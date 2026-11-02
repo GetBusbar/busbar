@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The closed upstream address, read from each transport family's own side.
-//!
-//! One opaque host string was read three incompatible ways at once — a socket address whose IP
-//! doubled as the offered certificate name, an absolute program path with no argument vector, and
-//! an address a call-per-path wire's method had nowhere to sit beside. These assert that each SHAPE
-//! now asks for exactly what it dials with, and gets nothing that belongs to another shape. What a
-//! particular family needs beside its shape is a declared key, not a shape of its own, and
-//! `open_shapes.rs` next door is where that is proven.
 
 use busbar_contract::transport::registry::facts;
 use busbar_contract::transport::UpstreamAddress;
@@ -58,8 +51,6 @@ fn a_program_target_carries_a_path_an_argv_and_an_environment() {
 
 #[test]
 fn a_call_per_path_family_carries_the_method_its_wire_names_every_call_by() {
-    // A SOCKET — a peer you connect to — with the one fact its wire needs declared beside the
-    // address, under the reserved key the arrival grammar already spells a method with.
     let per_path = UpstreamAddress::Socket {
         authority: "upstream.internal:8443",
         sni: Some("upstream.internal"),

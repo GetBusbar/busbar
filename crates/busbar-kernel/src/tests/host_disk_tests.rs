@@ -5,7 +5,6 @@ use super::*;
 use busbar_contract::abi::mechanism::call::Outcome;
 use std::path::PathBuf;
 
-/// A fresh directory for one test.
 fn dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-disk-lane-{name}-{}-{}",
@@ -29,7 +28,6 @@ fn dest(path: &Path, rotate_at: Option<u64>) -> DiskDest {
     }
 }
 
-/// A destination rotated as 1.5.5 rotated it: truncated in place.
 fn truncating(path: &Path, rotate_at: Option<u64>) -> DiskDest {
     DiskDest {
         rotate: DiskRotate::Truncate,
@@ -37,10 +35,6 @@ fn truncating(path: &Path, rotate_at: Option<u64>) -> DiskDest {
     }
 }
 
-/// 1.5.5's ROTATION (v1.5.5 `crates/busbar/src/export/file.rs:96-108`, "roll over by truncation rather
-/// than a rename"; Q128 arch u50): a due file is truncated in place and the append lands from empty;
-/// no archive is ever written, and, as 1.5.5 reported nothing of it, no rotation is reported. RED
-/// before the host honoured `DiskRotate::Truncate`: the file was renamed to `.1`.
 #[test]
 fn a_due_file_truncates_in_place_under_truncate() {
     let d = dir("truncate");
@@ -54,8 +48,6 @@ fn a_due_file_truncates_in_place_under_truncate() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// 1.5.5's WRITE: each append creates the file when absent and adds the bytes after what is
-/// there, unchanged — the file is the concatenation of every append, byte for byte.
 #[test]
 fn appends_create_the_file_and_land_whole_in_order() {
     let d = dir("order");
@@ -79,8 +71,6 @@ fn appends_create_the_file_and_land_whole_in_order() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// An unopenable path (its directory is missing) is a FAILED open, in the operating system's words;
-/// nothing is created.
 #[test]
 fn an_unopenable_path_fails_the_open_step() {
     let d = dir("open");
@@ -92,9 +82,6 @@ fn an_unopenable_path_fails_the_open_step() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// ROTATION IS THE HOST'S: a file already at the destination's threshold is renamed to `<path>.1`
-/// (older archives shifted up) BEFORE the append, which then starts the live file afresh; below the
-/// threshold nothing rotates.
 #[test]
 fn a_due_file_rotates_by_rename_before_the_append() {
     let d = dir("rotate");
@@ -113,11 +100,6 @@ fn a_due_file_rotates_by_rename_before_the_append() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// KEEP 0 IS 1.5.5'S ROLLOVER (v1.5.5 `crates/busbar/src/export/file.rs` 96-108: "roll over by
-/// truncation rather than a rename"): a due file that keeps no archives is TRUNCATED IN PLACE —
-/// the same inode, no `<path>.1` or any other file beside it — and the append starts it afresh,
-/// reported as no rotation. Below the threshold it appends as ever. RED before: keep 0 was
-/// clamped to one archive, the live file renamed to `<path>.1` and a new inode created.
 #[test]
 fn a_due_keep_zero_destination_truncates_in_place_and_keeps_no_archive() {
     let d = dir("keep0");
@@ -156,8 +138,6 @@ fn a_due_keep_zero_destination_truncates_in_place_and_keeps_no_archive() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// THE HOST'S POLICY from a manifest's `keep`: `0` truncates in place, `n` renames keeping `n`
-/// archives, and none declared takes 1.5.5's truncation.
 #[test]
 fn a_declared_keep_maps_to_the_hosts_rotation() {
     assert_eq!(DiskRotate::declared(Some(0)), DiskRotate::Truncate);
@@ -168,7 +148,6 @@ fn a_declared_keep_maps_to_the_hosts_rotation() {
     assert_eq!(DiskRotate::declared(None), DiskRotate::Truncate);
 }
 
-/// Retention: at `keep` archives the oldest is dropped, never more than `keep` kept.
 #[test]
 fn rotation_keeps_at_most_keep_archives() {
     let d = dir("keep");
@@ -186,9 +165,6 @@ fn rotation_keeps_at_most_keep_archives() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// KEEP N, DEFAULT 9 (owner signed 2026-10-27): a destination rotated by rename at its size keeps
-/// `<path>.1` .. `<path>.9`, newest first; the tenth rotation drops only the oldest archive, and
-/// every rotation is reported (`rotated`), so no line goes without a report.
 #[test]
 fn a_rename_rotation_keeps_nine_archives_and_drops_only_the_oldest() {
     let d = dir("keep9");
@@ -218,7 +194,6 @@ fn a_rename_rotation_keeps_nine_archives_and_drops_only_the_oldest() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A rename that cannot happen (no live file) is reported as the rename step, and nothing else.
 #[test]
 fn a_failed_rename_is_reported_and_nothing_is_truncated() {
     let d = dir("rename");
@@ -228,8 +203,6 @@ fn a_failed_rename_is_reported_and_nothing_is_truncated() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// THE LANE: an append submitted runs off the caller's thread and its report reaches the caller's
-/// `Later` as the stored READY answer; appends land in submission order.
 #[test]
 fn the_lane_runs_appends_in_order_and_answers_through_later() {
     let d = dir("lane");
@@ -257,7 +230,6 @@ fn the_lane_runs_appends_in_order_and_answers_through_later() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// Secret jobs run off the append executor. A panic leaves both executors usable.
 #[test]
 fn a_job_runs_on_the_lane_thread_and_a_panicking_one_leaves_the_lane_running() {
     let d = dir("job");
@@ -302,11 +274,6 @@ fn a_job_runs_on_the_lane_thread_and_a_panicking_one_leaves_the_lane_running() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// AN APPEND WHOSE COMPLETION PANICS FAILS ONLY ITSELF (Q128 arch u32 #39; the per-append
-/// fail-closed rule above): the appends behind it still land and still answer.
-///
-/// RED before the fix: the Append arm called `later` with no `catch_unwind`, so the panic ended the
-/// lane thread; every later submit answered LANE_GONE and nothing restarted the lane.
 #[test]
 fn an_append_whose_completion_panics_leaves_the_lane_running() {
     let d = dir("later-panic");
@@ -320,8 +287,7 @@ fn an_append_whose_completion_panics_leaves_the_lane_running() {
     let later: Later = Box::new(move |s| {
         let _ = tx.send(s);
     });
-    // The submit may race the panicking completion: before the fix it is refused LANE_GONE at once
-    // or never answered; either is the lane lost.
+
     let submitted = lane.submit(dest(&file, None), b"second\n".to_vec(), later);
     assert!(submitted.is_ok(), "the lane still takes appends");
     let stored = rx
@@ -376,7 +342,7 @@ fn a_blocked_disk_job_does_not_block_ordered_appends_or_their_completions() {
     }
     let first = submitted.then(|| done.recv_timeout(std::time::Duration::from_secs(2)));
     let second = submitted.then(|| done.recv_timeout(std::time::Duration::from_secs(2)));
-    // Always unblock the resolver before asserting, including on the old shared-worker failure.
+
     let _ = release.send(());
     let cleaned = finished.recv_timeout(std::time::Duration::from_secs(10));
     let backlog_cleaned = drained.recv_timeout(std::time::Duration::from_secs(10));
@@ -416,8 +382,6 @@ fn a_blocked_disk_job_does_not_block_ordered_appends_or_their_completions() {
     assert_eq!(bytes.unwrap(), b"first\nsecond\n");
 }
 
-/// Full admission drops the rejected callback outside custody locks: its destructor can submit
-/// on the same lane, and appends can complete reentrantly while secret admission stays full.
 #[test]
 fn full_secret_admission_drops_reentrant_custody_without_blocking_appends() {
     use std::sync::Arc;
@@ -465,8 +429,7 @@ fn full_secret_admission_drops_reentrant_custody_without_blocking_appends() {
         answer,
         completed,
     };
-    // Keep the test thread able to release the controlled blocker if a lock regression deadlocks
-    // the destructor. Do not join that submitter until it has answered.
+
     let submitter = std::thread::spawn(move || lane.run(Box::new(move || drop(reenter))));
     let reentered = answered.recv_timeout(std::time::Duration::from_secs(2));
     let appended = completion.recv_timeout(std::time::Duration::from_secs(2));

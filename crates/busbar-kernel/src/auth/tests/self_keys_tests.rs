@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Token-exchange guards: deterministic idempotent mint, refresh-invalidates-old, the
-//! HMAC-is-a-mint-time-selector-not-the-credential property, identity-from-principal-not-body, and a
-//! FAKE `SelfServeKeys` proving the endpoint is key-scheme agnostic.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,16 +18,11 @@ use crate::governance::{GovState, MemoryStore, RecordStore as _};
 
 const SEED: [u8; 32] = [7u8; 32];
 
-/// A fake [`SelfGroupProvisioner`] over an in-memory group registry, seeded with the TEAM (parent)
-/// carrying a `child_default`. `ensure_leaf` mirrors production: build the leaf via the real
-/// `provision_child` (so the child_default → leaf-limits logic is the SAME code the admin path uses),
-/// idempotent on the leaf name. Lets the GovState-only test harness assert the group is provisioned.
 struct FakeProvisioner {
     registry: std::sync::Mutex<BTreeMap<String, GroupCfg>>,
 }
 
 impl FakeProvisioner {
-    /// Seed a registry with `team` carrying the given `child_default` YAML body (a `GroupCfg`).
     fn with_team(team: &str, group_yaml: &str) -> Self {
         let cfg: GroupCfg = serde_yaml::from_str(group_yaml).expect("team group cfg parses");
         let mut reg = BTreeMap::new();
@@ -51,7 +42,7 @@ impl SelfGroupProvisioner for FakeProvisioner {
     async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
         let mut reg = self.registry.lock().unwrap();
         if reg.contains_key(leaf) {
-            return Ok(()); // idempotent: already provisioned, never reset
+            return Ok(());
         }
         let cfg = provision_child(&reg, parent);
         reg.insert(leaf.to_string(), cfg);
@@ -59,8 +50,6 @@ impl SelfGroupProvisioner for FakeProvisioner {
     }
 }
 
-/// A no-op provisioner for the tests that only exercise key-row behavior (idempotency, refresh,
-/// token verification) and do not assert on the group tree.
 struct NoopProvisioner;
 #[async_trait]
 impl SelfGroupProvisioner for NoopProvisioner {
@@ -92,7 +81,6 @@ fn principal(id: &str, roles: &[&str]) -> Principal {
     }
 }
 
-/// role_bindings with `<module>.<role>` → group `team`, all pools.
 fn bindings(module: &str, role: &str, group: Option<&str>) -> RoleBindings {
     let mut inner = BTreeMap::new();
     inner.insert(
@@ -255,14 +243,12 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
     assert_eq!(self_rows(&gov, "sam").len(), 1);
 }
 
-// ── deterministic idempotent mint ────────────────────────────────────────────────────────────────
-
 #[test]
 fn first_call_provisions_second_call_reuses_one_row() {
     let gov = gov();
     let (b1, t1) = gov.issue_self("sam", "corp", None, 5000, 1000).unwrap();
     let (b2, t2) = gov.issue_self("sam", "corp", None, 6000, 2000).unwrap();
-    // ONE binding row for the principal, reused: same id, same group.
+
     assert_eq!(
         b1.id, b2.id,
         "deterministic id: re-login reuses the same subject"
@@ -272,23 +258,15 @@ fn first_call_provisions_second_call_reuses_one_row() {
         1,
         "exactly one binding row after two logins"
     );
-    // Both tokens verify (the second just carries a fresher exp).
+
     assert!(gov.verify_token(&t1, 1000, None).is_some());
     assert!(gov.verify_token(&t2, 2000, None).is_some());
 }
 
-/// THE 1.5.2 TOKEN-EXCHANGE FIX. A self-serve exchange must produce a USABLE key:
-/// the `user:<sub>` budget group is auto-provisioned as a leaf under the resolved TEAM, stamped from
-/// the team's `child_default`, so enforcement resolves the chain instead of failing closed with 429
-/// MissingGroup. Idempotent: a second exchange reuses the one leaf and the one key row.
-///
-/// Before the fix: the mint seam bound the key to `user:<sub>` but never created that group, so
-/// `crate::proto::protocol_for("user:sam")` is absent (panic) and a cost model built from the registry can't resolve the
-/// key's chain — exactly the live `429 group 'user:<sub>' is not configured` the demo hit.
 #[tokio::test]
 async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     let gov = gov();
-    // The team the role binds to, carrying a child_default the per-user leaf inherits.
+
     let prov = Arc::new(FakeProvisioner::with_team(
         "team",
         "child_default:\n  limits:\n    - { budget: 500, per: month }\n",
@@ -301,7 +279,6 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         prov.clone(),
     );
 
-    // First exchange: mints the key AND auto-provisions the user:sam budget bucket.
     let issued = issue_key(
         &keys,
         &principal("sam", &["eng"]),
@@ -312,7 +289,6 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     .expect("first exchange issues a key");
     assert_eq!(issued.group, "user:sam");
 
-    // The GROUP now exists, parented under the team, with the team's child_default limits copied in.
     let reg = prov.snapshot();
     let leaf = reg
         .get("user:sam")
@@ -332,8 +308,6 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         "child_default limits actually copied onto the leaf"
     );
 
-    // ENFORCEMENT resolves it: a cost model built from the registry finds the key's chain, NOT
-    // MissingGroup — the exact difference between a usable key and the live 429.
     let cost = crate::cost::CostModel::resolve_parts(None, 0, &reg);
     assert!(cost.group_named("user:sam").is_some());
     let binding = gov
@@ -344,7 +318,6 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         "the self key resolves its enforcement chain (not MissingGroup)"
     );
 
-    // Idempotent: a second exchange reuses the one leaf and the one key row (no sprawl, no reset).
     let issued2 = issue_key(
         &keys,
         &principal("sam", &["eng"]),
@@ -388,12 +361,12 @@ fn refresh_invalidates_old_token() {
     let (_b2, fresh) = gov
         .refresh_self("sam", "corp", None, 100_000, 2000)
         .unwrap();
-    // Old token now fails (its binding was tombstoned / rotated away).
+
     assert!(
         gov.verify_token(&old, 2000, None).is_none(),
         "refresh must invalidate the prior token"
     );
-    // The new token verifies, and there is still exactly one live self row.
+
     assert!(
         gov.verify_token(&fresh, 2000, None).is_some(),
         "fresh token valid"
@@ -405,8 +378,6 @@ fn refresh_invalidates_old_token() {
     );
 }
 
-// ── the crypto guard: HMAC is a mint-time id SELECTOR, NEVER the credential ───────────────────────
-
 #[test]
 fn hmac_sig_token_rejected_bad_signature() {
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
@@ -415,14 +386,11 @@ fn hmac_sig_token_rejected_bad_signature() {
     );
     let verifier =
         crate::governance::signing::TokenVerifier::single(signer.kid(), signer.verifying_key());
-    // A legit token: reuse its payload segment, then FORGE the signature as a literal HMAC over the
-    // subject — the "Model B literal-HMAC credential" a naive reading might build. It must be
-    // rejected: the credential is an ed25519 signature, not an HMAC.
+
     let tok = signer.mint("vk_deadbeef", 5000, Some("0"));
     let body = tok.strip_prefix("bbk_").unwrap();
     let (payload_b64, _sig_b64) = body.split_once('.').unwrap();
-    // 64-byte HMAC (SHA-512) so it PARSES as a signature and reaches the (failing) crypto check,
-    // proving rejection is BadSignature, not merely Malformed length.
+
     let forged_sig = ring::hmac::sign(
         &ring::hmac::Key::new(ring::hmac::HMAC_SHA512, &SEED),
         b"user:vk_deadbeef#0",
@@ -443,8 +411,6 @@ fn hmac_sig_token_rejected_bad_signature() {
 
 #[test]
 fn issued_token_verifies_through_the_unchanged_path() {
-    // The whole point of Model B: `issue_self` returns a STANDARD busbar token that the ordinary
-    // verify path accepts — no verify-side change.
     let gov = gov();
     let (binding, token) = gov.issue_self("sam", "corp", None, 5000, 1000).unwrap();
     let resolved = gov
@@ -454,10 +420,6 @@ fn issued_token_verifies_through_the_unchanged_path() {
     assert_eq!(resolved.group.as_deref(), Some("user:sam"));
 }
 
-/// Re-login after an admin NARROWS the group's `allowed_pools` must take effect: the single reused
-/// binding is re-persisted with the freshly-resolved pools, not left with the stale set. Before
-/// the fix: `issue_self`'s reuse branch returned the existing binding verbatim, keeping the OLD pools
-/// forever.
 #[test]
 fn re_login_updates_allowed_pools_when_they_change() {
     use busbar_contract::records::ScopeRef;
@@ -466,7 +428,7 @@ fn re_login_updates_allowed_pools_when_they_change() {
         .issue_self("sam", "corp", Some(vec!["poolA".into()]), 5000, 1000)
         .unwrap();
     assert_eq!(b1.allowed_scopes, Some(vec![ScopeRef::pool("poolA")]));
-    // Admin changed the group's pools; the dev logs in again (same sub).
+
     let (b2, _t2) = gov
         .issue_self("sam", "corp", Some(vec!["poolB".into()]), 6000, 2000)
         .unwrap();
@@ -481,11 +443,9 @@ fn re_login_updates_allowed_pools_when_they_change() {
     );
 }
 
-/// Concurrent issue-only calls deduplicate to one deterministic binding. The separate overlap
-/// witness below exercises serialization against a refresh rather than relying on idempotent puts.
 #[test]
 fn concurrent_issue_self_yields_one_binding() {
-    let gov = gov(); // Arc<GovState>
+    let gov = gov();
     let mut handles = vec![];
     for i in 0..8u64 {
         let g = gov.clone();
@@ -504,7 +464,6 @@ fn concurrent_issue_self_yields_one_binding() {
     );
 }
 
-/// Pause one real mint's store write before it commits, without holding the backing store lock.
 struct RefreshOverlapStore {
     inner: MemoryStore,
     next_put: std::sync::Mutex<
@@ -579,9 +538,6 @@ impl crate::governance::RecordStore for RefreshOverlapStore {
     }
 }
 
-/// Exercise the hosted-login entry point, including admission, real group provisioning and the
-/// offloaded mint. A same-subject login/refresh must follow the parked refresh; another subject
-/// must still complete. Returning the old token or failing after a stale read is not serialization.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
     use crate::auth::login::{issue_self_key, SelfKeyIssue};
@@ -673,8 +629,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
         })
         .await
         .is_ok();
-        // This control walks the same provisioning/offload/store path while Sam's write is held.
-        // It also prevents a process-wide mint lock from passing the same-subject assertion.
+
         let other_handle = handle.clone();
         let mut other = tokio::spawn(async move {
             let app = other_handle.snapshot();
@@ -691,7 +646,6 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
         let other_completed_while_parked = other_progress.is_ok();
         let completed_while_parked = contender.is_finished();
 
-        // Release and join before assertions, including when the broken path completed early.
         let _ = release_tx.send(());
         let first = first.await;
         let contender = contender.await;
@@ -746,15 +700,8 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
     }
 }
 
-// ── admit_self_mint: the mint ceiling binds the self-serve mint (X-1001) ─────────────────────────
-
-/// The self-serve default lifetime the tests mint at: 90 days, as `auth.self_key_ttl` defaults.
 const SELF_TTL: u64 = crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS;
 
-/// **THE BLOCK `max_ttl` BINDS `POST /auth/token`** (X-1001; the mint ceiling is a kernel valve,
-/// `BUSBAR-1.6.0.md:157`). Before, only the admin `POST /keys` mint was held to the ceiling: an
-/// identity that could not be issued a key past an hour by an admin minted itself one for ninety
-/// days. The self-serve lifetime is a DEFAULT, not an explicit ask, so the ceiling clamps it.
 #[test]
 fn the_block_ttl_ceiling_clamps_the_self_serve_key() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
@@ -769,7 +716,6 @@ fn the_block_ttl_ceiling_clamps_the_self_serve_key() {
     assert_eq!(mint.team, "team");
 }
 
-/// A role's `mint_ceilings` TTL narrows below the block cap, as it does on the admin mint.
 #[test]
 fn a_role_ttl_ceiling_clamps_the_self_serve_key() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
@@ -789,9 +735,6 @@ fn a_role_ttl_ceiling_clamps_the_self_serve_key() {
     assert_eq!(mint.ttl, Duration::from_secs(600));
 }
 
-/// A role ceiling that admits only some pools refuses a self-serve key whose bindings grant ALL of
-/// them, exactly as it refuses an admin mint of all pools: the key would carry more than the
-/// ceiling lets that role hand out.
 #[test]
 fn a_role_pool_ceiling_refuses_a_self_serve_key_over_it() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
@@ -810,8 +753,6 @@ fn a_role_pool_ceiling_refuses_a_self_serve_key_over_it() {
     ));
 }
 
-/// THE CONTROL: with no `auth.policy` the self-serve key keeps its configured lifetime and pools —
-/// the 1.5.5 shape, byte for byte — and `self_mint: false` still refuses before any ceiling.
 #[test]
 fn no_policy_mints_at_the_self_serve_default_and_self_mint_off_still_refuses() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
@@ -831,8 +772,6 @@ fn no_policy_mints_at_the_self_serve_default_and_self_mint_off_still_refuses() {
     ));
 }
 
-/// The default self-serve mode is still a real mode: omitted, empty and explicit policy lists
-/// retain their three-state meaning at the shared admission seam used by exchange and login.
 #[test]
 fn self_mint_checks_its_recorded_mode_against_block_and_role_lists() {
     use crate::governance::mint_policy::{MintPolicy, RoleCeiling};
@@ -938,12 +877,8 @@ fn self_mint_mode_refusal_preserves_identity_and_disabled_policy_errors() {
     ));
 }
 
-// ── resolve_exchange: identity source + refusal matrix ────────────────────────────────────────────
-
 #[test]
 fn identity_from_principal_not_body() {
-    // resolve_exchange takes ONLY the verdict — there is no body parameter through which a caller
-    // could assert a different identity. The subject it resolves is exactly the verified principal.
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, team, _pools) = resolve_exchange(&v, &rb, None).expect("bound principal admitted");
@@ -960,7 +895,7 @@ fn identity_from_principal_not_body() {
 #[test]
 fn rejects_static_key_400() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
-    // A static busbar key was presented → the engine resolved a VirtualKey.
+
     let key = Arc::new(crate::governance::VirtualKey {
         id: "vk_static".into(),
         generation_hash: "binding:vk_static:0".into(),
@@ -1001,7 +936,6 @@ fn open_and_denied_are_unauthorized() {
 
 #[test]
 fn unbound_role_is_403() {
-    // Identified but no role bound under the identifying module.
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified("test-idp-double", principal("sam", &["other"]));
     assert_eq!(
@@ -1012,7 +946,6 @@ fn unbound_role_is_403() {
 
 #[test]
 fn bound_role_without_group_is_403() {
-    // A self key must charge through a group; a binding without one is refused.
     let rb = bindings("test-idp-double", "eng", None);
     let v = identified("test-idp-double", principal("sam", &["eng"]));
     assert_eq!(
@@ -1023,17 +956,6 @@ fn bound_role_without_group_is_403() {
 
 #[test]
 fn later_role_group_used_when_earlier_role_bound_but_groupless() {
-    // resolve_exchange must scan ALL of the principal's granting bindings
-    // in the module for the first one that carries a group — not just take the FIRST role that has
-    // any binding at all and then fail if THAT one happens to be groupless. Here role "A" binds but
-    // has no group; role "B" binds AND carries a group. Before the fix this 403'd with Unbound even
-    // though a later granting role clearly admits the principal under group "x".
-    //
-    // The POOLS must be the UNION across ALL granting bindings (role A's
-    // "pool-a" AND role B's "pool-b"), matching `synthesize_principal_key` — not just the pools of
-    // the single binding the group happened to come from (role B alone, "pool-b" only). Before
-    // the fix: only `pool-b` came back, silently narrowing a self-serve key's pools below what the
-    // SAME identity gets on the data plane through `synthesize_principal_key`.
     let mut inner = BTreeMap::new();
     inner.insert(
         "A".to_string(),
@@ -1080,11 +1002,6 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
 
 #[test]
 fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
-    // An OMITTED `allowed_pools` on ANY granting binding is the widest grant (ALL pools) and
-    // must win the union even when another granting binding lists an explicit, narrower set — the
-    // SAME rule `synthesize_principal_key` applies. Role A omits `allowed_pools` (all pools); role B
-    // (which carries the group) lists only "pool-b". The resolved pools must be `None` (all), not
-    // `Some(["pool-b"])`.
     let mut inner = BTreeMap::new();
     inner.insert(
         "A".to_string(),
@@ -1121,8 +1038,7 @@ fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
 #[test]
 fn sub_sanitization_refused() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
-    // Refused: '/' separator, a LEADING reserved bucket/real-key prefix, empty, and control chars.
-    // NOTE an INTERNAL ':' (e.g. `oidc:alice`) is NOT here — it is legitimate (module-namespaced).
+
     for bad in ["a/b", "vk_evil", "group:x", "user:x", "", "a\tb", "a\nb"] {
         let v = identified("test-idp-double", principal(bad, &["eng"]));
         assert_eq!(
@@ -1131,7 +1047,7 @@ fn sub_sanitization_refused() {
             "unsafe subject {bad:?} must be refused"
         );
     }
-    // Admitted: a plain sub and a module-namespaced sub (internal ':').
+
     for ok in ["sam", "test-idp-double:alice", "test-external-idp:torvalds"] {
         let v = identified("test-idp-double", principal(ok, &["eng"]));
         assert!(
@@ -1140,8 +1056,6 @@ fn sub_sanitization_refused() {
         );
     }
 }
-
-// ── end-to-end through the real seam ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn resolve_then_issue_via_real_seam() {
@@ -1164,18 +1078,13 @@ async fn resolve_then_issue_via_real_seam() {
         .expose(&crate::seal::lend())
         .starts_with("bbk_"));
     assert_eq!(issued.group, "user:sam");
-    // The token the seam handed back verifies through the ordinary path.
+
     let now = busbar_kernel::store::now();
     assert!(gov
         .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
 }
 
-/// A real OIDC/GitHub/LDAP plugin sets `principal.id = "oidc:<sub>"` (module-namespaced). Such an id
-/// is LEGITIMATE and verified — it must mint a key, grouped under `user:oidc:<sub>` (the internal ':'
-/// cannot escape the `user:` namespace because the group is ALWAYS `user:` + the whole sub). Before
-/// the fix: `sanitize_self_sub` rejected ANY ':' → 403 BadSubject, so token-exchange with a
-/// real OIDC JWT never issued a key.
 #[tokio::test]
 async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let gov = gov();
@@ -1209,9 +1118,6 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         .is_some());
 }
 
-// ── an admin's hold and the minting provider hold across a login (K3 #17, #21) ────────────────
-
-/// One self-serve key scheme for `provider`, over `gov`, charging through `team`.
 fn keys_via(gov: &Arc<GovState>, provider: &str) -> DeterministicEd25519Keys {
     DeterministicEd25519Keys::new(
         gov.clone(),
@@ -1222,20 +1128,14 @@ fn keys_via(gov: &Arc<GovState>, provider: &str) -> DeterministicEd25519Keys {
     )
 }
 
-/// The one row with this id, tombstoned or not.
 fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
     gov.store().get_key(id).unwrap().expect("the row exists")
 }
 
-/// K3 #17 (disable): an admin DISABLE of a self-serve key must hold across the user's next login and
-/// refresh. `current_self_binding` finds only enabled rows, so the next login used to arrive at epoch
-/// 0, re-derive the disabled row's id and write it back `enabled: true` at its old generation: every
-/// pre-disable token verified again. Both doors now refuse with 1.5.5's 403 (`Unbound`) while a
-/// disabled binding stands, and write nothing.
 #[tokio::test]
 async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     let gov = gov();
-    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+
     gov.hold_self_mint_state();
     let keys = keys_via(&gov, "corp");
     let alice = principal("oidc:alice", &["eng"]);
@@ -1249,7 +1149,6 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         .verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
 
-    // The admin disables it, exactly as `PATCH /api/v1/admin/keys/{id} {"enabled":false}` would.
     gov.update_key(&t0.key_id, Some(false), None)
         .unwrap()
         .expect("the key exists");
@@ -1279,10 +1178,6 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     );
 }
 
-/// 1.5.5 PARITY CELL: with the hold unsigned, a login after an admin DISABLE mints as
-/// 1.5.5 minted (v1.5.5 crates/busbar/src/governance/state.rs:431 skips only tombstoned rows, :560
-/// mints): the subject's derived row is written back enabled at its id, the login answers a key,
-/// never 403, and a refresh mints too. RED against the hold (K3 #17), which refuses both 403.
 #[tokio::test]
 async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
     let gov = gov();
@@ -1307,9 +1202,6 @@ async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
         .expect("1.5.5 minted on a refresh too");
 }
 
-/// 1.5.5 PARITY CELL: with the hold unsigned, a second identity provider asserting the
-/// same subject is handed the subject's one self-serve key, as 1.5.5 handed it (1.5.5 keyed the
-/// binding by subject alone and recorded no provider), never 403. RED against the hold (K3 #21).
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did() {
     let gov = gov();
@@ -1328,11 +1220,6 @@ async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5
     );
 }
 
-/// 1.5.5 PARITY CELL: a self-serve key is written with EMPTY labels, as 1.5.5 wrote it
-/// (v1.5.5 crates/busbar/src/governance/state.rs:487), through issue, re-issue under changed pools
-/// and refresh, so `GET /keys` (whose views serve `labels` verbatim) shows `{}` as 1.5.5 did. The
-/// minting provider rides the kernel-only `idp_provider`, which no key view carries. RED before the
-/// fix: every self-serve row carried `busbar_self_provider` in `labels`.
 #[tokio::test]
 async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     let gov = gov();
@@ -1362,14 +1249,10 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     assert_eq!(rotated_row.idp_provider.as_deref(), Some("corp"));
 }
 
-/// K3 #21: two named providers backed by one module can both assert `oidc:alice`. The binding is
-/// keyed by subject alone, so the second provider used to be handed the first one's key (and could
-/// refresh it away). The binding now records its minting provider; another provider is refused with
-/// the 403 (`Unbound`) and the first provider's key is untouched.
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_refused() {
     let gov = gov();
-    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+
     gov.hold_self_mint_state();
     let corp = keys_via(&gov, "corp");
     let partner = keys_via(&gov, "partner");
@@ -1413,17 +1296,14 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
     assert_eq!(again.key_id, issued.key_id);
 }
 
-/// K3 #21 (legacy rows): a binding minted before the provider label existed ADOPTS the first
-/// provider that logs in, with no migration; every other provider is refused from then on.
 #[tokio::test]
 async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     let gov = gov();
-    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+
     gov.hold_self_mint_state();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
-    // A pre-record binding: mint one, then strip the provider record from the stored row.
     let issued = issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
         .await
         .expect("issues");
@@ -1455,10 +1335,6 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     );
 }
 
-// ── the endpoint is key-scheme agnostic ──────────────────────────────────────────────────────────
-
-/// A FAKE scheme that issues an opaque string — proving `issue_key`/the handler depend ONLY on the
-/// `SelfServeKeys` trait, never on ed25519/epoch/envelope internals.
 struct FakeKeys;
 #[async_trait]
 impl SelfServeKeys for FakeKeys {
@@ -1498,7 +1374,7 @@ async fn endpoint_is_scheme_agnostic_over_the_trait() {
         issued.secret.expose(&crate::seal::lend()),
         "fake-scheme-token:sam"
     );
-    // Refresh path also rides the same trait object.
+
     let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true)
         .await
         .unwrap();
@@ -1508,10 +1384,6 @@ async fn endpoint_is_scheme_agnostic_over_the_trait() {
     );
 }
 
-/// HEADLINE secret-hygiene fix: an `IssuedKey` carries a LIVE bearer token, and the struct derives
-/// `Debug`. Before the `secret: Secret<String>` conversion, `format!("{issued:?}")` printed the
-/// token verbatim — a latent leak the instant any code `tracing`/`{:?}`'d an `IssuedKey`. Now the
-/// token is `[REDACTED]` in Debug while the safe `key_id` identity still shows.
 #[tokio::test]
 async fn issued_key_debug_never_leaks_the_live_token() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
@@ -1530,18 +1402,10 @@ async fn issued_key_debug_never_leaks_the_live_token() {
         dbg.contains("[REDACTED]"),
         "the secret field must render redacted: {dbg}"
     );
-    // The non-secret identity is still visible for logs/audit.
+
     assert!(dbg.contains("fake"), "key_id (safe id) still shows: {dbg}");
 }
 
-// ── PROOF: auth.policy.self_mint enforced on the self-serve mint path ─────────────────────────────
-
-/// `auth.policy.self_mint: false` DISABLES the self-serve mint path. The SAME authenticated,
-/// otherwise-eligible identity that mints a real key under `self_mint: true` is REFUSED (403
-/// `SelfMintDisabled`) under `self_mint: false`, and NO VirtualKey row is written; the documented
-/// default (`None` ⇒ self-mint available whenever an IdP is configured) leaves the path open. The
-/// `Some(true)` case establishes that the identity is eligible, so the refusal under `Some(false)` is
-/// the policy switch closing the path — not a pre-existing rejection of this identity.
 #[tokio::test]
 async fn proof_self_mint_disabled_refuses_self_serve() {
     crate::snapshot::init();
@@ -1563,8 +1427,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             })
             .build();
         let handle = Arc::new(crate::state::AppHandle::new(app));
-        // Invoke the actual exchange with this store attached. The same verified identity is
-        // eligible in both positive controls, including the documented omitted-policy default.
+
         let response = crate::auth::exchange::exchange(
             axum::extract::State(handle),
             axum::http::Request::builder()
@@ -1601,9 +1464,6 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
     }
 }
 
-/// Both real entry points must reject a forbidden mode before group provisioning, overlay
-/// persistence or any binding write. The same identities mint user-bound keys under an explicit
-/// allowance and the omitted-policy default; login refresh passes through the same gate.
 #[tokio::test]
 async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation() {
     use crate::auth::login::{issue_self_key, SelfKeyIssue};
@@ -1756,7 +1616,6 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
     }
 }
 
-/// A verified identity asking for a real replay claim, as an inbound auth door does.
 struct ModeReplayIdentity;
 
 struct ModeReplayAnswer(Option<busbar_contract::auth_calls::VerifyAnswer>);

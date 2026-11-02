@@ -132,8 +132,6 @@ fn visit_postgres_keyword<'a>(
 }
 
 fn postgres_policy(mut url: CredUrl, require_auth: Option<Bytes>) -> CredUrl {
-    // Only valid parsed methods can relax the PostgreSQL floor. The native public parser
-    // retains responsibility for reporting an invalid option, including every duplicate.
     let floor = url.floor.postgres(
         require_auth
             .as_ref()
@@ -171,8 +169,7 @@ pub(super) fn postgres(text: &str) -> Result<CredUrl, &'static str> {
                     require_auth = Some(value.clone());
                 }
                 let value = core::str::from_utf8(&value).expect("keyword characters are UTF-8");
-                // Canonical public pairs retain escaped and Unicode-whitespace semantics for
-                // the native parser, TLS policy, and auth-floor parsing alike.
+
                 kept.push(format!(
                     "{key}='{}'",
                     value.replace('\\', "\\\\").replace('\'', "\\'")
@@ -193,8 +190,6 @@ pub(super) fn postgres(text: &str) -> Result<CredUrl, &'static str> {
     if !authority.contains('@') && !authority.starts_with('[') {
         if let Some((_, port)) = authority.rsplit_once(':') {
             if rest[authority.len()..].contains('@') && port.parse::<u16>().is_err() {
-                // A raw '/' or '?' ended the authority before '@'. Native parsing refuses
-                // this nonnumeric port; do not first copy a password-looking tail to public.
                 return Err(
                     if query
                         .is_some_and(|q| q.split('&').any(|p| !p.is_empty() && !p.contains('=')))
@@ -241,8 +236,7 @@ pub(super) fn postgres(text: &str) -> Result<CredUrl, &'static str> {
                 if &key[..] == b"sslmode" {
                     let value = strict(value)?;
                     let value = core::str::from_utf8(&value).expect("strict UTF-8");
-                    // This public keyword has no form '+' decoding; normalize its percent
-                    // spelling so the shared secure policy sees the same mode as the driver.
+
                     if matches!(
                         value,
                         "disable" | "allow" | "prefer" | "require" | "verify-ca" | "verify-full"
@@ -266,7 +260,7 @@ pub(super) fn postgres(text: &str) -> Result<CredUrl, &'static str> {
 }
 
 /// WHATWG preprocessing: strip leading/trailing C0/space, ignore tab/newline/CR anywhere.
-/// The temporary is wiped; only the password-free output survives capture.
+
 fn normalized(text: &str) -> Zeroizing<String> {
     let mut out = Zeroizing::new(String::with_capacity(text.len()));
     for c in text.trim_matches(|c: char| c <= '\u{20}').chars() {
@@ -279,7 +273,6 @@ fn normalized(text: &str) -> Zeroizing<String> {
     out
 }
 
-// Match form_urlencoded's lossy UTF-8 without leaving allocating Cow/String scratch behind.
 fn lossy(bytes: &[u8]) -> Bytes {
     let mut out = Zeroizing::new(Vec::with_capacity(bytes.len().saturating_mul(3)));
     let mut rest = bytes;
@@ -309,7 +302,7 @@ pub(super) fn valkey(text: &str) -> CredUrl {
     let mut error = None;
     let Some(colon) = text.find(':') else {
         let mut out = captured(String::new(), None, echoes);
-        // Keep an empty setting distinguishable from a malformed nonempty URL.
+
         out.parsing_error = if text.is_empty() {
             None
         } else {
@@ -330,8 +323,6 @@ pub(super) fn valkey(text: &str) -> CredUrl {
     }
     let rest = &text[colon + 1..];
     if !supported || (!rest.starts_with("//") && (!unix || !rest.starts_with('/'))) {
-        // Unsupported/opaque forms carry no usable native authority. Retain a safe refusal
-        // or a minimal public opaque form so native Missing hostname/path precedence remains.
         let mut out = captured(format!("{scheme}:"), None, echoes);
         out.parsing_error = error;
         return out;
@@ -394,7 +385,6 @@ pub(super) fn valkey(text: &str) -> CredUrl {
         .split_once('?')
         .map_or((before_fragment, None), |(a, q)| (a, Some(q)));
     if ambiguous {
-        // Keep path segment boundaries/dot-segment meaning while hiding the ambiguous tail.
         for (i, segment) in path.split('/').enumerate() {
             if i != 0 {
                 public.push('/');
@@ -419,7 +409,7 @@ pub(super) fn valkey(text: &str) -> CredUrl {
             if matches!(&key_decoded[..], b"pass" | b"password") {
                 let b = decode_form(value);
                 remember(&mut echoes, value, &b);
-                // query_pairs uses lossy UTF-8, including for passwords.
+
                 let value = lossy(&b);
                 echoes.push(Cred::from_bytes(decode(
                     pair.split_once('=').map_or("", |(_, v)| v),
@@ -432,8 +422,6 @@ pub(super) fn valkey(text: &str) -> CredUrl {
                 public.push_str(key);
                 public.push('=');
             } else if ambiguous {
-                // Preserve known parameter semantics; unknown names were withheld by the old
-                // blind password scrub. An '@' marker keeps that refusal shape without its text.
                 let known = if unix {
                     &["db", "user", "protocol"][..]
                 } else {
@@ -475,7 +463,7 @@ pub(super) fn valkey(text: &str) -> CredUrl {
 }
 
 /// Compare one sealed spelling to a message suffix. Percent triplets ignore only hex case;
-/// other bytes compare exactly. A form space also matches '+'. No decoded copy is allocated.
+
 fn echo_len_mode(message: &[u8], secret: &[u8], encoded: bool) -> Option<usize> {
     if secret.is_empty() {
         return None;

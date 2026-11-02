@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE 1.5.5 HOOK WIRE, REPLY SIDE: what the HOST still reads of a hook's 1.5.5 JSON after the hook
-//! switch-over (the design: hooks are on the memory ABI; a hook's `decide`/`transform` reply
-//! crosses as the hook kind's fixed `out`, lowered from 1.5.5 JSON on the PLUGIN side by
-//! `abi::sdk::hook::lower_decide_reply` / `lower_transform_reply`, and read back by the kernel's host
-//! hook stage, `plane_driver::hooks::policy`). Moved here from the kernel's `hooks::wire` (the hook reply wire shapes live in the contract, beside the
-//! request side in [`super`]). What is here is the host's half of 1.5.5's reply contract, which the
-//! fixed `out` does not do for it: the reject-status clamp and message sanitiser, the rewrite parsed
-//! fail-closed, and the `status`/`describe` blobs (1.5.5 JSON, carried verbatim by the ABI) with the
-//! bounded hook-metrics shape they report. The settings-bag-carrying [`StatusReply`] stays inside the
-//! settings-leak-lint scan root.
 
 use serde::Deserialize;
 
@@ -92,9 +83,6 @@ pub struct HookMetric {
     /// Gauge normalization ceiling (finite number, else dropped).
     #[serde(default)]
     pub max: Option<f64>,
-    // Time SERIES are the CONSUMER's job in 1.3 (a dashboard samples `status` and accumulates); an
-    // engine-retained `series` member is the reserved append-only path (a future release). A hook
-    // may send unknown members today — they are ignored, not an error.
 }
 
 /// The hook's `status` reply body (liberal: every field optional, unknown fields ignored),
@@ -107,10 +95,6 @@ pub struct StatusReply {
     pub settings_version: Option<u64>,
     /// The hook's echo of its resolved settings bag.
     #[serde(default)]
-    // settings-leak-lint: allow — INBOUND wire reply the engine only consumes: the hook's echo of
-    // the RESOLVED bag. It is never serialized to a reader (`hook_status` projects `settings_keys`
-    // from it; `settings_drift_keys` compares key names), and this is the exact type whose leak
-    // — historical #3 — the widened scan root exists to keep caught.
     pub settings: Option<serde_json::Map<String, serde_json::Value>>,
     /// The raw metric entries, validated by [`parse_status_metrics`].
     #[serde(default)]
@@ -148,8 +132,7 @@ pub const MAX_METRIC_LABEL_CHARS: usize = 64;
 pub const MAX_METRIC_UNIT_CHARS: usize = 16;
 
 /// Validate a hook-reported metric NAME or LABEL KEY: `^[a-z][a-z0-9_]{0,63}$`. Anything else is
-/// dropped — names/keys become Prometheus identifiers, so the charset is enforced structurally (a
-/// hook granted `prompt: ro` physically cannot smuggle content into a scrape).
+
 pub fn valid_metric_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b'a'..=b'z'))
@@ -158,9 +141,7 @@ pub fn valid_metric_name(name: &str) -> bool {
 }
 
 /// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
-/// char boundary; `.chars().take(n)` is panic-free and matches the documented "≤ N chars" rule).
-/// An over-cap value is cut at the cap with nothing added, as 1.5.5 cut it.
-/// Empty text stays empty; only rejection messages receive a default explanation.
+
 pub fn sanitize_cap(raw: &str, n: usize) -> String {
     raw.chars()
         .filter(|c| {
@@ -180,10 +161,7 @@ pub fn sanitize_cap(raw: &str, n: usize) -> String {
 }
 
 /// Parse + validate the metrics ARRAY of a `status` reply FAIL-OPEN: a malformed entry (bad
-/// name/type, non-finite value) is DROPPED whole, valid ones kept, capped at [`MAX_HOOK_METRICS`].
-/// Within an entry, malformed OPTIONAL members (an out-of-charset label key, a non-finite quantile,
-/// an inverted CI, an out-of-vocabulary viz) are dropped INDIVIDUALLY — the metric survives. Every
-/// exposed string is sanitized + length-bounded; every number is finite.
+
 pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
     let mut out = Vec::new();
     for v in raw {
@@ -193,15 +171,14 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
         let Ok(mut m) = serde_json::from_value::<HookMetric>(v.clone()) else {
             continue;
         };
-        // Drop the whole entry on the load-bearing invariants: name charset, known type, finite
-        // scalar. (A histogram may legitimately carry value 0 — the distribution is in quantiles.)
+
         if !valid_metric_name(&m.name)
             || !matches!(m.kind.as_str(), "counter" | "gauge" | "histogram")
             || !m.value.is_finite()
         {
             continue;
         }
-        // Labels: keep only charset-valid keys with sanitized values, capped in count.
+
         m.labels = m.labels.map(|labels| {
             labels
                 .into_iter()
@@ -210,10 +187,7 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
                 .take(MAX_METRIC_LABELS)
                 .collect()
         });
-        // Quantiles: keys parse to a probability in [0,1], values finite; drop the map if empty.
-        // Capped like labels and buckets: the [0,1] filter does NOT bound the count — "0.5", "0.50",
-        // "0.500" are all distinct keys that all parse in range — and the scrape renders one line per
-        // quantile per metric, so an uncapped map defeats `scrape.rs`'s stated BOUNDED property.
+
         m.quantiles = m
             .quantiles
             .map(|q| {
@@ -225,9 +199,7 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
                     .collect::<std::collections::BTreeMap<_, _>>()
             })
             .filter(|q| !q.is_empty());
-        // Buckets: keys are `le` bounds — a finite number or `"+Inf"` — values finite, non-negative
-        // cumulative counts. Cap the bucket count (a histogram with 64 le bounds is already generous).
-        // Drop the map if empty.
+
         m.buckets = m
             .buckets
             .map(|b| {
@@ -241,7 +213,7 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
                     .collect::<std::collections::BTreeMap<_, _>>()
             })
             .filter(|b| !b.is_empty());
-        // Confidence interval: both finite and ordered, else drop the pair entirely.
+
         match (m.ci_low, m.ci_high) {
             (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() && lo <= hi => {}
             _ => {
@@ -270,8 +242,7 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
 use crate::hooks::RewriteReply;
 
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
-/// "tools"?: [...]}` with a NON-EMPTY messages array; anything else yields `None` (proceed with the
-/// original body). `tools` is optional (defaults empty).
+
 pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     let messages: Vec<serde_json::Value> = value.get("messages")?.as_array()?.clone();
     if messages.is_empty() {
@@ -289,9 +260,7 @@ pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
 pub const REJECT_STATUS_DEFAULT: u16 = 403;
 
 /// Clamp a hook-supplied reject status to the client-error range: anything outside 400..=499
-/// becomes `REJECT_STATUS_DEFAULT` (403). Shared by the hook reply read-back (`policy::reject_of`)
-/// and forward's policy-outcome seam (defense in depth for a `RoutingDecision::Reject`
-/// constructed directly by a policy impl), so no producer can mint a success/redirect/5xx.
+
 pub fn clamp_reject_status(status: u16) -> u16 {
     if (400..=499).contains(&status) {
         status
@@ -305,16 +274,7 @@ pub const REJECT_MESSAGE_MAX_CHARS: usize = 300;
 pub const REJECT_MESSAGE_DEFAULT: &str = "Request rejected by the routing policy.";
 
 /// Sanitize a reject message for the client error body AND the operator log line: strip control
-/// chars, the Unicode line/paragraph separators (U+2028/29 — several log/OTLP pipelines treat
-/// them as newlines: a record-splitting vector like CRLF), and the invisible direction/zero-width
-/// formatting chars (bidi overrides U+202A..=U+202E and isolates U+2066..=U+2069 can visually
-/// spoof a log line in a terminal; zero-widths U+200B..=U+200F and U+FEFF hide content). Cap the
-/// length (cut at the cap with nothing added, the 1.5.5 bytes); fall back to the canned default
-/// when nothing printable survives.
-///
-/// Shared by the hook reply read-back (`policy::reject_of`) and by `forward`'s seam mapping (defense in
-/// depth for a `RoutingDecision::Reject` constructed directly by a policy impl), so the "safe to
-/// log, safe for the client" guarantee holds for EVERY producer of a rejection.
+
 pub fn sanitize_reject_message(raw: &str) -> String {
     let message = sanitize_cap(raw, REJECT_MESSAGE_MAX_CHARS);
     if message.trim().is_empty() {

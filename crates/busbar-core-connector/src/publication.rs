@@ -276,7 +276,7 @@ impl Eq for ProducerCustody {}
 
 impl ProducerCustody {
     /// Recover the host publication owner after concurrent association removal. The owner is
-    /// weak here, so a producer cannot keep an otherwise retired connection alive.
+
     #[must_use]
     pub fn pairing(&self) -> Option<Arc<crate::datagram::Pairing>> {
         let memory = self.0.as_ref()?.memory.as_ref()?;
@@ -340,7 +340,6 @@ impl Drop for Lease {
 #[derive(Debug, Default, Clone)]
 pub struct Custody(Option<Arc<Lease>>);
 
-// Storage identity is deliberately absent from semantic output equality.
 impl PartialEq for Custody {
     fn eq(&self, _: &Self) -> bool {
         true
@@ -358,7 +357,7 @@ impl Custody {
         self.0.is_some()
     }
     /// Split already reserved storage into an independent owner before the parent reservation
-    /// is shared. The child allocation and its Arc header are paid from pre-crossing credit.
+
     pub(crate) fn split(&mut self, bytes: usize) -> Self {
         let Some(lease) = self.0.as_mut() else {
             return Self::default();
@@ -381,7 +380,7 @@ impl Custody {
     }
 
     /// Return unused pre-crossing credit once every requested allocation is known. This is
-    /// only valid before the fresh reservation is shared with publication or reader owners.
+
     pub(crate) fn reduce(&mut self, retained: usize) {
         let Some(lease) = self.0.as_mut() else {
             return;
@@ -426,7 +425,7 @@ impl Custody {
     }
 
     /// Transfer storage to this leg's reader. Queued bytes on the writer's own leg cannot be
-    /// assumed independently consumable while that writer is blocking its reader task.
+
     #[must_use]
     pub fn reader_on(&self, leg: crate::datagram::Leg) -> ReaderCustody {
         self.reader_for(Some(match leg {
@@ -600,9 +599,7 @@ impl Messages {
     }
 
     /// Transfer an already charged message; no payload copy is made.
-    ///
-    /// # Errors
-    /// The endpoint closed or its existing descriptor bound is reached. The message is returned.
+
     pub fn send(&self, message: Message) -> Result<(), Message> {
         {
             let mut state = lock(&self.state);
@@ -675,9 +672,7 @@ impl Messages {
     }
 
     /// Take an already queued message, for source controls and nonblocking readers.
-    ///
-    /// # Errors
-    /// No message is queued.
+
     pub fn try_recv(&self) -> Result<Message, std::sync::mpsc::TryRecvError> {
         let mut state = lock(&self.state);
         let node = state
@@ -694,7 +689,7 @@ impl Messages {
     }
 
     /// Close the producer. Already accepted messages remain readable and charged until the
-    /// reader consumes them or the endpoint itself is destroyed.
+
     pub fn close(&self) {
         lock(&self.state).closed = true;
         self.ready.notify_waiters();

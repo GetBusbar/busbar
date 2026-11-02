@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SECRET KIND'S CALLS over the one dispatcher (THE DESIGN, "Plugins" and the plugin ABI): the
-//! contract's [`SecretAxis`] and [`SecretCalls`], implemented here over [`Plugin`]`<`[`Secret`]`>`.
-//! [`SecretRows`] holds every secret plugin the composition root admitted — a compiled-in row (its
-//! linked door) and a dropped-in one (its verified library, discovered off its signed manifest) —
-//! as the [`Candidate`]s the boot stages read, and loads each through the one loader path
-//! ([`load_linked`] / [`load_dropped_bytes`]) only when a reference first names it. Nothing here
-//! reads which door a plugin came in by once it is loaded.
-//!
-//! `open` is a ticket-less crossing (it may not pend); `resolve` is submitted on a ticket and the
-//! calling thread waits for its answer, which may PEND (the dispatcher's worker drives it). THE
-//! VALUE IS WRITTEN INTO THE HOST'S BUFFER (the credential chip, row 6: host-owned secret bytes): a zeroed
-//! [`SecretValue`] the host lends `resolve` ([`ResolveIn::secret_buf`]) and keeps, so there is no
-//! plugin lease, no copy out of plugin memory and nothing to release. A value over the buffer is
-//! the short-buffer answer, re-called once with a buffer its size. The holder is the bytes' one
-//! home until the consumer's `open` has them, and wipes them when it drops. An instance is closed
-//! when its last handle drops.
-
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
@@ -48,26 +31,16 @@ use crate::dispatch::{
     EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
 };
 
-/// How long a `resolve` may pend before the dispatcher cancels it (the Call budget).
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The longest the calling thread waits for one answer: past the Call budget, so the dispatcher's
-/// own cancel ends a slow op first; this bounds a wait on a dispatcher that stopped.
 const WAIT: Duration = Duration::from_secs(40);
 
-/// How many calls one secret instance holds in flight, at most.
 const MAX_INFLIGHT_CAP: u32 = 16;
 
-/// The host's bounded config-time disk executor, isolated from ordered appends: run a job off
-/// the caller's thread, or say why it was not taken (the lane is full or not running).
 pub type DiskRun = fn(Box<dyn FnOnce() + Send>) -> Result<(), String>;
 
 type DiskJob = Box<dyn FnOnce() + Send>;
 
-/// Shared custody of a resolve that has not started. Both the queued callback and its waiter
-/// withdraw it on drop; only a running crossing can retain the instance beyond its deadline.
-/// Taking custody is the only operation under this mutex. Running or dropping it (which can
-/// close a plugin and reenter the host) always happens after the guard is released.
 struct QueuedDiskResolve {
     pending: Arc<Mutex<Option<DiskJob>>>,
     deadline: Instant,
@@ -86,7 +59,6 @@ impl QueuedDiskResolve {
         if Instant::now() < self.deadline {
             job();
         }
-        // An expired job is dropped here even if its waiter has not been scheduled again.
     }
 }
 
@@ -107,9 +79,6 @@ enum Disk {
     Unwired,
 }
 
-/// ONE OPENED SECRET PLUGIN INSTANCE: its calls through the one dispatcher, or — for a source that
-/// declares a disk need — on the host's disk lane at config time only. Closed when its last handle
-/// drops (a lane job holds one).
 pub struct LoadedSecret {
     opened: Arc<Opened>,
     dispatcher: Arc<Dispatcher>,
@@ -117,7 +86,6 @@ pub struct LoadedSecret {
     disk: Disk,
 }
 
-/// The opened instance itself, shared with a lane job running its `resolve`. Closed on drop.
 struct Opened {
     plugin: Plugin<Secret>,
 }
@@ -131,20 +99,12 @@ impl std::fmt::Debug for LoadedSecret {
     }
 }
 
-/// ONE RESOLVE'S HOST MEMORY, owned by the dispatcher while the crossing runs (a crossing the
-/// waiter gave up on still writes into it until it returns): the settings it reads and the zeroed
-/// holder the value is written into. The holder is taken out (moved, never copied) once the answer
-/// is READY; whatever is left wipes itself when the last owner drops.
 struct Lending {
-    // settings-leak-lint: allow — NON-PROJECTION engine type: one resolve's settings bytes, lent to
-    // the plugin for the call and owned by the dispatcher until it returns. `Lending` implements
-    // neither `Debug` nor `Serialize`.
     settings: Vec<u8>,
     held: Mutex<SecretValue<Vec<u8>>>,
 }
 
 impl Lending {
-    /// `settings` and a zeroed holder of `cap` bytes, and the `in` naming both.
     fn new(settings: &[u8], cap: usize) -> (Arc<Self>, ResolveIn) {
         let mut held = SecretValue::zeroed(cap);
         let (buf, cap) = held.lend_mut();
@@ -156,7 +116,6 @@ impl Lending {
         (lending, input)
     }
 
-    /// The holder, moved out, keeping the `len` bytes the plugin wrote.
     fn take(&self, len: usize) -> SecretValue<Vec<u8>> {
         let mut held =
             std::mem::take(&mut *self.held.lock().unwrap_or_else(PoisonError::into_inner));
@@ -165,7 +124,6 @@ impl Lending {
     }
 }
 
-/// `resolve`'s `in`: the settings and the host's buffer.
 fn resolve_in(settings: Blob, secret_buf: *mut u8, secret_cap: usize) -> ResolveIn {
     ResolveIn {
         head: in_head(),
@@ -175,7 +133,6 @@ fn resolve_in(settings: Blob, secret_buf: *mut u8, secret_cap: usize) -> Resolve
     }
 }
 
-/// `resolve`'s `out`, blank.
 fn resolve_out() -> ResolveOut {
     ResolveOut {
         head: out_head(),
@@ -186,23 +143,14 @@ fn resolve_out() -> ResolveOut {
     }
 }
 
-/// The buffer a short answer asks for: what it `needed`, within the secret cap the answer check
-/// already enforced.
 fn regrown(out: &ResolveOut) -> usize {
     usize::try_from(out.needed)
         .unwrap_or(FIRST_SECRET_CAP)
         .min(MAX_SECRET_BYTES)
 }
 
-/// The reason buffer the host lends a `check`, in bytes.
 const CHECK_REASON_CAP: usize = 4096;
 
-/// `check` one reference's `settings` (JSON bytes) on `plugin`, ticket-less and with no instance
-/// (`abi::secret::Ops::check`): `Ok` when READY, or REFUSED (a plugin that serves no `check`
-/// passes every reference); else the plugin's reasons, one per line, as it wrote them.
-///
-/// # Errors
-/// The plugin's reasons, or what it answered instead of a judgement.
 pub fn check(plugin: &Plugin<Secret>, settings: &[u8]) -> Result<(), Vec<String>> {
     let mut reason = vec![0_u8; CHECK_REASON_CAP];
     let mut f = Frame::new(
@@ -241,10 +189,6 @@ fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
 }
 
-/// THE VALUE CHANGED SIZE BETWEEN THE HOST'S TWO READS: the one re-call, lent a buffer the size
-/// the first answer named, was answered short again (the dispatcher's FAULT for a second short
-/// answer): the value grew between the reads (a file rotated, a Kubernetes `..data` swap). A
-/// transient refusal, UNAVAILABLE, naming the module, so the caller resolves again.
 fn changed_size(name: &str) -> SecretRefused {
     refused(
         ERROR_KIND_UNAVAILABLE,
@@ -255,13 +199,10 @@ fn changed_size(name: &str) -> SecretRefused {
     )
 }
 
-/// The re-call answered short again: FAULT (the second short answer), its `out` naming more than
-/// the `lent` bytes of the re-call's buffer.
 fn short_again(outcome: Outcome, out: &ResolveOut, lent: usize) -> bool {
     outcome == Outcome::Fault && out.needed > lent as u64
 }
 
-/// The text of a refused answer: the plugin's own, else `fallback`.
 fn answer_text(error: Option<&[u8]>, fallback: String) -> String {
     error
         .map(|e| String::from_utf8_lossy(e).into_owned())
@@ -270,13 +211,6 @@ fn answer_text(error: Option<&[u8]>, fallback: String) -> String {
 }
 
 impl LoadedSecret {
-    /// `open` `plugin` over its module `settings` (JSON bytes, empty = none) and the material its
-    /// Statement's `secret_refs` resolved to, in order, on `dispatcher`. The material is revealed
-    /// under the seal the host lent `dispatcher` (Part 2 #54).
-    ///
-    /// # Errors
-    /// The plugin's refusal, in 1.5.5's words (`plugin '<name>' open failed: <reason>`); material
-    /// to hand over on a dispatcher lent no seal (refused, never revealed).
     pub fn open(
         plugin: Plugin<Secret>,
         dispatcher: Arc<Dispatcher>,
@@ -314,23 +248,16 @@ impl LoadedSecret {
         })
     }
 
-    /// This instance as a source that reads the disk (its `declares.disk`, THE DESIGN §11.11 R4):
-    /// its `resolve` runs on the host's disk lane `lane` at config time only, and is refused without
-    /// the config-time proof. With no lane wired, every resolve is refused.
     #[must_use]
     pub fn reading_disk(mut self, lane: Option<DiskRun>) -> Self {
         self.disk = lane.map_or(Disk::Unwired, Disk::Lane);
         self
     }
 
-    /// The plugin's Statement name.
     pub fn name(&self) -> &str {
         self.opened.plugin.name()
     }
 
-    /// `resolve` on the host's disk lane: the job runs the plugin's `resolve` on the lane thread
-    /// (a ticket-less crossing, which may not pend) and the caller waits for its answer, bounded by
-    /// [`WAIT`] whatever the lane does.
     fn resolve_on_lane(
         &self,
         lane: DiskRun,
@@ -357,8 +284,7 @@ impl LoadedSecret {
             )
         })?;
         let answer = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-        // Withdraw a still-queued resolve now. A running crossing owns its memory until it
-        // returns; timing out never pretends to interrupt a blocking filesystem operation.
+
         drop(waiting);
         answer.unwrap_or_else(|_| {
             Err(refused(
@@ -370,9 +296,6 @@ impl LoadedSecret {
 }
 
 impl Opened {
-    /// `resolve` on THIS thread, ticket-less: the disk lane's crossing. The value is written into
-    /// the host's holder (re-called once, with a buffer its size, when it does not fit), so
-    /// nothing is left in plugin memory and nothing is released.
     fn resolve_here(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
         let name = self.plugin.name();
         let mut held = SecretValue::zeroed(FIRST_SECRET_CAP);
@@ -384,7 +307,6 @@ impl Opened {
         let mut c = self.plugin.call(slot::RESOLVE, &mut f);
         let mut recalled = None;
         if let Some(token) = c.recall.take() {
-            // THE ONE RE-CALL (M-SB): a holder the size the answer named; the first held nothing.
             held = SecretValue::zeroed(regrown(&f.out));
             let (buf, cap) = held.lend_mut();
             f.input.secret_buf = buf;
@@ -398,7 +320,6 @@ impl Opened {
         }
         match c.outcome {
             Outcome::Ready => {
-                // `check_resolve` held the answer to the host's buffer: `len` bytes at its start.
                 held.keep(f.out.secret.len);
                 Ok(held)
             }
@@ -430,7 +351,6 @@ impl SecretCalls for LoadedSecret {
     fn resolve(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
         let name = self.name();
         if !matches!(self.disk, Disk::No) {
-            // A source that reads the disk answers at config time only (THE DESIGN §11.11 R4).
             return Err(refused(
                 ERROR_KIND_DENIED,
                 format!("secret module '{name}': {RESOLVE_OFF_CONFIG_TIME}"),
@@ -445,8 +365,7 @@ impl SecretCalls for LoadedSecret {
                 format!("secret module '{name}' could not be called: no ticket"),
             ));
         };
-        // The settings and the holder ride with the job: a crossing the watchdog answered still
-        // owns them until it returns, and the holder wipes itself when the last owner drops.
+
         let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
         let mut cap = FIRST_SECRET_CAP;
         let mut first = true;
@@ -465,8 +384,6 @@ impl SecretCalls for LoadedSecret {
                 )
                 .wait(WAIT);
             match done {
-                // THE ONE RE-CALL, on the same ticket, with a holder the size the answer named;
-                // the dispatcher answers a second short answer FAULT.
                 Some(d) if d.short && first => {
                     first = false;
                     cap = d.frame.as_ref().map_or(cap, |f| regrown(&f.out));
@@ -490,7 +407,6 @@ impl SecretCalls for LoadedSecret {
             return Err(changed_size(name));
         }
         match (done.outcome, done.frame.as_ref()) {
-            // `check_resolve` held the answer to the host's buffer: `len` bytes at its start.
             (Outcome::Ready, Some(f)) => Ok(lending.take(f.out.secret.len)),
             (Outcome::Failed | Outcome::Refused, f) => Err(refused(
                 f.map_or(ERROR_KIND_INTERNAL, |f| f.out.error_kind),
@@ -528,29 +444,19 @@ impl SecretCalls for LoadedSecret {
     }
 }
 
-/// THE PROCESS'S SECRET PLUGINS, by Statement name and alias: the linked rows (fixed at build) and
-/// the dropped-in ones (replaced at each admission), each loaded on first use through the one
-/// loader and called through the one dispatcher. Two different plugins answering one word are
-/// refused when the dropped-in set is admitted ([`SecretRows::admit_dropped`], ARCHITECT Q-P4-12);
-/// neither door outranks the other. The composition root builds it and
-/// installs it as the kernel's [`SecretAxis`].
 pub struct SecretRows {
-    /// The process dispatcher, asked for at first use: a plugin is opened on it, never before.
     dispatcher: fn() -> Arc<Dispatcher>,
-    /// The host's one connection table, asked for at each load: a plugin that declares a need (a
-    /// dropped-in vault's http exchange) is declared on it and lent its connector.
+
     conns: fn() -> Option<Arc<dyn DeclaredConns>>,
-    /// `plugins.logs`, asked for at each load: every opened instance logs to its own
-    /// `<dir>/<label>.log`. `None` = no log configuration is wired (records are discarded).
+
     logs: Option<fn() -> PluginLogConfig>,
     linked: Vec<Candidate>,
     dropped: RwLock<Vec<Candidate>>,
-    /// Each linked module's shared instance, opened outside the map's lock ([`OpenOnce`]).
+
     shared: OpenOnce<String, LoadedSecret>,
-    /// The host's one disk lane, where a source that declares a disk need resolves at config time.
-    /// `None` = no lane is wired (such a source refuses every resolve).
+
     disk_run: Option<DiskRun>,
-    /// Each plugin bound (never opened) to `check` references in the current admitted set.
+
     checkers: Mutex<Checkers>,
 }
 
@@ -580,9 +486,6 @@ impl std::fmt::Debug for SecretRows {
 }
 
 impl SecretRows {
-    /// No rows yet; every instance opens on the dispatcher `dispatcher` answers, asked for at the
-    /// first open (so the rows can be built before the process dispatcher is), its needs declared on
-    /// the connection table `conns` answers.
     pub fn new(
         dispatcher: fn() -> Arc<Dispatcher>,
         conns: fn() -> Option<Arc<dyn DeclaredConns>>,
@@ -599,20 +502,12 @@ impl SecretRows {
         }
     }
 
-    /// A source that declares a disk need resolves on the host's one disk lane `run`, at config
-    /// time only (THE DESIGN §11.11 R4, as the OWNER amended it 2026-10-13).
     #[must_use]
     pub fn with_disk_lane(mut self, run: DiskRun) -> Self {
         self.disk_run = Some(run);
         self
     }
 
-    /// The LINKED row `door` states, its `declares.json` `json` read as a dropped-in copy's signed
-    /// `declares` is: its disk need.
-    ///
-    /// # Errors
-    /// The door does not state itself, no linked row is that door's plugin, or `json` is not a
-    /// `declares` section.
     pub fn declare_linked(&mut self, door: DoorFn, json: &str) -> Result<&mut Self, String> {
         let name = Candidate::linked(door)?.name;
         let declares = crate::sign::Declares::from_declares_json(json.as_bytes())
@@ -626,7 +521,6 @@ impl SecretRows {
         Ok(self)
     }
 
-    /// `opened` as `c` declares it: on the disk lane when its source reads the disk.
     fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
         if c.disk {
             opened.reading_disk(self.disk_run)
@@ -635,25 +529,16 @@ impl SecretRows {
         }
     }
 
-    /// Every opened instance logs to its own file under the `plugins.logs` configuration `logs`
-    /// answers (THE DESIGN §11.2 Plugin logging: no logs for plugins is not an option).
     #[must_use]
     pub fn with_logs(mut self, logs: fn() -> PluginLogConfig) -> Self {
         self.logs = Some(logs);
         self
     }
 
-    /// The instance label of a secret instance opened for the configured `module` word (the key of
-    /// its `secrets:` entry), as the export kind labels its own (`export.<name>`).
     fn label(module: &str) -> String {
         format!("secrets.{module}")
     }
 
-    /// Add a COMPILED-IN secret plugin by its door: its Statement is rendered and read here (the
-    /// door's head and Statement checks); nothing is loaded or opened.
-    ///
-    /// # Errors
-    /// The door's refusal, or a door of another kind.
     pub fn link(&mut self, door: DoorFn) -> Result<&mut Self, String> {
         let c = Candidate::linked(door)?;
         if c.kind != KindCode::Secret {
@@ -663,7 +548,7 @@ impl SecretRows {
             ));
         }
         self.linked.push(c);
-        // The sugars the linked rows declare: a word or role two of them claim refuses the link.
+
         if let Err(e) = crate::boot::sugars_of(&self.linked) {
             self.linked.pop();
             return Err(e);
@@ -671,12 +556,6 @@ impl SecretRows {
         Ok(self)
     }
 
-    /// Each LINKED row answering also to the former names `former_of` gives for any of its words
-    /// (its name or an alias), as a dropped-in copy states them in its signed manifest (compiled in
-    /// = dropped in).
-    ///
-    /// # Errors
-    /// A linked row that would then claim a word another linked plugin answers to, naming both.
     pub fn with_former_names(
         &mut self,
         former_of: impl Fn(&str) -> Vec<String>,
@@ -688,11 +567,6 @@ impl SecretRows {
         Ok(self)
     }
 
-    /// [`Self::set_dropped`], refused when a dropped-in secret plugin and another plugin (linked or
-    /// dropped in) answer one word but are different plugins ([`crate::boot::one_owner`]).
-    ///
-    /// # Errors
-    /// The contested word and the two plugins that claim it; the last set stays.
     pub fn admit_dropped(
         &self,
         candidates: impl IntoIterator<Item = Candidate>,
@@ -711,11 +585,6 @@ impl SecretRows {
         Ok(())
     }
 
-    /// The secret-kind candidates among `candidates`, judged as [`Self::admit_dropped`] judges
-    /// them and NOT put on the rows: what a build that commits nothing (a dry run) refuses.
-    ///
-    /// # Errors
-    /// The contested word and the two plugins that claim it, or two sugars that collide.
     pub fn judge_dropped(
         &self,
         candidates: impl IntoIterator<Item = Candidate>,
@@ -735,22 +604,19 @@ impl SecretRows {
         Ok(secrets)
     }
 
-    /// The DROPPED-IN secret plugins: every secret-kind candidate among `candidates` (the registry's
-    /// discovered rows), replacing the last set.
     pub fn set_dropped(&self, candidates: impl IntoIterator<Item = Candidate>) {
         let secrets = candidates
             .into_iter()
             .filter(|c| c.kind == KindCode::Secret)
             .collect();
         let retired = {
-            // Match checker's snapshot order: a candidate and its cache generation change together.
             let mut dropped = self.dropped.write().unwrap_or_else(PoisonError::into_inner);
             let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
             let candidates = std::mem::replace(&mut *dropped, secrets);
             let checkers = std::mem::take(&mut *checkers);
             (candidates, checkers)
         };
-        // Retiring a cached plugin can unload its library: do it outside both host locks.
+
         drop(retired);
     }
 
@@ -779,7 +645,7 @@ impl SecretRows {
             }
             (key, candidate.clone(), Arc::clone(&checkers.generation))
         };
-        // Staging, dlopen, log sinks and dispatcher/connector callbacks hold no cache or row lock.
+
         let loaded = Arc::new(self.load(&candidate, &format!("{}.check", Self::label(module)))?);
         let plugin = {
             let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
@@ -791,14 +657,12 @@ impl SecretRows {
                         .or_insert_with(|| Arc::clone(&loaded)),
                 )
             } else {
-                // An in-flight check keeps its snapshot, but cannot republish a retired image.
                 Arc::clone(&loaded)
             }
         };
         Ok(Some(plugin))
     }
 
-    /// The candidate `module` names, linked first; `None` when no row answers it.
     fn find(&self, module: &str) -> Option<Candidate> {
         self.linked
             .iter()
@@ -814,8 +678,6 @@ impl SecretRows {
             })
     }
 
-    /// Load `c` through the one loader, bound under the configured instance `label`, its log
-    /// records and diagnostics going to that instance's own file.
     fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
         let sink: Arc<dyn EnvelopeSink> = match self.logs {
             Some(logs) => Arc::new(
@@ -830,7 +692,7 @@ impl SecretRows {
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink,
             dispatcher: (self.dispatcher)().adopter(),
-            // Opened to resolve: the host's table, or a door that declares no need.
+
             conns: ConnTable::serving((self.conns)()),
         };
         match &c.origin {
@@ -842,7 +704,6 @@ impl SecretRows {
         .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))
     }
 
-    /// The settings keys `c`'s Statement names as secret references.
     fn secret_refs(c: &Candidate) -> Result<Vec<String>, String> {
         busbar_contract::abi::mechanism::rendering::read(&c.stated)
             .map(|r| r.secret_refs)
@@ -869,8 +730,7 @@ impl SecretAxis for SecretRows {
                     .cloned(),
             )
             .collect();
-        // Every row was admitted with its sugars declared ([`Self::link`],
-        // [`Self::admit_dropped`]); a set that no longer declares answers no sugar (fail-closed).
+
         crate::boot::sugars_of(&all).unwrap_or_default()
     }
 
@@ -880,7 +740,6 @@ impl SecretAxis for SecretRows {
 
     fn check(&self, module: &str, settings: &serde_json::Value) -> Result<(), Vec<String>> {
         let Some(plugin) = self.checker(module).map_err(|e| vec![e])? else {
-            // No row answers it: whether the module exists is the registry's to say.
             return Ok(());
         };
         check(&plugin, settings.to_string().as_bytes())
@@ -896,7 +755,7 @@ impl SecretAxis for SecretRows {
             .iter()
             .find(|c| c.answers(module))
             .ok_or_else(|| format!("no linked secret module answers to '{module}'"))?;
-        // Bound and opened with the map's lock let go (THE DESIGN §11.13 M1).
+
         let label = Self::label(module);
         let (s, _) = self.shared.get_or_open(&c.name, || {
             LoadedSecret::open(self.load(c, &label)?, (self.dispatcher)(), &[], &[])
@@ -921,11 +780,8 @@ impl SecretAxis for SecretRows {
                 &c.name,
             ));
         }
-        // An exact key stays in the settings, as this host has always left it; a wildcard match
-        // is lent behind its `{"$secret": <index>}` marker. Each resolved secret stays in the
-        // holder its secret plugin wrote it into (row 6): moved, never copied.
+
         let reference = |at: &str, v: serde_json::Value| -> Result<SecretValue<Vec<u8>>, String> {
-            // The decoder's own text is withheld: the value may be the secret itself.
             let r = serde_json::from_value::<SecretRef>(v).map_err(
                 crate::boot::not_a_reference(format!("secrets.{module}.settings.{at}")),
             )?;
@@ -937,7 +793,6 @@ impl SecretAxis for SecretRows {
             &keys,
             true,
             |at, found| found.map_or(Ok(SecretValue::default()), |v| reference(at, v)),
-            // A wildcard match is a declared secret as an exact one is: a literal refuses (7b).
             |at, found| reference(at, found),
         )?;
         let bytes = if lent_settings.is_null() {

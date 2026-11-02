@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plane spine: identity, the superset-IR rule, and plane dispatch — proven on the REAL linked
-//! plane roster.
-//!
-//! Relocated here from `src/plane/tests/plane_tests.rs` (the A6/HostCtx dev-dependency-cycle
-//! cleanup): the tests assert against the planes' REAL declared wire formats — properties of the
-//! actual dialect/plane registries, not a shape a neutral fake could stand in for. The planes come
-//! from the test-linked table (`tests/linked/mod.rs`; K3, architect ruling N02) and are ADDRESSED by
-//! what they declare, read back from the registry: the fallback plane, the plane that owns the
-//! `tools:` section (one wire format over several transports) and the plane that owns `agents:`
-//! (several bindings of one registration). The `agents:` owner is a DOOR row — a `door:` row
-//! of the test-linked list, the plane's own door folded from its Statement by the kernel's door
-//! fold as the composition root folds it in a shipped build (the linked engine crate that used to
-//! own it is deleted). This file spells no plane key; each plane pins its own literal identity in
-//! its own crate. Every test installs the roster first (idempotent, first-wins). A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
-//! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `sole_of`,
-//! `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
-
 use busbar_kernel::plane_driver::dispatch::{
     fallback_key, plane_decl, plane_keys, sole_of, sole_wire_format, wire_format_names,
     wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
@@ -25,42 +8,30 @@ use busbar_kernel::plane_driver::dispatch::{
 
 mod linked;
 
-/// Install the linked roster in the process registry — idempotent (first-wins), so every test can
-/// call it unconditionally regardless of run order.
 fn register_planes() {
     linked::install();
 }
 
-/// The fallback plane's key, read off the plane that declares the flag.
 fn fallback() -> &'static str {
     linked::fallback().key
 }
 
-/// The key of the plane that owns the `tools:` section — a plane with ONE wire format.
 fn single() -> &'static str {
     linked::owning("tools").key
 }
 
-/// The key of the plane that owns the `agents:` section — a door row with several bindings.
 fn multi() -> &'static str {
     linked::owning("agents").key
 }
 
-/// A mount path spelled from a plane's own key: `/<key>`.
 fn door(key: &str) -> String {
     format!("/{key}")
 }
 
-/// WARM THE SHARED PROTOCOL REGISTRY. Reading `known_protocols()` once, up front, before any plane
-/// helper reaches it, keeps the dialect list populated order-independently of whatever order the
-/// harness runs tests in.
 fn warm_shared_protocol_registry() {
     let _ = busbar_kernel::ingress::protocols::known_protocols();
 }
 
-/// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config
-/// validator and the candidate projection all iterate this, so a plane missing from it is a plane
-/// that silently does not exist.
 #[test]
 fn all_is_complete_and_has_no_duplicates() {
     register_planes();
@@ -80,9 +51,6 @@ fn all_is_complete_and_has_no_duplicates() {
     assert_eq!(keys.len(), before, "two planes share a key");
 }
 
-/// A plane's identity strings are all DISTINCT across planes. These are the strings that key config
-/// sections, scope grants and audit resources; a collision would let one plane's grant admit
-/// another plane's traffic, which is the whole thing the plane boundary exists to prevent.
 #[test]
 fn plane_identity_strings_never_collide_across_planes() {
     register_planes();
@@ -122,12 +90,6 @@ fn plane_identity_strings_never_collide_across_planes() {
     assert_eq!(nouns.len(), before, "two planes claim one subject noun");
 }
 
-/// THE MULTI-BINDING LEGS' NAMES ARE THE SHARED WIRE-FORMAT WORDS. A door row carries its
-/// Statement's dialect words verbatim (the kernel's fold copies them), and the mount table labels a
-/// request with the word of the door it was knocked on (`wire_format_of`). If the door's words ever
-/// diverge from the shared spellings, an operator correlating a Prometheus series with a leg is
-/// silently comparing two strings that no longer describe the same leg. The door's card spelling of
-/// each binding is pinned in its own crate.
 #[test]
 fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     register_planes();
@@ -144,9 +106,6 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     );
 }
 
-/// The fallback plane's wire-format count is DERIVED from the real protocol registry, never a
-/// literal. An additional registered protocol must not require anyone to remember to bump a number
-/// here.
 #[test]
 fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
     register_planes();
@@ -161,7 +120,6 @@ fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
     );
 }
 
-/// A transport is NOT a wire format: a plane can carry several transports for one wire format.
 #[test]
 fn transports_do_not_count_as_wire_formats() {
     register_planes();
@@ -172,9 +130,6 @@ fn transports_do_not_count_as_wire_formats() {
     );
 }
 
-// ── plane DISPATCH ───────────────────────────────────────────────────────────────────────────────
-
-/// The plane a path resolves to, the fallback included.
 fn plane_of(d: &PlaneDispatch, path: &str) -> &'static str {
     match d.ingress_of(path) {
         Ingress::Mounted(key) => key,
@@ -182,8 +137,6 @@ fn plane_of(d: &PlaneDispatch, path: &str) -> &'static str {
     }
 }
 
-/// With no plane mounted, everything is the fallback plane, exactly as the protocol catch-all is
-/// today — including every path a linked plane's key spells.
 #[test]
 fn with_nothing_mounted_every_path_is_the_fallback_plane() {
     register_planes();
@@ -199,8 +152,6 @@ fn with_nothing_mounted_every_path_is_the_fallback_plane() {
     }
 }
 
-/// A mounted plane claims its mount AND everything under it, because an endpoint legitimately has
-/// sub-paths.
 #[test]
 fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
     register_planes();
@@ -211,7 +162,6 @@ fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
     assert_eq!(plane_of(&d, &format!("{m}/tools/list")), k);
 }
 
-/// THE SEGMENT-BOUNDARY RULE: a sibling path that merely shares a prefix is NOT the plane.
 #[test]
 fn a_prefix_sibling_is_not_the_plane() {
     register_planes();
@@ -229,7 +179,6 @@ fn a_prefix_sibling_is_not_the_plane() {
     }
 }
 
-/// Two planes mounted at once each claim their own, and neither claims the other's.
 #[test]
 fn two_mounted_planes_do_not_claim_each_other() {
     register_planes();
@@ -242,8 +191,6 @@ fn two_mounted_planes_do_not_claim_each_other() {
     assert_eq!(plane_of(&d, "/v1/messages"), fallback());
 }
 
-/// An UNMOUNTED plane claims nothing, so a deployment that never enabled a plane cannot have a
-/// request routed onto it by path shape alone.
 #[test]
 fn an_unmounted_plane_claims_nothing() {
     register_planes();
@@ -253,8 +200,6 @@ fn an_unmounted_plane_claims_nothing() {
     assert_eq!(plane_of(&d, &format!("{}/tools/list", door(s))), fallback());
 }
 
-/// A mount is normalised, so an operator writing `/<door>/` or `<door>` gets the same dispatch as
-/// `/<door>`.
 #[test]
 fn a_mount_is_normalised_before_it_is_matched() {
     register_planes();
@@ -276,7 +221,6 @@ fn a_mount_is_normalised_before_it_is_matched() {
     }
 }
 
-/// The fallback plane cannot be mounted: it IS the fallback.
 #[test]
 fn the_fallback_plane_cannot_be_mounted() {
     register_planes();
@@ -294,7 +238,6 @@ fn the_fallback_plane_cannot_be_mounted() {
     assert_eq!(d.mount_of(fallback_key()), None);
 }
 
-/// A plane's mount is readable back.
 #[test]
 fn a_mount_is_readable_back() {
     register_planes();
@@ -304,7 +247,6 @@ fn a_mount_is_readable_back() {
     assert_eq!(d.mount_of(a), None);
 }
 
-/// `sole_wire_format` ANSWERS EXACTLY WHEN THERE IS ONE ANSWER, stated over every plane.
 #[test]
 fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
     register_planes();
@@ -332,7 +274,6 @@ fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
     assert_eq!(sole_wire_format(multi()), None);
 }
 
-/// THE LABEL COMES OFF THE DOOR, WHICH IS WHY A SECOND BINDING DOES NOT SILENCE A PLANE.
 #[test]
 fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
     register_planes();
@@ -351,10 +292,6 @@ fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
     assert_eq!(d.wire_format_of("/v1/chat/completions"), None);
 }
 
-/// A CLAIM MAY ONLY NAME A DIALECT ITS PLANE ADMITS TO SPEAKING. Every mounted plane's canonical door
-/// speaks JSON-RPC, so every mountable linked plane must declare it; each plane's OWN claims (its
-/// real mount paths and their bindings) are pinned against its declared list in that plane's crate
-/// (each plane crate's own suite).
 #[test]
 fn a_claim_only_names_a_wire_format_its_plane_speaks() {
     register_planes();
@@ -371,11 +308,10 @@ fn a_claim_only_names_a_wire_format_its_plane_speaks() {
             wire_format_names(plane)
         );
     }
-    // The multi-binding plane's second binding is declared too.
+
     assert!(wire_format_names(multi()).contains(&WIRE_GRPC));
 }
 
-/// EVERY MOUNTABLE PLANE'S DOOR SHAPES ITS REFUSALS AS JSON-RPC 2.0.
 #[test]
 fn every_mounted_planes_door_dialect_is_jsonrpc() {
     register_planes();
@@ -399,10 +335,6 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
     }
 }
 
-// ── THE MERGED RESOLVER ──────────────────────────────────────────────────────────────────────────
-
-/// THE ORDER OF RESOLUTION, which is the whole of the merge: the MOUNT TABLE first, the path shape
-/// only for what is left over.
 #[test]
 fn the_mount_table_is_read_before_the_path_shape() {
     register_planes();
@@ -422,7 +354,6 @@ fn the_mount_table_is_read_before_the_path_shape() {
     assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback(None));
 }
 
-/// A MOUNT CANNOT BE INFERRED FROM A URL.
 #[test]
 fn an_unmounted_plane_is_never_resolved_from_the_path() {
     register_planes();
@@ -442,7 +373,6 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
     }
 }
 
-/// THE WIRE FORMAT a resolved ingress is labelled and answered in.
 #[test]
 fn a_resolved_ingress_names_its_own_wire_format() {
     register_planes();
@@ -461,8 +391,6 @@ fn a_resolved_ingress_names_its_own_wire_format() {
     );
 }
 
-/// `mounted_plane_of` distinguishes the fallback from a mounted plane, and agrees with the
-/// resolver everywhere else.
 #[test]
 fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     register_planes();
@@ -495,7 +423,6 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     assert_eq!(PlaneDispatch::default().mounted_plane_of(&ms), None);
 }
 
-/// THE ZERO-DIALECT PLANE, pinned. Pure data — no registration needed.
 #[test]
 fn a_plane_with_zero_wire_formats_is_labelless_by_design() {
     assert_eq!(
@@ -507,8 +434,6 @@ fn a_plane_with_zero_wire_formats_is_labelless_by_design() {
     assert_eq!(sole_of(&["a", "b"]), None);
 }
 
-/// **The fallback plane's dialect list IS the registry's, so the empty case is the registry's empty
-/// case.**
 #[test]
 fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
     register_planes();

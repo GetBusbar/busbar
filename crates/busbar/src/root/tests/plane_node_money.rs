@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NODE'S OWN CELLS, PROVEN WITH NO PLANE LINKED (Law 10, `BUSBAR-1.6.0.md` l.2110), built in
-//! EVERY test build: the arrival reading, the lane-name interner, the card provenance stamp, the
-//! sweep and its drop guard, the card binding, and the one audit record every unit seals. The
-//! node carries no money: a unit's counts are the governance ledger's (MONEY-DESIGN §3).
-//!
-//! Two shapes. A cell that already named no plane is ported VERBATIM from `tests/plane_node.rs`. A
-//! cell that reached the node through the plane's handed unit is ported onto the DOOR PATH: a unit
-//! of the test's own, driven through [`Node::drive_borrowed`] exactly as `root::serve` drives a door
-//! unit, onto a bound journal.
-
 use super::*;
 use busbar_contract::caps::{
     Admit, Admittance, Approve, Arrival, Authenticate, Consumption, Decode, Dial, Encode, Meter,
@@ -24,17 +14,8 @@ use busbar_contract::caps::{
     Admission, ArrivalRecord, Authenticated, Frame, ReasonCode, RoutePlan, ScopeFacts,
 };
 
-/// A configured lane name the interner cells resolve.
 const LANE: &str = "m0";
 
-/// **One arrival is one reading, and both figures come out of it.**
-///
-/// The pure half of the straddle. A unit arriving at the last millisecond of a window has its
-/// seconds in that window and its milliseconds one tick short of the next: read the clock twice
-/// there and the second read is already over the line, so the table stamps the unit in one
-/// window and the books bill it in another. Read once and the two figures are two spellings of
-/// one instant, which is the property asserted here.
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::one_arrival_reading_spells_both_the_figures_the_loop_asks_for`, verbatim: it names no plane.
 #[test]
 fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
     const LAST_MILLISECOND: u64 = 1_700_000_000_999;
@@ -53,15 +34,8 @@ fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
     );
 }
 
-/// The unit-arrival epoch this proof pins, so the window a posting lands in is a fixed one.
 const EPOCH: u64 = 1_700_000_000;
 
-/// THE INTERNER IS THE NODE'S, and it is idempotent.
-///
-/// A lane name is leaked to become the borrowed static one the priced axis is written in, so
-/// interning the same name twice must yield the same pointer: a leak per request would be a
-/// leak per request whatever it was called.
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::the_nodes_interner_leaks_a_lane_name_once`, verbatim: it names no plane.
 #[test]
 fn the_nodes_interner_leaks_a_lane_name_once() {
     let node = Node::new();
@@ -80,13 +54,6 @@ fn the_nodes_interner_leaks_a_lane_name_once() {
     assert!(std::ptr::eq(first.as_str(), again.as_str()));
 }
 
-/// AND THE INTERNER IS REACHED ONCE PER NAME, not once per request.
-///
-/// The interner is one mutex for the whole image, and the Verify step resolves a name per
-/// candidate lane, per request — so a node that asks it every time makes every plane in the
-/// process queue behind one lock for an answer that was settled the first time. The count is
-/// per distinct name and does not grow with how often the name is asked for.
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::a_lane_name_reaches_the_interner_once_however_often_it_is_resolved`, verbatim: it names no plane.
 #[test]
 fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
     let node = Node::new();
@@ -114,29 +81,8 @@ fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
     );
 }
 
-/// THE PROVENANCE STAMP NAMES THE CARD IN FORCE WHEN THE UNIT ARRIVED (#79), not the newest card
-/// ever published and not a literal.
-///
-/// This stamp used to be a hardcoded `0`, and `0` is not a neutral placeholder: it is
-/// `HistorySeq::OPENING`, a REAL entry number. So every posting this plane made claimed the opening
-/// card had priced it — and the node (`plane_node`) is the root unit module that is live on the
-/// serving path, so this was a confident wrong answer on shipped traffic, which is worse than none.
-///
-/// THE CANARY IS THE POINT. Three dated entries over one history and three arrivals, one in each
-/// window. Two of the three expected values are NON-ZERO, so the pre-fix code — which answered `0`
-/// for every unit — fails this test on those two. A test whose expectations were all `0` would have
-/// passed against the bug it was written for.
-///
-/// It also pins the MILLISECOND binding: `effective_from` is written on the millisecond scale
-/// (`root/kernel.rs:435`), so a resolution handed the seconds reading matches only the from-zero
-/// opening entry and reports it forever. The `_at_seconds` assertion below is that hazard made
-/// visible — it is the bug wearing a different hat, and it would pass a "reads a history" review.
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived`, verbatim: it names no plane.
 #[test]
 fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
-    // Dated on the MILLISECOND scale the history is written on. The first is effective from instant
-    // zero however it is dated — one entry has to cover every instant, or an early arrival falls in
-    // a hole and is reported as OPENING for a different reason.
     const SECOND_CARD_MS: u64 = 1_700_000_500_000;
     const THIRD_CARD_MS: u64 = 1_700_000_900_000;
 
@@ -177,18 +123,12 @@ fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
         "a unit that arrived after the third card names the third entry"
     );
 
-    // NO HISTORY PINNED — a build with no root ledger. The opening entry is the only one that
-    // covers every instant by construction, so it is the honest fallback rather than a silent hole.
     assert_eq!(
         card_in_force(None, 1_700_000_600_000),
         0,
         "no pinned history falls back to the opening entry"
     );
 
-    // THE SECONDS/MILLISECONDS HAZARD, made visible. Handed the SECONDS reading of the same instant
-    // that resolves to entry 1 above, every arrival collapses onto the opening entry — the original
-    // bug with a lookup in front of it. `Arrived::ms()` is what the settle path passes, and this is
-    // why.
     assert_eq!(
         stamped_ms(1_700_000_600),
         0,
@@ -197,11 +137,6 @@ fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
     );
 }
 
-// ---------------------------------------------------------------------------------------------
-// THE SWEEP: a unit whose task went away seals its one audit record
-// ---------------------------------------------------------------------------------------------
-
-/// A fresh node over a memory-buffered book, and that book.
 fn swept_node() -> (
     Node,
     Arc<std::sync::Mutex<crate::root::durability::Durability>>,
@@ -218,8 +153,6 @@ fn swept_node() -> (
     (node, book)
 }
 
-/// Enter unit `key` into `node`'s table with its arrival hold, then drop its guard unfinished: a
-/// unit whose task went away under operation class `op_class`.
 fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str) {
     let slot = node
         .inflight
@@ -248,14 +181,12 @@ fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str) {
     });
 }
 
-/// A competing sweep cannot take a hold whose facts are already owned by the first sweep.
 #[test]
 fn a_competing_sweep_leaves_a_claimed_units_hold_and_slot_with_its_owner() {
     let (node, book) = swept_node();
     let key = UnitKey::new(93);
     lose_a_unit(&node, key, "widget_call");
-    // Stage the ownership boundary without timing: the first sweeper has removed the facts,
-    // but has not yet taken the hold. The second sweeper sees the same marked slot.
+
     let owned = node
         .lost
         .lock()
@@ -290,22 +221,6 @@ fn a_competing_sweep_leaves_a_claimed_units_hold_and_slot_with_its_owner() {
     );
 }
 
-/// Q128 p29#5: A SWEPT UNIT SEALS EXACTLY ONE AUDIT RECORD, AND ITS AMOUNT IS ITS LEDGER LINE.
-///
-/// THE DESIGN §1 (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
-/// plane ... never optional"; §7 U14 (l.1061-1065): one audit record per unit, sealed at its one
-/// line. A unit whose task disappeared is ended by the node's sweep, never by its own exit, so the
-/// record is the sweep's to seal: outcome `Failed(at, TaskLost)`, finish `Error`, the operation class
-/// the unit's guard recorded, the hold its admission opened, and the posted line by its registered
-/// class. The swept unit's evidence went with its task, so its line is the estimated zero under the
-/// kernel's own class: a money figure no registration declares and a record may not hold (§1
-/// l.193-195, #43, #77(3)), so the record names no line and its amount, zero, is the zero the line
-/// moved. And the record reads back, as every record on the journal must at the next boot.
-///
-/// RED before the fix: the sweep posted the unit's line with `None::<Sealing>` ("A unit the sweep
-/// ends never handed back its audit pass: it has no record"), so the book had a posting and the
-/// chain no record.
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line`, verbatim: it names no plane.
 #[test]
 fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line() {
     let (node, book) = swept_node();
@@ -335,18 +250,17 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
     );
     assert_eq!(record.outcome.finish, RecordFinish::Error);
     assert_eq!(record.what.op_class.as_str(), "widget_call");
-    // No hold or settlement is journalled, so the record names neither.
+
     assert_eq!(record.controls.hold_ref, None);
     assert_eq!(record.controls.settle_ref, None);
-    // The amount: the line the sweep posted was the estimated zero under the kernel's own class,
-    // which the record does not name.
+
     assert!(
         record.usage.lines.is_empty(),
         "a record names no money-class line: {:?}",
         record.usage.lines
     );
     assert!(durability.retained_audit_findings().is_empty());
-    // It reads back off the journal, as the next boot reads it.
+
     let replayed = durability
         .journal
         .replay()
@@ -364,12 +278,6 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
     );
 }
 
-/// Q128 p29#5: NO UNIT SETTLES WITH ZERO AUDIT RECORDS. Every unit the sweep settles has its one
-/// record on the chain, one each. (No posting rides beside it: the one ledger is the store's usage
-/// counts, MONEY-DESIGN §4.)
-///
-/// RED before the fix: the swept units posted their lines and sealed nothing.
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::no_swept_unit_settles_with_zero_audit_records`, verbatim: it names no plane.
 #[test]
 fn no_swept_unit_settles_with_zero_audit_records() {
     let (node, book) = swept_node();
@@ -408,24 +316,12 @@ fn no_swept_unit_settles_with_zero_audit_records() {
     assert_eq!(durability.audit_records.len(), keys.len());
 }
 
-/// The open class a rerank's search units are ledgered under (the rerank dialect codec's
-/// `SEARCH_UNITS_CLASS`, which `record_resp_usage` ledgers verbatim — item 134). Spelled here because
-/// this crate does not depend on the codec.
 const SEARCH_UNITS: &str = "search_units";
 
-/// The serving lane of the served-rerank fixture: a Cohere lane, the one dialect whose rerank reader
-/// reads `meta.billed_units.search_units`.
 const RERANK_LANE: &str = "rerank-v3.5";
 
-/// The search units the scripted Cohere upstream bills.
 const RERANK_UNITS: u64 = 50;
 
-/// **THE NODE PLANE'S BOOK BINDING JOURNALS THE APPLIED CARDS** (#79): a build with this plane and no
-/// admin surface binds the dated rate-card history to the book here or nowhere, so a card applied
-/// after the boot must land on the chain through this binding alone. Before, only the admin
-/// assembly bound it: this plane's node settled onto the book while every live apply stayed in
-/// memory, and a restart repriced the node's postings at the boot card.
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::binding_the_node_to_the_book_journals_every_card_applied_after_it`, verbatim: it names no plane.
 #[test]
 fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     use crate::root::kernel::{CardApplied, RootHistory};
@@ -458,7 +354,6 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch directory");
 
-    // The production boot's holder: armed, resolved at boot, its history rebuilt by the book.
     let holder: &'static RootHistory = Box::leak(Box::default());
     holder.arm_journal();
     apply(holder, 3.0, 1_000);
@@ -476,7 +371,6 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
         .expect("the journal opens"),
     ));
 
-    // THE NODE PLANE'S BINDING, and nothing else — no admin assembly.
     super::bind_node_book(&Node::new(), holder, Arc::clone(&book));
     apply(holder, 5.0, 20_000);
 
@@ -503,14 +397,6 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE RECORD'S AMOUNT IS COUNTS AND A CARD VERSION, NEVER A PRICE (`BUSBAR-1.6.0.md` THE DESIGN
-/// §1, "The amount is the unit's counts plus the rate-card version, never a price"; §7).
-///
-/// A unit whose exit settles a non-zero figure (the settlement writer's money, in nano-units) seals
-/// its record beside that line. The record names what the unit reported, by class; the exit's
-/// posting carries no class and no count, only the figure it moved, so the record it seals has no
-/// line of it at all.
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::the_exit_arm_seals_no_money_figure_into_the_record`, verbatim: it names no plane.
 #[test]
 fn the_exit_arm_seals_no_money_figure_into_the_record() {
     use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
@@ -525,7 +411,6 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
     let book = Arc::new(std::sync::Mutex::new(durability));
     node.bind_book(Arc::clone(&book));
 
-    // The count the settlement writer carried: 150.
     const MONEY: u64 = 150;
     let who = PrincipalId::new("acct:h2");
     let hold = Hold::open(&grant::<Admittance>(), who.clone());
@@ -571,30 +456,19 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
     );
 }
 
-// ---------------------------------------------------------------------------------------------
-// THE DOOR PATH: a unit driven through `Node::drive_borrowed`, as `root::serve` drives a door unit
-// ---------------------------------------------------------------------------------------------
-
-/// Whose unit every door cell below drives.
 const PRINCIPAL: &str = "acct:door";
 
-/// The one destination Verify seals for a door unit.
 const DESTINATION: &str = "door-dest";
 
-/// A DOOR UNIT OF THE TEST'S OWN: every seat proceeds (its door at a zero hold, as a door plane's
-/// is), its Route leg answers at once, and its record is sealed under [`DoorUnit::op_class`]. It
-/// can be told to refuse at Decode or to screen itself out before the door, and it notes whether
-/// its first seat and its admission seat were ever reached.
 struct DoorUnit {
-    /// Refuse at Decode with this reason: a request the unit cannot read.
     decode_refusal: Option<ReasonCode>,
-    /// Screen the unit out before the door with this reason (SEAM-4j).
+
     screen: Option<ReasonCode>,
-    /// Leave the pre-door screen pending so cancellation happens before the loop's guard exists.
+
     pause_screen: bool,
-    /// The Arrival seat ran.
+
     reached_arrival: AtomicBool,
-    /// The Admit seat (the door) ran.
+
     reached_admit: AtomicBool,
 }
 
@@ -692,7 +566,7 @@ impl busbar_kernel::teller::DoorSeats for DoorUnit {
         _leases: &GroupLeaseSlip,
     ) -> SeatVerdict<Admit> {
         self.reached_admit.store(true, Ordering::SeqCst);
-        // The arrival hold is the hold the exit settles: a door plane's door opens at zero.
+
         SeatVerdict::proceed(token, Admission::ZeroHold)
     }
 }
@@ -704,7 +578,6 @@ impl busbar_kernel::teller::UnitEnds for DoorUnit {
         _ctx: &UnitCtx,
         _destinations: &[VerifiedDestination],
     ) -> SeatVerdict<Route> {
-        // Reached through the awaited leg below, never here.
         SeatVerdict::refuse(token, Refusal::new(ReasonCode::TaskLost))
     }
 
@@ -843,8 +716,6 @@ fn cancelling_before_the_door_retires_the_borrowed_facts_and_sweeps_once() {
     );
 }
 
-/// A node bound to `book`, and the door's posting site over it (`root::serve` holds one per
-/// process: `NodeEndPost::new(node())`).
 fn door_node(book: &crate::root::durability::NodeBook) -> (Arc<Node>, NodeEndPost) {
     let node = Arc::new(Node::new());
     node.bind_book(Arc::clone(&book.durability));
@@ -852,8 +723,6 @@ fn door_node(book: &crate::root::durability::NodeBook) -> (Arc<Node>, NodeEndPos
     (node, post)
 }
 
-/// ONE DOOR UNIT, through the node's borrowed drive, as `root::serve` drives it: a key from the
-/// node's mint, the arrival it charged in, its late reading, the card history pinned at its door.
 async fn drive_door(
     node: &Node,
     post: &NodeEndPost,
@@ -879,19 +748,14 @@ async fn drive_door(
     (key, outcome)
 }
 
-/// A late reading that never arrives (a door unit whose money never opened).
 fn no_late() -> Late {
     Box::new(|| None)
 }
 
-/// The door's late reading of `report`, as `root::serve`'s `report_of` hands it to the node.
 fn late_of(report: Report) -> Late {
     Box::new(move || Some((report.usage, report.fee_count, report.lane)))
 }
 
-/// One door unit's END, as the loop seals it: the unit run through the kernel loop in `node`'s
-/// table, its record kept on `post` (the borrowed drive's taps), the end handed back unposted.
-/// What `plane_node.rs`'s `drive_to_end` did over the handed unit's wrapper, on the door's.
 async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
     let unit = DoorUnit::served();
     let key = node.mint();
@@ -944,12 +808,6 @@ async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
     ended
 }
 
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record`.
-// Each end is the loop's own, sealed over the borrowed drive's wrapper rather than the handed
-// unit's; the posting site and every assertion are the original's.
-/// A DRIVEN PLANE'S ABANDONED END SEALS EXACTLY ONE AUDIT RECORD with its one line, from the facts
-/// and pass its audit door handed back; an abandoned unit whose audit door never answered seals none.
-/// RED: without the held pass the posting site seals no record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     use busbar_kernel::plane_driver::EndPost;
@@ -982,7 +840,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
         op_class: busbar_contract::caps::OpClassId::new("call"),
         finish: busbar_contract::FinishClass::Complete,
     };
-    // The audit door answered: one record, with the line.
+
     let ended = drive_to_end(&node, &site).await;
     site.open(
         UnitKey::new(51),
@@ -1002,7 +860,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
         before + 1,
         "exactly one audit record for the abandoned unit"
     );
-    // The audit door never answered: the line is posted, and no record is minted for it.
+
     let ended = drive_to_end(&node, &site).await;
     site.open(UnitKey::new(52), who, Arrived::at(EPOCH * 1_000, 1), None);
     let before = records();
@@ -1010,15 +868,6 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     assert_eq!(records(), before, "no pass, no record");
 }
 
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain`,
-// onto the door path: the served unit and the refused one (a request its Decode cannot read, the
-// original's unreadable body) are driven through the borrowed drive; the chain assertions are the
-// original's.
-/// AUDIT-CHAIN, THE NODE'S DOOR UNITS: every unit the node drives, served (a dispatched completion)
-/// or refused (a request it cannot read), seals ONE record on the node's audit chain, the second
-/// linked to the first; the chain walks clean, and a record altered after its seal (the served unit
-/// re-told as refused) breaks the walk. RED: a loop whose audit door's pass is never handed back to
-/// the node seals nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain(
 ) {
@@ -1089,14 +938,6 @@ async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_t
     );
 }
 
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::a_screened_veto_through_the_node_admits_nothing`,
-// onto the door path: the unit screens itself out through the borrowed drive's wrapper. The
-// original read "nothing admitted" off the plane's governance ledger; here it is read off the door
-// seat itself, which the loop never reaches.
-/// RED (SEAM-4j through the node): a unit whose route SCREENS it before the door (a gate-first
-/// plane's veto) is screened through the node's own wrapper: the unit is refused at Approve's seat
-/// with the screen's reason and the door never admits it. RED before: the node's wrapper answered
-/// the default screen, the unit was admitted and served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_screened_veto_through_the_node_admits_nothing() {
     let book = crate::root::durability::node_book();
@@ -1117,16 +958,6 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
     );
 }
 
-// PORT of `crates/busbar/src/root/tests/plane_node.rs::a_full_journal_lane_refuses_a_new_unit_503_with_the_reason`,
-// onto the door path. The book, the full lane and every assertion on the node are the original's;
-// the 503 the handed path renders is that path's own answer, and the door's answer is the door's.
-/// **A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED** (ARCHITECT 2026-10-07 H3 ruling):
-/// the book's journal is kept by the configured store, the store refuses and the lane to it is
-/// full, so a new money-bearing unit is refused with the reason, before any step of it runs or
-/// anything is held or journalled for it, and nothing the journal holds is dropped. A state 1.5.5
-/// never reached (it kept no journal).
-///
-/// RED before the fix: the node admitted the unit and drove it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
     for data_dir in [
@@ -1189,15 +1020,6 @@ async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
     }
 }
 
-/// **NO PROCESS-WIDE LOCK STANDS IN FRONT OF A UNIT'S MONEY** (MONEY-DESIGN §4, PR-C; owner ruling:
-/// no process-wide lock around fsync). Eight units end CONCURRENTLY while another thread holds the
-/// node's book — the one `Mutex<Durability>` every audit seal and every journal read takes — and
-/// every one of them lands its counts on the one ledger before that lock is let go. The money is
-/// the governance counts, behind per-key shard locks; nothing about it waits on the book.
-///
-/// RED on the base: an exit arm's money was also a posting on the node's second book
-/// (`SharedBook::settle_*`, its `sync_data` under this same mutex), so a unit's settlement could not
-/// complete while the book was held, and N settlements took turns behind it.
 #[test]
 fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
     use busbar_contract::abi::plane::{UnitCount, UNITS_REPORTED};
@@ -1234,7 +1056,6 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
         ..Default::default()
     });
 
-    // The book, held for the whole of the units' run.
     let held = book.durability.lock().unwrap_or_else(|p| p.into_inner());
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let threads: Vec<_> = (1..=UNITS)

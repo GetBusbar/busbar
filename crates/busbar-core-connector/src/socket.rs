@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host's OS sockets: a non-blocking dial (TCP, or a unix-domain stream for an
-//! operator-infrastructure need alone, [`UNIX_TARGET`]) and a per-acceptor listener. Nothing here
-//! waits; the caller registers the socket with [`crate::io::register`] and waits on its readiness.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -19,8 +17,7 @@ use crate::io::{Direction, Registered};
 const BACKLOG: i32 = 1024;
 
 /// An authority this host dials without resolving a name: an IP literal with its port, or
-/// `localhost`. A name is the kernel's destination judge's to resolve (it pins the address the
-/// egress rules judged), so the connector refuses one rather than resolve it on a worker.
+
 #[must_use]
 pub fn address_of(authority: &str) -> Option<SocketAddr> {
     if let Ok(addr) = authority.parse::<SocketAddr>() {
@@ -36,12 +33,11 @@ pub fn address_of(authority: &str) -> Option<SocketAddr> {
 pub const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The prefix of a UNIX-DOMAIN target (the
-/// connector serves unix-domain targets for operator-infrastructure needs): `unix:/absolute/path`.
+
 pub const UNIX_TARGET: &str = "unix:";
 
 /// The socket path a unix-domain target names: `unix:` then an absolute path (one leading `/`;
-/// `unix://…`, a URL spelling, is not this form and is read as any other target). `None` for every
-/// other target.
+
 #[must_use]
 pub fn unix_path(target: &str) -> Option<&str> {
     let path = target.strip_prefix(UNIX_TARGET)?;
@@ -94,10 +90,7 @@ impl Write for &Sock {
 
 impl Sock {
     /// Shut down `how`.
-    ///
-    /// # Errors
-    ///
-    /// The OS refused.
+
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         match self {
             Self::Tcp(s) => s.shutdown(how),
@@ -109,16 +102,10 @@ impl Sock {
 /// A connecting stream socket whose connect [`poll_connected`] can settle.
 pub trait Connecting: AsFd {
     /// The socket's pending error (`SO_ERROR`).
-    ///
-    /// # Errors
-    ///
-    /// The OS refused the query.
+
     fn pending_error(&self) -> io::Result<Option<io::Error>>;
     /// `Ok` once connected; `NotConnected` while the connect is in flight.
-    ///
-    /// # Errors
-    ///
-    /// `NotConnected`, or the socket's failure.
+
     fn connected(&self) -> io::Result<()>;
 }
 
@@ -147,11 +134,7 @@ impl Connecting for Sock {
 }
 
 /// Begin a non-blocking connect to the unix-domain socket at `path`: the socket comes back at once,
-/// the connect in flight (or done: a local connect usually completes at once).
-///
-/// # Errors
-///
-/// The socket could not be made, or the connect failed at once (no such socket, refused).
+
 pub fn connect_unix(path: &str) -> io::Result<UnixStream> {
     let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
     socket.set_nonblocking(true)?;
@@ -164,17 +147,12 @@ pub fn connect_unix(path: &str) -> io::Result<UnixStream> {
 }
 
 /// Begin a non-blocking connect to `addr`: the socket comes back at once, the connect in flight.
-///
-/// # Errors
-///
-/// The socket could not be made, or the connect failed at once.
+
 pub fn connect(addr: SocketAddr) -> io::Result<TcpStream> {
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
     socket.set_nonblocking(true)?;
     socket.set_tcp_nodelay(true)?;
-    // 1.5.5's egress client probed an idle socket after 60 s (`tcp_keepalive(60s)`, v1.5.5
-    // `crates/busbar/src/main.rs`), so a connection a middlebox dropped while it sat in the pool is
-    // found by the probe, not by the next request.
+
     socket.set_tcp_keepalive(&socket2::TcpKeepalive::new().with_time(KEEPALIVE_IDLE))?;
     match socket.connect(&addr.into()) {
         Ok(()) => {}
@@ -189,11 +167,7 @@ fn in_progress(e: &io::Error) -> bool {
 }
 
 /// Whether the connect [`connect`] began has completed: Ready(Ok) connected, Ready(Err) refused,
-/// Pending with `cx`'s waker on the socket's write readiness.
-///
-/// # Errors
-///
-/// The far end refused, or the socket failed.
+
 pub fn poll_connected<T: Connecting>(
     sock: &Registered<T>,
     cx: &mut Context<'_>,
@@ -212,11 +186,7 @@ pub fn poll_connected<T: Connecting>(
 }
 
 /// A non-blocking listener on `bind`, with address and port reuse: every acceptor (one per worker)
-/// binds its own on the one address, and the kernel balances connections across them.
-///
-/// # Errors
-///
-/// The address does not parse or cannot be bound.
+
 pub fn listen(bind: &str) -> io::Result<TcpListener> {
     let addr: SocketAddr = bind
         .parse()

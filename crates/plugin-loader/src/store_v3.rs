@@ -1,35 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE, REACHED THROUGH ITS TABLE (THE DESIGN, the plugin ABI):
-//! [`LoadedStore`] is one store instance loaded through the ONE loader
-//! ([`load_linked`](crate::dispatch::load_linked) for a compiled-in row,
-//! [`load_dropped`](crate::dispatch::load_dropped) for a dropped-in `cdylib`) and called through
-//! the store v3 table (`busbar_contract::abi::store`) by the one dispatcher. Compiled in or dropped
-//! in, every call crosses the same table; the kernel names no store crate.
-//!
-//! It answers two surfaces:
-//!
-//! * [`StoreCalls`], the typed store v3 surface: every op is SUBMITTED on a ticket to the
-//!   dispatcher and AWAITED on the caller's task (no runtime thread is parked, no
-//!   `spawn_blocking`); a full instance answers [`StoreFailure::Overloaded`] without a crossing;
-//!   a short answer is re-submitted once on the same ticket with the buffers it named.
-//! * [`RecordStore`], the 1.5.5 op set, SYNCHRONOUSLY, for the consumers that have not moved to
-//!   [`StoreCalls`]. M6: this bridge is deleted when no consumer remains. Every one of its ops is
-//!   SUBMITTED ON A TICKET like a [`StoreCalls`] op, and the synchronous caller waits for the
-//!   completion: a store that answers PENDING (a remote store waiting on its connection) is
-//!   resumed by the dispatcher on its wake and completes the op, never faulted (ARCHITECT ruling
-//!   2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI). The wait is the caller's, exactly where the
-//!   compiled-in store's direct calls ran before, so no call site moves from non-blocking to
-//!   blocking. Only on a dispatcher's only worker, which cannot run an op while it waits, does an
-//!   op cross ticket-less on the caller's thread, where a PENDING is FAULT (loud: logged at error,
-//!   and a debug build panics). Remaining consumers: the kernel's governance state and budget flusher
-//!   (`busbar-kernel/src/governance/state.rs`), the plane host's record and token ops
-//!   (`busbar-kernel/src/plane_host/`), the admin units, the boot ledger's migration read, and
-//!   the planes' own record legs.
-//!
-//! Off-path answers are read out of their lease and the lease is released at once.
-
 use std::cell::UnsafeCell;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -65,23 +36,18 @@ use crate::dispatch::{
     in_head, now_ns, out_head, Dispatcher, Frame, InFrame, Lent, OutFrame, Plugin,
 };
 
-/// The first byte buffer a request-path read is handed; a longer answer is re-asked once at the
-/// size it named.
 const FIRST_BYTES: usize = 16 * 1024;
-/// The first item capacity of a request-path list.
+
 const FIRST_ITEMS: usize = 256;
-/// How long a Call-class op may pend before the dispatcher cancels it.
+
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
 
-// ── the handle ───────────────────────────────────────────────────────────────────────────────
-
-/// ONE STORE INSTANCE, opened through the store v3 table.
 pub struct LoadedStore {
     plugin: Plugin<Store>,
     dispatcher: Arc<Dispatcher>,
     facts: StoreFacts,
     next_worker: AtomicU32,
-    /// The node's one `op_id` allocator, for the bridge's `op_id`-carrying 1.5.5 writes.
+
     mint: OpIdMint,
 }
 
@@ -95,13 +61,6 @@ impl std::fmt::Debug for LoadedStore {
 }
 
 impl LoadedStore {
-    /// Open `plugin` on the operator's `settings` (the section's JSON), on
-    /// `dispatcher`. `mint` is the node's one `op_id` allocator: every `op_id` the synchronous
-    /// bridge mints for the 1.5.5 op set's additive writes comes from it.
-    ///
-    /// # Errors
-    /// The store's refusal of its settings, in 1.5.5's words
-    /// (`plugin '<name>' open failed: <reason>`), or a Statement with no store tail.
     pub fn open(
         plugin: Plugin<Store>,
         dispatcher: Arc<Dispatcher>,
@@ -112,14 +71,11 @@ impl LoadedStore {
             .context::<StoreFacts>()
             .cloned()
             .ok_or_else(|| "the store states no tail".to_string())?;
-        // THE DECLARED SECRETS, as every kind's `open` takes them: each path the Statement names
-        // in `secret_refs` (its value already resolved by the kernel) is taken OUT of the settings
-        // and lent as a `BLOB_SECRET` blob, in the Statement's order.
+
         let (settings, secrets) = split_secrets(&facts.secret_refs, settings);
-        // The settings and secrets the `open` lends, owned so they outlive its crossing ([`Lent`]).
+
         let lent = Arc::new(OpenLent::new(settings, secrets));
-        // `open` is the settings' judge, as it was in 1.5.5: its refusal carries the plugin's own
-        // reason (the host's lent reason buffer), which a bare `validate` answer cannot.
+
         let mut o = open_frame(octets(&lent.settings));
         if !lent.blobs.is_empty() {
             o.input.secrets = lent.blobs.as_ptr();
@@ -129,8 +85,7 @@ impl LoadedStore {
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
-        // Own the successful OPEN before readiness can fail, so every subsequent error uses
-        // the same CLOSE path as a normally served store.
+
         let store = Self {
             plugin,
             dispatcher,
@@ -138,20 +93,13 @@ impl LoadedStore {
             next_worker: AtomicU32::new(0),
             mint,
         };
-        // DISCOVERY AT BOOT: a store door that states `ready` is awaited before it is served.
+
         store
             .plugin
             .ready(&store.dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
         Ok(store)
     }
 
-    /// `open` ON A TICKET (ARCHITECT ruling 2026-10-03 on Q-L16-2; the mechanism: `open` "may
-    /// pend", on the control lane): submitted through the dispatcher and waited for, so a store
-    /// whose connect step ([`busbar_contract::abi::sdk::store::StoreSlots::connect`]) pends on the
-    /// connector is resumed on its wake and completes the open, and an unreachable backend still
-    /// refuses the load at open, in the store's own words. Called on the dispatcher's only worker,
-    /// it crosses ticket-less on this thread (as the bridge does, [`LoadedStore::inline`]).
-    /// `settings` owns what `o` lends: the dispatcher keeps it until the crossing returns.
     fn open_on_ticket(
         plugin: &Plugin<Store>,
         dispatcher: &Dispatcher,
@@ -190,37 +138,28 @@ impl LoadedStore {
         }
     }
 
-    /// The store's own check of `settings`: it PARSES them and never opens a store. `Ok`, or its
-    /// refusal's text, verbatim.
-    ///
-    /// # Errors
-    /// The store's refusal of its settings.
     pub fn validate(plugin: &Plugin<Store>, settings: &[u8]) -> Result<(), String> {
         let c = validate_call(plugin, octets(settings));
         match (c.outcome, c.error) {
             (Outcome::Ready, _) => Ok(()),
-            // The store's own words reach the operator VERBATIM (1.5.5 printed the plugin's text).
+
             (_, Some(e)) if !e.is_empty() => Err(String::from_utf8_lossy(&e).into_owned()),
             (o, _) => Err(format!("the store's validate answered {o:?}")),
         }
     }
 
-    /// What the store states in its tail.
     pub fn facts(&self) -> StoreFacts {
         self.facts.clone()
     }
 
-    /// The store's name, as its Statement states it.
     pub fn name(&self) -> &str {
         self.plugin.name()
     }
 
-    /// The loaded instance (for the dispatcher's drain and the tests).
     pub fn plugin(&self) -> &Plugin<Store> {
         &self.plugin
     }
 
-    /// A fresh `op_id` for one of the bridge's additive writes.
     fn mint(&self) -> OpId {
         (self.mint)()
     }
@@ -229,18 +168,6 @@ impl LoadedStore {
         lifecycle::release(&self.plugin, lease);
     }
 
-    // ── the two runners ──────────────────────────────────────────────────────────────────────
-
-    /// THE BRIDGE'S RUNNER (ARCHITECT ruling 2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI: every call
-    /// returns Ready or Pending(wake), and slow I/O pends, never a blocking thread): the op is
-    /// SUBMITTED on a ticket exactly as [`StoreCalls`] submits it, and this synchronous caller
-    /// waits for its completion. A store that answers PENDING is resumed by the dispatcher on its
-    /// wake, its crossing never parked; a short answer is re-submitted once on the same ticket.
-    /// Called on one of the dispatcher's own workers (whose thread cannot run the op while it
-    /// waits), the op goes to another worker; on a dispatcher with that worker alone it crosses
-    /// ticket-less on this thread ([`LoadedStore::inline`]).
-    // TRANSITIONAL: the synchronous caller waits on its own thread (ARCHITECT ruling 2026-10-03 on
-    // Q-L16-1); drains when the governance callers move to StoreCalls (D2/D3; 1.6.0-TODO.md).
     fn now<R: Req>(&self, mut r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
         let s = r.slot();
         let Some(worker) = self.bridge_worker() else {
@@ -256,8 +183,7 @@ impl LoadedStore {
         let mut regrown = false;
         loop {
             let frame = r.frame();
-            // Settled before it is dropped, so the drop cancels nothing. The request is LENT: the
-            // dispatcher holds it until the crossing returns, even past a watchdog fault.
+
             let done = self
                 .dispatcher
                 .submit_lent(&self.plugin, ticket, s, frame, class, deadline, r.lent())
@@ -278,8 +204,6 @@ impl LoadedStore {
         }
     }
 
-    /// The worker the bridge submits to: the next in turn, never the calling thread's own; `None`
-    /// when the calling thread is the dispatcher's only worker.
     fn bridge_worker(&self) -> Option<u32> {
         pick_worker(
             &self.dispatcher,
@@ -287,10 +211,6 @@ impl LoadedStore {
         )
     }
 
-    /// A ticket-less crossing on this thread, the one re-call of a short answer: the bridge's path
-    /// on a dispatcher's only worker, where a ticketed op could never run.
-    // TRANSITIONAL: the one-worker fallback of the bridge's wait (ARCHITECT ruling 2026-10-03 on
-    // Q-L16-1); drains with the bridge (D2/D3; 1.6.0-TODO.md).
     fn inline<R: Req>(&self, r: &mut R) -> Ran<R::O> {
         let s = r.slot();
         let mut f = Frame::new(r.input(), r.out());
@@ -300,7 +220,7 @@ impl LoadedStore {
             f = Frame::new(r.input(), r.out());
             c = self.plugin.recall(token, s, &mut f);
         }
-        // The SDK answers a ticket-less PENDING as FAULT, so a FAULT here is the pend (or worse).
+
         if c.outcome == Outcome::Fault {
             pended_on_the_bridge(self.plugin.name(), s);
         }
@@ -312,8 +232,6 @@ impl LoadedStore {
         }
     }
 
-    /// THE TYPED RUNNER: submitted on a ticket, awaited, a short answer re-submitted once on the
-    /// same ticket.
     async fn submit<R: Req>(&self, r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
         let s = r.slot();
         let workers = self.dispatcher.workers().max(1);
@@ -327,8 +245,7 @@ impl LoadedStore {
         let mut regrown = false;
         loop {
             let frame = r.frame();
-            // The request is LENT: the dispatcher holds it until the crossing returns, even when
-            // the watchdog faults the op or this future is dropped first.
+
             let reply = self.dispatcher.submit_lent(
                 &self.plugin,
                 ticket,
@@ -357,8 +274,6 @@ impl LoadedStore {
     }
 }
 
-/// The worker a synchronous waiter submits to: the `turn`th in turn, never the calling thread's
-/// own; `None` when the calling thread is the dispatcher's only worker.
 fn pick_worker(dispatcher: &Dispatcher, turn: u32) -> Option<u32> {
     let workers = dispatcher.workers().max(1);
     let next = turn % workers;
@@ -370,8 +285,6 @@ fn pick_worker(dispatcher: &Dispatcher, turn: u32) -> Option<u32> {
     }
 }
 
-/// Op `s`'s deadline class and its deadline: a Call-class op may pend [`CALL_DEADLINE`]; a
-/// WriteBehind op is never cancelled, so it carries none.
 fn deadline_of(s: u32) -> (DeadlineClass, u64) {
     let class = OPS[(s - LIFECYCLE_SLOTS) as usize].deadline;
     let deadline = match class {
@@ -382,14 +295,11 @@ fn deadline_of(s: u32) -> (DeadlineClass, u64) {
 }
 
 impl Drop for LoadedStore {
-    /// The handle is the instance's owner: dropping it (a reload's retired store, a test's) closes
-    /// the instance, so what it holds (its kept connections) goes with it.
     fn drop(&mut self) {
         lifecycle::close(&self.plugin);
     }
 }
 
-/// The ticket goes back when the call is over, however it ended.
 struct Recycle<'a>(
     &'a Dispatcher,
     busbar_contract::abi::mechanism::ticket::Ticket,
@@ -400,9 +310,6 @@ impl Drop for Recycle<'_> {
     }
 }
 
-/// A ticket-less crossing ([`LoadedStore::inline`], on a dispatcher's only worker) that PENDED
-/// faulted the store. Loud: an error line always, and a debug build panics, so a pend there never
-/// goes unseen.
 fn pended_on_the_bridge(store: &str, s: u32) {
     tracing::error!(
         store,
@@ -415,12 +322,6 @@ fn pended_on_the_bridge(store: &str, s: u32) {
     );
 }
 
-/// ONE OP'S REQUEST, LENT TO THE DISPATCHER (THE DESIGN §2: "The memory a call lends a plugin
-/// lives until that call completes, abandoned or not, for every kind (a submit that the watchdog
-/// can abandon uses the lending submit)"). Every pointer an op's `in` carries names memory its
-/// request owns ([`Owned`] and its own buffers); the runner hands a clone of this `Arc` to
-/// [`Dispatcher::submit_lent`], so a crossing the watchdog abandoned, or one whose caller stopped
-/// waiting, still reads and writes live memory until it returns.
 struct Lend<R>(UnsafeCell<R>);
 // SAFETY: a request is plain data and raw pointers into memory it owns. The host touches it only
 // between crossings (building a frame, growing it on a SHORT answer, reading a READY answer, each
@@ -434,28 +335,23 @@ impl<R: Req> Lend<R> {
         Arc::new(Self(UnsafeCell::new(r)))
     }
 
-    /// The request, to read an answer the crossing that wrote it has returned from.
     fn get(&self) -> &R {
         // SAFETY: see `Send`: no crossing writes the request's own fields, and the buffers they
         // own are read only from a READY answer, whose crossing returned.
         unsafe { &*self.0.get() }
     }
 
-    /// The next submit's frame. Called only before the first submit or after a SHORT answer,
-    /// when no crossing of the op runs.
     fn frame(&self) -> Frame<R::I, R::O> {
         // SAFETY: as `frame`'s contract: nothing else touches the request now.
         let r = unsafe { &mut *self.0.get() };
         Frame::new(r.input(), r.out())
     }
 
-    /// Grow the buffers a SHORT answer named (its crossing returned).
     fn grow(&self, out: &R::O) {
         // SAFETY: as `frame`.
         unsafe { &mut *self.0.get() }.grow(out);
     }
 
-    /// The owner the dispatcher holds until the op completes.
     fn lent(self: &Arc<Self>) -> Lent {
         Arc::clone(self) as Lent
     }
@@ -474,8 +370,6 @@ struct Owned {
 
 impl Drop for Owned {
     fn drop(&mut self) {
-        // Conditional carrier keys and extension bytes are opaque. Keeping their initialized
-        // copies private to this request also gives every legacy byte field the same custody.
         zeroize::Zeroize::zeroize(&mut self.bytes);
     }
 }
@@ -535,7 +429,7 @@ impl Owned {
 
     fn secret_octets(&mut self, mut bytes: zeroize::Zeroizing<Vec<u8>>) -> Blob {
         let (ptr, len) = (bytes.as_ptr(), bytes.len());
-        // Reserve while the wiping owner still holds the bytes; handoff itself cannot allocate.
+
         self.secrets.reserve(1);
         self.secrets.push(Zeroing(std::mem::take(&mut *bytes)));
         Blob {
@@ -553,19 +447,16 @@ impl Owned {
     }
 }
 
-/// An `in` built over memory it owns.
 fn owned_in<I>(f: impl FnOnce(&mut Owned, InHead) -> I) -> (I, Owned) {
     let mut o = Owned::default();
     let i = f(&mut o, in_head());
     (i, o)
 }
 
-/// An `in` that points at nothing.
 fn bare<I>(i: I) -> (I, Owned) {
     (i, Owned::default())
 }
 
-/// What one op answered.
 struct Ran<O> {
     outcome: Outcome,
     out: O,
@@ -590,7 +481,6 @@ impl<O> Ran<O> {
             .unwrap_or_default()
     }
 
-    /// A non-READY answer as the typed failure.
     fn failure(&self) -> StoreFailure {
         let text = self.text();
         match self.outcome {
@@ -611,10 +501,6 @@ impl<O> Ran<O> {
     }
 }
 
-/// The `RecordStore` surface's error for a store call. A FAILED op carries the store's own text
-/// unchanged, so the operator reads `store error: <the backend's text>` exactly as 1.5.5 printed it
-/// (oracle BOOT-172/BOOT-175: `store error: database disk image is malformed`); the other failures
-/// have no 1.5.5 counterpart and keep their typed wording.
 fn bridge<T>(r: Result<T, StoreFailure>) -> RecordStoreResult<T> {
     r.map_err(|f| match f {
         StoreFailure::Failed(text) => RecordStoreError(text),
@@ -622,26 +508,22 @@ fn bridge<T>(r: Result<T, StoreFailure>) -> RecordStoreResult<T> {
     })
 }
 
-// ── the requests ─────────────────────────────────────────────────────────────────────────────
-
-/// One op's `in`/`out`, built over buffers the request owns (never over the caller's borrow).
 trait Req: 'static {
     type I: InFrame;
     type O: OutFrame;
     fn slot(&self) -> u32;
-    /// Host-selected scheduling; only the typed transaction request overrides the slot default.
+
     fn schedule(&self) -> (DeadlineClass, u64) {
         deadline_of(self.slot())
     }
-    /// The `in`, pointing at the request's own buffers and borrowed data.
+
     fn input(&mut self) -> Self::I;
-    /// A blank `out`.
+
     fn out(&self) -> Self::O;
-    /// Grow the buffers a short answer named.
+
     fn grow(&mut self, _out: &Self::O) {}
 }
 
-/// An op with no host result buffers: a fixed `in` over what it owns.
 struct Fixed<I, O> {
     slot: u32,
     input: I,
@@ -676,7 +558,6 @@ impl<I: InFrame, O: OutFrame> Req for Fixed<I, O> {
     }
 }
 
-/// A zeroed `out` with a blank head.
 fn blank<O: OutFrame>() -> O {
     // SAFETY: every `OutFrame` is `#[repr(C)]` plain data for which all-zero is valid.
     let mut o: O = unsafe { std::mem::zeroed() };
@@ -707,7 +588,6 @@ fn from_json<T: serde::de::DeserializeOwned>(b: &[u8]) -> Result<T, StoreFailure
         .map_err(|e| StoreFailure::Fault(format!("a store record does not decode: {e}")))
 }
 
-/// Copy `len` bytes at `ptr` (the plugin's, valid under the answer's lease, checked by the kind).
 fn copy(ptr: *const u8, len: usize) -> Vec<u8> {
     if ptr.is_null() || len == 0 {
         return Vec::new();
@@ -771,7 +651,6 @@ impl LoadedStore {
     }
 }
 
-/// A request-path read into one host byte buffer (`record_get`, `get_plane_record`).
 struct BytesReq<I> {
     slot: u32,
     input: I,
@@ -814,14 +693,11 @@ impl<I> BytesReq<I> {
     }
 }
 
-/// A transaction is a typed host request carried on GET, with its own immutable intent.
 struct ConditionalReq {
     read: BytesReq<RecordGetIn>,
     candidate: zeroize::Zeroizing<conditional::Request>,
 }
 
-/// Empty legacy batch plus an owned, immutable correction intent. Pending/resumed crossings
-/// borrow this same frame; cancellation never turns it into an ordinary additive batch.
 struct CorrectionReq {
     write: Fixed<AddUsageBatchIn, OutHead>,
     candidate: correction::Request,
@@ -910,7 +786,6 @@ impl Req for ConditionalReq {
     }
 }
 
-/// Releases a handed answer after validation, including every early failure.
 struct AnswerLease<'a>(&'a LoadedStore, u64);
 impl Drop for AnswerLease<'_> {
     fn drop(&mut self) {
@@ -977,7 +852,6 @@ impl LoadedStore {
     }
 }
 
-/// A request-path list into host buffers: `items` rows of `T` and one byte buffer.
 struct ListReq<I, T> {
     slot: u32,
     input: I,
@@ -1081,8 +955,6 @@ fn in_of<T>(f: impl FnOnce(InHead) -> T) -> T {
     f(in_head())
 }
 
-// ── the ops, shared by both surfaces ─────────────────────────────────────────────────────────
-
 /// Run `req` through `$run` (`now` or `submit`), on `$self`.
 macro_rules! run {
     ($self:ident, now, $r:expr) => {
@@ -1093,8 +965,6 @@ macro_rules! run {
     };
 }
 
-/// The typed ops over a runner: the bridge's `now` (submitted on a ticket and waited for) and
-/// [`StoreCalls`]' `submit` (submitted on a ticket and awaited).
 impl LoadedStore {
     fn get_plane_req(kind: &str, id: &str) -> BytesReq<GetPlaneRecordIn> {
         let (input, owned) = owned_in(|o, head| GetPlaneRecordIn {
@@ -1180,7 +1050,7 @@ impl LoadedStore {
             }),
             place_records,
         );
-        // A scan never answers more than its limit.
+
         r.items.truncate((limit as usize).clamp(1, FIRST_ITEMS));
         r
     }
@@ -1205,12 +1075,9 @@ impl LoadedStore {
     }
 }
 
-/// Read a host-buffer blob the plugin pointed into (inside the host's own byte buffer).
 fn host_blob(b: &Blob) -> Vec<u8> {
     copy(b.ptr, b.len)
 }
-
-// ── StoreCalls: submitted and awaited ────────────────────────────────────────────────────────
 
 fn boxed<'a, T>(f: impl Future<Output = Result<T, StoreFailure>> + Send + 'a) -> StoreCall<'a, T> {
     Box::pin(f)
@@ -1646,7 +1513,6 @@ impl StoreCalls for LoadedStore {
         boxed(async move {
             let r = fixed::<_, CountOut>(
                 slot::PURGE_PLANE_RECORDS_BEFORE,
-                // The age rule, as the bridge's `purge_plane_records_before` states it.
                 owned_in(|o, head| KindBeforeIn {
                     head,
                     kind: o.text(kind),
@@ -1664,7 +1530,6 @@ impl StoreCalls for LoadedStore {
         boxed(async move {
             let r = fixed::<_, CountOut>(
                 slot::PURGE_PLANE_RECORDS_BEFORE,
-                // The usage ledger's purge rides slot 22 under its own code, `kind` empty.
                 owned_in(|o, head| KindBeforeIn {
                     head,
                     kind: o.text(""),
@@ -1678,8 +1543,6 @@ impl StoreCalls for LoadedStore {
         })
     }
 }
-
-// ── RecordStore: the synchronous bridge (until M6) ────────────────────────────────────────────────
 
 impl LoadedStore {
     fn plain<I: InFrame>(&self, s: u32, input: (I, Owned)) -> RecordStoreResult<()> {
@@ -1806,7 +1669,6 @@ impl RecordStore for LoadedStore {
         window_start: u64,
         delta: &UsageDelta,
     ) -> RecordStoreResult<()> {
-        // One cell through the batch slot: one op_id, atomic.
         self.plain(
             slot::ADD_USAGE_BATCH,
             owned_in(|o, head| {
@@ -1928,8 +1790,7 @@ impl RecordStore for LoadedStore {
                     "credential rewrap answered without a leased result".into(),
                 ));
             }
-            // A successful result extension is held by the same lease as its answer memory.
-            // Copy it before releasing; do not infer success from READY alone.
+
             let bytes = copy(ran.out.extensions.ptr, ran.out.extensions.len);
             match extensions::get(&bytes, rewrap::RESULT) {
                 Some(b"applied") => Ok(true),
@@ -1977,7 +1838,6 @@ impl RecordStore for LoadedStore {
         self.many(slot::LIST_CREDENTIALS_SINCE, Self::value(since))
     }
 
-    /// No store slot carries a 1.5.5 audit append: refused loudly, never dropped.
     fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
         Err(RecordStoreError(
             "append_audit is not a store op: 1.6.0 writes its audit as plane records".to_string(),
@@ -2108,12 +1968,6 @@ impl RecordStore for LoadedStore {
     }
 }
 
-/// THE STORE'S DECLARED SECRETS OUT OF ITS SETTINGS: each exact path `refs` names is taken out of
-/// the `settings` object (its value already resolved by the kernel) and handed back as the secret's
-/// bytes, in order (an unset or non-string one as empty bytes); then each wildcard path's string
-/// matches, each replaced in the settings by its `{"$secret": <index>}` marker
-/// (`busbar_contract::secret_fields::lend`), as the auth host splits an auth instance's. Settings
-/// that are not a JSON object, or a store declaring none, pass as written.
 fn split_secrets(refs: &[String], settings: &[u8]) -> (Vec<u8>, Vec<Zeroing>) {
     let Some(mut block) = (!refs.is_empty())
         .then(|| serde_json::from_slice::<serde_json::Value>(settings).ok())
@@ -2138,13 +1992,9 @@ fn split_secrets(refs: &[String], settings: &[u8]) -> (Vec<u8>, Vec<Zeroing>) {
     (settings, secrets.into_iter().map(Zeroing).collect())
 }
 
-/// What a store's `open` is lent, held until its crossing returns (even past a watchdog fault):
-/// the settings, the secrets (zeroed when this drops) and the `BLOB_SECRET` list over them.
 struct OpenLent {
-    // settings-leak-lint: allow — NON-PROJECTION engine type: OPEN's settings bytes,
-    // held for the crossing's lifetime; never exposed through an admin read.
     settings: Vec<u8>,
-    #[allow(dead_code)] // held: `blobs` points into it
+    #[allow(dead_code)]
     secrets: Vec<Zeroing>,
     blobs: Vec<Blob>,
 }
@@ -2174,7 +2024,6 @@ unsafe impl Send for OpenLent {}
 // SAFETY: as `Send`: shared access only reads.
 unsafe impl Sync for OpenLent {}
 
-/// Serialized secret material, zeroed when dropped.
 struct Zeroing(Vec<u8>);
 impl Drop for Zeroing {
     fn drop(&mut self) {
@@ -2182,21 +2031,13 @@ impl Drop for Zeroing {
     }
 }
 
-/// THE STORE AXIS over the process's ONE dispatcher (WIRE-STORE Q8/Q9): the composition root
-/// builds it with its dispatcher, its `plugins.logs`, its one connection table and the kernel's
-/// `op_id` allocator, and installs it in the kernel, which opens its governance store through it.
-/// A compiled-in row is loaded by [`load_linked`](crate::dispatch::load_linked), a dropped-in
-/// plugin by [`load_dropped_bytes`](crate::dispatch::load_dropped_bytes) against its stated
-/// Statement; both are opened as a [`LoadedStore`].
 pub struct DoorStoreAxis {
-    /// The process's one dispatcher.
     pub dispatcher: Arc<Dispatcher>,
-    /// Where each store instance's plugin log goes.
+
     pub logs: crate::dispatch::PluginLogConfig,
-    /// The host's one connection table, or why a store opens with none
-    /// ([`crate::dispatch::Bind::conns`]).
+
     pub conns: crate::dispatch::ConnTable,
-    /// The node's one `op_id` allocator.
+
     pub mint: OpIdMint,
 }
 

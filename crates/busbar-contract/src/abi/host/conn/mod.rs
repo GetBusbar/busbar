@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CONNECTION TABLE, lowered: [`crate::conn::Conns`] as a `#[repr(C)]` table of
-//! `extern "C"` slots, ONE SLOT PER METHOD, named for it ([`ConnSlots`]). The witness
-//! `tests/conn_slot_coverage.rs` holds the list to the trait.
-//!
-//! Two halves, one file, because they are one contract:
-//!
-//! * **HOST side** — [`host_slots`], the table a host hands every plugin instance, each slot running
-//!   the host's own [`Conns`] for the instance its [`ConnCtx`] names. A plugin never states who it
-//!   is: the host reads the caller off the context it minted for that instance, so a [`ConnId`] the
-//!   caller does not own, a closed one and a need the caller never declared are refused here exactly
-//!   as a linked caller is refused.
-//! * **PLUGIN side** — [`HostConns`], a plugin's view of the table it was handed: the same six
-//!   operations, without the caller.
-//!
-//! Every slot catches its own panics and answers [`ConnOutcome::Fault`]; nothing unwinds across the
-//! table (THE DESIGN, the signed kind-ABI design's finding M3), and a panic that escaped a slot
-//! would abort, never unwind. What a slot hands back that borrows the host — a piece's status
-//! numbering, a connection's facts — stays valid until that connection is closed.
 
 use std::collections::{HashMap, HashSet};
 use std::os::raw::c_void;
@@ -91,10 +74,7 @@ impl RawConnOutcome {
     }
 
     /// The result the byte states.
-    ///
-    /// # Errors
-    ///
-    /// The refusal the byte names; an unknown byte is [`ConnError::Fault`].
+
     pub const fn result(self) -> Result<(), ConnError> {
         match self.0 {
             0 => Ok(()),
@@ -182,8 +162,7 @@ impl Headless {
 const _: () = assert!(core::mem::size_of::<Headless>() == OPEN_DESC_HEADLESS);
 
 /// How much of a [`WireOpenDesc`] a sized descriptor must state: everything before the appended
-/// head words ([`WireOpenDesc::method`], [`WireOpenDesc::head_target`]), which a shorter one
-/// states as none.
+
 pub const OPEN_DESC_HEADLESS: usize = core::mem::offset_of!(WireOpenDesc, method);
 
 /// [`Piece`], written by the host into the caller's slot.
@@ -253,14 +232,8 @@ pub struct ConnSlots lowers Conns -> RawConnOutcome {
 }
 }
 
-// ── HOST SIDE ────────────────────────────────────────────────────────────────────────────────────
-
 /// What a host keeps for one plugin instance, behind the [`ConnCtx`] it hands that instance: its
-/// connection table, the instance it serves, and what a slot handed back that borrows the host.
-///
-/// The state lives on the heap and the [`ConnCtx`] points at it, never at the `ConnHost` itself, so
-/// moving a `ConnHost` after minting its context (returning it from a helper, pushing it into a
-/// vector) leaves every context valid.
+
 pub struct ConnHost {
     state: Box<HostState>,
 }
@@ -298,7 +271,7 @@ struct Held {
 
 impl Held {
     /// `s` as an exposed range that stays valid until this connection's close: the interned copy
-    /// (made now if `s` is new).
+
     fn keep(&mut self, s: &str) -> DeclStr {
         if let Some(kept) = self.retention.get(s) {
             return range(kept);
@@ -310,7 +283,7 @@ impl Held {
     }
 
     /// [`Self::keep`] where the string is stated; an absent one is the NULL range and touches
-    /// nothing already exposed.
+
     fn keep_opt(&mut self, s: Option<&str>) -> DeclStr {
         s.map_or(DeclStr::NONE, |s| self.keep(s))
     }
@@ -338,7 +311,7 @@ impl ConnHost {
     }
 
     /// The context the host hands `self`'s instance: a pointer to the heap-stable state, valid
-    /// wherever `self` moves. `self` must outlive every call made with it.
+
     #[must_use]
     pub fn ctx(&self) -> ConnCtx {
         ConnCtx {
@@ -355,8 +328,7 @@ impl HostState {
     }
 
     /// Begin a `read`/`facts` operation on `conn`: capture the epoch of its retention (an empty
-    /// entry is made if there is none yet) BEFORE the backend is asked, with every host lock let
-    /// go again. The guard prunes what it made if nothing was published.
+
     fn begin(&self, conn: ConnId) -> Operation<'_> {
         let epoch = Arc::clone(&self.held().entry(conn).or_default().epoch);
         Operation {
@@ -368,7 +340,7 @@ impl HostState {
 }
 
 /// One in-flight `read`/`facts` operation on a connection: the retention epoch it captured before
-/// the backend answered. The backend is always asked with no host lock held.
+
 struct Operation<'h> {
     host: &'h HostState,
     conn: ConnId,
@@ -377,9 +349,7 @@ struct Operation<'h> {
 
 impl Operation<'_> {
     /// Run `publish` over the connection's retention and, under the SAME table guard, let it write
-    /// the successful out-slot, so a close cannot retire the retention between the two. Only while
-    /// the captured epoch is still the table's: an absent entry (closed meanwhile) or a different
-    /// one answers [`ConnError::Closed`], writes nothing and creates nothing.
+
     fn publish(
         &self,
         publish: impl FnOnce(&mut Held) -> Result<(), ConnError>,
@@ -400,10 +370,7 @@ impl Drop for Operation<'_> {
         };
         let retired = {
             let mut held = self.host.held();
-            // Empty, still ours, and nobody else's operation holds the epoch (the table's clone and
-            // this one's are the only two): the entry was only this operation's scaffolding. The
-            // count cannot rise under the table lock (clones are made under it) and our clone is
-            // let go under it below, so a concurrent operation's drop sees an exact count.
+
             let ours_and_empty = held.get(&self.conn).is_some_and(|entry| {
                 Arc::ptr_eq(&entry.epoch, &epoch)
                     && entry.retention.is_empty()
@@ -414,11 +381,11 @@ impl Drop for Operation<'_> {
             } else {
                 None
             };
-            // A bare counter: nothing runs on its release.
+
             drop(epoch);
             retired
         };
-        // The guard is released before the retired (empty) state is destroyed.
+
         drop(retired);
     }
 }
@@ -439,7 +406,7 @@ pub const fn host_slots() -> ConnSlots {
 }
 
 /// Run a host slot body over the instance's state, answering the fault byte for a panic or a null
-/// context.
+
 fn hosted(ctx: ConnCtx, body: impl FnOnce(&HostState) -> Result<(), ConnError>) -> RawConnOutcome {
     RawConnOutcome::of(
         crate::abi::sdk::boundary::caught(|| {
@@ -510,7 +477,6 @@ unsafe extern "C" fn host_open(
     out_conn: *mut u64,
 ) -> RawConnOutcome {
     hosted(ctx, |host| {
-        // The out-slot is required: checked before the backend can open anything.
         if desc.is_null() || out_conn.is_null() {
             return Err(ConnError::Fault);
         }
@@ -521,7 +487,7 @@ unsafe extern "C" fn host_open(
             if size < OPEN_DESC_HEADLESS {
                 return Err(ConnError::Fault);
             }
-            // The head words are read only where the descriptor's size states them.
+
             let d = if size >= core::mem::size_of::<WireOpenDesc>() {
                 core::ptr::read_unaligned(desc)
             } else {
@@ -547,11 +513,11 @@ unsafe extern "C" fn host_open(
                     timeout_ms: d.timeout_ms,
                     method: bytes(d.method.ptr, d.method.len)?,
                     head_target: bytes(d.head_target.ptr, d.head_target.len)?,
-                    // A pin is stated through the connector's ESTABLISH (`EstablishIn::within`).
+
                     within: &[],
-                    // So is a registration (`EstablishIn::member`).
+
                     member: "",
-                    // A plugin's own open serves no kernel unit.
+
                     unit: 0,
                 },
             )?;
@@ -569,7 +535,6 @@ unsafe extern "C" fn host_write(
     out_written: *mut usize,
 ) -> RawConnOutcome {
     hosted(ctx, |host| {
-        // The out-slot is required: checked before the backend can take any byte.
         if out_written.is_null() {
             return Err(ConnError::Fault);
         }
@@ -605,8 +570,7 @@ unsafe extern "C" fn host_read(
         } else {
             unsafe { std::slice::from_raw_parts_mut(buf, cap) }
         };
-        // The retention's epoch is captured BEFORE the backend answers (no host lock held across
-        // it), and the answer is published only while it is still the table's.
+
         let operation = host.begin(ConnId(conn));
         let piece = host.conns.read(host.instance, ConnId(conn), ticket, into)?;
         if piece.len > cap
@@ -627,11 +591,7 @@ unsafe extern "C" fn host_read(
         if piece.declared_len.is_some() {
             flags |= PIECE_HAS_DECLARED_LEN;
         }
-        // The numbering is held until the connection closes, so the plugin's borrow outlives the
-        // call and every later one: a different numbering is held beside it, an absent one states
-        // the NULL range and leaves what was exposed alone. It is interned and the out-slot
-        // written under ONE table guard: a close cannot retire the retention between the two, and
-        // one that already did answers Closed with nothing written.
+
         operation.publish(|held| {
             let ns = piece
                 .status_namespace
@@ -675,7 +635,6 @@ unsafe extern "C" fn host_wait(
     out_ready: *mut usize,
 ) -> RawConnOutcome {
     hosted(ctx, |host| {
-        // The out-slot is required: checked before the backend can register any interest.
         if out_ready.is_null() || (set_ptr.is_null() && set_len != 0) {
             return Err(ConnError::Fault);
         }
@@ -695,18 +654,14 @@ unsafe extern "C" fn host_facts(
     out_facts: *mut WireConnFacts,
 ) -> RawConnOutcome {
     hosted(ctx, |host| {
-        // The out-slot is required: checked before the backend is asked or anything is held.
         if out_facts.is_null() {
             return Err(ConnError::Fault);
         }
-        // The epoch is captured before the backend answers, which it does with no host lock held.
+
         let operation = host.begin(ConnId(conn));
         let facts = host.conns.facts(host.instance, ConnId(conn))?;
         let cert = facts.peer_cert.as_ref();
-        // Each exposed string is interned in the connection's retention (never the facts value
-        // itself, which a later answer would replace and free under a range the plugin kept), and
-        // the out-slot written, under ONE table guard and only while the captured epoch is still
-        // the table's: a close that already retired it answers Closed, writing and keeping nothing.
+
         operation.publish(|kept| {
             let wire = WireConnFacts {
                 size: core::mem::size_of::<WireConnFacts>() as u32,
@@ -727,12 +682,6 @@ unsafe extern "C" fn host_facts(
 
 unsafe extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
     hosted(ctx, |host| {
-        // The backend closes with no host lock held (it may re-enter any slot). A close that
-        // succeeded, or that answers `Closed` (explicitly closed already, or never open), ends
-        // every borrow: the retention is taken out under the table lock and dropped after it is
-        // let go, and the backend's own outcome is what the plugin is told. Any other refusal
-        // (`NotOwner`, a fault) ends nothing, and a panic after the backend committed is an
-        // unknown `Fault` that is not inferred to be a close.
         let outcome = host.conns.close(host.instance, ConnId(conn));
         if matches!(outcome, Ok(()) | Err(ConnError::Closed)) {
             let retired = host.held().remove(&ConnId(conn));
@@ -761,8 +710,6 @@ const fn piece_kind_of(b: u8) -> Option<PieceKind> {
     })
 }
 
-// ── PLUGIN SIDE ──────────────────────────────────────────────────────────────────────────────────
-
 /// A plugin's view of the connection table it was handed: the six operations, without the caller —
 /// the host knows who is calling from `ctx`.
 #[derive(Debug, Clone, Copy)]
@@ -789,10 +736,7 @@ impl HostConns {
     }
 
     /// [`Conns::open`], for this instance.
-    ///
-    /// # Errors
-    ///
-    /// As [`Conns::open`].
+
     pub fn open(&self, need: NeedId, desc: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
         let f = self.slots.open.ok_or(ConnError::Fault)?;
         let fields: Vec<WireField> = desc
@@ -832,10 +776,7 @@ impl HostConns {
     }
 
     /// [`Conns::write`], for this instance.
-    ///
-    /// # Errors
-    ///
-    /// As [`Conns::write`].
+
     pub fn write(
         &self,
         conn: ConnId,
@@ -862,10 +803,7 @@ impl HostConns {
     }
 
     /// [`Conns::read`], for this instance.
-    ///
-    /// # Errors
-    ///
-    /// As [`Conns::read`].
+
     pub fn read(&self, conn: ConnId, ticket: Ticket, buf: &mut [u8]) -> Result<Piece, ConnError> {
         let f = self.slots.read.ok_or(ConnError::Fault)?;
         let mut p = core::mem::MaybeUninit::<WirePiece>::zeroed();
@@ -915,10 +853,7 @@ impl HostConns {
     }
 
     /// [`Conns::wait`], for this instance.
-    ///
-    /// # Errors
-    ///
-    /// As [`Conns::wait`].
+
     pub fn wait(&self, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError> {
         let f = self.slots.wait.ok_or(ConnError::Fault)?;
         let ids: Vec<u64> = set.iter().map(|c| c.0).collect();
@@ -930,10 +865,7 @@ impl HostConns {
     }
 
     /// [`Conns::facts`], for this instance.
-    ///
-    /// # Errors
-    ///
-    /// As [`Conns::facts`].
+
     pub fn facts(&self, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let f = self.slots.facts.ok_or(ConnError::Fault)?;
         let mut w = core::mem::MaybeUninit::<WireConnFacts>::zeroed();
@@ -957,18 +889,14 @@ impl HostConns {
                 alpn: owned(w.alpn)?,
                 peer_cert,
                 claim: owned(w.claim)?,
-                // The far end's key pin and whether busbar presented its client identity reach a
-                // plugin on the host connector's FACTS service (`connector::StreamFacts`), not here.
+
                 ..ConnFacts::default()
             })
         }
     }
 
     /// [`Conns::close`], for this instance.
-    ///
-    /// # Errors
-    ///
-    /// As [`Conns::close`].
+
     pub fn close(&self, conn: ConnId) -> Result<(), ConnError> {
         let f = self.slots.close.ok_or(ConnError::Fault)?;
         // SAFETY: new() proves this copied table and its host context live for every call.

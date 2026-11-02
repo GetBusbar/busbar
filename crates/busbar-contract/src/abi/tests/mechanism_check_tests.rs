@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RED arms for the shared answer-validator helpers: one per rule, each failing if its check is
-//! removed.
 
 use super::*;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
@@ -95,7 +94,7 @@ fn reported_checks_the_count_before_any_slice() {
     let buf = [7u32; 4];
     // SAFETY: `buf` is a host buffer of capacity 4.
     assert_eq!(unsafe { reported(buf.as_ptr(), 4, 4, "t") }, Ok(&buf[..]));
-    // cap + 1, over a pointer no slice may ever be built from: refused before any read.
+
     let dangling = core::ptr::NonNull::<u32>::dangling().as_ptr().cast_const();
     assert_eq!(
         unsafe { reported(dangling, 5, 4, "t") },
@@ -185,8 +184,6 @@ fn a_string_counted_with_a_null_pointer_is_fault() {
     );
 }
 
-// ── THE STATEMENT'S LISTS (the design's One Statement: marks, rewrites, sections, needs) ──────
-
 use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::Blob;
 use crate::abi::mechanism::decl::RedCase;
@@ -252,7 +249,7 @@ fn a_word_mark_has_a_known_class_and_a_word() {
         word(MARK_WORD_CARRIER, "x-api-key"),
     ];
     assert_eq!(check_marks(0, &ok), Ok(()));
-    // Above the range and an empty word: the generated table (`every_declared_statement_field_rule_is_red`).
+
     assert_eq!(
         check_marks(0, &[word(0, "w")]),
         Err(fault(Rule::UnknownCode, "mark_word.class"))
@@ -267,7 +264,7 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
         rewrite(REWRITE_KEY, "key_ref", abi_str("key.ref")),
     ];
     assert_eq!(check_rewrites(&ok), Ok(()));
-    // Above the range: the generated table.
+
     assert_eq!(
         check_rewrites(&[rewrite(0, "x", NONE)]),
         Err(fault(Rule::UnknownCode, "rewrite.class"))
@@ -275,9 +272,7 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
 }
 
 /// The secret-sugar rewrites a later contract reads (the sugar's settings key, its shown
-/// placeholder, what its value names, its core role) are ACCEPTED by this one and grant nothing:
-/// each names its `from` and its `to`, and a sugar may state the settings key it lands under, so a
-/// plugin built for the later contract loads here unchanged (the two-step lockstep cure).
+
 #[test]
 fn the_later_sugar_rewrites_are_accepted_and_each_names_its_target() {
     let ok = [
@@ -328,11 +323,10 @@ fn a_statement_has_at_most_one_declaring_section() {
         ]),
         Err(fault(Rule::NotExactlyOne, "section.flags"))
     );
-    // An unknown flag and an empty name: the generated table.
 }
 
 /// THE GENERATED RED TABLES: one RED per (field, rule) each Statement element's declaration states,
-/// each answering exactly its rule and field; the cross-field rules are the hand cases here.
+
 #[test]
 fn every_declared_statement_field_rule_is_red() {
     fn reds<T: Copy>(base: T, table: &[RedCase<T>], check: impl Fn(&T) -> Result<(), Fault>) {
@@ -413,8 +407,7 @@ fn the_sdk_statement_states_no_marks_rewrites_sections_needs_paths_or_answers() 
 }
 
 /// CLAIMS ARE A TRANSPORT'S FACT: a Statement of any other kind that states URL schemes is refused
-/// at admit, so no store, plane or other kind can state a scheme Discover might read. RED: a plane
-/// Statement claiming `https` is refused; the same claim on a transport Statement passes.
+
 #[test]
 fn a_statement_of_another_kind_stating_claims_is_refused() {
     const CLAIMS: &[AbiStr] = &[abi_str("https")];
@@ -433,9 +426,7 @@ fn a_statement_of_another_kind_stating_claims_is_refused() {
 }
 
 /// THE SELECTING SECTION (Law 7): a section whose presence uses the plane is a known bit beside
-/// `SECTION_CONSUMED` and `SECTION_REQUIRED`, and redundant beside `SECTION_DECLARING` (a verb
-/// selects its plane already). RED: before the bit was known, a consumed, required, selecting
-/// section was refused as an unknown code.
+
 #[test]
 fn a_selecting_section_is_known_and_never_beside_the_declaring_one() {
     assert_eq!(
@@ -455,8 +446,7 @@ fn a_selecting_section_is_known_and_never_beside_the_declaring_one() {
 }
 
 /// A SELECTING SECTION IS A PLANE'S FACT: a Statement of any other kind stating one is refused at
-/// admit, never silently ignored. RED: a store Statement with a selecting section is refused; the
-/// same section on a plane Statement passes.
+
 #[test]
 fn a_statement_of_another_kind_stating_a_selecting_section_is_refused() {
     const SECTIONS: &[Section] = &[Section {
@@ -520,14 +510,11 @@ fn a_statement_list_is_checked_whole_and_a_null_list_with_a_count_is_fault() {
     );
 }
 
-// ── THE STATEMENT LISTS' BOUNDS (contract audit M7: at most STATEMENT_LIST_MAX, never misaligned) ─
-
 /// `STATEMENT_LIST_MAX + 1` answers, one past the cap.
 const OVER_CAP: &[AbiStr] = &[abi_str("a"); STATEMENT_LIST_MAX + 1];
 
 /// A Statement list above [`STATEMENT_LIST_MAX`] is refused before any entry is read, whichever
-/// list states it; exactly the cap passes. RED: without the cap a plugin's stated count is walked
-/// whole, and a count past its own data reads the host past it.
+
 #[test]
 fn a_statement_list_above_the_cap_is_refused_before_it_is_read() {
     let at_cap = &OVER_CAP[..STATEMENT_LIST_MAX];
@@ -570,8 +557,7 @@ fn a_statement_list_above_the_cap_is_refused_before_it_is_read() {
 }
 
 /// A Statement list whose pointer is not aligned for its entry type is refused before a slice is
-/// built over it (a slice over a misaligned pointer is undefined behaviour). RED: without the
-/// alignment check the host builds the slice.
+
 #[test]
 fn a_misaligned_statement_list_is_refused_before_a_slice_is_built() {
     #[repr(C, align(16))]

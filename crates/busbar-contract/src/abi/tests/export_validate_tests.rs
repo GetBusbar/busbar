@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The export answer validators: one RED test per arm, each asserting its exact rule and field and
-//! failing if its check is removed, and the GREEN answers per outcome.
 
 use super::*;
 use crate::abi::mechanism::call::{AbiStr, Blob, Envelope, Outcome, RawOutcome};
@@ -59,7 +58,7 @@ fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
 }
 
 /// A zeroed `out` on PENDING and on REFUSED passes every op's check: those outcomes carry no
-/// answer beyond the head.
+
 #[test]
 fn zeroed_pending_and_refused_pass_every_op() {
     for o in [Outcome::Pending, Outcome::Refused] {
@@ -358,8 +357,6 @@ fn deliver_null_error_faults() {
         red(Rule::NullWithCount, "deliver.error")
     );
 }
-
-// ── the Statement tail ─────────────────────────────────────────────────────────────────────────
 
 fn tail(streams: &[u8], routes: &[Route]) -> Tail {
     Tail {

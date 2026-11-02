@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/governance/mint_policy.rs`.
-//!
-//! RELOCATED out of `admin/tests/parse_duration_secs_tests.rs` (1.6.0 de-alias, stage 2a) alongside
-//! the `MintPolicy` type itself; the `parse_duration_secs` unit tests stayed behind in that file
-//! (they exercise `crate::config::parse::parse_duration_secs`, unrelated to mint policy).
-
 use super::{apply_mint_ttl_ceiling, MintPolicy, MintRequest, RoleCeiling};
 
 const DAY: u64 = 86_400;
 
-/// A `MintRequest` builder for the ceiling tests: caller `roles`, requested `pools` (3-state), a
-/// `ttl` in seconds that is treated as EXPLICIT unless `default_ttl` is used, and no mode.
 fn req<'a>(
     roles: &'a [String],
     pools: Option<&'a [String]>,
@@ -40,9 +32,6 @@ fn role_policy(role: &str, ceiling: RoleCeiling, block_max_ttl: Option<u64>) -> 
     }
 }
 
-/// W9: a role whose ceiling names its pools mints POOL grants only. A grant of another kind (a
-/// plane's `allowed_{kind}s`) is refused under that ceiling, as it was unmintable before; with no
-/// pool ceiling, or none held, the same mint is admitted.
 #[test]
 fn mint_ceiling_of_named_pools_refuses_a_grant_of_another_kind() {
     let policy = role_policy(
@@ -75,8 +64,6 @@ fn mint_ceiling_of_named_pools_refuses_a_grant_of_another_kind() {
         .is_ok());
 }
 
-/// A role AT its TTL ceiling: a default (non-explicit) over-long request is CLAMPED down to the
-/// role's `max_ttl`, even when the block cap is looser.
 #[test]
 fn mint_ceiling_role_ttl_clamps_the_default() {
     let policy = role_policy(
@@ -85,7 +72,7 @@ fn mint_ceiling_role_ttl_clamps_the_default() {
             max_ttl_secs: Some(7 * DAY),
             ..Default::default()
         },
-        Some(30 * DAY), // looser block cap — the role narrows below it
+        Some(30 * DAY),
     );
     let roles = vec!["app-admin".to_string()];
     assert_eq!(
@@ -95,7 +82,6 @@ fn mint_ceiling_role_ttl_clamps_the_default() {
     );
 }
 
-/// An EXPLICIT TTL over-ask beyond the role ceiling is REFUSED.
 #[test]
 fn mint_ceiling_role_ttl_refuses_explicit_over_ask() {
     let policy = role_policy(
@@ -115,8 +101,6 @@ fn mint_ceiling_role_ttl_refuses_explicit_over_ask() {
     );
 }
 
-/// A pool OUTSIDE the role's `allowed_pools` is refused (naming the offending pool); a subset is
-/// allowed; requesting ALL pools under a finite ceiling is refused; the empty set is always allowed.
 #[test]
 fn mint_ceiling_role_pool_subset_is_enforced() {
     let policy = role_policy(
@@ -129,33 +113,28 @@ fn mint_ceiling_role_pool_subset_is_enforced() {
     );
     let roles = vec!["app-admin".to_string()];
 
-    // subset OK
     let ok = vec!["growth".to_string()];
     assert!(policy
         .check_mint(&req(&roles, Some(&ok), DAY, true))
         .is_ok());
 
-    // pool outside the ceiling → refused, naming it
     let bad = vec!["growth".to_string(), "secret".to_string()];
     let err = policy
         .check_mint(&req(&roles, Some(&bad), DAY, true))
         .expect_err("a pool outside the ceiling must be refused");
     assert!(err.contains("secret"), "the offending pool is named: {err}");
 
-    // requesting ALL pools (None) under a finite ceiling → refused
     assert!(
         policy.check_mint(&req(&roles, None, DAY, true)).is_err(),
         "requesting ALL pools under a finite ceiling is an over-ask"
     );
 
-    // the empty set is always within any ceiling
     let none: Vec<String> = Vec::new();
     assert!(policy
         .check_mint(&req(&roles, Some(&none), DAY, true))
         .is_ok());
 }
 
-/// A requested binding mode outside the role's allowed modes is refused; an allowed one passes.
 #[test]
 fn mint_ceiling_role_mode_membership_is_enforced() {
     let policy = role_policy(
@@ -187,10 +166,6 @@ fn mint_ceiling_role_mode_membership_is_enforced() {
     );
 }
 
-/// A ROLE'S MODES NARROW THE BLOCK'S, NEVER WIDEN THEM: with the deployment allowing only
-/// `user-bound`, a role listing `time-bound` cannot mint `time-bound`, and a mode both lists allow
-/// passes. RED: the role list REPLACED the block list, so the role's `time-bound` mint passed though
-/// the deployment forbids it.
 #[test]
 fn mint_ceiling_role_modes_cannot_widen_the_block_modes() {
     let mut policy = role_policy(
@@ -226,8 +201,6 @@ fn mint_ceiling_role_modes_cannot_widen_the_block_modes() {
     );
 }
 
-/// A caller whose roles carry NO `mint_ceilings` entry falls back to the BLOCK caps alone: the block
-/// TTL still clamps, and there is no pool restriction (the block level carries none).
 #[test]
 fn mint_ceiling_no_role_ceiling_falls_back_to_block() {
     let policy = MintPolicy {
@@ -238,28 +211,25 @@ fn mint_ceiling_no_role_ceiling_falls_back_to_block() {
     };
     let roles = vec!["some-unrelated-role".to_string()];
 
-    // block TTL clamps the default
     assert_eq!(
         policy.check_mint(&req(&roles, None, 90 * DAY, false)),
         Ok(14 * DAY)
     );
-    // no pool restriction from the block level: requesting ALL pools is fine
+
     assert!(policy.check_mint(&req(&roles, None, DAY, true)).is_ok());
-    // an explicit under-block request is unchanged
+
     assert_eq!(policy.check_mint(&req(&roles, None, DAY, true)), Ok(DAY));
 }
 
-/// The per-role ceiling narrows BELOW the block cap but never above it: effective TTL = min(block,
-/// role). A role permitting 30d under a 7d block is still capped at 7d.
 #[test]
 fn mint_ceiling_role_cannot_exceed_the_block_cap() {
     let policy = role_policy(
         "app-admin",
         RoleCeiling {
-            max_ttl_secs: Some(30 * DAY), // role would allow more...
+            max_ttl_secs: Some(30 * DAY),
             ..Default::default()
         },
-        Some(7 * DAY), // ...but the block hard-caps at 7d
+        Some(7 * DAY),
     );
     let roles = vec!["app-admin".to_string()];
     assert_eq!(
@@ -269,7 +239,6 @@ fn mint_ceiling_role_cannot_exceed_the_block_cap() {
     );
 }
 
-/// The empty policy (no `auth.policy:`) is a full passthrough — byte-identical pre-1.6.0 behavior.
 #[test]
 fn mint_ceiling_empty_policy_is_passthrough() {
     let policy = MintPolicy::default();
@@ -280,8 +249,6 @@ fn mint_ceiling_empty_policy_is_passthrough() {
     );
 }
 
-/// No policy ceiling (`auth.policy.max_ttl` unset) is byte-identical pre-1.6.0 behavior: any
-/// requested lifetime passes through unchanged, explicit or default.
 #[test]
 fn mint_ttl_ceiling_absent_is_a_passthrough() {
     assert_eq!(apply_mint_ttl_ceiling(86_400, true, None), Ok(86_400));
@@ -291,7 +258,6 @@ fn mint_ttl_ceiling_absent_is_a_passthrough() {
     );
 }
 
-/// A request AT or UNDER the ceiling is accepted verbatim, explicit or default.
 #[test]
 fn mint_ttl_ceiling_within_bound_is_unchanged() {
     let max = 7 * 86_400;
@@ -300,8 +266,6 @@ fn mint_ttl_ceiling_within_bound_is_unchanged() {
     assert_eq!(apply_mint_ttl_ceiling(3600, false, Some(max)), Ok(3600));
 }
 
-/// An EXPLICIT over-ask is REFUSED (the operator named a lifetime longer than policy allows), and
-/// the error names the ceiling so the 4xx is actionable.
 #[test]
 fn mint_ttl_ceiling_refuses_explicit_over_ask() {
     let max = 7 * 86_400;
@@ -314,9 +278,6 @@ fn mint_ttl_ceiling_refuses_explicit_over_ask() {
     );
 }
 
-/// An over-long DEFAULT (no expires_in/expires_at) is CLAMPED down to the ceiling, never refused —
-/// a default that predates a shorter policy must not silently outlive the cap, but it was never an
-/// explicit ask to reject.
 #[test]
 fn mint_ttl_ceiling_clamps_over_long_default() {
     let max = 7 * 86_400;

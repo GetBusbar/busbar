@@ -2,70 +2,21 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `ir::facts` — THE ONE PROJECTION. What the shared pipeline is allowed to know about a request,
-//! read from the IR and from nothing else.
-//!
-//! A SHAPE (DECISIONS #83) — the trait `IrFacts`, the provenance `Slot`, the borrowed
-//! `ContentItem`, the `Shape` counts, the `NeutralFacts` empty projection and the render-once
-//! `ScreenedContent` are the operation-blind projection surface every protocol family implements
-//! and the shared pipeline reads. Relocated, module-path-only, from
-//! `busbar-substrate-values::ir::facts`, which re-exports each under its historical path so every
-//! caller is unchanged.
-//!
-//! **THIS FILE CONTAINS NO EXECUTABLE PROTOCOL COMPARISON AND MUST NEVER CONTAIN ONE.** No
-//! `PROTO_*`, no dialect literal in a condition, no `match ingress_protocol`. The protocol is what
-//! the IR was parsed FROM; it is a dimension carried as provenance on the item ([`Slot`]), never a
-//! branch in what happens after.
-//!
-//! # The protocol as a dimension rather than a branch
-//!
-//! The dimension is carried as **provenance on the item**: [`Slot`] says which turn a piece of
-//! content came from and whether it came from the system slot, a turn, a tool call's arguments or a
-//! tool result. A consumer reads `slot`; it never reads a protocol name. The protocol determined the
-//! slot at parse time — in exactly one `proto/` arm — and never appears again.
-//!
-//! # Scope: the model-inference family's walk, behind a seam two families now implement
-//!
-//! The concrete-IR projection (`impl IrFacts for IrRequest` + `project`) lives in the plane that
-//! owns that IR; the invocation IR ([`crate::ir::invoke`]) is the second family
-//! implementing this trait with its own walk rather than being folded into a superset — one IR per
-//! family is a standing rule, because a shared superset across families is a lossless-translation
-//! surface between things that never translate.
-//!
-//! # What this projection does NOT widen, deliberately
-//!
-//! An image block contributes no item. That is parity with the projection being replaced (which
-//! shows a media-only turn as `{role, text: ""}`), not an oversight: widening image provenance to
-//! hook sidecars is a real disclosure decision that deserves its own unit and its own CHANGELOG line.
-//! The turn itself is never lost — see the empty-turn rule the concrete walk keeps.
 
 use crate::operation::OpVerb;
 use serde_json::Value;
 use std::borrow::Cow;
 
 /// Fixed non-content marker substituted for content busbar cannot read. Busbar cannot decrypt
-/// provider-encrypted reasoning, so handing a hook the raw bytes has zero screening value AND would
-/// be a new information disclosure: the projection is POSTed to an operator-configured sidecar that
-/// never received provider ciphertext before.
-///
-/// It is a PRESENCE signal, not a trust signal, and a consumer must not treat it as one. A client
-/// can send a plain text block whose text IS this exact string; the hook seam is upstream of any
-/// authentication of content. The correct read is *"there is content here I cannot screen"* —
-/// reject or escalate — never *"this text is genuine ciphertext"* and never *"this turn is empty"*.
-///
-/// The string is BYTE-IDENTICAL to the marker the raw-body projection substitutes today, and
-/// `opaque_marker_is_byte_identical_to_the_projection_it_replaces` pins that, so the cutover is not
-/// also a wire change for the one shape both implementations already agree on.
+
 pub const OPAQUE_CONTENT_MARKER: &str = "[busbar:redacted_reasoning]";
 
 /// Label for an opaque reasoning item. A stable, protocol-blind noun: three wire shapes across three
-/// dialects land here and the consumer must not be able to tell which.
+
 pub const LABEL_REASONING: &str = "reasoning";
 
 /// Label for a structured, non-prose content member — the shape a tool result carries when it
-/// answers with data rather than prose (one dialect's `{"json": …}` tool-result member reaches the
-/// IR as a JSON block; NO BRANCH HERE, the reader already decided). Named rather than left empty so a
-/// screening hook can tell a JSON payload apart from a tool call's arguments without inspecting the
-/// value.
+
 pub const LABEL_JSON: &str = "json";
 
 /// WHERE a piece of content came from — the protocol dimension, carried as provenance.
@@ -95,7 +46,7 @@ pub enum Slot {
 
 impl Slot {
     /// The conversation turn this slot belongs to, or `None` for the system slot. The one place the
-    /// "tool slots are attributed to their turn" rule is written, so no consumer re-derives it.
+
     pub fn turn_index(self) -> Option<usize> {
         match self {
             Slot::System => None,
@@ -145,10 +96,7 @@ pub enum ContentItem<'a> {
 
 impl ContentItem<'_> {
     /// Who authored this content — an OPAQUE label the producing walk chose, never a core enum. The
-    /// model-inference walk uses `"system"`/`"user"`/`"assistant"`/`"tool"` (the strings the hook
-    /// wire has always carried); a non-chat plane uses its own words. Core reads this as the
-    /// hook-wire bucket label a screening consumer is shown and **branches on nothing** — the label
-    /// carries no protocol.
+
     pub fn author(&self) -> &'static str {
         match self {
             ContentItem::Text { author, .. }
@@ -167,17 +115,7 @@ impl ContentItem<'_> {
     }
 
     /// The text a screening consumer is shown for this item — and, by construction, the text the
-    /// `total_chars` SIZE signal counts.
-    ///
-    /// **This is the single definition of "what a hook sees", and that is the point.** The two
-    /// tripwires this design supersedes (`system_text_chars_counts_block_arrays` and
-    /// `size_signal_and_projection_agree_on_reasoning`) exist because a size signal and a content
-    /// projection were computed by two functions that could drift. Here [`Shape::text_chars`] is a
-    /// sum over this method, so they cannot: there is nothing left for them to disagree about.
-    /// **COST.** The `Data` arm SERIALIZES: every call re-renders the payload. A screening pass that
-    /// asks the same item for its text more than once (the size sum, the prompt projection, the
-    /// per-hook cleared-set digest, once per attached gate) pays that render each time. Callers that
-    /// screen therefore build a [`ScreenedContent`] once and read the text off it — see there.
+
     pub fn screenable_text(&self) -> Cow<'_, str> {
         match self {
             ContentItem::Text { text, .. } => Cow::Borrowed(text.as_ref()),
@@ -191,26 +129,13 @@ impl ContentItem<'_> {
     }
 
     /// A collision-resistant identity for "have I screened this exact piece before" — over the author
-    /// label, the slot (kind + index, so the SAME text in a DIFFERENT slot is a distinct piece a
-    /// guardrail must re-see), and the screenable text.
-    ///
-    /// The fields are LENGTH-PREFIX framed before hashing (the same discipline `audit::Digest` uses),
-    /// so `("a","b")` can never hash-collide with `("ab","")`. A collision here would let one session's
-    /// cleared-set skip-screen a *different* piece — a security-adjacent skip (design D4) — which is
-    /// why this is a full SHA-256 over framed bytes, not a 64-bit fast hash. Used by the gate's
-    /// incremental-scan tenant of the session store: the digest is what a session's scanned-set holds.
-    ///
-    /// NOTE: an [`ContentItem::Opaque`] piece digests its MARKER, not real content — the caller must
-    /// never cache an opaque piece as "cleared" (it is a presence signal, not screenable content); the
-    /// digest is defined here for uniformity, and the caller enforces the never-cache-opaque rule.
+
     pub fn screening_digest(&self) -> String {
         self.digest_of(&self.screenable_text())
     }
 
     /// [`Self::screening_digest`] over an ALREADY-RENDERED text — the body of the digest, so a
-    /// caller holding the rendered text (a [`ScreenedContent`]) hashes it without asking the item to
-    /// render it a second time. Byte-identical to `screening_digest` for the item's own text; pass
-    /// anything else and the identity you get back is not this item's.
+
     pub fn digest_of(&self, text: &str) -> String {
         fn framed(buf: &mut Vec<u8>, bytes: &[u8]) {
             buf.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
@@ -222,17 +147,14 @@ impl ContentItem<'_> {
             Slot::ToolArgs(i) => (2, i as u64),
             Slot::ToolResult(i) => (3, i as u64),
         };
-        // The VARIANT is part of the identity. Without it a `Data` payload whose serialization
-        // happens to equal an `Opaque` marker (or a `Text` body) digests identically, and the
-        // cleared-set would skip-screen a different KIND of piece — the security-adjacent skip the
-        // length framing exists to prevent, one field short.
+
         let variant: u8 = match self {
             ContentItem::Text { .. } => 0,
             ContentItem::Data { .. } => 1,
             ContentItem::Opaque { .. } => 2,
         };
         let author = self.author();
-        // Exact: four length prefixes plus one byte, eight bytes, and the two variable fields.
+
         let mut buf = Vec::with_capacity(5 * 8 + 1 + 1 + 8 + author.len() + text.len());
         framed(&mut buf, &[variant]);
         framed(&mut buf, &[slot_kind]);
@@ -243,9 +165,6 @@ impl ContentItem<'_> {
     }
 }
 
-// Test-only tally of how many times a `ContentItem::Data` payload was actually SERIALIZED, so a
-// test can pin that a screening pass renders each payload once rather than once per reader.
-// Thread-local, so parallel tests do not contaminate each other's count.
 #[cfg(test)]
 thread_local! {
     static DATA_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -258,17 +177,7 @@ pub(crate) fn take_data_renders() -> usize {
 }
 
 /// A content projection with EVERY item's screenable text rendered ONCE, up front.
-///
-/// [`ContentItem::screenable_text`] is not free: the `Data` arm serializes its payload on every
-/// call. A screening pass asks for that text repeatedly — the system-slot size sum, the prompt
-/// projection, and the cleared-set digest, each of them again for every attached gate — so a request
-/// carrying one tool-call payload re-rendered it a number of times that grew with the number of
-/// hooks, for an answer that cannot change between them.
-///
-/// This holds the rendered text alongside the item and hands both out together, so the render count
-/// is the ITEM count and nothing downstream can reintroduce the growth. Filtering ([`Self::select`])
-/// carries the rendered text across with the item rather than dropping back to the items and
-/// re-rendering, which is the whole point: the incremental scan filters, then projects.
+
 pub struct ScreenedContent<'a> {
     entries: Vec<(&'a ContentItem<'a>, Cow<'a, str>)>,
 }
@@ -312,7 +221,7 @@ impl<'a> ScreenedContent<'a> {
     }
 
     /// The `text_chars` / `system_chars` size signals, summed over exactly these items — the same
-    /// sum [`Shape::counts_over`] performs, off the rendered text rather than a fresh render.
+
     pub fn counts(&self) -> (usize, usize) {
         let mut text_chars = 0usize;
         let mut system_chars = 0usize;
@@ -369,11 +278,7 @@ pub struct Shape {
 
 impl Shape {
     /// Sum the `text_chars` / `system_chars` size signals over an ALREADY-BUILT content projection —
-    /// the ONE place a non-chat family's size counts are derived, so the size signal can never walk a
-    /// different set of items than the gate is shown. The drift invariant `IrRequest`/`InvokeReq`
-    /// state inline (a size signal and a content projection computed by two functions can drift); the
-    /// non-chat families express the same invariant by summing over exactly the slice `content()`
-    /// returned rather than by a second walk.
+
     pub fn counts_over(items: &[ContentItem<'_>]) -> (usize, usize) {
         let mut text_chars = 0usize;
         let mut system_chars = 0usize;
@@ -389,8 +294,7 @@ impl Shape {
                         }
                     }
                     let mut count = CharCount(0);
-                    // Value's compact Display is also what screenable_text uses. Counting the
-                    // borrowed fragments avoids an owned copy of the serialized arguments.
+
                     write!(&mut count, "{value}").expect("the character counter cannot fail");
                     count.0
                 }
@@ -411,9 +315,7 @@ impl Shape {
     }
 
     /// The shape of a request that carries no readable conversation facts at all — a multipart or
-    /// binary body, or one whose protocol has no reader registered. Named rather than
-    /// `Default::default()`d so a consumer reads "nothing here" as a decision rather than as a
-    /// zero-initialized accident.
+
     pub const EMPTY: Shape = Shape {
         turn_count: 0,
         has_tools: false,
@@ -425,21 +327,10 @@ impl Shape {
 }
 
 /// Everything the SHARED pipeline needs to know about any request on any protocol.
-///
-/// The pipeline holds the request behind this trait and nothing else. Nothing here is model-shaped,
-/// nothing downcasts, and no method returns a wire body. A protocol family joins by implementing it;
-/// govern, hook, select, dispatch, classify, meter and audit then span the new family with no work
-/// in any of them, which is the whole payoff and also the acceptance test.
-///
-/// **`target()` is deliberately ABSENT.** The design sketches one ("pool | tool server | agent —
-/// the container name"), and it belongs on this trait eventually — but the container is a ROUTING fact
-/// resolved outside the IR, and `IrRequest` cannot answer it, so the only thing that could land
-/// today is a stub returning `""` that every caller would have to know not to trust. A method that
-/// lies is worse than a method that is missing; it lands with the first implementer that actually
-/// knows the answer, additively.
+
 pub trait IrFacts {
     /// The semantic operation — the same closed vocabulary the metrics label and the `paths:` config
-    /// key use, so a consumer that switches on it is switching on something already enumerated.
+
     #[cfg_attr(not(test), allow(dead_code))]
     fn verb(&self) -> OpVerb;
 
@@ -447,24 +338,19 @@ pub trait IrFacts {
     fn wants_stream(&self) -> bool;
 
     /// End-user identifier for provider-side abuse tracking, normalized by the reader from whichever
-    /// field its dialect spells it in. Rides the `user: ro` grant; it is caller identity, not
-    /// content.
+
     fn end_user(&self) -> Option<&str>;
 
     /// Counts and sizes. No content.
     fn shape(&self) -> Shape;
 
     /// The content projection, in request order. Grant-gated at the seam that CALLS this, never
-    /// here: a projection that decides for itself whether it may be seen is a projection with a
-    /// policy in it.
+
     fn content(&self) -> Vec<ContentItem<'_>>;
 }
 
 /// A SHARED projection is still a projection. `facts()` must hand back an OWNED
-/// `Box<dyn IrFacts + Send + Sync>`, which forced every neutral handle to deep-clone its whole
-/// request — arguments `Value` and all — just to answer a read-only question. With this impl the
-/// handle can hold an `Arc` and hand out a REFCOUNT BUMP instead, and the request payload is
-/// serialized/allocated exactly once for the life of the request.
+
 impl<T: IrFacts + ?Sized> IrFacts for std::sync::Arc<T> {
     fn verb(&self) -> OpVerb {
         (**self).verb()
@@ -484,9 +370,7 @@ impl<T: IrFacts + ?Sized> IrFacts for std::sync::Arc<T> {
 }
 
 /// The empty projection over a bare [`OpVerb`] — the [`IrFacts`] a RESPONSE-side `IrHandle`
-/// returns from its `facts()` default. It is never actually read (facts are a request-side seam:
-/// `read_facts` runs only on the ingress request handle), so it answers with the operation it holds
-/// and nothing else. Naming it here keeps the response handles from having to carry a real projection.
+
 pub struct NeutralFacts(pub OpVerb);
 
 impl IrFacts for NeutralFacts {

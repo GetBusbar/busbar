@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-kernel/src/audit/auditlog.rs`.
-
 use super::*;
 use crate::audit::{digest, frame_prelude, Framing};
 
-/// THE BYTE-IDENTITY GATE: the plane's pre-framed suffix, appended RAW after the host prelude
-/// framed with `digests_scope = false`, reproduces the legacy [`AuditEntry`] digest byte-for-byte.
-/// A perturbation of the suffix, the prelude framing, or the `digests_scope` flag would fail this.
 fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, out: &str, pr: &str) {
-    // The seam's digest input: frame_prelude(PipeSeparated, prev_hash, None=no scope, seq) ⧺ suffix.
     let mut input = frame_prelude(Framing::PipeSeparated, prev_hash, None, seq);
     input.extend_from_slice(&audit_suffix(ts, act, res, out, pr));
     let via_seam = busbar_contract::redacted::sha256_hex(&input);
 
-    // The legacy digest: the AuditEntry's own `digest_fields` through the ONE canonicaliser, forced
-    // to scheme 1 -- the framing this suffix (a raw pipe join, built by `audit_suffix` above) is
-    // actually in.
     let entry = AuditEntry {
         seq,
         ts,
@@ -39,8 +30,6 @@ fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, ou
 
 #[test]
 fn suffix_plus_scopeless_prelude_equals_legacy_audit_digest() {
-    // Genesis (empty prev_hash) — the leading `|` before `seq` the empty prev_hash produces is
-    // load-bearing; and a linked record.
     assert_roundtrip(
         1,
         "",
@@ -61,10 +50,6 @@ fn suffix_plus_scopeless_prelude_equals_legacy_audit_digest() {
     );
 }
 
-/// THE CONVERSION GATE: a converted site's record, appended through the SEAM, carries the SAME hash
-/// the legacy admin ring computes for the same fields at the same chain position — genesis AND the
-/// inter-record link. Feeds a fixed `ts` on both sides (the seam suffix built directly, the legacy
-/// `AuditEntry` filled directly) so the comparison isolates the digest, not the clock.
 #[test]
 fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
     let h = AuditTestHarness::over(std::sync::Arc::new(crate::governance::MemoryStore::new()));
@@ -76,15 +61,12 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
         "admin",
     );
 
-    // Append through the seam (the converted-site path) and read the link each append sealed.
     let (seq1, prev1, hash1) = h.emit_full(ADMIN_LOG, audit_suffix(ts, act, res, out, pr));
     let (seq2, prev2, hash2) = h.emit_full(
         ADMIN_LOG,
         audit_suffix(ts + 60, "hook.delete", res, out, pr),
     );
 
-    // The legacy ring's records for the SAME fields at the SAME chain positions -- scheme 1, the
-    // framing the manually-built `audit_suffix` fed through the seam above is actually in.
     let mk = |seq, ts, action: &str, prev: String| AuditEntry {
         seq,
         ts,
@@ -103,15 +85,6 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
     assert_eq!(hash2, digest(&mk(2, ts + 60, "hook.delete", hash1)));
 }
 
-// ── A COMBINED DURABLE STORE DOUBLE for the boot-restore + migration witnesses ────────────────────
-//
-// MemoryStore uses the trait DEFAULTS for the audit table AND for `plane_records` (accept-and-keep-
-// nothing), so it cannot back a durable round-trip. This double persists BOTH: the legacy audit table
-// (`append_audit`/`list_audit`) and the neutral `plane_records` (`append_plane_record`/
-// `list_plane_records`/`list_plane_record_parents`), delegating everything else to an inner MemoryStore
-// so `GovState::new` is satisfied. `parent` keys `plane_records`, appended in seq order as a real
-// backend would.
-/// kind + optional parent → ordered opaque bodies, the `plane_records` a durable backend keeps.
 type PlaneRows = std::collections::HashMap<(String, Option<String>), Vec<Vec<u8>>>;
 
 struct DualDurableStore {
@@ -181,7 +154,7 @@ impl busbar_contract::records::RecordStore for DualDurableStore {
     {
         self.inner.list_metering(bucket)
     }
-    // ── the legacy audit table ──
+
     fn append_audit(
         &self,
         entry: &busbar_contract::records::AuditRecord,
@@ -218,7 +191,7 @@ impl busbar_contract::records::RecordStore for DualDurableStore {
             .cloned()
             .collect())
     }
-    // ── the neutral plane_records ──
+
     fn append_plane_record(
         &self,
         record: busbar_contract::records::PlaneRecordRef<'_>,
@@ -267,17 +240,12 @@ impl busbar_contract::records::RecordStore for DualDurableStore {
     }
 }
 
-/// WITNESS (a) — ROUND-TRIP: a mutation written through the SEAM into `plane_records`, then a
-/// simulated REBOOT (a fresh log + fresh chain positions over the SAME store) restores FROM
-/// `plane_records`, verifies the chain (zero breaks), and yields records + digests + `GET /audit`
-/// output BYTE-IDENTICAL to the legacy admin ring for the same fields at the same positions.
 #[test]
 fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
     let (ts, res, out, pr) = (1_700_000_500u64, "hook:rt", "applied", "admin");
 
-    // Process 1: two mutations through the seam. This PERSISTS the neutral bodies to `plane_records`.
     let h1 = AuditTestHarness::over(store.clone());
     let (s1, p1, hash1) = h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
     let (s2, p2, hash2) = h1.emit_full(
@@ -291,7 +259,6 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
         "record 2 links record 1"
     );
 
-    // The store durably holds both neutral bodies under (audit, admin).
     let bodies = store
         .list_plane_records(
             KIND_AUDIT,
@@ -304,8 +271,6 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
         "both seam records persisted to plane_records"
     );
 
-    // Process 2 (a "restart"): a FRESH log + fresh host positions over the SAME store, restoring from
-    // `plane_records` — the production boot source.
     let h2 = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
     let restored = h2
@@ -322,10 +287,6 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
         "both records restored from plane_records"
     );
 
-    // The legacy admin ring's records for the SAME fields at the SAME positions — the byte-identity
-    // reference. `digest` is the ONE canonicaliser both paths share. Scheme 1: these fields went
-    // through the seam as a raw `audit_suffix` (legacy) suffix above, so a correct restore must read
-    // them back as scheme 1 too — see the `scheme` check added to `same` below.
     let mk = |seq, ts, action: &str, prev: String| AuditEntry {
         seq,
         ts,
@@ -343,7 +304,6 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     assert_eq!(digest(&legacy_head), hash1, "seam genesis == legacy digest");
     assert_eq!(digest(&legacy_tail), hash2, "seam link == legacy digest");
 
-    // GET /audit output: the seeded ring, newest-first, BYTE-IDENTICAL to the legacy records.
     let ring = h2
         .log
         .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
@@ -375,7 +335,7 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
             b.scheme,
         )
     };
-    // Newest-first: the tail leads. Fill the reference hashes so every field is compared.
+
     let ref_tail = AuditEntry {
         hash: hash2.clone(),
         ..legacy_tail.clone()
@@ -395,21 +355,15 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     );
 }
 
-/// WITNESS (b) — OLD-STORE GOLDEN: a store whose audit lives ONLY in the legacy `list_audit` table
-/// (every OLD store) BOOTS, MIGRATES `list_audit` → `plane_records`, RESTORES from `plane_records`,
-/// and verifies BYTE-IDENTICALLY — proving "OLD stores boot-verify EXACTLY". The legacy rows are the
-/// FROZEN pre-cleave bytes (identical to `boot_verify_golden`'s `AD_1`/`AD_2`), so a digest drift in
-/// the migration or restore fails this against a hash a PAST build computed, not one this build did.
 #[test]
 fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
-    // `boot_verify_golden`'s frozen pre-cleave `serde(AuditRecord)` rows and their frozen hashes.
     use crate::audit::boot_verify_golden::{AD_1, AD_2};
     const AD_HEAD_HASH: &str = "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa";
     const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
-    // Seed the LEGACY table only — plane_records is empty, exactly like an OLD store on first boot.
+
     let ad1: busbar_contract::records::AuditRecord =
         crate::store::plane_view::decode(AD_1).unwrap();
     let ad2: busbar_contract::records::AuditRecord =
@@ -427,17 +381,15 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
         "an OLD store has NO audit plane_records before migration"
     );
 
-    // BOOT MIGRATION: list_audit -> plane_records, preserving the chain exactly.
     let migrated = migrate_legacy_table_to_plane_records(store.as_ref()).unwrap();
     assert_eq!(migrated, 2, "both legacy rows migrated");
-    // IDEMPOTENT: a store already migrated does nothing.
+
     assert_eq!(
         migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
         0,
         "a second migration is a no-op"
     );
 
-    // BOOT RESTORE from plane_records: verifies + seeds the ring, byte-identical to the frozen bytes.
     let h = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
     let restored = h
@@ -451,7 +403,6 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     );
     assert_eq!(restored.records, 2, "both migrated records restored");
 
-    // The ring `GET /audit` serves is byte-identical to the FROZEN bytes, newest-first.
     let ring = h
         .log
         .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
@@ -481,15 +432,8 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
 
 use crate::test_support::warn_capture::DiagCapture;
 
-/// Serializes every test that restores an admin audit stream holding an undecodable row, because they
-/// all hit the same process-wide tracing callsite (BUSBAR-2047). tracing caches a callsite's interest
-/// process-wide: a test with no subscriber that hits the callsite while another test's capture is
-/// being installed leaves the callsite disabled for the capture, so it saw nothing depending on test
-/// order. Holding this lock for the whole restore keeps each test's subscriber the only one in play.
 static DIAG_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// The isolated capture: the serial lock, then `cap` as THIS thread's subscriber with tracing's
-/// callsite interest cache rebuilt, both released when it drops.
 struct IsolatedCapture {
     _guard: tracing::subscriber::DefaultGuard,
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -506,26 +450,17 @@ fn capture_into(cap: &DiagCapture) -> IsolatedCapture {
     }
 }
 
-/// TAMPER-EVIDENCE SILENT-SKIP CLOSED (mirrors BUSBAR-2045/2046): an UNDECODABLE row in the admin
-/// audit `plane_records` — a corrupt or tampered body no released build wrote — must be reported
-/// LOUDLY at the ring-seeding skip site with a coded diagnostic (`PLANE_AUDIT_ROW_UNREADABLE`,
-/// BUSBAR-2047) at ERROR, not dropped in silence. A silently skipped evidence row on a tamper-evidence
-/// surface is exactly the class of gap this pins. The GOOD row still seeds the read model the
-/// `GET /audit` view serves — one bad sibling does not take the decodable rows down with it.
 #[test]
 fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
     let (ts, res, out, pr) = (1_700_000_900u64, "hook:tamper", "applied", "admin");
 
-    // Process 1: one GOOD mutation through the seam persists a decodable neutral body to plane_records.
     let h1 = AuditTestHarness::over(store.clone());
     let (s1, _p1, _hash1) =
         h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
     assert_eq!(s1, 1, "the good record is genesis");
 
-    // A raw UNDECODABLE body appended under the SAME (audit, admin) parent: it decodes as neither the
-    // neutral body the seam writes nor a legacy `AuditRecord` — a corrupt/tampered row.
     store
         .append_plane_record(
             busbar_contract::records::PlaneRecord {
@@ -541,20 +476,15 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
         )
         .unwrap();
 
-    // Process 2 (a "restart"): a FRESH log over the SAME store restores from plane_records under a
-    // diagnostics-capturing subscriber. The undecodable row must FIRE the coded diagnostic at ERROR.
     let h2 = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
     let cap = DiagCapture::default();
     {
         let _g = capture_into(&cap);
-        // The decodable row seeds the good row and the bad one is REPORTED — the behaviour under
-        // test here. (The undecodable sibling no longer aborts the restore; that no-fork guarantee
-        // is pinned by `restore_does_not_fork_the_chain_when_one_row_is_undecodable`.)
+
         let _ = h2.log.restore_from_store(plane.as_ref());
     }
 
-    // The GOOD row still seeded the read model `GET /audit` serves.
     let ring = h2
         .log
         .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
@@ -566,7 +496,6 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     assert_eq!(ring[0].seq, 1);
     assert_eq!(ring[0].action, "hook.register");
 
-    // The undecodable row was reported LOUDLY, not skipped silently — a coded ERROR diagnostic.
     let diags = cap.0.lock().unwrap();
     assert!(
         diags.iter().any(|d| d.contains("BUSBAR-2047")),
@@ -576,25 +505,16 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     );
 }
 
-/// GOVERNANCE-CHAIN SEQ-1 FORK CLOSED: an undecodable sibling row must NOT abort the whole
-/// admin-audit restore. Previously the ring-seed loop tolerated the bad row but the SEAM chain seed
-/// was still handed the FULL body set — including the undecodable one — so it faulted and `?`-aborted
-/// `restore_from_store`, leaving the host-side chain position UNSEEDED. The next mutation then minted
-/// seq 1 again, FORKING the governance hash-chain (durability loss). The fix filters the seam seed to
-/// the decodable bodies (mirroring the per-call log), so one bad row can neither abort the restore nor
-/// fork the chain. This test pins BOTH: the restore returns Ok, and the chain resumes at seq 2.
 #[test]
 fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
     let (ts, res, out, pr) = (1_700_001_100u64, "hook:fork", "applied", "admin");
 
-    // Process 1: one GOOD genesis mutation persists a decodable neutral body to plane_records.
     let h1 = AuditTestHarness::over(store.clone());
     let (s1, _p1, _h1) = h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
     assert_eq!(s1, 1, "the good record is genesis");
 
-    // A raw UNDECODABLE body under the SAME (audit, admin) parent — a corrupt/tampered row.
     store
         .append_plane_record(
             busbar_contract::records::PlaneRecord {
@@ -610,8 +530,6 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
         )
         .unwrap();
 
-    // Process 2 (a "restart"): a FRESH log over the SAME store restores. The undecodable sibling must
-    // NOT abort the restore (before the fix this `?`-aborted and returned Err → the chain forked).
     let h2 = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
     let restored = {
@@ -625,8 +543,6 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
         "only the decodable row is a restored record"
     );
 
-    // The host-side chain position was seeded from the GOOD genesis, so the NEXT mutation continues
-    // the chain at seq 2 — NOT a fork back at seq 1. This is the durability guarantee under test.
     let (s2, _p2, _h2) = h2.emit_full(ADMIN_LOG, audit_suffix(ts + 1, "hook.next", res, out, pr));
     assert_eq!(
         s2, 2,
@@ -634,19 +550,10 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
     );
 }
 
-// ── the legacy pipe-joined suffix is forgeable; `audit_suffix_safe` is not ─────────────────────────
-
-/// THE FORGERY [`audit_suffix`] (legacy) IS VULNERABLE TO: a `|` inside a free-text field shifts
-/// every field after it once split back apart, so a caller who controls `resource` can make a
-/// restored record report a DIFFERENT outcome/principal than what actually happened — while the
-/// digest still matches (same bytes either way), so `verify_chain` sees nothing wrong. This pins the
-/// defect on the LEGACY path so nobody mistakes it for fixed, since fixing it there would change bytes
-/// already sealed on disk.
 #[test]
 fn legacy_pipe_suffix_lets_an_embedded_pipe_forge_the_readback() {
     let ts = 1_700_000_000u64;
-    // The attacker controls `resource` (e.g. a hook/task name echoed into the audit trail) and packs
-    // it with the rest of the record it wants read back instead.
+
     let forged_resource = "innocuous|applied|root";
     let suffix = audit_suffix(ts, "hook.register", forged_resource, "rejected", "attacker");
     let (_, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
@@ -656,16 +563,13 @@ fn legacy_pipe_suffix_lets_an_embedded_pipe_forge_the_readback() {
         "an unmarked, pipe-joined suffix must read back as scheme 1"
     );
     assert_eq!(action, "hook.register");
-    // The real outcome/principal ("rejected"/"attacker") were swallowed into `resource` and the
-    // forged tail split out as if they were the real outcome/principal.
+
     assert_eq!(resource, "innocuous");
     assert_eq!(
         outcome, "applied",
         "the forged outcome was read back, not the real one"
     );
-    // `splitn(5, '|')` stops splitting after the 5th field, so the REAL outcome/principal
-    // ("rejected"/"attacker") end up tacked onto the end of the forged principal rather than
-    // vanishing — either way, what comes back as `outcome`/`principal` is not what was recorded.
+
     assert_eq!(
         principal, "root|rejected|attacker",
         "the forged principal was read back, not the real one, and the real outcome/principal are \
@@ -673,9 +577,6 @@ fn legacy_pipe_suffix_lets_an_embedded_pipe_forge_the_readback() {
     );
 }
 
-/// THE FIX: the SAME embedded-`|` payload through [`audit_suffix_safe`] round-trips EXACTLY — no
-/// byte any field carries can move a boundary, because boundaries come from the length prefixes, not
-/// from scanning the content.
 #[test]
 fn safe_suffix_round_trips_a_pipe_carrying_payload_without_forgery() {
     let ts = 1_700_000_000u64;
@@ -697,7 +598,6 @@ fn safe_suffix_round_trips_a_pipe_carrying_payload_without_forgery() {
     assert_eq!(principal, "attacker");
 }
 
-/// Every field carrying `|` at once, plus empty fields — the safe suffix must not confuse any of it.
 #[test]
 fn safe_suffix_round_trips_pipes_in_every_field_and_empty_fields() {
     let suffix = audit_suffix_safe(42, "a|b", "", "o|u|t", "p|r");
@@ -710,8 +610,6 @@ fn safe_suffix_round_trips_pipes_in_every_field_and_empty_fields() {
     assert_eq!(principal, "p|r");
 }
 
-/// BACK-COMPAT: a body a store already holds from before this change (the legacy pipe-joined suffix,
-/// no [`SAFE_SUFFIX_MARKER`] byte) still parses as it always did — reading old records is unaffected.
 #[test]
 fn parse_audit_suffix_still_reads_legacy_bodies() {
     let suffix = audit_suffix(7, "hook.delete", "hook:compress", "applied", "admin");
@@ -724,11 +622,6 @@ fn parse_audit_suffix_still_reads_legacy_bodies() {
     assert_eq!(principal, "admin");
 }
 
-/// A record appended through the SEAM with the SAFE suffix (what [`emit_admin_hostless`] writes
-/// for a record a pipe join would not read back) restores and reconstructs its EXACT typed fields —
-/// including a `|`-carrying value that would have forged a different record under the legacy
-/// suffix — via the same
-/// [`audit_entry_from_body`] bridge a boot restore uses.
 #[test]
 fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
@@ -759,14 +652,8 @@ fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
     assert_eq!(entry.principal, "attacker");
 }
 
-/// LENGTH-FIELD BOUNDS: a SAFE-marked suffix that is truncated — cut short inside a length prefix, or
-/// declaring a length that runs past what remains — must decode to empty trailing fields rather than
-/// panicking. `take_lp`'s "decode what you can, never panic" discipline is exercised here directly
-/// rather than only reasoned about, since this is the one path a corrupt/tampered on-disk row (caught
-/// by `verify_chain` separately) or a truncated write can actually reach at restore time.
 #[test]
 fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
-    // Marker only, nothing after it.
     let (ts, action, resource, outcome, principal, _scheme) =
         parse_audit_suffix(&[SAFE_SUFFIX_MARKER]);
     assert_eq!(
@@ -780,19 +667,17 @@ fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
         (0, "", "", "", "")
     );
 
-    // Marker plus a length prefix cut short of its full 8 bytes.
     let mut short_len = vec![SAFE_SUFFIX_MARKER];
     short_len.extend_from_slice(&[0, 0, 0]);
     let (ts, action, ..) = parse_audit_suffix(&short_len);
     assert_eq!(ts, 0);
     assert_eq!(action, "");
 
-    // Marker plus a complete length prefix that declares more bytes than actually follow.
     let mut over_declared = vec![SAFE_SUFFIX_MARKER];
-    over_declared.extend_from_slice(&8u64.to_be_bytes()); // ts field claims 8 bytes...
-    over_declared.extend_from_slice(&1_700_000_000u64.to_be_bytes()); // ...and gets them.
-    over_declared.extend_from_slice(&1_000u64.to_be_bytes()); // action field claims 1000 bytes...
-    over_declared.extend_from_slice(b"short"); // ...but only 5 follow.
+    over_declared.extend_from_slice(&8u64.to_be_bytes());
+    over_declared.extend_from_slice(&1_700_000_000u64.to_be_bytes());
+    over_declared.extend_from_slice(&1_000u64.to_be_bytes());
+    over_declared.extend_from_slice(b"short");
     let (ts, action, resource, outcome, principal, _scheme) = parse_audit_suffix(&over_declared);
     assert_eq!(ts, 1_700_000_000);
     assert_eq!(
@@ -804,15 +689,6 @@ fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
     assert_eq!(principal, "");
 }
 
-// ── AUDIT-INTEGRITY: THE PENDING RECOVERY QUEUE ─────────────────────────────────────────────────────
-//
-// `PendingAuditQueue` is tested directly, driven over an injected `mint` closure, rather than through
-// `emit`/`emit_admin_hostless` themselves: those two are hardwired to the PRODUCTION `KIND_ID_AUDIT`
-// stream (a process-wide singleton other parallel tests share via `global_audit_host_app`), so forcing
-// a durable-write failure through them would either race those tests or require re-registering the
-// shared stream mid-suite. The queue is the actual recoverability mechanism under test; driving it
-// directly is a tighter, deterministic proof of the same fix.
-
 fn pending(scope: &str, tag: u8) -> PendingAudit {
     PendingAudit {
         origin: EventOrigin::Mutation,
@@ -821,16 +697,11 @@ fn pending(scope: &str, tag: u8) -> PendingAudit {
     }
 }
 
-/// RED-before-green shape: before this fix, a durable-write failure inside `emit`/`emit_admin_hostless`
-/// was logged and the record was gone the instant the call returned — nothing existed to retry it.
-/// GREEN: a record that fails to mint while the backend is down stays queued (not dropped), and is
-/// delivered on the FIRST successful drain once the backend recovers.
 #[test]
 fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
     let q = PendingAuditQueue::new(4);
     q.enqueue(pending("admin", 1));
 
-    // First drain: the backend is STILL down — nothing recovers, and the record must stay queued.
     let mut recovered: Vec<(String, u64)> = Vec::new();
     q.drain_with(
         |_scope, _suffix| Err(()),
@@ -847,7 +718,6 @@ fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
          before it, the record vanished the instant `emit` returned"
     );
 
-    // Second drain: the backend has recovered — the SAME record must now be delivered.
     q.drain_with(
         |_scope, _suffix| Ok((7, "prev".to_string(), "hash".to_string())),
         |p, seq, _prev, _hash| recovered.push((p.scope.clone(), seq)),
@@ -860,14 +730,6 @@ fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
     assert_eq!(q.len(), 0, "a delivered record leaves the queue");
 }
 
-/// A STORE BACKEND THAT PANICS cannot take the request down or lose the record. The stream
-/// registry calls its sink with no `catch_unwind` of its own: every production store is a door the
-/// loader dispatches to, and the door's slot body runs under the SDK's mandatory `catch_unwind`
-/// (`busbar-contract/src/abi/sdk/door.rs`, `export_door!`/`plugin_door!`'s trampoline), which
-/// answers FAULT. Here the store is the kernel's store double opened THROUGH its door on the test
-/// store axis, with a panic planted in its `append_plane_record` slot: the append comes back as an
-/// error, never an unwind, and the admin record is QUEUED exactly as `emit_admin_hostless` queues a
-/// failed write. RED if the boundary let the panic through: this test would unwind.
 #[test]
 fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
     use busbar_contract::store_calls::StoreDoor;
@@ -895,7 +757,6 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
         "the planted panic answers FAULT at the door and reads back as a store error"
     );
 
-    // The emitter's own recovery step over the SAME path: the failed record stays queued.
     let q = PendingAuditQueue::new(4);
     q.enqueue(PendingAudit {
         origin: EventOrigin::Mutation,
@@ -916,8 +777,6 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
     );
 }
 
-/// Multiple queued records drain OLDEST-FIRST, in the order they failed — a recovery that reordered
-/// evidence would itself be a form of corruption.
 #[test]
 fn pending_audit_queue_drains_in_fifo_order() {
     let q = PendingAuditQueue::new(8);
@@ -939,8 +798,6 @@ fn pending_audit_queue_drains_in_fifo_order() {
     assert_eq!(q.len(), 0);
 }
 
-/// A mint that fails partway through a multi-record drain stops WITHOUT losing or reordering the
-/// records that had not yet been tried — they must still be queued, in their original order.
 #[test]
 fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
     let q = PendingAuditQueue::new(8);
@@ -948,7 +805,7 @@ fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
     q.enqueue(pending("admin", 2));
 
     let mut seen: Vec<u8> = Vec::new();
-    // The FIRST row (tag 1) recovers; the SECOND (tag 2) still fails.
+
     q.drain_with(
         |_scope, suffix| {
             if suffix == [1] {
@@ -966,7 +823,6 @@ fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
         "the still-failing row stays queued rather than being dropped"
     );
 
-    // A later, fully-healthy drain finishes the job.
     q.drain_with(
         |_scope, _suffix| Ok((2, String::new(), String::new())),
         |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
@@ -978,9 +834,6 @@ fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
     );
 }
 
-/// THE WATERMARK: once the recovery queue itself is full, the OLDEST entry is evicted to admit the
-/// newest failure, and that eviction is a DETECTED, COUNTED gap — never a silent one. Proven both on
-/// the counter and on the coded diagnostic actually firing at the eviction site.
 #[test]
 fn pending_audit_queue_reports_a_gap_when_it_overflows() {
     let q = PendingAuditQueue::new(2);
@@ -1000,7 +853,6 @@ fn pending_audit_queue_reports_a_gap_when_it_overflows() {
         "the third failure, over the cap, evicted the oldest — a detected, counted gap"
     );
 
-    // The SURVIVING two are the newest two: the oldest (tag 0) was evicted to make room.
     let mut seen: Vec<u8> = Vec::new();
     q.drain_with(
         |_s, _suffix| Ok((1, String::new(), String::new())),
@@ -1021,9 +873,6 @@ fn pending_audit_queue_reports_a_gap_when_it_overflows() {
     );
 }
 
-/// RED ARM for the isolation above: the capture is per-test state. A restore over a CLEAN store, under
-/// a fresh capture, must record nothing: if a previous test's captured diagnostics (or its subscriber)
-/// leaked into this one, BUSBAR-2047 would show here.
 #[test]
 fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
@@ -1041,9 +890,6 @@ fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
     );
 }
 
-// ── Q128 p12#1: what `GET /audit` serves for a record written today ─────────────────────────────
-
-/// The newest record `emit_admin_hostless` pushed for `resource` (each test names its own).
 fn served(resource: &str) -> AuditEntry {
     AUDIT_LOG
         .list_filtered(
@@ -1057,20 +903,11 @@ fn served(resource: &str) -> AuditEntry {
         .expect("emit_admin_hostless pushed the record into the served read model")
 }
 
-/// THE LIVE WRITE PATH SERVES 1.5.5's HASH. A record whose `action`/`resource`/`outcome` carry no
-/// `|` is sealed over the 1.5.5 pipe join, so the `hash` `GET /audit` serves is exactly
-/// `sha256(prev_hash|seq|ts|action|resource|outcome|principal)` (v1.5.5
-/// `crates/busbar/src/admin/audit.rs:61-73`; THE DESIGN §7 "`GET /audit` is unchanged"), the record
-/// declares scheme 1, and recomputing it under that declared scheme gives the served hash.
-///
-/// RED before the fix: every live write was sealed over `prev_hash|seq` then the length-prefixed
-/// safe suffix and declared scheme 2, so the served hash was neither 1.5.5's formula nor what scheme
-/// 2 recomputes to.
 #[test]
 fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
     ensure_global_audit_stream_registered();
     let resource = "q128-p12-1:plain";
-    // A `|` in the principal (the last field) still reads back exactly.
+
     emit_admin_hostless(
         1_700_000_777,
         "test.write",
@@ -1112,12 +949,6 @@ fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
     assert_eq!(read_scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
 }
 
-/// A record whose `resource` carries a `|` would not split back exactly from a pipe join, so it is
-/// sealed under the length-prefixed suffix — and the scheme it declares (2) recomputes to exactly
-/// the hash it was minted with.
-///
-/// RED before the fix: scheme 2 recomputed as one length-prefixed buffer over every field, a
-/// different byte stream from the one the seam sealed, so the served record read as tampered.
 #[test]
 fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared_scheme() {
     ensure_global_audit_stream_registered();
@@ -1141,13 +972,6 @@ fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared_schem
     assert_eq!(e.hash, busbar_contract::redacted::sha256_hex(&sealed));
 }
 
-// ── Q128 arch u26 #2: GET /audit recomputes by the PUBLISHED recipe ─────────────────────────────
-
-/// The recipe `AuditEntry.hash` publishes (its doc, which the served OpenAPI document carries),
-/// rebuilt here from the served JSON alone: no kernel framing or digest code is called, so a drift
-/// between what the node seals and what the contract states turns this red. Scheme 1 is the 1.5.5
-/// pipe join; scheme 2 is `prev_hash|seq`, a zero byte, then each field as an 8-byte big-endian
-/// length and its bytes (`ts` as its 8-byte big-endian value).
 fn hash_by_the_published_recipe(served: &serde_json::Value) -> String {
     use sha2::{Digest as _, Sha256};
     let text = |k: &str| served[k].as_str().expect("a served text field").to_string();
@@ -1183,14 +1007,6 @@ fn hash_by_the_published_recipe(served: &serde_json::Value) -> String {
     hex::encode(Sha256::digest(&preimage))
 }
 
-/// EVERY RECORD `GET /audit` SERVES RECOMPUTES BY THE PUBLISHED RECIPE, under the scheme it declares,
-/// and the node's own verifier agrees with that recipe. The records cover both schemes: a `|` in
-/// each of `action`, `resource` and `outcome` (scheme 2), a `|` only in `principal` (scheme 1, the
-/// last field reads back), empty and non-ASCII fields.
-///
-/// RED on dev before p12#1: every record declared scheme 2 while the node's `digest` framed scheme 2
-/// as one length-prefixed buffer over all seven fields, so `digest(entry)` disagreed with the served
-/// `hash`, and a record with no `|` anywhere was not served under 1.5.5's formula (scheme 1).
 #[test]
 fn every_served_audit_record_recomputes_by_the_published_recipe() {
     ensure_global_audit_stream_registered();
@@ -1227,7 +1043,7 @@ fn every_served_audit_record_recomputes_by_the_published_recipe() {
             principal,
         );
     }
-    // What the `GET /audit` handler serializes: the read model's entries, as JSON.
+
     let served = serde_json::to_value(AUDIT_LOG.list_filtered(
         0,
         crate::audit_ring::MAX_AUDIT_ENTRIES,
@@ -1274,9 +1090,6 @@ fn every_served_audit_record_recomputes_by_the_published_recipe() {
     }
 }
 
-// ── Q128 p12#2: a failed boot restore does not fork the chain ───────────────────────────────────
-
-/// A store that answers every read with an error: the boot restore's read failing.
 struct UnreadableStore;
 
 impl PlaneStore for UnreadableStore {
@@ -1336,18 +1149,12 @@ impl PlaneStore for UnreadableStore {
     }
 }
 
-/// A boot restore that could not read the store leaves the chain unseeded; the next append must
-/// read the persisted tail back and continue it, never write a second seq-1 record beside it.
-///
-/// RED before the fix: the restore error was only logged, the journal had never evicted, so the
-/// append opened a fresh chain at seq 1 with an empty `prev_hash` and forked the durable log.
 #[test]
 fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
     let (ts, res) = (1_700_001_000u64, "hook:restore-failed");
 
-    // Process 1: two records persisted.
     let h1 = AuditTestHarness::over(store.clone());
     h1.emit_full(
         ADMIN_LOG,
@@ -1358,14 +1165,12 @@ fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
         audit_suffix(ts + 1, "hook.delete", res, "applied", "admin"),
     );
 
-    // Process 2: its boot restore cannot read the store.
     let h2 = AuditTestHarness::over(store.clone());
     assert!(
         h2.log.restore_from_store(&UnreadableStore).is_err(),
         "the restore read failed"
     );
 
-    // The store answers again: the first append continues the persisted chain.
     let (seq, prev_hash, _hash) = h2.emit_full(
         ADMIN_LOG,
         audit_suffix(ts + 2, "hook.register", res, "applied", "admin"),
@@ -1377,16 +1182,8 @@ fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
     );
 }
 
-// ── Q128 p12#3: a part-way legacy migration resumes ─────────────────────────────────────────────
-
-// The frozen pre-cleave legacy rows (the bytes `boot_verify_golden` pins).
 use crate::audit::boot_verify_golden::{AD_1 as LEGACY_1, AD_2 as LEGACY_2};
 
-/// A copy an earlier boot left part-way (legacy seq 1 copied, seq 2 not) is finished on the next
-/// boot, and the restored chain carries the whole legacy history.
-///
-/// RED before the fix: the idempotency gate saw a non-empty `plane_records` and skipped, so legacy
-/// seq 2 never reached the chain that is restored and served.
 #[test]
 fn a_part_way_legacy_migration_resumes_instead_of_skipping() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
@@ -1396,7 +1193,6 @@ fn a_part_way_legacy_migration_resumes_instead_of_skipping() {
     let ad2: busbar_contract::records::AuditRecord =
         crate::store::plane_view::decode(LEGACY_2).unwrap();
 
-    // The earlier boot: only seq 1 made it across before the store failed.
     store.append_audit(&ad1).unwrap();
     assert_eq!(
         migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
@@ -1404,7 +1200,6 @@ fn a_part_way_legacy_migration_resumes_instead_of_skipping() {
     );
     store.append_audit(&ad2).unwrap();
 
-    // This boot finishes the copy.
     assert_eq!(
         migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
         1,
@@ -1430,8 +1225,6 @@ fn a_part_way_legacy_migration_resumes_instead_of_skipping() {
     assert_eq!(restored.records, 2, "the whole legacy history is restored");
 }
 
-/// `plane_records` that disagree with the legacy table at the seq they share (records written over
-/// a part-way copy) are never spliced onto it: the migration copies nothing and says so.
 #[test]
 fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
@@ -1466,9 +1259,6 @@ fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
     assert_eq!(rows.len(), 1, "nothing was copied");
 }
 
-/// v1.5.5's own digest, re-stated from `git show v1.5.5:crates/busbar/src/admin/audit.rs`
-/// (`AuditEntry::compute_hash`) and computed on RustCrypto's sha2, independently of this build's
-/// canonicaliser: `sha256(prev_hash|seq|ts|action|resource|outcome|principal)`, lowercase hex.
 fn v1_5_5_hash(prev: &str, seq: u64, ts: u64, act: &str, res: &str, out: &str, pr: &str) -> String {
     use sha2::Digest as _;
     let canonical = format!("{prev}|{seq}|{ts}|{act}|{res}|{out}|{pr}");
@@ -1478,15 +1268,6 @@ fn v1_5_5_hash(prev: &str, seq: u64, ts: u64, act: &str, res: &str, out: &str, p
         .collect()
 }
 
-/// THE S-7 READ-BACK GATE (b): a 1.5.5 deployment's admin audit table — rows in v1.5.5's own serde
-/// shape (`busbar_api::AuditRecord`), hashed by v1.5.5's own formula — reads back through the boot
-/// migration and restore with EVERY record intact (every field, byte for byte), the chain verifies,
-/// and the next admin record this build seals CONTINUES the 1.5.5 chain: seq one past the 1.5.5
-/// tail, `prev_hash` the 1.5.5 tail's hash, and `hash` the 1.5.5 formula over its own fields.
-///
-/// The last part is what pins the admin log's own chain: its link is admin record to admin record
-/// under 1.5.5's digest, which is what `GET /audit` serves. A journal whose only chain links every
-/// record class under one digest cannot produce that `prev_hash` or that `hash`.
 #[test]
 fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain() {
     let rows = [
@@ -1527,7 +1308,7 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
     for (i, (ts, act, res, out, pr)) in rows.iter().enumerate() {
         let seq = i as u64 + 1;
         let hash = v1_5_5_hash(&prev, seq, *ts, act, res, out, pr);
-        // Exactly the JSON v1.5.5 serialised a row as: its struct's field order, no extra field.
+
         let json = format!(
             r#"{{"seq":{seq},"ts":{ts},"action":"{act}","resource":"{res}","outcome":"{out}","principal":"{pr}","prev_hash":"{prev}","hash":"{hash}"}}"#
         );
@@ -1556,7 +1337,6 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
     assert_eq!(restored.records, rows.len());
     assert_eq!(restored.unreadable, 0);
 
-    // Every record intact, as `GET /audit` serves it (newest first).
     let mut served = h
         .log
         .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
@@ -1589,7 +1369,6 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
         );
     }
 
-    // The next admin record continues the 1.5.5 chain under the 1.5.5 digest.
     let (ts, act, res, out, pr) = (
         1_700_000_000u64,
         "hook.delete",
@@ -1616,9 +1395,6 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
     );
 }
 
-// ── PLUGIN REFUSALS AT BOOT AND BIND ─────────────────────────────────────────────────────────────
-
-/// A held refusal named `n`.
 fn held(n: u64) -> HeldRefusal {
     HeldRefusal {
         origin: EventOrigin::Mutation,
@@ -1628,8 +1404,6 @@ fn held(n: u64) -> HeldRefusal {
     }
 }
 
-/// Raised before the chain opens, refusals are HELD in raise order and sealed, in that order, when it
-/// opens; one raised after is sealed at once; a second open seals nothing again.
 #[test]
 fn held_refusals_seal_in_order_once_the_chain_opens() {
     let hold = RefusalHold::new();
@@ -1656,7 +1430,6 @@ fn held_refusals_seal_in_order_once_the_chain_opens() {
     assert_eq!(sealed.borrow().len(), 3, "a second open seals nothing");
 }
 
-/// Past the bound, a refusal is not lost silently: the count is sealed when the chain opens.
 #[test]
 fn refusals_over_the_hold_are_counted_and_sealed() {
     let hold = RefusalHold::new();
@@ -1670,10 +1443,6 @@ fn refusals_over_the_hold_are_counted_and_sealed() {
     assert_eq!(over, Some(3));
 }
 
-/// THE DESIGN §11.13 M1 ("no plugin code runs under a host lock"): sealing a held refusal crosses
-/// the audit store, which is plugin code. A refusal raised while the open is parked in that crossing
-/// is not parked behind the hold's lock: it returns at once, and is still sealed after everything
-/// held, in raise order.
 #[test]
 fn a_refusal_raised_while_the_open_is_parked_in_the_store_is_not_held_behind_it() {
     use std::sync::mpsc;
@@ -1713,8 +1482,6 @@ fn a_refusal_raised_while_the_open_is_parked_in_the_store_is_not_held_behind_it(
     assert_eq!(*sealed.lock().unwrap(), vec![held(1), held(2)]);
 }
 
-/// Every part of a refusal's resource is clamped to host words: a `|`, a newline or a long run of
-/// plugin bytes cannot move a field boundary or carry text onto the chain.
 #[test]
 fn a_refusal_resource_is_clamped_to_host_words() {
     assert_eq!(
@@ -1740,8 +1507,6 @@ fn overlapping_pending_drains_cannot_overtake_the_oldest_row() {
     q.drain_with(
         |_scope, suffix| {
             if suffix == [1] {
-                // The store callback re-enters the same drain while row 1 is still in flight.
-                // This also proves no queue mutex is held over the callback.
                 q.drain_with(
                     |_, _| Ok((2, String::new(), String::new())),
                     |row, _, _, _| delivered.lock().unwrap().push(row.suffix[0]),
@@ -1764,7 +1529,6 @@ fn a_failed_in_flight_row_cannot_overfill_the_pending_queue() {
         let _capture = capture_into(&cap);
         q.drain_with(
             |_, _| {
-                // A new emitter fills the waiting slot during the older store write.
                 q.enqueue(pending("admin", 2));
                 Err(())
             },

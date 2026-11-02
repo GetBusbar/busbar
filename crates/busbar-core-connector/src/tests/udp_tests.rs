@@ -27,7 +27,7 @@ fn a_datagram_arrives_whole_with_the_peer_it_came_from_and_is_answered_there() {
     let (got, peer) = recv(&b);
     assert_eq!(got, b"stun-ish");
     assert_eq!(peer, a.local_addr());
-    // A payload far above any MTU still arrives as ONE datagram.
+
     let big = vec![0x80_u8; 9_000];
     b.try_send_to(&big, peer).unwrap().unwrap();
     assert_eq!(recv(&a).0, big);

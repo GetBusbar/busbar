@@ -2,38 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The MONEY-PATH DURABLE RECORD SHAPES — the data types a `db` plugin (SQLite built-in, Postgres,
-//! Valkey, …) reads and writes, their wire encoding, plus the [`RecordStore`] trait itself and its
-//! error type. The plain records that cross the seam live here too, so a plugin crate can name them
-//! without depending on the engine.
-//!
-//! ## Why the SHAPES live in the contract and the SEMANTICS do not (DECISIONS #83/#84)
-//!
-//! #83 fixes the global definition: **this crate holds the SHAPE of anything — the data and its
-//! wire encoding — and the money one-book holds the SEMANTICS, what the shapes MEAN and what may
-//! be done with them.** A store plugin must agree on the shape of what it persists; it must never
-//! participate in what the book *means*. So the record shapes are contract; settlement, postings,
-//! totals, the balance identity, the recompute and the checkpoint chain are the book's, and stay
-//! there.
-//!
-//! #84 is why it matters rather than merely tidies: before this module moved, every third-party
-//! plugin's compile closure ran plugin → the author SDK → the retiring api shim → THE MONEY
-//! ONE-BOOK → here, so **a store plugin transitively linked the book** and any change to a ledger
-//! type forced every third-party plugin to rebuild, even though nothing it names moved. Owner's
-//! rule: *"plugins use sdk, sdk uses nothing busbar-*"*. The book leaves the plugin path here.
-//!
-//! ## Provenance, and the byte-identity guard
-//!
-//! These are the same records the admin API and governance enforcement speak. They were relocated
-//! out of the retiring api shim into the money one-book under DECISIONS #35 (W3.a), and from there
-//! to here under #83/#84. Both moves are module-path-ONLY and BYTE-IDENTICAL on the wire (serde
-//! field names / wire bytes UNCHANGED, the hand-written [`virtual_key_wire`] mirror travels
-//! verbatim, oracle-proven).
-//!
-//! The five false-friend names de-collided on the FIRST move — `Store`→[`RecordStore`],
-//! `StoreError`→[`RecordStoreError`], `StoreResult`→[`RecordStoreResult`]: [`RecordStore`] (the
-//! 31-method domain-record CRUD a `db` plugin implements) is a different contract from the store
-//! kind's table, and the two must never be spelled the same. The api shim re-exports these under their original names for staged back-compat until
-//! it retires (W5.b). No I/O, no engine state: pure data.
 
 /// Atomic correction vocabulary for the existing raw usage ledger.
 pub mod correction;
@@ -55,7 +23,7 @@ pub struct ScopeRef {
 
 impl ScopeRef {
     /// Build a `kind: "pool"` scope — today's only kind, and the one every wire-compat shim in
-    /// this generalization translates a bare pool-name string into/out of.
+
     pub fn pool(value: impl Into<String>) -> Self {
         ScopeRef {
             kind: "pool".to_string(),
@@ -65,23 +33,7 @@ impl ScopeRef {
 }
 
 /// THE SCOPE-KIND WIRE CONVENTION. A [`ScopeRef`] kind beyond the built-in `pool` (core's own
-/// admission kind) is a plane's own (a tool plane's server or tool kind, an agent plane's `agent`,
-/// …) and is DATA off its `PlaneDecl.scope_kinds`; this crate names no concrete plane kind and
-/// holds no registry of them. The wire-field NAME for a kind is the frozen convention
-/// `allowed_{kind}s` (`pool`→`allowed_pools`, a plane's `agent`→`allowed_agents`, …), so the config
-/// grammar keys stay byte-identical.
-///
-/// ## The wire is a carrier, and holds no process state (THE DESIGN A.8)
-///
-/// The [`VirtualKey`] wire is a pure, lossless CARRIER: every kind serializes to its own
-/// `allowed_{kind}s` field and reads back as the same kind (the naming convention is a bijection,
-/// see [`scope_kinds::kind_for_wire_field`]). It used to keep a process-global registry of kinds and
-/// refuse to serialize an unregistered one, which made a DROPPED-IN store plugin unable to hand back
-/// a key it had just been given: a `cdylib` statically links its own copy of this crate, so its
-/// registry was a different, empty static. The refusal went first (1.6.0 SDK-SCOPEKINDS); the
-/// registry it consulted went with it, because nothing read it after, and `busbar-contract` holds
-/// no `static` (THE DESIGN A.8 "Statelessness", `BUSBAR-1.6.0.md` l.3701; C.2 l.3893). A plugin is
-/// an opaque carrier of the kind string.
+
 pub mod scope_kinds {
     /// The frozen wire-field name for a scope `kind` — `allowed_{kind}s`.
     pub fn wire_field_for(kind: &str) -> String {
@@ -89,7 +41,7 @@ pub mod scope_kinds {
     }
 
     /// The scope kind a wire field carries, or `None` if the field is not an `allowed_*` scope
-    /// field. The exact inverse of [`wire_field_for`] for the frozen convention.
+
     pub fn kind_for_wire_field(field: &str) -> Option<String> {
         field
             .strip_prefix("allowed_")
@@ -99,29 +51,7 @@ pub mod scope_kinds {
 }
 
 /// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each scope kind gets
-/// its OWN named wire field, `allowed_{kind}s` — `allowed_pools` (kind `pool`), `allowed_agents`
-/// (kind `agent`), and one field per kind every other plane declares — each a plain array of bare
-/// value strings, never a `{kind, value}` object. The in-memory `Option<Vec<ScopeRef>>` is
-/// partitioned by kind on write and reassembled on read. The kind is the entry's own data, named by
-/// the [`scope_kinds`] convention, NOT hard-coded here — so this crate names no concrete plane.
-///
-/// Wire-compat invariants, all pinned by tests:
-/// - the pool-only shape stays BYTE-IDENTICAL to the pre-generalization
-///   `allowed_pools: Option<Vec<String>>` (absent grant = `null`, explicit `[]` = empty set);
-///   the per-kind fields are OMITTED unless that kind has entries, so a pre-1.6.0 row/reader never
-///   sees them;
-/// - EVERY non-`pool` kind, registered or not, is written to its OWN `allowed_{kind}s` field and
-///   read back as the same kind - never silently remapped into `allowed_pools` (the pre-P0 defect:
-///   a plane-declared kind's grant became a POOL grant on any store round-trip - a lost plane grant
-///   AND a pool-access escalation) and never silently dropped (which would WIDEN a
-///   `Some([unknown])` = no-scopes grant toward the `None` = all wildcard). The wire consults no
-///   registry, so a dropped-in store plugin (whose registry copy is empty) round-trips exactly what
-///   a compiled-in one does;
-/// - reassembly is canonical-by-kind (pools, then the remaining kinds in wire-field order).
-///   `scope_allowed` is a pure membership test, so cross-kind order is never consulted.
-///
-/// Rows are persisted THROUGH this shape by JSON-round-tripping store backends (valkey-shaped),
-/// which is exactly where the pre-P0 kind collapse corrupted grants.
+
 mod virtual_key_wire {
     use super::{scope_kinds, ScopeRef, VirtualKey};
     use std::collections::BTreeMap;
@@ -165,12 +95,11 @@ mod virtual_key_wire {
     }
 
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
-    /// every non-`pool` kind's grant under its frozen wire-field name.
+
     pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, Vec<String>>);
 
     /// Partition `allowed_scopes` into the per-kind wire fields. Total and lossless: every
-    /// non-`pool` kind gets its own `allowed_{kind}s` entry, whether or not this process registered
-    /// it - see the module doc.
+
     pub(super) fn partition_scopes(scopes: &Option<Vec<ScopeRef>>) -> ScopePartition {
         let Some(list) = scopes else {
             return (None, BTreeMap::new());
@@ -187,21 +116,16 @@ mod virtual_key_wire {
                     .push(sr.value.clone());
             }
         }
-        // `allowed_pools` is ALWAYS present for an explicit grant (even empty) so `Some([])` =
-        // no-scopes survives the trip; the per-kind fields are additive and omitted when empty
-        // (a kind with no values never gets a map entry above).
+
         (Some(pools), by_kind)
     }
 
     /// Reassemble the per-kind wire fields into kind-tagged scopes. All three absent = the
-    /// omitted-grant wildcard (`None`); any present field makes the grant an explicit
-    /// (fail-closed, exhaustive-across-kinds) list.
+
     pub(super) fn assemble_scopes(
         pools: Option<Vec<String>>,
         by_kind: BTreeMap<String, Vec<String>>,
     ) -> Option<Vec<ScopeRef>> {
-        // Only `allowed_*` wire fields carry scopes; any other flattened key is ignored so a
-        // foreign top-level field never becomes a phantom scope kind.
         let scope_fields: Vec<(String, Vec<String>)> = by_kind
             .into_iter()
             .filter_map(|(field, values)| {
@@ -213,7 +137,7 @@ mod virtual_key_wire {
         }
         let mut list = Vec::new();
         list.extend(pools.into_iter().flatten().map(ScopeRef::pool));
-        // `by_kind` is a `BTreeMap`, so kinds arrive in wire-field order (canonical, deterministic).
+
         for (kind, values) in scope_fields {
             list.extend(values.into_iter().map(|value| ScopeRef {
                 kind: kind.clone(),
@@ -363,28 +287,7 @@ pub struct VirtualKey {
 
 impl VirtualKey {
     /// Whether this key may target the scope `(kind, value)`.
-    ///
-    /// - `allowed_scopes` OMITTED (`None`) = ALL scopes of EVERY kind.
-    /// - an explicit list is EXHAUSTIVE ACROSS ALL KINDS — **not** "exhaustive per kind".
-    /// - an explicit EMPTY list is NO scopes at all (never "all").
-    ///
-    /// # Cross-kind semantics are fail-closed, and frozen
-    ///
-    /// A key whose `allowed_scopes` lists only `pool` entries grants **NOTHING** for any other
-    /// kind. When a release introduces a new kind (each plane-declared server and `agent` kind, in
-    /// 1.6.0), an existing key that named only pools does not silently acquire access to every
-    /// server or agent — it acquires access to NONE of them, and an operator must add entries to
-    /// grant any.
-    ///
-    /// The alternative reading — an unlisted kind is "unconstrained", therefore allowed — is
-    /// fail-OPEN: it would turn every existing pool-scoped key into a wildcard over a brand-new
-    /// kind, silently, on upgrade. Pinned by `scope_allowed_cross_kind_is_fail_closed` because
-    /// these semantics ship in 1.5.3 and freeze with it: only an OMITTED list is a wildcard.
-    ///
-    /// The generalized replacement for the pool-only `pool_allowed` — every existing call site
-    /// checking pool admission calls this as `scope_allowed("pool", pool_name)`, which is the exact
-    /// same membership test over a differently-shaped list, so behavior for a pool-only config is
-    /// unchanged.
+
     pub fn scope_allowed(&self, kind: &str, value: &str) -> bool {
         match &self.allowed_scopes {
             None => true,
@@ -393,24 +296,12 @@ impl VirtualKey {
     }
 
     /// `false` once this key has been tombstoned (`delete_key`). Every admin-mutation existence
-    /// check (PATCH, rotate, revoke, GET-by-id-for-display, and DELETE's own idempotency check)
-    /// MUST call this — not just check `Option::is_some()` — now that `delete_key` no longer
-    /// removes the row: a raw `get_key(id).is_some()` is true FOREVER for an id that ever existed,
-    /// tombstoned or not. The row surviving is deliberate (billing/audit attribution keeps
-    /// resolving it), but a tombstoned key must present as "not found" to every admin surface that
-    /// used to mean "gone" by a row's absence.
+
     pub fn is_live(&self) -> bool {
         self.deleted_at.is_none()
     }
 }
 
-// MANUAL Debug that REDACTS `generation_hash`. A derived `Debug` would print the SHA-256 of the key's
-// secret in PLAINTEXT — a latent credential leak any time a `VirtualKey` (or `GovCtx`, which embeds
-// one and whose derived Debug delegates here transitively) is debug-logged. The hash is the stored
-// authenticator (a presented secret is matched by hashing it and looking up this value), so it is
-// secret-equivalent and must never reach a log. Print presence only, never the value — mirroring
-// `config::GovernanceCfg`/`auth::AuthMiddleware`. All non-secret fields are shown verbatim so the
-// struct stays diagnosable.
 impl std::fmt::Debug for VirtualKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VirtualKey")
@@ -505,9 +396,6 @@ pub struct CredentialMeta {
     pub revision: u64,
 }
 
-// MANUAL Debug even though this type has no secret field — `derive(Debug)` would be equally safe
-// here today, but writing it out is what makes it a compile-time-visible decision if a future field
-// addition ever needs the same discipline as `CredentialSecret`'s. Kept deliberately boring.
 impl CredentialMeta {
     /// Whether this credential currently admits (not revoked, not expired as of `now`).
     pub fn is_live(&self, now: u64) -> bool {
@@ -540,12 +428,7 @@ pub struct CredentialSecret {
 
 impl CredentialSecret {
     /// Extract the raw plaintext for a `"v1:plain:<payload>"`-scheme secret — the ONLY scheme that
-    /// exists today (HMAC verification needs the exact bytes the client signed with, so it cannot
-    /// be at rest in any transformed form for a `Recoverable`-form credential). Returns `None` for
-    /// any other version/scheme tag (e.g. a future `"v1:aead:…"` at-rest-encrypted form, which a
-    /// caller must decrypt through a dedicated path, not this one) — callers MUST NOT fall back to
-    /// using `secret` verbatim on a `None`, since that would use ciphertext (or an unrecognized
-    /// future format) as if it were the plaintext HMAC key.
+
     pub fn plaintext(&self) -> Option<&str> {
         self.secret.strip_prefix("v1:plain:")
     }
@@ -568,18 +451,14 @@ impl std::fmt::Debug for CredentialSecret {
 }
 
 /// THE CANONICAL RESERVED UNIT NAMES (1.6.0 M1b). The reserved four pricing tiers are no longer a
-/// distinct `TierTokens` struct; they are PLAIN KEYS in the name-keyed `usage_units` ledger, sharing
-/// the one map with every open (operator/plane) unit. These constants are the single source of truth
-/// for those four names, so the pricer, the ledger and the flush primitive can never disagree on the
-/// spelling. `UNIT_CACHE_WRITE` is the canonical spelling; the older `cache_creation` name is a
-/// 1.5.x row's, and upgrading such a row is its store plugin's own `migrate()` (#33).
+
 pub const UNIT_INPUT: &str = "input";
 pub const UNIT_OUTPUT: &str = "output";
 pub const UNIT_CACHE_READ: &str = "cache_read";
 pub const UNIT_CACHE_WRITE: &str = "cache_write";
 
 /// The reserved four, in canonical order — the set the pricer prices via the `RateNanos` tiers and
-/// the migration folds the old `TierTokens` fields onto.
+
 pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE];
 
 /// One model's accumulated billable-unit counts inside a [`UsageLedger`]. RAW counts, never money:
@@ -650,7 +529,7 @@ impl UsageLedger {
     }
 
     /// Total TOKENS across every model — the reserved token classes only (the scalar `tokens`
-    /// view). An open class (item 123) is priced from the same map but is not a token.
+
     pub fn total_tokens(&self) -> u64 {
         RESERVED_UNITS
             .iter()
@@ -658,7 +537,7 @@ impl UsageLedger {
     }
 
     /// Summed count of one reserved tier across every model — the durable counterpart of the
-    /// matching per-tier cap.
+
     fn total_tier(&self, unit: &str) -> u64 {
         self.models
             .iter()
@@ -666,7 +545,7 @@ impl UsageLedger {
     }
 
     /// UNCACHED-INPUT tokens across every model — the durable counterpart of the `tokens_input`
-    /// per-tier cap.
+
     pub fn total_input(&self) -> u64 {
         self.total_tier(UNIT_INPUT)
     }
@@ -677,13 +556,13 @@ impl UsageLedger {
     }
 
     /// CACHE-READ tokens across every model — the durable counterpart of the `tokens_cache_read`
-    /// cap.
+
     pub fn total_cache_read(&self) -> u64 {
         self.total_tier(UNIT_CACHE_READ)
     }
 
     /// Apply one signed per-model unit delta, flooring every counter at 0 (a refund can never
-    /// drive a durable counter negative). Allocates a model entry only on first sight.
+
     pub fn apply_model_delta(&mut self, delta: &ModelTokensDelta) {
         let entry = match self.models.iter_mut().find(|m| m.model == delta.model) {
             Some(m) => m,
@@ -695,9 +574,7 @@ impl UsageLedger {
                 self.models.last_mut().expect("just pushed")
             }
         };
-        // Fold every keyed unit (reserved four AND opens, one map now) — flooring each counter at 0
-        // (a refund can never drive a durable counter negative), allocating a key only on first
-        // sight.
+
         for (key, d) in &delta.usage_units {
             let cur = entry.usage_units.entry(key.clone()).or_insert(0);
             *cur = cur.saturating_add_signed(*d);
@@ -705,7 +582,7 @@ impl UsageLedger {
     }
 
     /// Apply a whole [`UsageDelta`] (admission requests + billable requests + every model row),
-    /// flooring at 0.
+
     pub fn apply_delta(&mut self, delta: &UsageDelta) {
         self.requests = self.requests.saturating_add_signed(delta.requests);
         self.billable_requests = self
@@ -716,12 +593,6 @@ impl UsageLedger {
         }
     }
 }
-
-// ── THE 1.5.x ROW FOLD IS NOT HERE, AND THE ENGINE HAS NONE (#33, ARCHITECT 2026-09-29) ─────────
-//
-// A 1.5.x usage row lives in the store plugin's own database; the engine never holds those bytes.
-// Each store plugin's own `migrate()` upgrades its own 1.5.x rows. Until M6, a published 1.5.x store (payload schema
-// below 4) is still read through plugin-loader's legacy adapter (`legacy_usage::ledger_from_legacy`).
 
 /// One model's signed unit delta inside a [`UsageDelta`] — the fleet-additive flush primitive's
 /// per-model payload. (1.6.0 M1b) The signed twin of [`ModelTokens::usage_units`]: one name-keyed
@@ -921,15 +792,6 @@ impl From<&str> for RecordStoreError {
     }
 }
 
-// ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0, ADDITIVE) ──────────────────────────────
-//
-// The 14 protocol-named durable methods above (put_task/…/redeem_ask_state) are being collapsed onto
-// eight KIND-TAGGED verbs that name a "plane record" by its `kind` string instead of by protocol
-// ("task"/"task_event"/"call"/"demotion"/"ask"). This block ADDS that neutral surface; nothing calls
-// it yet and every method is DEFAULTED to the SAME accept-and-keep-nothing behaviour as its
-// protocol-named sibling, so the addition is byte-for-byte inert. The migration of call sites and the
-// removal of the named methods happen in later commits.
-
 /// Whether a plane record is in a TERMINAL (final) state or still ACTIVE. This is the sidecar column
 /// that lets [`RecordStore::purge_plane_records_before`] honor a per-kind retention contract that opaque
 /// `body` bytes cannot express: the `task` kind drops only TERMINAL rows older than the cutoff (an
@@ -978,7 +840,7 @@ impl Retention {
     }
 
     /// Whether a purge under this rule drops a row of `disposition` written at `ts`, against the
-    /// cutoff `before`: a row at or after the cutoff is always kept.
+
     #[must_use]
     pub fn drops(self, ts: u64, before: u64, disposition: PlaneDisposition) -> bool {
         ts < before
@@ -1099,47 +961,14 @@ impl PlaneSelector<'_> {
 }
 
 /// The durable governance store — the `db` plugin contract. A backend (the built-in `SqliteStore`,
-/// or a plugin `PostgresStore`/`ValkeyStore`/`MySqlStore`/…) implements this to persist the bounded
-/// ENFORCEMENT state: virtual keys + row-looked-up credentials (today: SigV4), and per-key usage
-/// counters per budget window.
-///
-/// The engine keeps the AUTHORITATIVE enforcement counters in memory and treats this store as a
-/// write-behind durability layer (boot-hydrate + periodic flush), so every method here is off the
-/// request hot path — a plain synchronous call is fine, and a backend that needs async I/O runs it
-/// on its own runtime behind the sync signature. The credential/hydration-delta methods are
-/// DEFAULTED so a backend with no credential support (or a lightweight test double) need not
-/// implement them — see each method's own doc for its specific default behavior and why it's safe.
+
 pub trait RecordStore: Send + Sync + 'static {
     /// UPSERT `key` by `key.id` — the mint path and every in-place update (rename, enable/disable,
-    /// regroup, rotate) go through here.
-    ///
-    /// ONE precondition, and it is not negotiable: **a `put_key` whose `key.deleted_at` is `None`
-    /// MUST NOT overwrite a stored row whose `deleted_at` is `Some(_)`.** Return an error instead.
-    /// [`VirtualKey::deleted_at`] says the id is never reissued and [`RecordStore::delete_key`] says the
-    /// tombstone is permanent, so silently clearing one resurrects a key an operator revoked — the
-    /// exact outcome [`RecordStore::delete_key`] exists to prevent, reached through the other door.
-    ///
-    /// Writing a key that CARRIES a tombstone (`key.deleted_at.is_some()`) is unaffected: hydration
-    /// and test fixtures legitimately write tombstoned rows, and neither clears anything.
-    ///
-    /// This has to be enforced in the store, not by the caller. Core's callers do check
-    /// `deleted_at` before writing, but that check is a read-then-write: a `delete_key` committing
-    /// between the `get_key` and the `put_key` slips straight through it. Only the backend can make
-    /// the test and the write atomic, so only the backend can actually close it.
-    ///
-    /// `put_key` is otherwise an ABSOLUTE SET, not a compare-and-set: it takes no expected
-    /// `revision`, so two concurrent writers are last-writer-wins on the whole row. That is a known
-    /// and accepted limitation of this signature (adding a precondition parameter is a breaking
-    /// trait change); it is recorded here so no caller mistakes the tombstone guard above for
-    /// general optimistic concurrency, which it is not.
+
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()>;
     fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>>;
     /// EVERY key, live or tombstoned (`deleted_at` set or not) — deliberately UNFILTERED, so this
-    /// one method serves both the admin-listing caller (which filters `deleted_at.is_none()`
-    /// itself before rendering) and [`RecordStore::list_keys_since`]'s default incremental-hydration
-    /// fallback (which needs to SEE tombstones to evict cached credentials — see that method's
-    /// doc). A backend must not filter here; filtering belongs at the call site that actually wants
-    /// a "live only" view.
+
     fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>>;
     /// TOMBSTONE `id`: the row is NOT removed. An implementation must, atomically:
     /// 1. Destroy every credential row for this key (see [`RecordStore::list_credentials`]) — secret
@@ -1163,22 +992,7 @@ pub trait RecordStore: Send + Sync + 'static {
     fn delete_key(&self, id: &str) -> RecordStoreResult<()>;
 
     /// Every key with `revision > since` — the INCREMENTAL hydration delta, used instead of a full
-    /// [`RecordStore::list_keys`] reload on each staleness tick. UNLIKE `list_keys`, this does NOT filter
-    /// tombstones: a hydrator needs to observe a newly-tombstoned key (via its `deleted_at` now
-    /// being `Some`) so it can evict that key's cached credentials from its in-process map — see
-    /// [`RecordStore::list_credentials_since`] for why that eviction cannot rely on the credential rows'
-    /// own deltas. `since = 0` returns every key (the boot/full-load case).
-    ///
-    /// DEFAULTED to a full-scan-and-filter over `list_keys` — CORRECT for any backend (it degrades
-    /// to "always changed" for a row the backend hasn't stamped with a real `revision`, per
-    /// `VirtualKey::revision`'s doc, and `list_keys` is unfiltered so tombstones are always visible
-    /// here) but not incremental; a backend that wants real delta-fetch efficiency overrides this
-    /// with an indexed `WHERE revision > ?`-shaped query.
-    ///
-    /// `revision == 0` is its own arm, not folded into `revision > since`: a row the backend never
-    /// stamped with a real revision (including a tombstoned/revoked key written by a backend that
-    /// doesn't track revisions) must always read as "changed", or an incremental hydrator running
-    /// with `since > 0` would never observe it and would never evict that key's cached credentials.
+
     fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
         Ok(self
             .list_keys()?
@@ -1188,16 +1002,11 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its
-    /// key id) OR a budget-group bucket - same shape either way. An untouched (bucket, window)
-    /// reads as the empty ledger. NO dollar field crosses this seam: spend is derived at read time
-    /// from `ledger x rate_card`.
+
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger>;
 
     /// Atomically compare raw pre-states and commit every replacement with its applied receipt.
-    /// After an unknown result the caller must retain and replay the exact operation id/body.
-    ///
-    /// # Errors
-    /// Unsupported by default, before effects. No read-modify-write fallback is safe here.
+
     fn apply_usage_correction(
         &self,
         request: &correction::Request,
@@ -1212,9 +1021,7 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Write-behind ABSOLUTE set of a bucket's window ledger. SETS (replaces) the whole
-    /// requests + per-model token record. Single-writer semantics only: with multiple busbar nodes
-    /// sharing one store, an absolute overwrite loses the other nodes' accruals - the fleet flush
-    /// path uses [`RecordStore::add_usage`] instead.
+
     fn put_usage(
         &self,
         bucket_id: &str,
@@ -1223,14 +1030,7 @@ pub trait RecordStore: Send + Sync + 'static {
     ) -> RecordStoreResult<()>;
 
     /// Write-behind ADDITIVE accumulate of a bucket's window ledger: adds the signed requests
-    /// delta plus each per-(model, tier) TOKEN delta (possibly negative, e.g. a refund) to the
-    /// durable record. This is the FLEET-HONEST flush primitive: N nodes each flushing their
-    /// delta-since-last-flush sum to the true fleet total, where `put_usage`'s absolute overwrite
-    /// would be last-writer-wins. Counters are floored at 0. No dollar delta crosses the wire.
-    ///
-    /// DEFAULT: a read-modify-write fallback (get + apply + put) for stores without a native
-    /// atomic add - correct for a single writer; a real shared backend overrides with an atomic
-    /// accumulate (SQL `UPDATE x = x + delta` UPSERT / valkey `HINCRBY`).
+
     fn add_usage(
         &self,
         bucket_id: &str,
@@ -1243,12 +1043,7 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Apply this complete usage batch atomically under the caller's immutable operation identity.
-    /// A replay of the same id and body applies once; a different body under that id refuses.
-    /// After an unknown result, replay this exact id and body. Never replace the identity or
-    /// emulate this method with individual additive writes.
-    ///
-    /// # Errors
-    /// Unsupported by default before effects. An error may leave application unknown.
+
     fn add_usage_batch_deduped(
         &self,
         op: crate::abi::store::OpId,
@@ -1259,7 +1054,7 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Whether this implementation accepts caller-owned immutable usage batch identities.
-    /// Legacy implementations retain their ordinary additive path unless they explicitly opt in.
+
     fn supports_usage_batch_deduped(&self) -> bool {
         false
     }
@@ -1270,12 +1065,7 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Apply the immutable metering body once under `op`. Replaying the same id and body
-    /// returns its acknowledgement; changing that body refuses. After any uncertain error,
-    /// callers must retain this exact id and body rather than use `add_metering` as a fallback.
-    ///
-    /// # Errors
-    /// Unsupported by default before effects. An implementation's error can leave application
-    /// unknown, so support is detected explicitly before the first attempt.
+
     fn add_metering_batch_deduped(
         &self,
         op: crate::abi::store::OpId,
@@ -1288,26 +1078,15 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Accumulate one completed response's RAW consumption into the per-(key, bucket, model,
-    /// provider) metering row (UPSERT/add; +1 request). Metering is observability — best-effort,
-    /// never consulted for enforcement.
+
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()>;
 
     /// Every metering row accumulated in `bucket` (a metering-bucket day start), for the usage read's
-    /// by-model / by-key aggregations.
+
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>>;
 
     /// Persist a row-looked-up credential (today: only the request-signing auth's kind) — see
-    /// [`CredentialSecret`] and the [`RecordStore::list_credentials`] doc for the
-    /// generalized-from-AWS-specific rationale.
-    /// UPSERTs on `(key_id, kind, slot)`: minting into an occupied LIVE slot (not `revoked_at`) MUST
-    /// fail rather than silently destroy a working credential mid-overlap-window — an explicit slot
-    /// pointed at a live credential is almost certainly an operator mistake, not an intended
-    /// rotation. `secret.meta.id`/`secret.meta.key_id`/`secret.meta.kind`/`secret.meta.slot` name
-    /// the row; the rest of `secret.meta` plus `secret.secret` is the full row to write.
-    ///
-    /// DEFAULTED so the (many) lightweight test-double stores need not implement the credential
-    /// surface — only a real backend does. The default is a no-op-shaped error so a misconfigured
-    /// store that silently dropped a credential cannot pass as success.
+
     fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
         Err(RecordStoreError(
             "this Store does not support row-looked-up credentials".to_string(),
@@ -1315,14 +1094,7 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Update only the envelope of an existing, unrevoked Recoverable credential, atomically
-    /// comparing the complete stored row (metadata including revision, and envelope) to `expected`.
-    /// The owning key must still exist and be untombstoned. Preserve every metadata field except
-    /// the store-managed revision; never insert, reclaim a slot, or resurrect a deleted row.
-    /// Returns true only after committing the replacement. A mismatch or identical replacement
-    /// returns false without any mutation or revision increment. An error may mean a lost commit
-    /// reply: reconcile by reading the row, never fall back to ordinary PUT or blindly replay.
-    /// The trusted host establishes plaintext continuity before requesting this maintenance write.
-    /// Stores without this operation refuse it; a read-then-write fallback cannot implement CAS.
+
     fn rewrap_credential(
         &self,
         _expected: &CredentialSecret,
@@ -1334,8 +1106,7 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// ATOMIC key+credential mint. Persist the bearer `VirtualKey` row AND its paired credential row
-    /// together or not at all. A real transactional backend overrides this to wrap both writes in one
-    /// transaction. DEFAULT fallback: sequential writes (for test doubles with no transaction).
+
     fn put_key_with_credential(
         &self,
         key: &VirtualKey,
@@ -1347,23 +1118,13 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Every credential row for `key_id`, metadata only, never the secret. The admin/listing
-    /// surface.
-    ///
-    /// DEFAULTED to empty: a store with no credential support simply has none to list.
+
     fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
         Ok(Vec::new())
     }
 
     /// Revoke ONE credential by id (independent of the owning key — see
-    /// [`CredentialMeta::revoked_at`]). Idempotent. DEFAULTED to a loud error, matching
-    /// [`RecordStore::add_denylist`]'s reasoning: a silent no-op here would let an operator believe a
-    /// leaked SigV4 secret was killed when it was not.
-    ///
-    /// To spell out what "idempotent" does and does not cover, because backends have read it both
-    /// ways: revoking an ALREADY-REVOKED id is `Ok(())`, and an id that names NO ROW is an ERROR.
-    /// A backend must therefore read the row count its UPDATE actually affected, or check for the
-    /// row explicitly — a statement that matched nothing looks identical to one that matched, and
-    /// this is precisely the case where those two must not be confused.
+
     fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
         Err(RecordStoreError(
             "this Store does not support credential revocation".to_string(),
@@ -1371,53 +1132,25 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Every credential row with `revision > since`, SECRET included — the incremental hydration
-    /// delta for the in-process verify-path cache (which must never make a synchronous store call,
-    /// so it needs the actual secret material in hand, not just metadata). `since = 0` returns every
-    /// row (boot/full-load).
-    ///
-    /// CONTRACT a hydration consumer MUST implement, not just this method: revision-based deltas
-    /// CANNOT observe a hard delete (a deleted row produces no further delta — it simply stops
-    /// appearing). Since [`RecordStore::delete_key`]'s tombstone destroys every credential row for that
-    /// key, a delta-only consumer that ONLY reacts to credential-row deltas would keep serving a
-    /// deleted key's SigV4 credential from cache forever — an authentication bypass. The fix is on
-    /// the CONSUMER side: whenever a [`RecordStore::list_keys_since`] delta shows a key's `deleted_at`
-    /// newly set, the consumer MUST evict every cached credential for that key id itself, rather
-    /// than waiting for (or relying on) a corresponding credential-row delta that will never come.
-    ///
-    /// DEFAULTED to a full-scan-and-filter over an internal full-credential enumeration; a backend
-    /// with no credential support returns empty (nothing to hydrate). Concrete backends should
-    /// override for real delta-fetch efficiency once they have their own storage to query.
+
     fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
         Ok(Vec::new())
     }
 
     /// Append one 1.5.5 admin AUDIT row. No production path writes these rows any more (1.6.0's
-    /// admin audit is plane records); the store ABI carries no slot for it, so a loaded store
-    /// refuses it. In-process test stores that seed 1.5.5 rows for the migration read keep it.
-    ///
-    /// A record arriving on a `seq` that ALREADY HAS ONE is settled by comparing the two:
-    /// byte-identical is `Ok(())`, different is an error (a forked log). DEFAULTED to `Ok(())`.
+
     fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
         Ok(())
     }
 
     /// Every persisted audit record, oldest-first (by `seq`) — the boot RESTORE source when a durable
-    /// store is configured (the store becomes the source of truth; the hash chain is verified after
-    /// load). DEFAULTED to an empty list so a store with no durable-audit support restores nothing
-    /// (the RAM default) rather than forcing every backend to implement it.
+
     fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
         Ok(Vec::new())
     }
 
     /// Add `sub` to the REVOCATION DENYLIST (1.5.0 signed-token keys): a minted token is stateless,
-    /// so revoking it means recording its subject id here. The verify path reads the denylist
-    /// (`list_denylist` hydrates an in-memory set at boot; `add_denylist` updates it live) and
-    /// rejects any token whose `sub` is present. Idempotent (adding an already-denied sub is a
-    /// no-op). `reason` is operator metadata (audit only), never a secret.
-    ///
-    /// DEFAULTED to a no-op error so a store predating denylist support fails LOUD if asked to
-    /// revoke (a silent success would leave a "revoked" token still valid). A real backend
-    /// overrides this + `list_denylist`.
+
     fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
         Err(RecordStoreError(
             "this Store does not support the revocation denylist".to_string(),
@@ -1425,20 +1158,13 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Every denied subject id (for the boot hydrate of the in-memory denylist set). DEFAULTED to
-    /// empty so a store with no denylist support has nothing to deny.
+
     fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 
     /// The most-recent `limit` audit records, oldest-first - the BOUNDED boot restore source. The
-    /// engine's ring is size-bounded, so restoring the whole (never-pruned) durable history is
-    /// wasteful and, over the plugin ABI, can exceed the response size cap or OOM on a large log.
-    /// Restore reads only the tail it will keep (plus the head is verified within that tail).
-    ///
-    /// DEFAULTED to a `list_audit` fallback + tail-truncation so every existing backend keeps working:
-    /// a store that has not overridden this still restores correctly (it just materializes the full
-    /// list once before truncating). A durable backend SHOULD override this with a `LIMIT`ed query so
-    /// the bound is enforced at the source (in the DB / across the ABI), which is the whole point.
+
     fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
         let mut all = self.list_audit()?;
         let limit = limit as usize;
@@ -1448,41 +1174,26 @@ pub trait RecordStore: Send + Sync + 'static {
         Ok(all)
     }
 
-    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD VERBS (1.6.0) ────────────────────────────────────
-    //
-    // Eight kind-tagged verbs that SUBSUME the fourteen protocol-named durable methods this trait
-    // once carried, collapsed in 1.6.0 into one generic surface. Every core consumer and every
-    // backend now speaks these; the `kind` string names what a caller-specific method used to name
-    // in its identifier. Each is DEFAULTED to accept-and-keep-nothing so a backend that keeps no
-    // durable rows behaves exactly as the shipped RAM default does.
-
     /// UPSERT one plane record by `(record.kind, record.id)`, for any registered record kind.
-    /// Takes the whole record, borrowed ([`PlaneRecordRef`]), so the typed sidecar
-    /// (`ts`/`disposition`/…) is on the write path where retention needs it.
-    ///
-    /// DEFAULTED to `Ok(())` — accept and keep nothing. The return value is worthless as evidence
-    /// of durability; the engine learns what its backend kept by reading it back.
+
     fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
 
     /// The opaque `body` of the record identified by `(kind, id)`, or `None` when absent.
-    /// DEFAULTED to `Ok(None)`.
+
     fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
 
     /// APPEND one child plane record within `record.parent`, keyed and ordered by `record.seq`. The
-    /// store persists the opaque body verbatim and never recomputes any digest inside it.
-    ///
-    /// DEFAULTED to `Ok(())`.
+
     fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
 
     /// The opaque bodies of a kind's records, narrowed by `selector` — every record of the kind
-    /// ([`PlaneSelector::All`]) or every child record of one parent, oldest-first by `seq`
-    /// ([`PlaneSelector::Parent`]). DEFAULTED to empty.
+
     fn list_plane_records(
         &self,
         _kind: &str,
@@ -1492,31 +1203,19 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// Every distinct [`PlaneRecord::parent`] with at least one record of `kind` (the boot
-    /// enumeration). DEFAULTED to empty.
+
     fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
 
     /// RETENTION: drop records of `kind` older than `before`, returning how many went. WHICH
-    /// predicate applies (terminal-only vs. all older rows) is part of the kind's own contract,
-    /// which is exactly why the `disposition` sidecar is a typed column: the backend reads it to
-    /// honor a terminal-only split without decoding the opaque body.
-    ///
-    /// DEFAULTED to `Ok(0)`.
+
     fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
         Ok(0)
     }
 
     /// RETENTION, with the predicate named: drop records of `kind` older than `before` under
-    /// `retention`, returning how many went.
-    ///
-    /// The reserved host `ticket` kind stores absolute expiry in `ts`. Its purge cutoff is
-    /// bounded by the store's own clock under purge serialization, so a fast node cannot delete
-    /// a live ticket. Other kinds retain the requested cutoff. Clock failures return errors.
-    ///
-    /// DEFAULTED: [`Retention::Age`] is [`RecordStore::purge_plane_records_before`];
-    /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
-    /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
+
     fn purge_plane_records(
         &self,
         kind: &str,
@@ -1535,19 +1234,7 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
-    /// was the first redemption. `expires_at` is an absolute Unix-second deadline. The store
-    /// samples its own clock after serializing the claim, rejects `expires_at < store_now`, and
-    /// uses that same clock for expiry cleanup and reuse. Equality remains valid and spent.
-    /// `now` is retained for wire compatibility and is not expiry authority. A losing claim never
-    /// changes the winner's deadline. Clock-read failures return an error before mutation.
-    ///
-    /// # The default is FAIL-CLOSED
-    ///
-    /// DEFAULTED to `Ok(false)`, NOT `Ok(true)`. A store that keeps no ledger cannot attest that
-    /// THIS call was the first redemption of the token — answering `true` unconditionally would let
-    /// a captured single-use token be replayed without limit against any backend that hasn't
-    /// implemented this verb. A store that means to grant these single-use capabilities implements
-    /// it; until then, every redemption attempt is refused.
+
     fn redeem_plane_token(
         &self,
         _kind: &str,
@@ -1559,33 +1246,7 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// IS THIS TOKEN STILL LIVE? A MULTI-USE, TIME-AND-STATE-BOUNDED CAPABILITY, and deliberately
-    /// NOT [`RecordStore::redeem_plane_token`]'s single-use test-and-set.
-    ///
-    /// Answers `true` while the record identified by `(kind, token)` is present, its disposition is
-    /// still [`PlaneDisposition::Active`], and `now` has not passed `expires_at`. It SPENDS NOTHING:
-    /// asking twice answers the same both times, because the capability this expresses is "the work
-    /// this token names is still in flight", not "nobody has used this yet".
-    ///
-    /// A repeated, out-of-band callback against one long-running task is the case it exists for: a
-    /// remote party calls back several times for one task — an in-progress update, then another,
-    /// then a terminal one — so a token spent by the first call would refuse every honest call after
-    /// it, and a `redeem` that answered `true` every time would let a captured token replay forever.
-    /// The honest verb is this one: live until the task reaches a terminal state (which flips the
-    /// record's disposition) or until its deadline passes, and refused from that moment on.
-    ///
-    /// The reserved host `ticket` kind is a non-consuming preflight exception: its record must
-    /// be Terminal, its `ts` must exactly equal the signed `expires_at`, and the store's own clock
-    /// must not have passed that deadline. A missing record refuses; clock failures return errors.
-    /// Other kinds retain the Active-record and caller-`now` policy above.
-    ///
-    /// # The default is FAIL-CLOSED, and that is the whole point
-    ///
-    /// `Ok(false)`, NOT `Ok(true)`. Every other defaulted neutral verb here tolerates a backend that
-    /// keeps no rows by answering empty or `Ok(())`, because "this store remembers nothing" and "there
-    /// is nothing to remember" are the same answer for a read. For a capability check they are
-    /// opposites: a store that cannot say whether a token is still live must not be read as saying it
-    /// is, or a backend that captured one replays it against a finished task on every deployment whose
-    /// store predates this verb. A store that means to accept these callbacks implements it.
+
     fn plane_token_live(
         &self,
         _kind: &str,
@@ -1613,13 +1274,13 @@ pub struct PlaneRequestCtx {
 
 impl PlaneRequestCtx {
     /// The resolved caller key, or `None` when governance is disabled. Borrows through the `Arc` so a
-    /// plane reads the key without naming `Arc` or touching the field directly.
+
     pub fn key(&self) -> Option<&VirtualKey> {
         self.key.as_deref()
     }
 
     /// Whether this request carries a resolved key (governance enabled). `false` is the no-op posture:
-    /// there is no key, no budget, and nothing to enforce.
+
     pub fn is_governed(&self) -> bool {
         self.key.is_some()
     }

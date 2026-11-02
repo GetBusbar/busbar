@@ -235,7 +235,7 @@ fn admitted_verify_keeps_its_input_while_refresh_publishes_a_new_selection() {
         }
         drop(state);
         let refreshed = calls.refresh();
-        // Release the crossing even if the refresh assertion below fails.
+
         lock.lock().unwrap().1 = true;
         changed.notify_all();
         refreshed.unwrap();
@@ -246,8 +246,6 @@ fn admitted_verify_keeps_its_input_while_refresh_publishes_a_new_selection() {
     });
 }
 
-// Wrap the real SDK table to observe lease custody and CLOSE, and to emulate foreign metadata.
-// Choice's SDK still owns every instance and lease, so the wrappers exercise the real seam.
 mod observed {
     use super::*;
     use busbar_contract::abi::auth::Ops;

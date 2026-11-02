@@ -1,49 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLAG SURFACE — everything busbar answers on the command line instead of on a socket.
-//!
-//! `main()` has two halves and they have nothing to do with each other. One BOOTS AND SERVES: it
-//! sizes the runtime, installs the four axes, resolves configuration, seals the composition root,
-//! binds listeners and runs until a signal. The other ANSWERS AND EXITS: `--version`, `--help`,
-//! `--build-info`, `--print-metadata-blocklist`, `--validate`, `--list-plugins`,
-//! `--migrate-config`, `--generate-signing-key` — each of which prints, returns an exit code, and
-//! never binds anything. This file is the second half, and it is here because one file over the
-//! `structure-lint:oversized` cap measures two things at once and tells you about neither.
-//!
-//! ## What binds the two halves together, and why it is not a duplicate
-//!
-//! The serving half reads the SAME flags this one does — `-c`/`--config`, `--providers`,
-//! `BUSBAR_CONFIG`, `BUSBAR_PROVIDERS` — so the scanners that resolve them ([`value_flag`],
-//! [`config_path_flag`], [`providers_override`], [`resolve_config_path`]) and the two
-//! override notices live here and are `pub(crate)` rather than copied. A `--validate` that
-//! resolved its config path by a different rule than boot does would be a clean check of a file
-//! the gateway will never read, which is the one thing `--validate` exists to rule out.
-//!
-//! ## Why it is under the composition root and not beside `main.rs`
-//!
-//! Not taste — coverage. `xtask/src/audit.rs` special-cases the binary crate (`SPLIT_CRATE`) into
-//! exactly two production audit scopes, `crates/busbar/src/root` and `crates/busbar/src/main.rs`,
-//! and pushes no scope for `crates/busbar/src` itself. A module at `src/cli.rs` would belong to
-//! neither and would be read by no audit round; under `src/root/` the directory scope already
-//! covers it. `src/build_stamp.rs` is the standing example of the other outcome.
-//!
-//! Boot ORDER already puts the flags here: the root's own note records that boot runs kernel,
-//! interner, transports, planes, the two boot checks, *then* the CLI flags — because `--validate`
-//! reads the plane and protocol lists and every axis must be installed before any reader.
-
 use busbar_kernel::{config, config_validate, diagnostics};
 use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS};
 
 use crate::{build_info_line, safe_mode_requested};
 
-/// Process statuses retained from the 1.5.5 command surface: success, command failure,
-/// and invalid command usage respectively. These are process codes, never HTTP statuses.
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_FAILURE: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 
-/// Operator option spellings accepted by the command dispatcher and value readers.
 const OPTION_VERSION: &str = "--version";
 const OPTION_VERSION_SHORT: &str = "-V";
 const OPTION_BUILD_INFO: &str = "--build-info";
@@ -60,7 +26,6 @@ pub(super) const OPTION_PROVIDERS: &str = "--providers";
 const OPTION_CONFIG_ASSIGNMENT: &str = "--config=";
 const OPTION_PROVIDERS_ASSIGNMENT: &str = "--providers=";
 
-/// The part of `busbar --help` the root owns, before the linked planes' `Flags:` rows.
 const HELP_HEAD: &str = "
 
 USAGE:
@@ -109,20 +74,14 @@ Flags:
     --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
 ";
 
-/// The part of `busbar --help` the root owns, after the linked planes' `Flags:` rows and before
-/// their `ENDPOINTS` rows.
 const HELP_ENDPOINTS_HEAD: &str = "
 ENDPOINTS (once running, listen address from config.yaml `listen`):
 ";
 
-/// The part of `busbar --help` the root owns, after the linked planes' `ENDPOINTS` rows.
 const HELP_TAIL: &str = "    GET  /stats  /healthz  /metrics
 
 Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar\n";
 
-/// `busbar --help`, assembled from the root's own text and the rows each linked plane declares
-/// (#47/#49: a plane owns its operator-facing text; the root names no plane). A plane compiled out
-/// contributes no row: its tagline, its `Flags:` rows and its `ENDPOINTS` rows leave with it.
 pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) -> String {
     let rows = || planes.iter().flat_map(|rows| rows.iter());
     let mut out = format!("busbar {ver}");
@@ -144,22 +103,7 @@ pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) ->
     out
 }
 
-/// EVERY PLANE'S `busbar --help` ROWS: each linked row's (its `cli-help` axis), then each linked
-/// plane door's, read off its tail's `cli_help` without binding it, then each plane door dropped
-/// into the configured `plugins.dir`, read off its signed manifest ([`dropped_help`]), in the
-/// contract's grammar (`busbar_contract::abi::plane::cli_help`: its tagline, `Flags:` and
-/// `ENDPOINTS` rows), in manifest order. A door whose tail cannot be read contributes nothing here;
-/// its boot refuses it.
-///
-/// COMPILED IN OR DROPPED IN, ONE PATH (BUSBAR-1.6.0.md l.2179, Part 2 #2; audit busbar-src r4
-/// S-2): the plane axis is installed before the command line is read (`main`'s
-/// `register_planes`, which discovers the dropped-in doors), so a dropped-in plane's flag is
-/// accepted, asks for the line serve and moves the logs to stderr exactly as the same plane's
-/// compiled in does. With no configuration to read there is no `plugins.dir`, and only the linked
-/// planes' rows are read.
 pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
-    // The doors' rows, read once and kept for the process (the linked doors are fixed at build),
-    // each door's lent out as one slice: nothing is leaked to give them their `'static` life.
     static DOOR_ROWS: std::sync::OnceLock<Vec<Vec<super::linked::CliHelpRow>>> =
         std::sync::OnceLock::new();
     let door_rows = DOOR_ROWS.get_or_init(|| {
@@ -182,9 +126,6 @@ pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
     rows
 }
 
-/// The rows of the plane doors the boot discovered in the configured `plugins.dir`
-/// (`root::boot::discover_planes`), read once the discovery has run and kept for the process (the
-/// directory is scanned once per boot). Before the discovery there are none, and nothing is kept.
 fn dropped_rows() -> &'static [Vec<super::linked::CliHelpRow>] {
     static TEXTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     static ROWS: std::sync::OnceLock<Vec<Vec<super::linked::CliHelpRow>>> =
@@ -201,11 +142,6 @@ fn dropped_rows() -> &'static [Vec<super::linked::CliHelpRow>] {
     })
 }
 
-/// THE DROPPED-IN PLANES' HELP: each dropped-in candidate's tail `cli_help`, read off its SIGNED
-/// MANIFEST's Statement rendering with no dlopen
-/// (`loader::dispatch::kinds::plane::rendered_cli_help`), in discovery order. A linked candidate
-/// adds none (its rows are read off its door, above), and neither does a rendering that does not
-/// read back: admitting the plane refuses it.
 pub(crate) fn dropped_help(candidates: &[crate::root::loader::boot::Candidate]) -> Vec<String> {
     use crate::root::loader::boot::Origin;
     use crate::root::loader::dispatch::kinds::plane::rendered_cli_help;
@@ -216,8 +152,6 @@ pub(crate) fn dropped_help(candidates: &[crate::root::loader::boot::Candidate]) 
         .collect()
 }
 
-/// Whether `arg` is a flag a plane declares, compiled in or dropped in — the first word of one of
-/// its `Flags:` rows.
 pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) -> bool {
     planes
         .iter()
@@ -226,16 +160,11 @@ pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) 
         .any(|(_, lines)| lines.split_whitespace().next() == Some(arg))
 }
 
-/// Handle CLI flags before any environment or file access, so they work without a configured
-/// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
-/// proceed to normal startup. busbar takes no positional arguments and is configured via
-/// environment + YAML; an unrecognized flag is a usage error rather than a silent server start.
 pub(crate) fn handle_cli_flags() -> Option<i32> {
     let supplied: Vec<String> = std::env::args().skip(1).collect();
     let mut values = supplied.iter();
     while let Some(arg) = values.next() {
         if arg == OPTION_MIGRATE_CONFIG {
-            // This command's next word is its literal path, including a flag-looking name.
             values.next();
             continue;
         }
@@ -249,8 +178,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         }
     }
     let mut args = supplied.into_iter();
-    // Boot modifiers may precede an exit command. Their values retain the same meaning as in
-    // the full argument scanners; keep the remaining iterator for a command's own operands.
+
     let command = loop {
         let arg = args.next();
         match arg.as_deref() {
@@ -265,58 +193,37 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         }
     };
     match command.as_deref() {
-        None => None, // no args → run the gateway
+        None => None,
         Some(OPTION_VERSION | OPTION_VERSION_SHORT) => {
-            // Version AND build posture on one line each: an operator correlating a perf number to a
-            // binary sees immediately whether it was the optimized release build or a local debug/
-            // non-PGO build (the misdiagnosis this stamp exists to prevent).
             println!("busbar {}", env!("CARGO_PKG_VERSION"));
             println!("build: {}", build_info_line());
             Some(EXIT_SUCCESS)
         }
         Some(OPTION_BUILD_INFO) => {
-            // The raw stamp line ALONE (no version prefix), for CI to parse and assert against. Kept
-            // separate from `--version` so the gate greps a stable single line.
             println!("{}", build_info_line());
             Some(EXIT_SUCCESS)
         }
         Some(OPTION_METADATA_BLOCKLIST) => {
-            // Print the EFFECTIVE cloud-metadata denylist the running binary enforces: the hardcoded
-            // set (single source of truth in config_validate) UNION the operator's
-            // `security.blocked_metadata_hosts`. The hardcoded set always prints (no config needed);
-            // the operator extension is appended best-effort if BUSBAR_CONFIG is readable + parseable,
-            // so the flag is useful even before a deployment is wired up. One entry per line, exit 0.
             let mut entries = config_validate::metadata_enforced_entries();
             let config_path = resolve_config_path(config_path_flag().as_deref());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
                 match config::interpolate_env(&raw) {
-                    Ok(interpolated) => {
-                        match config::deploy_from_yaml_str(&interpolated) {
-                            Ok(deploy) => {
-                                if let Some(sec) = deploy.security {
-                                    entries.extend(sec.blocked_metadata_hosts);
-                                }
+                    Ok(interpolated) => match config::deploy_from_yaml_str(&interpolated) {
+                        Ok(deploy) => {
+                            if let Some(sec) = deploy.security {
+                                entries.extend(sec.blocked_metadata_hosts);
                             }
-                            Err(_) => {
-                                // The config did not parse (e.g. an unknown/typo'd key now rejected by
-                                // deny_unknown_fields). Don't silently print an INCOMPLETE denylist that
-                                // omits the operator's `security.blocked_metadata_hosts` — warn instead.
-                                // (Deliberately NOT echoing the error, which could quote a config value;
-                                // the normal boot path surfaces the precise parse error.)
-                                eprintln!(
+                        }
+                        Err(_) => {
+                            eprintln!(
                                 "warning: {code}: config at {config_path} did not parse; printing the \
                                  built-in metadata denylist only (security.blocked_metadata_hosts \
                                  skipped). Run busbar normally to see the parse error.",
                                 code = diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                             );
-                            }
                         }
-                    }
+                    },
                     Err(_) => {
-                        // Interpolation itself failed (unset var, or — since this fix — a value
-                        // that would change the config's YAML structure). Same reasoning as the
-                        // parse-failure arm above: don't silently print an incomplete denylist,
-                        // and don't echo the error (it could quote a rejected env var's value).
                         eprintln!(
                             "warning: {code}: config at {config_path} failed to interpolate; printing \
                              the built-in metadata denylist only (security.blocked_metadata_hosts \
@@ -331,10 +238,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
             }
             Some(EXIT_SUCCESS)
         }
-        // A flag a plane declares (its `Flags:` row), compiled in or dropped in, is not an
-        // exit-and-print flag: it proceeds to the ordinary boot and is read again inside `run()`,
-        // where the line-serve flag swaps the two listeners for the process's own stdin/stdout.
-        // Recognised here so it is not refused as an unknown argument.
+
         Some(arg) if is_plane_flag(&help_rows(), arg) => None,
         Some(OPTION_VALIDATE) => Some(validate_config_command()),
         Some(OPTION_GENERATE_SIGNING_KEY) => Some(generate_signing_key_command()),
@@ -351,13 +255,6 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
     }
 }
 
-/// `--validate`: parse, resolve, and semantically validate the config WITHOUT booting. Runs the exact
-/// same load -> resolve -> validate the gateway runs at boot (so a clean `--validate` means a clean
-/// boot), but never binds a listener, writes state, spawns a task, opens TLS, or makes a network call,
-/// and does NOT require provider secrets (validation is STRUCTURE, not reachability — the nginx -t rule).
-/// Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
-/// Prints an OK summary + exits 0 when valid;
-/// prints every error (same text boot prints) + exits 1 when not.
 pub(crate) fn validate_config_command() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
@@ -380,8 +277,7 @@ pub(crate) fn validate_config_command() -> i32 {
     };
     let providers_path = loaded.providers_path.clone();
     let unset_env_vars = loaded.unset_env_vars.clone();
-    // --validate reads operator inputs only and opens no Store. Runtime overlay recovery is a
-    // boot/live-reload operation; these projections remain no-ops for the input-only load here.
+
     if let Some(doc) = loaded.overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
     }
@@ -396,19 +292,11 @@ pub(crate) fn validate_config_command() -> i32 {
             return EXIT_FAILURE;
         }
     };
-    // Merge the persisted overlay's hooks/groups sections exactly as boot does, so --validate
-    // validates the EFFECTIVE config (base + API-applied hooks/groups), not just the base file.
+
     if let Some(doc) = loaded.overlay_doc.take() {
         config::overlay::merge_into(&mut cfg, doc);
     }
-    // THE ONE VALIDATOR (`config_validate::check`), the sequence boot and the admin dry run run:
-    // the semantic pass; the destination guard as boot builds it (a bad `advanced.allow_destinations`
-    // entry fails here as it fails the boot); the plugin pre-flight boot shares (consistency, trust,
-    // the three-phase tarball scan, store resolution); and every secret module and reference
-    // against that registry. No Store is opened and nothing is fetched. Native grammar/hook/secret checks use the root's pre-staging archive-pin gate;
-    // no application Store is opened. `--validate` alone also RESOLVES every built-in secret: boot and the admin paths warn
-    // on an unresolvable secret by design, but an operator asking whether the config is good gets
-    // the strict answer.
+
     let destination_guard =
         |c: &config::RootCfg| crate::root::connector::guard_for(&c.destinations()).map(|_| ());
     let registry = match config_validate::check(
@@ -452,8 +340,7 @@ pub(crate) fn validate_config_command() -> i32 {
             return EXIT_FAILURE;
         }
     };
-    // The kernel hands back the contract's view of the registry this root's build made
-    // (`root::boot::registry_rows`); the stages below read the registry itself.
+
     let Some(registry) = crate::root::loader::rows::registry_arc(registry) else {
         eprintln!(
             "[error] {}: the plugin rows are not this root's registry",
@@ -461,10 +348,7 @@ pub(crate) fn validate_config_command() -> i32 {
         );
         return EXIT_FAILURE;
     };
-    // STAGES 0-2 (BUSBAR-1.6.0.md §3: `--validate` runs Plan, Discover and Select, and nothing is
-    // opened): what the configuration uses, each dropped-in plugin's stated facts, the plugins it
-    // selects, and the version refusal for a selected plugin built for another host.
-    // The host's own listeners head the one list of listeners.
+
     let root = crate::root::boot::RootListens {
         listen: &cfg.listen,
         admin_listen: &cfg.admin_listen,
@@ -502,10 +386,7 @@ pub(crate) fn validate_config_command() -> i32 {
                 s.manifest.name, s.file, s.reason
             );
         }
-        // The stage report (each dropped-in plugin's stated facts and selection, each plugin
-        // listener) is debug logging, never stdout: `--validate`'s stdout is 1.5.5's bytes
-        // (ARCHITECT 2026-10-06; oracle `plugins.store-persist|store-sqlite` read a
-        // `plugin: … — selected as store` line 1.5.5 never printed). The refusals above stand.
+
         for line in stages.lines() {
             tracing::debug!(target: "busbar::validate", "{}", line.trim_start());
         }
@@ -522,20 +403,12 @@ pub(crate) fn validate_config_command() -> i32 {
     EXIT_SUCCESS
 }
 
-/// THE `--list-plugins` COLUMN HEADER, v1.5.5's bytes (v1.5.5 crates/busbar/src/main.rs:419-422):
-/// the row format's six columns at its widths, then `STATUS`, as the one line it prints.
 const LIST_PLUGINS_HEADER: &str = "FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS";
 
-/// `--list-plugins`: MANIFEST-ONLY inventory of every plugin tarball in `plugins.dir` — name,
-/// alias, kind, version, signature verdict, and load status (including the exact skip/invalid
-/// reason and which one `store.module` selects). NEVER `dlopen`s anything, so an untrusted
-/// plugin's code cannot run from listing it. Exit 0 (informational; `--validate` is the gate).
 fn list_plugins_command() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
-    // Best-effort config read (lenient env): a missing/broken config falls back to the default
-    // plugins block so the inventory still works pre-deployment. A config with no `store:` block
-    // selects no store row (Q-STORE = (B): no row is a default).
+
     let (plugins_cfg, store_ref) = match load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
@@ -590,7 +463,7 @@ fn list_plugins_command() -> i32 {
                 )
             })
             .unwrap_or_else(|| ("-".into(), "-".into(), "-".into(), "-".into()));
-        // Which row the configured governance store selects (only meaningful when it would load).
+
         let selected = store_ref.as_deref().filter(|s| {
             plugins_cfg.enabled
                 && row.status == "ready"
@@ -611,15 +484,6 @@ fn list_plugins_command() -> i32 {
     EXIT_SUCCESS
 }
 
-/// The disk-load pipeline: read providers.yaml + config.yaml, env-interpolate (from the process's
-/// boot-time environment — a live reload cannot see edited env files; documented), capture the
-/// BASE hook names, then merge the persisted overlay (opt-in, fail-soft). Shared verbatim by boot
-/// and `POST /api/v1/admin/config/reload`, so a reload IS a boot-equivalent read of disk truth.
-/// `--migrate-config <old.yaml>`: mechanically convert a 1.4.x config to the 1.5.0 shape.
-/// Prints the migrated YAML (with a TODO/WARNING comment header) to STDOUT and the change summary
-/// to STDERR - zero side effects, nothing is written, no env interpolation (a `${VAR}` reference
-/// passes through verbatim so the output stays a template). Exit 0 on success (even with TODOs -
-/// they are review items, not errors), 1 on unreadable/unparseable input, 2 on a missing path.
 fn migrate_config_command(path: Option<String>) -> i32 {
     let Some(path) = path else {
         eprintln!(
@@ -634,9 +498,7 @@ fn migrate_config_command(path: Option<String>) -> i32 {
             return EXIT_FAILURE;
         }
     };
-    // Core migrates its own keys; each configured plugin migrates its own settings section,
-    // through the root's host (its build here, or its release for this busbar from the release
-    // index): `crate::root::config_migrate`.
+
     let host =
         crate::root::config_migrate::RootHost::for_document(&raw, std::path::Path::new(&path));
     match config::migrate::migrate_config_with(&raw, &host) {
@@ -686,11 +548,6 @@ Review the output, then run `busbar --validate` on it before deploying.         
     }
 }
 
-/// Resolve the config.yaml path under the flag-first precedence (1.6.0):
-/// `-c`/`--config <path>` flag > `BUSBAR_CONFIG` env > compiled-in `DEFAULT_CONFIG_PATH`. The ONE
-/// resolver every config-path consumer routes through, so the precedence is stated once. `cli` is the
-/// value of the `--config` flag (scanned from the process args via [`config_path_flag`]); `None` ⇒
-/// no flag passed, fall through to the env layer and then the default.
 pub(crate) fn resolve_config_path(cli: Option<&str>) -> String {
     match cli {
         Some(p) => p.to_string(),
@@ -698,10 +555,6 @@ pub(crate) fn resolve_config_path(cli: Option<&str>) -> String {
     }
 }
 
-/// Scan an arg iterator for a value-taking flag and return the LAST occurrence's value. Accepts
-/// `--long value`, `--long=value`, and (when `short` is `Some("-x")`) the short `-x value` form.
-/// Takes the iterator as a parameter (like `safe_mode_requested`) so it is unit-testable against a
-/// synthetic arg list rather than the process environment.
 pub(crate) fn value_flag(
     args: impl Iterator<Item = String>,
     long: &str,
@@ -721,16 +574,12 @@ pub(crate) fn value_flag(
             a.as_str(),
             OPTION_MIGRATE_CONFIG | OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS
         ) {
-            // Every other value-taking option and migration's operand owns its next word.
-            // In particular, a literal migration path never becomes a providers option.
             iter.next();
         }
     }
     result
 }
 
-/// The `-c`/`--config <path>` flag value from the process args (`None` ⇒ not passed). See
-/// [`resolve_config_path`] for the precedence this feeds.
 pub(crate) fn config_path_flag() -> Option<String> {
     value_flag(
         std::env::args().skip(1),
@@ -739,20 +588,12 @@ pub(crate) fn config_path_flag() -> Option<String> {
     )
 }
 
-/// The providers-catalog override handed to [`load_config_from_disk`]: the `--providers <path>` flag
-/// value, else the deprecated `BUSBAR_PROVIDERS` env var (`None` ⇒ neither, so the catalog resolves
-/// from `providers_file:` or the default next to config.yaml). Precedence is `--providers` flag >
-/// `BUSBAR_PROVIDERS` env > `providers_file:` config key > `providers.yaml` default.
 pub(crate) fn providers_override() -> Option<std::path::PathBuf> {
     value_flag(std::env::args().skip(1), OPTION_PROVIDERS, None)
         .map(std::path::PathBuf::from)
         .or_else(providers_override_from_env)
 }
 
-/// Resolve the DEPRECATED `BUSBAR_PROVIDERS` override, warning once when it is set. `None` ⇒ unset
-/// or empty. Kept so an operator's existing pin keeps working across the upgrade to the
-/// `providers_file:` config key. Pre-subscriber (it runs before tracing is installed under
-/// `--validate` and at boot alike), so the warning goes to stderr like the other boot diagnostics.
 fn providers_override_from_env() -> Option<std::path::PathBuf> {
     let v = std::env::var(ENV_PROVIDERS)
         .ok()
@@ -764,10 +605,6 @@ fn providers_override_from_env() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(v))
 }
 
-/// The config-path override notice (1.6.0): `Some(msg)` when BOTH the `--config` flag and the
-/// `BUSBAR_CONFIG` env var are set to DIFFERENT paths — the flag wins, so an operator whose env value
-/// was ignored is told why. `None` when the flag is absent, the env is unset, or the two are equal (no
-/// real override to explain). Pure so the "REAL override only" rule is unit-testable.
 pub(crate) fn config_override_notice(flag: Option<&str>, env: Option<&str>) -> Option<String> {
     match (flag, env) {
         (Some(f), Some(e)) if f != e => Some(format!(
@@ -777,10 +614,6 @@ pub(crate) fn config_override_notice(flag: Option<&str>, env: Option<&str>) -> O
     }
 }
 
-/// The providers-catalog override notice (1.6.0): `Some(msg)` when the `--providers` flag is set AND
-/// config.yaml ALSO declares a DIFFERENT `providers_file:` — the flag wins, so name both. `None` when
-/// the flag is absent, the config declared no `providers_file:`, or the two are equal. Pure for
-/// unit-testing the "flag alone / matching values ⇒ no notice" rule.
 pub(crate) fn providers_override_notice(
     flag: Option<&str>,
     providers_file: Option<&str>,
@@ -793,13 +626,7 @@ pub(crate) fn providers_override_notice(
     }
 }
 
-/// `--generate-signing-key`: mint a fresh ed25519 signing secret from the OS RNG and PRINT it (as 64
-/// hex chars) plus a paste-ready `auth.signing_key` snippet + a fleet note. ZERO side effects - like
-/// `--validate`/`--migrate-config`, it writes nothing; the operator PLACES the key (busbar never
-/// edits their config). Exit 0 on success, 1 if the OS entropy source is unavailable.
 fn generate_signing_key_command() -> i32 {
-    // The mint lives behind `busbar_kernel::boot`: the CLI needs a hex string, not a `TokenSigner`,
-    // so the signer type and its default kid stay crate-private in core.
     let hex = match busbar_kernel::boot::generate_signing_key_hex() {
         Ok(h) => h,
         Err(e) => {
@@ -811,22 +638,12 @@ fn generate_signing_key_command() -> i32 {
         }
     };
     let (secret_line, guidance) = signing_key_command_output(&hex);
-    // The secret (64 hex chars) goes to STDOUT ONLY so it is pipeable/captureable
-    // (`busbar --generate-signing-key > /run/secrets/busbar-signing.key`); the guidance goes to
-    // STDERR so a capture gets ONLY the key — the guidance itself must therefore be secret-free
-    // (SECURITY: it must never embed `hex`, or the master key leaks into any sink that captures stderr:
-    // systemd journal, CI/build logs, terminal scrollback). See `signing_key_command_output`.
+
     println!("{secret_line}");
     eprintln!("{guidance}");
     EXIT_SUCCESS
 }
 
-/// Split the `--generate-signing-key` output into (STDOUT secret line, STDERR guidance). The secret
-/// `hex` appears ONLY in the stdout line; the stderr guidance uses a NON-SECRET placeholder that points
-/// at the stdout value, so a stderr capture never leaks the master signing key. Pure (no I/O) so the
-/// stdout-only-secret contract is unit-testable (see `signing_key_guidance_omits_secret`), not merely
-/// asserted in a comment. `auth.signing_key` is a secret REFERENCE (never an inline literal — busbar
-/// rejects that), so the snippets wire the key via `{ file }` / `{ env }`.
 pub(crate) fn signing_key_command_output(hex: &str) -> (String, String) {
     let secret_line = hex.to_string();
     let guidance = "\n# ed25519 signing key for busbar-signed virtual keys (64 hex chars, printed above on stdout).\n\

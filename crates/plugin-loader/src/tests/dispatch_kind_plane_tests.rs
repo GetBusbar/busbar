@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plane kind's adapter: each checked op answers GREEN and RED through `Kind::check`, a count
-//! one past the host's cap is FAULT before any slice exists, a foreign `in` is FAULT, every slot
-//! has a name, and the short answers are recognised.
-
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, NonNull};
 use std::sync::LazyLock;
@@ -319,8 +315,6 @@ fn f(rule: Rule, field: &'static str) -> Result<(), Fault> {
     Err(fault(rule, field))
 }
 
-/// An answer of `slot` over the test's own `in` and `out`.
-/// The tail bounds every answer here is judged against: four entries in each tail list.
 static FACTS: LazyLock<PlaneFacts> = LazyLock::new(|| PlaneFacts {
     bounds: Bounds {
         op_classes: 4,
@@ -337,7 +331,6 @@ fn answer<'a, I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'a> {
     bare(s, outcome, i, o).with_context(Some(&*FACTS))
 }
 
-/// An answer judged with no tail at all.
 fn bare<'a, I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'a> {
     // SAFETY: `i` and `o` are live for the answer's use in each test and nobody writes them.
     unsafe {
@@ -371,12 +364,10 @@ fn field() -> OutField {
     }
 }
 
-// ── arrive ──
-
 #[test]
 fn arrive_green_units_within_the_hosts_cap() {
     let mut units = [unit(); 4];
-    // One count per class: a class counted twice in one report is refused.
+
     units[1].class = 1;
     let mut i: ArriveIn = z();
     i.units_buf = units.as_mut_ptr();
@@ -436,8 +427,6 @@ fn arrive_units_counted_over_a_null_buffer_fault() {
         f(Rule::NullWithCount, "arrive.units")
     );
 }
-
-// ── on_piece ──
 
 fn piece_in(
     units: &mut [UnitCount],
@@ -532,8 +521,6 @@ fn on_piece_counts_one_past_each_cap_fault_before_any_slice() {
     }
 }
 
-// ── refusal ──
-
 fn refusal_in(fields: &mut [OutField]) -> RefusalIn {
     let mut i: RefusalIn = z();
     i.reply_cap = 16;
@@ -574,8 +561,6 @@ fn refusal_fields_one_past_the_cap_fault_before_any_slice() {
         f(Rule::OverCap, "refusal.fields")
     );
 }
-
-// ── serve ──
 
 fn serve_in(fields: &mut [OutField]) -> ServeIn {
     let mut i: ServeIn = z();
@@ -625,8 +610,6 @@ fn serve_fields_one_past_the_cap_fault_before_any_slice() {
     );
 }
 
-// ── open, refresh: the generation snapshot ──
-
 fn snap(generation: u64) -> PlaneSnapshot {
     let mut s: PlaneSnapshot = z();
     s.size = size_of::<PlaneSnapshot>() as u32;
@@ -670,9 +653,6 @@ fn open_green_and_red_on_its_snapshot() {
     );
 }
 
-/// RED, THE APPEND RULE AT THE HOST: a plugin built before `PlaneSnapshot::listed` was appended
-/// publishes a snapshot whose `size` ends before it. The host accepts it and reads its list as none,
-/// never the bytes past that `size` (here garbage: a count over a dangling pointer).
 #[test]
 fn a_snapshot_from_before_listed_reads_as_listing_none() {
     let mut i: PlaneOpenIn = z();
@@ -702,10 +682,6 @@ fn a_snapshot_from_before_listed_reads_as_listing_none() {
     assert_eq!(copied.listed, vec!["listed-one".to_string()]);
 }
 
-/// RED (audit contract-src #11, `check_claim_target`'s own rule: "the host runs this on every target
-/// it copies into the generation"): a claim whose TARGET breaks the claim grammar refuses the whole
-/// snapshot when the host copies it, so it never loads as a route nothing can match. Each bad
-/// target is one the claims' shape check (`check_claims`, which reads no text) passes.
 #[test]
 fn red_a_claim_whose_target_breaks_the_grammar_refuses_the_snapshot() {
     use busbar_contract::abi::plane::{
@@ -739,15 +715,10 @@ fn red_a_claim_whose_target_breaks_the_grammar_refuses_the_snapshot() {
         );
     }
     for bad in [
-        // A pattern with a half-braced segment.
         claim("/t/{id", CLAIM_PATTERN),
-        // A pattern with no placeholder.
         claim("/t/id", CLAIM_PATTERN),
-        // A raw affix with no `*`.
         claim("/v1/sign", CLAIM_RAW_AFFIX),
-        // A signed path off anything but a raw affix.
         claim("/v1/sign", CLAIM_SIGNED_INGRESS),
-        // A raw affix that lists a catalog.
         claim("/v1/*:sign", CLAIM_RAW_AFFIX | CLAIM_CATALOG),
     ] {
         assert!(
@@ -777,8 +748,6 @@ fn refresh_green_and_red_on_its_snapshot() {
     );
 }
 
-// ── cancel, hydrate, start ──
-
 #[test]
 fn cancel_green_and_red_on_its_disposition() {
     let i: busbar_contract::abi::plane::PlaneCancelIn = z();
@@ -797,7 +766,7 @@ fn cancel_green_and_red_on_its_disposition() {
             f(Rule::UnknownCode, "cancel.disposition")
         );
     }
-    // SEAM-L(r): a write counted past the host's record buffer is FAULT.
+
     o.cancel.disposition = CANCEL_ABORTED;
     o.records_written = 1;
     assert_eq!(
@@ -817,8 +786,6 @@ fn hydrate_and_start_have_no_per_answer_rule() {
         }
     }
 }
-
-// ── project ──
 
 fn project_in(signals: &mut [SignalEntry], arena: &mut [u8]) -> ProjectIn {
     let mut i: ProjectIn = z();
@@ -890,7 +857,7 @@ fn a_short_project_answer_is_recognised() {
         &i,
         &o
     )));
-    // A prompt with more turns than the host's buffer holds is a short answer too.
+
     o.messages_needed = 3;
     let a = answer(slot::PROJECT, Outcome::Failed, &i, &o);
     assert_eq!(Plane::check(&a), Ok(()));
@@ -922,8 +889,6 @@ fn project_red_a_rewritten_body_for_a_call_that_carried_no_rewrite() {
         "the same answer to a call that carried one"
     );
 }
-
-// ── foreign sizes ──
 
 #[test]
 fn an_in_smaller_than_the_ops_struct_is_foreign() {
@@ -957,8 +922,6 @@ fn an_out_smaller_than_the_ops_struct_is_foreign() {
         f(Rule::Foreign, "out")
     );
 }
-
-// ── names, identity, short ──
 
 #[test]
 fn every_slot_has_a_name() {
@@ -1024,7 +987,6 @@ fn a_failed_answer_with_a_need_above_the_cap_is_short() {
 
 #[test]
 fn red_a_tail_index_past_its_list_is_fault_at_the_crossing() {
-    // A billable class past the tail's four: FAULT at the crossing.
     let mut units = [UnitCount { class: 4, ..unit() }; 1];
     let mut i: ArriveIn = z();
     i.units_buf = units.as_mut_ptr();
@@ -1034,14 +996,14 @@ fn red_a_tail_index_past_its_list_is_fault_at_the_crossing() {
     o.principal_need = PRINCIPAL_REQUIRED;
     let broke = Plane::check(&answer(slot::ARRIVE, Outcome::Ready, &i, &o)).unwrap_err();
     assert_eq!(broke.rule, Rule::IndexOutOfRange);
-    // The GREEN twin: the last class in the list.
+
     let mut last = [UnitCount { class: 3, ..unit() }; 1];
     i.units_buf = last.as_mut_ptr();
     assert_eq!(
         Plane::check(&answer(slot::ARRIVE, Outcome::Ready, &i, &o)),
         Ok(())
     );
-    // Without the instance's tail bounds the answer cannot be judged: FAULT.
+
     assert_eq!(
         Plane::check(&bare(slot::ARRIVE, Outcome::Ready, &i, &o)),
         f(Rule::Missing, "plane.tail")
@@ -1064,8 +1026,6 @@ fn red_a_plane_without_a_whole_tail_does_not_bind() {
     );
 }
 
-/// The tail's trust keys are judged per ELEMENT at bind: a pin naming no mechanism, and a mechanism
-/// with no token, each refuse the load; a whole key binds.
 #[test]
 fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -1111,9 +1071,9 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
         mechanisms_len: mechs.len(),
     };
     assert_eq!(bind(&[pin(&good)]), Ok(()));
-    // A pin with no mechanisms: refused by the key's own rule.
+
     assert!(bind(&[pin(&[])]).is_err());
-    // A mechanism with no token: refused by the per-mechanism rule, which `check_tail` never ran.
+
     let nameless = [PinMechanism {
         token: z(),
         flags: MECHANISM_ROOT,
@@ -1123,8 +1083,6 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
     assert!(err.contains("pin_mechanism.token"), "{err}");
 }
 
-/// RED: the tail's refusal statuses are judged at bind. A row the validator refuses refuses the
-/// load; the rows that pass are the instance's, for the kernel's driver.
 #[test]
 fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -1182,9 +1140,6 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
     assert!(refused.contains("refusal_status.status"), "{refused}");
 }
 
-/// RED (ARCHITECT Q-L5-FEE (C)): the tail's fee units are judged at bind. A fee unit that is one of
-/// the tail's billable classes binds; one no class lists refuses the load (the plane could never
-/// report it, so its fee would be refunded on every unit), and so does a class with no family.
 #[test]
 fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
     use busbar_contract::abi::mechanism::door::{
@@ -1315,10 +1270,6 @@ fn routing_recipe_is_kept_after_plane_tail_validation() {
     assert_eq!(facts.served.route_cost, vec![(1, 0.0), (0, 2.5), (0, 1.0)]);
 }
 
-/// RED: the tail's chained record kinds are judged at bind (the host frames and verifies each in
-/// its declared framing, `BUSBAR-1.6.0.md` Part 3 §5). A chain naming a known framing over a
-/// declared kind binds and is the instance's; an unknown framing, a kind past the list, or a kind
-/// named twice refuses the load.
 #[test]
 fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
     use busbar_contract::abi::mechanism::door::{
@@ -1385,10 +1336,6 @@ fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
     assert!(refused.contains("record_chain.kind_twice"), "{refused}");
 }
 
-/// RED/GREEN: the tail's record retention rules are judged at bind and copied with its record
-/// kinds. A rule over a declared kind binds and is the instance's; an unknown rule, a kind past the
-/// list, or a kind named twice refuses the load. A tail whose `size` ends before the list (an older
-/// plane's) binds and declares none, even when the memory past its size holds one.
 #[test]
 fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
     use busbar_contract::abi::mechanism::door::{
@@ -1461,10 +1408,6 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
     assert!(refused.contains("record_retention.kind_twice"), "{refused}");
 }
 
-/// THE STREAM CEILING IS A TAIL ADDITION (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of
-/// the whole size states its ceiling and the root is handed it; a tail whose `size` ends before the
-/// field still loads and states none (`0`), even when the memory past its size holds a value. RED:
-/// a frozen size equal to the grown tail refused the shorter tail, and no fact carried the ceiling.
 #[test]
 fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
     use busbar_contract::abi::mechanism::door::{
@@ -1512,7 +1455,6 @@ fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
     );
 }
 
-/// Exercise the actual loader adapter and its recall classification with all four owned buffers.
 #[test]
 fn reply_recall_includes_record_only_and_cross_dimension_shortages() {
     macro_rules! check_reply {

@@ -6,9 +6,7 @@
 use crate::upstream::{re_derived, strip_re_derived};
 
 /// 1.5.5 built every upstream request's headers itself and sent no `accept-encoding` (its HTTP
-/// client had no content-coding feature, and no client header was copied across), so the far end
-/// never compressed what busbar must read to meter. A client's `accept-encoding` is not forwarded,
-/// in any spelling, and the headers around it are.
+
 #[test]
 fn a_clients_accept_encoding_never_goes_upstream() {
     assert!(re_derived("accept-encoding", std::iter::empty()));

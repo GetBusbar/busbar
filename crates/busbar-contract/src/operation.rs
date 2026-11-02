@@ -130,7 +130,7 @@ pub enum OpShape {
 
 impl OpShape {
     /// Every shape, so a site that must cover all of them cannot silently cover some. The same role
-    /// `Transport::ALL` and `Plane::ALL` play for their axes.
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [OpShape] = &[
         OpShape::Invoke,
@@ -142,27 +142,11 @@ impl OpShape {
     ];
 
     /// MAY AN EXCHANGE OF THIS SHAPE BE ANSWERED INCREMENTALLY? The core's floor under
-    /// `crate::handlers::OpDispatch::wants_stream` and
-    /// `crate::handlers::OpDispatch::streaming`, and the one place the shape is a decision rather
-    /// than a label.
-    ///
-    /// It is a FLOOR, not a replacement: a cell that answers `false` still answers `false` (a tool
-    /// plane's `tools/call` is `Invoke` and does not stream). What the floor buys is the direction
-    /// no cell can be trusted to get right on its own — a shape that has nothing to stream must not
-    /// be able to claim it does, because the engine would then hold a response open for a body that
-    /// is never coming. That sentence was already written in prose on `IrReq::wants_stream` for
-    /// `Subscribe`; this is the same rule with a compiler behind it.
-    ///
-    /// Enumerated, never `_`: a shape added without an answer here is a compile error, which is the
-    /// whole mechanism.
+
     pub const fn may_stream(self) -> bool {
         match self {
-            // Something ran and the answer can arrive in pieces.
             OpShape::Invoke => true,
-            // A list, a document, a task record, an acknowledgement and a handshake are each ONE
-            // answer. Registering is not the stream: the events that follow a subscription travel
-            // on the channel the transport already provides, not as an incremental rendering of
-            // the registration's own reply.
+
             OpShape::Catalogue
             | OpShape::Fetch
             | OpShape::Task
@@ -172,9 +156,7 @@ impl OpShape {
     }
 
     /// The shape's own stable word, used as the `name` of the verb a protocol-surface shape carries
-    /// when the protocol has not named it something else. Also the shape's label in a test failure.
-    ///
-    /// Enumerated, never `_`, for the same reason [`Self::may_stream`] is.
+
     pub const fn as_str(self) -> &'static str {
         match self {
             OpShape::Invoke => "invoke",
@@ -207,10 +189,6 @@ pub enum OpVerb {
 }
 
 impl OpVerb {
-    // ── THE MODEL-INFERENCE FAMILY'S SEVEN VERBS. All one shape (`Invoke`): name a model, hand it
-    //    arguments, get content or an error back. They keep their published names to the letter,
-    //    because those names are the metrics label and the `paths:` config key and a rename is a
-    //    broken dashboard.
     pub const CHAT: OpVerb = OpVerb::named_invoke("chat");
     pub const EMBEDDINGS: OpVerb = OpVerb::named_invoke("embeddings");
     pub const MODERATION: OpVerb = OpVerb::named_invoke("moderation");
@@ -219,12 +197,6 @@ impl OpVerb {
     pub const SPEECH: OpVerb = OpVerb::named_invoke("speech");
     pub const RERANK: OpVerb = OpVerb::named_invoke("rerank");
 
-    // ── THE PROTOCOL SURFACE'S SIX. One verb per shape today, carrying the shape's own word: a
-    //    tool plane and an agent plane both address these through their own method names, which the
-    //    protocol's `resolve_operation` maps onto these constants. When a cell needs to distinguish
-    //    two verbs of one shape (`tools/list` from `prompts/list`), it adds a constant beside these
-    //    with the SAME `op` and its own `name` — an addition in the protocol's vocabulary, not in
-    //    the core's.
     pub const INVOKE: OpVerb = OpVerb::of(OpShape::Invoke);
     #[cfg_attr(not(test), allow(dead_code))]
     pub const CATALOGUE: OpVerb = OpVerb::of(OpShape::Catalogue);
@@ -237,15 +209,7 @@ impl OpVerb {
     pub const CONTROL: OpVerb = OpVerb::of(OpShape::Control);
 
     /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. This
-    /// used to also list the seven model-inference verbs, which made it a core table naming one
-    /// family's endpoints — exactly the coupling the module header calls out, and the reason the
-    /// deletion test passed "in the weakest sense": with every model-inference protocol deleted,
-    /// `ALL` still published `chat`…`rerank` as if something served them. Those rows now reach the
-    /// vocabulary from the protocol DECLARATIONS instead (`proto::registry::declared_verbs()`,
-    /// folded at boot from `ProtocolDecl::verbs`), so a protocol's verbs leave when the protocol
-    /// does. The closed metric-label surface the header promises is `ALL ∪ declared_verbs()`: both
-    /// halves are `&'static` consts fixed at load, and nothing constructs an `OpVerb` from the
-    /// wire.
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [OpVerb] = &[
         OpVerb::INVOKE,
@@ -257,9 +221,7 @@ impl OpVerb {
     ];
 
     /// A NAMED `Invoke` verb: one shape, an explicit wire word. Private, `const`, and the only way
-    /// the family's several words are spelled — so "are they really all one shape?" is answered by
-    /// the constructor rather than by several arms that could drift. (The model-inference family's
-    /// seven verbs — chat, embeddings, … — are all built here; the constructor names no protocol.)
+
     const fn named_invoke(name: &'static str) -> OpVerb {
         OpVerb::Verb {
             op: OpShape::Invoke,
@@ -268,7 +230,7 @@ impl OpVerb {
     }
 
     /// The verb a shape carries when the shape's own word is the name. Private for the same reason
-    /// [`Self::named_invoke`] is: constructing an `OpVerb` is this module's business.
+
     const fn of(op: OpShape) -> OpVerb {
         OpVerb::Verb {
             op,
@@ -284,17 +246,7 @@ impl OpVerb {
     }
 
     /// Stable identifier — the metrics label and the `paths:` config key.
-    ///
-    /// **OPERATOR-VISIBLE CONTRACT.** These strings appear in dashboards and in configuration
-    /// files; changing one silently breaks a `paths:` key and re-bases a metric series.
-    /// `snake_case`, singular, and named for the SHAPE rather than for any one protocol's method —
-    /// `invoke`, not `tool_call`; `catalogue`, not `list_tools`. The seven model-inference words
-    /// are the exception the header explains: they are endpoint names that were already published,
-    /// and republishing them under their shape's word would break every dashboard to prove a point
-    /// about tidiness.
-    ///
-    /// BOUNDED BY CONSTRUCTION — see the module header. This returns a field, not a computation,
-    /// and the field's only possible values are the constants above.
+
     pub const fn name(self) -> &'static str {
         match self {
             OpVerb::Verb { name, .. } => name,

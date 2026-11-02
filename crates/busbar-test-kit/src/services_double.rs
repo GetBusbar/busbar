@@ -26,16 +26,11 @@ use busbar_contract::services::{
     Stored, TrustKeyRef, UNSERVED,
 };
 
-/// The answer of a service this double does not serve, for a service that may pend.
 fn refused() -> Ran {
     Ran::Now(Stored::refused(UNSERVED))
 }
 
-/// THE HOST SERVICES, WITH A REFUSING DEFAULT FOR EACH: implement it for a test's own type and
-/// override only what the test serves. Each method is the [`HostServices`] method of the same
-/// name; the blanket impl forwards one to the other.
 pub trait ServicesDouble: Send + Sync {
-    /// Read-only observation; unserved by default.
     fn observe_chain_life(
         &self,
         _caller: &Caller,
@@ -49,12 +44,11 @@ pub trait ServicesDouble: Send + Sync {
     ) -> Result<(), &'static str> {
         Err(UNSERVED)
     }
-    /// Optional conditional record publication; unserved by default.
+
     fn supports_record_transactions(&self) -> bool {
         false
     }
 
-    /// Accepted work remains host-owned after caller loss.
     fn conditional_record_transaction(
         &self,
         _caller: &Caller,
@@ -67,7 +61,6 @@ pub trait ServicesDouble: Send + Sync {
         Err(UNSERVED)
     }
 
-    /// Optional read-only main-extension host inspection. Unserved: Unsupported.
     fn inspect(
         &self,
         _caller: &Caller,
@@ -77,7 +70,6 @@ pub trait ServicesDouble: Send + Sync {
         Err(busbar_contract::abi::mechanism::inspection::InspectionError::Unsupported)
     }
 
-    /// `clock.now`. Unserved: the zero reading.
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 0,
@@ -85,22 +77,18 @@ pub trait ServicesDouble: Send + Sync {
         }
     }
 
-    /// `dest.judge`. Unserved: REFUSED.
     fn dest_judge(&self, _dest: &str, _class: u32, _flags: u32, _later: Option<Later>) -> Ran {
         refused()
     }
 
-    /// `records.get`. Unserved: REFUSED.
     fn records_get(&self, _caller: &Caller, _kind: &str, _key: &[u8], _later: Later) -> Ran {
         refused()
     }
 
-    /// `records.list`. Unserved: REFUSED.
     fn records_list(&self, _caller: &Caller, _list: RecordsList, _later: Later) -> Ran {
         refused()
     }
 
-    /// `records.claim`. Unserved: REFUSED.
     fn records_claim(
         &self,
         _caller: &Caller,
@@ -112,12 +100,10 @@ pub trait ServicesDouble: Send + Sync {
         refused()
     }
 
-    /// `sign`. Unserved: REFUSED.
     fn sign(&self, _caller: &Caller, _data: &[u8]) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `trust.sight`. Unserved: REFUSED.
     fn trust_sight(
         &self,
         _caller: &Caller,
@@ -128,12 +114,10 @@ pub trait ServicesDouble: Send + Sync {
         refused()
     }
 
-    /// `trust.sight` with `TRUST_UNREACHABLE`. Unserved: REFUSED.
     fn trust_unreached(&self, _caller: &Caller, _counterparty: &str) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `trust.sight_item`. Unserved: REFUSED.
     fn trust_sight_item(
         &self,
         _caller: &Caller,
@@ -144,7 +128,6 @@ pub trait ServicesDouble: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
-    /// `trust.decide`. Unserved: REFUSED.
     fn trust_decide(
         &self,
         _caller: &Caller,
@@ -155,12 +138,10 @@ pub trait ServicesDouble: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
-    /// `trust.state`. Unserved: REFUSED.
     fn trust_state(&self, _caller: &Caller, _counterparty: &str) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `trust.serves`. Unserved: REFUSED.
     fn trust_serves(
         &self,
         _caller: &Caller,
@@ -171,12 +152,10 @@ pub trait ServicesDouble: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
-    /// `trust.due`. Unserved: REFUSED.
     fn trust_due(&self, _caller: &Caller) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `trust.verify`. Unserved: REFUSED.
     fn trust_verify(
         &self,
         _caller: &Caller,
@@ -187,17 +166,14 @@ pub trait ServicesDouble: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
-    /// `entitlement.check`. Unserved: REFUSED.
     fn entitlement_check(&self, _caller: &Caller, _unit: Option<u64>, _target: &str) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `session.emit`. Unserved (a host that holds no carrier session): REFUSED.
     fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `ticket.mint`. Unserved (a host that mints no tickets): REFUSED.
     fn ticket_mint(
         &self,
         _caller: &Caller,
@@ -208,27 +184,22 @@ pub trait ServicesDouble: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
-    /// `ticket.take`. Unserved (a host that mints no tickets): REFUSED.
     fn ticket_take(&self, _caller: &Caller, _unit: Option<u64>) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `random.fill`. Unserved: REFUSED.
     fn random_fill(&self, _len: u64) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `records.secret`. Unserved (a host with no credential source): REFUSED.
     fn records_secret(&self, _kind: &str, _id: &str, _later: Later) -> Ran {
         refused()
     }
 
-    /// `unit.nest`. Unserved: REFUSED.
     fn unit_nest(&self, _caller: &Caller, _unit: Option<u64>, _ask: NestAsk, _later: Later) -> Ran {
         refused()
     }
 
-    /// `work.open`. Unserved: REFUSED.
     fn work_open(
         &self,
         _caller: &Caller,
@@ -240,7 +211,6 @@ pub trait ServicesDouble: Send + Sync {
         refused()
     }
 
-    /// `work.find`. Unserved: REFUSED.
     fn work_find(
         &self,
         _caller: &Caller,
@@ -251,7 +221,6 @@ pub trait ServicesDouble: Send + Sync {
         refused()
     }
 
-    /// `work.settle`. Unserved: REFUSED.
     fn work_settle(
         &self,
         _caller: &Caller,
@@ -263,7 +232,6 @@ pub trait ServicesDouble: Send + Sync {
         refused()
     }
 
-    /// `work.resume`. Unserved: REFUSED.
     fn work_resume(
         &self,
         _caller: &Caller,
@@ -274,22 +242,18 @@ pub trait ServicesDouble: Send + Sync {
         refused()
     }
 
-    /// `disk.append`. Unserved (a host with no disk lane): REFUSED.
     fn disk_append(&self, _dest: &DiskDest, _bytes: Vec<u8>, _later: Later) -> Ran {
         refused()
     }
 
-    /// `verify.lookup`. Unserved: REFUSED.
     fn verify_lookup(&self, _caller: &Caller, _key: &[u8], _later: Later) -> Ran {
         refused()
     }
 
-    /// `verify.store`. Unserved: REFUSED.
     fn verify_store(&self, _caller: &Caller, _key: &[u8], _entry: &[u8], _ttl_ms: u64) -> Stored {
         Stored::refused(UNSERVED)
     }
 
-    /// `content.scan`. Unserved: REFUSED.
     fn content_scan(
         &self,
         _caller: &Caller,
@@ -300,12 +264,10 @@ pub trait ServicesDouble: Send + Sync {
         refused()
     }
 
-    /// `hook.call`. Unserved: REFUSED.
     fn hook_call(&self, _caller: &Caller, _unit: Option<u64>, _ask: HookAsk, _later: Later) -> Ran {
         refused()
     }
 
-    /// `snapshot.read`. Unserved (a host with no snapshot for this caller): REFUSED.
     fn snapshot_read(&self, _caller: &Caller, _scope: u32) -> Snapshot {
         Snapshot::Refused(UNSERVED)
     }

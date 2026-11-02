@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A real door RESTATED with one outbound `tcp` need, the way the conformance suite's RED arms
-//! restate a door (`red_ready`): no plugin of its own, the door's own table and Statement with only
-//! its needs moved. The bind tests below read what the loader does with a door that declares a need.
-
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
@@ -19,7 +15,6 @@ const NONE: AbiStr = AbiStr {
     len: 0,
 };
 
-/// One outbound need over `transport`, its target the plugin's own.
 #[must_use]
 pub(crate) const fn need(transport: AbiStr) -> Need {
     Need {
@@ -40,10 +35,8 @@ pub(crate) const fn need(transport: AbiStr) -> Need {
     }
 }
 
-/// One `tcp` need.
 pub(crate) const TCP: [Need; 1] = [need(abi_str("tcp"))];
 
-/// `real`'s door with its Statement declaring `needs`, stored in `slot` (once) and answered.
 pub(crate) fn restate(slot: &AtomicPtr<Door>, real: DoorFn, needs: &'static [Need]) -> *const Door {
     let have = slot.load(Ordering::SeqCst);
     if !have.is_null() {

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The root's boot stages: its `plugins.fetch` runs the loader's fetch, and only ever downloads
-//! through its SSRF-guarded download over the one connector (`root::plugin_fetch`).
-
 use super::*;
 
 fn scratch(tag: &str) -> std::path::PathBuf {
@@ -26,11 +23,6 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     d
 }
 
-/// A PIN-CACHED entry skips the network: the file already on disk hashes to the pin, so the
-/// loader's fetch the root delegates to reports it cached and never calls the download (which
-/// would fail the test). The root's `plugins_fetch` downloads only through the connector
-/// (`root::plugin_fetch`, row 130 E6), so the panicking download is handed to the loader's fetch
-/// directly; the root maps its outcome one to one.
 #[test]
 fn a_pin_cached_fetch_never_downloads() {
     let dir = scratch("cached");
@@ -58,9 +50,6 @@ fn a_pin_cached_fetch_never_downloads() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE ROOT'S FETCH CANNOT BYPASS THE GUARD: a cloud-metadata URL fetched through the root is
-/// refused, before any dial, with the same message the loader's fetch gives the root's
-/// SSRF-guarded download directly, and nothing is written.
 #[test]
 fn the_roots_fetch_refuses_a_metadata_host_through_the_kernels_guard() {
     let dir = scratch("ssrf");
@@ -86,16 +75,10 @@ fn the_roots_fetch_refuses_a_metadata_host_through_the_kernels_guard() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// PER-NAME anti-downgrade through the root's `trust_policy` (floors-only semantics): a validly-signed
-/// first-party artifact on its own independent version line LOADS under the default policy (no
-/// automatic binary-version floor — plugins ship 1.0.x/2.x under a 1.5.0 engine), while an
-/// explicit per-name floor (the persisted rollback-pin seam) binds exactly at its pinned version:
-/// at the pin loads, below the pin refuses.
 #[test]
 fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     use crate::root::loader::sign::{evaluate, sign, Manifest, SigningKey, Verdict};
 
-    // A first-party release key + an OLD (below the current binary) signed first-party artifact.
     let release = SigningKey::from_bytes(&[7u8; 32]);
     let artifact = b"\x7fELF old first-party build";
     let old = sign(
@@ -104,7 +87,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             name: "busbar-store-kv-plugin".into(),
             alias: "kv".into(),
             kind: "store".into(),
-            version: "0.9.0".into(), // below any real CARGO_PKG_VERSION (1.x)
+            version: "0.9.0".into(),
             publisher: crate::root::loader::sign::FIRST_PARTY_PUBLISHER.into(),
             abi_version: crate::root::loader::supported_abi("store")[0],
             sha256: String::new(),
@@ -123,16 +106,13 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
         artifact,
     );
 
-    // Build both policies off ONE PluginsCfg, but embed the SAME release key as the first-party key so
-    // the signature verifies in-test (production reads the embedded release key; here we inject it).
     let cfg = PluginsCfg {
         enabled: true,
         ..Default::default()
     };
     let mut automatic = trust_policy(&cfg, env!("CARGO_PKG_VERSION")).expect("automatic policy");
     automatic.first_party_key = Some(release.verifying_key());
-    // DEFAULT policy: no per-name floor pins this artifact, so its 0.9.0 version line is its own
-    // business — a verified first-party plugin loads regardless of the binary's version.
+
     assert!(
         matches!(
             evaluate(artifact, &old, &automatic).unwrap(),
@@ -144,8 +124,6 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
         "default policy must load a verified first-party artifact on its own version line"
     );
 
-    // EXPLICIT per-name floor (the rollback-pin seam): pinned exactly at the artifact's version,
-    // it loads; the pin binds and nothing older passes (asserted below).
     let mut explicit = trust_policy(&cfg, env!("CARGO_PKG_VERSION")).expect("explicit policy");
     explicit
         .first_party_floors
@@ -162,8 +140,6 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
         "an explicit rollback floor admits the prior first-party artifact"
     );
 
-    // But an EVEN OLDER artifact is STILL refused under the explicit floor — a rollback lowers the
-    // floor to EXACTLY the pinned target, not to zero.
     let older = sign(
         &release,
         Manifest {
@@ -194,21 +170,17 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     );
 }
 
-/// A runtime-set PER-PLUGIN `first_party_floors` override on `PluginsCfg` is honored by the root's `trust_policy`
-/// (the seam the persisted rollback pin drives) for that name ONLY, while the global `binary_version`
-/// stays the binary's own version — so an UNPINNED first-party plugin still faces the full floor.
 #[test]
 fn to_policy_honors_runtime_first_party_floor_override() {
     let mut cfg = PluginsCfg {
         enabled: true,
         ..Default::default()
     };
-    // Default: the automatic floor equals the binary version and there are no per-name overrides.
+
     let auto = trust_policy(&cfg, env!("CARGO_PKG_VERSION")).expect("policy");
     assert_eq!(auto.binary_version, env!("CARGO_PKG_VERSION"));
     assert!(auto.first_party_floors.is_empty());
-    // With an explicit per-name override (as a persisted rollback pin sets): only that name is lowered;
-    // the global binary_version floor (what every OTHER first-party plugin uses) is untouched.
+
     cfg.first_party_floors
         .insert("acme-hook".to_string(), "0.9.0".to_string());
     let pinned = trust_policy(&cfg, env!("CARGO_PKG_VERSION")).expect("policy");
@@ -222,12 +194,6 @@ fn to_policy_honors_runtime_first_party_floor_override() {
     );
 }
 
-/// REGRESSION PROOF: a malformed `min_versions` floor does NOT fail the root's `trust_policy` — the
-/// comparator (`version_at_least`), not config validation, is where a malformed floor is refused
-/// (fail closed at the comparator, don't refuse the boot). Passes before AND after; it is
-/// the anti-regression guard against the superseded design (the root's `trust_policy` returning
-/// `Err` for this case), which the current design deliberately does NOT do. If this test goes red,
-/// the superseded design has been reintroduced.
 #[test]
 fn to_policy_still_returns_ok_for_a_malformed_floor() {
     let mut cfg = PluginsCfg {
@@ -241,8 +207,6 @@ fn to_policy_still_returns_ok_for_a_malformed_floor() {
         "a malformed floor must not fail the boot — it is refused at the comparator instead"
     );
 }
-
-// ── INBOUND ──
 
 use std::sync::Arc;
 
@@ -287,7 +251,6 @@ fn listening_plane(target_from: &str) -> Candidate {
     }
 }
 
-/// A selected plane's declared bind reaches its SERVE consumer; an unused declaration binds nothing.
 #[test]
 fn a_selected_plane_inbound_need_keeps_its_consumer_and_physical_bind() {
     let doc: serde_json::Value =
@@ -426,9 +389,6 @@ fn explicit_same_address_needs_share_compatible_physical_policy() {
     );
 }
 
-/// RED (ARCHITECT ruling 2026-09-30): the root's own listeners head THE ONE LIST: the data
-/// door at `listen` with its raw `tls` block and the admin surface at `admin_listen` with its raw
-/// `admin_tls`, uncapped as in 1.5.5; `--validate` reports only plugin listeners.
 #[test]
 fn red_the_roots_listeners_head_the_one_list_of_listeners() {
     let doc: serde_json::Value = serde_json::from_str(
@@ -479,12 +439,8 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
     assert!(report.iter().all(|l| !l.contains("listens:")), "{report:?}");
 }
 
-// ── STAGE 3g: THE DEAL ──
-
 use busbar_contract::plugin::Kind;
 
-/// RED: at 3g each seat is dealt only its own section, reserved sub-keys stripped,
-/// and a plugin's validation refusal names the operator's file position in 1.5.5's form.
 #[test]
 fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
     let doc = Document::parse(
@@ -526,9 +482,6 @@ fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
     );
 }
 
-/// **RED ARM: `plugins.logs` FOLLOWS A CONFIG APPLY** (THE DESIGN §11.2). A sink opened under
-/// `warn` drops an `info` line; once an apply's `plugins.logs` says `info`, the same sink writes it,
-/// and a `warn` config applied again drops the next.
 #[test]
 fn an_applied_plugins_logs_level_reaches_a_live_sink() {
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink, PluginLogConfig};
@@ -571,8 +524,7 @@ fn an_applied_plugins_logs_level_reaches_a_live_sink() {
     info("under info");
     follow_plugin_logs(&logs, &words("warn"));
     info("under warn again");
-    // The writer must pass the last filtered line before its absence is meaningful. This WARN
-    // shares the sink's ordered queue and is admitted under the final configuration.
+
     sink.diag(Diagnostic {
         id: DIAG_LOG,
         name: &[],
@@ -601,12 +553,8 @@ fn an_applied_plugins_logs_level_reaches_a_live_sink() {
     assert!(!text.contains("under warn"), "{text}");
 }
 
-/// The variable the `test-harness` build's first-party key seam reads
-/// (`boot::HARNESS_FIRST_PARTY_KEY_ENV`), spelled out here because a build without the feature has
-/// no such constant.
 const HARNESS_KEY_VAR: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
-/// A first-party (`publisher: busbar`) manifest for `artifact`, signed by `key`.
 fn first_party_signed_by(
     key: &crate::root::loader::sign::SigningKey,
     artifact: &[u8],
@@ -627,10 +575,6 @@ fn first_party_signed_by(
     )
 }
 
-/// **THE RED ARM OF THE HARNESS KEY SEAM (ARCHITECT ruling, busbar #700).** In a build WITHOUT
-/// `test-harness`, which is every release build, setting the harness variable to a test key changes
-/// nothing: the root's trust resolution keeps the embedded release key, so a plugin the test key
-/// signed first-party is refused, and so is an unsigned one.
 #[cfg(not(feature = "test-harness"))]
 #[test]
 fn a_build_without_test_harness_ignores_the_harness_key_and_refuses_a_test_signed_first_party_plugin(
@@ -665,9 +609,6 @@ fn a_build_without_test_harness_ignores_the_harness_key_and_refuses_a_test_signe
     );
 }
 
-/// The seam itself, in a `test-harness` build: a set variable names the first-party key, under which
-/// a plugin that key signed first-party is trusted as first-party; unset or empty leaves the
-/// embedded key standing; a malformed value is refused, never ignored.
 #[cfg(feature = "test-harness")]
 #[test]
 fn a_test_harness_build_takes_its_first_party_key_from_the_harness_variable() {
@@ -701,11 +642,6 @@ fn a_test_harness_build_takes_its_first_party_key_from_the_harness_variable() {
     ));
 }
 
-/// THE ADMIN CATALOG'S ROW for a plugin a harness key signed first-party, read over
-/// `GET /api/v1/admin/plugins?type=store` on a snapshot carrying the root's trust builder
-/// ([`trust_policy`], what `root::linked::register_stores` installs for every snapshot), with the
-/// harness variable set to that key: the row's (`valid`, `trust`). The key is not the kernel test
-/// build's stand-in release key, so only the root's harness seam can admit it.
 async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     tag: &str,
 ) -> (serde_json::Value, serde_json::Value) {
@@ -745,7 +681,6 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let page: serde_json::Value = serde_json::from_slice(&bytes).expect("a JSON page");
     let row = page["items"]
         .as_array()
-        // The row is found by its tarball's name, wherever the row states it.
         .and_then(|rows| {
             rows.iter()
                 .find(|r| r.to_string().contains("harness-seam.tar.gz"))
@@ -755,12 +690,6 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     (row["valid"].clone(), row["trust"].clone())
 }
 
-/// **THE ADMIN CATALOG JUDGES UNDER BOOT'S TRUST (the fleet e2e that read it red).** In a
-/// `test-harness` build with the harness key set, the catalog row for a plugin that key signed
-/// first-party reads valid and trusted — the verdict boot admits it under — because the admin
-/// surface resolves through the root's one builder, harness key included, and builds none of its
-/// own. RED before: the admin crate built its own policy without the harness key and reported the
-/// row rejected (`first-party plugin only`) while boot admitted the plugin.
 #[cfg(feature = "test-harness")]
 #[tokio::test]
 async fn a_test_harness_admin_catalog_reads_a_harness_signed_plugin_as_valid() {
@@ -770,8 +699,6 @@ async fn a_test_harness_admin_catalog_reads_a_harness_signed_plugin_as_valid() {
     assert_eq!(trust, serde_json::json!("trusted"));
 }
 
-/// The red arm: in a build WITHOUT `test-harness`, the same plugin under the same variable is
-/// refused by the admin catalog, as boot refuses it — the harness key reaches neither.
 #[cfg(not(feature = "test-harness"))]
 #[tokio::test]
 async fn an_admin_catalog_without_test_harness_refuses_a_harness_signed_plugin() {
@@ -780,8 +707,6 @@ async fn an_admin_catalog_without_test_harness_refuses_a_harness_signed_plugin()
     assert_eq!(trust, serde_json::json!("rejected"));
 }
 
-/// The features a `[features]` table turns on from `root`, transitively: only the package's own
-/// features (a `dep:` or `crate/feature` entry enables nothing of this package's own).
 fn features_reached(manifest: &str, root: &str) -> std::collections::BTreeSet<String> {
     let mut table = std::collections::BTreeMap::<String, Vec<String>>::new();
     let mut in_features = false;
@@ -834,11 +759,6 @@ fn features_reached(manifest: &str, root: &str) -> std::collections::BTreeSet<St
     reached
 }
 
-/// THE RELEASE ARTIFACT NEVER CARRIES THE HARNESS SEAM (ARCHITECT ruling, busbar #700, condition b):
-/// the release builds (`scripts/release-build.sh`, both `scripts/pgo-build.sh` builds) compile
-/// the default distribution (`dist/default`) with its default features and name no `--features` or `--all-features`, and the
-/// default feature set does not reach `test-harness`. RED arm: a manifest whose default reaches it
-/// through another feature is caught, so the walk is not vacuous.
 #[test]
 fn the_release_feature_set_excludes_test_harness() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -877,10 +797,6 @@ fn the_release_feature_set_excludes_test_harness() {
     }
 }
 
-/// RED (Q-STEP9-a, ARCHITECT 2026-10-07; base: a root pool named after a reserved sub-key was
-/// stripped from the dealt blob as if it were that knob): the plane whose verb is the root `pools:`
-/// section is dealt a pool named `tier` or `work` as the pool it is, its own knobs and its members'
-/// taken off; only 1.5.5's two section words leave at the section level.
 #[test]
 fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
     let doc = Document::parse(
@@ -906,13 +822,8 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
     );
 }
 
-// ── THE DROPPED-IN SECRET ROWS ──
-
-/// The process's one secret axis (`root::linked::secret_rows`) is shared by every test here that
-/// writes its dropped-in rows: each holds this while its rows are in play.
 static SECRET_ROWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A dropped-in secret plugin the running node admitted, answering `name`.
 fn dropped_secret(name: &str) -> Candidate {
     Candidate {
         kind: KindCode::Secret,
@@ -934,16 +845,6 @@ fn dropped_secret(name: &str) -> Candidate {
     }
 }
 
-/// A DRY RUN LEAVES THE LIVE SECRET ROWS ALONE (row 159, audit root A-4): the registry build is
-/// stage 1, Discover, which `--validate` and the admin config-validate run too (BUSBAR-1.6.0.md
-/// l.456-457: "`--validate` runs stages 0–2 … nothing dials"; "A validation refusal keeps the
-/// running generation"), and the secret plugins are opened in stage 3 (l.444, l.448). So a registry
-/// build over a configuration with `plugins.enabled: false` leaves the dropped-in secret plugin
-/// the running node admitted answering its word: a `{module: <it>}` reference keeps resolving.
-///
-/// RED before the fix: `root::boot::registry` put the build's dropped-in secret set on the
-/// process's one secret axis (`admit_dropped` → `set_dropped`), so the dry run's empty set replaced
-/// the running node's and the module stopped answering.
 #[test]
 fn red_a_dry_runs_registry_build_leaves_the_live_dropped_secret_rows_alone() {
     use busbar_contract::secret::SecretAxis as _;
@@ -972,11 +873,6 @@ fn red_a_dry_runs_registry_build_leaves_the_live_dropped_secret_rows_alone() {
     );
 }
 
-/// GREEN TWIN of the dry-run test above: the admission the committing builds make (boot's scan and
-/// the app build, through the install record's `secret_admit`) still REPLACES the dropped-in secret
-/// rows with its own registry's set (BUSBAR-1.6.0.md §3, stages 3a/3e open the secret plugins).
-/// Added with the fix: before it, the registry build was the only admission, so there was no
-/// separate committing path to name.
 #[test]
 fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
     use busbar_contract::secret::SecretAxis as _;
@@ -989,8 +885,7 @@ fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
     let off = PluginsCfg::default();
     let registry = crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
         .expect("a build with the plugins directory off is the linked rows alone");
-    // The app build's path: the kernel holds the registry as the contract's rows view and hands it
-    // to the install record's admission, which reads it back as the registry this root built.
+
     let plugin_rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
     admit_secrets(&plugin_rows, &off).expect("no dropped-in secret contests a word");
     let answers = rows.answers("row159-stale-vault");
@@ -1001,8 +896,6 @@ fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
     );
 }
 
-/// The production discovery and run/validation entry points, isolated from libtest's CLI flags.
-/// No Store, plugin axis or staging function is replaced by a test double in these children.
 pub(super) fn constructor_child(validate: bool) -> ! {
     let late = crate::root::serve::LateServices::new();
     crate::root::boot::install_native_load_guard().unwrap();
@@ -1024,9 +917,6 @@ pub(super) fn constructor_child(validate: bool) -> ! {
     panic!("the constructor-only fixture must be refused for its missing plugin door");
 }
 
-/// Exercise the production bootstrap run path in a fresh process: constructors run at dlopen, before
-/// a missing door can be refused. The same signed native image must remain unopened under a
-/// mismatched base archive pin, and reach its constructor only under the matching pin.
 #[cfg(unix)]
 #[test]
 fn bootstrap_archive_pins_refuse_before_native_constructors() {

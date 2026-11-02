@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A PLUGIN'S CONNECTIONS, THROUGH THE HOST CONNECTOR (THE DESIGN, the connections section: one connector for every kind;
-//! the plugin ABI: every call is Ready or Pending(wake), never a blocking thread). [`Host`] is the instance's
-//! host tables as `open` handed them (`OpenIn.host`, kept by the generic lifecycle,
-//! `abi::sdk::life::Held::host`); [`Connector`] makes the connector's services for ONE op on ONE
-//! ticket, each answering [`Poll::Ready`] or [`Poll::Pending`]. The one-shot request/reply every
-//! driver needs is `abi::sdk::exchange`, built on it.
-//!
-//! THE REPLAY RULE (the mechanism's completion handles, `abi::mechanism::ticket`). An op that
-//! answers PENDING is re-invoked, on the same ticket, when its wake fires; its body runs again from
-//! the top. Each service a [`Connector`] makes carries the handle `(ticket, n)`, `n` counting the
-//! services this entry made. So a body that makes its services in the same order on every entry
-//! re-issues each completed one with its own handle, and the host answers its stored result
-//! without running it twice. Memory a pending service writes into (a read buffer) must outlive the
-//! entry: `abi::sdk::exchange` keeps its buffers parked on the ticket (`Instance::park`).
 
 use std::task::Poll;
 
@@ -137,8 +124,6 @@ pub struct Host {
     io: Option<IoSlots>,
 }
 
-// Copy complete advertised fields only: a shorter foreign table need not allocate the current
-// Rust struct, and a partially advertised function pointer must never be materialized.
 macro_rules! snapshot_table {
     ($name:ident, $ty:ident, $($field:ident),+ $(,)?) => {
         pub(super) unsafe fn $name(raw: *const $ty) -> Option<$ty> {
@@ -254,7 +239,7 @@ impl Host {
     };
 
     /// A host that only wakes tickets through a safe callback and an opaque scalar context.
-    /// No connector, service or I/O table is offered. This needs no raw-pointer proof.
+
     #[must_use]
     pub const fn wake_only(ctx: HostCtx, wake: WakeFn) -> Self {
         Self {
@@ -319,7 +304,7 @@ impl Host {
     }
 
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
-    /// a carrier moves bytes with (`abi::sdk::io`).
+
     #[must_use]
     pub fn io(&self, ticket: Ticket) -> super::io::Io<'_> {
         super::io::Io::new(
@@ -332,8 +317,7 @@ impl Host {
     }
 
     /// WAKE `ticket` (the host's `wake`, `abi::mechanism::ticket`): from any thread, never blocks,
-    /// never fails; the host re-invokes the op that answered PENDING on it with `FLAG_RESUME`. A
-    /// wake for a stale ticket is dropped; tables with no wake make it a no-op.
+
     pub fn wake(&self, ticket: Ticket) {
         if let Some(wake) = self.wake {
             wake(self.ctx, ticket);
@@ -341,7 +325,7 @@ impl Host {
     }
 
     /// The host services table these tables carry (`abi::host::service`), as the SDK's typed
-    /// wrappers; `None` when the host offers none.
+
     #[must_use]
     pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
         self.services
@@ -355,9 +339,7 @@ impl Host {
     }
 
     /// The connector for one entry of the op running on `ticket`, its handles counting on from
-    /// `issued` (what [`Connector::issued`] answered when the op parked): an op that runs several
-    /// requests one after another parks `(which request, issued)` and resumes the pending one
-    /// without replaying the completed ones.
+
     #[must_use]
     pub fn connector_from(&self, ticket: Ticket, issued: u32) -> Connector<'_> {
         Connector {
@@ -370,7 +352,7 @@ impl Host {
     }
 
     /// Whether the host lent the instance a connector table: a host that declared none of its needs
-    /// (no connection table bound) dials nothing for it.
+
     #[must_use]
     pub fn lends_connector(&self) -> bool {
         self.conns.is_some()
@@ -454,15 +436,14 @@ impl Connector<'_> {
     }
 
     /// Where the last service this connector made that failed was failed, as the host named it:
-    /// a `CAUSE_*` stage (`CAUSE_NONE` = the host named none). The failure's text is the
-    /// [`ConnFailure`]'s, the underlying error's own words when a stage is named.
+
     #[must_use]
     pub fn cause(&self) -> u64 {
         self.cause.get()
     }
 
     /// Bound every request this connector sends to `ms` milliseconds: what is left of the op's
-    /// deadline, as the op knows it. A request asking for longer is clamped to it.
+
     #[must_use]
     pub const fn within(mut self, ms: u64) -> Self {
         self.budget_ms = Some(ms);
@@ -487,7 +468,7 @@ impl Connector<'_> {
     }
 
     /// Make one service through `f` with `input`, under the next handle on the ticket: the
-    /// connector's services and the host's share one count, so one op may make both.
+
     fn make<I: ServiceIn>(
         &mut self,
         op: u32,
@@ -497,8 +478,7 @@ impl Connector<'_> {
         let Some(f) = f else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
-        // A service on no ticket may not pend: `close` never does, so it is made on none (an
-        // instance closing its kept connections as it goes).
+
         if self.ticket.is_none() && op != service::CLOSE {
             return Poll::Ready(Err(ConnFailure::NoTicket));
         }
@@ -541,7 +521,7 @@ impl Connector<'_> {
     }
 
     /// Cross into service `op` through `f` with `input`, under `handle`: the outcome the host
-    /// returned and the `out` it wrote, whatever the outcome.
+
     fn cross_out<I: ServiceIn>(
         &self,
         op: u32,
@@ -568,15 +548,13 @@ impl Connector<'_> {
     }
 
     /// Establish a stream for the declared need `need` (its index), to `target` (`None` = the
-    /// need's `target_from`), its dial landing only on an address of `within` (the set a
-    /// `dest.judge` answered, `Judged::within`; `""` = no pin beyond the host's judgement): the
-    /// stream. A dial the host's judgement pins outside `within` is refused before any byte leaves.
+
     pub fn establish(&mut self, need: u32, target: Option<&str>, within: &str) -> Answer<u64> {
         self.establish_timed(need, target, within, 0)
     }
 
     /// [`Connector::establish`], its dial bounded by `timeout_ms` (`0` = the need's own timeout,
-    /// else the host's default): an operator-set connect timeout.
+
     pub fn establish_timed(
         &mut self,
         need: u32,
@@ -588,8 +566,7 @@ impl Connector<'_> {
     }
 
     /// [`Connector::establish_timed`] for the REGISTRATION `member` (its name in the plugin's
-    /// declaring section): what the host sealed for that registration alone (its private reach)
-    /// applies to this stream; `None` = the stream names none.
+
     pub fn establish_as(
         &mut self,
         need: u32,
@@ -611,7 +588,7 @@ impl Connector<'_> {
     }
 
     /// Write `bytes` to `stream`: how many the host took. The host reads `bytes` during this call
-    /// only (`IoIn`); after a PENDING answer the RESUME lends them again.
+
     pub fn write(&mut self, stream: u64, bytes: &[u8]) -> Answer<usize> {
         let input = IoIn {
             head: blank_head(),
@@ -624,7 +601,7 @@ impl Connector<'_> {
     }
 
     /// Read from `stream` into `buf`: how many bytes; `0` = the end. The host writes `buf` during
-    /// this call only (`IoIn`); after a PENDING answer the RESUME lends it again.
+
     pub fn read(&mut self, stream: u64, buf: &mut [u8]) -> Answer<usize> {
         let input = IoIn {
             head: blank_head(),
@@ -637,7 +614,7 @@ impl Connector<'_> {
     }
 
     /// Upgrade `stream` to connection security, offering `name` (`None` = the endpoint's) and
-    /// trusting `trust` (`None` = the need's anchors).
+
     pub fn upgrade_secure(
         &mut self,
         stream: u64,
@@ -648,9 +625,7 @@ impl Connector<'_> {
     }
 
     /// [`Connector::upgrade_secure`] with `UPGRADE_*` `flags`
-    /// ([`UPGRADE_VERIFY_OFF`](crate::abi::host::conn::connector::UPGRADE_VERIFY_OFF): the
-    /// operator's opt-in to an unverified handshake, honoured for an operator-infrastructure need
-    /// only).
+
     pub fn upgrade_secure_flagged(
         &mut self,
         stream: u64,
@@ -671,13 +646,8 @@ impl Connector<'_> {
     }
 
     /// WHAT `stream`'s CONNECTION SECURITY ESTABLISHED, as the host connector observed it
-    /// (`service::FACTS`): whether it is secured, the protocol agreed, the far end's key pin and
-    /// whether busbar presented its client identity (the transport pin, ARCHITECT 2026-10-03) — readable
-    /// on a stream whose connection the connector refused for its trust anchors too, until it is
-    /// closed. `None`: a re-issued handle the host answered from its store without writing the
-    /// facts again (the replay rule) — they were read on the entry that first answered it.
+
     pub fn facts(&mut self, stream: u64) -> Answer<Option<Observed>> {
-        // `size` stays 0 unless the host wrote the facts on this call.
         let mut slot = StreamFacts {
             size: 0,
             secure: 0,
@@ -709,8 +679,7 @@ impl Connector<'_> {
     }
 
     /// THE PROCESS IDENTITY (`service::IDENTITY`): the pid, OS user and program the host presents
-    /// for this process. Never pends; needs no stream, but the call is made on the op's ticket
-    /// like every connector service.
+
     pub fn identity(&mut self) -> Answer<ProcessId> {
         let mut slot = ProcessIdentity {
             size: 0,
@@ -763,8 +732,7 @@ pub(crate) struct Closer {
 
 impl Closer {
     /// Close `stream` on no ticket: a close never pends, so it is made on none
-    /// ([`Connector::close`]). What the host answers is not read: the stream is given up either
-    /// way.
+
     pub(crate) fn close(&self, stream: u64) {
         let host = Host {
             ctx: self.ctx,
@@ -793,16 +761,13 @@ impl Connector<'_> {
         match self.cross_now(op::CLOCK_NOW, |s| s.clock_now, input) {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(reading)),
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            // It never pends: a host that says so broke the service's rule.
+
             Poll::Pending => Poll::Ready(Err(ConnFailure::Fault)),
         }
     }
 
     /// THE HOST'S VERDICT on the declared need `need` (its index in the Statement's needs), as it
-    /// admitted it when it bound this instance (target, egress class, trust anchors): `Ok` when
-    /// admitted, or `ConnFailure::Refused` with the host's text. Never pends. It only lets `open`
-    /// answer its own words — a need that failed admission is refused at every establish whether
-    /// or not the plugin asked (FAIL-CLOSED, the connector's).
+
     pub fn admit(&mut self, need: u32) -> Result<(), ConnFailure> {
         let input = NeedAdmitIn {
             head: blank_head(),
@@ -811,17 +776,13 @@ impl Connector<'_> {
         };
         match self.cross_now(op::NEED_ADMIT, |s| s.need_admit, input) {
             Poll::Ready(r) => r.map(|_| ()),
-            // It never pends: a host that says so broke the service's rule.
+
             Poll::Pending => Err(ConnFailure::Fault),
         }
     }
 
     /// APPEND `bytes` to the local file the host maps this instance's destination `dest_key` to
-    /// (`disk.append`, the host's bounded disk lane, THE DESIGN): the host owns the path
-    /// and rotates the file by its own rules before the append when it is due. It may pend: a body
-    /// re-issues it with the same `bytes` on resume (the replay rule) and reads the stored answer.
-    /// READY with what the host wrote: the whole of `bytes` landed, and whether the file was rotated
-    /// first. A FAILED answer names its step and still reports the rotation that ran before it.
+
     pub fn disk_append(&mut self, dest_key: &str, bytes: &[u8]) -> DiskAnswer {
         let blank = DiskWritten::ZERO;
         let fail = |step, rotation, why| {
@@ -879,8 +840,7 @@ impl Connector<'_> {
     }
 
     /// Make a host service that NEVER pends through `pick`'s slot, on NO ticket: the host keeps no
-    /// stored result for it, so every entry of the op asks afresh, and it draws no handle from the
-    /// op's count (the replay rule is untouched).
+
     fn cross_now<I: ServiceIn>(
         &self,
         op: u32,
@@ -899,9 +859,7 @@ impl Connector<'_> {
     }
 
     /// Write one request piece on a framed `stream`: `piece` describes it, `bytes` holds what its
-    /// spans name (a head's method, target and field block) or the body bytes. How many bytes the
-    /// host took. Both must stay where they are until the write completes (keep them parked). A
-    /// stream that is not framed refuses it.
+
     pub fn write_request(
         &mut self,
         stream: u64,
@@ -931,8 +889,7 @@ pub struct Replied {
 
 impl Connector<'_> {
     /// Read the next piece of the reply on `stream` into `buf`, with its descriptor. `buf` (and
-    /// the descriptor the SDK keeps beside it in `slot`) must stay where they are until the read
-    /// completes (on a PENDING answer, keep them parked).
+
     pub fn read_reply(
         &mut self,
         stream: u64,

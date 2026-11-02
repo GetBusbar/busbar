@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE 1.5.5 OP SET as store v3 slots: the `in` shapes of the `RecordStore` methods (v1.5.5
-//! `crates/api/src/store.rs:604-927`). Every one is off path; results come back under a lease
-//! (mechanism memory class (iv)). The 1.5.5 behaviour each op keeps is stated on its slot in
-//! [`super::slot`] and [`super::OPS`].
 
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead};
 use crate::abi::mechanism::decl::abi_struct;

@@ -5,49 +5,32 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// The busbar-owned config overlay (persistence substrate for API-applied hook changes).
 pub mod card;
 pub mod overlay;
 mod overlay_store;
 
-/// The credential positions `${VAR}` filled, and the settings a plane is handed over them: a secret
-/// reference at each, never the bytes (THE DESIGN §6); every other position as interpolated.
 pub mod filled;
 
-/// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
-/// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
+
 pub mod migrate;
 pub mod migrate_catalog;
 pub mod migrate_export;
 pub mod migrate_plugins;
-/// The root migration table the composition root hands in, and the one rewrite over it.
+
 pub mod migration_table;
-/// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
-/// data so every surface that serves the universal pattern is parameterized instead of copied.
+
 pub mod named_map;
-/// Neutral config-parsing helpers (`parse_duration_secs`, `parse_ceiling`), relocated out of
-/// `admin::`/`admin::v1::contract` (1.6.0 de-vocab): both are consumed by `config_validate` and
-/// `named_map`, not the admin HTTP API. See the module doc.
-///
-/// BACK HERE as a real module, 2026-09-22: `busbar-core-config` — the wave-0 scaffold this was
-/// parked in — is KILLED by DECISIONS #37 (`busbar-core-{hooks,config,caps,grammar,timing}`), so
-/// its one landed helper file comes home to the only crate that ever called it. The path
-/// `crate::config::parse::…` / `busbar_kernel::config::parse::…` is byte-identical to what the
-/// re-export served, so no call site moves.
+
 pub mod parse;
-/// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
+
 pub mod patch;
-/// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen
-/// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
+
 pub mod prepass;
 pub mod secret;
-/// The settings each plugin declares public; every other plugin setting is sensitive.
+
 pub mod settings_public;
-/// The ONE config-mutation choke point (`config_transaction`), relocated out of
-/// `admin::v1::json::txn` (1.6.0 de-alias, stage 2a): core config-apply infrastructure that
-/// `auth::self_keys` (core) now calls directly instead of reaching into `admin::`. See the module
-/// doc.
+
 pub mod transaction;
 
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
@@ -63,38 +46,11 @@ use crate::diagnostics::{
 };
 use busbar_kernel_ledger::cost::compose_plane_cards;
 
-/// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
-/// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
-/// value carrying a YAML-structural control character — most critically a NEWLINE or carriage
-/// return — can close the quoted (or plain) scalar it sits inside and inject sibling YAML nodes.
-/// This is the FIRST of two layers: it is a fast, cheap, clear-error rejection of the
-/// newline-based injection shape. It is NOT sufficient on its own — see
-/// [`interpolate_env_with`]'s structural-equivalence check for the second layer, which closes the
-/// remaining injection surface that needs no newline at all: inside a YAML FLOW collection
-/// (`{ }` / `[ ]` — used by this project's own documented interpolation examples, e.g.
-/// `client_tokens: [ "${VAR}" ]`), a value containing a bare `,`, `"`, or `'` can inject sibling
-/// structure on a single line. A flow SEQUENCE has no schema-level defense against an extra
-/// element (it silently widens e.g. a client-token allowlist), and an opaque `settings:` map
-/// (`serde_json::Map`, used by auth-chain/hook module config and `SecretRef`) has no
-/// `deny_unknown_fields` to reject an injected sibling key either — both are real, exploitable
-/// shapes in this config format. (A typed struct like `PluginsCfg`, which DOES carry
-/// `#[serde(deny_unknown_fields)]` on every field, blocks a bare sibling-key injection at the
-/// deserialize layer for that specific struct — but that is struct-specific luck, not a general
-/// guarantee, and does not help flow sequences or opaque maps at all.)
-///
-/// No legitimate secret, token, URL, or path value contains a raw control character, so blocking
-/// the entire C0 control range (plus DEL and the C1 NEL/LS/PS line-breaks YAML also treats as line
-/// boundaries) closes the newline-based injection vector with effectively zero false positives. A
-/// double-quote, `#`, or comma on its own is harmless without a line break to terminate the
-/// current scalar in most positions, and YAML's own quoting handles them, so we do not
-/// over-reject those here — the flow-collection case they DO enable is handled by the structural
-/// check instead, which is not a character-based check.
 fn reject_yaml_unsafe_value(var_name: &str, value: &str) -> Result<(), String> {
-    if let Some(bad) = value.chars().find(|c| {
-        // C0 controls (incl. \n, \r, \t, NUL) and DEL, plus the Unicode line/paragraph separators
-        // and NEL that YAML treats as line breaks (U+0085 NEL, U+2028 LS, U+2029 PS).
-        c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
-    }) {
+    if let Some(bad) = value
+        .chars()
+        .find(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
         return Err(format!(
             "environment variable '{var_name}' contains a control character (U+{:04X}) that could \
              inject YAML structure during config interpolation; remove it",
@@ -115,16 +71,10 @@ pub enum EnvSubst {
     Lenient,
 }
 
-/// Expand `${VAR}` tokens from the environment (see [`EnvSubst`] for unset-variable behavior). See
-/// [`interpolate_env_with`] for the two-layer injection defense applied to every substituted value.
 pub fn interpolate_env(s: &str) -> Result<String, String> {
     interpolate_env_with(s, EnvSubst::Strict, &mut Vec::new())
 }
 
-/// A single `${VAR}` occurrence resolved during interpolation: the real substituted text and the
-/// per-occurrence placeholder token that stands in for it in the "shape" pass (see
-/// [`assert_interpolation_preserves_structure`]). Recorded in source order so a structural
-/// mismatch can be attributed back to a specific occurrence / variable, best-effort.
 struct Occurrence {
     var_name: String,
     real_value: String,
@@ -160,7 +110,7 @@ pub fn interpolate_env_with(
 
     while let Some(ch) = chars.next() {
         if ch == '$' && chars.peek() == Some(&'{') {
-            chars.next(); // consume '{'
+            chars.next();
             let mut var_name = String::new();
             let mut closed = false;
             for ch in chars.by_ref() {
@@ -170,10 +120,7 @@ pub fn interpolate_env_with(
                 }
                 var_name.push(ch);
             }
-            // The inner loop also exits when the iterator is exhausted, so a token with no closing
-            // brace (e.g. `${FOO`) would otherwise be treated as `${FOO}` — silently succeeding if
-            // FOO happens to be set, or reporting a misleading "unset variable" if it is not. Reject
-            // the malformed token loudly instead so config typos surface at boot.
+
             if !closed {
                 return Err(format!(
                     "unclosed variable reference starting at '${{{var_name}'"
@@ -192,22 +139,14 @@ pub fn interpolate_env_with(
                         if !unset.contains(&var_name) {
                             unset.push(var_name.clone());
                         }
-                        var_name.clone() // placeholder: a non-empty, YAML-safe scalar
+                        var_name.clone()
                     }
                 },
             };
-            // Reject a structurally-unsafe value BEFORE splicing it in, so it cannot break out of
-            // the surrounding YAML scalar and inject sibling nodes (e.g. extra client_tokens).
+
             reject_yaml_unsafe_value(&var_name, &value)?;
             result.push_str(&value);
-            // Unique PER OCCURRENCE (not per var name): two different `${VAR}` references never
-            // collapse to the same placeholder token, so a real shape difference between two
-            // occurrences of the same variable can never be masked by the placeholder pass
-            // accidentally making them look like "the same node twice". Reusing the SAME var's
-            // real value at multiple points needs no special handling either way — the shape
-            // check never compares scalar leaf VALUES, only node kind/keys/lengths, so two
-            // occurrences sharing a real value are indistinguishable, structurally, from two
-            // occurrences with different values; both are fine.
+
             let placeholder = structural_placeholder(occurrences.len());
             occurrences.push(Occurrence {
                 var_name,
@@ -226,18 +165,10 @@ pub fn interpolate_env_with(
     Ok(result)
 }
 
-/// The per-occurrence placeholder token used by the structural-equivalence check: alphanumeric +
-/// underscore only, so it can never itself introduce YAML structure (no `,` `"` `'` `&` `*` `!`
-/// `:` `[` `]` `{` `}` `#` `|` `>` `-` or whitespace) regardless of where in the template it lands.
 fn structural_placeholder(occurrence_index: usize) -> String {
     format!("__BUSBAR_INTERP_PLACEHOLDER_{occurrence_index}__")
 }
 
-/// Re-run the interpolation of `template` with the placeholder token substituted for occurrence
-/// `keep_real` (kept as its real value) and every OTHER occurrence's placeholder for all others,
-/// re-scanning `template` for `${...}` spans in the same left-to-right order `occurrences` was
-/// built in. Used only on the (rare, boot-time-only) attribution path after a mismatch is already
-/// known, to isolate which single occurrence's real value is responsible.
 fn splice_occurrences(
     template: &str,
     occurrences: &[Occurrence],
@@ -268,17 +199,11 @@ fn splice_occurrences(
     out
 }
 
-/// The structural-equivalence check (see [`interpolate_env_with`] doc comment). `real` is the
-/// already fully-interpolated text; `template` is the original raw source (re-scanned to build the
-/// all-placeholder text and, on the failure path, single-occurrence hybrids for attribution).
 fn assert_interpolation_preserves_structure(
     template: &str,
     real: &str,
     occurrences: &[Occurrence],
 ) -> Result<(), String> {
-    // A generic map or a lifted field can accept a duplicate that Value rejects. A parse error
-    // therefore cannot stand in for the structural proof: fail closed before any typed reader.
-    // Never render the expanded parser error, which may quote an interpolated secret as a key.
     let real_value: serde_yaml::Value = match serde_yaml::from_str(real) {
         Ok(v) => v,
         Err(error) => {
@@ -301,10 +226,6 @@ fn assert_interpolation_preserves_structure(
     let placeholder_value: serde_yaml::Value = match serde_yaml::from_str(&placeholder_text) {
         Ok(v) => v,
         Err(e) => {
-            // The placeholder text is built from YAML-inert tokens, so this should not normally
-            // happen. Real interpolation succeeded (parsed fine above) but we cannot verify it
-            // preserves the template's structure — fail closed rather than let an unverifiable
-            // interpolation through.
             return Err(format!(
                 "could not verify that environment-variable interpolation preserves config \
                  structure (internal placeholder document failed to parse: {e}); refusing to \
@@ -314,9 +235,6 @@ fn assert_interpolation_preserves_structure(
     };
 
     if structural_shapes_match(&real_value, &placeholder_value, 0) {
-        // The two trees match in shape, so walking them in step finds the scalar each `${VAR}`
-        // filled: the kernel records those positions, and every blob a plane is handed carries a
-        // secret reference at the credential ones instead of the bytes (`filled::plane_bound`).
         let vars: Vec<&str> = occurrences.iter().map(|o| o.var_name.as_str()).collect();
         filled::record(
             &real_value,
@@ -327,15 +245,12 @@ fn assert_interpolation_preserves_structure(
         return Ok(());
     }
 
-    // Mismatch: try to isolate which single occurrence's real value is responsible by swapping
-    // real values back in one at a time against the all-placeholder baseline. Boot-time-only,
-    // rare (error) path, so re-parsing per occurrence is a non-issue.
     let mut culprits: Vec<String> = Vec::new();
     for (i, occ) in occurrences.iter().enumerate() {
         let hybrid_text = splice_occurrences(template, occurrences, Some(i));
         let matches = match serde_yaml::from_str::<serde_yaml::Value>(&hybrid_text) {
             Ok(hybrid_value) => structural_shapes_match(&hybrid_value, &placeholder_value, 0),
-            Err(_) => false, // this occurrence alone breaks parsing outright: also a culprit
+            Err(_) => false,
         };
         if !matches && !culprits.contains(&occ.var_name) {
             culprits.push(occ.var_name.clone());
@@ -343,8 +258,6 @@ fn assert_interpolation_preserves_structure(
     }
 
     if culprits.is_empty() {
-        // No single occurrence reproduces the mismatch in isolation (e.g. it takes two or more
-        // values together) — name every candidate rather than guess wrong.
         let mut all: Vec<String> = occurrences.iter().map(|o| o.var_name.clone()).collect();
         all.sort();
         all.dedup();
@@ -365,21 +278,6 @@ fn assert_interpolation_preserves_structure(
     }
 }
 
-/// The node "kind" compared by the structural-equivalence check: every scalar variant (`Null`,
-/// `Bool`, `Number`, `String`) folds into one bucket, because interpolation legitimately changes a
-/// leaf's content and even its INFERRED TYPE (e.g. `port: ${PORT}` — a real `8080` infers as
-/// `Number`, the placeholder token infers as `String`) without that being an injection. `Mapping`,
-/// `Sequence`, and `Tagged` stay distinct: those are shapes a plain scalar substitution should
-/// never turn into, so seeing one appear only on the real side (or vice versa) IS the signal.
-///
-/// `depth` bounds the recursion (mirrors `json::MAX_JSON_DEPTH`'s reasoning, at the same limit):
-/// this walks an UNTYPED `serde_yaml::Value` tree built from a config file only "trusted but
-/// validated" per this project's own threat model (a typo shouldn't become a crash), and unlike
-/// the typed deserialize path this function has no schema to bound its own depth — a config with
-/// deeply nested (even accidentally, via a templating bug) mappings/sequences could otherwise
-/// stack-overflow the boot/reload path. Past the limit, treat the pair as a shape MISMATCH (fail
-/// closed into the ordinary "would change structure" rejection) rather than let a document too
-/// deep to safely verify slip through.
 const MAX_STRUCTURAL_COMPARE_DEPTH: usize = 128;
 
 fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: usize) -> bool {
@@ -393,11 +291,7 @@ fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: 
             let mut kb: Vec<String> = mb.iter().map(|(k, _)| mapping_key_repr(k)).collect();
             ka.sort();
             kb.sort();
-            // Compared as a SET, not in map order: a real injection would not necessarily
-            // preserve key order, and order carries no semantic meaning for a YAML mapping here
-            // (`serde_yaml` / the typed structs downstream don't treat map key order as
-            // significant either), so an order-sensitive compare would be both meaningless and a
-            // source of spurious failures.
+
             if ka != kb {
                 return false;
             }
@@ -419,16 +313,11 @@ fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: 
         (Value::Mapping(_), _) | (_, Value::Mapping(_)) => false,
         (Value::Sequence(_), _) | (_, Value::Sequence(_)) => false,
         (Value::Tagged(_), _) | (_, Value::Tagged(_)) => false,
-        // Both plain scalars (Null/Bool/Number/String in any combination): shape matches
-        // regardless of content or inferred type — see the doc comment above.
+
         _ => true,
     }
 }
 
-/// A YAML mapping key rendered to a comparable string for the structural-equivalence check's
-/// key-set comparison. Every key in this project's config surface is a plain YAML string, so the
-/// common case is exact; the fallback exists only so a non-string key (not expected in practice)
-/// degrades to a still-deterministic, still-comparable representation instead of panicking.
 fn mapping_key_repr(key: &serde_yaml::Value) -> String {
     match key {
         serde_yaml::Value::String(s) => s.clone(),
@@ -578,11 +467,6 @@ pub struct RootCfg {
 }
 
 impl RootCfg {
-    /// The VALIDATED endpoint resource for a plane, keyed by that plane's config `section`, or `None`
-    /// when this deployment configures no such endpoint (or the owning plane was compiled out). The
-    /// resource is type-erased as `Arc<dyn Any>` — the owning plane's own module downcasts it back to
-    /// its concrete resource. This is the NEUTRAL, section-keyed read the composition root uses in
-    /// place of a per-plane field, mirroring `plane_defs` beside it.
     pub fn endpoint_resource(
         &self,
         section: &str,
@@ -591,67 +475,21 @@ impl RootCfg {
     }
 }
 
-/// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
-/// Busbar serves plain HTTP exactly as before. Present ⇒ Busbar terminates TLS itself; if
-/// `client_ca` is also set, it additionally requires and verifies a client certificate (mTLS).
-/// All three values are SECRET REFERENCES (`{ file: … }` / `{ env: … }` / a secret module)
-/// resolving to PEM bytes; they are resolved once at startup and any resolve/parse error is fatal
-/// (`die`). Key bytes are never logged.
-// Moved to `busbar_kernel::config::sections`; re-exported at its historical `config::` path.
 pub use busbar_kernel::config::sections::TlsCfg;
 
 pub use busbar_kernel::config::auth::{
     builtin_identity_providers, is_builtin_identity_module, names_operator, operator_module,
     operator_principal_id, operator_provider,
 };
-/// One entry in the top-level `identity-providers:` NAMED-DEFINITION map, the resolved auth-chain
-/// entry, the role-binding grant, the token-mint policy, the built-in provider names, and the
-/// WIRE/RESOLVED `auth:` block itself: plain data with serde derives and pure accessors — nothing
-/// here loads a file, resolves a secret, or touches the running `App`. Moved to
-/// `busbar_kernel::config::auth`; the resolver that joins chain NAMES to definitions
-/// (`resolve_auth`, just below) stays here. Re-exported at their historical `config::` path.
+
 pub use busbar_kernel::config::auth::{
     AuthCfg, AuthChainEntry, AuthDeployCfg, AuthMethodCfg, AuthMethods, AuthPolicyCfg, BindingMode,
     BrowserLoginCfg, IdentityProviderCfg, IdentityProviders, MintCeilingCfg, RoleBindingCfg,
     RoleBindings, VerbGrant, ALL_ADMIN_VERBS, DEFAULT_MAX_ADMIN_SCOPE, KEYS_MODULE,
 };
 
-/// The built-in signed-key verifier module name (`auth.chain: [keys]`).
-/// The config shape `--migrate-config` targets, for anything that needs to NAME it in output.
-///
-/// Derived from the crate version rather than written down, because the previous hardcoded "1.5.0"
-/// in the migrator's banner was still claiming 1.5.0 three releases after the target moved. A
-/// version string a human has to remember to bump is a version string that goes stale.
 pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Join each `auth.chain:` / `auth.admin_auth:` NAME to its `identity-providers:` definition, producing
-/// the RESOLVED [`AuthCfg`] every runtime consumer reads.
-///
-/// The DEDUPE property this whole redesign exists for: one provider definition referenced from BOTH
-/// chains yields two [`AuthChainEntry`]s that share one definition — same module, same settings, same
-/// ceiling, by construction. The pre-1.5.3 shape needed the operator to write the settings twice, and
-/// nothing stopped the two copies from drifting.
-///
-/// Errors are ACCUMULATED into `errors`:
-/// - a name with no definition that is not a bare built-in (a dangling reference — fail closed, never
-///   a silently-skipped auth module);
-/// - a `token:` on a provider whose module is not the [`operator_provider`] (meaningless there);
-/// - a definition with an empty `module:`.
-///
-/// The `max_admin_scope` DEFAULT is applied here, once, so every downstream reader sees the resolved
-/// ceiling rather than re-deriving it: absent ⇒ [`DEFAULT_MAX_ADMIN_SCOPE`] for every provider except
-/// the operator credential ([`operator_provider`]), which stays `None` (exempt, full by definition) —
-/// byte-identical to the pre-1.5.3 semantics.
-/// THE ONE `identity-providers.<name>.token:` PLACEMENT RULE. `token:` is the operator credential
-/// ([`operator_provider`]); on any other module it is inert, so it is almost certainly a MISPLACED
-/// SECRET and must fail loud rather than sit in config doing nothing.
-///
-/// Shared by [`resolve_auth`] (which sees only providers REFERENCED from a chain) and by
-/// `NamedMapSection::parse_def` (which sees every DEFINITION the admin API writes, referenced or
-/// not). The definition-side call is the one that matters: `resolve_auth`'s check is keyed off the
-/// resolved chain, so a provider defined through the admin API and not yet referenced escaped it
-/// entirely — the API answered 200 and stored the misplaced credential, and the error surfaced only
-/// once something named the provider.
 pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
     if has_token && !names_operator(module) {
         let op = operator_provider();
@@ -688,7 +526,7 @@ pub fn resolve_auth(
                     settings: def.settings.clone(),
                 }
             }
-            // A BARE BUILT-IN needs no definition. Anything else is a dangling reference.
+
             None if builtin_identity_providers().contains(&name.as_str()) => {
                 AuthChainEntry::bare(name.clone())
             }
@@ -715,10 +553,6 @@ pub fn resolve_auth(
         .map(|n| resolve_one("admin_auth", n))
         .collect::<Vec<_>>();
 
-    // FREEZE BLOCKER — every `identity-providers:` entry is a potential hosted-login method; the
-    // `browser_login:` block on it is what puts a BUTTON on the login page. (A provider that is not
-    // in either chain still resolves here: headless `POST /auth/token` against a defined provider is
-    // exactly what the retired `auth.methods:` map allowed, so nothing narrows.)
     let methods: AuthMethods = providers
         .iter()
         .filter(|(_, def)| !is_builtin_identity_module(def.module.trim()))
@@ -745,11 +579,6 @@ pub fn resolve_auth(
     }
 }
 
-/// Append a targeted migration hint to a config-deserialize error when it is the removed 1.3.0
-/// `auth.mode:` key (rejected by `AuthCfg`'s `deny_unknown_fields`), so an upgrading operator gets
-/// actionable guidance instead of serde's bare "unknown field `mode`, expected one of …". Additive:
-/// any other error is returned verbatim. (1.4.0 config compatibility — the key was renamed to
-/// `auth.chain:` / `auth.upstream_credentials:` but the failure gave no upgrade breadcrumb.)
 pub fn augment_config_error(err: impl std::fmt::Display) -> String {
     let msg = err.to_string();
     if msg.contains("unknown field `mode`") {
@@ -763,9 +592,6 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
         .copied()
         .find(|(old, _)| msg.contains(&format!("unknown variant `{old}`")))
     {
-        // 1.5.3 HARD rename of the tap `at:` vocabulary (Route→Candidate, Attempt→Routing,
-        // Completion→Response). Serde rejects the old wire string as an unknown variant with no
-        // upgrade breadcrumb; name the old AND the new value + point at the migrator.
         format!(
             "{msg}\n  hint: hook tap stage `{old}` was renamed to `{new}` in 1.5.3 — run \
              `busbar --migrate-config <config.yaml>` or update the `at:` value to `{new}`"
@@ -774,9 +600,6 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
         .into_iter()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
-        // 1.5.3 observability→export lift-out. Serde rejects the retired key as an unknown
-        // field; name the old key AND its new home under the built-in exporters + point at the
-        // migrator, exactly like the HookStage rename above.
         format!(
             "{msg}\n  hint: `{old}` was retired in 1.5.3 — the observability sink moved to the \
              built-in EXPORTERS (`{new}`). Run `busbar --migrate-config <config.yaml>` or move the \
@@ -786,9 +609,6 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
         .into_iter()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
-        // The 1.5.3 GRAMMAR-LOCK retirements. Same shared-table discipline as
-        // the two branches above: one table drives this hint, the `detect_legacy_markers` boot
-        // loud-fail, AND the migrator's rewrite, so the three can never disagree about a key.
         format!(
             "{msg}\n  hint: `{old}` was retired in 1.5.3 — it is now `{new}`. Run \
              `busbar --migrate-config <config.yaml>` to rewrite it in place"
@@ -798,31 +618,22 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
     }
 }
 
-/// The 1.5.3 GRAMMAR-LOCK retired keys (retired key → its new home), shared by
-/// [`augment_config_error`]'s loud-fail hint, `config::migrate::detect_legacy_markers` (the
-/// boot/`--validate` loud-fail) and `migrate_config`'s mechanical rewrite so the three cannot drift —
-/// the same shared-table discipline [`RENAMED_HOOK_STAGES`] and [`retired_observability_keys`] use.
-///
-/// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
-/// is frozen additive-only afterwards. The rows that name an export sink (the `observability:`
-/// block's home and the trace URL keys that folded into one) are the root migration table's frozen
-/// 1.5.5 text ([`migration_table`]): the kernel names no export instance.
 pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
     let trace_home = format!(
         "an `export:` instance with `module: {}` and `settings.url`",
         migration_table::text("export_trace_module")
     );
     [
-        // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
-        // retired leaves reports the block-level move (the leaves have nowhere left to live).
+
+
         ("observability", migration_table::text("observability_home").to_string()),
-        // Inverted so the SAFE posture is the default.
+
         ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)".to_string()),
-        // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
+
         ("upstream_credentials", "pools.upstream_credentials (the all-pools default) + a per-pool `pools.<p>.upstream_credentials` override".to_string()),
-        // The IdP is DEFINED once and REFERENCED by name.
+
         ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)".to_string()),
-        // The last `observability:` field (and its 1.4.x spelling) folded into `export:`.
+
         (migration_table::text("observability_trace_key"), trace_home.clone()),
         (migration_table::text("observability_trace_key_1_4"), trace_home),
     ]
@@ -831,20 +642,12 @@ pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
     .collect()
 }
 
-/// The 1.5.3 tap-stage `at:` renames (old wire string → new), shared by `augment_config_error`'s
-/// loud-fail hint and the `--migrate-config` rewrite so the two cannot drift.
 pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
     ("route", "candidate"),
     ("attempt", "routing"),
     ("completion", "response"),
 ];
 
-/// The 1.5.3 observability→export RETIRED keys (retired LEAF key → its new home under the
-/// exporters), shared by `augment_config_error`'s loud-fail hint, `config::migrate::detect_legacy_markers`
-/// (the boot/`--validate` loud-fail), and `migrate_config`'s mechanical rewrite so the three cannot
-/// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
-/// The leaves, the request-log type key they fold under and the metrics type key are the root
-/// migration table's frozen 1.5.5 rows ([`migration_table`]); the top-level `metrics:` block is listed last.
 pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
     let log = migration_table::text("observability_log_type_key");
     let mut out: Vec<(&'static str, String)> = migration_table::pairs("observability_log_keys")
@@ -861,33 +664,11 @@ pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
     out
 }
 
-// The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
-// resolved provider the runtime reads, the active-health block and the per-model entry — are plain
-// serde data; the catalog/deployment MERGE that produces a `ResolvedProvider` runs here (`resolve`).
-// Moved to `busbar_kernel::config::providers`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::providers::{
     neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy, ProviderTable,
     ResolvedProvider,
 };
 
-// ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
-// value concept; its body lives in `config::providers` (serde `Deserialize` + the
-// `#[serde(rename)]` wire strings VERBATIM, byte-identical; architect ruling PROVIDERS-MOVE).
-// Re-exported (end of this file) at its historical `config::ProviderAuth` path so the frozen
-// providers.yaml grammar parse is unchanged.
-
-// ABI-purity CONFIG-ENUM: the resolved on_error/on_empty TERMINAL moved to
-// `busbar_kernel::config` (serde derives + rename VERBATIM); re-exported here at its historical
-// `config::PolicyOnError` path so the frozen config grammar + every deserialization are unchanged.
-
-// The `hooks:` config SHAPES (the named definition, the runtime registry entry, the structured
-// `on_error:` value, the mode/access/stage enums, the reserved terminal + strategy vocabulary, and
-// the two pure scope predicates) and the `pools:` config SHAPES (the pool itself, its members, the
-// ranking strategy, the breaker/failover/affinity blocks and the `on_exhausted:` value) are plain
-// serde data with pure accessors — no loader, validator, or `App` touch. They moved to
-// `busbar_kernel::config::{hooks, pools}`; re-exported here at their historical `config::` path
-// so no caller (this module's own definition-to-registry lowering, validation, `config_validate`,
-// `store`) moves.
 pub use busbar_kernel::config::hooks::{
     caller_in_hook_groups, default_on_error, default_policy_timeout_ms, is_reserved_hook_name,
     on_error_terminal, HookCfg, HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg,
@@ -906,41 +687,14 @@ pub use busbar_kernel::config::pools::{
     STRATEGY_USAGE,
 };
 
-// The FAILOVER BUDGET numeric defaults/bounds live beside the `FailoverCfg` shape in `pools`;
-// re-exported here at their historical `crate::config::*` paths so every core call site
-// (`appbuild`, `config_validate`, `test_support`) resolves unchanged.
 pub use busbar_kernel::config::pools::{
     DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
 };
 
 pub use busbar_kernel::config::auth::{default_admin_auth, default_admin_auth_names};
 
-// THE FROZEN reserved key set of the `pools:` SECTION (freeze blocker, 1.5.3): `hooks` and
-// `upstream_credentials` are section-level knobs, NOT pool names — `pools.hooks:` (LIST → ADDITIVE:
-// attach to ALL pools) and `pools.upstream_credentials:` (SCALAR → OVERRIDE: the all-pools default),
-// alongside real pools like `pools.fast:`.
-//
-// THIS SET IS CLOSED AND MUST NEVER GROW. Every reserved word here is a word an operator can no longer
-// use as a POOL NAME, so ADDING one in a later release retroactively turns a previously-legal config
-// into a boot failure — exactly the class of break 1.5.3 exists to make impossible. Every FUTURE
-// all-scope knob must therefore land under a reserved `defaults:` sub-key (`pools.defaults.<knob>`),
-// which costs one word ONCE and is then additive forever.
-//
-// THIS IS THE ONLY DECLARATION, on every plane, and it lives in `busbar-contract` as
-// `busbar_contract::section::RESERVED_SECTION_KEYS` (the shared section split that reads it
-// moved there): `tools:` and `agents:` reserve the same two words by reading that ONE slice, not by
-// restating it. Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
+#[allow(clippy::too_many_arguments)]
 
-/// THE ONE CHECK BOTH FAILOVER SECTIONS GET, parameterised by which registry a bare name resolves
-/// against rather than written once per plane. `tool_pools:` and `agent_pools:` are the same grammar
-/// over two registries, so a second copy of this would be the shape the `structure-lint` gate's plane
-/// ledger calls DEBT: the copy that is hardened and the copy that is not look identical from outside.
-///
-/// Three refusals, in the order an operator can act on them: a pool with fewer than two members is a
-/// pool that cannot fail over (a typo, or a leftover), a member on the WRONG PLANE is named as the
-/// thing it actually is, and a member that exists nowhere is a plain dangling reference.
-#[allow(clippy::too_many_arguments)] // eight small, positional facts about ONE check; bundling them
-                                     // into a struct would move the same arguments one line up.
 fn check_failover_pool(
     errors: &mut Vec<String>,
     section: &str,
@@ -958,8 +712,7 @@ fn check_failover_pool(
             def.members.len()
         ));
     }
-    // A plane consumer's pool is capped at `store::MAX_POOL_MEMBERS` members, refused here where the
-    // operator can act.
+
     if def.members.len() > crate::store::MAX_POOL_MEMBERS {
         errors.push(format!(
             "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \
@@ -969,9 +722,7 @@ fn check_failover_pool(
             crate::store::MAX_POOL_MEMBERS
         ));
     }
-    // A pool named after a REGISTRATION on its own plane would alias the registration's degenerate
-    // breaker cell (`tool:<id>` / `agent:<id>` — the same string either way), merging two targets'
-    // learned health into one cell. The keyspace rule is the audit's; this is its enforcement.
+
     if on_this_plane(pool) {
         errors.push(format!(
             "{section}.{pool}: `{pool}` is also the id of a `{this_registry}:` registration. A \
@@ -1003,10 +754,7 @@ fn check_failover_pool(
             ));
         }
     }
-    // `repeatable:` naming an operation is a SAFETY declaration, so a typo in it silently leaves the
-    // operation non-repeatable — which fails SAFE and is therefore not an error. It is still worth
-    // nothing to write, so it is refused when it is empty of meaning: a `repeatable:` list on a pool
-    // is only ever read for operations dispatched through that pool.
+
     for op in &def.repeatable {
         if op.trim().is_empty() {
             errors.push(format!(
@@ -1042,13 +790,6 @@ impl<'de> Deserialize<'de> for PoolsCfg {
     where
         D: serde::Deserializer<'de>,
     {
-        // THE SECTION SPLIT is `config::plane_sections`'s, and the pool plane reads its section through the
-        // same six steps in the same order as `tools:` and `agents:` — including the refusal of a
-        // reserved key holding a MAPPING before the typed lifts, which is the step this rule exists
-        // for and the step a per-plane copy is likeliest to lose.
-        //
-        // The pool plane declares NO value rules here: `PoolCfg`'s are run later, over the whole
-        // config, where they can see the cross-section references a single entry cannot.
         let section = crate::config::plane_sections::split_section_for_plane::<D, PoolCfg>(
             deserializer,
             crate::plane_driver::dispatch::fallback_key(),
@@ -1057,28 +798,12 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         Ok(PoolsCfg {
             all_pool_hooks: section.hooks,
             all_pool_upstream_credentials: section.upstream_credentials,
-            // The pool map is a `HashMap` and its order is never read back; converted here, once,
-            // where the loss of order is visible rather than assumed.
+
             pools: section.entries.into_iter().collect::<HashMap<_, _>>(),
         })
     }
 }
 
-/// The ADDITIVE-LIST DEDUPE rule, in ONE place so every plane section that
-/// ships an additive `hooks:` list (today `pools:`; later `tools:`/`agents:`) combines identically.
-///
-/// The locked combine rule says section-level LISTS are ADDITIVE, but "additive" alone does not
-/// say what happens when the SAME hook name appears in BOTH `pools.hooks:` and a pool's own `hooks:`.
-/// Both answers were defensible, so 1.5.3 PINS one forever:
-///
-/// > **A hook named in both lists fires ONCE, at its FIRST position** — i.e. the section-level
-/// > position, since section-level hooks precede the entity's own.
-///
-/// Rationale: attaching a hook to all pools and then *also* naming it on one pool is the natural way
-/// an operator writes "…and definitely on this one" — reading that as "fire twice" would silently
-/// double-charge a gate's latency budget and double-count a tap's audit record. Deduping by NAME is
-/// safe precisely because the name IS the instance: two DIFFERENT configurations of one
-/// module are two different NAMES, so dedupe can never collapse two distinct hooks.
 pub fn combine_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(section.len() + entity.len());
     for name in section.iter().chain(entity.iter()) {
@@ -1089,13 +814,6 @@ pub fn combine_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
     out
 }
 
-/// The RUNTIME projection of the additive-list rule (see [`combine_hook_refs`]). busbar fires the
-/// section list and the entity list through two SEPARATE resolved chains (`App::global_gates` then
-/// `PoolRuntime::gates`), so the dedupe has to be applied to the ENTITY half: this returns the
-/// entity's own references with (a) intra-list duplicates and (b) anything already named at the
-/// section level removed. Concatenating `section` with this result reproduces
-/// [`combine_hook_refs`] exactly — the property `hook_refs_combine_is_section_then_entity_only`
-/// pins, so the two can never drift.
 pub fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
     combine_hook_refs(section, entity)
         .into_iter()
@@ -1103,8 +821,6 @@ pub fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Vec<Strin
         .collect()
 }
 
-// The two listen-address defaults are plain string literals; moved to
-// `busbar_kernel::config::sections`, re-exported at their historical `config::` path.
 pub use busbar_kernel::config::sections::{DEFAULT_ADMIN_LISTEN_ADDR, DEFAULT_LISTEN_ADDR};
 
 fn default_listen() -> String {
@@ -1115,20 +831,11 @@ fn default_admin_listen() -> String {
     DEFAULT_ADMIN_LISTEN_ADDR.into()
 }
 
-/// The serde default for `admin_require_mtls:` — **true**. 1.5.3 inverted the retired
-/// `admin_insecure:` boolean: the SAFE posture is the DEFAULT and the waiver is the
-/// explicit `false`, so a config that says nothing gets the guard rather than the hole.
 fn default_admin_require_mtls() -> bool {
     true
 }
 
-/// True iff `addr` (a `host:port` bind string) binds ONLY to the loopback interface, so a service
-/// on it is unreachable from off-host. Drives the admin-plane boot-guard: a loopback admin listener
-/// is safe without mTLS; anything else is treated as network-exposed. Unclassifiable hostnames fail
-/// CLOSED (treated as exposed) so an ambiguous bind never silently waives the mTLS requirement.
 pub fn bind_is_loopback(addr: &str) -> bool {
-    // Strip the trailing `:port`. IPv6 literals contain colons, so split from the RIGHT, then peel
-    // the `[...]` brackets an IPv6 host carries in `[::1]:8081` form.
     let host = addr.rsplit_once(':').map_or(addr, |(h, _port)| h);
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if host.eq_ignore_ascii_case("localhost") {
@@ -1136,15 +843,13 @@ pub fn bind_is_loopback(addr: &str) -> bool {
     }
     match host.parse::<std::net::IpAddr>() {
         Ok(ip) => ip.is_loopback(),
-        Err(_) => false, // a hostname we can't resolve here → assume exposed (fail closed)
+        Err(_) => false,
     }
 }
 
-/// Each non-fallback plane's own card (#47): plane registry key → lane → rate entry.
 pub type PlaneRateCards =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, RateEntryCfg>>;
 
-/// Each non-fallback plane's own fees (#47): plane registry key → its fees, in minor units.
 pub type PlaneFeesMap = std::collections::BTreeMap<String, busbar_kernel_ledger::cost::PlaneFees>;
 
 /// A plane section's reserved `fees:` (#44: `{ per_request | per_session }`), in minor units; an
@@ -1159,9 +864,7 @@ pub struct PlaneFeesCfg {
 }
 
 /// Deployment configuration - operator-owned config.yaml structure.
-// deny_unknown_fields: a typo'd or unknown TOP-LEVEL key (e.g. `plugin:` for `plugins:`) must be a
-// loud startup error, not a silently-ignored block - the fail-closed posture every nested
-// security-relevant struct (auth/governance/plugins/security) already enforces.
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployCfg {
@@ -1196,10 +899,7 @@ pub struct DeployCfg {
     /// resource server. Its PRESENCE is what mounts that plane's endpoint — absent, the deployment
     /// carries no ingress for it and no `.well-known` document, and nothing joins the route table.
     /// See that plane's own endpoint config type.
-    // Type-erased through the neutral `EndpointSection` seam: the `mcp:` block deserializes into
-    // its owning plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
-    // plane-specific endpoint type. The plane compiled out captures it raw and refuses a present block
-    // at `resolve` (the deletion-gate leg).
+
     ///
     /// A CARRIER, not a parsed field: the key is lifted off the document by
     /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
@@ -1330,12 +1030,7 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is: one field for every such section.
     #[serde(skip)]
     pub declared: DeclaredSections,
-    // 1.6.0 POOLS UNDER THEIR VERB: the unreleased `tool_pools:` and `agent_pools:` sections are
-    // GONE. The top-level `pools:` (above) is the model plane's alone, as in 1.5.5; another plane's
-    // pools are its section's reserved `pools` sub-key, read in `resolve`. A 1.6.0-dev config still
-    // carrying `tool_pools:`/`agent_pools:` LOUD-FAILS here (unknown field) with the
-    // `--migrate-config` breadcrumb, exactly as the retired `observability:` block does — the
-    // migrator moves them under their verbs.
+
     /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
@@ -1358,9 +1053,6 @@ pub struct DeployCfg {
 }
 
 impl DeployCfg {
-    /// THE DOOR PLANES' SETTINGS: every registered plane's declaring section this document writes,
-    /// as written (card and fees stripped), whichever carrier holds it, raw or parsed. A plane served
-    /// through its door opens with its own (LAW 7: a section absent here opens nothing).
     #[must_use]
     pub fn door_sections(&self) -> std::collections::BTreeMap<&'static str, serde_yaml::Value> {
         self.plane_raw
@@ -1371,17 +1063,10 @@ impl DeployCfg {
             .collect()
     }
 
-    /// The operator-declared `providers_file:` pointer, if any — read by the bin's 1.6.0
-    /// providers-override startup notice (the `providers_file` field is `pub`, so the bin
-    /// crate needs this accessor). `None` ⇒ the key is absent from config.yaml.
     pub fn providers_file(&self) -> Option<&str> {
         self.providers_file.as_deref()
     }
 
-    /// A registered plane's declared section this document writes, resolved by its config-section
-    /// KEY — the seam the generic named-map machinery reaches a plane registry through without
-    /// naming a plane field. `None` for a section the document does not write, or a key that is not
-    /// a plane section.
     pub fn plane_section(
         &self,
         section: &str,
@@ -1389,9 +1074,6 @@ impl DeployCfg {
         self.declared.get(section)
     }
 
-    /// The mutable twin of [`DeployCfg::plane_section`] — the seam the named-map WRITE path installs a
-    /// parsed definition through: the section as written, or its plane's empty section when the
-    /// document writes none. `None` for a key no registered plane declares.
     pub fn plane_section_mut(
         &mut self,
         section: &str,
@@ -1400,7 +1082,6 @@ impl DeployCfg {
     }
 }
 
-// Moved to `busbar_kernel::config::sections`; re-exported at its historical `config::` path.
 pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
 
 /// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
@@ -1516,8 +1197,6 @@ pub struct EnvFetch {
     pub env: String,
 }
 
-/// The tarball filename inside `plugins.dir` a fetch URL writes to: the last path segment (before any
-/// `?`/`#`), which must be non-empty. Errors if the URL has no usable basename.
 fn fetch_filename_from_url(url: &str) -> Result<String, String> {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let path = match path.split_once("://") {
@@ -1549,12 +1228,9 @@ pub struct FetchTarget {
     pub filename: String,
 }
 
-/// Resolve one [`PluginFetch`] to its [`FetchTarget`].
 fn fetch_target_from(f: &PluginFetch) -> Result<FetchTarget, String> {
     match f {
         PluginFetch::Github(g) => {
-            // "org/repo@tag" → the GitHub release-asset URL. busbar plugins ship one signed
-            // `{repo}.tar.gz` per release, so the asset name is derived, not discovered.
             let (repo_path, tag) = g.github.split_once('@').ok_or_else(|| {
                 format!(
                     "plugins.fetch github '{}' must be 'org/repo@tag' (missing '@tag')",
@@ -1593,8 +1269,7 @@ fn fetch_target_from(f: &PluginFetch) -> Result<FetchTarget, String> {
                     e.env
                 )
             })?;
-            // The var value is `url` or `url@sha256`. Split on the LAST '@' so a userinfo '@' in the
-            // URL isn't mistaken for the pin separator (pins are hex, no '@').
+
             let (url, sha256) = match raw.rsplit_once('@') {
                 Some((u, s)) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit()) => {
                     (u.to_string(), Some(s.to_string()))
@@ -1656,20 +1331,10 @@ pub struct PluginPublisher {
 }
 
 impl PluginsCfg {
-    /// Resolve `plugins.fetch:` into its [`FetchTarget`] list: each entry becomes a
-    /// `{ url, sha256?, filename }`. `github: "org/repo@tag"` → the release-asset
-    /// download URL (busbar's one-file-per-plugin `{repo}.tar.gz` convention); `url:` → itself, with
-    /// the target filename taken from the URL basename; `env:` → the named var's value (a `url` or
-    /// `url@sha256`), erroring if the var is unset. Called at boot/reload BEFORE the fetch; never in
-    /// `--validate` (the zero-network contract).
     pub fn fetch_targets(&self) -> Result<Vec<FetchTarget>, String> {
         self.fetch.iter().map(fetch_target_from).collect()
     }
 
-    /// The configured third-party publishers as `(name, hex public key)`: what the composition
-    /// root's trust resolution reads (the loader's `TrustPolicy::from_config`). The AUTOMATIC
-    /// first-party anti-downgrade floor is not configuration: the registry build arms it from the
-    /// per-name high-water marks.
     pub fn publisher_keys(&self) -> Vec<(&str, &str)> {
         self.trust
             .publishers
@@ -1678,13 +1343,6 @@ impl PluginsCfg {
             .collect()
     }
 
-    /// Warn, once per resolution, about every anti-downgrade floor that is not a valid
-    /// `MAJOR.MINOR.PATCH`. A malformed floor is not a config error (it does not stop the boot —
-    /// the comparator fails closed, refusing just the one floored plugin) but it IS worth telling
-    /// the operator about early, before an artifact is even present: an unparsable floor silently
-    /// disarms the anti-downgrade control. Runs at every moment the trust policy is resolved: boot,
-    /// reload and apply (the preflight), the admin catalog, reload, upload and rollback, and
-    /// `--list-plugins`.
     pub fn warn_invalid_floors(&self) {
         for (name, floor) in &self.min_versions {
             if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
@@ -1714,34 +1372,21 @@ impl PluginsCfg {
     }
 }
 
-// The `store:` block and the `secrets:` per-module init block are plain serde data (`{ module,
-// settings }` shapes). Moved to `busbar_kernel::config::sections`; re-exported at their
-// historical `config::` path.
 pub use busbar_kernel::config::sections::{
     migrated_store_module, store_required, SecretModuleCfg, StoreCfg,
 };
 
-// The `advanced:` block (INTERNAL tuning knobs) and its nested `response_headers:` block are plain
-// serde data with `Default` impls that route through the same shared consts as their `#[serde(default
-// = ...)]` fns, so the omitted-block and omitted-field paths cannot drift. Moved to
-// `busbar_kernel::config::sections`; re-exported at their historical `config::` path. Needed here
-// (not just at their own call sites) because `LimitsResolved::from_sections` takes `&AdvancedCfg`.
 pub use busbar_kernel::config::sections::{
     default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,
     ResponseHeadersCfg, DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY,
     DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
 };
 
-// The `config:` config-management-policy block, its `overlay:` backend selector, the `rate_card:`
-// entry, and the `export:` NAMED-DEFINITION entry (+ its module vocabulary) are plain serde data.
-// Moved to `busbar_kernel::config::sections`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::sections::{
     rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg,
     RateEntryCfg,
 };
 
-/// The serde default for `per_request_fee:` - 0 (no flat per-request charge; token spend derives
-/// from the ledger x rate_card).
 fn default_per_request_fee() -> i64 {
     0
 }
@@ -1790,22 +1435,11 @@ pub struct PluginExportSettings {
 }
 
 impl ExportCfg {
-    /// The generation's UNION OF PROJECTIONS — "what does ANYTHING configured here want". Computed
-    /// ONCE per config apply and carried on the `App` (next to `requested_signals`, which is the
-    /// same mechanism for hook signals), then read per request as the COMPUTE GATE: core generates a
-    /// stream's records ONLY when some sink declared it. Supersedes the one-off
-    /// `export::request_log_configured()` boolean — one mechanism, not two.
     pub(crate) fn projection_union(&self) -> crate::export::projection::ProjectionUnion {
         crate::export::projection::ProjectionUnion::of(self.plugins.iter().map(|s| &s.projection))
     }
 }
 
-/// The limit `LimitsResolved` sources from the resolved `export:` block rather than from
-/// `limits:` itself (1.5.3: moved from the retired `observability.*`/`metrics.*` keys onto the
-/// built-in EXPORTER settings). `busbar_kernel::config::limits::LimitsResolved::from_sections`
-/// takes anything that converts to `ExportLimits`, so core (the only crate that knows the typed
-/// `ExportCfg` shape) hands the reduction across through this `From` impl instead of the resolver
-/// re-walking `export.*` itself.
 impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
     fn from(export: &ExportCfg) -> Self {
         let key_gauge_limit = export
@@ -1831,36 +1465,16 @@ pub struct PrometheusSettings {
     pub key_gauge_limit: usize,
 }
 
-/// Lower the `export:` NAMED-DEFINITION map into the typed [`ExportCfg`] every runtime consumer reads.
-/// Errors are ACCUMULATED (not short-circuited) so `--validate` reports every bad exporter at once,
-/// the same posture `resolve` takes everywhere else.
-///
-/// Enforced here:
-/// - a `module:` that is not registered on the export axis is a boot error naming the modules this
-///   build serves (never a silently-ignored sink);
-/// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
-///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
-/// - a SECOND instance of a module whose row states the `one_instance` mark is that module's own
-///   refusal: the kernel asks the module's `check` at the limits phase, here (so it reports among
-///   the configuration's errors, before any sink opens), and renders its findings verbatim — the
-///   plugin words it (1.5.5's text for the scrape and trace sinks); the extra instance is not
-///   resolved;
-/// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
-///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
-///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
-///   a pinned field, and `durable: true` are all LOUD errors here rather than a sink that validates
-///   and delivers nothing.
 pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
     let mut out = ExportCfg::default();
-    // The `one_instance` modules already configured once, and those whose refusal is already in.
+
     let mut seen_once: Vec<&str> = Vec::new();
     let mut refused: Vec<&str> = Vec::new();
 
     for (name, def) in defs {
         let settings = serde_json::Value::Object(def.settings.clone());
         let module = def.module.trim();
-        // The module is asked of the export axis: the streams its sink declares (so the projection
-        // is resolved against them now) and its own verdict on the settings.
+
         let axis = crate::export::plugin::probe(name, module, &def.settings);
         let declared = axis.as_ref().and_then(|(streams, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
@@ -1872,9 +1486,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             def.durable,
             errors,
         );
-        // A `one_instance` module configured again: the host words the refusal around the reason
-        // its own `check` (limits phase) gives, once, over every instance of it; the extra
-        // instance is not resolved.
+
         if crate::export::plugin::one_instance(module) {
             if seen_once.contains(&module) {
                 if !refused.contains(&module) {
@@ -1893,16 +1505,12 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             seen_once.push(module);
         }
         match module {
-            // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
-            // An instance subscribed to `metrics` whose sink carries it and is granted FIRST-PARTY
-            // is the SCRAPE SINK — the first such instance. A third party may subscribe to
-            // `metrics`; it never renders busbar's own `/metrics` (#65).
             other if axis.is_some() => {
                 let metrics = busbar_contract::abi::export::ExportStream::Metrics;
                 let carries = declared.is_some_and(|d| d.contains(&metrics));
                 let first_party = crate::export::plugin::first_party(other);
                 let scrape = carries && first_party && projection.wants_stream(metrics);
-                // The first scrape-sink instance renders `/metrics`; no other takes it over.
+
                 let scrape = scrape && !out.plugins.iter().any(|p| p.scrape);
                 if scrape {
                     out.recorder = serde_json::from_value(settings).ok();
@@ -1915,9 +1523,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                     scrape,
                 })
             }
-            // The modules THIS build serves: the export rows it links, in the order the
-            // composition root registered them (1.5.5's, so a default build, which links every
-            // sink, prints 1.5.5's text byte for byte). The kernel names none.
+
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
                  {}",
@@ -1928,14 +1534,6 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
     out
 }
 
-// ───────────────────────────────────────────────────────────────────────────────────────────────
-// The operational-limit config SHAPES ("NEVER CODED CAPS"): the historical default constants, the
-// `limits:` / `health:` / `routing:` blocks and the flat resolved `LimitsResolved` every startup
-// wire reads. Every field defaults — via a `default = "fn"` whose body is the historical hardcoded
-// const — to today's behavior, so an absent key (the common case) is byte-for-byte unchanged. Moved
-// to `busbar_kernel::config::limits`; the process-wide INSTALL of the resolved values and the
-// `ExportCfg` → `ExportLimits` reduction (see the `From` impl above `ExportCfg`) stay here.
-// Re-exported at their historical `config::` path so no caller moves.
 pub use busbar_kernel::config::limits::{
     default_default_max_tokens, default_hard_down_cooldown_secs, default_hook_content_max_bytes,
     default_key_gauge_limit, default_max_auto_provisioned_groups,
@@ -1961,16 +1559,6 @@ fn default_plugins_dir() -> String {
     "plugins".to_string()
 }
 
-/// Resolve DeployCfg + ProviderDef map into resolved RootCfg.
-/// For each deployed provider, look up its definition by name; produce a resolved ResolvedProvider
-/// = def's protocol/base_url/error_map (with any config.yaml override applied) + the deployment's api_key_env.
-/// Build a runtime [`HookCfg`] registry entry from one top-level `hooks:` NAMED DEFINITION (1.5.3).
-/// `module:` names the `kind: hook` PLUGIN that backs the hook (by signed-manifest name/alias) and
-/// lowers to the runtime `plugin:` field; `settings:` stays fully opaque (pushed to the plugin via
-/// `configure`). The `groups:`/`phase:` SELECTION scope carries onto the `HookCfg` for the firing
-/// filter. The plugin reference must be non-empty; an unresolvable/wrong-kind reference is caught
-/// fail-closed at the plugin pre-flight (like a store/auth ref). A named hook attached to a pool is a
-/// decision point by default, so an unset `kind:` defaults to `gate`.
 fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     let plugin = def.module.trim().to_string();
     if plugin.is_empty() {
@@ -1990,11 +1578,11 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
         prompt: def.prompt.unwrap_or_default(),
         user: def.user.unwrap_or_default(),
         priority: def.priority.unwrap_or(0),
-        // `phase:` is the 1.5.3 stage set; the legacy single `at:` is unused by a named definition.
+
         at: None,
         on_empty: def.on_empty.clone(),
         settings: def.settings.clone(),
-        // A named-definition shorthand has no `signals:` sub-key in this pass.
+
         signals: Vec::new(),
         global: false,
         default: false,
@@ -2003,19 +1591,11 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     })
 }
 
-/// THE CORE-RESIDENT FALLBACK for `PlaneDecl::resolve_provider`, kept for the build with no plane
-/// implementing the hook: [`ResolvedProvider::merge`], the neutral merge (the kernel-owned keys
-/// typed, the plane's table by [`busbar_kernel::config::providers::merge_tables`]). `providers:`/
-/// `pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged UNCONDITIONALLY (never gated
-/// on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an llm-plane-absent build keeps merging
-/// providers exactly as every prior release has rather than silently dropping configured providers
-/// out of `RootCfg::providers`. See `crate::plane_driver::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
-/// why this section never evicts.
 pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ResolvedProvider {
     ResolvedProvider::merge(def, deploy_cfg)
 }
 
-#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[cold]
 #[inline(never)]
 pub fn resolve(
     deploy: &DeployCfg,
@@ -2023,31 +1603,15 @@ pub fn resolve(
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
 
-    // Lower the `export:` NAMED-DEFINITION map into the typed per-module projection. Unknown modules,
-    // bad settings, and duplicate singleton instances land in `errors` here.
     let export = resolve_export(&deploy.export, &mut errors);
 
-    // (A scrape sink's zero retention window — recording at full cost, reporting nothing — is its
-    // own settings refusal, raised by the sink while `resolve_export` validates it.)
     let mut resolved_providers: HashMap<String, ResolvedProvider> = HashMap::new();
 
-    // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the LLM
-    // plane's own logic (`PlaneDecl::resolve_provider`), resolved ONCE here — not per-provider — since
-    // it is a pure fn pointer and every iteration of the loop below reads the identical value. `None`
-    // when no plane implements the hook (an llm-plane-absent build): `providers:`/`pools:` are
-    // `CORE_OWNED_CONCRETE_SECTIONS` (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`),
-    // so a build compiled without the LLM plane must keep merging providers exactly as every prior
-    // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
-    // kept for exactly that build.
     let resolve_provider_hook = crate::plane_driver::registry::plane_decl_for(
         crate::plane_driver::dispatch::fallback_key(),
     )
     .and_then(|d| d.resolve_provider);
 
-    // Every owned catalog row is judged, deployed or not. If no provider is deployed, a row with
-    // no owning plane is inert catalog data: deleting that plane must not make its unused options
-    // prevent startup. As soon as any provider is deployed, the entire catalog is judged strictly
-    // before resolution, including rows the deployment does not reference.
     let mut catalog_names: Vec<&String> = defs.keys().collect();
     catalog_names.sort();
     for name in catalog_names {
@@ -2062,7 +1626,6 @@ pub fn resolve(
     }
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
-        // Look up the provider definition by name
         let Some(def) = defs.get(deploy_name) else {
             errors.push(format!(
                 "provider '{}' referenced in config.yaml not found in providers.yaml",
@@ -2078,30 +1641,13 @@ pub fn resolve(
         resolved_providers.insert(deploy_name.clone(), merged);
     }
 
-    // 1.5.3 NAMED-HOOKS: build the runtime hook registry from the top-level `hooks:` DEFINITION map
-    // (define-once). Each definition becomes a `HookCfg` registry entry keyed by its own name (the
-    // instance id); the SAME `module` may back multiple names, each an independent hook with its own
-    // `groups:`/`phase:` scope. A definition name may not shadow a reserved terminal / built-in
-    // strategy (validated). References BY BARE NAME then resolve against this registry: the reserved
-    // all-pools list (`pools.hooks:`) lowers to the runtime `global_hooks` (fires on EVERY pool), and
-    // each pool's own bare names populate `pool.gates`. An unresolvable/wrong-kind plugin behind a
-    // `module:` is a FAIL-CLOSED plugin-preflight error (like a store/auth ref).
     let mut hooks_registry: HashMap<String, HookCfg> = HashMap::new();
     let mut pools = deploy.pools.pools.clone();
-    // FREEZE BLOCKER — additive-list DEDUPE. A hook named in BOTH `pools.hooks:` and a pool's own
-    // `hooks:` fires ONCE, at its FIRST (section-level) position. The section list is fired through
-    // `App::global_gates` and the pool's own through `PoolRuntime::gates`, so the dedupe is applied
-    // to the POOL half here, at the single lowering point — see [`entity_only_hook_refs`].
+
     for pool in pools.values_mut() {
         pool.gates = entity_only_hook_refs(&deploy.pools.all_pool_hooks, &pool.gates);
     }
-    // ── A PLANE'S POOLS SIT UNDER ITS OWN VERB (THE DESIGN §4 POOLS-VERBS, #43/#47). The top-level
-    // `pools:` is the fallback plane's alone, as in 1.5.5: its members are `models:` entries, and a
-    // member that is not one is refused there in 1.5.5's words. Any other plane's failover pools are
-    // the reserved `pools` sub-key of that plane's own section (`<verb>.pools`), read here as the
-    // kernel reads every reserved sub-key, with the uniform grammar (`members:` by bare name and
-    // `repeatable:`). The kernel infers no plane from a member: which plane a pool belongs to is
-    // where the operator wrote it.
+
     let mut plane_pools: std::collections::BTreeMap<
         &'static str,
         std::collections::BTreeMap<String, pools::CandidatePoolCfg>,
@@ -2125,18 +1671,10 @@ pub fn resolve(
             )),
         }
     }
-    // NEUTRAL POOL-LEVEL ROUTING KNOBS → members (1.6.0, fallback plane). `weights:`/`tier:`/
-    // `attempt_timeout_ms:` on the pool refine any member that did NOT state the value inline (an
-    // inline per-member value WINS, for byte-identity with 1.5.4 rich-member configs). This lets a
-    // uniform bare-name fallback-lane pool carry weights/tier/timeouts without per-member rich
-    // objects. On other planes these knobs are carried on the pool but their ordered-failover
-    // engines do not yet read `weights:` — the projection to `CandidatePoolCfg` above is
-    // deliberately behaviour-neutral.
+
     for pool in pools.values_mut() {
         for m in pool.members.iter_mut() {
             if let Some(&w) = pool.weights.get(&m.model) {
-                // A member left at the default weight (1) takes the pool-level weight; an inline
-                // non-default weight is the operator's explicit per-member choice and stands.
                 if m.weight == default_weight() {
                     m.weight = w;
                 }
@@ -2149,14 +1687,7 @@ pub fn resolve(
             }
         }
     }
-    // THE FAILOVER POOLS' CROSS-REFERENCES, judged exactly like every other bare-name reference in
-    // this function. A member naming nothing is an operator believing a request has somewhere to go
-    // when it does not, which is the same class of defect as a dangling hook reference and is
-    // therefore an error rather than a warning. NO POOL MAY STRADDLE TWO PLANES: a pool's members
-    // resolve ONLY against the registrations of the section it is written under, so a member that is
-    // another section's entry fails here rather than at dispatch — and the message says which section
-    // the name actually lives in, because "not found" would send an operator looking for a typo they
-    // did not make.
+
     for (&section, pools) in &plane_pools {
         let at = format!("{section}.{}", busbar_contract::section::RESERVED_POOLS_KEY);
         let this = deploy.plane_section(section);
@@ -2180,10 +1711,7 @@ pub fn resolve(
                 section,
             );
         }
-        // ONE POOL PER MEMBER, per plane. The dispatch route resolves a registration to ITS pool and
-        // records health into that pool's cells; a registration in two pools would be two cell
-        // histories for one upstream with the winner chosen by map iteration order — a
-        // nondeterminism an operator cannot see. Refused as config, where the ambiguity was written.
+
         let mut owner: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
         for (pool, def) in pools {
             for member in &def.members {
@@ -2215,22 +1743,9 @@ pub fn resolve(
             Err(e) => errors.push(format!("hooks.{name}: {e}")),
         }
     }
-    // The pool bare-name references are already parsed onto `pool.gates` (the non-strategy names in
-    // each pool's `hooks:` list); existence + kind are validated by `config_validate`. The reserved
-    // all-pools attach (`pools.hooks:`) becomes the runtime `global_hooks` list — the ONLY global
-    // mechanism (fires on every pool, filtered per hook by `groups`/`phase`/`kind`).
+
     let global_hook_names: Vec<String> = deploy.pools.all_pool_hooks.clone();
 
-    // EACH DECLARED SECTION's hook references (P2-243/P2-decvalidate), held to ONE rule whatever
-    // the plane: bare names only, into the ONE top-level `hooks:` map, its section-wide
-    // `<section>.hooks:` list and each registration's own list read through the `container_gates`
-    // seam, and a dangling one a boot error rather than a silently dropped attachment.
-    //
-    // A RAW-carried section ([`DeployCfg::plane_raw`]) whose registered plane parses its section
-    // (a plane served through its door: `busbar_kernel::plane_driver::door`, whose parse is the door's own
-    // `validate`) is judged HERE too, so `--validate` and boot refuse a section its plane refuses,
-    // naming the section, and the parsed section answers the same reserved-word checks a declared
-    // one does (its `hooks:` list here, its model map's provider references below).
     let raw_judged: Vec<(
         &'static str,
         Box<dyn crate::config::plane_sections::PlaneCfg>,
@@ -2257,7 +1772,7 @@ pub fn resolve(
         .chain(raw_judged.iter().map(|(s, c)| (*s, c)));
     for (section, cfg) in judged {
         let g = cfg.container_gates();
-        // The section-level attach is judged by the same rule an entry's own list is.
+
         if let Err(e) = crate::config::plane_sections::validate_section_hooks(
             &format!("`{section}.hooks`"),
             &g.section_hooks,
@@ -2273,8 +1788,7 @@ pub fn resolve(
                 ));
             }
         }
-        // Each registration's own list: a dangling reference is an operator believing a control is
-        // attached that is not, so it is an error and not a warning, as it is for `auth.chain`.
+
         for (entry, hooks) in &g.containers {
             for hook in hooks {
                 if !deploy.hooks.contains_key(hook) {
@@ -2287,15 +1801,6 @@ pub fn resolve(
         }
     }
 
-    // GENERIC MODEL → `providers:` CROSS-REFERENCE CHECK (P2-243/P2-decvalidate), the model-serving
-    // twin of the hook blocks above: every plane-owned section's own `PlaneCfg::model_provider_refs`
-    // lists its `models:`-shaped provider references, fully qualified — today only `decisions:`
-    // answers non-empty (`tools:`/`agents:`/`streams:` inherit the trait's empty default, so this is
-    // a no-op for them) — checked for EXISTENCE against the RESOLVED `providers:` catalog, and, when
-    // it exists, its resolved protocol checked against the plane's own `PlaneCfg::known_dialects`
-    // (BUSBAR-1.6.0.md #51, OWNER-LOCKED: an unknown dialect fails closed — "the decisions plane
-    // (only jev) handed `anthropic` fails"). Dialect validation stays the PLANE's answer (`#49`: core
-    // spells no protocol literal); this loop only compares strings the plane itself supplied.
     let declared = deploy
         .declared
         .0
@@ -2337,23 +1842,12 @@ pub fn resolve(
         }
     }
 
-    // EACH SECTION'S WHOLE-REGISTRY RULES, judged by its plane, and they have to run HERE rather than
-    // per entry because they are the registry rules that are not about one entry (one
-    // registration's published name colliding with another's). `resolve` is where the whole
-    // EFFECTIVE registry exists — file base plus whatever the management surface applied — and it is
-    // the single point boot, `--validate`, the management-surface config-apply rebuild and the
-    // management-surface dry-run validate endpoint all pass through, so a config that boots is
-    // exactly the config that validates.
     for cfg in deploy.declared.0.values() {
         if let Err(e) = cfg.validate_registry() {
             errors.push(e);
         }
     }
-    // LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"):
-    // the plane sections this config writes, carried on `RootCfg`. A section whose owning plane is
-    // not registered never gets here: the pre-pass lifts only the sections REGISTERED planes declare,
-    // so an undeclared one is refused at parse as an unknown field (Option A, S11b (c) / Q67) and no
-    // carrier can be present without its plane.
+
     let mut plane_sections = std::collections::BTreeSet::new();
     for (section, present) in deploy.declared.0.iter().map(|(s, c)| (*s, c.is_present())) {
         if present {
@@ -2361,13 +1855,6 @@ pub fn resolve(
         }
     }
 
-    // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
-    // (mTLS) — the management surface is the highest-value target and must not sit on a public bind
-    // behind a bearer token alone. Loopback binds are safe (unreachable off-host); an explicit
-    // `admin_require_mtls: false` waives the guard for operators fronting admin with a mesh that
-    // terminates mTLS. Anything else that would expose admin without a client CA refuses to boot.
-    // 1.5.3: the flag INVERTED (`admin_insecure: true` → `admin_require_mtls: false`); the BEHAVIOR
-    // below is byte-identical, only the spelling of the waiver changed.
     {
         let admin_listen = &deploy.admin_listen;
         let exposed = !bind_is_loopback(admin_listen);
@@ -2385,8 +1872,6 @@ pub fn resolve(
         }
     }
 
-    // Join every `auth.chain:`/`auth.admin_auth:` NAME to its `identity-providers:` definition
-    // (define once, reference by name). Dangling references land in `errors`.
     let resolved_auth = deploy
         .auth
         .as_ref()
@@ -2401,23 +1886,12 @@ pub fn resolve(
         |a| a.admin_auth.iter().map(|e| e.name.clone()).collect(),
     );
 
-    // The `mcp:` block is validated HERE, into `errors`, rather than at first request: its owning
-    // plane's endpoint, whose canonical URI is malformed, would advertise one audience in its
-    // metadata document and expect another in its verifier, and every correctly-behaved client in
-    // the world would obtain a token this server then refuses. A boot refusal names the field and
-    // what to type; a runtime one is discovered by a caller that cannot connect and cannot say why.
-    // The `mcp:` endpoint is LOWERED through the plane seam into its validated resource, type-erased
-    // as `Option<Arc<dyn Any>>` — so `RootCfg` names no plane-specific resource type. The plane's
-    // `lower_endpoint` hook returns the SAME `Display` string boot produced for that error type,
-    // collected verbatim. With that plane compiled out nothing declares the block, so the pre-pass
-    // never lifts it: it is refused at parse as an unknown field (Option A, S11b (c) / Q67).
     let endpoint_block = deploy.endpoint.0.as_ref();
-    // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
-    // `mcp:` door), so no plane key is named here.
+
     let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     let lower = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
-    // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
+
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
         plane_sections.insert(endpoint_section);
     }
@@ -2425,25 +1899,16 @@ pub fn resolve(
         .zip(lower)
         .and_then(|(ep, lower)| lower(&**ep).map_err(|e| errors.push(e)).ok());
 
-    // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
-    // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
-    // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
-    // key is the map key; a build compiled without that plane produced no resource and inserts none.
     let mut endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
         .map(|resource| (endpoint_section, resource))
         .into_iter()
         .collect();
-    // Each RAW-carried plane section a config writes declares its plane (LAW 7) and is that plane's
-    // resource, as `(section, value)`.
+
     for (&section, value) in deploy.plane_raw.iter().filter(|(_, v)| !v.is_null()) {
         plane_sections.insert(section);
         endpoint_resources.insert(section, std::sync::Arc::new((section, value.clone())));
     }
 
-    // The `oauth_as:` block, validated HERE for the same reason the endpoint block is: an authorization server
-    // whose issuer is malformed advertises endpoints at paths it does not serve, and every
-    // conforming client discovers them and fails. A boot refusal names the field; a runtime one is
-    // found by an agent that cannot log in and cannot say why.
     let oauth_as = deploy
         .oauth_as
         .clone()
@@ -2469,7 +1934,6 @@ pub fn resolve(
         });
 
     if errors.is_empty() {
-        // An absent `security:` block is the all-default one: no extra hosts, no allow-all.
         let security = deploy.security.clone().unwrap_or_default();
         Ok(RootCfg {
             listen: deploy.listen.clone(),
@@ -2496,9 +1960,7 @@ pub fn resolve(
                 .all_pool_upstream_credentials
                 .unwrap_or_default(),
             hooks: hooks_registry,
-            // The admin chain PROVIDER NAMES, from `auth.admin_auth:` (default: the operator
-            // credential, `default_admin_auth_names`, when the whole `auth:` block is absent). 1.5.3: the runtime identity of an admin chain
-            // entry is its provider NAME (what `role_bindings.<name>` binds), not its module.
+
             admin_auth: admin_auth_names,
             groups: deploy.groups.clone(),
             rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
@@ -2515,9 +1977,7 @@ pub fn resolve(
                 allow: deploy.advanced.allow_destinations.clone(),
                 ..Destinations::default()
             },
-            // Project the operational-limit sections onto a flat resolved struct. The `advanced:` /
-            // `export:` blocks are optional; absent ⇒ their section defaults (the historical
-            // hardcoded values, via the manual `Default` impls).
+
             limits: LimitsResolved::from_sections(
                 &deploy.limits,
                 &deploy.advanced,
@@ -2547,33 +2007,21 @@ mod advanced_destinations_tests;
 #[path = "tests/named_map_replace_tests.rs"]
 mod named_map_replace_tests;
 
-// The CONFIG BACK-COMPAT CORPUS GATE: the resolved billing/limits surface is byte-stable across
-// 1.6.0 changes (the baseline M3's config-noun eviction must preserve). Lives here because it reads
-// the `pub` resolved fields (`limits.default_max_tokens`, `reasoning_effort_budgets`) that an
-// out-of-crate integration test cannot see.
 #[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
 
-// The 1.5.5 refusals of a provider entry's dialect keys, pinned byte for byte before the reading of
-// those keys leaves the kernel (row 155 B1).
 #[cfg(test)]
 #[path = "tests/provider_refusal_pins.rs"]
 mod provider_refusal_pins;
 
-// The resolved provider: the kernel-owned keys typed, the plane's one table under the neutral merge
-// (row 155 B1b).
 #[cfg(test)]
 #[path = "tests/resolved_provider_tests.rs"]
 mod resolved_provider_tests;
 
-// A provider's base URL (and token endpoint) as a `Debug` print shows it: no userinfo, while the
-// value the outbound request is built from keeps it (row 74, F25).
 #[cfg(test)]
 #[path = "tests/provider_debug_redaction_tests.rs"]
 mod provider_debug_redaction_tests;
-
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 pub mod auth;
 pub mod credentials;
@@ -2599,9 +2047,6 @@ pub enum PolicyOnError {
     First,
 }
 
-/// Per-provider auth-style override — the LLM plane's selector, declared with the rest of the
-/// `providers:` shapes in `config::providers` (architect ruling PROVIDERS-MOVE; home since #83a SD-8)
-/// and re-exported here at its historical `config::ProviderAuth` path.
 pub use providers::ProviderAuth;
 
 #[cfg(test)]

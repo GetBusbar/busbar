@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CROSS-PLANE `/metrics` GAUGE TESTS, relocated here from `src/tests/metrics_tests.rs` (the "fix
-//! the 38" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in this file builds a
-//! `TestApp` with real lanes/pools and reads the topology back through `refresh_scrape_gauges` →
-//! `App::engine_tables_view`, which — same as `endpoints_cross_plane.rs` — projects the FALLBACK
-//! plane's own runtime slot through that plane decl's `viewer` fn-pointer. Only the REAL
-//! the retired engine crate plane sets `viewer`/`build_runtime` to something that actually returns lane/pool
-//! tables; a neutral fake plane (all hooks `None`/no-op) would leave every gauge here reading the
-//! empty `EMPTY_VIEW` projection — a different, false-negative failure from what these tests exist
-//! to pin. That only type-checks with ONE `busbar_kernel` in the graph, which is exactly what an
-//! integration-test target gives. See `crates/busbar/tests/plane_integration.rs`'s header for the same rationale, first
-//! written there.
-//!
-//! Every OTHER test in `metrics_tests.rs` (counters, `describe()`, key-spend gauges, the gauge
-//! idle-timeout constant, …) names no lane/pool topology and stays in the unit module.
-//!
-//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
-//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
-//! build.rs): every cell reads lane/pool gauges through the fallback plane's runtime view, which
-//! only a real plane builds, and the composition root is where a plane may be linked.
-
 mod linked;
 
 use busbar_contract::records::{UsageLedger, VirtualKey};
@@ -60,13 +40,7 @@ fn sample_vkey(id: &str) -> VirtualKey {
     }
 }
 
-/// Find the trailing numeric value of the exposition line for `metric` labeled with `pool`.
 fn gauge_value(out: &str, metric: &str, pool: &str) -> Option<f64> {
-    // Match the metric name at an EXACT boundary (`name{`), not a bare prefix: `busbar_lane_available`
-    // is a prefix of `busbar_lane_available_permits`, so a `starts_with(metric)` match picked
-    // whichever of the two happened to render first — and prometheus group order is non-deterministic
-    // (recorder HashMap iteration), which made every prefix-of-another-metric assertion flaky. All
-    // these gauges carry labels, so requiring the `{` after the name is exact and stable.
     let needle = format!("{metric}{{");
     out.lines()
         .find(|l| {
@@ -76,7 +50,6 @@ fn gauge_value(out: &str, metric: &str, pool: &str) -> Option<f64> {
         .and_then(|v| v.trim().parse::<f64>().ok())
 }
 
-/// `refresh_scrape_gauges` with no governance must not panic and must emit `LANE_STATE` gauges.
 #[test]
 fn test_scrape_gauges_lane_state_no_governance() {
     register_planes();
@@ -87,7 +60,6 @@ fn test_scrape_gauges_lane_state_no_governance() {
         .pool("pool-x", &[(0, 1)])
         .build();
 
-    // Must not panic.
     refresh_scrape_gauges(&app);
 
     let out = render();
@@ -101,10 +73,6 @@ fn test_scrape_gauges_lane_state_no_governance() {
     );
 }
 
-/// `/metrics` renders per-lane availability from the UNIFIED `classify` taxonomy. On saturation,
-/// `busbar_lane_available` flips 1→0 (the inverted successor to the ad-hoc `busbar_lane_at_capacity`),
-/// `busbar_lane_available_permits` drops 1→0, `busbar_lane_inflight` rises 0→1, and
-/// `busbar_lane_recovery_hint_ms` reports the honest at-capacity floor (2000ms).
 #[test]
 fn test_scrape_gauges_lane_available_flips_on_saturation() {
     register_planes();
@@ -120,7 +88,6 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
         .pool("cap-pool", &[(0, 1)])
         .build();
 
-    // Idle: available, one permit, no inflight, no recovery hint.
     refresh_scrape_gauges(&app);
     let out = render();
     assert_eq!(
@@ -144,13 +111,11 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
         "an available lane has recovery_hint_ms=0; got:\n{out}"
     );
 
-    // The renamed gauge fully replaces the ad-hoc one — the old series must be gone.
     assert!(
         !out.contains("busbar_lane_at_capacity"),
         "the ad-hoc busbar_lane_at_capacity gauge must be removed; got:\n{out}"
     );
 
-    // Saturate by holding the only permit → the unified gauges must flip.
     let _held = sem
         .clone()
         .try_acquire_owned()
@@ -179,16 +144,11 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
     );
 }
 
-/// The doc contract: an UNBOUNDED lane (no `max_concurrent`) emits NO `busbar_lane_available_permits`
-/// sample (rather than a misleading infinite/zero one), so PromQL rules can treat the gauge's mere
-/// PRESENCE as "this lane is bounded". The lane is still scraped (`busbar_lane_available` is present),
-/// but the permits gauge must be absent for it.
 #[test]
 fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
     register_planes();
     init();
 
-    // `max >= Semaphore::MAX_PERMITS` is the store's unbounded sentinel (no `max_concurrent`).
     let app = TestApp::new()
         .lane(
             LaneSpec::new("unb-model", PROTO_OPENAI, "http://u")
@@ -199,13 +159,13 @@ fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
 
     refresh_scrape_gauges(&app);
     let out = render();
-    // The lane IS scraped (availability present)…
+
     assert_eq!(
         gauge_value(&out, LANE_AVAILABLE, "unb-pool"),
         Some(1.0),
         "an unbounded lane is still scraped and reports available=1; got:\n{out}"
     );
-    // …but its available-permits gauge must be ABSENT (no meaningful count for an unbounded lane).
+
     assert_eq!(
         gauge_value(&out, LANE_AVAILABLE_PERMITS, "unb-pool"),
         None,
@@ -213,10 +173,6 @@ fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
     );
 }
 
-/// In `/metrics`: a breaker-Open lane reports `busbar_lane_available=0` with a breaker-derived
-/// `busbar_lane_recovery_hint_ms`, while the INDEPENDENT `busbar_lane_state` breaker gauge reads
-/// tripped and `busbar_lane_available_permits` still exposes the capacity axis — the two are never
-/// collapsed into a single signal.
 #[test]
 fn test_scrape_gauges_breaker_open_lane_unavailable() {
     register_planes();
@@ -227,7 +183,6 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
         .pool("brk-pool", &[(0, 1)])
         .build();
 
-    // Trip the pool cell Open with a cooldown 30s out.
     let t = now();
     app.store.force_open_in("brk-pool", 0, t + 30);
 
@@ -238,13 +193,13 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
         Some(0.0),
         "a breaker-Open lane must classify unavailable; got:\n{out}"
     );
-    // Independent breaker axis: LANE_STATE reads tripped (2).
+
     assert_eq!(
         gauge_value(&out, LANE_STATE, "brk-pool"),
         Some(2.0),
         "the independent breaker gauge must read tripped; got:\n{out}"
     );
-    // Breaker-derived recovery hint (~30s = 30000ms), NOT the at-capacity floor.
+
     assert_eq!(
         gauge_value(&out, LANE_RECOVERY_HINT_MS, "brk-pool"),
         Some(30000.0),
@@ -252,8 +207,6 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
     );
 }
 
-/// `busbar_pool_queued{pool}` is defined for every configured pool, not only for pools that have
-/// queued: it must appear (reading 0) for every configured pool on the very first scrape.
 #[test]
 fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     register_planes();
@@ -271,11 +224,6 @@ fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     );
 }
 
-/// A `Store` whose `list_keys` fails on every call AFTER the first — the first call succeeds so
-/// `GovState::new` (which loads the key cache via `list_keys` at construction time) can still
-/// build successfully, and every call from then on (i.e. from `refresh_scrape_gauges`'s
-/// `all_keys()`) fails, simulating a governance-store hiccup discovered exactly at scrape time.
-/// Every other method delegates to a real in-memory `MemoryStore`.
 struct ScrapeTimeBrokenKeyListStore {
     inner: MemoryStore,
     calls: std::sync::atomic::AtomicUsize,
@@ -319,13 +267,6 @@ impl RecordStore for ScrapeTimeBrokenKeyListStore {
     }
 }
 
-/// Regression:
-/// `refresh_scrape_gauges` must keep refreshing `busbar_lane_state` (and the group-bucket
-/// gauges, which don't depend on `all_keys()` either) even when the governance store's
-/// `all_keys()` call fails during the scrape. The old code did a bare `return` on that error,
-/// which — given the metrics recorder's 24h gauge idle-timeout — left `busbar_lane_state`
-/// showing stale/absent values for up to a day after a single transient governance-store
-/// hiccup, hiding a breaker that trips during that exact window from lane-health alerting.
 #[test]
 fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
     register_planes();
@@ -337,7 +278,7 @@ fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
         calls: std::sync::atomic::AtomicUsize::new(0),
     });
     store.put_key(&key).unwrap();
-    // Construction consumes the ONE successful `list_keys` call.
+
     let gov = Arc::new(GovState::new(store, None).unwrap());
 
     let app = TestApp::new()
@@ -346,12 +287,10 @@ fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
         .governance(gov)
         .build();
 
-    // Every `all_keys()` call from here on fails (simulated scrape-time governance outage).
     refresh_scrape_gauges(&app);
 
     let out = render();
-    // The lane-health gauge must still be present and labeled for this pool — it has nothing to
-    // do with the governance store and must not be collateral damage of the failed key list.
+
     let lane_line = out.lines().find(|l| {
         l.contains(LANE_STATE) && l.contains("pool=\"pool-broken\"") && !l.starts_with('#')
     });
@@ -360,15 +299,13 @@ fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
         "busbar_lane_state for pool-broken must still be emitted despite the governance \
              all_keys() failure; got:\n{out}"
     );
-    // The per-key spend gauge (which DOES depend on the failed `all_keys()` read) must
-    // correctly be absent — this is the one thing that should actually be skipped.
+
     assert!(
         !out.contains("vk_broken_store01"),
         "the failed key's id must not appear as a per-key gauge label; got:\n{out}"
     );
 }
 
-/// A healthy lane (no cooldown, not dead) must emit `busbar_lane_state = 0`.
 #[test]
 fn test_lane_state_healthy_is_zero() {
     register_planes();
@@ -382,7 +319,7 @@ fn test_lane_state_healthy_is_zero() {
     refresh_scrape_gauges(&app);
 
     let out = render();
-    // Look for the lane_state line for pool-h. A healthy lane should carry value 0.
+
     let lane_line = out
         .lines()
         .find(|l| l.contains(LANE_STATE) && l.contains("pool=\"pool-h\"") && !l.starts_with('#'));
@@ -395,19 +332,13 @@ fn test_lane_state_healthy_is_zero() {
         line.ends_with(" 0") || line.ends_with(" 0.0"),
         "healthy lane must have state 0; got:\n{line}"
     );
-    // The `lane` label is the lane's MODEL string (NOT a numeric index), consistent with the
-    // proxy engine counter sites so the gauge and counters can be PromQL-joined on `lane`.
+
     assert!(
         line.contains("lane=\"model-h\""),
         "lane label must be the model string, not a numeric index; got:\n{line}"
     );
 }
 
-/// SHARED LANE, one pool's OWN cell Open, the other pool's cell healthy: the tripped pool reads
-/// `busbar_lane_state = 2` and the healthy pool reads `0`. The gauge reads each pool's own breaker
-/// cell; a sibling pool's healthy cell on the same lane never softens a trip into `1` (that value
-/// is reserved for a real half-open probe on the pool's own cell). The tripped pool's
-/// `busbar_lane_available` on the same label pair reads 0, so the two gauges agree.
 #[test]
 fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     register_planes();
@@ -420,8 +351,7 @@ fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
         .build_with_store();
 
     let t = now();
-    // Materialize the sibling pool's cell (Closed, no cooldown) so the lane is genuinely usable
-    // through it, then trip the other pool's cell Open with a cooldown well into the future.
+
     let _ = store.cooldown_remaining_in("pool-sibling", 0, t);
     store.force_open_in("pool-tripped", 0, t + 600);
 
@@ -446,9 +376,6 @@ fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     );
 }
 
-/// The `by_model` (direct/no-pool routing) twin: the DEFAULT (`""`) cell tripped Open while a
-/// per-pool cell for the same lane stays Closed must read 2 for the model-labeled gauge — the
-/// direct path's own cell is tripped, and the pool cell it does not route through cannot mask it.
 #[test]
 fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_cell() {
     register_planes();
@@ -478,10 +405,6 @@ fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_
     );
 }
 
-/// `1` is reachable, and ONLY through a real half-open probe on the pool's own cell: an Open cell
-/// whose cooldown has elapsed reads 0 (the next request through it is the probe), and once a
-/// dispatch wins that probe the cell is HalfOpen and the gauge reads 1. A sibling pool on the same
-/// lane is untouched and reads 0 throughout.
 #[test]
 fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
     register_planes();
@@ -495,7 +418,7 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
 
     let t = now();
     let _ = store.cooldown_remaining_in("pool-probe-sib", 0, t);
-    // Open with a cooldown that has already elapsed: the next dispatch through this cell probes.
+
     store.force_open_in("pool-probe", 0, t.saturating_sub(1));
 
     refresh_scrape_gauges(&app);
@@ -507,7 +430,6 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
          got:\n{out}"
     );
 
-    // A dispatch wins the single-flight probe: the pool's own cell is now HalfOpen.
     let probe = store
         .try_admit_breaker("pool-probe", 0, now())
         .expect("an elapsed Open cell admits the probe");
@@ -530,12 +452,6 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
     );
 }
 
-/// The `cooldown > 0` boundary on the by_model gauge: with the DEFAULT (`""`) cell UNTOUCHED
-/// (cooldown reads exactly 0 — `by_model`'s direct-routing path never went through it) while every
-/// per-pool cell for the SAME lane is Open, the by_model gauge must report state 0 (the direct
-/// path's own cell is genuinely healthy — pool cells on a separate traffic path are irrelevant to
-/// it), not 2. A mutated `cooldown >= 0` would flip this case to 2; the tests with a 600s cooldown
-/// can never reach that boundary.
 #[test]
 fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy() {
     register_planes();
@@ -548,10 +464,7 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
         .build_with_store();
 
     let t = now();
-    // Trip EVERY per-pool cell Open (unexpired cooldown) — the lane is unusable via any pool.
-    // The DEFAULT ("") cell is deliberately never touched: cooldown_remaining_in("", 0, now)
-    // reads exactly 0 (its pristine untouched state), which is the boundary value that
-    // distinguishes `>` from `==`.
+
     store.force_open_in("poolX", 0, t + 600);
     store.force_open_in("poolY", 0, t + 600);
 
@@ -573,18 +486,6 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
     );
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/scrape_queued_depth_tests.rs::test_scrape_gauges_pool_queued_reads_live_depth`
-/// (coverage map v2 row 604). 1.5.5: `busbar_pool_queued{pool}` reads the LIVE park depth, not a
-/// literal 0: `1` while a request is parked on the pool's wait terminal, `0` once it leaves.
-///
-/// The park is written where the served walk writes it (`set_pool_queued_depth`, the walk
-/// telemetry's balanced park/leave count) and read through the kernel's own tables, the read seam
-/// the scrape takes for a door-served plane; the scrape's gauge is then held to whatever the app's
-/// read seam answers for the pool at that moment, so the gauge is the seam's reading and never a
-/// literal.
-///
-/// RED: the door read seam ignores the walk's park depth (reads 0 while parked, or keeps 1 after
-/// the leave), or the scrape renders a value other than the live depth its read seam reports.
 #[test]
 fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     use busbar_kernel::plane_driver::route_tables::{
@@ -592,9 +493,9 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     };
     register_planes();
     init();
-    // Unique labels: the recorder and the park table are process-global.
+
     let pool = "q-live-pool";
-    // The linked plane's own default dialect, read off the registry (this cell names none).
+
     let dialect = busbar_kernel::ingress::protocols::residual_default_dialect()
         .or_else(|| {
             busbar_kernel::ingress::protocols::detect_protocol(
@@ -609,7 +510,6 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
         .build();
     let door_tables = ConfigTables::default();
 
-    // A request parks on the pool's wait terminal.
     set_pool_queued_depth(pool, 1);
     assert_eq!(
         door_tables.queued_depth(pool),
@@ -625,7 +525,6 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
         "busbar_pool_queued must render the live depth its read seam reports; got:\n{out}"
     );
 
-    // The request leaves the queue.
     set_pool_queued_depth(pool, 0);
     assert_eq!(
         door_tables.queued_depth(pool),

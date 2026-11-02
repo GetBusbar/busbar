@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A per-unit path resolves a reported name against the vocabulary and never interns one.
-//!
-//! [`Registration::resolve`] is the lookup a unit's one line uses to turn a class it reported into
-//! the static name a usage line carries. It must answer only what registration put there, and it
-//! must allocate nothing for a name nobody registered, with the vocabulary open or closed. Its own
-//! test binary, because the vocabulary is the process's.
-
 use busbar_contract::MeterClassId;
 use busbar_kernel::Registration;
 

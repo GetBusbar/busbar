@@ -2,63 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOST'S I/O TABLE, `io.*` (`BUSBAR-1.6.0.md` THE DESIGN, the connections section: "No
-//! plugin opens a socket, dials, binds or does TLS"; TRANSPORT-STACK (2): a CARRIER writes "with
-//! readiness via core `io.*`"): the kind-neutral primitives a carrier moves bytes with, over OS
-//! handles the HOST owns. One table, [`IoSlots`], handed in [`HostTables::io`].
-//!
-//! THE SPLIT (ARCHITECT, p2-transport-carrier). The host owns every OS handle — a stream, a
-//! listener, a spawned program's two pipes — and a plugin never sees a descriptor: it holds an
-//! OPAQUE `u64` handle the host minted, and every slot checks that the caller owns it. The carrier
-//! owns the policy over these primitives: which address it opens and in what order, the accept loop,
-//! the chunking of what it reads and writes, how a connection closes and what its far end is.
-//!
-//! * [`op::OPEN`] begins reaching an address (`ip:port`, or `unix:` and an absolute path): the
-//!   host makes a non-blocking stream and starts its connect, and answers its handle at once. The
-//!   connect settles under [`op::READY`] for [`DIR_WRITE`] (FAILED with the system's text when the
-//!   far end refused). The host opens only an address it ADMITTED for the dial that asked (the
-//!   connector's one destination guard, THE DESIGN's connections section): any other is REFUSED,
-//!   before any system call.
-//! * [`op::LISTEN`] binds a listener on `ip:port` and writes the address bound.
-//! * [`op::ACCEPT`] takes the next connection off a listener and writes its far end's address.
-//! * [`op::READ`] / [`op::WRITE`] move bytes; `len` `0` from a READ is the clean end.
-//! * [`op::READY`] waits until a handle may make progress in one direction.
-//! * [`op::SHUT`] shuts one direction (or both) of a handle down; [`op::CLOSE`] releases it (a
-//!   spawned program is killed with it).
-//! * [`op::SPAWN`] starts a program — an absolute path, its arguments and its WHOLE environment, no
-//!   shell — and answers ONE duplex handle: READ is its output, WRITE its input, SHUT of
-//!   [`DIR_WRITE`] closes its input. Its error output is the host's. The host spawns only the
-//!   program it ADMITTED for the dial that asked.
-//! * [`op::ENDS`] answers a handle's local port (`value`) and writes its far end's address. On a
-//!   spawned program's handle it answers the program's OWN exit, read without waiting:
-//!   `ServiceOut::exited` is `1` once the program has exited and `value` is then its exit code
-//!   (`128` plus the signal for one a signal ended); `exited` is `0` while it runs. A descendant
-//!   still holding the program's output keeps the pipe open, so this, not the pipe's end, is where a
-//!   carrier sees the program end.
-//!
-//! THE HOST CLOSES WHAT AN INSTANCE LEAVES. Once an instance can never cross again (let go after
-//! its `close`, quarantined, or faulted), the host releases every handle it still holds, as
-//! [`op::CLOSE`] releases one. A plugin's `close` need not release its handles first, and a listener
-//! or socket never outlives the instance that made it.
-//!
-//! THE CALL SHAPE is the host services' (`abi/host/service.rs`): `svc(ctx, in, out)`, the C ABI,
-//! every `in` leading with a [`ServiceHead`]. `ServiceOut::value` is the handle a slot made
-//! (`OPEN`, `LISTEN`, `ACCEPT`, `SPAWN`) or the local port (`ENDS`); `ServiceOut::len` the bytes
-//! moved (`READ`, `WRITE`) or written into the caller's buffer (`LISTEN`, `ACCEPT`, `ENDS`).
-//!
-//! READINESS, NOT A STORED RESULT. A slot that MAY PEND ([`may_pend`]: `ACCEPT`, `READ`, `WRITE`,
-//! `READY`) answers PENDING only when NOTHING moved, and wakes its handle's ticket once the handle
-//! may make progress in that direction. The re-issued call (on RESUME, the same op) tries again:
-//! there is no stored result to redeem, because a PENDING attempt did nothing to store. Called with
-//! no ticket, a slot that may pend is REFUSED and never runs. The others never pend.
-//!
-//! ADDRESSES. The bytes `LISTEN`, `ACCEPT` and `ENDS` write are UTF-8 text (`ip:port`, or empty for
-//! a handle with no network far end), at most [`MAX_ADDR`] bytes: the caller lends at least that
-//! many, and a smaller buffer is REFUSED (there is no short path).
-//!
-//! REFUSED vs FAILED. REFUSED is the host's policy (not admitted, not the caller's handle, a
-//! buffer too small, no ticket); FAILED is the system's answer, with its text in `error`.
-//!
-//! [`HostTables::io`]: crate::abi::mechanism::ticket::HostTables::io
 
 use crate::abi::mechanism::call::{AbiStr, Field};
 use crate::abi::mechanism::check::{self, fault, Fault, Rule};
@@ -98,13 +41,13 @@ pub const MAX_ADDR: usize = 256;
 /// [`ReadyIn::dir`] / [`ShutIn::how`]: the read direction.
 pub const DIR_READ: u32 = 1;
 /// [`ReadyIn::dir`] / [`ShutIn::how`]: the write direction (for a stream still connecting, its
-/// connect settling).
+
 pub const DIR_WRITE: u32 = 2;
 /// [`ShutIn::how`]: both directions.
 pub const DIR_BOTH: u32 = DIR_READ | DIR_WRITE;
 
 /// Whether a slot may answer PENDING, and so is callable only inside a ticketed op. `false` for an
-/// index past the table.
+
 #[must_use]
 pub const fn may_pend(slot: u32) -> bool {
     matches!(slot, op::ACCEPT | op::READ | op::WRITE | op::READY)
@@ -263,13 +206,8 @@ pub struct SpawnIn {
     pub env_len: usize,
 }
 
-// ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
-
 /// A direction a `ready` waits on: exactly one of [`DIR_READ`] and [`DIR_WRITE`].
-///
-/// # Errors
-///
-/// [`Rule::UnknownCode`] for any other value.
+
 pub const fn check_dir(dir: u32) -> Result<(), Fault> {
     match dir {
         DIR_READ | DIR_WRITE => Ok(()),
@@ -278,10 +216,7 @@ pub const fn check_dir(dir: u32) -> Result<(), Fault> {
 }
 
 /// What a `shut` shuts: [`DIR_READ`], [`DIR_WRITE`] or [`DIR_BOTH`].
-///
-/// # Errors
-///
-/// [`Rule::UnknownCode`] for any other value.
+
 pub const fn check_how(how: u32) -> Result<(), Fault> {
     match how {
         DIR_READ | DIR_WRITE | DIR_BOTH => Ok(()),
@@ -290,11 +225,7 @@ pub const fn check_how(how: u32) -> Result<(), Fault> {
 }
 
 /// An address buffer: a capacity never comes with a NULL pointer, and it is at least
-/// [`MAX_ADDR`].
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`]; [`Rule::OverCap`] for a buffer below [`MAX_ADDR`].
+
 pub fn check_addr_buf(buf: *mut u8, cap: usize, field: &'static str) -> Result<(), Fault> {
     check::listed(buf.cast_const(), cap, field)?;
     if cap < MAX_ADDR || buf.is_null() {
@@ -304,10 +235,7 @@ pub fn check_addr_buf(buf: *mut u8, cap: usize, field: &'static str) -> Result<(
 }
 
 /// A `spawn`'s lists: a count never comes with a NULL pointer.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`].
+
 pub fn check_spawn_in(i: &SpawnIn) -> Result<(), Fault> {
     check::text(i.program, "io.spawn.program")?;
     check::listed(i.args, i.args_len, "io.spawn.args")?;

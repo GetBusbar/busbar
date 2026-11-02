@@ -106,8 +106,6 @@ fn a_marker_that_is_not_an_index_is_refused() {
 
 #[test]
 fn the_marker_substitution_never_leaves_a_value_in_an_error() {
-    // A lent value landing where the type does not take a string, a later field failing after the
-    // substitution, and a document that does not parse: none quotes the lent bytes.
     let lent: [&[u8]; 3] = [CANARY.as_bytes(), CANARY.as_bytes(), CANARY.as_bytes()];
     let wrong_type = format!(r#"{{"key":"k","port":{{"{SECRET_MARKER}":0}},"servers":{{}}}}"#);
     let later = format!(r#"{{"key":{{"{SECRET_MARKER}":0}},"servers":{{"a":{{"env":{{}}}}}}}}"#);

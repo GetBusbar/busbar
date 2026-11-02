@@ -1,18 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CREDENTIAL RIGS the black-box suites share: a local token issuer whose JWKS is served over a
-//! certificate-verified loopback TLS endpoint, the signed token-verifying `kind: auth` plugin busbar
-//! builds packaged into a plugins dir, the first-party key a `test-harness` child takes, and the
-//! busbar-key re-signing an operator's audience binding performs. Moved here from the suites that
-//! first wrote them, so every suite (and the plane black-box runner) drives the same rigs.
-
 use std::path::Path;
 
-/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`: an ES256 key, its JWKS and
-/// genuinely signed tokens), its JWKS served over a certificate-verified loopback TLS endpoint
-/// ([`serve_jwks`]) a module trusts through `ca_cert_pem`. The child `busbar` process's OWN
-/// connector fetches the JWKS over the dropped-in module's declared need.
 pub fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
     static ONE: std::sync::OnceLock<busbar_test_kit::test_issuer::Issuer> =
         std::sync::OnceLock::new();
@@ -24,9 +14,6 @@ pub fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
     })
 }
 
-/// Serve `jwks` over TLS on a fresh loopback port for the life of the process, under a self-signed
-/// certificate for `127.0.0.1`: the JWKS URL and the certificate's PEM. One background thread
-/// answers every request with the document.
 pub fn serve_jwks(jwks: String) -> (String, String) {
     use std::io::{Read as _, Write as _};
     let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
@@ -72,12 +59,10 @@ pub fn serve_jwks(jwks: String) -> (String, String) {
     (url, cert_pem)
 }
 
-/// A JWT for principal `sub` with `roles`, bound to `aud` and signed by the local issuer.
 pub fn token_for(sub: &str, roles: &[&str], aud: &str) -> String {
     issuer().mint(sub, roles, aud)
 }
 
-/// The issuer's module settings for `audience`, as YAML mapping lines indented by `indent` spaces.
 pub fn issuer_settings_yaml(audience: &str, indent: usize) -> String {
     issuer()
         .settings(audience)
@@ -86,26 +71,16 @@ pub fn issuer_settings_yaml(audience: &str, indent: usize) -> String {
         .collect()
 }
 
-/// The variable a `test-harness` child reads its first-party key from: the binary's
-/// `root::boot::HARNESS_FIRST_PARTY_KEY_ENV`, whose unit tests pin this spelling.
 pub const HARNESS_FIRST_PARTY_KEY_ENV: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
-/// The first-party key a suite signs a dropped-in module with and hands the child through the
-/// harness seam ([`HARNESS_FIRST_PARTY_KEY_ENV`]).
 pub fn harness_release_key() -> busbar_plugin_loader::sign::SigningKey {
     super::plugins::key(0x5a)
 }
 
-/// The harness key's public half, hex, as the child reads it from [`HARNESS_FIRST_PARTY_KEY_ENV`].
 pub fn harness_release_key_hex() -> String {
     hex::encode(harness_release_key().verifying_key().as_bytes())
 }
 
-/// Package the REAL token-verifying `kind: auth` plugin cdylib busbar builds (a pinned git
-/// dev-dependency, so the build leaves it under `deps/`) into a `kind: auth` tarball named `module`
-/// (alias `alias`) in `plugins_dir`, its manifest stating the door's Statement as the pack tool
-/// renders it, SIGNED first-party under [`harness_release_key`] when `first_party`, else under a
-/// third-party key. A cdylib that is not built fails the caller in every run.
 pub fn install_auth_plugin(plugins_dir: &Path, module: &str, alias: &str, first_party: bool) {
     let lib = super::plugins::token_verifier_cdylib_path()
         .and_then(|p| std::fs::read(p).ok())
@@ -122,8 +97,7 @@ pub fn install_auth_plugin(plugins_dir: &Path, module: &str, alias: &str, first_
     };
     let mut m = super::plugins::manifest("auth", module, publisher);
     m.alias = alias.into();
-    // One staging file PER CALL: suites run as threads of one process, and rewriting a library
-    // another thread still has mapped (dlopened for its Statement) truncates it under that mapping.
+
     static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
         "busbar-auth-module-{}-{}{}",
@@ -145,7 +119,6 @@ pub fn install_auth_plugin(plugins_dir: &Path, module: &str, alias: &str, first_
     std::fs::write(plugins_dir.join(format!("{module}.tar.gz")), bytes).expect("write the tarball");
 }
 
-/// A fresh signing key from the binary itself (`--generate-signing-key`): its 32 bytes and its hex.
 pub fn generate_signing_key() -> ([u8; 32], String) {
     let out = std::process::Command::new(super::boot::exe())
         .arg("--generate-signing-key")
@@ -163,8 +136,6 @@ pub fn generate_signing_key() -> ([u8; 32], String) {
     (bytes, hex_key)
 }
 
-/// Bind a minted busbar key (`bbk_<claims>.<sig>`) to `audience`: its claims plus `a`, re-signed
-/// with the node's signing key — what an operator's audience binding performs.
 pub fn bind_key(secret: &[u8; 32], plain: &str, audience: &str) -> String {
     use base64::Engine as _;
     use ed25519_dalek::Signer as _;

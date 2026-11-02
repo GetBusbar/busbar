@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The connector's own rules: an instance handed no connector is Unarmed, a NONE ticket cannot
-//! pend, and a connector resumed from a parked count issues its handles on from it. (The scripted
-//! host that pends every service is `exchange_tests`.)
 
 use std::ffi::c_void;
 use std::sync::Mutex;
@@ -182,7 +180,7 @@ fn a_connector_resumed_from_a_parked_count_issues_on_from_it() {
 }
 
 /// `open` learns the host's verdict on its needs: admitted, or refused with the host's text
-/// verbatim (so the plugin answers its own 1.5.5 words); on no ticket, drawing no handle.
+
 #[test]
 fn open_learns_the_hosts_verdict_on_a_need() {
     let h = host(&SLOTS);
@@ -193,7 +191,7 @@ fn open_learns_the_hosts_verdict_on_a_need() {
         Err(ConnFailure::Refused(NOT_ADMITTED.to_string()))
     );
     assert_eq!(c.issued(), 0, "no handle drawn");
-    // An instance handed no services table cannot ask.
+
     let bare = /* SAFETY: these harness tables and callbacks are live for the snapshot. */ unsafe { Host::from_raw(&HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
@@ -226,7 +224,7 @@ fn establish_hands_the_host_the_set_its_dial_lands_within() {
 }
 
 /// `close` never pends, so it is made on no ticket (an instance closing its kept connections as it
-/// goes); every other service still refuses NONE.
+
 #[test]
 fn close_is_made_on_no_ticket() {
     let h = host(&SLOTS);
@@ -278,8 +276,7 @@ static REFUSING: ConnectorSlots = ConnectorSlots {
 };
 
 /// A refusal naming `CAUSE_CREDENTIAL_UNAVAILABLE` reads as [`ConnFailure::CredentialUnavailable`]:
-/// the plugin tells a vanished credential from any other refusal. RED arm: the same refusal naming
-/// no cause is the host's plain refusal, with its text.
+
 #[test]
 fn a_refusal_naming_an_unavailable_credential_reads_as_its_own_failure() {
     use crate::abi::host::conn::connector::{CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE};
@@ -452,7 +449,6 @@ fn snapshots_read_only_complete_advertised_function_fields() {
     let absent = unsafe { snapshot_connector(std::ptr::from_ref(&prefix).cast()) }.unwrap();
     assert!(absent.establish.is_none());
 
-    // A header-only allocation has no function-pointer storage to read.
     let head = [8u32, u32::MAX];
     // SAFETY: exactly the two advertised u32 words are allocated and readable.
     let empty = unsafe { snapshot_services(head.as_ptr().cast()) }.unwrap();

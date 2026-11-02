@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Inspect only initialized wire bytes through the allocator's live deallocation pointer.
-//! All output is produced through real Framing calls, including recalls, resumes and cancellation.
 
 use super::*;
 use std::collections::HashMap;

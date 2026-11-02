@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! MUTATION-HARDENING: `crates/busbar-contract/src/hooks.rs` and
-//! `crates/busbar-contract/src/operation.rs` (moved here from `busbar-api`'s own suite when that crate
-//! retired; both modules had already moved to the contract).
-//!
-//! Neither file had ANY `#[cfg(test)] mod tests` when this suite was written,
-//! so `RoutingDecision::from_ranked`'s real logic (dedup, unknown-idx filtering, empty→Abstain
-//! coercion) and every `OpShape`/`OpVerb` const-fn (`may_stream`, `as_str`, `shape`, `name`) were
-//! completely unexercised. Integration test (auto-discovered by Cargo,
-//! public-surface only) — no `mod` line needs adding anywhere.
 
 use busbar_contract::hooks::{
     CallerIdentity, HookStatus, PolicyError, PolicyResult, PromptProjection, RoutingContext,
@@ -19,9 +11,7 @@ use busbar_contract::operation::{OpShape, OpVerb};
 use std::collections::HashSet;
 
 /// A minimal, single-poll async executor: every default `RoutingPolicy` method under test here
-/// returns immediately (no real I/O, no real await point), so a no-op waker that never actually
-/// wakes anything is sufficient — this avoids pulling a runtime crate (tokio/futures) into this
-/// crate's dependency tree just to drive three trivial default-method calls.
+
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
     fn no_op(_: *const ()) {}
@@ -40,8 +30,6 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
         }
     }
 }
-
-// ── `RoutingDecision::from_ranked` ────────────────────────────────────────────────────────────────
 
 #[test]
 fn from_ranked_empty_input_is_abstain() {
@@ -62,7 +50,7 @@ fn from_ranked_drops_unknown_idxs_not_in_valid() {
 }
 
 /// If EVERY raw idx is unknown, the result coerces to `Abstain` (not `Prefer(vec![])`) — a policy
-/// that names only garbage must look exactly like a policy with no opinion.
+
 #[test]
 fn from_ranked_all_unknown_coerces_to_abstain() {
     let valid: HashSet<usize> = [0, 1].into_iter().collect();
@@ -90,8 +78,6 @@ fn from_ranked_preserves_a_clean_subset_order() {
         RoutingDecision::Prefer(vec![3, 1])
     );
 }
-
-// ── `OpShape` ─────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn op_shape_may_stream_only_invoke() {
@@ -126,8 +112,6 @@ fn op_shape_as_str_is_stable_and_distinct() {
         "every shape's word must be distinct"
     );
 }
-
-// ── `Operation` ───────────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn operation_invoke_class_verbs_are_all_invoke_shape_with_their_published_name() {
@@ -177,12 +161,8 @@ fn operation_all_lists_exactly_the_six_protocol_surface_verbs_in_order() {
     );
 }
 
-// ── `hooks.rs`'s redacting `Debug` impls ─────────────────────────────────────────────────────────
-
 /// `PromptProjection`'s `Debug` must actually WRITE the shape summary (system char count, message
-/// count) — a mutant that turned the whole `fmt` body into a no-op `Ok(())` would produce an EMPTY
-/// debug string, which this catches, while still never emitting the operator-opted-in prompt text
-/// itself.
+
 #[test]
 fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
     let proj = PromptProjection {
@@ -215,7 +195,7 @@ fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
 }
 
 /// `CallerIdentity`'s `Debug` shows the operator-facing key fields but redacts the end-user PII —
-/// same "must not be a no-op" pin as `PromptProjection`, plus the redaction split.
+
 #[test]
 fn caller_identity_debug_writes_key_fields_and_redacts_user() {
     let id = CallerIdentity {
@@ -230,8 +210,6 @@ fn caller_identity_debug_writes_key_fields_and_redacts_user() {
     assert!(!dbg.contains("alice@example.com"), "{dbg}");
     assert!(dbg.contains("redacted"), "{dbg}");
 }
-
-// ── `RoutingPolicy`'s defaulted `configure`/`describe`/`status` ─────────────────────────────────
 
 struct MinimalPolicy;
 

@@ -1,29 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR'S READY PATH ALLOCATES NOTHING ON THE HOST (`BUSBAR-1.6.0.md` A.8, "Zero allocation on
-//! the READY path. A counting-allocator witness is 0 for each request-path op").
-//!
-//! The witness is a counting `#[global_allocator]`, so it is its own test binary. The count is PER
-//! THREAD and ARMED only around one crossing, so another test thread never lands in it.
-//!
-//! WHAT IS MEASURED: the host's half of one crossing, `Plugin::call` on the one dispatcher, for
-//! every op the plane kind's contract table marks `request_path` (`abi::plane::CONTRACTS`): the
-//! frame checks, the `max_inflight` unit, the watchdog's crossing record, the gate, the kind's
-//! answer check over the host's buffers and the envelope read. The plugin's own slot body runs
-//! DISARMED: what a plane does inside its slot is that plane's witness (each `busbar-plane-*`
-//! crate's own `alloc_gate`/`door_alloc` binary), and the test plane this binary drives is a
-//! fixture that keeps maps of its units, not a plane under measurement.
-//!
-//! WHY IT EXISTS BESIDE `hot-path-alloc`: that gate's instrument
-//! (`crates/busbar-kernel/benches/plane_host_vtable_alloc.rs`) counts a plugin's call batch into
-//! the host-services table (`HostSlots`), which replaced the deleted HOT lane. This is the
-//! door lane's witness, the one the request path crosses, and `hot-path-alloc:door-ready-zero`
-//! holds it.
-//!
-//! The ops are taken from the contract table, not listed by hand: a request-path op the kind adds
-//! without a measured case here is RED ([`every_request_path_op_is_measured`]).
-
 #[path = "fixtures/plane_driver_test_plane.rs"]
 #[allow(dead_code)]
 mod plane;
@@ -48,8 +25,6 @@ use busbar_plugin_loader::dispatch::{
     LinkedRow, NoSink, Plugin, NO_BLOB,
 };
 
-// ── the witness ──────────────────────────────────────────────────────────────────────────────
-
 thread_local! {
     /// Whether this thread's allocations are being counted.
     static ARMED: Cell<bool> = const { Cell::new(false) };
@@ -57,7 +32,6 @@ thread_local! {
     static COUNTED: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The system allocator, counting the armed thread's allocations and reallocations.
 struct Counting;
 
 fn count_one() {
@@ -96,7 +70,6 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
-/// The allocations `f` makes on this thread, the plugin's own slot bodies excluded.
 fn counted(mut f: impl FnMut()) -> u64 {
     COUNTED.with(|c| c.set(0));
     ARMED.with(|a| a.set(true));
@@ -105,7 +78,6 @@ fn counted(mut f: impl FnMut()) -> u64 {
     COUNTED.with(Cell::get)
 }
 
-/// `f` with the witness disarmed: the plugin's side of a crossing.
 fn unmeasured<T>(f: impl FnOnce() -> T) -> T {
     let was = ARMED.with(|a| a.replace(false));
     let out = f();
@@ -113,9 +85,6 @@ fn unmeasured<T>(f: impl FnOnce() -> T) -> T {
     out
 }
 
-// ── the door under measurement: the test plane's, its request-path slot bodies disarmed ─────────
-
-/// A `'static` table of raw pointers, shared read-only.
 struct Shared<T>(T);
 // SAFETY: written once (`OnceLock`) before any read, never mutated after; the pointers it holds
 // are to `'static` plugin data.
@@ -123,7 +92,6 @@ unsafe impl<T> Sync for Shared<T> {}
 // SAFETY: as above.
 unsafe impl<T> Send for Shared<T> {}
 
-/// The test plane's own ops table.
 fn inner() -> &'static Ops {
     static INNER: OnceLock<Shared<Ops>> = OnceLock::new();
     &INNER
@@ -150,9 +118,6 @@ disarmed!(refusal, refusal);
 disarmed!(serve, serve);
 disarmed!(project, project);
 
-/// The `catalog` the door answers:
-/// an empty listing, `200`, its body disarmed like every other op's, so the crossing measured is the
-/// host's own.
 extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
     unmeasured(|| {
         let out = out.cast::<CatalogOut>();
@@ -166,8 +131,6 @@ extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
     })
 }
 
-/// The door this binary loads: the test plane's Statement and lifecycle, its request-path ops
-/// wrapped so their bodies run disarmed.
 extern "C" fn door() -> &'static Door {
     static OPS: OnceLock<Shared<Ops>> = OnceLock::new();
     static DOOR: OnceLock<Shared<Door>> = OnceLock::new();
@@ -195,8 +158,6 @@ extern "C" fn door() -> &'static Door {
         .0
 }
 
-/// The plane, loaded LINKED (the witness counts this process's allocator; a dropped `cdylib`
-/// allocates through its own) and opened.
 fn opened(dispatcher: &Dispatcher) -> Plugin<Plane> {
     let bind = Bind {
         instance: Arc::from("the-instance"),
@@ -224,9 +185,6 @@ fn opened(dispatcher: &Dispatcher) -> Plugin<Plane> {
     plugin
 }
 
-// ── the cases: one READY crossing per request-path op ─────────────────────────────────────────
-
-/// Host buffers a crossing lends, kept alive across the measured calls.
 struct Bufs {
     reply: Vec<u8>,
     units: Vec<UnitCount>,
@@ -280,8 +238,6 @@ const STATS: &[u8] = b"/stats";
 const POST: &[u8] = b"POST";
 const REASON_TEXT: &[u8] = b"in-flight cap";
 
-/// One READY crossing of request-path op `s`, its frame built before `measure` runs and the call
-/// alone inside it; answers the allocations `measure` counted.
 fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u64 {
     match s {
         slot::ARRIVE => {
@@ -396,7 +352,6 @@ fn ready(s: u32, outcome: AbiOutcome) {
     assert_eq!(outcome, AbiOutcome::Ready, "op {s} answers READY");
 }
 
-/// How a crossing is run: counted, or not (the warm-up).
 type Measure = fn(&mut dyn FnMut()) -> u64;
 
 fn not_measured(f: &mut dyn FnMut()) -> u64 {
@@ -408,7 +363,6 @@ fn measured(f: &mut dyn FnMut()) -> u64 {
     counted(f)
 }
 
-/// The plane kind's request-path ops, from its contract table.
 fn request_path_ops() -> Vec<u32> {
     CONTRACTS
         .iter()
@@ -417,10 +371,6 @@ fn request_path_ops() -> Vec<u32> {
         .collect()
 }
 
-// ── the claims ───────────────────────────────────────────────────────────────────────────────
-
-/// THE INSTRUMENT FIRST: an allocation inside a measured closure is counted, one inside a plugin
-/// body (disarmed) is not, and nothing outside the armed window is.
 #[test]
 fn the_witness_counts_what_it_measures_and_nothing_else() {
     let planted = counted(|| drop(std::hint::black_box(Box::new(7_u64))));
@@ -435,8 +385,6 @@ fn the_witness_counts_what_it_measures_and_nothing_else() {
     );
 }
 
-/// Every request-path op of the plane kind answers READY through the one dispatcher with ZERO
-/// host allocations, after a warm-up that lets the crossing's own once-only state settle.
 #[test]
 fn every_request_path_op_is_measured() {
     let dispatcher = Dispatcher::new(DispatchConfig::default());
@@ -447,7 +395,7 @@ fn every_request_path_op_is_measured() {
         !ops.is_empty(),
         "the plane contract names no request-path op; the witness would measure nothing"
     );
-    // `on_piece` reads the head its unit's `arrive` left, so `arrive` crosses first.
+
     for _ in 0..8 {
         for &s in &ops {
             crossing(&plugin, s, &mut bufs, not_measured);

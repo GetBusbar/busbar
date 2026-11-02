@@ -4,7 +4,7 @@
 use super::{encode, entries, entry, entry_len, get};
 
 /// A SCOPE ROUND-TRIPS: what the host encodes under a key reads back byte for byte, beside a key
-/// the reader does not know (passed over), and a key named twice answers its first entry.
+
 #[test]
 fn a_scope_round_trips_beside_keys_the_reader_does_not_know() {
     let blob = encode(&[
@@ -19,7 +19,7 @@ fn a_scope_round_trips_beside_keys_the_reader_does_not_know() {
     assert_eq!(get(&blob, "unknown"), Some(&b"\x00\x01binary"[..]));
     assert_eq!(get(&blob, "absent"), None);
     assert_eq!(entries(&blob).count(), 3);
-    // An empty value is a stated value, not an absent one.
+
     let empty = encode(&[(crate::abi::auth::EXT_SCOPE, b"")]);
     assert_eq!(get(&empty, crate::abi::auth::EXT_SCOPE), Some(&b""[..]));
     assert_eq!(get(&[], crate::abi::auth::EXT_SCOPE), None);
@@ -36,7 +36,7 @@ fn an_entry_cut_short_ends_the_blob() {
 }
 
 /// AN ENTRY BUILT AT COMPILE TIME is the entry `encode` writes: a `const` Statement's extensions read
-/// back exactly as a host-encoded blob does.
+
 #[test]
 fn an_entry_built_at_compile_time_is_the_encoded_entry() {
     const KEY: &str = "shape";
@@ -49,9 +49,7 @@ fn an_entry_built_at_compile_time_is_the_encoded_entry() {
 }
 
 /// THE ONE-CALL WRITER (`statement_extensions!` over `concat`): the bytes built at compile time are
-/// the bytes `encode` writes for the same entries, the blob states their length as octets, and the
-/// `declares` document reads back off them by its key. RED: a writer that drops or reorders an
-/// entry, or a reader that misses `EXT_DECLARES`.
+
 #[test]
 fn the_statement_extensions_writer_is_encode_at_compile_time() {
     const DECLARES: &[u8] = br#"{"breaker":{"bench_below_trip_threshold":false}}"#;
@@ -72,8 +70,7 @@ fn the_statement_extensions_writer_is_encode_at_compile_time() {
 }
 
 /// A MISSING KEY: a blob that states no `declares` entry answers `None` (the Statement states none),
-/// beside an empty blob and one whose only entry is another key. RED: a reader that answers the
-/// first entry whatever its key.
+
 #[test]
 fn a_statement_stating_no_declares_answers_none() {
     assert_eq!(super::declares(&[]), None);
@@ -84,9 +81,7 @@ fn a_statement_stating_no_declares_answers_none() {
 }
 
 /// A DUPLICATE KEY IS REFUSED where the extensions are written: two entries naming one key would
-/// leave a reader answering the first and never the second, so the writer refuses them (in a
-/// `const`, a compile error; called here at run time, a panic). Distinct keys of one length pass.
-/// RED: a writer that encodes both.
+
 #[test]
 fn a_duplicate_key_is_refused_by_the_writer() {
     let twice: &[(&str, &[u8])] = &[
@@ -101,7 +96,7 @@ fn a_duplicate_key_is_refused_by_the_writer() {
 }
 
 /// THE REFERENCE-CAPABLE FIELDS a Statement states under `reference_fields` (lead ruling item 7a):
-/// a JSON array of `.`-separated settings paths; absent states none; anything else is malformed.
+
 #[test]
 fn reference_fields_read_from_the_statement_extensions() {
     use super::{reference_fields, EXT_DECLARES, EXT_REFERENCE_FIELDS};

@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-// The lint hooks: the exact symbol lists the source scan enforces.
-//
-// This file is DATA, not surface. Everything in it exists because Rust cannot express the rule: a
-// hold has to be consumed by exactly one function, Rust has no linear types, so `std::mem::forget`
-// will always compile. Rather than pretend otherwise, the rules the compiler cannot carry are
-// written down in `lint_rules.txt` and the workspace's source scan enforces them. The scan is the
-// enforcement; the data is the specification, and a test in this crate keeps it from going empty
-// or stale.
-//
-// The scan's shape is deliberately dull: for each entry, a literal substring search over the Rust
-// sources of the crates named by the entry's scope, with one reviewed allow-list of exceptions. No
-// parsing, no cleverness, nothing that can be argued with in review.
-//
-// It lives under `fixtures/` rather than under `src/` because a plugin author never names any of
-// it; it is included into the crate's test module and nowhere else.
-//
-// The rule DATA is not in this file. It is `lint_rules.txt` beside it: the
-// list has to spell the constructors it confines, and as Rust source those spellings were read by
-// the construction gate's `token-sealed` scan as forged mints. As data the gate never walks, they
-// are what they always were, a specification. This file keeps the types and the parser.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /// One rule the compiler cannot enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,13 +77,13 @@ fn list(name: &str) -> Vec<LintRule> {
 }
 
 /// The ways a hold could be made to disappear without a posting. Every one of them compiles; none
-/// of them is ever correct, because a hold that vanishes is money that vanishes.
+
 pub fn hold_escapes() -> Vec<LintRule> {
     list("hold-escape")
 }
 
 /// The symbols that decide who may build a capability at all. Each is a crate boundary Rust cannot
-/// police, so each is one audited name.
+
 pub fn seal_sites() -> Vec<LintRule> {
     list("seal-site")
 }

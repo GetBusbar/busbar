@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! RFC 8628 and RFC 7009 through the real mounted router. Clients below are explicitly
-//! pre-registered by the host; public registration remains unable to enable DeviceCode.
-
 use std::sync::Arc;
 
 use oauth_as::client::{Client, ClientAuth, ClientId, SecretHash};
@@ -20,8 +17,6 @@ const SECRET: &str = "device-client-secret-for-test";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 async fn setup() -> (String, Arc<busbar_kernel::state::App>, reqwest::Client) {
-    // An explicitly OPEN admin posture, as in the existing consent flow suite. The separate
-    // denial test below configures an admin chain that actually requires a credential.
     let (origin, app) = serve_with_admin_chain(Vec::new()).await;
     let scope = ScopeSet::from_tokens(["read"]).unwrap();
     oauth_as_plane(&app)
@@ -153,8 +148,7 @@ async fn advertised_device_flow_requires_confirmation_mints_and_revokes() {
         format!("{origin}/device_authorization")
     );
     assert_eq!(meta["revocation_endpoint"], format!("{origin}/revoke"));
-    // An undecided grant cannot mint. Keep it separate from the successful grant, so the test
-    // need not sleep through RFC 8628's minimum poll interval.
+
     let undecided = start(&client, &origin).await;
     assert_eq!(
         poll(&client, &origin, &undecided).await.1["error"],
@@ -289,8 +283,6 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
             &origin
         };
         if attack == "replay" {
-            // Stage one names no decision: a real form POST consumes the token and renders a
-            // new confirmation form. Replaying the old token cannot approve this grant.
             assert_eq!(
                 submit(&client, &mut jar, &origin, &grant, &token, "", &origin)
                     .await

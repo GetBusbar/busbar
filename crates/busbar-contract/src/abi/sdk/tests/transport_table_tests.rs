@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The token table: reached by token alone, never waited on by `reach`, and a token that outlived
-//! its value reaches nothing.
 
 use super::*;
 
@@ -28,7 +27,7 @@ fn every_index_has_one_place() {
 }
 
 /// A framing another op holds is answered at once (`Busy`), never waited for; once it is let go
-/// the next op reaches it. Another framing is reached meanwhile: no lock is shared.
+
 #[test]
 fn a_held_framing_answers_busy_at_once() {
     let table = Table::default();
@@ -64,7 +63,7 @@ fn hold_waits_for_the_op_that_holds_it() {
 }
 
 /// A finished framing's token reaches nothing, even once its slot holds a new framing; `remove`
-/// answers what it held.
+
 #[test]
 fn a_token_that_outlived_its_framing_reaches_nothing() {
     let table = Table::default();

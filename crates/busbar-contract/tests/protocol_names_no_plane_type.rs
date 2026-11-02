@@ -1,14 +1,7 @@
 //! The protocol seam names no transport's types (BUSBAR-1.6.0.md Part 2 #49, "core names zero plane
-//! types"; Part 4: every ABI shape lives in busbar-contract and is neutral).
-//!
-//! `protocol.rs` is the vocabulary a dialect implements and the kernel reads back. A head crosses it
-//! as [`HeadFields`](busbar_contract::protocol::HeadFields) pairs and a status as a `u16`; the
-//! kernel converts to and from its transport's header and status types at its own edges. These
-//! tests exercise field lookup on that neutral representation.
 
 /// A claims predicate reads a head field by name in any case, and the first field whose value is
-/// a legal header value is the one it reads: an earlier field carrying a control byte is passed
-/// over, exactly as a header map built from the same fields would never have held it.
+
 #[test]
 fn a_head_field_is_the_first_legal_value_under_its_name_in_any_case() {
     use busbar_contract::protocol::head_field;

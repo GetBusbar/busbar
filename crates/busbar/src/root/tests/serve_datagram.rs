@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A datagram session's caller leg: its channel messages are the session's pieces, what the plane
-//! writes before the channel opens waits for it, and a plane that falls behind its caller ends the
-//! session (its pairing closes, the leg with it).
-
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -56,7 +52,7 @@ async fn a_channels_messages_are_the_sessions_pieces_and_early_writes_wait_for_t
     doors.insert("dg", Arc::clone(&door));
     assert!(doors.get("dg").is_some() && doors.get("other").is_none());
     let now = Instant::now();
-    // Written before the channel opened: held, not lost.
+
     assert!(leg.write(b"early", true).await);
     assert_eq!(lock(&leg.outbound).held.len(), 1);
     leg.take(
@@ -83,8 +79,6 @@ async fn a_channels_messages_are_the_sessions_pieces_and_early_writes_wait_for_t
     assert!(!pairing.closed());
 }
 
-/// RED: a plane that does not keep up with its caller ends the session: the pairing closes and
-/// the caller's queue with it.
 #[tokio::test]
 async fn a_plane_that_falls_behind_its_caller_ends_the_session() {
     let (_door, leg, pairing, rx) = leg(2);
@@ -99,10 +93,6 @@ async fn a_plane_that_falls_behind_its_caller_ends_the_session() {
     assert!(rx.recv().await.is_none(), "the session's caller side ended");
 }
 
-/// Up to the caller queue's bound, what the plane writes before the far end opens a channel waits
-/// for it and is released onto it once the channel opens; the session stands (THE DESIGN l.758-765:
-/// application data waits). The green twin of the test below; RED before the fix: none, it passes
-/// before and after.
 #[tokio::test]
 async fn early_writes_up_to_the_bound_wait_for_the_channel() {
     let (door, leg, pairing, _rx) = leg(8);
@@ -124,13 +114,6 @@ async fn early_writes_up_to_the_bound_wait_for_the_channel() {
     assert!(!pairing.closed());
 }
 
-/// What the plane writes before the far end opens a channel is held to the same bound as what the
-/// caller sends the plane: the write past it is refused and ends the session (its pairing closes,
-/// the leg and what it held with it), as a plane that falls behind its caller does; a far end that
-/// never opens a channel cannot grow the host's memory for the session's whole life (THE DESIGN
-/// l.758-765; l.2221 #38(c): every collection has a ceiling). RED before the fix: the held queue had
-/// no bound, so the write past it was accepted and held, the session stood, and a closed leg went
-/// on holding writes.
 #[tokio::test]
 async fn a_plane_that_writes_past_the_bound_before_the_channel_opens_ends_the_session() {
     let (_door, leg, pairing, rx) = leg(8);
@@ -155,7 +138,6 @@ async fn a_plane_that_writes_past_the_bound_before_the_channel_opens_ends_the_se
     assert!(lock(&leg.outbound).held.is_empty(), "nor holds one");
 }
 
-/// A door that states only its facts.
 struct Stated(busbar_core_connector::framer::DoorFacts);
 
 impl busbar_core_connector::framer::FramerDoor for Stated {
@@ -212,9 +194,6 @@ fn framers(scheme: &str) -> Option<Arc<dyn busbar_core_connector::framer::Framer
     }
 }
 
-/// Ruling (d): a claim door is bound for every inbound listener whose transport a datagram framer
-/// answers, on its `{listen}` address, and for no other listener. RED arms: a wildcard address
-/// (no candidate to advertise) and a second door for one claim are refused, naming the setting.
 #[tokio::test]
 async fn boot_binds_a_claim_door_for_each_datagram_listener_and_no_other() {
     let root = crate::root::loader::boot::InboundBind {
@@ -254,9 +233,6 @@ async fn boot_binds_a_claim_door_for_each_datagram_listener_and_no_other() {
     assert!(twice.contains("a second claim door"), "{twice}");
 }
 
-/// A datagram session's open answers under the head its plane states on the session's first
-/// crossing: the plane's status and its fields, `location` among
-/// them, as it stated them.
 #[tokio::test]
 async fn the_open_answers_under_the_head_the_plane_states() {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -266,8 +242,6 @@ async fn the_open_answers_under_the_head_the_plane_states() {
     assert_eq!(head, Some((201, vec![location])));
 }
 
-/// RED: a plane that states no head within the open's bound, or whose session ends first, answers
-/// nothing: the open is refused, never a bare 201.
 #[tokio::test]
 async fn a_plane_that_states_no_head_in_time_answers_nothing() {
     let (_held, rx) = tokio::sync::oneshot::channel::<(u32, super::HeadFields)>();
@@ -285,8 +259,6 @@ async fn a_plane_that_states_no_head_in_time_answers_nothing() {
     );
 }
 
-/// The session's caller side opens with one empty piece, before the caller's first message: the
-/// plane crosses the session once before the open is answered.
 #[tokio::test]
 async fn the_caller_side_opens_with_one_empty_piece() {
     use busbar_kernel::plane_driver::SessionCaller;
@@ -403,8 +375,6 @@ impl std::task::Wake for WriteWake {
     }
 }
 
-/// Worker registration belongs to the serving thread, never the publishing callback thread.
-/// A separate current-thread reactor also lets cancellation precede every task's first poll.
 struct ControlledDoor {
     door: Arc<ClaimDoor>,
     leg: Arc<CallerLeg>,
@@ -446,7 +416,7 @@ impl ControlledDoor {
             } else {
                 let _ = stopped.blocking_recv();
             }
-            // Dropping this reactor cancels even futures it never polled.
+
             drop(runtime);
         });
         let (door, leg, pairing, rx, framer, id) = fixture
@@ -512,7 +482,7 @@ async fn ordinary_thread_publication_uses_the_serving_tracker_and_reactor_in_fif
     use busbar_kernel::plane_driver::CallerEnd;
 
     let mut control = ControlledDoor::new(true);
-    control.assert_tracked(); // The port's receive loop itself owns shutdown custody.
+    control.assert_tracked();
     let caller = caller_for(Arc::clone(&control.leg));
     assert!(CallerEnd::write(&caller, b"first").await);
     assert!(CallerEnd::write_text(&caller, b"second").await);
@@ -576,7 +546,6 @@ async fn shutdown_retires_a_blocked_accepted_drainer_and_wakes_the_later_writer(
     control.publish_channel();
     let parked = tokio::time::timeout(FRAMER_PARK_WAIT, async {
         loop {
-            // Rendezvous with the real pending Emit: its first accepted item has left the queue.
             if lock(&control.leg.outbound).held.len() == 1 {
                 break;
             }
@@ -590,7 +559,7 @@ async fn shutdown_retires_a_blocked_accepted_drainer_and_wakes_the_later_writer(
     let mut later = Box::pin(CallerEnd::write(&caller, b"never accepted"));
     let before = later.as_mut().poll(&mut cx);
     control.shutdown.send(true).unwrap();
-    // Shutdown must finish independently of the ordinary thread still borrowing the framer.
+
     let drained = tokio::time::timeout(FRAMER_PARK_WAIT, control.tracker.drained()).await;
     let after = later.as_mut().poll(&mut cx);
     let notified = wake.0.load(std::sync::atomic::Ordering::SeqCst);
@@ -624,7 +593,7 @@ async fn unpolled_runtime_cancellation_releases_accepted_drainer_custody() {
     assert!(CallerEnd::write(&caller, b"first").await);
     assert!(CallerEnd::write(&caller, b"second").await);
     control.publish_channel();
-    control.assert_tracked(); // Synchronous reservations, although neither task has been polled.
+    control.assert_tracked();
     assert!(lock(&control.leg.outbound).draining);
     assert_eq!(lock(&control.leg.outbound).held.len(), 2);
     control.stop();
@@ -684,7 +653,7 @@ async fn session_delivery_and_close_allow_the_receiver_waker_to_reenter_the_leg(
                 self.locked.store(true, std::sync::atomic::Ordering::SeqCst);
                 return;
             }
-            // A real receiver wake can synchronously end the session that published it.
+
             leg.failed();
         }
     }
@@ -747,8 +716,7 @@ async fn early_drain_wakes_the_next_writer_after_cancel_without_overtaking_accep
         } else {
             later_poll
         };
-        // Both waits are registered during the actual first Emit crossing. The later
-        // writer must hear the drainer finish even though its predecessor was cancelled.
+
         let _ = queued.lock().unwrap().take().unwrap().send((
             cancelled_poll,
             later_poll,
@@ -1108,8 +1076,7 @@ async fn refusal_of_an_accepted_early_message_closes_before_later_messages_cross
         vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
         Instant::now(),
     );
-    // This live write waits behind the early drainer, so its result also observes
-    // completion of the already accepted messages without a timed assertion.
+
     let later = CallerEnd::write(&caller, b"after refusal").await;
     let closed = pairing.closed();
     let emitted = framer.emitted();

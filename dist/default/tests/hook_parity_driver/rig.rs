@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RIG the hook parity suite runs on: the REAL plane door serving the `pools` map (linked, loaded
-//! through the one loader and driven through the one dispatcher), the kernel's plane driver with the
-//! hook stage bound ([`BoundHooks`]), the kernel's passing steps, a far end that walks the configured
-//! pools the way the egress walk does (its candidates, the hooks' constraint, a fallback pool holding
-//! the restricts), and a caller that records what it was answered. No fixture plugin: the plane is
-//! the real one, the hooks are the 1.5.5 tests' own in-process policies.
-//!
-//! The rig names no plane and no dialect. What it speaks to the plane under proof (the settings its
-//! pools become, each far end's answer, the request a plain unit posts) is that plane's own, in the
-//! plane's crate beside its cases (`crate::proofs::wire`).
-
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -40,8 +29,6 @@ use serde_json::Value;
 
 use super::common::{cell, ctx, TestUnits};
 
-// ── the deployment ───────────────────────────────────────────────────────────────────────────────
-
 /// One member of a pool: the model it serves (a key of `models:`), the model its far end names in
 /// its answer (what tells a test WHICH member served), its tags, and whether it is down.
 #[derive(Clone, Debug)]
@@ -53,7 +40,6 @@ pub struct Member {
     pub dead: bool,
 }
 
-/// A member served by the plane's default far end (`wire::DEFAULT_PROVIDER`).
 pub fn member(model: &'static str, label: &'static str) -> Member {
     Member {
         model,
@@ -86,14 +72,10 @@ pub struct Pool {
     pub members: Vec<Member>,
 }
 
-/// The plane's settings for these pools, in the plane's own words.
 fn settings(pools: &[&Pool]) -> Vec<u8> {
     crate::proofs::wire::settings(pools)
 }
 
-// ── the far end ─────────────────────────────────────────────────────────────────────────────────
-
-/// What a far end answers one attempt: the plane's own answer for that member's far end, whole.
 fn answer_of(m: &Member) -> Vec<FarPiece> {
     let body = crate::proofs::wire::answer_of(m);
     vec![FarPiece {
@@ -105,17 +87,12 @@ fn answer_of(m: &Member) -> Vec<FarPiece> {
     }]
 }
 
-/// One step of a walk: a pool's member, or the walk's refusal (its status and words).
 type Step = Result<(String, Member), (u32, String)>;
-/// What a walk has left.
+
 type Plan = VecDeque<Step>;
-/// A reply head: the status and the fields.
+
 type Head = (u32, Vec<(Vec<u8>, Vec<u8>)>);
 
-/// A WALK over the configured pools: the primary pool's live members in pool order (the hooks'
-/// order first, when they set one, restricted to what they kept), then the fallback pool's, its
-/// members held to the hooks' restricts (a required restrict nothing satisfies refuses, as 1.5.5
-/// failed closed at the fallback boundary). A dead member fails over before the plane sees it.
 pub struct Far {
     primary: Pool,
     fallback: Option<Pool>,
@@ -139,7 +116,6 @@ impl Far {
         }
     }
 
-    /// Every request the plane bound for the far end, in order.
     pub fn sent(&self) -> Vec<OutboundRequest> {
         self.sent.lock().unwrap().clone()
     }
@@ -289,7 +265,6 @@ impl FarEnd for Far {
         *self.constraint.lock().unwrap() = Some(constraint);
     }
 
-    /// A request/response far end holds no attempt open for a later frame.
     fn write<'a>(
         &'a self,
         _: &'a Pass<Route>,
@@ -298,8 +273,6 @@ impl FarEnd for Far {
         std::future::ready(false)
     }
 }
-
-// ── the caller and the books ─────────────────────────────────────────────────────────────────────
 
 /// What the caller was answered.
 #[derive(Default)]
@@ -323,7 +296,6 @@ impl CallerEnd for Caller {
     }
 }
 
-/// A request/response caller sends nothing after its request.
 impl busbar_kernel::plane_driver::SessionCaller for Caller {
     fn read(&self) -> impl Future<Output = Option<Vec<u8>>> + Send + '_ {
         std::future::ready(None)
@@ -342,8 +314,6 @@ impl MoneySeam for Book {
     fn abandoned(&self, _: &UnitCtx, _: Ended) {}
     fn served(&self, _: &UnitCtx, _: &str, _: &str) {}
 }
-
-// ── the hooks ────────────────────────────────────────────────────────────────────────────────────
 
 /// What the hooks may know of the caller: its key by principal, its group, nothing else; a hook
 /// handed the prompt leaves its access amendment on `journal`, the rig's node journal, as a node's
@@ -401,7 +371,6 @@ pub struct Hooks {
     pub requested: RequestedSignals,
 }
 
-/// The process's one request-id counter, as the binder is handed it.
 pub fn counter() -> Arc<dyn Fn() -> u64 + Send + Sync> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     Arc::new(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
@@ -430,8 +399,6 @@ impl Hooks {
     }
 }
 
-// ── one unit ─────────────────────────────────────────────────────────────────────────────────────
-
 fn octets(b: &[u8]) -> Blob {
     Blob {
         ptr: b.as_ptr(),
@@ -441,8 +408,6 @@ fn octets(b: &[u8]) -> Blob {
     }
 }
 
-/// THE LINKED DOOR SERVING THE `pools` MAP, found by what its Statement declares
-/// (`LINKED_PLANE_DOORS`, the manifest's plane-door rows): the plane under proof.
 pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
     crate::LINKED_PLANE_DOORS
         .iter()
@@ -468,7 +433,6 @@ pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
-/// The plane under proof's dialects, in its tail's order, as its door states them.
 pub(crate) fn dialects() -> Vec<String> {
     let dispatcher = Dispatcher::new(DispatchConfig::default());
     let row = LinkedRow::of(pools_door()).expect("the plane door states its Statement");
@@ -490,7 +454,6 @@ pub(crate) fn dialects() -> Vec<String> {
     .collect()
 }
 
-/// The door serving the `pools` map, linked, opened over `settings`.
 fn door(dispatcher: &Dispatcher, settings: &[u8]) -> Plugin<Plane> {
     let row = LinkedRow::of(pools_door()).expect("the plane door states its Statement");
     let plugin = load_linked::<Plane>(
@@ -543,7 +506,6 @@ fn door(dispatcher: &Dispatcher, settings: &[u8]) -> Plugin<Plane> {
     plugin
 }
 
-/// What one unit came to.
 pub struct Answered {
     pub status: u32,
     pub fields: Vec<(Vec<u8>, Vec<u8>)>,
@@ -553,11 +515,10 @@ pub struct Answered {
 }
 
 impl Answered {
-    /// The answer's body as JSON.
     pub fn json(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
     }
-    /// The model the answer names: which member served.
+
     pub fn model(&self) -> String {
         self.json()
             .get("model")
@@ -565,20 +526,19 @@ impl Answered {
             .unwrap_or_default()
             .to_string()
     }
-    /// The answer's body as text.
+
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 }
 
-/// THE RIG: one deployment (its pools and its hooks), ready to drive units.
 pub struct Rig {
     driver: PlaneDriver,
     primary: Pool,
     fallback: Option<Pool>,
-    /// The plane, shared with its instance (a `Plugin` is `!Clone`).
+
     _plugin: Arc<Plugin<Plane>>,
-    /// The node amendment journal its hooks' reads are recorded on.
+
     amendments: Arc<busbar_kernel::audit::amend::NodeAmendments>,
 }
 
@@ -627,12 +587,10 @@ impl Rig {
         }
     }
 
-    /// The node amendment journal this rig's hooks' reads are recorded on.
     pub fn amendments(&self) -> Arc<busbar_kernel::audit::amend::NodeAmendments> {
         Arc::clone(&self.amendments)
     }
 
-    /// One unit: `body` posted to `target` with `fields`, the kernel steps `steps`.
     pub async fn fire_with(
         &self,
         steps: &TestUnits,
@@ -671,8 +629,6 @@ impl Rig {
         }
     }
 
-    /// One plain unit (the plane's own plain request, `wire::FIRE_TARGET` with `wire::FIRE_FIELDS`)
-    /// with every kernel step passing.
     pub async fn fire(&self, body: &Value) -> Answered {
         self.fire_with(
             &TestUnits::passing(),
@@ -683,7 +639,6 @@ impl Rig {
         .await
     }
 
-    /// One unit refused at authentication.
     pub async fn fire_unauthenticated(&self, target: &str, body: &[u8]) -> Answered {
         self.fire_with(
             &TestUnits::refusing(StepName::Authenticate, ReasonCode::Unauthenticated),
@@ -695,7 +650,6 @@ impl Rig {
     }
 }
 
-/// Run one unit through the one loop; its outcome.
 async fn drive<S, F, C>(units: &busbar_kernel::plane_driver::PlaneUnits<'_, S, F, C>) -> Outcome
 where
     S: busbar_kernel::plane_driver::DriverSteps + Sync,

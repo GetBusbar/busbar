@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! EVERY ADMIN UNIT SEALS ONE RECORD ON THE FIXED AUDIT CHAIN (audit R2#2, row 159): THE DESIGN §1,
-//! "The audit step writes one fixed record, for every plane", and U14, one audit record per unit,
-//! a refused unit included. The admin units' audit door handed its facts and pass back to a step
-//! that dropped them, so no admin unit, a key mint included, was ever on `/audit/range`.
-
 use super::*;
 
-/// A dispatch whose every operation answers 200.
 struct Answers;
 
 impl AdminDispatch for Answers {
@@ -21,7 +15,6 @@ impl AdminDispatch for Answers {
     }
 }
 
-/// A key no other request in this binary is walking.
 fn a_fresh_unit() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -39,8 +32,6 @@ fn request(method: &str, path: &str) -> AdminRequest {
     }
 }
 
-/// Walk `request` through an admin node whose door is `door`: the answer, and every record the
-/// node's book holds afterwards.
 fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<AuditRecord>) {
     let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(Answers), door);
     let book = Arc::clone(&units.durability);
@@ -52,8 +43,6 @@ fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<AuditReco
     (answer, held)
 }
 
-/// AN ADMITTED ADMIN UNIT SEALS ONE RECORD, naming the unit, the operation class its audit door
-/// stated, and how it ended.
 #[test]
 fn an_admitted_admin_unit_seals_one_record() {
     let walked = request("POST", "/api/v1/admin/keys");
@@ -72,8 +61,6 @@ fn an_admitted_admin_unit_seals_one_record() {
     assert_eq!(record.wall, 1_700_000_000);
 }
 
-/// A REFUSED ADMIN UNIT SEALS A RECORD TOO (U14: "a refused unit gets a record too"): the arrival,
-/// never a principal nobody resolved, refused at the step that refused it.
 #[test]
 fn a_refused_admin_unit_seals_a_refused_record() {
     let walked = request("POST", "/api/v1/admin/keys");
@@ -103,9 +90,6 @@ fn a_refused_admin_unit_seals_a_refused_record() {
     );
 }
 
-/// THE PRODUCTION RECORD SINK WRITES THROUGH THE STORE'S V3 CALLS (C6): the record the admin
-/// `plane-records` write hands the sink lands in the governance store's plane records, read back
-/// through the same calls; governance whose store has no v3 calls keeps nothing and says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_live_record_sink_writes_through_the_store_calls() {
     busbar_kernel_testkit::test_support::metrics::init();

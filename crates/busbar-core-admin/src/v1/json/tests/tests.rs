@@ -1,17 +1,9 @@
 use super::*;
 
-/// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
-/// specification's own key, not a busbar or instance word, and every read of an operation's
-/// documented statuses below goes through it.
-///
-/// Read from `tests/fixtures/openapi_operation_statuses_key.txt`: the key is the specification's
-/// text, so it is golden input data the test loads, not a literal spelled here.
 #[cfg(feature = "openapi-schema")]
 const OAS_OPERATION_STATUSES: &str =
     include_str!("../../../../tests/fixtures/openapi_operation_statuses_key.txt").trim_ascii();
 
-/// Collect an axum Response into (status, content-type, parsed JSON body) for the wire-helper
-/// micro-tests below.
 async fn parts(resp: Response) -> (StatusCode, String, serde_json::Value) {
     let status = resp.status();
     let ct = resp
@@ -26,8 +18,6 @@ async fn parts(resp: Response) -> (StatusCode, String, serde_json::Value) {
     (status, ct, body)
 }
 
-/// The error envelope projection is `{"error":{"code","message"}}` with the error's status — the
-/// shape v1 tooling parses — served as application/json.
 #[tokio::test]
 async fn err_json_uses_stable_envelope() {
     let (status, ct, body) = parts(err_json(&AdminError::not_found("hook"))).await;
@@ -47,7 +37,6 @@ async fn err_json_uses_stable_envelope() {
     );
 }
 
-/// `ok_json` serializes the view verbatim with the GIVEN status and application/json.
 #[tokio::test]
 async fn ok_json_serializes_view_with_given_status() {
     #[derive(Serialize)]
@@ -61,8 +50,6 @@ async fn ok_json_serializes_view_with_given_status() {
     assert_eq!(body, json!({"name": "x", "n": 7}));
 }
 
-/// `respond` — the single seam every v1 handler funnels through — maps Ok to the given status
-/// and Err to the error's own status + envelope (the Ok-status never leaks onto an error).
 #[tokio::test]
 async fn respond_maps_ok_and_err() {
     let ok: Result<serde_json::Value, AdminError> = Ok(json!({"ok": true}));
@@ -76,9 +63,6 @@ async fn respond_maps_ok_and_err() {
     assert_eq!(body["error"]["code"], "rate_limited");
 }
 
-/// Structural lock on the discovery doc: OpenAPI 3.1, an info.version that matches the crate,
-/// and every path under the ONE contract prefix (whose literal value is pinned by the golden
-/// test in contract.rs) — the doc never mixes prefixes.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_doc_is_31_and_v1_prefixed() {
@@ -97,13 +81,6 @@ fn openapi_doc_is_31_and_v1_prefixed() {
     }
 }
 
-/// Release tooling, not a behavioral assertion. Publishing the OpenAPI schema is a release chore —
-/// an operator gets the doc from the live `GET /openapi.json` endpoint or the release
-/// asset, so it earns no user-facing CLI surface. This test is the build-time handle CI uses to
-/// capture the artifact straight from the same `openapi_doc()` the gateway serves, guaranteeing the
-/// published file matches the shipped binary. A normal `cargo test` (no env var) just re-asserts
-/// the doc is well-formed; the release workflow sets `BUSBAR_EMIT_OPENAPI=<path>` to also write the
-/// pretty-printed document there, then uploads it to the GitHub Release.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn emit_openapi_artifact() {
@@ -121,17 +98,9 @@ fn emit_openapi_artifact() {
     }
 }
 
-/// CONTRACT LOCK: every openapi path+method is annotated with `x-busbar-required-scope`, and
-/// the annotation matches the enforced `required_scope` matrix exactly (one source of truth —
-/// this test guards against a future hand-written path entry forgetting or contradicting it).
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_paths_annotate_required_scope() {
-    // Re-derives `required_scope`'s decision INDEPENDENTLY (not by calling it) so a change to the
-    // production matrix moves only the annotation side, not this expectation — `required_scope` is
-    // the single producer that stamps BOTH the OpenAPI annotation (`handlers.rs`'s stamping loop)
-    // and enforces the auth middleware, so comparing the annotation against a call to that same
-    // function is a tautology: editing the matrix moves both sides together and can never fail.
     fn expected_scope(method: &str, path: &str) -> &'static str {
         use crate::v1::contract::{ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
         if method == "get" || method == "head" {
@@ -141,7 +110,7 @@ fn openapi_paths_annotate_required_scope() {
         if rel == PATH_CONFIG_VALIDATE || rel == PATH_PLUGINS_INSPECT {
             return "read-only";
         }
-        // 1.5.2 scope collapse: every other mutation is full-only.
+
         "full"
     }
 
@@ -153,8 +122,7 @@ fn openapi_paths_annotate_required_scope() {
         for (method, op) in methods.as_object().expect("methods") {
             match method.as_str() {
                 "get" | "post" | "put" | "patch" | "delete" => {}
-                // Path-item `x-*` specification extensions (e.g. `x-busbar-error-envelope`) are
-                // valid OpenAPI and are not operations — they carry no scope annotation.
+
                 ext if ext.starts_with("x-") => continue,
                 other => panic!("unexpected method {other} on {path}"),
             };
@@ -172,15 +140,6 @@ fn openapi_paths_annotate_required_scope() {
     assert!(checked > 0, "no operations were checked");
 }
 
-/// The document must never contain a boolean `items`
-/// sub-schema (`"items": true`/`"items": false`) — `kin-openapi` (the parser under `oapi-codegen`,
-/// which every published SDK generates through) cannot represent a JSON-Schema-2020-12 boolean
-/// sub-schema at all and aborts the parse. `HookStatusView.metrics` was the one offender
-/// (`serde_json::Value`'s blanket schemars impl renders as boolean `true`, which is fine as a bare
-/// schema but fatal nested under `items`); it now overrides to `{}` via `schema_with`. This test is
-/// a structural sweep, not a one-field regression check, so any FUTURE `Vec<serde_json::Value>` (or
-/// equivalent) added anywhere in the doc is caught the same way. `additionalProperties: true/false`
-/// is a different, non-fatal position and is deliberately not checked here.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_never_emits_a_boolean_items_subschema() {
@@ -213,9 +172,6 @@ fn openapi_never_emits_a_boolean_items_subschema() {
     );
 }
 
-/// CONTRACT LOCK: the openapi Error-schema `code` enum must EXACTLY match the frozen `AdminError`
-/// codes — no drift between the discovery doc and the taxonomy tooling actually receives. Every
-/// variant's `code()` must appear in the enum, and the enum must list nothing else.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_error_enum_matches_admin_error_codes() {
@@ -228,7 +184,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    // The exhaustive set of AdminError codes — kept in lock-step with `AdminError::code`.
+
     let actual_codes: BTreeSet<String> = [
         AdminError::not_found(""),
         AdminError::Unauthorized,
@@ -248,8 +204,6 @@ fn openapi_error_enum_matches_admin_error_codes() {
     ]
     .iter()
     .map(|e| e.code().to_string())
-    // The node's administrative loop answers `503 unavailable` (the root's `answer_for` /
-    // `unavailable_answer`) on every operation it walks, in the same envelope.
     .chain(std::iter::once("unavailable".to_string()))
     .collect();
     assert_eq!(
@@ -258,12 +212,6 @@ fn openapi_error_enum_matches_admin_error_codes() {
     );
 }
 
-/// THE LOOP'S `503 unavailable` IS DOCUMENTED WHEREVER THE LOOP CAN ANSWER IT (architect ruling
-/// 2026-09-24). Every operation the closed table declares is walked through the node's
-/// administrative loop, which answers `503` with code `unavailable` when it cannot take the unit or
-/// cannot record what the operation would do — legacy operations included. So each of them
-/// documents a `503` in the one `Error` envelope, and the enum names the code. An operation the
-/// loop never walks (a plane's section or trust verb) documents none.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
@@ -307,9 +255,6 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
     );
 }
 
-/// The escalation 403 fires on PUT `/hooks/{name}` and PATCH
-/// `/hooks/{name}/settings` (a `hooks-register` principal touching a content-seeing / global
-/// hook), exactly as it does on POST `/hooks` — so all three must DOCUMENT the 403.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_hook_escalation_endpoints_document_403() {
@@ -328,30 +273,16 @@ fn openapi_hook_escalation_endpoints_document_403() {
     }
 }
 
-/// The committed static OpenAPI document the LIVE handler serves (via `include_str!`). The release
-/// binary can't regenerate it (schemars is CI-only), so this path is what every build ships.
 #[cfg(feature = "openapi-schema")]
 const COMMITTED_OPENAPI_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");
 
-/// SEAM PRECONDITION for every openapi test: `openapi_doc()` reads the process-global plane registry,
-/// which is populated by `crate::ensure_seam()` (the linked plane decls that contribute the
-/// `tools:`/`agents:` admin trust-verb operations). Only `openapi_json_matches_committed_file` used to
-/// install it, so any OTHER openapi test that read the document before that test's `ensure_seam()`
-/// happened to run first saw a PLANE-LESS document (5 operations short) — deterministic single-threaded
-/// (definition order), but a race under `--test-threads > 1`. `ensure_seam()` is `Once`-guarded and
-/// idempotent, so routing every read through this helper makes the document plane-complete regardless
-/// of harness thread count or test order. (Test-harness setup, not a production ordering bug — the
-/// composition root installs the planes before the binary ever serves the document.)
 #[cfg(feature = "openapi-schema")]
 fn openapi_doc_seamed() -> serde_json::Value {
     crate::ensure_seam();
     openapi_doc()
 }
 
-/// The string the live handler serves (the inflate of the embedded gz) must be BYTE-IDENTICAL to
-/// the committed file — i.e. `include_bytes!` compiled in a gz of exactly the bytes the drift test
-/// checks. (Guards a stale build-cache embed AND a hand-edited/stale `.gz` twin.)
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn served_openapi_equals_committed_file() {
@@ -360,16 +291,6 @@ fn served_openapi_equals_committed_file() {
     assert_eq!(super::handlers::openapi_json(), committed);
 }
 
-// THE PLANES' COMPONENT SCHEMAS ARE THE COMMITTED ONES (ARCHITECT Q2) moved to the composition
-// root's `crates/busbar/tests/admin_cross_plane/openapi.rs`, assertions unchanged: the schemas it
-// holds are door planes' stated ones, and this crate links no door (P2 D4, `Cargo.toml`), so here no
-// plane registered one and the test could only fail its own non-vacuity check.
-
-/// `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`
-/// (`handlers.rs`'s own doc comment on `restart()` — "Absent is the same as `{}`"), but `body_raw!`
-/// hardcodes `"required": true` on every attached request body, so the openapi contract asserts the
-/// no-body call (the common one — an operator with a supervisor never needs `confirm`) is invalid. A
-/// generated client honouring `required: true` would refuse to emit the call the server supports.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn restart_request_body_is_documented_optional() {
@@ -383,11 +304,6 @@ fn restart_request_body_is_documented_optional() {
     );
 }
 
-/// COVERAGE LOCK: 100% of operations carry a typed success-response BODY schema. Every operation
-/// (each method under each path, excluding `x-*` path-item extensions) must have — for its success
-/// status (204 No Content excepted — it has no body) — a `content.application/json.schema` that is a
-/// `$ref` into `components.schemas`, and every referenced component must be defined. This is the
-/// machine proof that no operation regressed to a bodyless `{"description":"OK"}`.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_every_operation_has_a_typed_response_schema() {
@@ -405,12 +321,11 @@ fn openapi_every_operation_has_a_typed_response_schema() {
             let by_status = op[OAS_OPERATION_STATUSES]
                 .as_object()
                 .expect("documented statuses");
-            // The success response: the single 2xx entry (200/201). 204 (No Content) has no body.
+
             let success = by_status
                 .keys()
                 .find(|s| s.starts_with('2') && s.as_str() != "204");
             let Some(status) = success else {
-                // A 204-only op (DELETE) legitimately has no success body.
                 assert!(
                     by_status.contains_key("204"),
                     "{method} {path} has no 2xx success response"
@@ -419,9 +334,7 @@ fn openapi_every_operation_has_a_typed_response_schema() {
             };
             with_body += 1;
             let schema = &by_status[status]["content"]["application/json"]["schema"];
-            // The discovery endpoint (`GET /openapi.json`) returns an OpenAPI document — described by
-            // an inline object schema, not a component `$ref` (no named struct, and modeling the
-            // OpenAPI meta-schema would be circular). Every OTHER operation must be a `$ref`.
+
             if path.ends_with("/openapi.json") {
                 assert_eq!(
                     schema["type"], "object",
@@ -443,7 +356,7 @@ fn openapi_every_operation_has_a_typed_response_schema() {
             );
         }
     }
-    // Sanity: the surface is ~34 operations; every non-204 op carries a body.
+
     assert!(op_count >= 30, "unexpectedly few operations: {op_count}");
     assert!(
         with_body >= 28,
@@ -451,14 +364,6 @@ fn openapi_every_operation_has_a_typed_response_schema() {
     );
 }
 
-/// EXHAUSTIVENESS BRIDGE: every `AdminError` variant is classified — either as a
-/// per-endpoint-declarable `ErrKind` or as ALGORITHMIC (`None`, stamped on every operation). The
-/// bridge itself is `err_kind_of`'s `match`, which will not COMPILE once a new variant exists; this
-/// test locks the other half: that the declarable kinds round-trip to the same frozen code + status
-/// the taxonomy already froze, and that the algorithmic bucket is exactly the universal errors.
-///
-/// Together with the golden, this subsumes `openapi_error_enum_matches_admin_error_codes`: the code
-/// enum can no longer be right while a per-endpoint response set is wrong.
 #[test]
 fn err_kind_bridges_every_admin_error_variant() {
     use crate::v1::contract::taxonomy::{err_kind_of, ErrKind};
@@ -490,7 +395,7 @@ fn err_kind_bridges_every_admin_error_variant() {
             "{kind:?} status drifted from AdminError"
         );
     }
-    // The universal half: emitted for EVERY operation, so never declarable per endpoint.
+
     for e in [
         AdminError::Unauthorized,
         AdminError::MethodNotAllowed,
@@ -505,9 +410,6 @@ fn err_kind_bridges_every_admin_error_variant() {
     }
 }
 
-/// TOTALITY of the declaration itself: every entry resolves to a real 4xx with a non-empty phrase,
-/// and no operation names the same condition twice (which would render a duplicated clause). Cheap,
-/// always-on, and it makes a typo'd table entry impossible rather than merely unlikely.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn declared_errors_is_total_and_well_formed() {
@@ -542,8 +444,7 @@ fn declared_errors_is_total_and_well_formed() {
                     de.cond
                 );
             }
-            // The document IS the projection: every status the declaration produces is present in
-            // the generated operation, with exactly the projected description.
+
             let by_status = op[OAS_OPERATION_STATUSES]
                 .as_object()
                 .expect("documented statuses");
@@ -559,10 +460,6 @@ fn declared_errors_is_total_and_well_formed() {
     }
 }
 
-/// An operation summary must not advertise a body field the request schema forbids. The keys PATCH
-/// summary listed `allowed_pools` and `labels`, which are mint-only — `UpdateKeyReq` is
-/// `deny_unknown_fields` over `{enabled, group}`, so a client following the document got a 400.
-/// Now that the operation also publishes a schema, the two would contradict each other in one file.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
@@ -570,8 +467,6 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
     let schemas = doc["components"]["schemas"].as_object().expect("schemas");
     let paths = doc["paths"].as_object().expect("paths");
 
-    // Every field name declared by any closed request schema. A name in this set means something
-    // specific to a client, so naming it in a summary is a promise the schema must keep.
     let mut known: Vec<String> = Vec::new();
     for schema in schemas.values() {
         if schema["additionalProperties"] != serde_json::Value::Bool(false) {
@@ -609,8 +504,7 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
                 if declared.contains(&name.as_str()) {
                     continue;
                 }
-                // Only a word-boundary hit counts, so a summary mentioning `group` does not trip on
-                // a schema that declares `groups`.
+
                 let named = summary
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .any(|w| w == name);
@@ -623,10 +517,6 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
     }
 }
 
-/// THE RESTART-TO-APPLY SENTENCE (u67 BLOCK 2 item 2): a write that introduces only routes keeps
-/// the exact sentence the answer has always given (the 1.5.5 wire), one that first writes the
-/// section of a plane the process did not open at boot names that section, both are joined, and
-/// neither is `None` (the field is then omitted, so the ordinary body is unchanged).
 #[test]
 fn the_restart_note_keeps_the_route_sentence_and_names_a_pending_plane() {
     let routes = vec!["/metrics".to_string()];
@@ -649,10 +539,6 @@ fn the_restart_note_keeps_the_route_sentence_and_names_a_pending_plane() {
     );
 }
 
-/// Whether a sibling task got the test's one worker while `served` was in flight: the sibling is
-/// spawned before `served` starts and records that it ran before `served` finished. On a
-/// `current_thread` runtime the sibling can run only when the handler's future yields the worker,
-/// so `false` means the handler held the worker for its whole run.
 async fn worker_was_free_during<Fut: std::future::Future<Output = Response>>(
     served: Fut,
 ) -> (bool, Response) {
@@ -672,11 +558,6 @@ async fn worker_was_free_during<Fut: std::future::Future<Output = Response>>(
     (ran_during.load(std::sync::atomic::Ordering::SeqCst), resp)
 }
 
-/// RED (a read blocks an async worker): `GET /openapi.json` inflates the embedded ~500 KB document,
-/// parses it, walks it for the operations of planes this node does not configure and re-renders
-/// it — per request, on a node that runs a 1.5.5 config. That work runs off the async worker. RED
-/// while it ran inline in the handler: the handler never yielded, so no other task ran while it
-/// built the document.
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_builds_the_served_document_off_the_async_worker() {
     let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
@@ -689,10 +570,6 @@ async fn openapi_builds_the_served_document_off_the_async_worker() {
     );
 }
 
-/// GREEN twin: the served document is still the committed one less the operations of every plane
-/// this node does not configure. This test binary links no plane, so every plane the committed
-/// document marks is unconfigured here: the answer is exactly `openapi_for_configured_planes` with
-/// nothing configured, as JSON, and every unmarked admin path is kept.
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
     let expected =
@@ -708,10 +585,6 @@ async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
     assert_eq!(std::str::from_utf8(&bytes).unwrap(), expected.as_str());
 }
 
-/// 1.5.5'S HEAD (ORACLE-116 review, F-011c): `openapi.json` is answered as identity-encoded
-/// `application/json` with no `Vary`, the head 1.5.5 recorded on `crosscut.traps|openapi-info-version`
-/// and `neutrality|routes|admin-openapi-paths`. RED: 1.6.0 added a gzip negotiation and
-/// `Vary: accept-encoding` nobody signed.
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_is_answered_with_1_5_5s_head() {
     let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
@@ -730,8 +603,6 @@ thread_local! {
     static TRUST_RESOLVED_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A root admission that marks the thread its inspect ran on and refuses, so the inspect stops
-/// there; every other question is the test build's stand-in's.
 struct MarkingAdmission;
 
 impl busbar_kernel::admission::PluginAdmission for MarkingAdmission {
@@ -797,11 +668,6 @@ fn inspect_body(tarball: &[u8]) -> axum::body::Bytes {
     ))
 }
 
-/// RED (a read blocks an async worker): `POST /plugins/inspect` — reachable by the read-only
-/// credential — resolves the trust policy, then gunzips and untars a caller-supplied archive of up
-/// to the tarball cap, hashes the library and checks its signature. All of it runs off the async
-/// worker. The root's trust builder marks the thread it runs on; RED while the inspect ran inline in
-/// the handler: the mark landed on the test's own runtime thread, its one worker.
 #[tokio::test(flavor = "current_thread")]
 async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
     let app = crate::new_test_app()
@@ -819,9 +685,6 @@ async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
     );
 }
 
-/// GREEN twin: the inspect still answers through the same envelope — a body that is not a tarball
-/// is the `invalid_request` naming the tarball, and a body that is not base64 is refused before any
-/// work is handed off.
 #[tokio::test(flavor = "current_thread")]
 async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
@@ -834,8 +697,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(ct.starts_with("application/json"), "{ct}");
     assert_eq!(body["error"]["code"], "invalid_request");
-    // The admission's own refusal, carried through the envelope as it answered it (the root's
-    // admission names an invalid tarball: `root::tests::admin_plugin_admission`).
+
     assert_eq!(
         body["error"]["message"],
         "a test build has no plugin admission: the composition root's tests prove it",

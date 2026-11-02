@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THERE IS NO UNIX TRANSPORT (`BUSBAR-1.6.0.md` kind table: "there is no unix transport"). The
-//! carriers are tcp and a member program's pipe. A `unix://` target is refused, whichever way a
-//! need names it: declared over a `unix` scheme no entry serves, or named as the target of a need
-//! declared over a served scheme. Neither reaches a dial.
-//!
-//! What the connector DOES serve is a unix-domain SOCKET PATH as the target of a `tcp` need in the
-//! operator-infrastructure (or loopback-allowed) class, spelled `unix:/absolute/path` (`src/tests/unix_target_tests.rs`). That is no transport
-//! and no scheme: the `unix://` URL spelling below is still refused.
 
 use busbar_contract::conn::{ConnError, Conns, InstanceId, NeedId, OpenDesc};
 use busbar_core_connector::endpoint::{self, EndpointRefusal};
@@ -18,7 +11,7 @@ const OWNER: InstanceId = InstanceId(1);
 const SOCKET: &str = "unix:///run/busbar.sock";
 
 /// A need declared over `unix` is refused at its declaration (no entry serves the scheme; the
-/// scheme match is made at declare), so it opens nothing.
+
 #[test]
 fn a_need_over_a_unix_scheme_is_refused() {
     let c = Connector::new();
@@ -37,7 +30,7 @@ fn a_need_over_a_unix_scheme_is_refused() {
 }
 
 /// A `unix://` target names no host, so the endpoint check refuses it before any transport is asked
-/// where it goes: a need over a served scheme cannot reach a socket path either.
+
 #[test]
 fn a_unix_target_names_no_host_and_is_refused_before_any_dial() {
     assert_eq!(

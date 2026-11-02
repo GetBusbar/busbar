@@ -1,28 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DEAL (`BUSBAR-1.6.0.md` THE DESIGN §3, stage 3g "deal config sections; plugins validate";
-//! §4 Config): the operator's document split into one SECTION per plugin, the reserved core-owned
-//! sub-keys read off a declared-verb section and stripped before it crosses, and the POSITION MAP
-//! the sections carry, so a plugin's refusal names the operator's file position.
-//!
-//! The position map is the operator's own text, kept beside the document value. A position is
-//! asked for by path and answered by the YAML library 1.5.5 parsed with, at the node the path names
-//! — so a refusal reads `<path>: <reason> at line L column C`, 1.5.5's bytes for a refusal raised at
-//! that node. A stage-0 rewrite edits the value ([`Document::value_mut`]) and leaves the text, so the
-//! line and column a refusal names are the ones the operator wrote.
-
 use busbar_contract::plugin::Kind;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
-/// THE RESERVED CORE-OWNED SUB-KEYS a declared-verb section may carry beyond the two every section
-/// reserves (`busbar_contract::section::RESERVED_SECTION_KEYS`) and its card and fees
-/// (`crate::config::prepass`): the
-/// keys (`breaker`, `on_exhausted`, the `gates` binding, `affinity`, `tier`, `repeatable`), POOLS-VERBS's
-/// `work` and `pools` (tool and agent pools sit under their plane's verb as a reserved `pools`
-/// sub-key), and an entry's `timeout`
-/// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`, its member's attempt bound).
 pub const RESERVED_SUB_KEYS: [&str; 9] = [
     "breaker",
     "on_exhausted",
@@ -35,7 +17,6 @@ pub const RESERVED_SUB_KEYS: [&str; 9] = [
     busbar_contract::section::ENTRY_TIMEOUT_KEY,
 ];
 
-/// Whether `key` is read by the kernel and stripped before a section crosses.
 #[must_use]
 pub fn is_reserved(key: &str) -> bool {
     RESERVED_SUB_KEYS.contains(&key)
@@ -56,14 +37,6 @@ enum Shape {
     MapOfMaps,
 }
 
-/// Each reserved knob's shape, read off the kernel type that reads it: `hooks`/`gates`/`repeatable`
-/// a list of names; `upstream_credentials` the `own`|`passthrough` scalar; `tier` a scalar; an
-/// entry's `timeout` a duration scalar (`busbar_contract::section::entry_timeout_ms`);
-/// `breaker` `config::pools::BreakerCfg`; `on_exhausted` `config::pools::OnExhaustedCfg` (a word, or
-/// `{fallback_pool}`/`{queue}`); `affinity` `config::pools::AffinityCfg`; `work`
-/// `host_work::WorkBounds::of_section`; `fees` `config::PlaneFeesCfg`; `pools` and `rate_card` maps
-/// of maps (a pool; a `RateEntryCfg`). The field lists are pinned against those types' own
-/// `expected one of` lists in the deal's tests.
 fn shape(key: &str) -> Option<Shape> {
     use busbar_contract::section::{
         ENTRY_TIMEOUT_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
@@ -72,7 +45,7 @@ fn shape(key: &str) -> Option<Shape> {
     let [card, fees] = crate::config::prepass::PLANE_CARD_KEYS;
     Some(match key {
         UPSTREAM_CREDENTIALS_KEY | "tier" | ENTRY_TIMEOUT_KEY => Shape::Scalar,
-        // The section's other word is its `hooks:` attach list.
+
         k if RESERVED_SECTION_KEYS.contains(&k) => Shape::List,
         "gates" | "repeatable" => Shape::List,
         "breaker" => Shape::Fields(&["base_cooldown_secs", "max_cooldown_secs", "trip"]),
@@ -85,13 +58,6 @@ fn shape(key: &str) -> Option<Shape> {
     })
 }
 
-/// THE GENERIC CHECK (spec :567, "a plane entry named after any reserved key is refused at
-/// validation with a clear message"): whether `value`, written at a declared-verb section's own
-/// level under the reserved key `key`, is plainly NOT that knob — an entry by that name. Only a
-/// clear mismatch counts, as `busbar_contract::section::split_section` judges `hooks`: a map where
-/// the knob is a list or a scalar; a map holding a key the knob does not read; a `pools`/`rate_card`
-/// map holding a value that is a list or a scalar. A knob that is the right kind of value but
-/// malformed is left to the knob's own reader, whose refusal says what is wrong with it.
 #[must_use]
 pub fn names_an_entry(key: &str, value: &serde_yaml::Value) -> bool {
     use serde_yaml::Value as Y;
@@ -108,15 +74,6 @@ pub fn names_an_entry(key: &str, value: &serde_yaml::Value) -> bool {
     }
 }
 
-/// A declared-verb section read off the operator's document, each depth-1 entry named after a
-/// reserved key judged AS IT IS READ ([`names_an_entry`]), so the refusal carries that entry's own
-/// path and position: `<section>.<key>: <sentence> at line L column C`, the form
-/// [`Document::refusal`] prints. `noun` is what one registration of the section is called; the
-/// sentence is `busbar_contract::section::reserved_name_refusal`'s.
-///
-/// # Errors
-///
-/// The deserializer's own, or the reserved-name refusal.
 pub fn read_section<'de, D: Deserializer<'de>>(
     de: D,
     section: &str,
@@ -141,8 +98,6 @@ enum Read<'a> {
 }
 
 impl Read<'_> {
-    /// The node read: an entry that is plainly not its knob is refused here, inside its own node,
-    /// so the library marks the refusal with the entry's path and position.
     fn done<E: de::Error>(self, value: serde_yaml::Value) -> Result<serde_yaml::Value, E> {
         match self {
             Read::Entry {
@@ -177,8 +132,7 @@ impl<'de> Visitor<'de> for Read<'_> {
             let read = serde_yaml::Value::deserialize(de::value::MapAccessDeserializer::new(map))?;
             return self.done(read);
         };
-        // The library's own map read (duplicate keys refused in its words), each reserved-named
-        // entry read through its judge.
+
         let mut out = serde_yaml::Mapping::new();
         while let Some(key) = map.next_key::<serde_yaml::Value>()? {
             if out.contains_key(&key) {
@@ -241,7 +195,6 @@ impl<'de> Visitor<'de> for Read<'_> {
     }
 }
 
-/// The YAML library's own sentence for a key written twice in one map (its `Mapping` read's).
 fn duplicate_entry(key: &serde_yaml::Value) -> String {
     use serde_yaml::Value as Y;
     match key {
@@ -270,8 +223,6 @@ pub enum Seat<'a> {
 }
 
 impl<'a> Seat<'a> {
-    /// The seat of a plugin of `kind`: by the verbs it states when its kind's verbs are declared
-    /// (`Kind::verb`), else by the name config gives the instance.
     #[must_use]
     pub fn of(kind: Kind, verbs: &'a [String], instance: &'a str) -> Self {
         match kind.verb() {
@@ -288,9 +239,6 @@ pub struct Section {
     pub at: Vec<Vec<String>>,
     /// The blob that crosses: `{verb: section}` for every stated verb the document writes, reserved
     /// sub-keys stripped; an instance's own `settings`.
-    // settings-leak-lint: allow — NON-PROJECTION engine type. `Section` derives no `Serialize`: it
-    // is the stage-3g deal, whose `settings` crosses only OUTBOUND to the dealt plugin's lifecycle
-    // `validate` (`root::boot::validate_dealt`); no admin read serves it.
     pub settings: Value,
     /// The reserved sub-keys read off, each at its path, for the kernel.
     pub reserved: Vec<(Vec<String>, Value)>,
@@ -304,28 +252,20 @@ pub struct Position {
 }
 
 impl Document {
-    /// The document `text` states.
-    ///
-    /// # Errors
-    ///
-    /// The text is not one YAML document.
     pub fn parse(text: String) -> Result<Self, serde_yaml::Error> {
         let value = serde_yaml::from_str(&text)?;
         Ok(Self { text, value })
     }
 
-    /// The document's value.
     #[must_use]
     pub fn value(&self) -> &Value {
         &self.value
     }
 
-    /// The value, for a stage-0 rewrite; positions stay the operator's.
     pub fn value_mut(&mut self) -> &mut Value {
         &mut self.value
     }
 
-    /// The section dealt to `seat`, or `None` when the document writes none for it.
     #[must_use]
     pub fn deal(&self, seat: Seat<'_>) -> Option<Section> {
         match seat {
@@ -372,7 +312,6 @@ impl Document {
             .filter(|v| !v.is_null())
     }
 
-    /// Where `path` sits in the operator's file, or `None` when the text holds no such node.
     #[must_use]
     pub fn position(&self, path: &[String]) -> Option<Position> {
         self.probe(path, "")
@@ -384,8 +323,6 @@ impl Document {
             })
     }
 
-    /// THE REFUSAL TEXT for `reason` at `path`: `<path>: <reason> at line L column C`, 1.5.5's bytes
-    /// for a refusal raised at that node; `<path>: <reason>` when the text holds no such node.
     #[must_use]
     pub fn refusal(&self, path: &[String], reason: &str) -> String {
         match self.probe(path, reason) {
@@ -394,7 +331,6 @@ impl Document {
         }
     }
 
-    /// [`Self::refusal`] at the first place `section` was dealt from.
     #[must_use]
     pub fn refuse(&self, section: &Section, reason: &str) -> String {
         section
@@ -403,7 +339,6 @@ impl Document {
             .map_or_else(|| reason.to_owned(), |p| self.refusal(p, reason))
     }
 
-    /// The library's own error raised at the node `path` names, carrying its path and mark.
     fn probe(&self, path: &[String], reason: &str) -> Result<serde_yaml::Error, ()> {
         let found = std::cell::Cell::new(false);
         let seed = Probe {
@@ -418,22 +353,6 @@ impl Document {
     }
 }
 
-/// THE STRIP: `section`, the value the document writes under
-/// `verb`, with the reserved sub-keys taken off at EXACT depths and nowhere else — the section's own
-/// level, each registration's level, each pool (`pools.<p>`) and each pool member
-/// (`pools.<p>.members[i]`, when the members are maps) — each recorded in `reserved` at its path
-/// (`[verb, ...]`). No recursion: a word spelled like a reserved key deeper than those is the
-/// plane's own and crosses.
-///
-/// Under a declared verb, `pools` is itself reserved, so the whole subtree leaves the blob and is
-/// recorded at `[verb, "pools"]`; the reserved keys of each of its pools and members are recorded at
-/// their own paths as well. Under the root `pools:` section (the verb that IS
-/// `busbar_contract::section::RESERVED_POOLS_KEY`) every depth-1 key is a POOL, as in 1.5.5: only
-/// the two section words (`RESERVED_SECTION_KEYS`, 1.5.5's frozen pair) are taken at that level, so
-/// a pool named `tier`, `work`, `breaker`, `rate_card`, … is a pool and crosses.
-///
-/// The one strip every crossing of a section goes through (the deal; a door plane's `open` and
-/// `refresh`).
 pub fn strip(verb: &str, mut section: Value, reserved: &mut Vec<(Vec<String>, Value)>) -> Value {
     use busbar_contract::section::{RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS};
     let at = [verb.to_owned()];
@@ -452,8 +371,7 @@ pub fn strip(verb: &str, mut section: Value, reserved: &mut Vec<(Vec<String>, Va
         return section;
     }
     take(map, &at, is_reserved, reserved);
-    // The `pools` subtree has left whole; the kernel also has its pools' and members' reserved keys
-    // by path.
+
     let pools_at = [verb.to_owned(), RESERVED_POOLS_KEY.to_owned()];
     let lifted = reserved.iter().rev().find(|(p, _)| p[..] == pools_at[..]);
     if let Some(Value::Object(mut pools)) = lifted.map(|(_, v)| v.clone()) {
@@ -478,7 +396,6 @@ pub fn strip(verb: &str, mut section: Value, reserved: &mut Vec<(Vec<String>, Va
     section
 }
 
-/// One pool at `at`: its reserved keys, then each member's (a member written as a map).
 fn strip_pool(pool: &mut Value, at: &[String], reserved: &mut Vec<(Vec<String>, Value)>) {
     let Some(map) = pool.as_object_mut() else {
         return;
@@ -495,7 +412,6 @@ fn strip_pool(pool: &mut Value, at: &[String], reserved: &mut Vec<(Vec<String>, 
     }
 }
 
-/// The keys of `map` that `reserved_here` names, taken off and recorded at `at.<key>`.
 fn take(
     map: &mut Map<String, Value>,
     at: &[String],
@@ -514,8 +430,6 @@ fn take(
     }
 }
 
-/// Walks the operator's text to the node a path names and raises `reason` there, so the library
-/// marks the error with that node's path and position.
 struct Probe<'p> {
     path: &'p [String],
     reason: &'p str,

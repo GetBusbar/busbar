@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE SUBJECT DECODER: a sealed body's subject is read back by the same round-tripping rule the
-//! amendment journal reads its subjects with.
-
 use crate::test_support::tokens::pass;
 use busbar_contract::caps::{Audit as AuditStep, MeterClassId};
 
@@ -11,7 +8,6 @@ use busbar_kernel_audit::journal::{from_journal_body, journal_body};
 use busbar_kernel_audit::record::AuditChain;
 use busbar_kernel_audit::sign::AuditSigningKey;
 
-/// The classes the fixture's lines name.
 fn declared(name: &str) -> Option<MeterClassId> {
     ["tokens_in", "tokens_out"]
         .into_iter()
@@ -19,12 +15,6 @@ fn declared(name: &str) -> Option<MeterClassId> {
         .map(MeterClassId::new)
 }
 
-/// A SUBJECT PAIR THAT DOES NOT RE-RENDER IS REFUSED, never read as a different spelling of the
-/// same subject. The journal decodes a sealed subject through the one decoder the amendment journal
-/// uses, which accepts `("node", v)` only when `v` is exactly how node `n` renders. A body that
-/// carries `"007"` where the record sealed `"7"` would otherwise decode as node 7 and re-digest
-/// cleanly, because the digest re-renders the canonical `"7"` — so the decoder is the only place a
-/// rewritten spelling can be caught.
 #[test]
 fn a_subject_value_that_does_not_re_render_is_refused_in_a_sealed_body() {
     let key = AuditSigningKey::from_hex_seed(

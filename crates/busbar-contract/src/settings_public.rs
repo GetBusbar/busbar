@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! SETTINGS SENSITIVITY: every plugin setting is SENSITIVE unless its plugin declares it public
-//! (owner ruling 2026-10-27, "lean sensitive by default"). The one declaration is the plugin's
-//! settings schema (the Statement's `settings_schema`, which the host reads at load): a direct
-//! member of the schema's root `properties` marked `"x-busbar-public": true` is public. A sensitive
-//! value is never shown anywhere the host renders settings (logs, audit records, admin views,
-//! config diff and drift output): only its key is. `secret_refs` names secret REFERENCES and is
-//! no sensitivity source.
 
 use std::collections::BTreeSet;
 
@@ -15,7 +9,7 @@ use std::collections::BTreeSet;
 pub const PUBLIC_MARK: &str = "x-busbar-public";
 
 /// The settings `schema` declares public: each direct member of its root `properties` marked
-/// [`PUBLIC_MARK`] `true`. No schema, or none marked: none (every setting is sensitive).
+
 #[must_use]
 pub fn public_settings(schema: &serde_json::Value) -> BTreeSet<String> {
     schema

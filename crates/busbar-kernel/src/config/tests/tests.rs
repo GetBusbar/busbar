@@ -30,13 +30,8 @@ fn structured_pool_strategy_keeps_the_existing_single_base_rule() {
     assert!(weighted.base_named);
 }
 
-// ── shared test helpers ──────────────────────────────────────────────────────────────────────────
-
-/// The dialect a test catalog entry names. The merge carries a provider's `protocol:` as opaque data
-/// and names no dialect, so these tests name none either.
 const CATALOG_PROTOCOL: &str = "proto-a";
 
-/// A minimal ProviderDef for resolve() tests.
 fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
     ProviderDef {
         protocol: protocol.to_string(),
@@ -54,7 +49,6 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
     }
 }
 
-/// A minimal ProviderDeploy whose credential is `{ env: <var> }`.
 fn provider_deploy(env_var: &str) -> ProviderDeploy {
     ProviderDeploy {
         api_key: SecretRef::env(env_var),
@@ -73,13 +67,11 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
     }
 }
 
-/// An all-default DeployCfg for struct-literal resolve() tests (DeployCfg has no Default because
-/// providers/models are required in YAML).
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         declared: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
-        // Left at its type default (unset).
+
         endpoint: Default::default(),
         oauth_as: None,
         credentials: Default::default(),
@@ -115,10 +107,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
     }
 }
 
-// 1.4.0 config compatibility: a 1.3.0 config using the removed `auth.mode:` key must fail with an
-// actionable migration hint, not just serde's bare "unknown field `mode`". Verify the hint is
-// appended for the mode error and that unrelated errors pass through verbatim; plus an end-to-end
-// parse.
 #[test]
 fn augment_config_error_adds_auth_mode_migration_hint() {
     let augmented =
@@ -135,12 +123,12 @@ fn augment_config_error_adds_auth_mode_migration_hint() {
         augmented.contains("upstream_credentials"),
         "hint covers the passthrough migration: {augmented}"
     );
-    // Unrelated errors are returned unchanged.
+
     assert_eq!(
         crate::config::augment_config_error("some other yaml error"),
         "some other yaml error"
     );
-    // End-to-end: a legacy `auth.mode:` config surfaces the hint through the parse path.
+
     let legacy = "providers: {}\nauth:\n  mode: none\n";
     let err = serde_yaml::from_str::<crate::config::DeployCfg>(legacy)
         .map_err(crate::config::augment_config_error)
@@ -151,10 +139,6 @@ fn augment_config_error_adds_auth_mode_migration_hint() {
     );
 }
 
-/// 1.5.3 HARD tap-stage rename (loud-fail, NO serde alias): an old-form `at:` wire string
-/// (`route`/`attempt`/`completion`) is rejected at parse as an unknown `HookStage` variant, and
-/// `augment_config_error` upgrades serde's bare message to a hint naming BOTH the old and the new
-/// value plus the migrator. Mirrors `augment_config_error_adds_auth_mode_migration_hint`.
 #[test]
 fn augment_config_error_adds_hook_stage_rename_hint() {
     for (old, new) in [
@@ -162,7 +146,6 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
         ("attempt", "routing"),
         ("completion", "response"),
     ] {
-        // The synthetic serde message an unknown enum variant produces.
         let augmented = crate::config::augment_config_error(format!(
             "unknown variant `{old}`, expected one of `request`, `candidate`, `routing`, `response`"
         ));
@@ -175,10 +158,7 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
             "hint must point at the migrator: {augmented}"
         );
     }
-    // End-to-end: an old stage VALUE (`completion`) written into the surviving `phase:` list surfaces
-    // the loud-fail through the parse path — the HARD rename has no back-compat alias, so it must NOT
-    // parse silently. (1.6.0 removed the `at:` KEY itself; the stage-value vocab it once carried now
-    // only reaches the parser through `phase:`.)
+
     let legacy = "kind: tap\nmodule: p\nphase: [completion]\n";
     let err = serde_yaml::from_str::<HookCfg>(legacy)
         .map_err(crate::config::augment_config_error)
@@ -191,10 +171,6 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
     );
 }
 
-/// The hook config types are round-trippable (Deserialize + Serialize), the foundation for the
-/// config-overlay persistence that lets a runtime-registered hook survive a restart. A `HookCfg`
-/// deserialized from JSON re-serializes + re-parses to an identical shape, exercising the
-/// snake_case enums (kind/prompt/user) + the transport + the ordering/stage fields.
 #[test]
 fn hook_cfg_round_trips_for_overlay_persistence() {
     let src = serde_json::json!({
@@ -208,23 +184,18 @@ fn hook_cfg_round_trips_for_overlay_persistence() {
         "timeout_ms": 25
     });
     let cfg: HookCfg = serde_json::from_value(src).expect("HookCfg deserializes");
-    // Serialize -> re-deserialize -> re-serialize: the two JSON forms must be identical (stable).
+
     let once = serde_json::to_value(&cfg).expect("HookCfg serializes");
     let cfg2: HookCfg = serde_json::from_value(once.clone()).expect("re-deserializes");
     let twice = serde_json::to_value(&cfg2).expect("re-serializes");
     assert_eq!(once, twice, "HookCfg round-trips stably");
-    // Spot-check the snake_case enum projection survives.
+
     assert_eq!(once["kind"], "gate");
     assert_eq!(once["prompt"], "rw");
     assert_eq!(once["user"], "ro");
     assert_eq!(once["on_error"], "reject");
 }
 
-/// 1.5.0 MIGRATION (fail-closed): the removed `auth:` keys are REJECTED AT PARSE by
-/// `deny_unknown_fields`, never silently dropped. Covers `mode:` (1.3.0), the single-token
-/// `token:` (1.0.0), and the 1.5.0 removals `client_tokens:` and `modules:` (the allowlist and
-/// per-module caps moved to `chain:` / `role_bindings:` / `groups:`). A rejected secret value is
-/// never echoed back in the parse error.
 #[test]
 fn test_removed_auth_keys_are_rejected_at_parse() {
     for (yaml, removed_key) in [
@@ -232,8 +203,6 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
         ("token: \"sk-bb-legacy\"", "token"),
         ("client_tokens: [\"sk-bb-legacy\"]", "client_tokens"),
         ("modules:\n  sso:\n    allowed_groups: [eng]", "modules"),
-        // 1.5.3 removals: the credential mode moved to `pools.upstream_credentials` and
-        // the hosted-login block folded into the `identity-providers:` definition.
         ("upstream_credentials: passthrough", "upstream_credentials"),
         ("methods:\n  oidc:\n    issuer: https://idp", "methods"),
     ] {
@@ -251,13 +220,9 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
     }
 }
 
-/// deny_unknown_fields gap: `TlsCfg` is `#[serde(deny_unknown_fields)]`, so a TYPO under
-/// `health:` was the ONE top-level section without `deny_unknown_fields`, so a typo'd probe knob
-/// parsed clean and was silently ignored — the operator believes probing is retuned while it keeps
-/// the defaults. Every sibling section rejects at parse; this one now does too.
 #[test]
 fn test_health_typo_rejected_at_parse() {
-    let bad = "default_probe_interval_sec: 5"; // missing the trailing `s`
+    let bad = "default_probe_interval_sec: 5";
     let err = serde_yaml::from_str::<crate::config::HealthDefaultsCfg>(bad)
         .expect_err("a typo under health: must be rejected at parse (deny_unknown_fields)");
     let msg = err.to_string();
@@ -267,13 +232,8 @@ fn test_health_typo_rejected_at_parse() {
     );
 }
 
-/// `tls:` (e.g. `client_c:` for `client_ca:`) is REJECTED AT PARSE rather than silently ignored
-/// (which would leave mTLS DISABLED while the operator believes it is on). The 1.4.x spellings
-/// `cert_file`/`key_file`/`client_ca_file` are REMOVED and rejected too; the fields are now
-/// SecretRefs (`cert:` / `key:` / `client_ca:`).
 #[test]
 fn test_tls_typo_and_removed_keys_rejected_at_parse() {
-    // A typo'd mTLS key must fail, not be silently dropped.
     let bad = "cert: { file: /c.pem }\nkey: { file: /k.pem }\nclient_c: { file: /ca.pem }";
     let err = serde_yaml::from_str::<TlsCfg>(bad)
         .expect_err("a typo under tls: must be rejected at parse (deny_unknown_fields)");
@@ -282,12 +242,12 @@ fn test_tls_typo_and_removed_keys_rejected_at_parse() {
         msg.contains("unknown field") && msg.contains("client_c"),
         "expected an unknown-field error naming the typo; got: {msg}"
     );
-    // The removed 1.4.x file-path spellings are rejected (they are SecretRefs now).
+
     let legacy = "cert_file: /c.pem\nkey_file: /k.pem";
     let err = serde_yaml::from_str::<TlsCfg>(legacy)
         .expect_err("the removed cert_file/key_file keys must be rejected");
     assert!(err.to_string().contains("unknown field"), "{err}");
-    // The new SecretRef spelling parses and enables mTLS.
+
     let good = "cert: { file: /c.pem }\nkey: { env: TLS_KEY_PEM }\nclient_ca: { file: /ca.pem }";
     let cfg = serde_yaml::from_str::<TlsCfg>(good).expect("well-formed tls config parses");
     assert_eq!(cfg.cert.file_path(), Some("/c.pem"));
@@ -298,12 +258,8 @@ fn test_tls_typo_and_removed_keys_rejected_at_parse() {
     );
 }
 
-/// 1.5.0 CLEAN BREAK: the pre-1.0 serde aliases are GONE. Each old spelling is now an
-/// unknown-field parse error; only the canonical name loads. (This test used to pin the aliases
-/// as accepted; 1.5.0 is unreleased with no back-compat, so it now pins them REJECTED.)
 #[test]
 fn test_removed_key_aliases_are_rejected() {
-    // breaker trip: window_s and n are gone; window_secs / consecutive_n are canonical.
     for (yaml, alias) in [
         ("mode: consecutive\nwindow_s: 42", "window_s"),
         ("mode: consecutive\nn: 7", "n"),
@@ -322,7 +278,6 @@ fn test_removed_key_aliases_are_rejected() {
     assert_eq!(new.window_secs, 42);
     assert_eq!(new.consecutive_n, 7);
 
-    // failover: deadline_secs and cap are gone; timeout_secs / max_hops are canonical.
     for (yaml, alias) in [("deadline_secs: 30", "deadline_secs"), ("cap: 5", "cap")] {
         let err = serde_yaml::from_str::<FailoverCfg>(yaml)
             .expect_err("a removed failover alias must be rejected");
@@ -338,15 +293,6 @@ fn test_removed_key_aliases_are_rejected() {
     assert_eq!(new.max_hops, 5);
 }
 
-/// 1.5.3: the `observability:` BLOCK IS DELETED and its last field (`otlp_url`, and before it the
-/// 1.4.x `otlp_endpoint`) is now the `settings.url` of an `export:` instance with `module: otlp`.
-/// The new spelling resolves — through the export axis since K9e-2, where the `otlp` sink is an
-/// export plugin (`busbar-export-otlp`) — and the instance keeps its settings bag exactly as
-/// written. (The 1.4.x key inside the bag is the SINK's refusal now: the binary-level
-/// `crates/busbar/tests/export_otlp_refuses_as_1_5_5_did.rs` pins its words.)
-///
-/// Before 1.5.3 `otlp_url` was an `ObservabilityCfg` field and there was no
-/// `otlp` export module at all, so this did not compile.
 #[test]
 fn test_otlp_folds_into_an_export_instance() {
     crate::test_support::export_axis::install_export_axis();
@@ -378,13 +324,6 @@ fn test_otlp_folds_into_an_export_instance() {
     );
 }
 
-/// 1.5.3 observability→export lift-out: the retired `observability.request_log_webhook_url` and the
-/// top-level `metrics:` block are rejected at parse (`deny_unknown_fields`), and `augment_config_error`
-/// turns the bare serde error into an actionable hint naming the new export home + the migrator — the
-/// same shared-table discipline as the HookStage rename.
-///
-/// Before 1.5.3 these keys were live config fields that parsed silently, so the
-/// parse SUCCEEDED (no error to augment) — this test does not pass on the pre-retirement tree.
 #[test]
 fn test_retired_observability_export_keys_loud_fail_with_hint() {
     let err = serde_yaml::from_str::<DeployCfg>(
@@ -410,10 +349,6 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
     );
 }
 
-/// `observability.emit_server_timing` MOVED to
-/// `advanced.response_headers.server_timing`. 1.5.3 went further and DELETED the whole
-/// `observability:` block, so the old location is now an unknown TOP-LEVEL field — LOUD
-/// and fail-closed; `busbar --migrate-config` moves it (see `migrate_tests.rs`).
 #[test]
 fn test_emit_server_timing_moved_to_advanced_response_headers() {
     let err = serde_yaml::from_str::<DeployCfg>(
@@ -427,8 +362,6 @@ fn test_emit_server_timing_moved_to_advanced_response_headers() {
     );
 }
 
-/// `advanced.response_headers:` — both toggles parse, default to `false`, and a typo'd field is a
-/// loud `deny_unknown_fields` reject (never a silent no-op).
 #[test]
 fn test_response_headers_cfg_defaults_and_parses() {
     let default = ResponseHeadersCfg::default();
@@ -445,8 +378,6 @@ fn test_response_headers_cfg_defaults_and_parses() {
     assert!(err.to_string().contains("unknown field"));
 }
 
-/// A minimal config without a `pools:` section parses fine: pools are optional (direct model
-/// routing). Only providers + models are required. Provider credentials are secret references.
 #[test]
 fn test_config_without_pools_parses() {
     let yaml = r#"
@@ -465,8 +396,6 @@ models:
     assert_eq!(deploy.providers["acme"].api_key.env_var(), Some("ACME_KEY"));
 }
 
-/// A provider's `path` override flows from the catalog (and a deployment override wins) into
-/// the resolved ProviderCfg, the knob that fixes version-in-base-url providers.
 #[test]
 fn test_provider_path_override_resolves() {
     let mut defs = HashMap::new();
@@ -475,7 +404,7 @@ fn test_provider_path_override_resolves() {
     defs.insert("zai-payg".to_string(), def);
 
     let mut dep = provider_deploy("ZAI_KEY");
-    // Deployment-side health (the block config.yaml documents under a provider).
+
     dep.health = Some(HealthCfg {
         mode: HealthMode::Dead,
         interval_secs: Some(5),
@@ -490,40 +419,37 @@ fn test_provider_path_override_resolves() {
         Some("/chat/completions"),
         "catalog path override must resolve into ProviderCfg"
     );
-    // Deployment-side health must survive resolve (regression: it was silently dropped).
+
     assert_eq!(
         cfg.providers["zai-payg"].health.as_ref().map(|h| h.mode),
         Some(HealthMode::Dead),
         "config.yaml provider health must resolve into ProviderCfg"
     );
-    // The secret REFERENCE (never a resolved value) is carried through.
+
     assert_eq!(cfg.providers["zai-payg"].api_key.env_var(), Some("ZAI_KEY"));
 }
 
 #[test]
 fn bind_is_loopback_classification() {
-    // Loopback binds: safe for a token-only guarded listener.
     assert!(bind_is_loopback("127.0.0.1:8081"));
     assert!(bind_is_loopback("localhost:8081"));
-    assert!(bind_is_loopback("LocalHost:8081")); // case-insensitive
-    assert!(bind_is_loopback("[::1]:8081")); // IPv6 loopback with brackets
-    assert!(bind_is_loopback("127.0.0.1")); // no :port
-    assert!(bind_is_loopback("127.0.0.2:80")); // whole 127/8 is loopback
-                                               // Exposed binds: the boot-guard must treat these as network-reachable.
+    assert!(bind_is_loopback("LocalHost:8081"));
+    assert!(bind_is_loopback("[::1]:8081"));
+    assert!(bind_is_loopback("127.0.0.1"));
+    assert!(bind_is_loopback("127.0.0.2:80"));
+
     assert!(!bind_is_loopback("0.0.0.0:8081"));
     assert!(!bind_is_loopback("10.0.0.5:8081"));
-    assert!(!bind_is_loopback("[::]:8081")); // IPv6 unspecified
-    assert!(!bind_is_loopback("admin.internal:8081")); // hostname: fail closed (exposed)
+    assert!(!bind_is_loopback("[::]:8081"));
+    assert!(!bind_is_loopback("admin.internal:8081"));
 }
 
-/// The `admin_listen` boot-guard: a network-exposed listener refuses to boot without mTLS,
-/// unless deliberately waived. Loopback binds and mTLS-equipped exposed binds resolve cleanly.
 #[test]
 fn admin_plane_boot_guard() {
     fn build(
         admin_listen: &str,
         client_ca: Option<&str>,
-        // 1.5.3: the flag INVERTED — this is `admin_require_mtls`, so `false` is the waiver.
+
         require_mtls: bool,
     ) -> Result<RootCfg, Vec<String>> {
         let mut defs = HashMap::new();
@@ -545,17 +471,15 @@ fn admin_plane_boot_guard() {
         resolve(&deploy, &defs)
     }
 
-    // DEFAULT: the zero-config `admin_listen` is loopback, so it boots with no mTLS. Note the
-    // argument: 1.5.3's DEFAULT is `admin_require_mtls: true` — the guard is ON unless waived.
     assert!(
         build(DEFAULT_ADMIN_LISTEN_ADDR, None, true).is_ok(),
         "the default loopback admin_listen must resolve"
     );
-    // A loopback `admin_listen` is safe without mTLS (unreachable off-host).
+
     assert!(build("127.0.0.1:8081", None, true).is_ok());
     assert!(build("[::1]:8081", None, true).is_ok());
     assert!(build("localhost:8081", None, true).is_ok());
-    // An EXPOSED `admin_listen` without mTLS and without waiver: REFUSE TO BOOT.
+
     let err = build("0.0.0.0:8081", None, true)
         .expect_err("exposed admin without mTLS must refuse to boot");
     let joined = err.join("\n");
@@ -565,20 +489,12 @@ fn admin_plane_boot_guard() {
         joined.contains("admin_require_mtls: false"),
         "the guard must name the 1.5.3 waiver spelling (not the retired `admin_insecure`): {joined}"
     );
-    // Exposed `admin_listen` WITH client-cert mTLS: allowed.
+
     assert!(build("0.0.0.0:8081", Some("client-ca.pem"), true).is_ok());
-    // Exposed `admin_listen` with the explicit `admin_require_mtls: false` waiver: allowed (deliberate).
+
     assert!(build("0.0.0.0:8081", None, false).is_ok());
 }
 
-/// FREEZE: 1.5.3 INVERTED the exposed-admin boot guard (`admin_insecure: true` →
-/// `admin_require_mtls: false`) so the SAFE posture is what an OMITTED key gives you — the single
-/// most consequential default in the config. An omitted key must resolve to the guard being ON, and
-/// the RETIRED key must LOUD-FAIL at parse rather than being silently ignored (which would leave an
-/// operator believing a waiver still applied).
-///
-/// Before 1.5.3 `admin_insecure` was a live field (so it parsed clean) and
-/// `admin_require_mtls` did not exist (so the omitted-default assertion did not compile).
 #[test]
 fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
     crate::test_support::register_neutral_test_plane();
@@ -602,21 +518,6 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
     );
 }
 
-/// A BUILD WITH NO PLANE REGISTERED AT ALL — the honest, structurally-guaranteed-reachable case
-/// under this architecture (Part 2 #1: core names zero planes; #3/#11: planes are plugins that may
-/// be compiled in, dropped out, or not yet installed when config resolves) — must REFUSE parsing a
-/// config that names a plane-owned section (`pools:`), with a named, actionable diagnostic. It must
-/// NEVER panic the process, and it must never silently default/skip the section (DECISIONS #42: an
-/// unknown is refused, never defaulted).
-///
-/// RED before the fix: `PoolsCfg::deserialize` → `config::plane_sections::split_section_for_plane` called
-/// `super::plane_decl(fallback_key())` — the PANICKING lookup — with `fallback_key()`'s own
-/// documented, honest empty-string answer for "no fallback plane registered", so this exact
-/// scenario (a build with a registered plane count of zero) crashed the process instead of
-/// refusing the parse. `TestRegistryIsolation::empty()` forces that scenario deterministically,
-/// even though this test binary registers planes elsewhere (unlike a shipped zero-plane build, it
-/// cannot rely on ambient absence) — the guard clears the registered set and holds the process
-/// registry's serial lock for its lifetime, so no sibling test's registration can leak in.
 #[test]
 fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registered() {
     let _isolation = busbar_kernel::test_support::planes::TestRegistryIsolation::empty();
@@ -633,13 +534,6 @@ fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registere
     );
 }
 
-// `test_shipped_example_config_resolves` lives in the composition root
-// (crates/busbar/src/root/tests/auth_bindings.rs): the shipped config.yaml names the operator
-// credential by the root migration table's word, which the kernel does not spell (ARCHITECT
-// 2026-09-30, KERNEL-AUTH-ZERO Q2).
-
-/// Each interpolation reads the current environment, including replacement and removal. This
-/// fixture owns a unique variable and restores its original value even if an assertion fails.
 #[test]
 fn test_interpolation_reads_replaced_and_removed_values() {
     const NAME: &str = "BUSBAR_T_INTERPOLATE_REPLACEMENT";
@@ -664,10 +558,6 @@ fn test_interpolation_reads_replaced_and_removed_values() {
     assert!(error.to_string().contains(NAME), "{error}");
 }
 
-// ── pool `hooks:` list ───────────────────────────────────────────────────────────────────────────
-
-/// The `hooks: [...]` list parses each native strategy name as the base; absent defaults to
-/// weighted with base NOT named (so the `default:` hook can replace it at resolution).
 #[test]
 fn test_pool_policy_strategies_parse() {
     for (name, expected) in [
@@ -686,16 +576,13 @@ fn test_pool_policy_strategies_parse() {
         );
         assert!(pool.base_named, "a named strategy names the base");
     }
-    // Absent hooks: defaults to the zero-cost weighted strategy; base NOT named, so the pool
-    // inherits the `default:` hook when one is registered.
+
     let absent: PoolCfg = serde_yaml::from_str("members: []\n").expect("absent parses");
     assert_eq!(absent.policy, PoolPolicy::Weighted);
     assert!(absent.gates.is_empty());
     assert!(!absent.base_named, "an absent hooks: did not name the base");
 }
 
-/// RETIRED pool keys: `policy:` / `hook:` / `route:` are simply unknown fields now
-/// (deny_unknown_fields on the pool raw shape) and fail at parse.
 #[test]
 fn test_pool_retired_keys_rejected() {
     for (yaml, key) in [
@@ -712,25 +599,20 @@ fn test_pool_retired_keys_rejected() {
             "expected unknown-field naming `{key}`; got: {msg}"
         );
     }
-    // A retired key errors even alongside a valid `hooks:` list (no silent half-migration).
+
     let e = serde_yaml::from_str::<PoolCfg>("hooks: [cheapest]\npolicy: fastest\nmembers: []\n")
         .expect_err("a retired key alongside hooks: must error");
     assert!(e.to_string().contains("unknown field"), "{e}");
 }
 
-/// The unified `hooks: [...]` pool form (1.5.3) mixes an optional ordering-strategy keyword with
-/// bare hook NAMES referencing the top-level `hooks:` definition map. The strategy sets the base
-/// ranking; every other bare name lands in `gates` in config order (no inline instances).
 #[test]
 fn test_pool_hooks_list_desugars() {
-    // strategy + hook name: base explicitly named, the name captured in gates.
     let pool: PoolCfg = serde_yaml::from_str("hooks: [cheapest, pii]\nmembers: []\n")
         .expect("hooks list must parse");
     assert_eq!(pool.policy, PoolPolicy::Cheapest);
     assert!(pool.base_named, "a named strategy sets base_named");
     assert_eq!(pool.gates, vec!["pii".to_string()]);
 
-    // hook name only: base stays default (weighted placeholder); base NOT named.
     let g: PoolCfg =
         serde_yaml::from_str("hooks: [pii]\nmembers: []\n").expect("name-only list parses");
     assert_eq!(g.policy, PoolPolicy::Weighted);
@@ -740,14 +622,12 @@ fn test_pool_hooks_list_desugars() {
         "a name-only pool did not name its base ordering"
     );
 
-    // Several names: config order is preserved (the phase-2 chain tie-break).
     let multi: PoolCfg = serde_yaml::from_str("hooks: [cheapest, pii, dlp]\nmembers: []\n")
         .expect("multi-name list parses");
     assert_eq!(multi.policy, PoolPolicy::Cheapest);
     assert_eq!(multi.gates, vec!["pii".to_string(), "dlp".to_string()]);
 }
 
-/// Two ordering strategies in one `hooks:` list is an error (a pool has one base ordering).
 #[test]
 fn test_pool_hooks_two_strategies_error() {
     let e = serde_yaml::from_str::<PoolCfg>("hooks: [cheapest, fastest]\nmembers: []\n")
@@ -758,8 +638,6 @@ fn test_pool_hooks_two_strategies_error() {
     );
 }
 
-/// A bare NON-strategy name in a pool `hooks:` list is a HOOK-NAME REFERENCE (1.5.3), captured in
-/// `gates`; its existence + `kind: gate` are validated later against the top-level `hooks:` map.
 #[test]
 fn test_pool_hooks_bare_name_is_a_reference() {
     let pool: PoolCfg = serde_yaml::from_str("hooks: [pii-guard]\nmembers: []\n")
@@ -769,8 +647,6 @@ fn test_pool_hooks_bare_name_is_a_reference() {
     assert!(!pool.base_named);
 }
 
-/// The top-level `hooks:` DEFINITION map is deny_unknown_fields: a stray key alongside `module:` is
-/// rejected at parse (a typo fails boot, never a silent no-op).
 #[test]
 fn test_hook_definition_unknown_key_rejected() {
     let e = serde_yaml::from_str::<crate::config::HookDefCfg>(
@@ -780,9 +656,6 @@ fn test_hook_definition_unknown_key_rejected() {
     assert!(e.to_string().contains("unknown field"), "{e}");
 }
 
-/// Pool member shape: the member names its model via `model:` (renamed from the 1.4.x
-/// `target:`), and the 1.4.x `cost_per_mtok:` member cost is REMOVED (rate_card is the only cost
-/// source). Both removed keys fail deny_unknown_fields.
 #[test]
 fn test_pool_member_model_key_and_removed_keys() {
     let m: PoolMember =
@@ -807,7 +680,6 @@ fn test_pool_member_model_key_and_removed_keys() {
     }
 }
 
-/// A hook's `prompt:` / `user:` grants parse the trust ladder; absent defaults to `no`.
 #[test]
 fn test_hook_access_grants_parse() {
     let hook: HookCfg = serde_yaml::from_str("kind: gate\nmodule: p\nprompt: rw\nuser: ro\n")
@@ -824,11 +696,6 @@ fn test_hook_access_grants_parse() {
     assert!(!bare.prompt.sends_prompt());
 }
 
-// ── env interpolation ────────────────────────────────────────────────────────────────────────────
-
-// NOTE: env vars are process-global; tests run in parallel. Use UNIQUE per-test var
-// names so they cannot race each other (the old shared HOST/USER raced + USER even
-// collided with the real shell var). Do not reintroduce shared names.
 #[test]
 fn test_interpolate_env_simple() {
     let input = "https://${BUSBAR_T_SIMPLE_HOST}/api";
@@ -870,8 +737,6 @@ fn test_interpolate_env_empty_var() {
     assert_eq!(result.unwrap_err(), "empty variable name in ${}");
 }
 
-/// `--validate` leniency: in Lenient mode an unset `${VAR}` substitutes a placeholder (its own name)
-/// and is recorded (deduped) instead of erroring; Strict still errors. Uses names guaranteed unset.
 #[test]
 fn test_interpolate_env_lenient_collects_unset() {
     use crate::config::{interpolate_env_with, EnvSubst};
@@ -894,14 +759,8 @@ fn test_interpolate_env_no_vars() {
     assert_eq!(result, "plain-text-no-vars");
 }
 
-/// An env value containing a NEWLINE (the structural
-/// break that closes a quoted YAML scalar) must be rejected, not spliced into the raw config
-/// text. The exploit shape: a value that ends a quoted list entry and injects an extra item must
-/// fail loudly at interpolation time. Uses a unique per-test var name (process-global env,
-/// parallel tests).
 #[test]
 fn test_interpolate_env_rejects_newline_yaml_injection() {
-    // The double-quote/newline breakout payload.
     std::env::set_var("BUSBAR_T_INJECT_NL", "real-tok\"\n    - \"injected-tok");
     let input = "allowed:\n    - \"${BUSBAR_T_INJECT_NL}\"";
     let result = interpolate_env(input);
@@ -917,7 +776,6 @@ fn test_interpolate_env_rejects_newline_yaml_injection() {
     );
 }
 
-/// A bare carriage return is also a YAML line break and must be rejected on the same grounds.
 #[test]
 fn test_interpolate_env_rejects_carriage_return() {
     std::env::set_var("BUSBAR_T_INJECT_CR", "tok\r- injected");
@@ -929,9 +787,6 @@ fn test_interpolate_env_rejects_carriage_return() {
     );
 }
 
-/// The guard must NOT over-reject: ordinary token / URL values (including ones with `:`, `/`,
-/// `@`, `.`, `-`, and even an embedded double-quote or `#`, which are harmless without a line
-/// break) interpolate cleanly. This keeps real opaque API keys working.
 #[test]
 fn test_interpolate_env_allows_ordinary_values_with_punctuation() {
     std::env::set_var("BUSBAR_T_OK_TOK", "sk-bb-aB3#9/x.y@z:1234567890abcdef");
@@ -940,10 +795,6 @@ fn test_interpolate_env_allows_ordinary_values_with_punctuation() {
     assert_eq!(result, "token: \"sk-bb-aB3#9/x.y@z:1234567890abcdef\"");
 }
 
-/// End-to-end: an env value carrying a newline-based injection must NOT smuggle extra YAML
-/// structure into a parsed auth config (e.g. an extra chain entry). The interpolation rejects it
-/// before serde ever sees the malformed YAML, so the auth surface cannot be silently widened via
-/// a compromised env var.
 #[test]
 fn test_env_injection_cannot_widen_auth_chain() {
     std::env::set_var(
@@ -960,19 +811,8 @@ fn test_env_injection_cannot_widen_auth_chain() {
     );
 }
 
-/// The structural-mismatch CULPRIT ATTRIBUTION (`assert_interpolation_preserves_structure`'s
-/// per-occurrence isolation loop) must name ONLY the variable whose value actually breaks
-/// structure, not an innocent co-occurring variable, and must fire even though the innocent
-/// variable's own hybrid substitution matches fine. This exercises `splice_occurrences`' own
-/// occurrence-index bookkeeping (each occurrence must land in the right position) together with
-/// the `!matches` culprit-recording guard.
 #[test]
 fn test_interpolate_env_multi_occurrence_names_only_the_true_culprit() {
-    // A newline is blocked by the EARLIER, cheaper control-character guard
-    // (`reject_yaml_unsafe_value`) before the structural check ever runs — to actually reach and
-    // exercise the structural-equivalence culprit-isolation loop, the injection must be a
-    // newline-free flow-collection breakout (comma + quote), the other injection shape the
-    // structural check exists specifically to catch per its own doc comment.
     std::env::set_var("BUSBAR_T_GOOD_VAR", "hello");
     std::env::set_var("BUSBAR_T_BAD_VAR", "hi\", c: \"extra");
     let yaml = "obj: {a: \"${BUSBAR_T_GOOD_VAR}\", b: \"${BUSBAR_T_BAD_VAR}\"}";
@@ -990,10 +830,6 @@ fn test_interpolate_env_multi_occurrence_names_only_the_true_culprit() {
     );
 }
 
-/// `structural_shapes_match` must compare `Tagged` YAML nodes by BOTH tag equality and recursive
-/// inner-value shape — not treat every tagged node as automatically matching (that would silently
-/// let a tag-wrapped structural injection through) nor treat a tagged/untagged pair as equal (a
-/// bare scalar must never be considered shape-equivalent to an explicitly tagged one).
 #[test]
 fn structural_shapes_match_compares_tagged_nodes_by_tag_and_inner_shape() {
     use serde_yaml::value::{Tag, TaggedValue};
@@ -1006,30 +842,24 @@ fn structural_shapes_match_compares_tagged_nodes_by_tag_and_inner_shape() {
         }))
     };
 
-    // Same tag, scalar inner content differs: scalars fold into one bucket, so this matches.
     assert!(structural_shapes_match(
         &tagged_str("mytag", "a"),
         &tagged_str("mytag", "b"),
         0
     ));
 
-    // Different tags: must NOT match, even though the inner scalar shape is identical.
     assert!(!structural_shapes_match(
         &tagged_str("tag_a", "x"),
         &tagged_str("tag_b", "x"),
         0
     ));
 
-    // Tagged vs. an equivalent-looking untagged scalar: must NOT match (Tagged is distinct from
-    // every other Value variant per the (Value::Tagged(_), _) | (_, Value::Tagged(_)) arms).
     assert!(!structural_shapes_match(
         &tagged_str("mytag", "x"),
         &Value::String("x".to_string()),
         0
     ));
 
-    // Tagged wrapping a Mapping vs. Tagged wrapping a Sequence, same tag: inner shapes differ, so
-    // the recursive call must catch it (proves the recursion, not just the tag comparison, runs).
     let mut map = serde_yaml::Mapping::new();
     map.insert(Value::String("k".into()), Value::String("v".into()));
     let tagged_map = Value::Tagged(Box::new(TaggedValue {
@@ -1043,11 +873,6 @@ fn structural_shapes_match_compares_tagged_nodes_by_tag_and_inner_shape() {
     assert!(!structural_shapes_match(&tagged_map, &tagged_seq, 0));
 }
 
-/// The `depth + 1` passed to every recursive call must actually INCREASE, never decrease — this
-/// is what makes `MAX_STRUCTURAL_COMPARE_DEPTH` a real cap rather than a no-op. Two single-element
-/// sequences (the simplest possible recursive call, `depth` going 0 -> 1) must both shape-match
-/// (scalar elements) AND simply return rather than panic — a `depth - 1` bug would underflow
-/// `depth: usize` on this very first recursive call.
 #[test]
 fn structural_shapes_match_recurses_into_sequence_elements_with_increasing_depth() {
     let seq_a = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("a".to_string())]);
@@ -1055,10 +880,6 @@ fn structural_shapes_match_recurses_into_sequence_elements_with_increasing_depth
     assert!(structural_shapes_match(&seq_a, &seq_b, 0));
 }
 
-/// `MAX_STRUCTURAL_COMPARE_DEPTH` must be an actual CAP (`depth > LIMIT`), not a same-value-only
-/// check (`depth == LIMIT`) that a caller can simply pass through — at the boundary itself
-/// (depth == LIMIT) the compare must still proceed normally; one past it must fail closed
-/// (rejected as a shape mismatch) regardless of the two values actually matching.
 #[test]
 fn structural_shapes_match_depth_cap_is_a_real_limit_not_an_exact_match() {
     let a = serde_yaml::Value::String("x".to_string());
@@ -1073,11 +894,6 @@ fn structural_shapes_match_depth_cap_is_a_real_limit_not_an_exact_match() {
     );
 }
 
-/// The per-occurrence placeholder token must actually encode `occurrence_index` — if every
-/// occurrence collapsed to the same constant token, two DIFFERENT `${VAR}` references could never
-/// be told apart during the structural-equivalence check's culprit isolation (see this function's
-/// own doc comment: "two different `${VAR}` references never collapse to the same placeholder
-/// token").
 #[test]
 fn structural_placeholder_is_unique_per_occurrence_index() {
     let p0 = structural_placeholder(0);
@@ -1088,26 +904,18 @@ fn structural_placeholder_is_unique_per_occurrence_index() {
     assert!(p1.contains('1'));
 }
 
-/// `mapping_key_repr`'s fallback (non-string key) must render a deterministic, comparable
-/// representation rather than e.g. collapsing every non-string key to the same string — the
-/// key-set comparison in `structural_shapes_match` relies on distinct keys staying distinguishable.
 #[test]
 fn mapping_key_repr_distinguishes_non_string_keys() {
     let n1 = serde_yaml::Value::Number(1.into());
     let n2 = serde_yaml::Value::Number(2.into());
     let s = serde_yaml::Value::String("1".to_string());
     assert_ne!(mapping_key_repr(&n1), mapping_key_repr(&n2));
-    // A string key is rendered as itself (the common-case fast path), not run through the
-    // `{:?}` fallback formatting a numeric key gets.
+
     assert_eq!(mapping_key_repr(&s), "1");
 }
 
-/// An unclosed `${FOO` (missing `}`) must fail loudly with an "unclosed" error rather than be
-/// treated as `${FOO}`, regardless of whether FOO is set in the environment. Uses a unique
-/// per-test var name (process-global env, parallel tests) and a guaranteed-unset name.
 #[test]
 fn test_interpolate_env_unclosed_brace_fails() {
-    // Unset variable, missing brace: must report "unclosed", NOT "unset environment variable".
     let result = interpolate_env("prefix-${BUSBAR_T_UNCLOSED_UNSET");
     assert!(result.is_err(), "unclosed token must error");
     let err = result.unwrap_err();
@@ -1120,7 +928,6 @@ fn test_interpolate_env_unclosed_brace_fails() {
         "must not misreport as an unset-variable error, got: {err}"
     );
 
-    // Set variable, missing brace: must STILL error (not silently interpolate the value).
     std::env::set_var("BUSBAR_T_UNCLOSED_SET", "leaked-value");
     let result2 = interpolate_env("https://${BUSBAR_T_UNCLOSED_SET/api");
     std::env::remove_var("BUSBAR_T_UNCLOSED_SET");
@@ -1135,14 +942,6 @@ fn test_interpolate_env_unclosed_brace_fails() {
     );
 }
 
-// ── structural-equivalence check (flow-collection / opaque-map injection, no newline needed) ──────
-
-/// THE HEADLINE EXPLOIT, end-to-end through REAL typed deserialization (not just asserting
-/// `is_err()` from the interpolation function in isolation — that alone tests the mechanism, not
-/// the security property). `client_tokens: ["${VAR}"]` is this project's own documented
-/// interpolation pattern (`docs/migration-1.5.md`, `docs/migration-1.3.md`) for a flow SEQUENCE,
-/// which has no `deny_unknown_fields`-equivalent defense: a value containing `", "` can freely add
-/// a second array element.
 #[test]
 fn test_structural_injection_widens_client_tokens_array_end_to_end() {
     let var = "BUSBAR_T_STRUCT_CLIENT_TOKENS";
@@ -1153,11 +952,6 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
         "providers: {{}}\nmodels: {{}}\nidentity-providers: {{ tokens: {{ module: tokens, settings: {{ client_tokens: [\"${{{var}}}\"] }} }} }}\n"
     );
 
-    // Sanity check FIRST: prove the underlying vulnerability is real by splicing the payload
-    // directly, the way an UNGUARDED interpolator would, and running it through the REAL typed
-    // `DeployCfg` deserializer (not just a raw `Value`). If this assertion ever stops holding, the
-    // exploit shape has changed and this test needs to be revisited — it must stay red on the
-    // unguarded path for the test below to mean anything.
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
     let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
         .expect("unguarded splice must parse and deserialize");
@@ -1174,8 +968,6 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
          not a mechanism-only artifact"
     );
 
-    // Now prove the guard closes it: real `interpolate_env` must reject this template outright,
-    // before any typed parsing ever sees the widened array.
     let result = interpolate_env(&template);
     std::env::remove_var(var);
     assert!(
@@ -1191,16 +983,10 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
     );
 }
 
-/// The second real, exploitable shape from the same audit: an OPAQUE `settings:` map
-/// (`serde_json::Map<String, serde_json::Value>`, used by `identity-providers:` / hook module settings
-/// / `SecretRef`) is a generic map, not a fixed struct — it carries no `deny_unknown_fields`
-/// equivalent, so an injected sibling key silently reconfigures a third-party auth/hook plugin.
-/// Mirrors the documented flow-style example:
-/// `identity-providers: { ad: { module: ad, settings: { server: "..." } } }`.
 #[test]
 fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
     let var = "BUSBAR_T_STRUCT_SETTINGS_KEY";
-    // Breaks out of the quoted `server` value and injects a whole new sibling key into `settings`.
+
     let payload = "ldaps://corp\", \"evil_key\": \"evil_val";
     std::env::set_var(var, payload);
 
@@ -1208,7 +994,6 @@ fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
         "providers: {{}}\nmodels: {{}}\nidentity-providers: {{ ad: {{ module: ad, settings: {{ server: \"${{{var}}}\" }} }} }}\n"
     );
 
-    // Sanity: the unguarded splice really does add the sibling key through real deserialization.
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
     let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
         .expect("unguarded splice must parse and deserialize");
@@ -1233,17 +1018,6 @@ fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
     );
 }
 
-/// Regression pin for the `plugins.trust.allow_unsigned` exhibit that does NOT work, kept as a
-/// documented "why this is safe" test (not because it's a live vector). `PluginsCfg` carries
-/// `#[serde(deny_unknown_fields)]` on every field and `dir` is its only interpolatable String, so
-/// injecting a sibling `trust: { allow_unsigned: true }` key requires also injecting a redirect to
-/// consume the template's own dangling closing quote — every redirect tried fails:
-/// an unrecognized field name (e.g. `ignore:`) is rejected by `deny_unknown_fields`, and reusing
-/// `dir` again to consume the quote hits DUPLICATE-KEY rejection at the `serde_yaml` `Value`
-/// layer, before `PluginsCfg` is ever constructed. `allow_unsigned` stays `false` through the full
-/// real config-parsing path on the ORIGINAL, unfixed code — this test passes with or without the
-/// structural-equivalence fix, and is here so a future reader doesn't mistake this path for
-/// unguarded.
 #[test]
 fn test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fields() {
     let var = "BUSBAR_T_PLUGINS_TRUST_PIN";
@@ -1284,24 +1058,15 @@ fn test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fi
     );
 }
 
-/// FALSE-POSITIVE FENCE: the structural check must not reject legitimate values whose content
-/// happens to be YAML-"special" but never changes the document's SHAPE. Must pass both before and
-/// after the fix (these values contain no control character either, so layer 1 never fires).
 #[test]
 fn test_structural_check_allows_real_world_special_char_values() {
     let cases: &[(&str, &str)] = &[
-        // An LDAP DN: commas are mandatory and this is exactly the shape the OLD blocklist design
-        // (rejected by an earlier draft of this fix) would have broken.
         ("BUSBAR_T_FENCE_LDAP", "cn=busbar,ou=svc,dc=corp,dc=com"),
-        // A legitimate JSON-ish blob value (braces/brackets/quotes as literal scalar content).
         (
             "BUSBAR_T_FENCE_JSON",
             "{\"role\":\"svc\",\"scopes\":[\"a\",\"b\"]}",
         ),
-        // A Windows-style path (busbar ships a windows-latest CI job + an
-        // x86_64-pc-windows-msvc release target, so backslash-bearing values are real).
         ("BUSBAR_T_FENCE_WINPATH", "C:\\ProgramData\\busbar\\secrets"),
-        // A URL with a query string.
         ("BUSBAR_T_FENCE_URL", "https://host/v1?a=1&b=2"),
     ];
     for (var, value) in cases {
@@ -1321,10 +1086,6 @@ fn test_structural_check_allows_real_world_special_char_values() {
     }
 }
 
-/// The exact false-positive the structural check must NOT flag: a numeric env value substituted
-/// into `port: ${VAR}` infers as a YAML `Number` (real), while the internal placeholder token
-/// infers as a `String` (it's not numeric) — a scalar TYPE change, not a shape change, and must be
-/// allowed. Verified end-to-end: the field really does deserialize as an integer.
 #[test]
 fn test_structural_check_allows_numeric_scalar_type_inference_change() {
     let var = "BUSBAR_T_FENCE_PORT";
@@ -1343,10 +1104,6 @@ fn test_structural_check_allows_numeric_scalar_type_inference_change() {
     );
 }
 
-/// Anchor/alias behavior, documented empirically (found via manual experimentation against the
-/// real `serde_yaml_ng` crate, not assumed): a bare `&name` / `*name` appearing STATICALLY in the
-/// template (not attacker-controlled) resolves normally and is not affected by interpolation at
-/// all — no false positive. This is the "no false positive" half.
 #[test]
 fn test_anchor_alias_static_usage_not_affected_by_interpolation() {
     let var = "BUSBAR_T_ANCHOR_STATIC";
@@ -1363,12 +1120,6 @@ fn test_anchor_alias_static_usage_not_affected_by_interpolation() {
     assert_eq!(doc.get("bar").and_then(|v| v.as_str()), Some("orig"));
 }
 
-/// Anchor/alias INJECTION, the "caught" half: an attacker-controlled value can REDEFINE an
-/// existing anchor from inside a flow collection with no newline at all (`, b: &shared {...}, c:
-/// "` — the same comma-breakout mechanism as the headline exploit), hijacking what a LATER `*alias`
-/// resolves to elsewhere in the document. Verified empirically that this changes the parsed TREE
-/// SHAPE at the alias site (a scalar becomes a mapping) — which the structural check catches via
-/// the ordinary key-set/kind comparison, with no anchor-specific logic needed.
 #[test]
 fn test_anchor_redefinition_injection_is_caught_end_to_end() {
     let var = "BUSBAR_T_ANCHOR_INJECT";
@@ -1377,8 +1128,6 @@ fn test_anchor_redefinition_injection_is_caught_end_to_end() {
     let template =
         format!("defaults: &shared orig-scalar\nfoo: {{ a: \"${{{var}}}\" }}\nbar: *shared\n");
 
-    // Sanity: prove the hijack is real on an unguarded splice — `bar` really does change from the
-    // scalar `orig-scalar` to a mapping.
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
     let doc: serde_yaml::Value =
         serde_yaml::from_str(&unguarded_spliced).expect("unguarded splice parses");
@@ -1396,8 +1145,6 @@ fn test_anchor_redefinition_injection_is_caught_end_to_end() {
     );
 }
 
-/// A document beyond YAML's recursion limit cannot supply the structural proof. Interpolation
-/// refuses it before a typed reader can accept a different subset, without echoing expanded values.
 #[test]
 fn test_structural_check_does_not_overflow_on_deeply_nested_config() {
     let var = "BUSBAR_T_DEEP_NEST";
@@ -1410,7 +1157,7 @@ fn test_structural_check_does_not_overflow_on_deeply_nested_config() {
     }
     input.push_str(&"  ".repeat(depth));
     input.push_str(&format!("b: \"${{{var}}}\"\n"));
-    // Must not panic or hang — the real assertion is that this returns at all, and quickly.
+
     let result = interpolate_env(&input);
     std::env::remove_var(var);
     let error = result.expect_err("a document beyond the YAML recursion limit fails closed");
@@ -1424,12 +1171,8 @@ fn test_structural_check_does_not_overflow_on_deeply_nested_config() {
     );
 }
 
-// ── two-file (providers.yaml + config.yaml) resolution ───────────────────────────────────────────
-
 #[test]
 fn test_resolve_provider_from_def() {
-    // DeployCfg referencing z.ai + providers.yaml def -> resolved ProviderCfg has
-    // protocol/base_url/error_map from def
     let mut defs = HashMap::new();
     let mut def = provider_def(CATALOG_PROTOCOL, "https://api.z.ai/api/model-1");
     def.error_map
@@ -1456,26 +1199,14 @@ fn test_resolve_provider_from_def() {
     assert_eq!(error_class(provider_cfg, "1302"), Some("rate_limit"));
 }
 
-/// The class a resolved provider's error map gives `code`.
 fn error_class<'a>(p: &'a ResolvedProvider, code: &str) -> Option<&'a str> {
     p.error_map()
         .find(|(c, _)| *c == code)
         .map(|(_, class)| class)
 }
 
-// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
-// `crates/busbar/tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
-// the retired engine crate's `PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
-// `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
-// target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
-// the retired engine crate produces. See that file's header for the full rationale.
-
-/// A provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
-/// `api_key:` (the pre-1.0 inline-key shape) is REJECTED AT PARSE (SecretRef deserializes only
-/// from a map), and the removed `api_key_env:` spelling is an unknown-field error.
 #[test]
 fn test_provider_inline_key_and_removed_env_key_rejected() {
-    // Inline literal key: rejected (a SecretRef is a map, never a bare secret).
     let yaml = r#"
 providers:
   myprov:
@@ -1487,9 +1218,6 @@ models: {}
         "an inline literal api_key must be rejected at parse"
     );
 
-    // The removed api_key_env spelling is not the credential: the entry names none and is refused
-    // at parse. (A key beyond busbar's is a provider option now, judged at validation by the plane,
-    // owner ruling 2026-10-27; boot's legacy-marker pass names this one with its migration first.)
     let yaml = r#"
 providers:
   myprov:
@@ -1502,11 +1230,6 @@ models: {}
     assert!(msg.contains("missing field `api_key`"), "{msg}");
 }
 
-/// security.md: pasting a secret inline is refused with ONE message that names the rule and the
-/// config position, and never echoes the value. Driven through the loader boot uses
-/// (`deploy_from_yaml_str`) on a document whose literal sits on a known line, as a bare string, an
-/// unquoted number and a boolean (each a spelling an operator pastes), so the refusal is the
-/// operator's to act on: it points at the line and the key, and carries none of the value.
 #[test]
 fn an_inline_literal_refusal_names_its_config_position() {
     for (literal, line) in [
@@ -1543,7 +1266,6 @@ fn an_inline_literal_refusal_names_its_config_position() {
 
 #[test]
 fn test_resolve_unknown_provider_error() {
-    // config.yaml references nope not in providers.yaml -> resolve returns error naming nope
     let defs = HashMap::new();
     let mut deploy = base_deploy();
     deploy
@@ -1560,7 +1282,6 @@ fn test_resolve_unknown_provider_error() {
 
 #[test]
 fn test_resolve_override_wins() {
-    // config.yaml provider with a base_url override wins over the def
     let mut defs = HashMap::new();
     defs.insert(
         "custom".to_string(),
@@ -1570,9 +1291,9 @@ fn test_resolve_override_wins() {
     let mut override_error_map = HashMap::new();
     override_error_map.insert("9999".to_string(), "client_error".to_string());
     let mut dep = provider_deploy("CUSTOM_KEY");
-    dep.protocol = Some("acme".to_string()); // Override protocol
-    dep.base_url = Some("https://override.example.com".to_string()); // Override base_url
-    dep.error_map = Some(override_error_map); // Override error_map
+    dep.protocol = Some("acme".to_string());
+    dep.base_url = Some("https://override.example.com".to_string());
+    dep.error_map = Some(override_error_map);
 
     let mut deploy = base_deploy();
     deploy.providers.insert("custom".to_string(), dep);
@@ -1598,7 +1319,6 @@ fn test_resolve_override_wins() {
 
 #[test]
 fn test_resolve_empty_error_map_allowed_in_def() {
-    // A def can have empty error_map; validation will catch it later if required
     let mut defs = HashMap::new();
     defs.insert(
         "minimal".to_string(),
@@ -1617,10 +1337,6 @@ fn test_resolve_empty_error_map_allowed_in_def() {
     assert_eq!(provider_cfg.error_map().count(), 0);
 }
 
-// ── on_exhausted (keyword bare, reference structured) ────────────────────────────────────────────
-
-/// The structured `on_exhausted:` parses its two bare keywords and the structured fallback-pool
-/// reference, and each projects to the right runtime behavior via `to_runtime()`.
 #[test]
 fn test_on_exhausted_parses_keywords_and_fallback_pool() {
     let r: OnExhaustedCfg = serde_yaml::from_str("reject").expect("reject parses");
@@ -1639,7 +1355,6 @@ fn test_on_exhausted_parses_keywords_and_fallback_pool() {
         OnExhausted::FallbackPool("drain".to_string())
     );
 
-    // And through a pool block end-to-end.
     let pool: PoolCfg =
         serde_yaml::from_str("members: []\non_exhausted: { fallback_pool: cold }\n")
             .expect("pool with structured on_exhausted parses");
@@ -1649,9 +1364,6 @@ fn test_on_exhausted_parses_keywords_and_fallback_pool() {
     );
 }
 
-/// Unknown `on_exhausted` keywords are rejected with an error teaching the valid vocabulary; the
-/// retired 1.4.x string form `fallback_pool:name` (colon inside ONE string) is now just an
-/// unknown keyword and is rejected too.
 #[test]
 fn test_on_exhausted_rejects_unknown_and_legacy_string_form() {
     let err = serde_yaml::from_str::<OnExhaustedCfg>("invalid_mode")
@@ -1664,8 +1376,6 @@ fn test_on_exhausted_rejects_unknown_and_legacy_string_form() {
         "the error must teach the structured form: {msg}"
     );
 
-    // The old one-string form: YAML parses `"fallback_pool:drain"` as a single scalar, which is
-    // not a recognized keyword.
     let err = serde_yaml::from_str::<OnExhaustedCfg>("\"fallback_pool:drain\"")
         .expect_err("the retired string form must error");
     assert!(
@@ -1673,19 +1383,13 @@ fn test_on_exhausted_rejects_unknown_and_legacy_string_form() {
         "{err}"
     );
 
-    // An empty structured pool name is rejected.
     let err = serde_yaml::from_str::<OnExhaustedCfg>("fallback_pool: \"\"")
         .expect_err("an empty fallback pool name must error");
     assert!(err.to_string().contains("non-empty"), "{err}");
 
-    // An unknown key in the structured form is rejected (deny_unknown_fields).
     assert!(serde_yaml::from_str::<OnExhaustedCfg>("fallback_pols: x").is_err());
 }
 
-/// F25 row 518: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::
-/// test_config_parsing_queue_unknown_inner_key_fails. `deny_unknown_fields` on the queue's inner
-/// body: a typo'd `max_millis` fails parsing instead of being ignored, while the same body spelled
-/// `max_ms` parses to the 250 ms queue.
 #[test]
 fn test_config_parsing_queue_unknown_inner_key_fails() {
     let result: Result<OnExhaustedCfg, _> = serde_yaml::from_str("{ queue: { max_millis: 250 } }");
@@ -1700,9 +1404,6 @@ fn test_config_parsing_queue_unknown_inner_key_fails() {
     assert_eq!(ok.to_runtime(), OnExhausted::Queue { max_ms: 250 });
 }
 
-/// F25 row 36: rehomed from the retired engine crate's src/engine/engine_tests/stream_deadline_tests.rs::
-/// the_total_deadline_the_stream_rides_defaults_to_five_minutes. The total deadline a proxied
-/// stream rides defaults to the value the binding names: 300 seconds.
 #[test]
 fn the_total_deadline_the_stream_rides_defaults_to_five_minutes() {
     assert_eq!(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, 300);
@@ -1710,11 +1411,6 @@ fn the_total_deadline_the_stream_rides_defaults_to_five_minutes() {
 
 #[test]
 fn breaker_cfg_default_matches_serde_default_fns() {
-    // `BreakerCfg::default()` (used when a pool omits the whole `breaker:` block) and the
-    // `#[serde(default = ...)]` fns (used when individual fields are omitted) must agree on the
-    // cooldown literals; otherwise the same pool would get different cooldowns depending on
-    // whether the block is present. `Default` now delegates to these fns, so this guards against
-    // the two ever drifting again.
     let d = BreakerCfg::default();
     assert_eq!(
         d.base_cooldown_secs,
@@ -1736,11 +1432,6 @@ fn breaker_trip_default_matches_an_empty_config_object() {
     assert_eq!(BreakerCfg::default(), parsed_breaker);
 }
 
-/// The config surface carries NO raw secret material anywhere:
-/// every credential is a SecretRef (module + settings), so debug-logging a whole DeployCfg can
-/// never leak a resolved secret VALUE. This sets a distinctive value in the environment, builds a
-/// config full of refs to it, and asserts the Debug dump shows the reference (the env var NAME)
-/// but never the value.
 #[test]
 fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
@@ -1754,8 +1445,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
-    // The operator credential now lives on its `identity-providers:` DEFINITION
-    // (not inline on a chain entry), so the Debug dump must stay clean there too.
+
     deploy.identity_providers.insert(
         crate::config::operator_provider().to_string(),
         crate::config::IdentityProviderCfg {
@@ -1787,11 +1477,6 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
     );
 }
 
-// ── operational limits ("NEVER CODED CAPS") ──────────────────────────────────────────────────────
-
-/// A config that OMITS the whole `limits:` block (and every other limit section) must resolve to
-/// the HISTORICAL hardcoded defaults, the common case and the guarantee that nothing changes
-/// for existing deployments. Asserts every resolved limit equals its `DEFAULT_*` const.
 #[test]
 fn test_limits_absent_block_yields_historical_defaults() {
     let yaml = r#"
@@ -1836,9 +1521,7 @@ models:
         l.upstream_error_body_max_bytes,
         DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES
     );
-    // A literal, not a comparison against the constant's own name: the constant's DEFINITION
-    // (`256 * 1024`) is itself what needs proving, so re-deriving the expectation from the same
-    // named constant would be tautological.
+
     assert_eq!(
         DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES, 262_144,
         "256 * 1024 = 256KiB, not 256 + 1024"
@@ -1856,8 +1539,7 @@ models:
         l.default_max_tokens,
         crate::config::limits::DEFAULT_MAX_TOKENS
     );
-    // The webhook sink's in-flight bound and delivery deadline are its own settings, checked by the
-    // sink (`busbar-export-webhook`), never projected onto `LimitsResolved`.
+
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
     assert_eq!(l.rate_sweep_interval, DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(l.usage_flush_interval_ms, DEFAULT_USAGE_FLUSH_INTERVAL_MS);
@@ -1883,7 +1565,7 @@ fn datagram_line_memory_limit_is_opt_in_and_resolves_to_root() {
         let cfg = resolve(&deploy, &HashMap::new()).expect("resolve the real config");
         assert_eq!(cfg.limits.datagram_line_memory_bytes, expected);
     }
-    // Serializing an old configuration must not introduce a new null field.
+
     assert!(serde_json::to_value(LimitsCfg::default())
         .unwrap()
         .get("datagram_line_memory_bytes")
@@ -1918,8 +1600,6 @@ fn datagram_line_memory_limit_refuses_invalid_types_and_out_of_range_values() {
     }
 }
 
-/// `LimitsResolved::default()` (the omitted-everything path) must equal the per-field defaults:
-/// the two ways of getting "today's behavior" cannot drift.
 #[test]
 fn test_limits_resolved_default_matches_from_sections_defaults() {
     let a = LimitsResolved::default();
@@ -1941,9 +1621,6 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
     assert_eq!(a.key_gauge_limit, b.key_gauge_limit);
 }
 
-/// A SET limit value (across several sections) OVERRIDES the default; an unset SIBLING field in
-/// the same block still defaults. Exercises the per-field `#[serde(default = "...")]` wiring.
-/// The former `governance:` tuning knobs now live under `advanced:`.
 #[test]
 fn test_limits_set_value_overrides_default() {
     crate::export::scrape::tests::installed_axis();
@@ -1992,17 +1669,12 @@ routing:
     assert_eq!(l.usage_flush_interval_ms, 5);
     assert_eq!(l.default_probe_interval_secs, 7);
     assert_eq!(l.default_policy_timeout_ms, 99);
-    // Unset SIBLING fields still default (pool_max_idle in the same `limits:` block, probe
-    // TIMEOUT in the same `health:` block):
+
     assert_eq!(l.pool_max_idle_per_host, DEFAULT_POOL_MAX_IDLE_PER_HOST);
     assert_eq!(l.default_probe_timeout_secs, DEFAULT_PROBE_TIMEOUT_SECS);
     assert_eq!(l.hard_down_cooldown_secs, DEFAULT_HARD_DOWN_COOLDOWN_SECS);
 }
 
-/// The body-size COUPLING: `limits.request_body_max_bytes` is the SINGLE knob; the resolved value
-/// the inbound `DefaultBodyLimit` uses IS the same value the egress translate-body cap reads
-/// (`busbar_kernel::proxy::max_translate_body_bytes` returns `request_body_max_bytes`). So an accepted
-/// request is always buffer-translatable on egress.
 #[test]
 fn test_request_body_size_couples_ingress_and_translate() {
     let d = LimitsResolved::default();
@@ -2031,10 +1703,6 @@ limits:
     assert_eq!(l.request_body_max_bytes, 5 * 1024 * 1024);
 }
 
-// ── SecretRef ────────────────────────────────────────────────────────────────────────────────────
-
-/// The `{ env: VAR }` / `{ file: PATH }` sugar spellings desugar to the built-in modules'
-/// canonical `{ module, settings }` form.
 #[test]
 fn test_secret_ref_sugar_desugars_to_builtin_modules() {
     let e: SecretRef = serde_yaml::from_str("env: MY_KEY").expect("env sugar parses");
@@ -2053,8 +1721,6 @@ fn test_secret_ref_sugar_desugars_to_builtin_modules() {
     assert_eq!(f.describe(), "file:/run/secrets/tls.pem");
 }
 
-/// The canonical `{ module, settings }` form parses verbatim (third-party secret modules), with
-/// settings passed through opaquely; a missing `settings:` defaults to empty.
 #[test]
 fn test_secret_ref_canonical_form_parses() {
     let v: SecretRef = serde_yaml::from_str("module: vault\nsettings:\n  path: kv/prod/api\n")
@@ -2071,23 +1737,20 @@ fn test_secret_ref_canonical_form_parses() {
     assert!(bare.settings.is_empty());
 }
 
-/// SecretRef malformed shapes fail loudly: both sugar + canonical forms together, two sugars,
-/// unknown keys, empty values, and an empty map are all parse errors.
 #[test]
 fn test_secret_ref_malformed_shapes_rejected() {
-    // Canonical + sugar together.
     let err = serde_yaml::from_str::<SecretRef>("module: env\nenv: FOO")
         .expect_err("module + sugar must error");
     assert!(err.to_string().contains("not both"), "{err}");
-    // Two sugar keys.
+
     let err = serde_yaml::from_str::<SecretRef>("env: FOO\nfile: /p")
         .expect_err("two sugar keys must error");
     assert!(err.to_string().contains("exactly one"), "{err}");
-    // Sugar + settings.
+
     let err = serde_yaml::from_str::<SecretRef>("env: FOO\nsettings: { a: 1 }")
         .expect_err("sugar with settings must error");
     assert!(err.to_string().contains("no `settings:`"), "{err}");
-    // Unknown key.
+
     let err =
         serde_yaml::from_str::<SecretRef>("keyring: FOO").expect_err("unknown key must error");
     let msg = err.to_string();
@@ -2095,29 +1758,25 @@ fn test_secret_ref_malformed_shapes_rejected() {
         msg.contains("unknown field") && msg.contains("keyring"),
         "{msg}"
     );
-    // Empty sugar value.
+
     let err =
         serde_yaml::from_str::<SecretRef>("env: \"\"").expect_err("empty sugar value must error");
     assert!(err.to_string().contains("non-empty"), "{err}");
-    // Empty module name.
+
     let err =
         serde_yaml::from_str::<SecretRef>("module: \"\"").expect_err("empty module must error");
     assert!(err.to_string().contains("non-empty"), "{err}");
-    // Empty map: neither module nor sugar.
+
     let err = serde_yaml::from_str::<SecretRef>("{}").expect_err("empty map must error");
     assert!(err.to_string().contains("needs `module:`"), "{err}");
-    // A bare scalar is not a secret reference.
+
     assert!(serde_yaml::from_str::<SecretRef>("\"sk-raw-secret\"").is_err());
 }
 
-/// Built-in resolution is FAIL-CLOSED: `env` resolves a set non-empty variable and errors on
-/// unset/empty; `file` reads bytes and errors on missing/empty; any other module errors; the
-/// string form trims trailing newlines (the file-delivered-secret convention).
 #[test]
 fn test_secret_ref_builtin_resolution_fail_closed() {
     use crate::config::secret::{resolve_linked_string, SecretResolver};
 
-    // env: set, non-empty.
     std::env::set_var("BUSBAR_T_SECRET_ENV_OK", "s3cr3t-value");
     assert_eq!(
         SecretResolver::builtins_only()
@@ -2127,7 +1786,6 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
-    // env: unset -> error naming the variable.
     let err = SecretResolver::builtins_only()
         .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET"))
         .unwrap_err();
@@ -2136,7 +1794,6 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         "{err}"
     );
 
-    // env: set but EMPTY -> fail-closed error, never an empty secret.
     std::env::set_var("BUSBAR_T_SECRET_ENV_EMPTY", "");
     let err = SecretResolver::builtins_only()
         .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY"))
@@ -2144,7 +1801,6 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     std::env::remove_var("BUSBAR_T_SECRET_ENV_EMPTY");
     assert!(err.contains("EMPTY"), "{err}");
 
-    // file: existing file resolves; the string form trims the trailing newline.
     let dir = std::env::temp_dir();
     let path = dir.join(format!("busbar-secret-test-{}", std::process::id()));
     std::fs::write(&path, "file-secret\n").unwrap();
@@ -2159,11 +1815,9 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     );
     std::fs::remove_file(&path).unwrap();
 
-    // file: missing -> error.
     let missing = SecretRef::file("/nonexistent/busbar-secret-test");
     assert!(SecretResolver::builtins_only().resolve(&missing).is_err());
 
-    // unknown module -> fail-closed error naming the module.
     let mut settings = serde_json::Map::new();
     settings.insert("path".to_string(), serde_json::Value::String("x".into()));
     let unknown = SecretRef {
@@ -2179,15 +1833,6 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     );
 }
 
-// ── identity providers + auth chain references ───────────────────────────────────────────────────
-
-/// 1.5.3: an IdP is DEFINED ONCE in the top-level `identity-providers:` map and
-/// REFERENCED BY BARE NAME from `auth.chain:` AND `auth.admin_auth:`. This covers the definition's
-/// shape (every typed field parses) plus the property the whole redesign exists for: ONE definition
-/// serving BOTH planes, so its settings cannot drift between them.
-///
-/// Before 1.5.3 `identity-providers:` did not exist and a chain entry was an
-/// inline single-key map, so neither the parse nor the shared-definition assertion compiled.
 #[test]
 fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
     crate::test_support::register_neutral_test_plane();
@@ -2209,12 +1854,8 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
     );
     assert!(errors.is_empty(), "{errors:?}");
 
-    // A BARE BUILT-IN needs no definition at all.
     assert_eq!(auth.chain[0], AuthChainEntry::bare(KEYS_MODULE));
 
-    // THE DEDUPE PROPERTY: `corp-ad` appears in BOTH chains and resolves from the SAME definition,
-    // so its module/settings/ceiling are identical BY CONSTRUCTION — the pre-1.5.3 grammar made the
-    // operator write them twice, and nothing stopped the two copies from disagreeing.
     let data = &auth.chain[1];
     let admin = &auth.admin_auth[1];
     assert_eq!(data.name, "corp-ad");
@@ -2229,18 +1870,12 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
         "one definition, referenced twice — never two independently-drifting copies"
     );
 
-    // The operator credential's `token:` lives on the DEFINITION now, not on a chain entry.
     assert_eq!(
         auth.admin_auth[0].token.as_ref().and_then(|t| t.env_var()),
         Some("BUSBAR_T_AD_TOKEN")
     );
 }
 
-/// FREEZE: an OMITTED `max_admin_scope` resolves to the MOST RESTRICTIVE ceiling
-/// (`read-only`) for every provider — EXCEPT the operator credential, which
-/// is full-by-definition and stays exempt. This preserves the pre-1.5.3 semantics EXACTLY while
-/// moving the field off the chain entry onto the definition, so upgrading cannot silently widen or
-/// narrow an existing deployment's admin ceiling.
 #[test]
 fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credential() {
     crate::test_support::register_neutral_test_plane();
@@ -2269,8 +1904,6 @@ fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credenti
     );
 }
 
-/// FAIL-CLOSED: a chain naming a provider that is neither defined nor a bare built-in is a boot
-/// error, never a silently-skipped auth module (which would quietly weaken the front door).
 #[test]
 fn test_dangling_identity_provider_reference_is_an_error() {
     crate::test_support::register_neutral_test_plane();
@@ -2292,8 +1925,6 @@ fn test_dangling_identity_provider_reference_is_an_error() {
     );
 }
 
-/// The INLINE chain entry is GONE: a chain is a list of bare NAMES, so the retired
-/// single-key-map form is a parse error rather than a second, silently-accepted grammar.
 #[test]
 fn test_inline_auth_chain_entry_is_rejected() {
     let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(
@@ -2306,8 +1937,6 @@ fn test_inline_auth_chain_entry_is_rejected() {
     );
 }
 
-/// `identity-providers:` is `deny_unknown_fields`: a typo'd definition key fails boot rather than
-/// silently dropping (most consequentially) a `max_admin_scope` ceiling.
 #[test]
 fn test_identity_provider_typo_rejected_at_parse() {
     let err = serde_yaml::from_str::<crate::config::IdentityProviders>(
@@ -2317,9 +1946,6 @@ fn test_identity_provider_typo_rejected_at_parse() {
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
-/// A `token:` is the operator credential and is MEANINGLESS on any other
-/// module — writing one there is an operator error (they believe a credential is configured) and
-/// must fail boot, not be silently ignored.
 #[test]
 fn test_token_on_a_non_operator_provider_is_an_error() {
     crate::test_support::register_neutral_test_plane();
@@ -2342,17 +1968,12 @@ fn test_token_on_a_non_operator_provider_is_an_error() {
     );
 }
 
-/// `OnErrorCfg::as_name` must return the wrapped name for BOTH variants (a fallback hook
-/// reference and a reserved terminal word use the identical flat representation downstream).
 #[test]
 fn on_error_cfg_as_name_unwraps_both_variants() {
     assert_eq!(OnErrorCfg::Terminal("fail".to_string()).as_name(), "fail");
     assert_eq!(OnErrorCfg::Hook("my-hook".to_string()).as_name(), "my-hook");
 }
 
-/// Every `#[serde(default = "default_X")]` free function must return its documented constant, not
-/// a mutant-plausible neighbor (0/1/a different constant/a typo'd literal). One consolidated table
-/// rather than N near-identical single-purpose tests.
 #[test]
 fn serde_default_fns_return_their_documented_constants() {
     assert_eq!(default_min_requests(), 5);
@@ -2361,22 +1982,11 @@ fn serde_default_fns_return_their_documented_constants() {
     assert_eq!(default_max_hops(), 3);
     assert_eq!(default_listen(), "0.0.0.0:8080");
     assert_eq!(default_max_keys_per_principal(), 0);
-    // `default_response_headers_server_timing` / `default_response_headers_route_policy`'s documented
-    // default is `false` for BOTH (privacy-by-default: every busbar-injected response header is a
-    // fingerprintable observable, see each field's own doc comment) — the "replace with false" mutant
-    // is a genuine EQUIVALENT mutant (the correct value IS false); only "replace with true" is a real
-    // gap.
+
     assert!(!default_response_headers_server_timing());
     assert!(!default_response_headers_route_policy());
 }
 
-/// RED (row 155 B1; BUSBAR-1.6.0.md #49: the kernel contains zero transport-protocol literals; THE
-/// DESIGN §4: "A plane receives, at open, the dialect fields of the providers it references and
-/// resolves model -> dialect itself"): the kernel supplies NO dialect for a provider entry that omits
-/// `protocol:`. The key stays empty; the default dialect is the speaking plane's own. (Base: the
-/// kernel filled in its own `DEFAULT_PROTOCOL` dialect name, so this read that name.) The catalog
-/// still requires the key, so a resolved provider always carries the catalog's dialect: see
-/// `test_resolve_provider_from_def`.
 #[test]
 fn an_omitted_provider_protocol_names_no_dialect_in_the_kernel() {
     let p: ProviderCfg =
@@ -2388,10 +1998,6 @@ fn an_omitted_provider_protocol_names_no_dialect_in_the_kernel() {
     );
 }
 
-/// `warn_invalid_floors`' anti-downgrade-floor sanity warning must fire ONLY for a
-/// non-empty, malformed floor — never for an OMITTED floor (empty string, "no floor set", not
-/// "malformed floor") and never for a well-formed one. A minimal capturing `tracing::Subscriber`
-/// (no test-only crate needed) records whether the WARN actually fired.
 #[test]
 fn warn_invalid_floors_warns_only_on_a_non_empty_malformed_floor() {
     use std::sync::{Arc, Mutex};
@@ -2439,9 +2045,6 @@ fn warn_invalid_floors_warns_only_on_a_non_empty_malformed_floor() {
     );
 }
 
-/// `auth.role_bindings:` parses as a module-nested map: module -> role -> grant, with the
-/// allowed_pools semantics preserved at the type level (omitted = None = ALL pools; `[]` =
-/// Some(empty) = NO pools).
 #[test]
 fn test_auth_role_bindings_nested_map_parses() {
     let yaml = r#"
@@ -2458,11 +2061,9 @@ role_bindings:
 "#;
     let auth: crate::config::AuthDeployCfg =
         serde_yaml::from_str(yaml).expect("role_bindings parse");
-    // 1.5.3: a chain is a list of bare PROVIDER NAMES; `max_admin_scope` moved onto the
-    // `identity-providers:` definition, so it is not on the chain entry any more.
+
     assert_eq!(auth.chain, ["keys", "ad"]);
 
-    // `role_bindings:` stays nested by the SAME string the chain references — the provider NAME.
     let ad = auth.role_bindings.get("ad").expect("ad provider bindings");
     let platform = ad.get("platform").expect("platform role");
     assert_eq!(
@@ -2471,18 +2072,13 @@ role_bindings:
     );
     assert_eq!(platform.group.as_deref(), Some("eng"));
     assert_eq!(platform.admin_scope.as_deref(), Some("read-only"));
-    // An explicit [] is the EMPTY set (no pools), distinct from omitted (all pools).
+
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
-    // The serde default for admin_auth is the operator credential's bare provider NAME.
     assert_eq!(auth.admin_auth, [crate::config::operator_provider()]);
 }
 
-// ── groups / limits ──────────────────────────────────────────────────────────────────────────────
-
-/// Every limit metric parses in the `{ <metric>: amount, per: window }` shape; `concurrent` takes
-/// no window; `enabled` defaults true; `parent` is carried.
 #[test]
 fn test_group_limits_each_metric_parses() {
     let yaml = r#"
@@ -2514,13 +2110,10 @@ limits:
         assert_eq!(g.limits[i].per, per, "limit {i}");
     }
 
-    // enabled: false freezes the group (parsed; enforcement elsewhere).
     let frozen: GroupCfg = serde_yaml::from_str("enabled: false\nlimits: []\n").expect("parses");
     assert!(!frozen.enabled);
 }
 
-/// Malformed limits fail AT PARSE with precise errors: `concurrent` with `per`, a windowed metric
-/// without `per`, two metric keys, an unknown window, an unknown key, and no metric at all.
 #[test]
 fn test_group_limits_malformed_rejected() {
     use crate::config::groups::LimitCfg;
@@ -2552,15 +2145,11 @@ fn test_group_limits_malformed_rejected() {
         .expect_err("a limit with no metric must error");
     assert!(err.to_string().contains("exactly one metric key"), "{err}");
 
-    // GroupCfg itself is deny_unknown_fields (a typo'd group key fails boot).
     let err =
         serde_yaml::from_str::<GroupCfg>("limitz: []").expect_err("a typo'd group key must error");
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
-/// The optional `pool:` qualifier: parses on a windowed limit (scoping it to one pool's traffic),
-/// round-trips exactly through the overlay Serialize (with and without), and is rejected on
-/// `concurrent` (the in-flight gauge is per group, not per pool).
 #[test]
 fn test_group_limit_pool_qualifier() {
     use crate::config::groups::LimitCfg;
@@ -2569,8 +2158,6 @@ fn test_group_limit_pool_qualifier() {
         .expect("pool-qualified budget parses");
     assert_eq!(l.scope.as_ref().map(|s| s.value.as_str()), Some("frontier"));
 
-    // Round-trip: serialize -> reparse must be identical (the overlay persistence contract),
-    // both with and without the qualifier.
     let plain: LimitCfg = serde_yaml::from_str("{ tokens: 9, per: day }").expect("parses");
     for orig in [&l, &plain] {
         let yaml = serde_yaml::to_string(orig).expect("serializes");
@@ -2587,9 +2174,6 @@ fn test_group_limit_pool_qualifier() {
     assert!(err.to_string().contains("duplicate"), "{err}");
 }
 
-/// The `on_exhaust` pair: parses + round-trips on a pool-scoped budget; every malformed
-/// coupling fails AT PARSE with a teaching error (downgrade without a target, a dangling target
-/// without downgrade, a non-budget metric, a group-wide budget, a self-referential target).
 #[test]
 fn test_group_limit_on_exhaust_qualifier() {
     use crate::config::groups::{LimitCfg, OnExhaust};
@@ -2607,7 +2191,6 @@ fn test_group_limit_on_exhaust_qualifier() {
     let back: LimitCfg = serde_yaml::from_str(&yaml).expect("reparses");
     assert_eq!(back, l, "overlay round-trip must be exact: {yaml}");
 
-    // An explicit `block` (the spelled-out default) also survives the round-trip.
     let b: LimitCfg = serde_yaml::from_str("{ budget: 5, per: month, pool: p, on_exhaust: block }")
         .expect("explicit block parses");
     let byaml = serde_yaml::to_string(&b).expect("serializes");
@@ -2643,11 +2226,6 @@ fn test_group_limit_on_exhaust_qualifier() {
     }
 }
 
-// ── top-level DeployCfg surface ──────────────────────────────────────────────────────────────────
-
-/// The REMOVED top-level blocks are rejected by deny_unknown_fields: `governance:` (split into
-/// store/rate_card/groups/advanced/auth), `group_map:` (auth.role_bindings now), and top-level
-/// `admin_auth:` (moved under `auth:`). The top-level named `hooks:` map remains supported.
 #[test]
 fn test_removed_top_level_blocks_rejected() {
     for (block, key) in [
@@ -2666,9 +2244,6 @@ fn test_removed_top_level_blocks_rejected() {
     }
 }
 
-/// The NEW top-level blocks parse: `store:` `{module, settings}` (settings opaque), `rate_card:`
-/// per config-model entries, `per_request_fee:`, `groups:`, and `advanced:`; and `per_request_fee`
-/// defaults to 0 (was price_per_request_cents default 1).
 #[test]
 fn test_new_top_level_blocks_parse() {
     let yaml = r#"
@@ -2699,8 +2274,7 @@ advanced:
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("new top-level blocks parse");
     let store = deploy.store.as_ref().expect("store block");
     assert_eq!(store.module, "acme-durable");
-    // Store settings are OPAQUE (passed to the plugin verbatim; the old governance.db_path /
-    // sqlite_busy_timeout_ms now live here).
+
     assert_eq!(
         store.settings.get("db_path").and_then(|v| v.as_str()),
         Some("/var/lib/busbar/gov.db")
@@ -2717,7 +2291,7 @@ advanced:
     assert_eq!(widget.input_utok, 3.0);
     assert_eq!(widget.output_utok, 15.0);
     assert_eq!(widget.cache_read_utok, 0.0, "omitted tier prices at 0");
-    // The routing scalar is the blended (input + output) / 2.
+
     assert_eq!(rate_entry_per_mtok(widget), 9.0);
     assert_eq!(deploy.per_request_fee, 2);
     assert_eq!(deploy.groups.len(), 2);
@@ -2725,7 +2299,6 @@ advanced:
     assert_eq!(deploy.advanced.rate_sweep_interval, 64);
     assert_eq!(deploy.advanced.usage_flush_interval_ms, 5);
 
-    // Defaults when everything is absent: no store, no rate_card, fee 0, defaults for advanced.
     let bare: DeployCfg =
         serde_yaml::from_str("providers: {}\nmodels: {}\n").expect("bare deploy parses");
     assert!(bare.store.is_none());
@@ -2742,17 +2315,10 @@ advanced:
     );
 }
 
-// ── resolve(): hook-registry synthesis + admin_auth projection ───────────────────────────────────
-
-/// `resolve` builds the runtime hook registry from the top-level `hooks:` DEFINITION map (1.5.3):
-/// each named definition becomes a registry entry keyed by its OWN name (`module:` → `HookCfg.plugin`,
-/// `settings:`/`groups:`/`phase:` carried through), the SAME module can back two independent names,
-/// per-pool bare-name references land in `pool.gates` in config order, and the reserved all-pools
-/// attach (`pools.hooks:`) lowers to the runtime `global_hooks`.
 #[test]
 fn test_resolve_builds_registry_from_named_defs() {
     let mut deploy = base_deploy();
-    // Two named hooks sharing ONE module, plus a tap — each an independent instance with its own scope.
+
     deploy.hooks = serde_yaml::from_str(
         "pii-eng:\n  module: busbar-phi\n  kind: gate\n  groups: [engineering]\n  settings: { team: alpha }\n\
          pii-all:\n  module: busbar-phi\n  kind: gate\n\
@@ -2772,7 +2338,6 @@ fn test_resolve_builds_registry_from_named_defs() {
     names.sort();
     assert_eq!(names, ["audit", "pii-all", "pii-eng"]);
 
-    // Same module, two independent names + independent scope.
     assert_eq!(cfg.hooks["pii-eng"].plugin, "busbar-phi");
     assert_eq!(cfg.hooks["pii-all"].plugin, "busbar-phi");
     assert_eq!(cfg.hooks["pii-eng"].groups, ["engineering"]);
@@ -2780,7 +2345,7 @@ fn test_resolve_builds_registry_from_named_defs() {
         cfg.hooks["pii-all"].groups.is_empty(),
         "pii-all is unscoped (all callers)"
     );
-    // Settings carried through OPAQUE; kind defaults to gate for a named def.
+
     assert_eq!(
         cfg.hooks["pii-eng"]
             .settings
@@ -2790,21 +2355,16 @@ fn test_resolve_builds_registry_from_named_defs() {
     );
     assert_eq!(cfg.hooks["pii-all"].kind, HookKind::Gate);
 
-    // The tap's phase list carries through and drives stage selection.
     assert_eq!(cfg.hooks["audit"].kind, HookKind::Tap);
     assert!(cfg.hooks["audit"].fires_at_stage(crate::config::HookStage::Response));
     assert!(!cfg.hooks["audit"].fires_at_stage(crate::config::HookStage::Request));
 
-    // Per-pool bare names land in gates in config order; base policy survives; all-pools → global.
     assert_eq!(cfg.pools["a"].gates, ["pii-eng"]);
     assert_eq!(cfg.pools["a"].policy, PoolPolicy::Cheapest);
     assert_eq!(cfg.pools["b"].gates, ["pii-all"]);
     assert_eq!(cfg.global_hooks, ["audit"]);
 }
 
-/// A named definition with an EMPTY `module:` is a FAIL-CLOSED resolve() error naming the hook; a
-/// definition name that shadows a reserved word (an on_error terminal / built-in strategy) is
-/// rejected too.
 #[test]
 fn test_resolve_rejects_bad_hook_defs() {
     let mut deploy = base_deploy();
@@ -2816,21 +2376,16 @@ fn test_resolve_rejects_bad_hook_defs() {
         "{joined}"
     );
 
-    // A definition named after a reserved word (a built-in strategy) is rejected.
     let mut deploy = base_deploy();
     deploy.hooks = serde_yaml::from_str("cheapest:\n  module: busbar-phi\n").unwrap();
     let errs = resolve(&deploy, &HashMap::new()).expect_err("reserved def name must fail");
     assert!(errs.join("\n").contains("reserved name"), "{errs:?}");
 }
 
-/// The named-hook SCOPE check (`caller_in_hook_groups`): a hook scoped to a group fires for a caller
-/// in that group OR any DESCENDANT (the group is an ancestor of the caller's leaf), never for a
-/// caller in another branch; an UNSCOPED hook fires for everyone; a groupless caller matches only an
-/// unscoped hook.
 #[test]
 fn test_caller_in_hook_groups_scope() {
     use crate::config::caller_in_hook_groups;
-    // acme → engineering → user:bob ; acme → sales → user:sue
+
     let tree: std::collections::BTreeMap<String, crate::config::GroupCfg> = serde_yaml::from_str(
         "acme: {}\n\
          engineering: { parent: acme }\n\
@@ -2841,25 +2396,22 @@ fn test_caller_in_hook_groups_scope() {
     .expect("groups tree parses");
     let eng = ["engineering".to_string()];
 
-    // A hook scoped to engineering fires for the engineering leaf (ancestor match), not the sales one.
     assert!(caller_in_hook_groups(Some("user:bob"), &eng, &tree));
     assert!(!caller_in_hook_groups(Some("user:sue"), &eng, &tree));
-    // The scoped group's own members match; a sibling branch does not.
+
     assert!(caller_in_hook_groups(Some("engineering"), &eng, &tree));
     assert!(!caller_in_hook_groups(Some("sales"), &eng, &tree));
-    // An UNSCOPED hook (empty groups) fires for every caller — including a groupless one.
+
     assert!(caller_in_hook_groups(Some("user:sue"), &[], &tree));
     assert!(caller_in_hook_groups(None, &[], &tree));
-    // A groupless caller never matches a SCOPED hook.
+
     assert!(!caller_in_hook_groups(None, &eng, &tree));
 }
 
-/// A pool named `hooks` is REJECTED at parse (the key is reserved for the all-pools attach list), and
-/// the reserved `pools.hooks:` list is lifted out as the all-pools attach.
 #[test]
 fn test_pools_reserved_hooks_key() {
     crate::test_support::register_neutral_test_plane();
-    // The reserved key is the all-pools attach; the rest are pools.
+
     let pools: crate::config::PoolsCfg =
         serde_yaml::from_str("hooks: [pii]\nfast:\n  members: []\n  hooks: [cheapest, pii]\n")
             .expect("pools with reserved hooks key parses");
@@ -2868,7 +2420,6 @@ fn test_pools_reserved_hooks_key() {
     assert!(!pools.pools.contains_key("hooks"));
     assert_eq!(pools.pools["fast"].gates, ["pii".to_string()]);
 
-    // A pool literally named `hooks` (a MAP value) is rejected with a clear message.
     let e = serde_yaml::from_str::<crate::config::PoolsCfg>("hooks:\n  members: []\n")
         .expect_err("a pool named `hooks` must be rejected");
     assert!(
@@ -2877,18 +2428,6 @@ fn test_pools_reserved_hooks_key() {
     );
 }
 
-/// BOOT-P07 — THE RESERVED-NAME REFUSAL, BYTE FOR BYTE.
-///
-/// The sentence is the one 1.5.5 shipped, which is what an operator's runbook, log alert and CI
-/// grep were written against. `split_section` now writes it for three planes from ONE template,
-/// and a shared template is exactly where a helpful extra clause slips in and moves bytes nobody
-/// meant to move — so the `pools:` spelling is pinned with `assert_eq!` rather than `contains`.
-/// The sibling test above deliberately keeps its loose `contains` assertion: it is about the
-/// mechanism (a map-valued reserved key is refused), this one is about the exact bytes.
-///
-/// ONE ASSERTION PER REFUSAL, in its own test, so BOOT-P09's sentence below cannot be shadowed by
-/// this one failing first — a second sentence pinned after a failed `assert_eq!` is a sentence
-/// nothing checks.
 #[test]
 fn test_pools_reserved_name_refusal_is_byte_identical_to_1_5_5() {
     crate::test_support::register_neutral_test_plane();
@@ -2901,8 +2440,6 @@ fn test_pools_reserved_name_refusal_is_byte_identical_to_1_5_5() {
     );
 }
 
-/// BOOT-P09 — THE ALL-POOLS CREDENTIAL-MODE REFUSAL, BYTE FOR BYTE. Same rule and same reason as
-/// BOOT-P07 above: 1.5.5's sentence, written from the shared three-plane template.
 #[test]
 fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
     crate::test_support::register_neutral_test_plane();
@@ -2915,23 +2452,18 @@ fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
     );
 }
 
-/// `resolve` projects the ADMIN chain module names from `auth.admin_auth:` onto
-/// `RootCfg.admin_auth` in order, and defaults to the operator credential when the whole `auth:` block
-/// is absent.
 #[test]
 fn test_resolve_projects_admin_auth_names() {
-    // auth absent: the default admin chain.
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 
-    // auth present with a custom admin chain: names projected in order.
     let mut deploy = base_deploy();
     let op = crate::config::operator_provider();
     let auth: crate::config::AuthDeployCfg =
         serde_yaml::from_str(&format!("chain: [keys]\nadmin_auth: [{op}, ad]\n"))
             .expect("auth parses");
     deploy.auth = Some(auth);
-    // 1.5.3: the operator credential + the external IdP's ceiling live on their DEFINITIONS.
+
     deploy.identity_providers = serde_yaml::from_str(&format!(
         "{op}: {{ module: {op}, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
          ad: {{ module: ad, max_admin_scope: read-only }}\n",
@@ -2939,7 +2471,7 @@ fn test_resolve_projects_admin_auth_names() {
     .expect("identity-providers parse");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "ad"]);
-    // The operator credential stays reachable as a SecretRef through the resolved auth block.
+
     assert_eq!(
         cfg.auth
             .as_ref()
@@ -2948,14 +2480,11 @@ fn test_resolve_projects_admin_auth_names() {
         Some("BUSBAR_ADMIN_TOKEN")
     );
 
-    // auth present but admin_auth omitted: the serde default (the operator credential) applies.
     let mut deploy = base_deploy();
     deploy.auth = Some(serde_yaml::from_str("chain: [keys]\n").expect("auth parses"));
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 }
-
-// ─── 1.5.2 token exchange: config surface (public_url / auth.methods / plugins.fetch) ───
 
 #[test]
 fn test_public_url_parses_top_level() {
@@ -2970,23 +2499,13 @@ models: {}
         deploy.public_url.as_deref(),
         Some("https://api.busbar.example")
     );
-    // Absent ⇒ None (default).
+
     let deploy2: DeployCfg =
         serde_yaml::from_str("listen: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n")
             .expect("absent public_url ⇒ default None");
     assert_eq!(deploy2.public_url, None);
 }
 
-/// FREEZE BLOCKER: the 1.5.2 `auth.methods:` block FOLDED INTO the `identity-providers:`
-/// definition. `browser_login` and the module's opaque settings are inherently PER PROVIDER — a
-/// client id/secret belongs to one IdP registration — so a second parallel map keyed by the same
-/// namespace was duplicate structure whose two halves could disagree about the same provider.
-///
-/// The resolved hosted-login method is now a PROJECTION of the definition, keyed by PROVIDER NAME
-/// and carrying the definition's `module:` separately (two named providers may share one plugin).
-///
-/// Before 1.5.3 `auth.methods:` was a live config block that parsed, so this
-/// resolution path did not exist.
 #[test]
 fn test_auth_method_browser_login_parses() {
     let yaml = "\
@@ -3021,14 +2540,12 @@ test-idp-double:
         .as_ref()
         .expect("browser_login present");
     assert_eq!(bl.client_id.as_deref(), Some("busbar-web"));
-    // client_secret is an OPTIONAL SecretRef (never a bare string); it resolves through the `env`
-    // module. (Optional so a Credential method can omit it; a Redirect method requires it — enforced
-    // at build per login_kind.)
+
     assert_eq!(
         bl.client_secret.as_ref().and_then(|s| s.env_var()),
         Some("BUSBAR_OIDC_SECRET")
     );
-    // Opaque module settings pass through, NOT swallowed into browser_login.
+
     assert_eq!(
         method.settings.get("issuer").and_then(|v| v.as_str()),
         Some("https://idp.example/")
@@ -3037,13 +2554,12 @@ test-idp-double:
         method.settings.get("audience").and_then(|v| v.as_str()),
         Some("busbar")
     );
-    // browser_login is NOT leaked into the opaque settings map pushed to the module.
+
     assert!(!method.settings.contains_key("browser_login"));
 }
 
 #[test]
 fn test_browser_login_deny_unknown_field() {
-    // A typo under `browser_login` must fail parse (deny_unknown_fields on BrowserLoginCfg).
     let yaml = "\
 oidc:
   module: oidc-plugin
@@ -3081,15 +2597,12 @@ fetch:
     );
     assert!(matches!(&cfg.fetch[2], PluginFetch::Env(e) if e.env == "BUSBAR_PLUGIN_URL"));
 
-    // A stray key matches no variant (per-variant deny_unknown_fields) ⇒ error.
     let bad = "enabled: true\nfetch:\n  - github: org/repo@v1\n    shaa: nope\n";
     assert!(
         serde_yaml::from_str::<PluginsCfg>(bad).is_err(),
         "typo'd fetch key must be rejected"
     );
 }
-
-// ─── 1.5.2: plugins.fetch → FetchTarget resolution ───
 
 #[test]
 fn test_fetch_specs_maps_github_and_url() {
@@ -3104,14 +2617,14 @@ fetch:
     let cfg: PluginsCfg = serde_yaml::from_str(yaml).unwrap();
     let specs = cfg.fetch_targets().expect("fetch_targets resolves");
     assert_eq!(specs.len(), 2);
-    // github → release-asset url + {repo}.tar.gz filename, pin carried.
+
     assert_eq!(specs[0].filename, "widget.tar.gz");
     assert_eq!(
         specs[0].url,
         "https://github.com/acme/widget/releases/download/v2.0.1/widget.tar.gz"
     );
     assert_eq!(specs[0].sha256.as_deref(), Some("deadbeef"));
-    // url → itself, filename from basename, no pin.
+
     assert_eq!(specs[1].url, "https://host/plugins/store-durable.tar.gz");
     assert_eq!(specs[1].filename, "store-durable.tar.gz");
     assert_eq!(specs[1].sha256, None);
@@ -3187,10 +2700,6 @@ fn test_fetch_env_spec_unset_is_error() {
     );
 }
 
-/// 1.5.3 env→config migration (the "new config.yaml key" half): the top-level `config:` block, the
-/// `providers_file:` pointer, and the new flat `advanced.*` knobs parse into `DeployCfg`. RED-before-
-/// GREEN: none of these fields existed pre-1.5.3, so this parse (`deny_unknown_fields` everywhere)
-/// would reject the document as unknown keys.
 #[test]
 fn config_consolidation_keys_parse_into_deploy_cfg() {
     let yaml = "\
@@ -3219,10 +2728,6 @@ advanced:
         other => panic!("expected a file backend, got {other:?}"),
     }
 
-    // The `advanced.upstream_*` knobs must not only PARSE but flow through `resolve` onto
-    // `cfg.limits` — the boot client-build reads them from there. Guards against a regression that
-    // drops the `upstream_http1_only: advanced.upstream_http1_only` (or the h2) wiring in
-    // `LimitsResolved::from_sections`, which would silently make the config.yaml knob a no-op.
     let mut deploy = base_deploy();
     deploy.advanced.upstream_http1_only = true;
     deploy.advanced.upstream_h2_prior_knowledge = true;
@@ -3236,7 +2741,6 @@ advanced:
         "advanced.upstream_h2_prior_knowledge must reach cfg.limits"
     );
 
-    // `overlay: false` parses as the explicit-disable form.
     let yaml2 = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n  overlay: false\n";
     let d2: crate::config::DeployCfg = serde_yaml::from_str(yaml2).expect("overlay:false parses");
     assert!(matches!(
@@ -3244,7 +2748,6 @@ advanced:
         Some(crate::config::OverlayCfg::Disabled(false))
     ));
 
-    // Absent `config:` ⇒ durable-by-default posture (mutable, no explicit overlay).
     let yaml3 = "providers: {}\nmodels: {}\n";
     let d3: crate::config::DeployCfg = serde_yaml::from_str(yaml3).expect("absent config parses");
     assert!(!d3.config.locked);
@@ -3253,33 +2756,11 @@ advanced:
     assert_eq!(d3.advanced.worker_threads, None);
 }
 
-// ── 1.5.3 FREEZE PINS (forward-compatibility) ────────────────────────────────────────────────────
-//
-// Each test below pins a semantic that 1.5.3 SHIPS and later releases must REUSE. They exist because
-// 1.5.3 is the break-once release: after it the grammar is additive-only forever, so anything a
-// later release could silently redefine has to be nailed down NOW, with a test that fails loudly if
-// someone changes it later. Every one names the finding it discharges.
-
-/// FREEZE BLOCKER — the hook-name namespace is CLOSED.
-///
-/// `RESERVED_HOOK_NAMES` and the bare strategy keywords accepted in a pool's `hooks:` list share ONE
-/// word space. Adding a bare terminal later — a new `on_error` word, a new ranking strategy, a new
-/// plugin-defined bounded-default floor — would retroactively invalidate a config that is LEGAL TODAY: an operator's
-/// hook named `least_bad` boots fine in 1.5.3 and would become a boot failure (or, worse, silently
-/// rebind to the new built-in) the moment the word were reserved.
-///
-/// So this asserts the EXACT contents of the frozen word space, not a subset. A future terminal must
-/// arrive STRUCTURED (`on_error: { hook: x }` is the shipped precedent — see `OnErrorCfg`), never as
-/// a new bare word, and a structured form costs zero words from this space.
 #[test]
 fn reserved_hook_names_are_frozen() {
     let mut frozen: Vec<&str> = crate::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
     frozen.sort_unstable();
 
-    // (a) The kernel's declared frozen list is EXACTLY these words — spelled out literally so a
-    //     diff shows a reviewer precisely which word someone tried to add. The operator
-    //     credential's provider completes the 1.5.3 space; it is the root migration table's word, and
-    //     the root pins the whole space with it (`root::tests::legacy_table`).
     assert_eq!(
         frozen,
         [
@@ -3298,11 +2779,8 @@ fn reserved_hook_names_are_frozen() {
          (e.g. `{{ hook: x }}`) — see RESERVED_HOOK_NAMES' doc comment."
     );
 
-    // (b) The declared list really IS the runtime union, so freezing the constant freezes the
-    //     BEHAVIOR and not just a parallel piece of documentation.
     let mut runtime: Vec<&str> = crate::config::RESERVED_HOOK_NAMES.to_vec();
     for word in crate::config::FROZEN_HOOK_NAME_WORD_SPACE {
-        // Every frozen word is either reserved outright or accepted bare as a pool strategy.
         assert!(
             crate::config::RESERVED_HOOK_NAMES.contains(word) || super::is_strategy_name(word),
             "'{word}' is declared frozen but is neither reserved nor a strategy keyword"
@@ -3315,7 +2793,6 @@ fn reserved_hook_names_are_frozen() {
         "RESERVED_HOOK_NAMES and FROZEN_HOOK_NAME_WORD_SPACE must not drift"
     );
 
-    // (c) And the reservation is ENFORCED: a hook definition named with a frozen word fails boot.
     let mut deploy = base_deploy();
     deploy.hooks.insert(
         "cheapest".to_string(),
@@ -3329,8 +2806,6 @@ fn reserved_hook_names_are_frozen() {
         "the error must name the reserved word: {errs:?}"
     );
 
-    // (d) The operator credential's provider — the word the root hands in (this build's double) —
-    //     is reserved on the same path, without the kernel spelling it.
     let operator = crate::config::operator_provider();
     assert!(crate::config::is_reserved_hook_name(operator));
     let mut deploy = base_deploy();
@@ -3347,18 +2822,6 @@ fn reserved_hook_names_are_frozen() {
     );
 }
 
-/// FREEZE BLOCKER — an OMITTED `phase:` means THE FOUR CORE STAGES, not "all stages ever".
-///
-/// If omission meant "all stages", a new plugin-defined invocation stage added in 1.6.0 (or a new
-/// delegation stage in 1.6.0) would retroactively make every already-deployed unscoped hook start firing at
-/// brand-new points in a brand-new plugin kind — a silent widening of what the operator signed off on, with
-/// no config change and no diagnostic. Pinning the default to a FROZEN list makes a later stage
-/// strictly additive: to fire there, a hook must NAME it.
-///
-/// Also pinned here: `phase:` is PLANE-NEUTRAL (these four names describe a request lifecycle every
-/// plane shares, so a later plane REUSES them rather than re-typing the field), and an INAPPLICABLE
-/// phase silently does not fire rather than being a config error — otherwise one hook definition
-/// could not serve two planes, which is the reuse the named-definition pattern exists for.
 #[test]
 fn omitted_phase_is_exactly_the_four_core_stages() {
     use crate::config::HookStage;
@@ -3375,8 +2838,6 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
          join this list, or it would retroactively widen every existing unscoped hook"
     );
 
-    // A definition with NO `phase:` fires at every core stage — and at NOTHING else, by construction
-    // (the enum is exhausted by the frozen list, so a future variant is excluded until named).
     let def: crate::config::HookDefCfg =
         serde_yaml::from_str("module: h\nkind: tap").expect("hook def parses");
     let cfg = super::hook_cfg_from_def(&def).expect("lowers");
@@ -3388,7 +2849,6 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
         );
     }
 
-    // An EXPLICIT phase list is exact: naming one stage excludes the other three.
     let def: crate::config::HookDefCfg =
         serde_yaml::from_str("module: h\nkind: tap\nphase: [response]").expect("parses");
     let cfg = super::hook_cfg_from_def(&def).expect("lowers");
@@ -3398,21 +2858,10 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
     assert!(!cfg.fires_at_stage(HookStage::Routing));
 }
 
-/// FREEZE BLOCKER — the additive-list DEDUPE rule: a hook named in BOTH `pools.hooks:` and a
-/// pool's own `hooks:` fires ONCE, at its FIRST (section-level) position.
-///
-/// The locked combine rule says section-level LISTS are ADDITIVE but never said what
-/// happens on an overlap. Both answers were defensible, so 1.5.3 pins one: attaching a hook to all
-/// pools and then ALSO naming it on one pool is how an operator writes "…and definitely on this
-/// one", and reading that as "fire twice" would double-charge a gate's latency budget and
-/// double-count a tap's audit record.
-///
-/// Before 1.5.3 the two lists were lowered independently, so an overlapping
-/// name landed in BOTH `global_hooks` and the pool's `gates` and fired twice.
 #[test]
 fn additive_hook_lists_dedupe_at_first_position() {
     crate::test_support::register_neutral_test_plane();
-    // The rule itself, at the single combine point.
+
     let section = vec!["audit".to_string(), "pii".to_string()];
     let entity = vec![
         "cheapest".to_string(),
@@ -3424,16 +2873,13 @@ fn additive_hook_lists_dedupe_at_first_position() {
         ["audit", "pii", "cheapest"],
         "a name in both lists fires ONCE, at its FIRST (section) position"
     );
-    // The runtime projection: the entity half keeps only what the section did not already name, and
-    // section ++ entity-only reproduces the combined order exactly.
+
     let entity_only = crate::config::entity_only_hook_refs(&section, &entity);
     assert_eq!(entity_only, ["cheapest"]);
     let mut rebuilt = section.clone();
     rebuilt.extend(entity_only);
     assert_eq!(rebuilt, crate::config::combine_hook_refs(&section, &entity));
 
-    // End to end through `resolve`: the pool's own gate list drops the name the all-pools list
-    // already carries, so the hook is fired by exactly one of the two resolved chains.
     let deploy: DeployCfg = serde_yaml::from_str(
         "hooks:\n  audit: { module: h, kind: gate }\n\
          pools:\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [cheapest, audit]\n\
@@ -3448,7 +2894,6 @@ fn additive_hook_lists_dedupe_at_first_position() {
         cfg.pools["fast"].gates
     );
 
-    // A pool hook the section list does NOT name is untouched.
     let deploy: DeployCfg = serde_yaml::from_str(
         "hooks:\n  audit: { module: h, kind: gate }\n  pii: { module: h, kind: gate }\n\
          pools:\n  hooks: [audit]\n  fast:\n    members: []\n    hooks: [pii]\n\
@@ -3459,15 +2904,6 @@ fn additive_hook_lists_dedupe_at_first_position() {
     assert_eq!(cfg.pools["fast"].gates, ["pii"]);
 }
 
-/// FREEZE BLOCKER — the `pools:` reserved section-key set is CLOSED at exactly two words.
-///
-/// Every reserved word here is a word an operator can no longer use as a POOL NAME, so ADDING one in
-/// a later release retroactively turns a previously-legal config into a boot failure. The set is
-/// therefore frozen, and every FUTURE all-scope knob must land under a reserved `defaults:` sub-key
-/// (`pools.defaults.<knob>`) — one word paid once, additive forever.
-///
-/// Before 1.5.3 only `hooks` was reserved (so a pool named
-/// `upstream_credentials` parsed fine) and there was no frozen set to assert against.
 #[test]
 fn pools_reserved_section_keys_are_frozen() {
     crate::test_support::register_neutral_test_plane();
@@ -3479,7 +2915,6 @@ fn pools_reserved_section_keys_are_frozen() {
          legal pool NAME into a boot failure."
     );
 
-    // BOTH reserved words are rejected as pool names, with a message that says why.
     for reserved in busbar_contract::section::RESERVED_SECTION_KEYS {
         let err = serde_yaml::from_str::<crate::config::PoolsCfg>(&format!(
             "{reserved}:\n  members: [ {{ model: a }} ]\n"
@@ -3493,10 +2928,6 @@ fn pools_reserved_section_keys_are_frozen() {
     }
 }
 
-/// FREEZE BLOCKER (the other half): `pools.upstream_credentials:` is the ALL-POOLS
-/// SCALAR default and a pool's own value OVERRIDES it (replaces — scalars never union). Pinned
-/// end-to-end because "scalar overrides, list is additive" is the rule every future inherited
-/// setting will be read against.
 #[test]
 fn pools_upstream_credentials_is_a_scalar_override() {
     crate::test_support::register_neutral_test_plane();
@@ -3519,19 +2950,10 @@ fn pools_upstream_credentials_is_a_scalar_override() {
         "a pool that sets nothing INHERITS (None = defer to the section default)"
     );
 
-    // Omitted at both levels ⇒ the built-in default, unchanged from pre-1.5.3 behavior.
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolves");
     assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
 }
 
-/// FREEZE BLOCKER — `secrets:` stays MODULE-KEYED, a deliberate exemption from the
-/// named-instance pattern, because it configures a MODULE's `open()` rather than an INSTANCE.
-///
-/// This is pinned (rather than only documented on the struct) so that a later "consistency" pass
-/// that wraps it in a `name -> {module, settings}` map fails a test whose message explains why the
-/// inconsistency is correct: there is no reference site that could name an instance — a `SecretRef`
-/// already names its MODULE — so a named map would invent an identity nothing can use and force
-/// every `SecretRef` in every config to be rewritten for no behavioral gain.
 #[test]
 fn secrets_block_stays_module_keyed_by_design() {
     crate::test_support::register_neutral_test_plane();
@@ -3548,9 +2970,7 @@ fn secrets_block_stays_module_keyed_by_design() {
         vault.settings.get("address").and_then(|v| v.as_str()),
         Some("https://vault.internal")
     );
-    // The tell that this is NOT the named-instance pattern: there is no `module:` field to name,
-    // because the KEY already is the module. If someone adds one, this fails and they read the
-    // struct doc explaining the exemption.
+
     let err = serde_yaml::from_str::<DeployCfg>(
         "secrets:\n  my-vault:\n    module: vault\n    settings: {}\n\
          providers: {}\nmodels: {}\npools: {}\n",
@@ -3559,16 +2979,8 @@ fn secrets_block_stays_module_keyed_by_design() {
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
-/// `export:` is a NAMED map, so the SAME module can back MULTIPLE instances — the exact
-/// thing the retired TYPE-KEYED block could not express (two `request-log-webhook`s to two URLs).
-/// A module whose row states the `one_instance` mark refuses a second instance LOUDLY, in its own
-/// words, rather than silently ignoring it.
-///
-/// The type-keyed `ExportCfg` had one `Option` per module, so a second webhook was
-/// unrepresentable and this test could not be written at all.
 #[test]
 fn export_named_map_allows_two_instances_of_one_module() {
-    // Two instances of one module on the export axis (the webhook and scrape sinks are such modules).
     crate::export::scrape::tests::installed_axis();
     let defs: crate::config::ExportDefs = serde_yaml::from_str(
         "req-log:  { module: k9-tail, settings: { url: \"https://logs.example.com/a\" } }\n\
@@ -3581,7 +2993,7 @@ fn export_named_map_allows_two_instances_of_one_module() {
     assert_eq!(export.plugins.len(), 2);
     assert_eq!(export.plugins[0].name, "req-log");
     assert_eq!(export.plugins[1].name, "req-siem");
-    // Per-INSTANCE settings really are independent — the whole point of named instances.
+
     assert_eq!(
         export.plugins[0].def.settings.get("delivery_timeout_secs"),
         None
@@ -3591,12 +3003,6 @@ fn export_named_map_allows_two_instances_of_one_module() {
         serde_json::json!(9)
     );
 
-    // A second instance of a module whose row states the `one_instance` mark is that module's own
-    // refusal, asked of its limits check while the configuration is resolved and rendered verbatim:
-    // here the stand-in axis's scrape double, in its own words. The extra instance is not resolved.
-    // (The linked scrape sink words it as 1.5.5 did, pinned by the shipped binary in
-    // `crates/busbar/tests/export_settings_refusal_1_5_5.rs`; the trace sink's line against the 1.5.5
-    // golden in `crates/busbar/tests/validate_matches_the_1_5_5_golden.rs`.)
     let defs: crate::config::ExportDefs = serde_yaml::from_str(
         "one: { module: prometheus, settings: { buffer_seconds: 60 } }\n\
          two: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
@@ -3615,10 +3021,6 @@ fn export_named_map_allows_two_instances_of_one_module() {
         "the extra instance is not resolved"
     );
 
-    // An unknown module is refused naming the modules this build serves, never silently dropped.
-    // Which sinks are linked depends on whether this test binary's axis is installed yet (a
-    // process-global another test installs); the binary-level
-    // `crates/busbar/tests/export_unknown_module_lists_what_links.rs` pins the default build's line.
     let defs: crate::config::ExportDefs =
         serde_yaml::from_str("x: { module: nope }\n").expect("parses");
     let mut errors = Vec::new();
@@ -3631,18 +3033,6 @@ fn export_named_map_allows_two_instances_of_one_module() {
     );
 }
 
-// THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR MOVED to
-// `crates/busbar/tests/config_cross_plane.rs::resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree`
-// — it constructs a REAL `busbar_mcp::mcp::config::ToolsCfg` and hands it to core's `resolve`,
-// which only type-checks with ONE `busbar_kernel` in the graph. See that file's header.
-
-// ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
-//
-// A plane's pools (`<section>.pools`) are OPT-IN, so the first thing checked is that saying nothing changes
-// nothing; the rest is the one shared check refusing what an operator cannot have meant.
-
-/// THE DEFAULT IS UNCHANGED. A config that says nothing about failover resolves exactly as it always
-/// did, with no pools on either plane — which is every deployment that exists today.
 #[test]
 fn failover_pools_are_absent_by_default() {
     let deploy = base_deploy();
@@ -3653,32 +3043,11 @@ fn failover_pools_are_absent_by_default() {
     );
 }
 
-// A member naming nothing... MOVED to
-// `crates/busbar/tests/config_cross_plane.rs::a_tool_pool_member_that_names_no_server_is_refused` (needs a
-// real `busbar_mcp::mcp::config::ToolsCfg`). See that file's header.
-
-// KIND IS INFERRED... MOVED to `crates/busbar/tests/config_cross_plane.rs::a_pool_may_not_straddle_two_planes`
-// (needs real `busbar_mcp` and agent-engine config types). See that file's header.
-
-// A one-member pool changes nothing... MOVED to
-// `crates/busbar/tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
-// the retired agent engine's `AgentsCfg`). See that file's header.
-
-// ── 1.6.0 auth.policy: block (additive; parse/resolve coverage) ──────────────────────────────────
-
-/// A fully-populated `auth.policy:` block parses and RESOLVES onto `AuthCfg.policy` verbatim —
-/// self-mint toggle, allowed binding modes, default/max TTLs, and a per-role mint ceiling with a
-/// 3-state `allowed_pools`. This test covers PARSE and RESOLVE only — that the block lands on
-/// `AuthCfg.policy` verbatim. (These knobs ARE enforced at mint: `self_mint` at `auth/self_keys.rs`
-/// and the binding-mode / TTL / pool ceilings at `MintPolicy::check_mint`; that enforcement is
-/// exercised elsewhere.)
 #[test]
 fn test_auth_policy_block_parses_and_resolves() {
     crate::test_support::register_neutral_test_plane();
     use crate::config::BindingMode;
-    // `auth.policy:` is a 1.6.0-additive key, so it is LIFTED off the document before the frozen
-    // structs parse: the document entry point is the only one that sees it (a bare
-    // `serde_yaml::from_str::<DeployCfg>` skips the lift and leaves the block at its default).
+
     let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
         "auth:\n  \
            chain: [keys]\n  \
@@ -3724,7 +3093,7 @@ fn test_auth_policy_block_parses_and_resolves() {
         .get("app-admin")
         .expect("app-admin ceiling present");
     assert_eq!(ceiling.max_ttl.as_deref(), Some("7d"));
-    // 3-state allowed_pools: an explicit list is exactly those pools.
+
     assert_eq!(
         ceiling.allowed_pools.as_deref(),
         Some(&["growth".to_string(), "ops".to_string()][..])
@@ -3735,8 +3104,6 @@ fn test_auth_policy_block_parses_and_resolves() {
     );
 }
 
-/// An omitted `auth.policy:` block resolves to `Default` — every field None/empty — so a config that
-/// predates the block behaves exactly as before (byte-identical: nothing consults it).
 #[test]
 fn test_auth_policy_absent_is_default() {
     crate::test_support::register_neutral_test_plane();
@@ -3759,8 +3126,6 @@ fn test_auth_policy_absent_is_default() {
     assert_eq!(p, &crate::config::AuthPolicyCfg::default());
 }
 
-/// The 3-state `allowed_pools` on a mint ceiling is preserved through parse: OMITTED = None (all
-/// pools), explicit `[]` = Some(empty) (no pools), `[list]` = exactly those. Never conflated.
 #[test]
 fn test_auth_policy_ceiling_allowed_pools_three_state() {
     crate::test_support::register_neutral_test_plane();
@@ -3793,13 +3158,8 @@ fn test_auth_policy_ceiling_allowed_pools_three_state() {
     );
 }
 
-/// An unknown binding-mode string is rejected at parse (the enum is closed), and an unknown key
-/// under `auth.policy:` or a ceiling is rejected by `deny_unknown_fields` — a typo'd control fails
-/// boot rather than sitting inert.
 #[test]
 fn test_auth_policy_rejects_bad_input_at_parse() {
-    // Whole DOCUMENTS, because `auth.policy:` is lifted off the document by the pre-pass: parsing
-    // the `auth:` block on its own would never reach the block at all.
     let doc = |policy_body: &str| {
         format!("auth:\n  policy:\n{policy_body}providers: {{}}\nmodels: {{}}\n")
     };
@@ -3823,9 +3183,6 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 }
 
-/// The `auth:` block's refusals, byte for byte, through the boot parser: the frozen five-key list
-/// (with or without the lifted `policy:` beside it), a lifted key's own refusal at its own path and
-/// position, and a value that is not a section. An empty `auth:` is no block at all.
 #[test]
 fn the_auth_block_refusals_are_pinned() {
     let refusal = |auth: &str| {
@@ -3857,13 +3214,8 @@ fn the_auth_block_refusals_are_pinned() {
     assert!(empty.auth.is_none());
 }
 
-/// The top-level section [`NEUTRAL_SECTION_PLANE`] declares and owns.
 const NEUTRAL_SECTION: &str = "neutral_section";
 
-/// A NEUTRAL plane that DECLARES AND OWNS a singular section of its own ([`NEUTRAL_SECTION`]) — the
-/// map carrier `config::plane_sections::DeclaredSections` holds it — all hooks stubbed, so the
-/// pre-pass, which lifts only the sections a REGISTERED plane declares, lifts it. With no
-/// `parse_section` hook the value is captured raw.
 static NEUTRAL_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -3877,20 +3229,6 @@ static NEUTRAL_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
         ..crate::test_support::NEUTRAL_FALLBACK
     };
 
-/// DECISIONS #47/#48 (`docs/design/BUSBAR-1.6.0.md:373`/`:374`): `decisions:` is the FIFTH plane's
-/// declaring top-level section, so the config PRE-PASS lifts it — while a REGISTERED plane declares
-/// it (#49: the kernel reads the lift list off the plane registry). `DeployCfg` is
-/// `deny_unknown_fields`, so without the lift a document carrying `decisions:` is refused outright
-/// AT THAT KEY (the test below).
-///
-/// THE LIFT IS ALL THIS PROVES, and that is deliberate: this crate cannot name the decisions plane
-/// (the dep wall, DECISIONS #40), so the plane seeded here is a NEUTRAL one that declares and owns a
-/// singular section of its own with no `parse_section` hook — the kernel keys that carrier by no
-/// literal, so the neutral section lands exactly where `decisions:` does — and the seam takes its
-/// raw arm. The typed half — that the
-/// hooks are wired, that `deny_unknown_fields` runs inside the block, and that `decisions: "hello"`
-/// is REFUSED — is proven on the served build, where the plane's door folds its row and judges its
-/// section with its own `validate` (`crates/busbar/tests/cli_validate.rs`, the decisions block).
 #[test]
 fn test_decisions_section_parses() {
     let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
@@ -3906,8 +3244,6 @@ fn test_decisions_section_parses() {
     ))
     .expect("a document carrying a section a registered plane declares must parse");
 
-    // The second half, because "the document parsed" is ALSO true of a key read and thrown away:
-    // the lifted value must be BANKED onto the carrier (`PlaneCfg` is already in scope).
     assert!(
         deploy
             .declared
@@ -3917,8 +3253,6 @@ fn test_decisions_section_parses() {
         "the lifted `decisions:` value must land on its carrier, not be dropped on the floor"
     );
 
-    // And its twin, so `is_present` above is reading the SECTION and not a default that is always
-    // present: an omitted `decisions:` leaves the carrier at its `Default`.
     let bare: DeployCfg =
         crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\npools: {}\n")
             .expect("a document with no `decisions:` section still parses");
@@ -3928,7 +3262,6 @@ fn test_decisions_section_parses() {
     );
 }
 
-/// A SECOND neutral plane that declares and owns its own section, beside [`NEUTRAL_SECTION_PLANE`].
 static SECOND_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -3940,10 +3273,6 @@ static SECOND_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
         ..NEUTRAL_SECTION_PLANE
     };
 
-/// THE ONE MAP CARRIER (#47/#49): EVERY section a registered plane declares and owns lands in
-/// `DeployCfg::declared` under its own key — not one singular slot the first such plane takes, with
-/// the rest falling through to the raw carrier (which would hand them to their plane's `build` as an
-/// endpoint resource and count `{}` as written). Each is a declared plane section for LAW 7 at resolve.
 #[test]
 fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
     let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
@@ -3968,9 +3297,6 @@ fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
     }
 }
 
-/// THE DOOR'S SETTINGS (SERVE-WIRE, DEC-SERVE P2): a declaring section its plane owns the grammar
-/// of is parsed into the map carrier AND kept as written (card and fees stripped), so a plane
-/// served through its door opens with it as its settings, as a raw-carried plane does.
 #[test]
 fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
     let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
@@ -4002,12 +3328,8 @@ fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
     );
 }
 
-/// The top-level section [`RAW_SECTION_PLANE`] declares — and does NOT own the grammar of.
 const RAW_SECTION: &str = "raw_section";
 
-/// A NEUTRAL plane declaring [`RAW_SECTION`] with no carrier of its own: not a named one, not the
-/// map one (it owns no grammar), not core's — the shape of a plane that states itself
-/// over the C ABI, whose section only it can read.
 static RAW_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -4021,12 +3343,6 @@ static RAW_SECTION_PLANE: crate::plane_driver::registry::PlaneDecl =
         ..crate::test_support::NEUTRAL_FALLBACK
     };
 
-/// THE GENERIC CARRIER: a registered plane's declaring section that no carrier holds is
-/// lifted RAW onto `DeployCfg::plane_raw` — its core-owned `rate_card`/`fees` stripped and banked
-/// under the plane's key like any plane's — and `resolve` makes it both LAW 7's "this plane is
-/// configured" and that plane's section-keyed resource, `(section, value)`, the bytes its `build` is
-/// handed. RED before K7: the pre-pass lifted no such section, so the document was refused at the key
-/// as an unknown field.
 #[test]
 fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
     let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
@@ -4060,7 +3376,6 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
         "the resource is `(section, value)`"
     );
 
-    // An absent (or null) section configures nothing and hands its plane nothing.
     let bare = crate::config::deploy_from_yaml_str(&format!(
         "{RAW_SECTION}: ~\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n"
     ))
@@ -4070,14 +3385,6 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
     assert!(root.endpoint_resource(RAW_SECTION).is_none());
 }
 
-/// THE DELETION-GATE LEG FOR `decisions:` (Option A, S11b (c) / Q67). A section an operator wrote,
-/// in a build with no registered plane declaring it, is a key this build does not know — and is
-/// REFUSED AT PARSE with serde's standard unknown-field message, naming the key, exactly as 1.5.5
-/// refused any key it did not know. The kernel cannot say more: naming the plane that would own it
-/// means spelling a plane section it does not have (#49).
-///
-/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decisions`, and the
-/// registry is seeded with the neutral fallback plane alone, so nothing declares `decisions`.
 #[test]
 fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
     let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
@@ -4096,9 +3403,6 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
         "the refusal must be serde's unknown-field refusal NAMING the key the operator wrote; got: {err}"
     );
 
-    // The control, in the same test, because a leg that refuses everything is not a leg: an ABSENT
-    // `decisions:` must parse and resolve clean. Without this the assertion above would still pass if
-    // every document were refused.
     let bare: DeployCfg =
         crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\npools: {}\n")
             .expect("a document with no `decisions:` section still parses");
@@ -4109,10 +3413,6 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
     );
 }
 
-// ── #43 / #47: A PLANE SECTION'S CORE-OWNED `rate_card` / `fees` NEVER CROSS TO THE PLANE ──────────
-
-/// Every section value the recording plane below was handed to parse — THE BLOB that crosses to the
-/// plane. Read under the registry isolation, so no sibling test writes it concurrently.
 static PLANE_SAW: std::sync::Mutex<Vec<serde_yaml::Value>> = std::sync::Mutex::new(Vec::new());
 
 fn record_plane_section(
@@ -4123,8 +3423,6 @@ fn record_plane_section(
     Ok(Box::<crate::config::plane_sections::RawPlaneSection>::default())
 }
 
-/// A stub plane owning the registry section a card is authored in, whose `parse_section` records
-/// what it was handed. `"card-plane"` is its registry key: the key the card is filed under.
 static CARD_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -4175,10 +3473,6 @@ static CARD_PLANE: crate::plane_driver::registry::PlaneDecl =
         door: None,
     };
 
-/// THE #43 ENFORCEMENT: the section value handed to the plane carries the plane's own settings and
-/// NO `rate_card` — core lifts the card off first and files it under the plane's registry key — and
-/// `resolve` composes it beside the (absent) flat card, qualified by that key, with the flat plane left
-/// billing OFF. A section carrying `fees` is refused before anything reaches the plane.
 #[test]
 fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
     let _isolation =
@@ -4221,9 +3515,6 @@ fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
     );
 }
 
-/// A plane section's reserved `fees:` (#47, OWNER RULING Q32) is LIFTED like its card: filed under the
-/// plane's registry key, resolved onto `RootCfg`, and never a byte of it handed to the plane (#43). A
-/// malformed one is refused naming `<section>.fees`, before the plane parses anything.
 #[test]
 fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
     use busbar_kernel_ledger::cost::PlaneFees;
@@ -4268,12 +3559,6 @@ fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
     }
 }
 
-/// RED (Q-STEP9-a, ARCHITECT 2026-10-07; spec :567 "a plane entry named after any reserved key is
-/// refused at validation with a clear message"): a declared-verb section's depth-1 entry named
-/// after a reserved key, whose value is plainly not that knob, is refused AT LOAD — the load
-/// `--validate` and boot both run — in the reserved-name sentence, at the entry's own path and
-/// position, before the plane is handed a byte. Every reserved knob, well-shaped, still loads. (Base:
-/// each such entry loaded, and the deal stripped it silently as if it were the knob.)
 #[test]
 fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
     use busbar_contract::section::reserved_name_refusal;
@@ -4323,13 +3608,8 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
     assert!(saw.contains("srv") && !saw.contains("fees"), "{saw}");
 }
 
-/// The root `pools:` section is 1.5.5's: a pool named after a reserved sub-key (`tier`, `work`,
-/// `breaker`) is a POOL and loads, resolves and validates as 1.5.5 accepted it; only 1.5.5's two
-/// section words are refused as pool names, in 1.5.5's sentence.
 #[test]
 fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
-    // Seeded, not registered: a registration is visible to the next read only until a sibling
-    // test's `TestRegistryIsolation` swaps the list, so the reader holds the isolation itself.
     let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
     ]);
@@ -4352,8 +3632,6 @@ fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
     }
 }
 
-/// 1.5.5's flat top-level `rate_card:` loads as the fallback plane's card BYTE-IDENTICALLY: with no plane
-/// card, the resolved map is the authored map, `rate_card: {}` included.
 #[test]
 fn a_flat_rate_card_resolves_to_itself() {
     for text in [
@@ -4367,9 +3645,6 @@ fn a_flat_rate_card_resolves_to_itself() {
     }
 }
 
-// ── CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): A CONCRETE SECTION IS REQUIRED ONLY BY A PLANE ──────
-
-/// A stub plane requiring exactly `required` of the requirable sections, and nothing else.
 const fn requiring_plane(
     required: &'static [&'static str],
 ) -> crate::plane_driver::registry::PlaneDecl {
@@ -4423,27 +3698,16 @@ const fn requiring_plane(
     }
 }
 
-/// The plane that requires both catalog sections — the shape a build linking the plane that owns
-/// `models` (and consumes `providers`) registers.
 static REQUIRES_BOTH: crate::plane_driver::registry::PlaneDecl =
     requiring_plane(&["providers", "models"]);
 
-/// The plane that requires only `providers` — a plane that consumes the catalog but owns no models.
 static REQUIRES_PROVIDERS: crate::plane_driver::registry::PlaneDecl =
     requiring_plane(&["providers"]);
 
-/// The same plane with its requirement list dropped — the build that links no plane requiring
-/// either section.
 static REQUIRES_NONE: crate::plane_driver::registry::PlaneDecl = requiring_plane(&[]);
 
-/// A document carrying neither catalog section.
 const NO_CATALOG: &str = "listen: \"127.0.0.1:0\"\npools: {}\n";
 
-/// THE DEFAULT-BUILD REFUSAL, byte for byte: with a registered plane requiring the sections, a
-/// document missing one is refused with the config grammar's own missing-field message — the exact
-/// text the published 1.5.5 binary prints after `config.yaml: invalid YAML: ` (measured on the
-/// v1.5.5 release binary: `[error] config.yaml: invalid YAML: missing field `providers``, and
-/// `models` for a document carrying `providers:` only). `providers` is refused first, as 1.5.5 did.
 #[test]
 fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
     let _isolation =
@@ -4453,13 +3717,12 @@ fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field
     let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\nproviders: {}\n")
         .expect_err("models required");
     assert_eq!(err.to_string(), "missing field `models`");
-    // The in-memory document path (the management surface's overlay merge) refuses identically.
+
     let value: serde_yaml::Value = serde_yaml::from_str(NO_CATALOG).unwrap();
     let err = crate::config::deploy_from_yaml_value(value).expect_err("providers required");
     assert_eq!(err.to_string(), "missing field `providers`");
 }
 
-/// A plane that requires `providers` only makes `providers` required: `models` reads empty.
 #[test]
 fn a_plane_requiring_one_section_leaves_the_other_omissible() {
     let _isolation =
@@ -4471,15 +3734,6 @@ fn a_plane_requiring_one_section_leaves_the_other_omissible() {
     assert!(deploy.models.is_empty() && deploy.providers.is_empty());
 }
 
-/// THE WARDEN DEFECT, GREEN: a build that registers no plane requiring either section (a
-/// single-plane build of a plane that needs neither) accepts a document with neither, and each
-/// reads empty. A section the document
-/// DOES carry is its own — never replaced by the supplied empty one, never read twice.
-///
-/// RED ARM (kept): this is the same registry and the same document as the refusal above, with only
-/// the plane's requirement list dropped — so the verdict is the plane's declaration, not a kernel
-/// default. Before CONFIG-REQ this document was refused with `missing field `providers`` whatever
-/// the registry held.
 #[test]
 fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
     let _isolation =
@@ -4502,7 +3756,6 @@ fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
     );
     assert!(carried.providers.is_empty());
 
-    // An unknown top-level key is still the frozen struct's own refusal, supplied sections or not.
     let err = crate::config::deploy_from_yaml_str("listen: \"x\"\nno_such_key: 1\n")
         .expect_err("unknown key");
     assert!(
@@ -4512,8 +3765,6 @@ fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
     );
 }
 
-/// Whatever top-level section a plane lists is enforced — nothing is stated and left unenforced:
-/// a document omitting it is refused with serde's own missing-field message for that section.
 #[test]
 fn any_section_a_registered_plane_requires_is_refused_when_absent() {
     static REQUIRES_POOLS: crate::plane_driver::registry::PlaneDecl = requiring_plane(&["pools"]);
@@ -4525,8 +3776,6 @@ fn any_section_a_registered_plane_requires_is_refused_when_absent() {
     crate::config::deploy_from_yaml_str("pools: {}\n").expect("carried, so accepted");
 }
 
-/// THE TWO FLOOR WARNINGS KEEP THEIR BYTES (the resolution moved out of the kernel; the warnings
-/// stayed): each malformed floor warns with its diagnostic, its key and its exact message.
 #[test]
 fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
     use crate::diagnostics::{CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID};
@@ -4568,10 +3817,6 @@ struct ProvidersDoc {
     providers: HashMap<String, ProviderDeploy>,
 }
 
-/// A deployment's keys beyond busbar's own are its OPTIONS (owner ruling 2026-10-27): read aside,
-/// under the name the operator wrote, they ride the resolved entry's table to the plane that judges
-/// them; the typed keys read as before. The retired `organization` is an option name like any
-/// other now, for the plane to refuse.
 #[test]
 fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
     let doc: ProvidersDoc = serde_yaml::from_str(
@@ -4596,7 +3841,7 @@ fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
         merged.table.get("api-version"),
         Some(&serde_json::json!("2024-10-21"))
     );
-    // No plane is folded in this build, so nothing speaks the dialect: an option is refused.
+
     assert_eq!(
         crate::config::providers::judge_options("p", &merged),
         Err(
@@ -4605,7 +3850,7 @@ fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
                 .to_string()
         )
     );
-    // An entry that sets no option is judged by nobody.
+
     let plain: ProvidersDoc =
         serde_yaml::from_str("providers:\n  p:\n    api_key: {env: K}\n").expect("reads");
     let plain = merge_provider_fallback(
@@ -4615,11 +3860,6 @@ fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
     assert_eq!(crate::config::providers::judge_options("p", &plain), Ok(()));
 }
 
-/// A `providers.yaml` CATALOG entry follows the same rule as a `config.yaml` one (owner ruling
-/// 2026-10-27: "we provide this file so it should be perfect; if the user modified it, refuse"):
-/// its keys beyond busbar's are its options, and every entry, referenced or not, is judged at
-/// resolve, the refusal naming the file and the key. A typed key's refusal keeps 1.5.5's path and
-/// position. RED on dev: the catalog silently dropped a key it did not read.
 #[test]
 fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
     let defs = crate::config::providers::catalog_from_str(
@@ -4650,8 +3890,6 @@ fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
     assert!(e.starts_with("p.protocol: invalid type: sequence"), "{e}");
 }
 
-/// Removing a plane leaves its unused catalog options inert. Activating a provider restores
-/// validation of every row before anything can become effective.
 #[test]
 fn an_unowned_catalog_is_deferred_only_while_no_provider_is_deployed() {
     let defs = crate::config::providers::catalog_from_str(
@@ -4677,7 +3915,6 @@ fn an_unowned_catalog_is_deferred_only_while_no_provider_is_deployed() {
     );
 }
 
-/// The absence of a plane never relaxes the connection grammar core owns.
 #[test]
 fn an_unused_catalog_still_requires_valid_core_fields() {
     let error = crate::config::providers::catalog_from_str(
@@ -4691,7 +3928,6 @@ fn an_unused_catalog_still_requires_valid_core_fields() {
     );
 }
 
-/// An option written twice in one entry is refused.
 #[test]
 fn an_option_written_twice_is_refused() {
     let e = serde_yaml::from_str::<ProvidersDoc>(
@@ -4703,7 +3939,6 @@ fn an_option_written_twice_is_refused() {
     assert!(e.contains("x-a"), "{e}");
 }
 
-/// `CATALOG_KEYS` is the catalog's typed grammar's own list, in its order.
 #[test]
 fn the_catalog_keys_are_the_typed_grammars() {
     assert_eq!(
@@ -4712,8 +3947,6 @@ fn the_catalog_keys_are_the_typed_grammars() {
     );
 }
 
-/// `DEPLOY_KEYS` is the typed grammar's own list, in its order: the derived reader's refusal of a
-/// key it does not read lists exactly these.
 #[test]
 fn the_deploy_keys_are_the_typed_grammars() {
     assert_eq!(
@@ -4722,9 +3955,6 @@ fn the_deploy_keys_are_the_typed_grammars() {
     );
 }
 
-/// A NEUTRAL plane that declares its own section and OWNS a second one beside it, the shape of a
-/// door plane whose Statement states a section that is neither declaring nor consumed (a plane's
-/// own `webhooks:`, ARCHITECT 2026-10-14 option A).
 static OWNS_BESIDE_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -4738,12 +3968,6 @@ static OWNS_BESIDE_PLANE: crate::plane_driver::registry::PlaneDecl =
         ..crate::test_support::NEUTRAL_FALLBACK
     };
 
-/// RED (ARCHITECT 2026-10-14, the plane-owned `webhooks:` section, option A): a section a
-/// registered plane owns BESIDE its declaring one, and that is no endpoint door, is lifted RAW and
-/// handed to that plane as written (`door_sections`, its `PlaneOpenIn::owned`). The kernel learns
-/// the key only from the plane's declared row and spells none. Before the fix it was left unlifted,
-/// so the document was refused at the key as an unknown field. A document that writes the plane's
-/// own section and not this one lifts nothing extra.
 #[test]
 fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
     let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
@@ -4765,9 +3989,6 @@ fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
     assert!(!bare.plane_raw.contains_key("beside_owned"));
 }
 
-/// An `on_exhausted` mapping naming BOTH `fallback_pool` and `queue` is refused with an "exactly
-/// one of" error, never force-fit to one of them. Rehomes
-/// the retired engine crate's `src/engine/tests/on_exhausted_tests.rs::test_config_parsing_both_fallback_and_queue_conflicts`.
 #[test]
 fn an_on_exhausted_naming_both_a_fallback_and_a_queue_is_refused() {
     let err =

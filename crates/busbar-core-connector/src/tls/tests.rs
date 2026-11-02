@@ -16,13 +16,7 @@ fn gen_self_signed() -> (String, String) {
 }
 
 /// Write `contents` to a uniquely-named temp file and return its path.
-///
-/// `cargo test` runs these `#[tokio::test]`s concurrently, and every caller of [`valid_tls_cfg`]
-/// uses the same `tag`s ("cert"/"key") — a wall-clock timestamp alone is not always distinct
-/// between two threads racing to call this within the same clock tick, and two tests writing the
-/// SAME path concurrently (one's `create`-time truncate landing inside another's write) is exactly
-/// how a resolved secret ends up looking like an "EMPTY file" that neither test ever wrote. A
-/// process-wide counter makes every call's filename distinct regardless of clock resolution.
+
 fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -51,18 +45,12 @@ fn valid_tls_cfg() -> (TlsCfg, String) {
 }
 
 /// `prepare` with `tls_cfg: None` hands back the identity wrap, and running a stream through it
-/// leaves the bytes byte-for-byte unchanged — the oracle-clean-by-construction property a plaintext
-/// binding depends on.
+
 #[tokio::test]
 async fn prepare_plaintext_is_identity_and_passes_bytes_unchanged() {
     let resolver = SecretResolver::builtins_only();
-    let security = prepare(
-        "plaintext-binding",
-        None,
-        &resolver,
-        /* transport_capable */ false,
-    )
-    .expect("a plaintext binding never needs transport capability");
+    let security = prepare("plaintext-binding", None, &resolver, false)
+        .expect("a plaintext binding never needs transport capability");
 
     let (mut a, b) = tokio::io::duplex(64);
     let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
@@ -82,13 +70,7 @@ async fn prepare_plaintext_is_identity_and_passes_bytes_unchanged() {
 }
 
 /// [`build_server_config`] builds a working `rustls::ServerConfig` from the operator's `tls:`
-/// config — every field a listener needs (the cert/key pair, the ALPN offer, no client-cert
-/// verifier when `client_ca` is absent) — and `prepare` reaches the same result for a
-/// TLS-configured, capable binding.
-///
-/// The ALPN offer is `h2, http/1.1`, in that order, a
-/// customer-visible change from 1.5.5, which offered `http/1.1` alone. The listener serves HTTP/2 on
-/// an `h2` connection; a client offering only `http/1.1` is served as in 1.5.5.
+
 #[tokio::test]
 async fn build_server_config_and_prepare_build_from_operator_config() {
     let (tls, _cert_pem) = valid_tls_cfg();
@@ -103,15 +85,12 @@ async fn build_server_config_and_prepare_build_from_operator_config() {
 
     let security = prepare("tls-binding", Some(&tls), &resolver, true)
         .expect("a capable transport + valid material must build the TLS wrap");
-    // `Tls::wrap` runs a real handshake; that path is exercised end-to-end below. Here we only
-    // need `prepare` to have chosen the TLS branch rather than plaintext, which the successful
-    // build above already proves it can only have done via `build_server_config`.
+
     drop(security);
 }
 
 /// A syntactically invalid PEM cert errors with the cert named, not a panic — moved here verbatim
-/// in spirit from `busbar-kernel`'s former `malformed_cert_errors_clearly`(the
-/// parsing this asserts now lives in `build_server_config`, in this crate).
+
 #[test]
 fn malformed_cert_errors_clearly() {
     let cert_file = temp_pem("bad-cert", "-----BEGIN CERTIFICATE-----\nnot base64\n");
@@ -128,7 +107,7 @@ fn malformed_cert_errors_clearly() {
 }
 
 /// A missing cert FILE errors with the offending path named, not a panic — moved here verbatim in
-/// spirit from `busbar-kernel`'s former `bad_cert_path_errors_clearly`.
+
 #[test]
 fn bad_cert_path_errors_clearly() {
     let tls = TlsCfg {
@@ -145,14 +124,12 @@ fn bad_cert_path_errors_clearly() {
 }
 
 /// FAIL CLOSED: a `TLS`-configured binding handed to a transport that has not declared
-/// `WRAPPABLE_BYTE_STREAM` must never be silently served in plaintext.
+
 #[tokio::test]
 async fn prepare_fails_closed_when_transport_is_incapable() {
     let (tls, _cert_pem) = valid_tls_cfg();
     let resolver = SecretResolver::builtins_only();
 
-    // `Arc<dyn ConnectionSecurity>` (the `Ok` type) is not `Debug`, so `expect_err` (which formats
-    // it on the failure path) does not apply here — match instead.
     let err = match prepare("incapable-binding", Some(&tls), &resolver, false) {
         Ok(_) => panic!("an incapable transport must never receive a TLS wrap"),
         Err(e) => e,
@@ -166,7 +143,7 @@ async fn prepare_fails_closed_when_transport_is_incapable() {
 }
 
 /// FAIL CLOSED: a `TLS`-configured binding whose cert cannot be resolved must never fall back to
-/// plaintext — boot must refuse.
+
 #[tokio::test]
 async fn prepare_fails_closed_on_missing_cert() {
     let tls = TlsCfg {
@@ -187,8 +164,7 @@ async fn prepare_fails_closed_on_missing_cert() {
 }
 
 /// The TLS wrap really does run a rustls handshake and carry bytes over it — not just build a
-/// `ServerConfig` that nothing then uses. Drives a real `tokio_rustls` client, trusting the same
-/// self-signed cert, over an in-memory duplex pipe standing in for the accepted TCP stream.
+
 #[tokio::test]
 async fn tls_wrap_completes_a_real_handshake_and_carries_bytes() {
     let (tls, cert_pem) = valid_tls_cfg();
@@ -239,12 +215,6 @@ async fn tls_wrap_completes_a_real_handshake_and_carries_bytes() {
     server_task.await.unwrap();
 }
 
-// TLS is core-only connection security: this crate is the one TLS path and it never crosses the
-// plugin ABI, so what a TLS listener does to a client is proven here, against the config built from
-// the operator's `tls:` block and the `Tls` wrap handed to a listener. Each handshake runs for real —
-// a rustls client against a rustls server — over in-memory buffers (or a duplex pipe, through the
-// wrap): the whole of the handshake, none of the socket.
-
 /// Generate a CA and a leaf it signs for `sans`. Returns (ca_pem, leaf_cert_pem, leaf_key_pem).
 fn gen_ca_and_leaf(sans: Vec<String>) -> (String, String, String) {
     use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
@@ -290,7 +260,7 @@ fn leaf_der(pem: &str) -> Vec<u8> {
 }
 
 /// Pump one handshake round trip between `client` and `server` over in-memory buffers, surfacing
-/// the first error either side's `process_new_packets` reports.
+
 fn pump(
     client: &mut rustls::ClientConnection,
     server: &mut rustls::ServerConnection,
@@ -317,8 +287,7 @@ fn pump(
 }
 
 /// Drive a full handshake between `client_cfg` and `server_cfg`, offering `name` (an IP address
-/// offers no SNI, as a dial to a bare socket address does), and hand back both ends once it
-/// completes — or the error that ended it.
+
 fn handshake(
     server_cfg: Arc<ServerConfig>,
     client_cfg: Arc<rustls::ClientConfig>,
@@ -345,10 +314,7 @@ fn anonymous_client(ca_pem: &str) -> Arc<rustls::ClientConfig> {
 }
 
 /// The listener has a key because this crate built one from the operator's config, and a real
-/// client completes a handshake against it and reads what the server wrote.
-///
-/// The config is [`build_server_config`]'s, read off the `tls:` block, with nothing in between: the
-/// key a listener serves under is the one the operator named, and no other path supplies one.
+
 #[test]
 fn the_config_built_from_the_tls_block_serves_a_real_handshake_and_carries_bytes() {
     install_crypto_provider();
@@ -377,12 +343,7 @@ fn the_config_built_from_the_tls_block_serves_a_real_handshake_and_carries_bytes
 }
 
 /// The client-cert verifier is the DIFFERENCE a `client_ca` makes, and the only way to see it is to
-/// make a client try: the same certificate and key, offered to a client that presents nothing,
-/// complete the handshake without a client CA configured and are refused with one.
-///
-/// Replacing the verifier arm in [`build_server_config`] with `with_no_client_auth()` leaves every
-/// assertion about the built config true and turns a listener an operator configured for mTLS into
-/// one that takes anonymous clients. This is what goes RED.
+
 #[test]
 fn only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate() {
     install_crypto_provider();
@@ -424,9 +385,7 @@ fn only_the_mutual_tls_config_refuses_a_client_that_offers_no_certificate() {
 }
 
 /// The mutual-TLS listener THROUGH THE WRAP: `prepare` hands back the `Tls` wrap for a `tls:` block
-/// with a `client_ca`, and a client presenting a certificate that chains to that CA completes the
-/// handshake over it and exchanges bytes. The refusal half is the cell above; this is the half that
-/// proves the wrap is the mutual config and not merely a config that refuses everyone.
+
 #[tokio::test]
 async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca() {
     install_crypto_provider();
@@ -490,12 +449,11 @@ async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca(
 }
 
 /// A client CA that resolves to bytes with no certificate in it — an operator who pointed the
-/// setting at the wrong file — is refused, not quietly turned into an empty root store that would
-/// bring the listener up and then refuse every client.
+
 #[test]
 fn a_client_ca_with_no_certificates_in_it_is_refused() {
     let (cert_pem, key_pem) = gen_self_signed();
-    // A PEM, and a real one — just not one with a certificate anywhere in it.
+
     let tls = tls_cfg_from(&cert_pem, &key_pem, Some(&key_pem));
     let err = build_server_config(&tls, &SecretResolver::builtins_only()).unwrap_err();
     assert!(err.contains("client_ca"), "{err}");
@@ -513,7 +471,7 @@ fn mismatched_cert_and_key_pair_is_refused() {
 }
 
 /// A cert source with no certificate in it is refused with a clear message rather than an empty,
-/// silently-accepted chain.
+
 #[test]
 fn empty_cert_chain_is_refused() {
     let (_cert_pem, key_pem) = gen_self_signed();
@@ -586,10 +544,7 @@ fn accept_any_server_cert() -> Arc<rustls::ClientConfig> {
 }
 
 /// A client offering no SNI (a dial to a bare address offers none) is served the configured
-/// certificate, and so is a client naming a host nobody configured: 1.5.5 built one
-/// `ServerConfig::with_single_cert` per listener and served it whatever a client offered, and the
-/// `tls:` block names exactly one certificate. A listener never refuses a handshake over the name
-/// offered.
+
 #[test]
 fn any_offered_name_or_none_is_served_the_configured_certificate() {
     install_crypto_provider();
@@ -612,11 +567,6 @@ fn any_offered_name_or_none_is_served_the_configured_certificate() {
     );
 }
 
-// A TLS listener offers ALPN `h2, http/1.1`: a client that offers `h2` speaks HTTP/2, one that offers
-// only `http/1.1` (or no ALPN at all) is served HTTP/1.1 as in 1.5.5. A connection whose ALPN is `h2`
-// is KNOWN to be HTTP/2, so RFC 9113 §3.4 governs its first bytes: one that does not open with the
-// connection preface is a connection error, closed with no bytes (no h2 frame layer exists yet).
-
 /// A client offering exactly `protocols` over ALPN, trusting exactly `ca_pem`.
 fn offering(ca_pem: &str, protocols: &[&[u8]]) -> Arc<rustls::ClientConfig> {
     let mut config = rustls::ClientConfig::builder()
@@ -627,7 +577,7 @@ fn offering(ca_pem: &str, protocols: &[&[u8]]) -> Arc<rustls::ClientConfig> {
 }
 
 /// The listener's config, built from the `tls:` block, negotiates `h2` with a client that offers it
-/// and `http/1.1` with a client that offers only that; a client offering no ALPN negotiates none.
+
 #[test]
 fn a_tls_listener_negotiates_h2_when_offered_and_http1_when_only_that_is_offered() {
     install_crypto_provider();
@@ -665,8 +615,7 @@ fn a_tls_listener_negotiates_h2_when_offered_and_http1_when_only_that_is_offered
 }
 
 /// Drive the `Tls` wrap with a real client offering `protocols`, send `sent` once the handshake is
-/// done, and hand back what the server read off the wrapped stream (`want` bytes) — or the error the
-/// wrap ended with.
+
 async fn wrap_and_read(
     protocols: &[&[u8]],
     sent: &'static [u8],
@@ -726,7 +675,7 @@ async fn an_h2_connection_that_opens_with_the_preface_is_served_its_bytes_unchan
 }
 
 /// On an ALPN `h2` connection anything but the preface is a connection error (RFC 9113 §3.4): the
-/// wrap fails and the connection closes with no bytes, never read as an HTTP/1 request line.
+
 #[tokio::test]
 async fn an_h2_connection_that_does_not_open_with_the_preface_is_closed() {
     for sent in [INVALID_PREFACE, &b"GET / HTTP/1.1\r\nhost: x\r\n\r\n"[..]] {
@@ -738,7 +687,7 @@ async fn an_h2_connection_that_does_not_open_with_the_preface_is_closed() {
 }
 
 /// On an `http/1.1` connection (and one with no ALPN) the first bytes are not screened here: an
-/// unparseable request line reaches the HTTP/1 server, which keeps 1.5.5's `400`.
+
 #[tokio::test]
 async fn an_http1_connection_is_handed_its_bytes_unscreened() {
     for protocols in [&[&b"http/1.1"[..]][..], &[]] {
@@ -749,12 +698,8 @@ async fn an_http1_connection_is_handed_its_bytes_unscreened() {
     }
 }
 
-// ── KEY ENCODINGS AND REFUSAL HYGIENE (security.md: "PKCS#8, PKCS#1, SEC1 keys accepted"; "a bad
-// cert/key/CA is fatal and names the file, never the bytes") ─────────────────────────────────
-
 /// A 2048-bit RSA key in PKCS#1 form (`BEGIN RSA PRIVATE KEY`) and its self-signed `localhost`
-/// certificate (valid 100 years), made with `openssl genrsa -traditional` / `req -x509`. rcgen
-/// writes only PKCS#8, so these two encodings need fixtures.
+
 const PKCS1_KEY: &str = r#"
 -----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEAs9oZ0in3QFiWrn6yJWWSIzADITGmavfgWaH3H6iZ6Ot9ac5Z
@@ -808,7 +753,7 @@ aQkjH8c7ybL8SH2LZI+KowOXUAXnmQs3OLX5So7zDHex4jrhMmPXlljc9AomCERc
 "#;
 
 /// A P-256 key in SEC1 form (`BEGIN EC PRIVATE KEY`, `openssl ecparam -genkey -noout`) and its self-signed
-/// `localhost` certificate (valid 100 years).
+
 const SEC1_KEY: &str = r#"
 -----BEGIN EC PRIVATE KEY-----
 MHcCAQEEIGSc6UoTXkJyPydWn7C2uys0D6/ygo6kL2PMn3GfkwYxoAoGCCqGSM49
@@ -831,8 +776,7 @@ T2oQ/ubQAiBqi7uw7oUthq1/KJLtHYXa4UfAUmO9ZL2ZlSaJfVniUA==
 "#;
 
 /// PKCS#1 (RSA) and SEC1 (EC) keys build a server config, and the config serves the certificate
-/// that key belongs to: the key is matched to the certificate, so a wrong parse would not pair.
-/// (PKCS#8 is every other test in this file.)
+
 #[test]
 fn pkcs1_and_sec1_keys_build_a_server_config() {
     install_crypto_provider();
@@ -859,8 +803,7 @@ fn pkcs1_and_sec1_keys_build_a_server_config() {
 }
 
 /// A refused key or client CA names the FILE it came from (the operator's one handle on it) and
-/// echoes none of its bytes: not the raw text, not its base64. Each file is a PEM section whose body
-/// is a marker, so the marker (or its base64) appearing in the error is the leak.
+
 #[test]
 fn a_bad_key_or_client_ca_names_its_file_and_never_its_bytes() {
     use base64::Engine;
@@ -872,7 +815,6 @@ fn a_bad_key_or_client_ca_names_its_file_and_never_its_bytes() {
     let (cert_pem, key_pem) = gen_self_signed();
     let path_of = |tag: &str, pem: &str| temp_pem(tag, pem).to_string_lossy().into_owned();
 
-    // (field, the config, the file the error must name)
     let mut cases: Vec<(&str, TlsCfg, String)> = Vec::new();
     for (label, body) in [
         ("PRIVATE KEY", b64.as_str()),

@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The auth kind's shared plugin pieces: a decode error withholds the decoder's text but keeps a
-//! missing or unknown field's name; a completed login's principal crosses the door as the identity
-//! answer the kind's own check accepts, or as the short-buffer answer with nothing written.
 
 use super::*;
 use crate::abi::auth::{check_complete_login, slot, CompleteLoginIn, Ops};
@@ -30,7 +28,7 @@ fn refused(json: &str) -> String {
 }
 
 /// A missing or unknown field is named as serde names it; any other failure is its class and
-/// position, never the value it quoted.
+
 #[test]
 fn a_decode_error_withholds_the_decoders_text() {
     let raw = |json: &str| serde_json::from_str::<Settings>(json).expect_err("refused");
@@ -153,7 +151,7 @@ mod outage_plugin {
 }
 
 /// One `complete_login` with host buffers of `cap` bytes and `groups` spans: the answer, and the
-/// bytes and group spans as the host holds them after it.
+
 fn login(cap: usize, groups: usize) -> (Outcome, IdentifyOut, Vec<u8>, Vec<Span>) {
     login_on(plugin::MACRO_DOOR, cap, groups)
 }
@@ -189,7 +187,7 @@ fn login_on(
 }
 
 /// The principal crosses as the identity: subject, name, its roles as groups and its TTL, every
-/// other field absent, verdict LOGIN_IDENTITY; the kind's own check accepts the answer.
+
 #[test]
 fn a_completed_login_crosses_as_the_identity_answer() {
     let (outcome, out, mut bytes, mut spans) = login(64, 4);
@@ -223,7 +221,7 @@ fn a_completed_login_crosses_as_the_identity_answer() {
 }
 
 /// A buffer too small for the bytes, or for the groups, writes nothing and answers FAILED with
-/// both sizes needed.
+
 #[test]
 fn a_short_buffer_writes_nothing_and_names_what_it_needs() {
     let need = "probe:alice".len() + "Alice".len() + "ops".len() + "dev".len();
@@ -239,10 +237,7 @@ fn a_short_buffer_writes_nothing_and_names_what_it_needs() {
 }
 
 /// An IdP that could not answer (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors"):
-/// [`login_outage`] answers LOGIN_OUTAGE, READY, and carries the IdP's delay as the reply-extensions
-/// entry `retry_after`, ASCII decimal, written into the HOST's identity buffer (the one memory the
-/// host reads back after the call); with no delay nothing is written. The kind's own check accepts
-/// both.
+
 #[test]
 fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
     use crate::abi::auth::{retry_after_of, EXT_RETRY_AFTER, LOGIN_OUTAGE};
@@ -251,8 +246,7 @@ fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
         let (outcome, out, mut bytes, mut spans) = login_on(outage_plugin::MACRO_DOOR, 64, 4);
         assert_eq!(outcome, Outcome::Ready, "{stated:?}");
         assert_eq!(out.verdict, LOGIN_OUTAGE, "{stated:?}");
-        // The harness clears the reply's head pointers before handing it back, so the entry is
-        // read where the host reads it: the host's own identity buffer, written from its start.
+
         match stated {
             Some(n) => {
                 let entry = crate::abi::auth::retry_after_extensions(n);
@@ -276,7 +270,7 @@ fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
         };
         check_complete_login(outcome, &out, &host, &[]).expect("the kind's check passes");
     }
-    // A host buffer too small for the entry: still the outage, its delay left absent.
+
     RETRY_AFTER.with(|r| r.set(Some(120)));
     let (outcome, out, bytes, _) = login_on(outage_plugin::MACRO_DOOR, 4, 1);
     assert_eq!((outcome, out.verdict), (Outcome::Ready, LOGIN_OUTAGE));

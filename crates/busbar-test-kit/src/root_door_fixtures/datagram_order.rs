@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A datagram framer that records emits and can reenter its host after each one. The root's
-//! safe tests drive the real connector; only this existing fixture crate writes raw ABI buffers.
-
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::Outcome;
@@ -13,10 +10,8 @@ use busbar_contract::abi::transport::{
 };
 use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
 
-/// An emit observer, called after recording and without a fixture lock held.
 pub type Observer = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
-/// A valid accepting association with inert wire output and observable message order.
 pub struct Recording {
     facts: DoorFacts,
     emitted: Mutex<Vec<Vec<u8>>>,
@@ -28,12 +23,10 @@ pub struct Recording {
 }
 
 impl Recording {
-    /// An independent fixture.
     pub fn new() -> Arc<Self> {
         Self::with_user(b"hostfrag")
     }
 
-    /// An association with its own demultiplexing identity on a shared port.
     pub fn with_user(user: &[u8]) -> Arc<Self> {
         Arc::new(Self {
             facts: DoorFacts {
@@ -55,28 +48,23 @@ impl Recording {
         })
     }
 
-    /// Install a reentrant observer.
     pub fn observe(&self, observer: Observer) {
         *self.observer.lock().unwrap() = Some(observer);
     }
 
-    /// The complete messages presented to the framer, in crossing order.
     pub fn emitted(&self) -> Vec<Vec<u8>> {
         self.emitted.lock().unwrap().clone()
     }
 
-    /// Have Emit also yield the input as a channel piece for the session.
     pub fn echo_emits(&self) {
         self.echo.store(true, std::sync::atomic::Ordering::Release);
     }
 
-    /// Have a LINE Emit produce its answer on this originating association's channel.
     pub fn echo_emits_on(&self, stream: u64) {
         *self.echo_stream.lock().unwrap() = Some(stream);
         self.echo_emits();
     }
 
-    /// Refuse application messages after recording their actual Emit crossing.
     pub fn refuse_emits(&self) {
         self.refuse
             .store(true, std::sync::atomic::Ordering::Release);

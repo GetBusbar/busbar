@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The publication actor's recall and held-source paths, driven through a real [`Pairing`] and
-//! scripted [`LegSink`]s.
-//!
-//! The actor is not spawned on a runtime thread: each sink captures the scheduled
-//! [`PublicationTask`] and the test runs it to completion itself, so every interleaving below is
-//! produced by a callback running at the exact point the real race occurs (inside a sink's
-//! crossing, outside every pairing lock), with no sleeps and no scheduler timing. Assertions are
-//! on what each sink was actually asked to cross and on the pairing's public outcome counters.
 
 use super::*;
 use crate::datagram::{Across, Leg, LegSink, LineStep, Pairing, Yielded};
@@ -144,8 +137,7 @@ fn drive(pairing: &Arc<Pairing>, scheduled_on: &Script) -> PublicationOutcome {
 }
 
 /// A recall that a crossing's own `Complete` races with: before the crossing returns, another
-/// producer publishes a new continuation. The same actor must cross it; the old `Complete` must
-/// not erase it.
+
 #[test]
 fn a_recall_published_while_a_crossing_completes_is_drained_by_the_same_actor() {
     let caller = Arc::new(Script::default());
@@ -158,7 +150,7 @@ fn a_recall_published_while_a_crossing_completes_is_drained_by_the_same_actor() 
         owe_recall(&weak.upgrade().unwrap(), Leg::Caller);
         LineStep::Complete
     });
-    // The newly published continuation's recall yields one LINE frame for the other leg.
+
     caller.then(|input| {
         assert!(input.is_none());
         LineStep::Batch {
@@ -228,7 +220,7 @@ fn a_recall_that_completes_without_new_output_crosses_exactly_once() {
 }
 
 /// A crossing that needs storage credit has not finished the recall it was given: the recall is
-/// still owed once the credit wait returns, never consumed by the attempt.
+
 #[test]
 fn a_credit_crossing_keeps_the_recall_it_did_not_finish() {
     let caller = Arc::new(Script::default());
@@ -236,8 +228,7 @@ fn a_credit_crossing_keeps_the_recall_it_did_not_finish() {
     let pairing = bridged(&caller, &upstream);
 
     let memory = pairing.memory_account();
-    // Genuine retirement progress while the credit crossing is outside the lock, so the
-    // actor's wait for reader progress returns at once instead of failing the pairing.
+
     caller.then(move |_| {
         memory.progress_changed();
         LineStep::Credit
@@ -272,8 +263,7 @@ impl Drop for Retired {
 }
 
 /// A source job whose crossing does not take its input is held by the actor. If the pairing
-/// closes while that batch is published, the held job is retired at once, with its custody and
-/// admission released outside the pairing lock, though the pairing itself stays alive.
+
 #[test]
 fn a_close_during_a_non_accepting_batch_retires_the_held_source_immediately() {
     const SOURCE: &[u8] = b"original";
@@ -299,7 +289,7 @@ fn a_close_during_a_non_accepting_batch_retires_the_held_source_immediately() {
             accepted: false,
         }
     });
-    // The close lands while the non-accepting batch is being published to its sink.
+
     let weak = Arc::downgrade(&pairing);
     *caller.on_channels.lock().unwrap() = Some(Box::new(move || weak.upgrade().unwrap().close()));
 
@@ -318,7 +308,6 @@ fn a_close_during_a_non_accepting_batch_retires_the_held_source_immediately() {
         .unwrap();
     let outcome = drive(&pairing, &caller);
 
-    // The pairing is still retained here: the job was retired by the actor, not by pairing drop.
     assert_eq!(dropped.load(Ordering::SeqCst), 1, "admission retired once");
     assert!(
         lock_free.load(Ordering::SeqCst),

@@ -12,12 +12,12 @@ fn signal_names_match_serde() {
         let derived = serde_json::to_value(s).unwrap();
         assert_eq!(derived, serde_json::Value::String(s.name().to_string()));
     }
-    // Round-trips through the derive too (config declaration parses these exact strings).
+
     for &s in Signal::ALL {
         let parsed: Signal = serde_json::from_value(serde_json::json!(s.name())).unwrap();
         assert_eq!(parsed, s);
     }
-    // Bit positions are dense and unique (0..ALL.len()).
+
     let mut bits: Vec<u32> = Signal::ALL.iter().map(|s| s.bit()).collect();
     bits.sort_unstable();
     bits.dedup();
@@ -50,7 +50,7 @@ fn populated_bag_serializes_flat_scalars() {
 }
 
 /// A populated bag is NOT empty — the other half of `is_empty`'s contract (only the empty case was
-/// pinned above).
+
 #[test]
 fn populated_bag_is_not_empty() {
     let mut bag = SignalBag::new();
@@ -60,7 +60,7 @@ fn populated_bag_is_not_empty() {
 }
 
 /// `SignalBag::get` finds a previously-pushed value BY KEY (not by position, not the first/last
-/// entry unconditionally) and returns `None` for a signal never pushed.
+
 #[test]
 fn get_finds_by_signal_key_and_none_when_absent() {
     let mut bag = SignalBag::new();
@@ -100,8 +100,7 @@ fn iter_yields_every_pushed_entry_in_order() {
 }
 
 /// `spilled` is `false` for the empty bag and for a bag within the inline `SmallVec` capacity (4);
-/// pushing past that capacity spills to the heap and `spilled` must flip to `true`. Pins BOTH
-/// values so a mutant that hardcodes either constant is caught.
+
 #[test]
 fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
     let mut bag = SignalBag::new();
@@ -118,10 +117,7 @@ fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
 }
 
 /// LEGACY the retired engine crate's `src/engine/tests/signal_catalog_tests.rs::default_path_allocates_no_signals_container`.
-/// ZERO COST WHEN UNDECLARED: a candidate's bag on the default path (no hook declares a signal) is
-/// empty and holds no heap buffer, and a bag of up to four declared signals still lives inline, so
-/// declaring the usual handful of signals adds no allocation per candidate.
-/// RED: a bag that allocates before its fifth entry, or an empty bag that holds a heap buffer.
+
 #[test]
 fn a_bag_of_up_to_four_signals_never_spills_onto_the_heap() {
     let mut bag = SignalBag::new();

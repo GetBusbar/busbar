@@ -17,19 +17,8 @@ use crate::config::plane_sections::{
     HookRefError,
 };
 
-// ══ 1. THE SECTION LIST EXISTS ONCE, AND IS DERIVED ══════════════════════════════════════════════
-
-/// The list is a FUNCTION OF THE CONFIG GRAMMAR's two declaring tables, not a literal that happens
-/// to match them today. Written as `assert_eq!` against a recomputed union rather than against a
-/// hand-typed expectation: a hand-typed expectation is a third copy of the very literal this unit
-/// deleted, and it would go green while the derivation rotted.
 #[test]
 fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
-    // Needs a plane registered so `plane_keys()` contributes at least `pools` — the equality below
-    // is self-consistent regardless of WHICH plane (both sides derive from the same registry read),
-    // but the floor assertion needs `pools` (and the fixed `NAMED_MAP_SECTIONS` literal's
-    // `tools`/`agents`/`export`/`identity-providers`) actually present.
-    // Hold the registry through every read, so a sibling's isolated set cannot replace this one.
     let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
     ]);
@@ -48,8 +37,6 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
         "the section list must be the union of the two tables that DECLARE the config grammar"
     );
 
-    // A floor, so the equality above cannot hold vacuously if both sides collapse to nothing. The
-    // five are the literal this unit deleted; they must still all be there.
     for was_hardcoded in ["pools", "tools", "agents", "export", "identity-providers"] {
         assert!(
             config_sections().contains(&was_hardcoded),
@@ -62,26 +49,8 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     );
 }
 
-// EVERY section the grammar declares is refused BY BOTH PLANES' production validators MOVED to
-// `crates/busbar/tests/plane_config_cross_plane.rs::every_section_the_grammar_declares_is_refused_on_both_planes`
-// — it registers the REAL the retired engine crate/busbar_mcp and agent-engine planes, which only type-checks with
-// ONE `busbar_kernel` in the graph. See that file's header.
-
-// ══ 2. A THIRD PLANE COSTS A SECTION NAME AND NOTHING ELSE ═══════════════════════════════════════
-
-/// THE ANALOGUE OF `a_fourth_stream_costs_a_record_type_and_nothing_else`: a plane busbar does not
-/// have, validated and refused correctly, with NO config module, NO validator and NO refusal type
-/// written for it.
-///
-/// `bays` is not a busbar plane and never has been. All it takes to be judged by the one rule is to
-/// appear in the section list the rule is handed — which is exactly what a real fourth plane would
-/// get for free by joining `Plane::ALL`.
 #[test]
 fn a_third_plane_costs_a_section_name_and_nothing_else() {
-    // Hold the registry serial lock for the whole test. Other tests seed a `bays` plane under a
-    // `TestRegistryIsolation`, and an unguarded reader on this thread sees that isolated list
-    // whenever the two interleave. The registry is process-global, so reading it is not isolated
-    // unless the reader holds the lock too.
     let _isolation = crate::test_support::planes::TestRegistryIsolation::empty();
     let mut sections = config_sections();
     assert!(
@@ -90,8 +59,6 @@ fn a_third_plane_costs_a_section_name_and_nothing_else() {
     );
     sections.push("bays");
 
-    // The parse-time rule refuses it, names it, and offers the bare name meant — with nothing
-    // written anywhere for `bays`.
     let err = refuse_cross_plane_reference("`bays.dock`", "bays.sanitizer", &sections)
         .expect_err("a plane busbar does not have is still a plane a hook may not reach onto");
     assert_eq!(
@@ -101,19 +68,12 @@ fn a_third_plane_costs_a_section_name_and_nothing_else() {
          an entry on another. Did you mean the hook `sanitizer`?"
     );
 
-    // The section-level list inherits it too, by the same call — a section attach is not a looser
-    // rule, and a fourth plane does not get to be the exception.
     validate_section_hooks("`bays.hooks`", &["bays.sanitizer".to_string()], &sections)
         .expect_err("the section-level attach list is judged by the same rule");
 
-    // And a BARE name on the new plane is still the legal form. A rule that refused everything
-    // would pass the assertions above while being useless.
     validate_section_hooks("`bays.hooks`", &["sanitizer".to_string()], &sections)
         .expect("a bare name is what a hook reference is, on every plane");
 
-    // The other direction of the same fact: without the new section in the list, `bays.sanitizer`
-    // is merely NOT BARE — a different refusal with a different sentence. That is what makes the
-    // list a real input rather than decoration.
     assert_eq!(
         judge_hook_ref("bays.sanitizer", &config_sections()),
         Err(HookRefError::NotBare {
@@ -122,12 +82,6 @@ fn a_third_plane_costs_a_section_name_and_nothing_else() {
     );
 }
 
-// ══ 3. TWO CROSS-PLANE REFUSALS, AND THEY ARE NOT THE SAME CHECK ═════════════════════════════════
-
-/// THE PARSE-TIME REFUSAL, on a string, before anything is known to exist.
-///
-/// The input is deliberately one NOTHING DEFINES: no `planner` exists on any plane in this test, so
-/// only a SHAPE rule can refuse it.
 #[test]
 fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
     let sections = config_sections();
@@ -139,10 +93,6 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
     );
 }
 
-// ══ THE REMAINING SENTENCES, so the total `From` has a reader for every arm ═══════════════════════
-
-/// An empty name and a dotted name that names no section are DIFFERENT refusals with different
-/// sentences. The `From` is total so that stays true when a fourth arm is added.
 #[test]
 fn every_refusal_arm_has_a_sentence_of_its_own() {
     let sections = config_sections();
@@ -155,7 +105,7 @@ fn every_refusal_arm_has_a_sentence_of_its_own() {
         "`tools.search`: `hooks:` may only name hooks from the top-level `hooks:` map, by bare \
          name. `a.b` is not a bare name."
     );
-    // Whitespace around a reference does not launder it past the rule.
+
     assert_eq!(
         judge_hook_ref("  agents.planner  ", &sections),
         Err(HookRefError::CrossPlane {

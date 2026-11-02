@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The validate refusal rule (`abi/mechanism/lifecycle.rs`): one RED per arm of
-//! `check_validate_refusal`, and the host's rendering pinned against the 1.5.5 words.
 
 use super::*;
 use crate::abi::mechanism::check::{Fault, Rule};

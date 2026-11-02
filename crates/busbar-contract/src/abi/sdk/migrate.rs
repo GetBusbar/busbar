@@ -63,8 +63,6 @@ pub enum MigrateNeed {
 #[serde(deny_unknown_fields)]
 pub struct Migrated {
     /// The settings section as it reads now. Core writes it in place of the old one.
-    // settings-leak-lint: allow — the migrated configuration itself, written back into the
-    // operator's own file by `--migrate-config`; no admin read serves it.
     pub settings: serde_json::Value,
     /// One line per change, each saying what changed and why. Core prints each under the plugin's
     /// name.
@@ -89,15 +87,7 @@ impl Migrated {
 /// A plugin's own migration of its settings section.
 pub trait Migrate {
     /// Migrate `settings` (the section as the operator wrote it; `null` when it wrote none) from
-    /// the busbar version `from` (`"1.5.5"`, or `""` when the configuration does not say). Pure: it
-    /// reads nothing but its arguments and writes nothing.
-    ///
-    /// A plane is handed one object keyed by section: the sections it owns (its declaring section
-    /// first), and beside them the sections it CONSUMES, READ-ONLY. It answers its own sections
-    /// rewritten; core refuses an answer that rewrites a consumed one. A plane that consumes the
-    /// providers is handed the providers catalog merged under the deployment's entries, as boot
-    /// merges them, so it sees every provider it can route to, whether the catalog or the
-    /// configuration states it.
+
     fn migrate(settings: serde_json::Value, from: &str) -> Migrated;
 }
 
@@ -131,8 +121,7 @@ impl<M: Migrate> RawSlot for Migrator<M> {
             }
             Err(e) => (Outcome::Refused, e.into_bytes()),
         };
-        // An oversized answer still leaves room for a fixed, nonsecret refusal reason when the
-        // host lent enough bytes for that reason. Never truncate an answer or a diagnostic.
+
         let (outcome, answer) = if answer.len() > input.err_cap {
             (
                 Outcome::Refused,
@@ -176,10 +165,7 @@ unsafe fn lent<'a>(p: *const u8, len: usize) -> &'a [u8] {
 }
 
 /// The answer a door's `migrate` named, read back by the HOST: the plugin's [`Migrated`], or the
-/// reason it gave.
-///
-/// # Errors
-/// The plugin did not answer READY (its reason), or answered something that is not a [`Migrated`].
+
 pub fn read_answer(outcome: Outcome, answer: &[u8]) -> Result<Migrated, String> {
     let text = String::from_utf8_lossy(answer);
     match outcome {

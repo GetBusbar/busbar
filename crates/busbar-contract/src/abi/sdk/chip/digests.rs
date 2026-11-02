@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! SHA-1 (FIPS 180-4) and MD5 (RFC 1321) whose every state and padding buffer is wiped, for the
-//! legacy database auth recipes keyed over a password. The same reasoning as `sdk::hmac`: a
-//! library digest frees its chaining state unwiped.
 
 use zeroize::Zeroizing;
 

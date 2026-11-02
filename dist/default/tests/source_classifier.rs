@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CLASSIFIER'S OWN GATE. `tests/common/mod.rs` decides what "production source" means for
-//! every scanning gate in this crate, so a bug in it is a silent weakening of all of them at once —
-//! a classifier that fails to recognise a `#[cfg(test)] mod` hands the scans the test bodies back,
-//! and every one of those gates becomes satisfiable by a mock.
-//!
-//! So the classifier is driven directly, over the shapes that actually appear in this tree, and the
-//! decisive cases are the negative ones: a token that appears ONLY inside a test module must be
-//! invisible, and a token in a comment or a string must not be mistaken for either.
-
 mod common;
 
 use common::{classify, item_body, production_lines};
 use std::path::Path;
 
-/// Join the production lines of a classified text back into one scannable string.
 fn production_of(src: &str) -> String {
     classify(src, false)
         .into_iter()
@@ -185,8 +175,6 @@ fn an_absent_item_is_absent_rather_than_the_whole_file() {
     assert!(item_body(&lines, "fn meter(").is_none());
 }
 
-/// The classifier is pointed at a real file in the tree so a refactor that moves the source layout
-/// out from under it is caught here rather than as nine silently-vacuous gates.
 #[test]
 fn the_classifier_reads_this_crate_s_own_root() {
     let main = Path::new(env!("BUSBAR_CORE_DIR")).join("src/main.rs");

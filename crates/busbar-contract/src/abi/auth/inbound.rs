@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE INBOUND FAMILY: `verify` and the `begin_login`/`complete_login` pair, plus the shapes the
-//! outbound family shares with them ([`RequestFacts`], [`NamedValue`]).
-//!
-//! An identity is WHO the caller is, never what they may do: nothing here has a slot for a pool, a
-//! scope or a policy decision. The kernel resolves `groups -> role_bindings -> policy` afterwards.
 
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Span};
 

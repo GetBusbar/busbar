@@ -2,27 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE RANGES THE CONNECTION TABLE EXPOSES OUTLIVE LATER ANSWERS: a raw plugin that keeps the
-//! `ns` range of one `read` answer, or any of the six string ranges of one `facts` answer, may
-//! still read them after any number of later `read`/`facts` calls, until the connection's close
-//! (`WirePiece::ns`, `ConnSlots::facts`, the module docs: "valid until that connection is closed").
-//!
-//! These tests drive the ACTUAL `host_slots()` read/facts/close slots (the SDK's [`HostConns`] copies
-//! every range at once, so it could never see the bug) and keep the exact `(ptr, len)` ranges the
-//! slots handed out. THEY NEVER DEREFERENCE A SAVED RANGE, at all: [`copy`] looks up the string the
-//! connection's retention CURRENTLY owns at the saved address and length ([`live`]), under the
-//! host's lock, and clones it through the owner's own fresh reference; no owner there fails the
-//! assertion. The saved `(ptr, len)` is only compared. That is the exact witness limit: an address
-//! that equals a live string's proves the host keeps a string there, NOT that the plugin's old
-//! pointer has provenance for it (a host that freed the old string may have its address reused by a
-//! new one of the same length); the retained-address assertions plus the independently written
-//! expected text (the EARLIER answer's) are what fail such a host, soundly, without any read
-//! through the old pointer. Nothing is touched after a close: the close tests assert the
-//! connection's retention was taken out of the host's table.
-//!
-//! The witness is the only code tied to the host's private shape ([`live`], [`kept`], [`holds`],
-//! [`retired`]); the baseline stage for the unfixed shape (`Held { facts, ns }`) replaces just those
-//! functions with the same observable meaning (the same safe live-owner lookup over the old
-//! fields), so the unfixed host fails the witness assertions rather than failing to compile.
 
 use super::*;
 use crate::conn::ConnSlab;
@@ -131,7 +110,7 @@ fn rig() -> (Arc<Scripted>, Box<ConnHost>, Box<ConnHost>) {
 }
 
 /// A connection the instance behind `host` opened (through the SDK's view, which is all it is used
-/// for: the ranges under test are only ever read through the raw slots).
+
 fn open(host: &ConnHost) -> ConnId {
     // SAFETY: the host's own table over the context `host` keeps alive for the test.
     let plugin = unsafe { HostConns::new(host_slots(), host.ctx()) };
@@ -145,8 +124,6 @@ fn open(host: &ConnHost) -> ConnId {
         )
         .expect("the scripted host opens")
 }
-
-// ── THE RAW SLOTS ────────────────────────────────────────────────────────────────────────────────
 
 /// The `read` slot itself: the numbering range the piece states.
 fn raw_read(ctx: ConnCtx, conn: ConnId) -> DeclStr {
@@ -163,7 +140,7 @@ fn raw_read(ctx: ConnCtx, conn: ConnId) -> DeclStr {
 }
 
 /// The `facts` slot itself: the six string ranges, in field order (sni, alpn, subject, issuer,
-/// fingerprint, claim).
+
 fn raw_facts(ctx: ConnCtx, conn: ConnId) -> [DeclStr; 6] {
     // SAFETY: an all-zero `WireConnFacts` is a valid out-slot (integers, NULL ranges).
     let mut w: WireConnFacts = unsafe { core::mem::zeroed() };
@@ -186,14 +163,8 @@ fn raw_close(ctx: ConnCtx, conn: ConnId) -> Result<(), ConnError> {
     unsafe { (host_slots().close.unwrap())(ctx, conn.0) }.result()
 }
 
-// ── THE WITNESS (the only code tied to the host's private shape) ─────────────────────────────────
-
 /// A copy of the string the connection's retention CURRENTLY owns at exactly the saved address and
-/// length, read through the owner's own fresh reference under the host's lock; `None` when the
-/// retention owns none there. `d` is only compared as an address and a length, NEVER dereferenced:
-/// an address equal to a live string's proves the host still keeps a string there, not that the
-/// saved raw pointer has valid provenance for it (an allocator may reuse a freed address), so the
-/// saved pointer is not trusted to read anything.
+
 fn live(host: &ConnHost, conn: ConnId, d: DeclStr) -> Option<String> {
     host.state.held().get(&conn).and_then(|held| {
         held.retention
@@ -229,12 +200,8 @@ fn retired(host: &ConnHost, conn: ConnId) -> bool {
     host.state.held().get(&conn).is_none()
 }
 
-// ── READING A RANGE ──────────────────────────────────────────────────────────────────────────────
-
 /// The text of a range the slots handed out: the CURRENT live owner's copy at the saved address and
-/// length (see [`live`]); a missing owner fails the assertion. The saved pointer is never read
-/// through, so this is sound even on a host that freed the string and let the allocator reuse its
-/// address, where the assertion on the exact expected text (the earlier answer's) is what fails.
+
 fn copy(host: &ConnHost, conn: ConnId, d: DeclStr) -> String {
     live(host, conn, d).unwrap_or_else(|| {
         panic!(
@@ -263,13 +230,8 @@ fn facts_of(
     }
 }
 
-// ── THE STATUS NUMBERING ─────────────────────────────────────────────────────────────────────────
-
 /// RED: `host_read` overwrote the connection's one numbering string, freeing the heap bytes an
-/// earlier `ns` range named, then answered the new one. Now A, then B, then none, then A again:
-/// every range handed out stays owned and readable until the close, A is the same range both
-/// times (equal strings dedupe), the absent answer is the NULL range and takes nothing back, and a
-/// hundred repeats add nothing.
+
 #[test]
 fn an_earlier_numbering_range_outlives_a_different_and_an_absent_one_until_close() {
     let (script, a, _b) = rig();
@@ -328,7 +290,7 @@ fn an_earlier_numbering_range_outlives_a_different_and_an_absent_one_until_close
 }
 
 /// An absent numbering allocates nothing and files no entry for the connection: a read with none
-/// stated is the NULL range and leaves the host's table as it was.
+
 #[test]
 fn an_absent_numbering_files_nothing() {
     let (_script, a, _b) = rig();
@@ -342,20 +304,14 @@ fn an_absent_numbering_files_nothing() {
     assert_eq!(raw_close(ctx, conn), Ok(()));
 }
 
-// ── THE FACTS ────────────────────────────────────────────────────────────────────────────────────
-
 /// RED: `host_facts` replaced the connection's one `ConnFacts` (`Option::insert`), freeing the six
-/// strings an earlier `facts` answer exposed. Now six facts answers (two certificate versions, the
-/// certificate absent, the first again, and equal strings in several fields): every range of every
-/// answer stays owned and readable, an absent field is the NULL range and takes nothing back, equal
-/// strings share one range, and what is never exposed (the key pin) is not kept.
+
 #[test]
 fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_until_close() {
     let (script, a, _b) = rig();
     let (ctx, conn) = (a.ctx(), open(&a));
     let mut saved: Vec<(DeclStr, &str)> = Vec::new();
 
-    // Version 1: all six present.
     *script.facts.lock().unwrap() = facts_of(
         Some("one.sni.test"),
         Some("h2"),
@@ -374,7 +330,6 @@ fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_un
     saved.extend(v1.into_iter().zip(expect1));
     assert_eq!(kept(&a, conn), 6);
 
-    // Version 2: all six different, and facts nothing exposes.
     let mut two = facts_of(
         Some("two.sni.example"),
         Some("http/1.1"),
@@ -400,7 +355,6 @@ fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_un
         "a fact the plugin is never shown was kept"
     );
 
-    // Version 3: every field absent, the certificate with them.
     *script.facts.lock().unwrap() = ConnFacts::default();
     let v3 = raw_facts(ctx, conn);
     assert!(
@@ -409,7 +363,6 @@ fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_un
     );
     assert_eq!(kept(&a, conn), 12, "absent facts took nothing back");
 
-    // Version 4: version 1 again: the same ranges, nothing added.
     *script.facts.lock().unwrap() = facts_of(
         Some("one.sni.test"),
         Some("h2"),
@@ -422,7 +375,6 @@ fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_un
     }
     assert_eq!(kept(&a, conn), 12);
 
-    // Version 5: one string in three fields is one range.
     *script.facts.lock().unwrap() = facts_of(Some("shared"), Some("shared"), None, Some("shared"));
     let v5 = raw_facts(ctx, conn);
     assert_eq!((v5[0].ptr, v5[0].len), (v5[1].ptr, v5[1].len));
@@ -431,8 +383,6 @@ fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_un
     saved.push((v5[0], "shared"));
     assert_eq!(kept(&a, conn), 13);
 
-    // Every range of every answer is still the live storage the retention owns, and reads back as
-    // what the host stated then. The ownership of ALL is asserted before ANY is read.
     for (range, _) in &saved {
         assert!(
             owns(&a, conn, *range),
@@ -447,10 +397,8 @@ fn every_facts_string_range_outlives_later_versions_and_an_absent_certificate_un
     assert!(retired(&a, conn));
 }
 
-// ── GROWTH ───────────────────────────────────────────────────────────────────────────────────────
-
 /// Many distinct numberings and facts grow the retention through many rehashes; no range handed out
-/// earlier moves or frees (rehashing moves `String` headers, never the heap bytes they own).
+
 #[test]
 fn many_growth_calls_keep_every_earlier_range_where_it_was_handed_out() {
     let (script, a, _b) = rig();
@@ -476,7 +424,7 @@ fn many_growth_calls_keep_every_earlier_range_where_it_was_handed_out() {
         assert_eq!(copy(&a, conn, *numbering), format!("numbering-{i}"));
         assert_eq!(copy(&a, conn, *sni), format!("host-{i}.growth.test"));
     }
-    // Repeating an answer adds nothing and names the range it always did.
+
     *script.namespace.lock().unwrap() = Some("numbering-7".into());
     assert_eq!(raw_read(ctx, conn).ptr, numberings[7].ptr);
     assert_eq!(kept(&a, conn), 400);
@@ -484,12 +432,8 @@ fn many_growth_calls_keep_every_earlier_range_where_it_was_handed_out() {
     assert!(retired(&a, conn));
 }
 
-// ── CONCURRENCY ──────────────────────────────────────────────────────────────────────────────────
-
 /// Raw `read` and `facts` calls from several threads on one connection, each call a different one
-/// of eight values: the host's one lock makes the interning whole. Every range any thread was handed
-/// is owned and readable once they are joined (the connection still open), the same text is always
-/// the same range, and exactly the sixteen distinct strings are held.
+
 #[test]
 fn concurrent_raw_reads_and_facts_on_one_connection_keep_every_handed_range() {
     let (script, a, _b) = rig();
@@ -570,12 +514,8 @@ fn concurrent_raw_reads_and_facts_on_one_connection_keep_every_handed_range() {
     assert!(retired(&a, conn));
 }
 
-// ── CLOSE ────────────────────────────────────────────────────────────────────────────────────────
-
 /// Only a SUCCESSFUL close by the owner ends the borrows: a close another instance attempts (not its
-/// connection), a close the backend fails, and a close of a connection that is not open all leave
-/// every exposed range owned and readable; the successful close retires exactly that connection's
-/// retention, never a sibling's, and a second close finds nothing. Nothing is read after a close.
+
 #[test]
 fn only_a_successful_owner_close_retires_the_exposed_ranges() {
     let (script, a, b) = rig();
@@ -589,14 +529,11 @@ fn only_a_successful_owner_close_retires_the_exposed_ranges() {
     assert_eq!(copy(&a, conn, numbering), "kept-numbering");
     assert_eq!(copy(&a, conn, sni), "kept.sni.test");
 
-    // Another instance's close of the connection is refused, files nothing of its own, and ends
-    // nothing of the owner's.
     assert_eq!(raw_close(bctx, conn), Err(ConnError::NotOwner));
     assert!(retired(&b, conn));
     assert_eq!(copy(&a, conn, numbering), "kept-numbering");
     assert_eq!(copy(&a, conn, sni), "kept.sni.test");
 
-    // The backend failing the close ends no borrow either.
     script.fail_close.store(true, Ordering::SeqCst);
     assert_eq!(raw_close(actx, conn), Err(ConnError::Fault));
     assert!(owns(&a, conn, numbering) && owns(&a, conn, sni));
@@ -604,7 +541,6 @@ fn only_a_successful_owner_close_retires_the_exposed_ranges() {
     assert_eq!(copy(&a, conn, sni), "kept.sni.test");
     script.fail_close.store(false, Ordering::SeqCst);
 
-    // The successful close retires this connection's retention, and only this one's.
     assert_eq!(raw_close(actx, conn), Ok(()));
     assert!(
         retired(&a, conn),

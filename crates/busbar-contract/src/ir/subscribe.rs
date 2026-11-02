@@ -2,20 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SUBSCRIBE IR data — the `OpVerb::SUBSCRIBE` request/response pair.
-//!
-//! A caller names a thing and asks to start — or to stop — being told when it changes. That is the
-//! whole operation, and it is two directions of ONE shape: the name is the same name, the answer is
-//! the same acknowledgement, and the only difference is which way the registration moves. One
-//! protocol spells the pair as a subscribe/unsubscribe verb pair; another spells it as its
-//! push-notification-configuration verbs. They are the same request.
-//!
-//! `SubscribeResp` carries an OPTIONAL registration record rather than pretending every peer returns
-//! one, so a cell never has to invent a body its own wire does not have.
-//!
-//! The family-blind `IrFacts` projection over `SubscribeReq` lives HERE (relocated beside its data at
-//! Batch C-2, keeping the orphan rule satisfied: the `IrFacts` trait and this data live in one
-//! crate). A shape (DECISIONS #83), relocated module-path-only from
-//! `busbar-substrate-values::ir::subscribe`, which re-exports it under its historical path.
 
 use super::SourceScopedExtra;
 use crate::operation::OpVerb;
@@ -59,10 +45,7 @@ pub struct SubscribeResp {
 }
 
 /// THE SUBSCRIBE FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. The one
-/// caller-authored thing on the operation is the `target` name (a resource URI, say), forwarded
-/// upstream verbatim, so it projects to [`crate::ir::facts::ContentItem::Text`] for a screening gate.
-/// `wants_stream` is `false`: registering is answered once with an acknowledgement — the events that
-/// follow are a separate channel, not an incremental rendering of this request.
+
 impl crate::ir::facts::IrFacts for SubscribeReq {
     fn verb(&self) -> OpVerb {
         OpVerb::SUBSCRIBE

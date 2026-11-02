@@ -33,7 +33,7 @@ impl RawIngress {
 
 impl PortAssociations {
     /// Admit a newly received raw network datagram without queuing it behind a busy association.
-    /// Application writes and already accepted output retain their ordinary custody paths.
+
     pub fn raw_datagram(
         &self,
         from: SocketAddr,
@@ -55,8 +55,7 @@ impl PortAssociations {
     }
 
     /// Newly received raw datagrams discarded because their association was not receive-ready,
-    /// including unavailable pre-crossing output credit under its configured memory limit.
-    /// Unrouted datagrams and selections already closing or removed do not contribute.
+
     #[must_use]
     pub fn raw_busy_dropped(&self) -> u64 {
         self.raw_busy_dropped.load(Ordering::Relaxed)

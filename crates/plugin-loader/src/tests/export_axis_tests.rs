@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The export rows (`export_axis.rs`) through BOTH DOORS on the export kind's memory ABI: the real
-//! sinks (owner FIXTURES ruling: "real plugins are the proofs"), reached by the both-ways table's
-//! `export-scrape`, `export-trace` and `export-carried` rows — each LINKED by its logic crate's
-//! `door` and DROPPED IN as its `-plugin` crate's `cdylib` (signed first-party, its Statement
-//! rendering in its manifest), probed, validated and opened through ONE dispatcher, and required to
-//! answer the same. The validate refusal renders
-//! under the instance as 1.5.5 printed it.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::export::{ExportStream, CHECK_PHASE_INSTANCES};
@@ -38,15 +30,11 @@ fn trace_diagnostics_mask_userinfo_even_when_the_endpoint_is_malformed() {
     assert!(!mask("https://user:secret@collector/v1/traces").contains("secret"));
 }
 
-/// A first-party export manifest named `name`, at this host's export ABI.
 fn manifest(name: &str) -> Manifest {
     let v = busbar_contract::abi::export::ABI_VERSION;
     both_ways::statement("export", name, name, v)
 }
 
-/// The two registries a sink is reached through: its `door` LINKED, and its `-plugin` crate's
-/// `cdylib` (`crate_snake`) DROPPED IN with its Statement rendering. A `cdylib` not built is a hard
-/// failure naming the command that builds it, never a skip.
 fn both(name: &str, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
     let lib = std::fs::read(both_ways::cdylib(crate_snake)).expect("read the cdylib");
     let linked = PluginRegistry::empty()
@@ -64,8 +52,6 @@ fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::new(DispatchConfig::default()))
 }
 
-/// The recorder exposition both doors render back, in the sink's stable order (counters, then
-/// gauges, then histograms/summaries, name-sorted within a kind).
 const EXPOSITION: &str = "\
 # TYPE busbar_requests_total counter
 busbar_requests_total{pool=\"a\\\"b\",outcome=\"ok\"} 3
@@ -81,9 +67,6 @@ busbar_request_duration_seconds_count 2
 
 ";
 
-/// THE PROMETHEUS SINK, BOTH DOORS: each probes as carrying `metrics`, validates good settings
-/// clean, refuses a bad key under the instance in 1.5.5's words and its zero retention in its own
-/// whole sentence, and renders the recorder snapshot back byte for byte — the same either way.
 #[test]
 fn the_scrape_sink_answers_the_same_through_either_door() {
     let row = "export-scrape";
@@ -130,9 +113,6 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
     assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
 }
 
-/// THE OTLP SINK, BOTH DOORS: each probes as carrying `traces`, refuses a bad key under the
-/// instance, and opens on good settings — the same either way. Its deliveries ride the host's
-/// connector; the shipped binary's both-doors proof posts them (`traces_stream_both_doors`).
 #[test]
 fn the_trace_sink_answers_the_same_through_either_door() {
     let row = "export-trace";
@@ -142,8 +122,6 @@ fn the_trace_sink_answers_the_same_through_either_door() {
         both_ways::fixture(row).1,
     );
     let transcripts = doors.map(|registry| {
-        // The OTLP sink declares an http need: opened to deliver, it binds over a table (one that
-        // declares it and opens nothing; this row never delivers).
         let rows = ExportRows::new(&registry, dispatcher())
             .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = row;
@@ -165,9 +143,6 @@ fn the_trace_sink_answers_the_same_through_either_door() {
     assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
 }
 
-/// THE REQUEST-LOG WEBHOOK SINK, BOTH DOORS: each probes as carrying `logs`, validates good settings
-/// clean, refuses a bad key under the instance in 1.5.5's words, and opens on good settings — the
-/// same either way. Its POSTs ride the host's connector over the `http` framer.
 #[test]
 fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
     let row = "export-carried";
@@ -177,8 +152,6 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
         both_ways::fixture(row).1,
     );
     let transcripts = doors.map(|registry| {
-        // The webhook sink declares an http need: opened to deliver, it binds over a table (one that
-        // declares it and opens nothing; this row never delivers).
         let rows = ExportRows::new(&registry, dispatcher())
             .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = row;
@@ -201,13 +174,6 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
     assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
 }
 
-/// **A REFUSED WEBHOOK TARGET IS ONE LINE OF BUSBAR'S LOG, SAID AT START** (oracle cell
-/// `export|request-log-webhook|loopback-refused`): 1.5.5 printed `…; disabling this webhook
-/// exporter` once, after the boot's own lines, where it configured its exporters. The sink asks
-/// the host's verdict on its target in `ready`, and its ERROR line is copied to busbar's log, so
-/// `ready` is asked when the host STARTS its sinks: opening says nothing, the start says it once,
-/// and a delivery after it says it no more. RED before: `ready` ran inside `open`, so the line
-/// came before the boot's own lines.
 #[test]
 fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
     use crate::dispatch::log_file::tests::{config, scratch, HostLog};
@@ -225,7 +191,7 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
     let rows = ExportRows::new(&registry, dispatcher())
         .with_logs(&logs)
         .with_conns(Arc::new(crate::needs_restated::Refusing));
-    // A target of this test's own, so a parallel test's line is never counted.
+
     let target = serde_json::json!({ "url": "http://127.0.0.1:1/said-once" });
     let said = || {
         host.lines()
@@ -255,9 +221,6 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
     assert_eq!(after, 1, "a delivery after it never says it again");
 }
 
-/// RED (export ABI defect 3): `check` runs on the first instance whose settings open. Before, it
-/// opened only on the first instance's settings, and when those did not open every finding across
-/// the instances was dropped: here, the second scrape sink's refusal.
 #[test]
 fn check_runs_when_the_first_instance_does_not_open() {
     let row = "export-scrape";
@@ -288,8 +251,6 @@ fn check_runs_when_the_first_instance_does_not_open() {
     );
 }
 
-/// A module no `kind: export` row answers is not the axis's (`None`), and opening it is refused
-/// naming it.
 #[test]
 fn a_module_no_row_answers_is_not_on_the_axis() {
     let registry = PluginRegistry::empty();
@@ -302,11 +263,6 @@ fn a_module_no_row_answers_is_not_on_the_axis() {
     assert_eq!(refused, "no `kind: export` plugin answers to 'nothing'");
 }
 
-/// DISCOVERY AT BOOT ON THE EXPORT AXIS (`abi::mechanism::lifecycle` READY): an export door that
-/// states `ready` is awaited when its opened instance is STARTED (where 1.5.5 configured its
-/// exporters), not when it is opened. A refusal refuses the start with the plugin's own text; a
-/// READY answer starts it. The instance `check` opens to judge a configuration (it has no
-/// connector) is never asked.
 #[test]
 fn an_export_door_stating_ready_is_awaited_when_it_starts() {
     use crate::dispatch::ready::ready_plugins::export::{door, NAME, READIES};
@@ -342,15 +298,6 @@ fn an_export_door_stating_ready_is_awaited_when_it_starts() {
     assert_eq!(READIES.load(Ordering::SeqCst), before + 2);
 }
 
-/// THE PER-INSTANCE IN-FLIGHT BOUND IS 1.5.5'S, PINNED (Q128 export audit, ruled parity
-/// 2026-10-18): an instance opened to deliver is bound by the `max_inflight_deliveries` ITS OWN
-/// settings state, clamped to at least one permit, within the door's declared concurrency. 1.5.5
-/// built each delivery target's gate as `max_inflight.clamp(1, Semaphore::MAX_PERMITS)` (v1.5.5
-/// crates/busbar/src/export/, the target gate) and validated only the largest instance's bound
-/// (v1.5.5 config/mod.rs:4003-4008, config_validate/mod.rs:1406-1420), so an instance stating `0`
-/// beside a larger sibling validated and ran at one permit; a per-instance refusal is an
-/// owner-signable difference, not a fix. Proven on the loader's own export witness (its Statement
-/// declares a concurrency of 4).
 #[test]
 fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
     use crate::dispatch::ready::ready_plugins::export::{door, NAME};
@@ -387,9 +334,6 @@ fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
     );
 }
 
-/// RED (export ABI defect 3): a `check` asked of a row that will not load here answers why, as a
-/// finding. Before, the load failure answered no findings at all, so the configuration validated
-/// clean while the sink's own checks never ran.
 #[test]
 fn a_check_on_a_row_that_will_not_load_answers_why() {
     let row = "export-unloadable";

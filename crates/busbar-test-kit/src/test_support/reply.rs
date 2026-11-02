@@ -48,22 +48,19 @@ mod sealed {
     #[derive(Debug, Clone, Copy)]
     pub struct Token(pub(super) ());
 
-    /// Only the reviewed generic and plane OPEN outputs carry an instance result.
     pub trait Open {}
 
-    /// Only this module implements it: the reviewed `out`s and how each is copied.
     pub trait Take: Sized {
-        /// The `out`'s head.
         fn head(&mut self) -> &mut OutHead;
-        /// Clear every reviewed pointer field (the head's included), keeping every scalar.
+
         fn clear(&mut self, token: Token);
-        /// Judge fields whose limits come from the input actually lent for this call.
+
         fn judge_input(&self, _: &dyn core::any::Any, _: Token) {}
-        /// Judge and copy every reviewed field the op wrote.
+
         fn take(&self, outcome: Outcome, token: Token) -> <Self as super::Reply>::Owned
         where
             Self: super::Reply;
-        /// The instance an `open` `out` states; NULL for every other `out`.
+
         fn opened(&self, _: Token) -> *mut core::ffi::c_void {
             core::ptr::null_mut()
         }
@@ -72,13 +69,10 @@ mod sealed {
 
 use sealed::Token;
 
-/// A reviewed `out` [`call`] copies. Sealed.
 pub trait Reply: AbiOut + sealed::Take {
-    /// The owned copies of its reviewed fields.
     type Owned: fmt::Debug;
 }
 
-/// A reviewed OPEN output, sealed to the lifecycle's `OpenOut` and the plane's `PlaneOpenOut`.
 pub trait OpenReply: Reply + sealed::Open {}
 
 /// One typed hosted OPEN crossing: a terminal copied answer, or custody of its unfinished
@@ -93,7 +87,6 @@ pub enum OpenStep<'h, I: AbiIn, O: OpenReply> {
 }
 
 impl<'h, I: AbiIn, O: OpenReply> OpenStep<'h, I, O> {
-    /// The latest copied answer, without transferring its unfinished instance.
     pub fn answer(&self) -> &Called<'h, O> {
         match self {
             Self::Complete(answer) => answer,
@@ -102,12 +95,6 @@ impl<'h, I: AbiIn, O: OpenReply> OpenStep<'h, I, O> {
     }
 }
 
-/// Exclusive custody of one unfinished hosted OPEN. The captured [`super::fake::LentIn`]
-/// retains both the host loan and the heap descriptor arrays its builders own. Resume reuses
-/// those exact bytes and ticket; a caller cannot substitute another input or another door.
-///
-/// Cancellation prevents further resumes. Explicit close consumes this token; abandoning it
-/// closes the partial instance once, before its input owners and host loan are released.
 pub struct PendingOpen<'h, I: AbiIn, O: OpenReply> {
     input: Option<super::fake::LentIn<'h, I>>,
     open: super::ViewOp,
@@ -129,16 +116,10 @@ impl<I: AbiIn, O: OpenReply> fmt::Debug for PendingOpen<'_, I, O> {
 }
 
 impl<'h, I: AbiIn, O: OpenReply> PendingOpen<'h, I, O> {
-    /// The latest copied PENDING answer.
     pub fn answer(&self) -> &Called<'h, O> {
         &self.answer
     }
 
-    /// Resume the same OPEN on its original ticket and input, adding `FLAG_RESUME`. This
-    /// consumes the old token; a new PENDING token, a READY proof or a terminal failure follows.
-    ///
-    /// # Panics
-    /// Cancellation already ended this opening, or the door changes its partial instance.
     pub fn resume(mut self) -> OpenStep<'h, I, O> {
         assert!(
             !self.cancelled,
@@ -151,7 +132,7 @@ impl<'h, I: AbiIn, O: OpenReply> PendingOpen<'h, I, O> {
         input_head_mut(&mut input.input).flags |=
             busbar_contract::abi::mechanism::call::FLAG_RESUME;
         let ptr = self.ptr;
-        // The resumed OPEN owns retirement from this point, including a terminal failure.
+
         self.ptr = ptr::null_mut();
         let answer = run_op(
             self.open.parts().0,
@@ -163,12 +144,6 @@ impl<'h, I: AbiIn, O: OpenReply> PendingOpen<'h, I, O> {
         open_step(self.open, self.close, input, answer, Some(ptr))
     }
 
-    /// CANCEL this unfinished OPEN using this same door's typed slot and original target
-    /// ticket. The copied disposition is preserved; the token remains only for close.
-    ///
-    /// # Panics
-    /// The slot/input is not this door's CANCEL, targets another ticket, or cancellation already
-    /// ran. Rejections happen before any plugin crossing.
     pub fn cancel<J: AbiIn, P: Reply>(
         &mut self,
         cancel: super::ViewOp,
@@ -209,13 +184,11 @@ impl<'h, I: AbiIn, O: OpenReply> PendingOpen<'h, I, O> {
         run_op(raw, None, self.ptr, frame, out)
     }
 
-    /// Close this partial instance exactly once, consuming its custody token. The captured
-    /// CLOSE slot and a fresh, fully initialized lifecycle head are used.
     pub fn close(mut self) -> Called<'h, OutHead> {
         let ptr = self.ptr;
         self.ptr = ptr::null_mut();
         let input = close_head();
-        // self.input remains owned until the crossing and its copied answer have completed.
+
         run_op(self.close.parts().0, None, ptr, input, super::zeroed())
     }
 }
@@ -393,9 +366,6 @@ pub struct Called<'h, O: Reply> {
 }
 
 impl<'h, O: Reply> Called<'h, O> {
-    /// The instance this call's `open` answered READY with: `Some` once, for an `open` through
-    /// [`call_in`] or [`call_hosted_in`] that answered READY with a non-NULL instance, `None` for
-    /// every other call and every later take.
     pub fn take_instance(&mut self) -> Option<Instance<'h>> {
         self.instance.take()
     }
@@ -458,16 +428,6 @@ pub unsafe fn call_hosted<'h, I: AbiIn, O: Reply>(
     run(op, instance, input.input, out)
 }
 
-/// Enter the slot `op` of a door the contract's macro built, on `instance` (`None` for `validate`
-/// and `open`; that door's READY `open`'s otherwise) over `input`, a [`TestIn`] whose every pointer
-/// borrows memory that outlives the call, and copy the reply before returning (status rows 159 and
-/// 194). An `open` that answers READY leaves its instance in [`Called::take_instance`]. #1471
-/// states its `call` as this, under this name too; `call_in(..)` compiles before and after.
-///
-/// # Panics
-///
-/// As [`call`], or the instance is missing, present where none is taken, another door's, or `op`
-/// is `close` ([`close_in`]).
 pub fn call_in<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Option<&Instance<'h>>,
@@ -537,12 +497,6 @@ pub fn call_hosted_in<'h, I: AbiIn, O: Reply>(
     )
 }
 
-/// `close` of `instance`, which this takes: the instance is gone once its door closed it. #1471
-/// states its `close` as this, under this name too.
-///
-/// # Panics
-///
-/// As [`call_in`], or `op` is not `close`, or the instance is another door's.
 pub fn close_in<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Instance<'h>,
@@ -564,7 +518,6 @@ pub fn close_in<'h, I: AbiIn, O: Reply>(
     run_op(raw, None, instance.ptr, input.input, out)
 }
 
-/// The instance pointer `op` is entered on: NULL for `validate` and `open`, else `instance`'s.
 fn on(op: super::ViewOp, instance: Option<&Instance<'_>>) -> *mut c_void {
     let (_, door, index) = op.parts();
     assert_ne!(
@@ -590,13 +543,10 @@ fn on(op: super::ViewOp, instance: Option<&Instance<'_>>) -> *mut c_void {
     }
 }
 
-/// [`call`]'s body, over the caller's `in`, copied.
 fn run<'h, I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: I, out: O) -> Called<'h, O> {
     run_op(op, None, instance, input, out)
 }
 
-/// The crossing: `op` entered over private copies of the `in` and `out`, the reply copied, and
-/// for an `open` (`opens` its door) that answered READY, its instance kept as an [`Instance`].
 fn run_op<'h, I: AbiIn, O: Reply>(
     op: Op,
     opens: Option<&'static busbar_contract::abi::mechanism::door::Door>,
@@ -643,8 +593,6 @@ fn run_op<'h, I: AbiIn, O: Reply>(
     }
 }
 
-// ── the reviewed copies ──────────────────────────────────────────────────────────────────────────
-
 /// One metric a reply's envelope reported, copied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricCopy {
@@ -678,8 +626,6 @@ pub struct EnvelopeCopy {
     pub diags: Vec<DiagCopy>,
 }
 
-/// The envelope `e` names, judged (NULL with a count, an over-long list or text panics, naming the
-/// field) and copied.
 fn envelope(e: &busbar_contract::abi::mechanism::call::Envelope) -> EnvelopeCopy {
     EnvelopeCopy {
         metrics: list(e.metrics, e.metrics_len, "head.envelope.metrics")
@@ -709,11 +655,9 @@ fn envelope(e: &busbar_contract::abi::mechanism::call::Envelope) -> EnvelopeCopy
     }
 }
 
-/// Secret material, copied into memory wiped on drop; never printed.
 pub struct SecretCopy(Zeroizing<Vec<u8>>);
 
 impl SecretCopy {
-    /// The material.
     #[must_use]
     pub fn material(&self) -> &[u8] {
         &self.0
@@ -808,9 +752,6 @@ pub struct SnapshotCopy {
     pub arrival_spans: Vec<String>,
 }
 
-// ── the reviewed `out`s ──────────────────────────────────────────────────────────────────────────
-
-/// The head's pointer fields cleared: its error, its envelope's lists, its extensions.
 fn clear_head(h: &mut OutHead) {
     h.error = AbiStr {
         ptr: ptr::null(),
@@ -827,7 +768,6 @@ fn clear_head(h: &mut OutHead) {
     };
 }
 
-/// `Err` from a kind's validator, as a panic naming the field.
 fn judged(r: Result<(), Fault>) {
     if let Err(f) = r {
         panic!("{}: {:?}", f.field, f.rule);
@@ -854,8 +794,7 @@ impl sealed::Take for busbar_contract::abi::mechanism::lifecycle::CancelOut {
     fn clear(&mut self, _: Token) {
         clear_head(&mut self.head);
     }
-    // The disposition is a scalar in this kind's vocabulary; preserve it without interpreting it
-    // as a plane cancellation disposition. No additional plugin-owned memory is named here.
+
     fn take(&self, _: Outcome, _: Token) {}
 }
 impl Reply for busbar_contract::abi::mechanism::lifecycle::CancelOut {
@@ -869,8 +808,7 @@ impl sealed::Take for busbar_contract::abi::plane::PlaneCancelOut {
     fn clear(&mut self, _: Token) {
         clear_head(&mut self.cancel.head);
     }
-    // Record writes and their arena remain in the caller's lent buffers. Preserve their counts;
-    // the caller judges those writes against its actual buffers and plane bounds.
+
     fn take(&self, outcome: Outcome, _: Token) {
         judged(busbar_contract::abi::plane::check::check_cancel(
             outcome,
@@ -889,7 +827,7 @@ impl sealed::Take for busbar_contract::abi::plane::PlaneDriveOut {
     fn clear(&mut self, _: Token) {
         clear_head(&mut self.head);
     }
-    // Ready-session IDs stay in the caller's lent buffer; only its scalar counts are returned.
+
     fn take(&self, _: Outcome, _: Token) {}
 }
 impl Reply for busbar_contract::abi::plane::PlaneDriveOut {
@@ -1032,7 +970,7 @@ impl sealed::Take for busbar_contract::abi::export::ScrapeOut {
             self, input.cap,
         ));
     }
-    /// The bytes stay in the caller's buffer; only the scalar counts remain on the `out`.
+
     fn take(&self, _: Outcome, _: Token) {}
 }
 impl Reply for busbar_contract::abi::export::ScrapeOut {
@@ -1046,9 +984,7 @@ impl sealed::Take for busbar_contract::abi::auth::IdentifyOut {
     fn clear(&mut self, _: Token) {
         clear_head(&mut self.head);
     }
-    /// Every identity field is a span into the host's buffers, which the caller lent and holds, so
-    /// the caller reads them; the kind's check (`check_identify`) needs those buffers and is the
-    /// caller's to run.
+
     fn take(&self, _: Outcome, _: Token) {}
 }
 impl Reply for busbar_contract::abi::auth::IdentifyOut {
@@ -1125,7 +1061,6 @@ impl Reply for busbar_contract::abi::plane::PlaneRefreshOut {
     type Owned = Option<SnapshotCopy>;
 }
 
-/// The snapshot a plane published at `p` (NULL = none), judged by the kind's own check and copied.
 fn snapshot(p: *const busbar_contract::abi::plane::PlaneSnapshot) -> Option<SnapshotCopy> {
     use busbar_contract::abi::plane::PlaneSnapshot;
     if p.is_null() {
@@ -1191,11 +1126,6 @@ fn snapshot(p: *const busbar_contract::abi::plane::PlaneSnapshot) -> Option<Snap
     })
 }
 
-// ── the reads, each checked first ────────────────────────────────────────────────────────────────
-//
-// Called ONLY from a reviewed `take` (or `call`'s head read), over a field the op wrote.
-
-/// `len` bytes at `ptr`, borrowed just long enough to copy.
 fn lent<'a>(ptr: *const u8, len: usize, field: &str) -> &'a [u8] {
     if len == 0 {
         return &[];
@@ -1209,7 +1139,6 @@ fn lent<'a>(ptr: *const u8, len: usize, field: &str) -> &'a [u8] {
     unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 
-/// `len` entries at `ptr`, borrowed just long enough to copy.
 fn list<'a, T>(ptr: *const T, len: usize, field: &str) -> &'a [T] {
     if len == 0 {
         return &[];
@@ -1224,7 +1153,6 @@ fn list<'a, T>(ptr: *const T, len: usize, field: &str) -> &'a [T] {
     unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 
-/// A text the op wrote, copied (empty = absent).
 fn text(s: AbiStr, field: &str) -> String {
     let b = lent(s.ptr, s.len, field);
     match core::str::from_utf8(b) {
@@ -1233,7 +1161,6 @@ fn text(s: AbiStr, field: &str) -> String {
     }
 }
 
-/// A text the op wrote, copied; `None` = absent (NULL).
 fn optional_text(s: AbiStr, field: &str) -> Option<String> {
     if s.ptr.is_null() {
         assert!(s.len == 0, "{field}: NULL with a count of {}", s.len);

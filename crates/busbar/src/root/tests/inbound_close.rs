@@ -119,8 +119,7 @@ fn hooked_app() -> Arc<busbar_kernel::state::App> {
         "settings": { "uncached": { "env": "INBOUND_CLOSE_UNUSED" } }
     }))
     .unwrap();
-    // The reference shape bypasses the global resolution cache. An explicit in-memory resolver
-    // supplies fixture bytes, so no environment or file is read. The App owns the final hook.
+
     let app = TestApp::new()
         .hook_env(env)
         .hook("retiring-close", cfg)

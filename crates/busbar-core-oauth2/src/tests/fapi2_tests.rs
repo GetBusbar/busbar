@@ -1,27 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FAPI 2.0 SECURITY PROFILE POSTURE (`oauth_as.fapi2: true`), driven over a real socket.
-//!
-//! The posture is the one the OpenID Foundation's `fapi2-security-profile-final-test-plan` runs
-//! under `openid=plain_oauth`, `client_auth_type=private_key_jwt`, `sender_constrain=dpop`,
-//! `fapi_profile=plain_fapi`. Each test below is one requirement of that profile on an
-//! authorization server, or one refusal it demands, with the clause it answers to:
-//!
-//! | requirement | clause | test |
-//! |---|---|---|
-//! | the metadata names PAR, DPoP, `private_key_jwt`, S256, `iss` | RFC 8414 s2, RFC 9126 s5, RFC 9449 s5.1, RFC 9207 s3 | [`the_metadata_advertises_the_profile`] |
-//! | the plain posture advertises none of it | (the posture is opt-in) | [`the_plain_posture_advertises_none_of_the_profile`] |
-//! | PAR, `private_key_jwt`, DPoP-bound code and token, `iss` | RFC 9126, RFC 7523, RFC 9449, RFC 9207, FAPI2 s5.3.2.1-9 | [`the_profile_flow_mints_a_sender_constrained_token`] |
-//! | loading the page does not spend the `request_uri` | FAPI2 s5.3.2.2 NOTE 3 | [`showing_the_consent_screen_does_not_spend_the_pushed_request`] |
-//! | the user can refuse | RFC 6749 s4.1.2.1 `access_denied` | [`the_operator_can_deny_a_pushed_request`] |
-//! | a request not pushed is refused | FAPI2 s5.3.2.2-3, RFC 9126 s4 | [`an_authorization_request_not_pushed_is_refused`] |
-//! | a `request_uri` is single use and bound to its client | RFC 9126 s4, s7.3, s2.2 | [`a_request_uri_is_single_use_and_bound_to_its_client`] |
-//! | the push refusals: no client auth, wrong `aud`, no PKCE, `plain` PKCE, no `redirect_uri`, foreign key, replayed assertion | FAPI2 s5.3.2.1-8, s5.3.3.1-5, s5.3.2.2-6, RFC 7636, RFC 7523 s3 | [`the_pushed_authorization_endpoint_refuses_what_the_profile_forbids`] |
-//! | the token refusals: no proof, foreign proof key, wrong `htu`, wrong verifier, code reuse | FAPI2 s5.3.4-2, RFC 9449 s4.3 s10, RFC 7636 s4.6, RFC 6749 s4.1.2 | [`the_token_endpoint_refuses_what_the_profile_forbids`] |
-//! | busbar's resource admits a DPoP-bound token with its proof, any scheme case | FAPI2 s5.3.4-2, RFC 9449 s7.1 | [`a_dpop_bound_token_reaches_the_resource_with_its_proof`] |
-//! | the resource refusals: as Bearer, no/two proofs, foreign key, htm, htu, ath, iat, replay | RFC 9449 s4.3, s7.1, s11.1 | [`the_resource_refuses_what_rfc_9449_forbids`] |
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -37,22 +16,20 @@ use crate::flow_tests::{
 };
 use crate::testkit::TestAppOauthExt;
 
-/// The client's redirect URI. Never fetched: every flow ends at the redirect that carries the code.
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
-/// RFC 7636 appendix B's verifier and challenge, so PKCE runs against a published vector.
+
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const SCOPE: &str = "read";
 const CLIENT_ID: &str = "fapi-client";
 const OTHER_CLIENT_ID: &str = "fapi-client-2";
-/// A client provisioned with an RSA key: PS256, the profile's other algorithm.
+
 const RSA_CLIENT_ID: &str = "fapi-client-ps256";
-/// RFC 7523 s2.2.
+
 const ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-/// Every `jti` this file mints is distinct, so no refusal below is a replay by accident.
 static JTI: AtomicU64 = AtomicU64::new(0);
 
 fn jti() -> String {
@@ -66,9 +43,6 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// One ES256 key: a client's `private_key_jwt` key, or a DPoP key. Signed with `ring`, which the
-/// server under test verifies with as well — but the JOSE framing is assembled here by hand from
-/// the RFCs, so a server that misread RFC 7515 would not be agreeing with itself.
 struct Key {
     pair: EcdsaKeyPair,
     kid: &'static str,
@@ -89,7 +63,6 @@ impl Key {
         (B64.encode(&point[1..33]), B64.encode(&point[33..65]))
     }
 
-    /// The public half as the operator declares it in `oauth_as.clients:`.
     fn static_jwk(&self) -> StaticClientJwk {
         let (x, y) = self.coordinates();
         StaticClientJwk {
@@ -105,20 +78,17 @@ impl Key {
         }
     }
 
-    /// The public half as a DPoP proof header carries it (RFC 9449 s4.2 `jwk`).
     fn public_json(&self) -> Value {
         let (x, y) = self.coordinates();
         json!({ "kty": "EC", "crv": "P-256", "x": x, "y": y })
     }
 
-    /// RFC 7638 thumbprint: SHA-256 over the required members in lexicographic order.
     fn thumbprint(&self) -> String {
         let (x, y) = self.coordinates();
         let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
         B64.encode(ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes()).as_ref())
     }
 
-    /// RFC 7515 compact serialization, ES256.
     fn sign(&self, header: &Value, claims: &Value) -> String {
         let input = format!(
             "{}.{}",
@@ -132,7 +102,6 @@ impl Key {
         format!("{input}.{}", B64.encode(sig.as_ref()))
     }
 
-    /// An RFC 7523 client authentication assertion naming `aud`.
     fn assertion(&self, client_id: &str, aud: Value) -> String {
         self.sign(
             &json!({ "alg": "ES256", "kid": self.kid }),
@@ -147,7 +116,6 @@ impl Key {
         )
     }
 
-    /// An RFC 9449 DPoP proof for `htm` `htu`.
     fn proof(&self, htm: &str, htu: &str) -> String {
         self.sign(
             &json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": self.public_json() }),
@@ -155,8 +123,6 @@ impl Key {
         )
     }
 
-    /// An RFC 9449 s7 proof for a protected resource request: `ath` binds it to `token` (the
-    /// base64url SHA-256 of the token, s4.2), and `iat` is given so a stale proof can be built.
     fn resource_proof(&self, htm: &str, htu: &str, ath: Option<&str>, iat: u64) -> String {
         let mut claims = json!({ "jti": jti(), "htm": htm, "htu": htu, "iat": iat });
         if let Some(ath) = ath {
@@ -169,9 +135,6 @@ impl Key {
     }
 }
 
-/// TEST-ONLY RSA-2048 private key (PKCS#8 DER, base64), minted once with `openssl genpkey` for
-/// this file: `ring` signs RSA but cannot generate a key. It authenticates nothing outside these
-/// tests; the AS under test only ever holds its public half.
 const RSA_TEST_KEY_PKCS8: &str = concat!(
     "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7yYGm5BUFWye7k6VKJySWzoRSnDf+Juv4e/YF7jesW86L",
     "pqpQ7KLhBF4oWMYtKPK9aifQN03G/zv9OdQ2cuMLthbVp3pE5M2hQvknd6+IJFohCBsaXEKo8cPoq/0IMlQI6/pL6pQB6U6V",
@@ -192,7 +155,6 @@ const RSA_TEST_KEY_PKCS8: &str = concat!(
     "HRBoliBzaqJOZhTG+2OSQ8VvI4b+/Z0lGlb4QSeZv1a7FC4nvmth3G4lO1WcnAmlUao4SZ9idGlNj5imrqqIOys=",
 );
 
-/// The PS256 client's RSA key: PS256 for what the profile admits, RS256 for what it must refuse.
 struct RsaKey {
     pair: ring::signature::RsaKeyPair,
     kid: &'static str,
@@ -232,14 +194,12 @@ impl RsaKey {
         json!({ "kty": "RSA", "n": n, "e": e })
     }
 
-    /// RFC 7638 over `e`, `kty`, `n`.
     fn thumbprint(&self) -> String {
         let (n, e) = self.components();
         let canonical = format!(r#"{{"e":"{e}","kty":"RSA","n":"{n}"}}"#);
         B64.encode(ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes()).as_ref())
     }
 
-    /// RFC 7515 compact, `alg` PS256 or RS256.
     fn sign(&self, alg: &str, header: &Value, claims: &Value) -> String {
         let mut header = header.clone();
         header["alg"] = json!(alg);
@@ -288,18 +248,15 @@ impl RsaKey {
     }
 }
 
-/// A served `fapi2: true` deployment with two `private_key_jwt` clients, each with its own key,
-/// both PROVISIONED BY CONFIG (`oauth_as.clients:`), which is how a deployment gets one: RFC 7591
-/// registration cannot carry a key.
 struct Subject {
     app: Arc<busbar_kernel::state::App>,
     origin: String,
     client: reqwest::Client,
-    /// `CLIENT_ID`'s registered key.
+
     key: Key,
-    /// `OTHER_CLIENT_ID`'s registered key.
+
     other: Key,
-    /// `RSA_CLIENT_ID`'s registered key.
+
     rsa: RsaKey,
 }
 
@@ -331,11 +288,7 @@ async fn serve(fapi2: bool) -> Subject {
             declared(RSA_CLIENT_ID, rsa.static_jwk()),
         ],
     };
-    // The open admin posture, as in `flow_tests::serve`: the consent screen's `RouteAuth::Admin`
-    // is not the property under test here.
-    // The data-plane chain is the test IdP stand-in (identifies any credential, as an OIDC plugin
-    // trusting this AS's JWKS would identify one of its tokens), so `GET /stats` — a mounted route
-    // that requires a busbar token — is the protected resource the DPoP tests call.
+
     let app = TestApp::new()
         .admin_chain(Vec::new())
         .idp_chain()
@@ -358,7 +311,6 @@ async fn serve(fapi2: bool) -> Subject {
     }
 }
 
-/// A form POST with an optional DPoP proof: `(status, the JSON body or Null)`.
 async fn post(
     s: &Subject,
     path: &str,
@@ -375,9 +327,6 @@ async fn post(
     (status, serde_json::from_str(&body).unwrap_or(Value::Null))
 }
 
-/// The pushed authorization request a conforming FAPI 2.0 client sends for `client_id`, signed by
-/// `key`. Tests that probe a refusal edit this list, so every refusal differs from an accepted push
-/// by exactly the one parameter it is about.
 fn push_form(s: &Subject, client_id: &str, key: &Key) -> Vec<(&'static str, String)> {
     vec![
         ("response_type", "code".to_string()),
@@ -395,7 +344,6 @@ fn push_form(s: &Subject, client_id: &str, key: &Key) -> Vec<(&'static str, Stri
     ]
 }
 
-/// Push `form` with a DPoP proof from `dpop`, and hand back the `request_uri`.
 async fn push(s: &Subject, form: &[(&str, String)], dpop: &Key) -> String {
     let proof = dpop.proof("POST", &format!("{}/par", s.origin));
     let (status, body) = post(s, "/par", form, Some(proof)).await;
@@ -422,9 +370,6 @@ fn authorize_url(s: &Subject, client_id: &str, request_uri: &str) -> String {
     )
 }
 
-/// The browser half for a pushed request: `/authorize` sends it to the consent screen, the screen
-/// renders, the operator answers `answer`, and the replayed `/authorize` answers. Returns where
-/// that last answer sends the browser.
 async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, answer: &str) -> String {
     let (status, headers, body) = send(&s.client, jar, reqwest::Method::GET, authorize, None).await;
     assert_eq!(
@@ -455,7 +400,6 @@ async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, answer: &str) -> S
     location(&headers, &s.origin)
 }
 
-/// PAR, consent, approve: the code.
 async fn code_for(s: &Subject, dpop: &Key) -> String {
     let request_uri = push(s, &push_form(s, CLIENT_ID, &s.key), dpop).await;
     let mut jar = Jar::new(false);
@@ -470,7 +414,6 @@ async fn code_for(s: &Subject, dpop: &Key) -> String {
     query_param(&redirect, "code").expect("a code")
 }
 
-/// The token request a conforming client sends for `code`.
 fn token_form(s: &Subject, code: &str) -> Vec<(&'static str, String)> {
     vec![
         ("grant_type", "authorization_code".to_string()),
@@ -520,10 +463,6 @@ async fn metadata(s: &Subject) -> Value {
     resp.json().await.expect("JSON metadata")
 }
 
-/// RFC 8414 s2 as the profile reads it: the document names the PAR endpoint and makes it mandatory
-/// (RFC 9126 s5), names the DPoP algorithms (RFC 9449 s5.1), offers `private_key_jwt` with the
-/// FAPI algorithms only (FAPI2 s5.4.1: ES256/PS256, never RS256), S256 alone for PKCE, and the
-/// RFC 9207 `iss` parameter.
 #[tokio::test]
 async fn the_metadata_advertises_the_profile() {
     let s = serve(true).await;
@@ -558,8 +497,6 @@ async fn the_metadata_advertises_the_profile() {
     );
 }
 
-/// The posture is opt-in: a plain `oauth_as:` block advertises no PAR endpoint, no DPoP and no
-/// assertion method, and serves no `/par`. (`signer_tests` pins the plain document's bytes.)
 #[tokio::test]
 async fn the_plain_posture_advertises_none_of_the_profile() {
     let s = serve(false).await;
@@ -583,11 +520,6 @@ async fn the_plain_posture_advertises_none_of_the_profile() {
     );
 }
 
-/// THE PROFILE, end to end: a `private_key_jwt` client pushes its request with a DPoP proof, the
-/// operator approves, the code comes back with `iss` (RFC 9207 s2), and the code is redeemed —
-/// with the same DPoP key — for a sender-constrained token (`token_type` DPoP, `cnf.jkt` the proof
-/// key's RFC 7638 thumbprint). The refresh token is REUSED, not rotated (FAPI2 s5.3.2.1-9): it
-/// redeems twice.
 #[tokio::test]
 async fn the_profile_flow_mints_a_sender_constrained_token() {
     let s = serve(true).await;
@@ -646,9 +578,6 @@ async fn the_profile_flow_mints_a_sender_constrained_token() {
     }
 }
 
-/// FAPI2 s5.3.2.2 NOTE 3: one-time use is enforced at the point of AUTHORIZATION, not at the point
-/// of loading the page. Visiting `/authorize` twice before anyone answers leaves the pushed request
-/// redeemable, and the second showing of the screen says it was shown before (`id="revisit"`).
 #[tokio::test]
 async fn showing_the_consent_screen_does_not_spend_the_pushed_request() {
     let s = serve(true).await;
@@ -681,9 +610,6 @@ async fn showing_the_consent_screen_does_not_spend_the_pushed_request() {
     );
 }
 
-/// RED: a pushed request that names no scope is granted the client's default (for a provisioned
-/// client, the operator's whole `default_grant`), and the consent screen names that scope. Before
-/// the fix the screen said `no scopes` while the approval minted a token for the default.
 #[tokio::test]
 async fn a_pushed_request_naming_no_scope_is_shown_the_default_it_is_granted() {
     let s = serve(true).await;
@@ -718,8 +644,6 @@ async fn a_pushed_request_naming_no_scope_is_shown_the_default_it_is_granted() {
     );
 }
 
-/// RFC 6749 s4.1.2.1: the resource owner may refuse, and the client hears `access_denied` at its
-/// redirect URI, with its `state` and (RFC 9207) the issuer.
 #[tokio::test]
 async fn the_operator_can_deny_a_pushed_request() {
     let s = serve(true).await;
@@ -743,8 +667,6 @@ async fn the_operator_can_deny_a_pushed_request() {
     assert!(query_param(&redirect, "code").is_none(), "{redirect}");
 }
 
-/// Assert `/authorize` refused with the HTML error page a browser can show (and the OIDF suite's
-/// browser waits for), naming the RFC 6749 error code.
 async fn assert_refused_with_a_page(s: &Subject, url: &str, code: &str) {
     let resp = s.client.get(url).send().await.expect("authorize");
     let status = resp.status().as_u16();
@@ -764,8 +686,6 @@ async fn assert_refused_with_a_page(s: &Subject, url: &str, code: &str) {
     assert!(page.contains(code), "the page names `{code}`: {page}");
 }
 
-/// FAPI2 s5.3.2.2-3 / RFC 9126 s4: authorization request data only via PAR. A plain query request
-/// is refused, never sent to consent and never answered with a code.
 #[tokio::test]
 async fn an_authorization_request_not_pushed_is_refused() {
     let s = serve(true).await;
@@ -778,8 +698,6 @@ async fn an_authorization_request_not_pushed_is_refused() {
     assert_refused_with_a_page(&s, &url, "invalid_request").await;
 }
 
-/// RFC 9126 s4 / s7.3: a `request_uri` is single use, and s2.2: it is bound to the client that
-/// pushed it. A redeemed handle, and another client's handle, are refused with the error page.
 #[tokio::test]
 async fn a_request_uri_is_single_use_and_bound_to_its_client() {
     let s = serve(true).await;
@@ -801,10 +719,6 @@ async fn a_request_uri_is_single_use_and_bound_to_its_client() {
     assert_refused_with_a_page(&s, &authorize, "invalid_request").await;
 }
 
-/// Assert a push was refused with one of `statuses` and one of `errors`. A client authentication
-/// failure is `invalid_client` at 400 or 401 (RFC 6749 s5.2: 401 when the client authenticated by
-/// the `Authorization` header), which is the pair the OIDF suite accepts
-/// (`EnsureHttpStatusCodeIs400or401`).
 async fn assert_push_refused(
     s: &Subject,
     form: &[(&str, String)],
@@ -825,12 +739,10 @@ async fn assert_push_refused(
     );
 }
 
-/// The pushed authorization endpoint's refusals, each one parameter away from an accepted push.
 #[tokio::test]
 async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     let s = serve(true).await;
-    // A FRESH push per case: an assertion's `jti` is single use, so a shared one would make every
-    // case after the first a replay refusal rather than the refusal it is about.
+
     let good = || push_form(&s, CLIENT_ID, &s.key);
     let token_endpoint = format!("{}/token", s.origin);
 
@@ -939,7 +851,6 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     .await;
 }
 
-/// Assert a token request was refused with a 4xx and one of `errors`.
 async fn assert_token_refused(
     s: &Subject,
     form: &[(&str, String)],
@@ -956,9 +867,6 @@ async fn assert_token_refused(
     );
 }
 
-/// The token endpoint's refusals. Each is checked against a FRESH code, so no refusal passes
-/// because an earlier one spent the code — except the last, which is the reuse refusal itself and
-/// is preceded by the correct redemption that proves the code was good.
 #[tokio::test]
 async fn the_token_endpoint_refuses_what_the_profile_forbids() {
     let s = serve(true).await;
@@ -1029,12 +937,10 @@ async fn the_token_endpoint_refuses_what_the_profile_forbids() {
     .await;
 }
 
-/// RFC 9449 s4.2 `ath`: base64url SHA-256 of the access token.
 fn ath(token: &str) -> String {
     B64.encode(ring::digest::digest(&ring::digest::SHA256, token.as_bytes()).as_ref())
 }
 
-/// Run the profile flow for `dpop` and hand back the DPoP-bound access token.
 async fn bound_token(s: &Subject, dpop: &Key) -> String {
     let code = code_for(s, dpop).await;
     let proof = dpop.proof("POST", &format!("{}/token", s.origin));
@@ -1046,7 +952,6 @@ async fn bound_token(s: &Subject, dpop: &Key) -> String {
         .to_string()
 }
 
-/// `GET /stats` with `authorization` and every proof in `proofs` as a `DPoP` header: the status.
 async fn resource(s: &Subject, authorization: &str, proofs: &[String]) -> u16 {
     let mut req = s
         .client
@@ -1058,10 +963,6 @@ async fn resource(s: &Subject, authorization: &str, proofs: &[String]) -> u16 {
     req.send().await.expect("resource").status().as_u16()
 }
 
-/// RFC 9449 s7.1: a DPoP-bound token is presented as `Authorization: DPoP <token>` with a proof for
-/// THIS request (`htm`, `htu`, fresh `iat`, `ath` of the token), signed by the key the token's
-/// `cnf.jkt` names, and busbar's own resource admits it. The scheme is case-insensitive (RFC 9110
-/// s11.1), which the OIDF suite's `access-token-type-header-case-sensitivity` checks.
 #[tokio::test]
 async fn a_dpop_bound_token_reaches_the_resource_with_its_proof() {
     let s = serve(true).await;
@@ -1078,8 +979,6 @@ async fn a_dpop_bound_token_reaches_the_resource_with_its_proof() {
     }
 }
 
-/// The IdP position is the existing stand-in, with an assertion that inbound lent the actual
-/// default candidate. The real AS seam verifies the proof; this is not a JWT-chain certification.
 struct InboundCandidate {
     calls: Arc<dyn busbar_contract::auth_calls::AuthCalls>,
     expected: busbar_contract::redacted::Secret<Vec<u8>>,
@@ -1250,8 +1149,7 @@ async fn resource_after_inbound(s: &Subject, token: &str, scheme: &str, proofs: 
         FLOW_CONTINUE
     );
     let receipt = inbound.claim_request(7, 1, 1, &head).unwrap();
-    // Host-only injection, outside the real kernel router, mirrors the composition root's
-    // claim after hand-in. The request's original credential/proof remains in the receipt.
+
     let router = busbar_kernel::build_router(Arc::clone(&s.app)).layer(axum::Extension(receipt));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1315,8 +1213,6 @@ async fn an_inbound_receipt_preserves_real_dpop_proof_checks_and_single_use() {
     );
 }
 
-/// Every refusal RFC 9449 s4.3 and s7 demand of a resource, each one deviation from the admitted
-/// request above.
 #[tokio::test]
 async fn the_resource_refuses_what_rfc_9449_forbids() {
     let s = serve(true).await;
@@ -1419,18 +1315,12 @@ async fn the_resource_refuses_what_rfc_9449_forbids() {
     );
 }
 
-/// RFC 6749 s4.1.2 / RFC 9700 s4.1.1: an authorization code presented twice is an attack, and the
-/// tokens the first redemption minted SHOULD be revoked. `oauth-as` revokes them at the AS; busbar's
-/// OWN resource must then stop admitting them too, rather than judging the token's signature alone
-/// until it expires. The OIDF suite's `attempt-reuse-authorization-code-after-one-second` checks
-/// exactly this (its WARNING `EnsureHttpStatusCodeIs4xx` when the resource still answers 200).
 #[tokio::test]
 async fn a_token_revoked_by_code_reuse_no_longer_reaches_the_resource() {
     let s = serve(true).await;
     let dpop = Key::new("dpop");
     let code = code_for(&s, &dpop).await;
-    // Each redemption is a fresh, valid request (its own client assertion and DPoP proof): only the
-    // code is reused.
+
     let token_url = format!("{}/token", s.origin);
     let (status, first) = post(
         &s,
@@ -1466,11 +1356,6 @@ async fn a_token_revoked_by_code_reuse_no_longer_reaches_the_resource() {
     );
 }
 
-/// A client provisioned with an RSA key runs the whole profile on PS256 — its `private_key_jwt`
-/// assertions at PAR and the token endpoint, and its DPoP proofs at the token endpoint and at
-/// busbar's resource — and the SAME key signing RS256 is refused: FAPI2 s5.4.1 forbids it, and the
-/// registration pins PS256. That refusal is what the OIDF suite's
-/// `ensure-signed-client-assertion-with-RS256-fails` checks, and it can only run with an RSA client.
 #[tokio::test]
 async fn a_ps256_client_runs_the_profile_and_rs256_is_refused() {
     let s = serve(true).await;

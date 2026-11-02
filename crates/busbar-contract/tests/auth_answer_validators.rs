@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! AUTH ANSWER VALIDATORS, RULE BY RULE. Each test starts from
-//! an answer the validator accepts, breaks exactly one rule, and
-//! asserts the named FAULT, so removing any one check turns its test red.
 
 use busbar_contract::abi::auth::{
     check_begin_login, check_complete_login, check_fields, check_identify, check_style_decl,
@@ -232,7 +230,7 @@ fn failed_with_a_need_the_capacity_covers_is_fault() {
         check_fields(Outcome::Failed, &f, CAP, FIELDS_CAP, &[]),
         red(Rule::WastedRecall, "fields")
     );
-    // A real short answer, and a real failure, are both accepted.
+
     let mut o: IdentifyOut = zeroed();
     o.needed_bytes = CAP as u64 + 1;
     assert_eq!(
@@ -494,7 +492,7 @@ fn complete_login_checks_its_own_vocabulary() {
 }
 
 /// M-SB REFINEMENT: one dimension short with the other reporting a fitting full size is a legal
-/// short FAILED; both fitting is FAULT.
+
 #[test]
 fn a_short_identify_reports_every_dimension_full_size() {
     let mut o: IdentifyOut = zeroed();
@@ -576,8 +574,7 @@ fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
         check_style_decl(STYLE_CALLER_CREDENTIAL | (1 << 3), POINT_HEAD),
         red(Rule::UnknownCode, "style.unknown_flags")
     );
-    // RED: the retired body-hash flag bit (1) is no longer in the vocabulary: a style that signs
-    // the body needs `HeadBody` instead.
+
     assert_eq!(
         check_style_decl(1, POINT_HEAD),
         red(Rule::UnknownCode, "style.unknown_flags")
@@ -585,10 +582,7 @@ fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
 }
 
 /// RED (arch-audit u29 F1): a style STATES where its token endpoint is — the provider entry's
-/// `token_url`, or the credential document — so the host judges that endpoint by the bit, never by
-/// the style's name; and it states its LIST RANK, where the host lists it among the outbound styles a
-/// provider's `auth:` may name. Each bit is in the vocabulary alone and with the others; a rank
-/// spells and reads back.
+
 #[test]
 fn a_style_decl_states_its_token_endpoint_and_its_list_rank() {
     let head = POINT_HEAD;
@@ -612,7 +606,7 @@ fn a_style_decl_states_its_token_endpoint_and_its_list_rank() {
 }
 
 /// RED (arch-audit u29 F1): a style takes its token endpoint from ONE place: both endpoint bits
-/// together contradict each other and refuse the load.
+
 #[test]
 fn a_style_decl_stating_both_token_endpoints_is_fault() {
     assert_eq!(
@@ -625,7 +619,7 @@ fn a_style_decl_stating_both_token_endpoints_is_fault() {
 }
 
 /// RED: a style needs at least one point, and a valid set (THE DESIGN, "Auth points and guest
-/// lists", step 1).
+
 #[test]
 fn a_style_decl_needs_a_valid_non_empty_point_set() {
     assert_eq!(check_style_decl(0, 0), red(Rule::Missing, "points.missing"));
@@ -644,7 +638,7 @@ fn a_style_decl_needs_a_valid_non_empty_point_set() {
 }
 
 /// THE POINT SET RULES, one RED each: an unknown bit, the reserved `Frame`, `Head` with `HeadBody`,
-/// and empty where a set is required. Every other set is accepted.
+
 #[test]
 fn check_points_refuses_each_broken_set() {
     assert_eq!(
@@ -682,7 +676,7 @@ fn check_points_refuses_each_broken_set() {
     ] {
         assert_eq!(check_points(ok, true), Ok(AuthPoints(ok)));
     }
-    // `check_points` is `const`: a plugin's tail is judged at compile time too.
+
     const HEAD: Result<AuthPoints, Fault> = check_points(POINT_HEAD, true);
     assert_eq!(HEAD, Ok(AuthPoints::HEAD));
 }
@@ -717,7 +711,7 @@ fn the_inbound_points_follow_the_inbound_capability() {
     );
     assert_eq!(check_inbound_points(CAP_OUTBOUND, 0), Ok(AuthPoints::EMPTY));
     assert_eq!(check_inbound_points(CAP_LOGIN, 0), Ok(AuthPoints::EMPTY));
-    // RED: an inbound plugin with no point, or a bad set.
+
     assert_eq!(
         check_inbound_points(CAP_INBOUND, 0),
         red(Rule::Missing, "points.missing")
@@ -726,7 +720,7 @@ fn the_inbound_points_follow_the_inbound_capability() {
         check_inbound_points(CAP_INBOUND | CAP_LOGIN, POINT_FRAME),
         red(Rule::UnknownCode, "points.reserved_point")
     );
-    // RED: points stated by a plugin that serves no `verify`.
+
     assert_eq!(
         check_inbound_points(CAP_OUTBOUND, POINT_HEAD),
         red(Rule::Contradiction, "points.unexpected")
@@ -797,7 +791,7 @@ fn a_decision_outside_the_vocabulary_is_fault() {
 }
 
 /// RED: each strip rule — the count over the capacity, a count that disagrees with the slice, an
-/// unknown place, a span past the buffer, an absent name.
+
 #[test]
 fn each_broken_strip_is_fault() {
     let mut o = stripped(VERDICT_REJECT);
@@ -855,7 +849,7 @@ fn a_credential_rides_only_an_identity() {
 }
 
 /// THE STRIP ARRAY'S SHORT ANSWER, and its REDs: a strip need past the hard maximum, a strip need
-/// on READY, REFUSED or PENDING.
+
 #[test]
 fn the_strip_array_has_the_short_buffer_rules() {
     let mut o: IdentifyOut = zeroed();
@@ -963,8 +957,7 @@ fn a_target_is_a_span_in_the_buffer_or_absent() {
 }
 
 /// RED (arch-audit u29 F1): THE ONE ORDER the host lists the outbound styles a provider's `auth:`
-/// may name in: ranked styles first, by rank, whichever row states them; then the unranked ones in
-/// the order the rows state them; a name stated twice listed once, at its first place.
+
 #[test]
 fn the_declared_styles_list_ranked_first_then_in_registration_order() {
     use busbar_contract::auth_calls::{listed_styles, DeclaredStyle};

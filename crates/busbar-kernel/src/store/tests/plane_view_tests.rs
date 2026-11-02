@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `PlaneStoreView` forwards to the real backend.
-
 use super::{PlaneStore, PlaneStoreView};
 
-/// A single-use token kind, as a spent-approval ledger writes it (no production caller names one).
 const KIND_ASK: &str = "ask";
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult,
@@ -74,7 +71,7 @@ impl busbar_contract::records::RecordStore for RecordingStore {
     ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
         Ok(Vec::new())
     }
-    // The neutral plane verbs the forwarding test observes.
+
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         let record = &record.to_record();
         if record.kind == crate::store::plane_view::KIND_DEMOTION {
@@ -108,7 +105,6 @@ impl busbar_contract::records::RecordStore for RecordingStore {
         _expires_at: u64,
         _now: u64,
     ) -> RecordStoreResult<bool> {
-        // First call fresh, later calls spent — proving the SAME inner instance is reached.
         let n = self
             .redemptions
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -118,9 +114,6 @@ impl busbar_contract::records::RecordStore for RecordingStore {
 
 #[test]
 fn plane_store_view_forwards_to_the_real_backend() {
-    // Forwarding is observable: the wrapper hands a write and a read to the SAME inner `Store`, so
-    // what one plane method persists another reads back. If `PlaneStoreView` did not forward, the
-    // demotion would not survive the call and the redemption ledger would not advance.
     let store: Arc<dyn PlaneStore> = PlaneStoreView::narrow(Arc::new(RecordingStore::default()));
     let list_demotions = |s: &Arc<dyn PlaneStore>| -> Vec<DemoRow> {
         s.list_plane_records(crate::store::plane_view::KIND_DEMOTION, &PlaneSelector::All)
@@ -156,8 +149,6 @@ fn plane_store_view_forwards_to_the_real_backend() {
     assert_eq!(rows.len(), 1, "the write forwarded to the inner backend");
     assert_eq!(rows[0].server, "srv-1");
 
-    // The spent-approval test-and-set forwards too: first redemption is fresh, the second is not,
-    // which can only hold if both calls reached the one inner instance.
     assert!(
         store
             .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
@@ -172,8 +163,6 @@ fn plane_store_view_forwards_to_the_real_backend() {
     );
 }
 
-/// A plane-owned kind is keyed by its plane: two planes declaring one kind get two kinds, none of
-/// them a kernel kind, and a name that would make the scope ambiguous gets none.
 #[test]
 fn a_plane_owned_kind_is_its_planes_alone_and_never_a_kernel_kind() {
     use super::{plane_owned_kind, KERNEL_RECORD_KINDS};

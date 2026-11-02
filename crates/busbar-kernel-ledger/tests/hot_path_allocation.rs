@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! What the rate lookup costs, measured.
-//!
-//! This case lives out here rather than beside the other rate cases for one reason: measuring
-//! allocations means installing an allocator, and installing one is an unsafe trait implementation,
-//! which the library forbids outright. An integration test is its own crate and carries its own
-//! lints, so the measurement can exist without the library relaxing anything. The library's
-//! `forbid(unsafe_code)` stands exactly as it was.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -70,21 +64,12 @@ fn four_class_card() -> RateCard {
 }
 
 /// A RATE LOOKUP ALLOCATES NOTHING.
-///
-/// The lookup is on the hot path twice over: every priced line of every posting asks for one, and
-/// the read-time derivation asks again for every line it reprices. A card keyed by a composite of
-/// two OWNED strings has to build that composite before it can look anything up, which is two heap
-/// allocations per lookup, thrown away immediately — paid for nothing, because both strings are
-/// already in hand as borrowed text. Keyed lane-first and then class, both steps are asked with the
-/// borrowed text directly.
-///
-/// The claim is measured rather than read off the source, because "no allocation" is exactly the
-/// kind of property a later refactor undoes without anyone noticing.
+
 #[test]
 fn a_rate_lookup_allocates_nothing() {
     let card = four_class_card();
     let view = card.lane_rates("lane").expect("the lane is priced");
-    // A warm-up pass, so nothing lazy is counted against the loop.
+
     assert_eq!(view.nanos_per_unit("input"), 1_000);
     assert!(view.class_priced("output"));
     assert!(!card.lane_unpriced("lane"));
@@ -93,7 +78,7 @@ fn a_rate_lookup_allocates_nothing() {
     let mut total = 0u64;
     for _ in 0..1_000 {
         total += view.nanos_per_unit("input");
-        // A class the lane does not name: the miss must not allocate either.
+
         total += view.nanos_per_unit("a-class-this-lane-does-not-name");
         assert!(!view.class_priced("a-class-this-lane-does-not-name"));
         assert!(view.class_priced("output"));
@@ -108,8 +93,7 @@ fn a_rate_lookup_allocates_nothing() {
 }
 
 /// Resolving the lane itself allocates nothing either, so a whole priced line — lane, then class —
-/// is allocation-free end to end. A lane the card does not name is the same: the miss is a lookup,
-/// not a construction.
+
 #[test]
 fn resolving_a_lane_allocates_nothing() {
     let card = four_class_card();

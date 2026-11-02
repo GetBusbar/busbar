@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Read plane-owned provider values from a plane's neutral descriptor. No request-shape
-//! key, model capability, or wire spelling is part of this parser.
-
 use busbar_contract::provider_keys::{Key, ProviderKeys, Shape, Table};
 use serde::de::{DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use serde::Deserialize;
@@ -134,8 +131,7 @@ impl<'de> Visitor<'de> for List<'_> {
         Ok(Value::Array(values))
     }
 }
-// Unknown names must fail in the key deserializer itself. Returning the same
-// error later from visit_map loses the key's YAML source column.
+
 struct FieldName<'a>(&'a Table);
 impl<'de> DeserializeSeed<'de> for FieldName<'_> {
     type Value = String;
@@ -201,8 +197,7 @@ impl<'de> Visitor<'de> for Fields<'_> {
                 )));
             }
         }
-        // Optional declared nulls serialize like an unset Option. Required nullable
-        // fields and unknown open-table extensions remain explicit values.
+
         values.retain(|name, value| {
             !value.is_null()
                 || !self

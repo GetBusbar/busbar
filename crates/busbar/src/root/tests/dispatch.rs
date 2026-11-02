@@ -19,11 +19,6 @@ fn one_plugin_worker_per_data_worker() {
     assert_eq!(config(0).workers, 1, "never zero workers");
 }
 
-/// THE BINARY'S DISPATCHER SERVES THE KERNEL'S HOST SERVICES, booted as `run()` boots it: the
-/// dispatcher over the composition's late services, then the composition once the configuration
-/// resolves. Before the composition every service answers REFUSED; after it `dest.judge` answers
-/// READY with the kernel's verdicts. The RED arm: a dispatcher built with no provider (the binary
-/// before U8) serves nothing, so every service answers REFUSED.
 #[test]
 fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     use busbar_contract::abi::host::service as svc;
@@ -54,7 +49,7 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
         judged(&dispatcher, "https://93.184.216.34/"),
         Stored::ready(svc::DEST_ALLOWED)
     );
-    // `records.secret` is the composition's too: REFUSED until the App's swap handle is set.
+
     let services = dispatcher
         .host_services()
         .expect("the binary's dispatcher has a provider");

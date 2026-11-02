@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Integration-level assertions over `Verbs`: scope enforcement, and that a new verb reaches
-//! `Governance::execute_new_verb` once its scope admits it — a plain scoped verb (#77(9)).
-
 use crate::governance::{Governance, GovernanceError};
 use crate::rate::CONFIG_CLASS_RULES;
 use crate::verb::{KernelVerb, VerbScope};
@@ -12,7 +9,6 @@ use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_kernel_seams::verb_store::{Store, StoreError};
 use std::sync::Mutex;
 
-/// A fresh node-lifetime limiter, as the composition root builds once per node.
 fn node_limiter() -> std::sync::Arc<crate::rate::MutationLimiter> {
     std::sync::Arc::new(crate::rate::MutationLimiter::new())
 }
@@ -28,11 +24,7 @@ fn make_verbs<G: Governance>(gov: G) -> Verbs<G, RecordingStore> {
 
 struct FakeGovernance {
     new_verb_calls: Mutex<Vec<KernelVerb>>,
-    /// What every mutating governance call should fail with, if anything.
-    ///
-    /// Without this the fail-closed arm of `GovernanceError::into_refusal` is unreachable from any
-    /// test: a double that can only succeed proves the happy path and nothing else, and a store that
-    /// went away is the case the mapping exists for.
+
     fails_with: Mutex<Option<GovernanceError>>,
 }
 
@@ -44,13 +36,11 @@ impl FakeGovernance {
         }
     }
 
-    /// Every mutating call refuses with this error until it is cleared.
     fn failing_with(self, error: GovernanceError) -> Self {
         *self.fails_with.lock().unwrap() = Some(error);
         self
     }
 
-    /// The injected failure, taken fresh for each call so a double can refuse more than once.
     fn injected(&self) -> Option<GovernanceError> {
         match *self.fails_with.lock().unwrap() {
             None => None,
@@ -128,15 +118,6 @@ fn readonly_caller_may_read() {
     assert_eq!(out, b"ok");
 }
 
-/// THE SIX VERBS THAT USED TO WAIT ON AN OPERATOR KEY ARE PLAIN SCOPED VERBS (#77(9), OWNER-LOCKED,
-/// `docs/design/BUSBAR-1.6.0.md` l.2279: "no verb carries dual control, escrow or operator
-/// signatures. Each verb is a plain scoped verb authorized by the per-verb allow-list on the admin
-/// token").
-///
-/// A grant that covers the verb (`full`, the 1.5.5 shorthand every mutating verb's allow-list
-/// resolves to) is admitted with nothing else asked: the governance verbs reach the governance
-/// seam and the two recovery verbs reach the store. RED before the fix: each was refused
-/// `OperatorUnset` while no operator key was sealed, and nothing reached either seam.
 #[test]
 fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
     let admin = admin();
@@ -172,9 +153,6 @@ fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
     );
 }
 
-/// The other half of the same rule: a grant that does NOT cover the verb is refused, for every one
-/// of the six, and nothing reaches either seam. The allow-list is the whole of the authorization,
-/// so it is the one thing that must still refuse.
 #[test]
 fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it() {
     let admin = admin();
@@ -226,9 +204,6 @@ fn a_new_verb_admitted_by_its_scope_reaches_governance() {
     );
 }
 
-/// D38 `amend_rate_history` is wired like any other money-governance verb: `full` scope and the
-/// `Crud` rate class. A read-only credential is refused at admit; a full one reaches the governance
-/// seam with nothing else asked.
 #[test]
 fn amend_rate_history_is_a_full_scope_new_verb() {
     use crate::rate::MutationClass;
@@ -247,7 +222,6 @@ fn amend_rate_history_is_a_full_scope_new_verb() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
 
-    // Scope refusal: a read-only credential may not amend the money-book's dated history.
     let err = verbs
         .execute(
             KernelVerb::AmendRateHistory,
@@ -260,7 +234,6 @@ fn amend_rate_history_is_a_full_scope_new_verb() {
         .expect_err("a read-only credential must be refused");
     assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
 
-    // Admitted with full scope: reaches the governance seam.
     let out = verbs
         .execute(
             KernelVerb::AmendRateHistory,
@@ -274,16 +247,10 @@ fn amend_rate_history_is_a_full_scope_new_verb() {
     assert_eq!(out, b"ok");
 }
 
-/// A store that has gone away refuses, on every governance call, with the reason the mapping names.
-///
-/// This is the fail-closed arm: it never echoes the cause (several of these calls carry secrets)
-/// and it never proceeds as if the call had succeeded. Nothing exercised it end to end before,
-/// because the only governance double in this crate could not fail.
 #[test]
 fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
     let admin = admin();
 
-    // A legacy verb, through the catch-all.
     let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
     let err = verbs
         .execute(
@@ -297,7 +264,6 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
 
-    // And a new 1.6.0 verb, once its scope has admitted it.
     let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
     let err = verbs
         .execute(
@@ -312,8 +278,6 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
     assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
 }
 
-/// The other three governance errors map to their own reasons, so `StoreError` is not a catch-all
-/// that would hide a validation mistake behind an infrastructure one.
 #[test]
 fn the_other_governance_errors_keep_their_own_reasons() {
     let admin = admin();
@@ -346,7 +310,6 @@ fn the_other_governance_errors_keep_their_own_reasons() {
     }
 }
 
-/// One trust decision through `execute`, as the root's route step makes it.
 fn approve_trust(
     verbs: &Verbs<FakeGovernance, RecordingStore>,
     admin: &Grant<AdminVerb>,
@@ -361,10 +324,6 @@ fn approve_trust(
     )
 }
 
-/// A new verb spends the node's mutation budget, and the budget is the NODE's: the 61st `Crud`
-/// mutation inside one window is refused even though every call was made through a different
-/// `Verbs` — which is how the composition root builds them, one per request, over the one limiter
-/// it holds for the life of the node.
 #[test]
 fn rate_limit_is_enforced_across_execute_calls() {
     let limiter = node_limiter();
@@ -386,9 +345,6 @@ fn rate_limit_is_enforced_across_execute_calls() {
     assert_eq!(err.reason, crate::refusal::ReasonCode::RateLimited);
 }
 
-/// A legacy mutation is NOT spent here. Its own 1.5.5 surface spends it in front of the handler,
-/// and a second count on this side would refuse at half the budget 1.5.5 granted: eleven config
-/// applies through one limiter all reach the surface, which is where the eleventh is refused.
 #[test]
 fn a_legacy_mutation_is_not_counted_a_second_time_here() {
     let verbs = make_verbs(FakeGovernance::new());
@@ -408,13 +364,6 @@ fn a_legacy_mutation_is_not_counted_a_second_time_here() {
     }
 }
 
-// ── the five 1.6.0 ledger views ─────────────────────────────────────────────────────────────────
-
-/// Which of the governance seam's three execution methods each verb reached.
-///
-/// Shared with the test rather than owned by the seam, because `Verbs` takes its governance by
-/// value: the log has to outlive the executor for the test to read it. Which method a verb reaches
-/// is the whole of what this crate decides about a ledger view, so it is what these tests measure.
 type SeamLog = std::sync::Arc<Mutex<Vec<(KernelVerb, &'static str)>>>;
 
 struct RoutingGovernance(SeamLog);
@@ -460,11 +409,6 @@ impl Governance for RoutingGovernance {
     }
 }
 
-/// A ledger view reaches the read seam under a read-only grant, the grant that refuses every
-/// mutation.
-///
-/// The control below is a mutating verb refused on the same executor under the same grant, so the
-/// green is the views being reads rather than the scope check being unwired.
 #[test]
 fn a_ledger_view_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation() {
     let admin = admin();
@@ -498,7 +442,6 @@ fn a_ledger_view_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation
     assert_eq!(reached.len(), crate::verb::LEDGER_VERBS.len());
 }
 
-/// A view asks for exactly what the legacy `/usage` read asks for, and no more.
 #[test]
 fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
     for verb in crate::verb::LEDGER_VERBS {
@@ -511,12 +454,6 @@ fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
     }
 }
 
-/// A view never spends a mutation slot.
-///
-/// The failure this pins is quiet and expensive: a view whose class fell through to `Crud` would
-/// consume one of the mutations a minute an operator is allowed, so a dashboard polling four
-/// balances would exhaust the budget the operator needed to change a config with — and the refusal
-/// would name the config change, not the polling.
 #[test]
 fn a_ledger_view_never_spends_a_mutation_slot() {
     for verb in crate::verb::LEDGER_VERBS {
@@ -526,20 +463,13 @@ fn a_ledger_view_never_spends_a_mutation_slot() {
             "{verb:?} is classified as a mutation"
         );
     }
-    // The control: a verb that IS a mutation still classifies as one, so the green above is the
-    // views being excluded rather than the classifier answering `Forbidden` to everything.
+
     assert_ne!(
         crate::rate::MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
         crate::rate::MutationClass::Forbidden
     );
 }
 
-/// An integrator who has bound no ledger serves nothing, and says so.
-///
-/// The default is what makes this addition additive: a `Governance` implementation written before
-/// the views existed compiles unchanged and answers `NotFound` — which is true, because it has no
-/// ledger behind it — rather than inventing zeros that would read as a deployment whose books
-/// balance.
 #[test]
 fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
     struct NoLedger;
@@ -562,7 +492,6 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
         ) -> Result<Vec<u8>, GovernanceError> {
             Ok(Vec::new())
         }
-        // `execute_ledger_read` is DELIBERATELY not written here. That absence is the test.
     }
 
     let admin = admin();
@@ -575,18 +504,6 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
     }
 }
 
-/// AN AUDIT-CHAIN READ REACHES A SEAM AT ALL — which is the whole of this test.
-///
-/// The three verbs were mounted on the closed table before anything answered them. They resolved,
-/// they carried the right scope and the right mutation class, and then `execute` fell past the
-/// ledger branch and past the new-verb branch into the legacy catch-all, where the mounted
-/// router answered a 404 for a path that release never had. A verb that resolves and then refuses
-/// is worse than one that does not resolve: the table says the surface exists and the surface says
-/// it does not.
-///
-/// The grant is the same one the ledger test uses, and for the same reason: a read-only grant
-/// refuses every mutating verb, and the control below is one of those refused on the same
-/// executor, so the green is the reads being reads rather than the scope check being unwired.
 #[test]
 fn an_audit_chain_read_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation() {
     let admin = admin();
@@ -620,10 +537,6 @@ fn an_audit_chain_read_reaches_the_read_seam_under_a_grant_that_refuses_every_mu
     assert_eq!(reached.len(), crate::verb::AUDIT_VERBS.len());
 }
 
-/// A chain read asks for exactly what the legacy `GET /audit` asks for, and no more.
-///
-/// A full-scope gate here would mean the only party who can check the evidence is the party the
-/// evidence is about.
 #[test]
 fn an_audit_chain_read_requires_what_the_legacy_audit_read_requires() {
     for verb in crate::verb::AUDIT_VERBS {
@@ -636,8 +549,6 @@ fn an_audit_chain_read_requires_what_the_legacy_audit_read_requires() {
     }
 }
 
-/// A chain read never spends a mutation slot: an auditor pulling a window must not exhaust the
-/// budget an operator needs to change a config with.
 #[test]
 fn an_audit_chain_read_never_spends_a_mutation_slot() {
     for verb in crate::verb::AUDIT_VERBS {
@@ -647,20 +558,13 @@ fn an_audit_chain_read_never_spends_a_mutation_slot() {
             "{verb:?} is classified as a mutation"
         );
     }
-    // The control: a verb that IS a mutation still classifies as one.
+
     assert_ne!(
         crate::rate::MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
         crate::rate::MutationClass::Forbidden
     );
 }
 
-/// An integrator who has bound no chain serves nothing, and says so.
-///
-/// `NotFound` rather than an empty head, and the distinction is the thirteenth instrument defect's
-/// rule (`docs/design/BUSBAR-1.6.0.md:2079`): a node that has sealed nothing and a node nobody wired
-/// a chain into are different facts, and an answer that cannot tell them apart is an instrument
-/// reporting over nothing. A `Governance` written before these three verbs existed compiles
-/// unchanged and answers the true thing.
 #[test]
 fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
     struct NoChain;
@@ -683,7 +587,6 @@ fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
         ) -> Result<Vec<u8>, GovernanceError> {
             Ok(Vec::new())
         }
-        // `execute_audit_read` is DELIBERATELY not written here. That absence is the test.
     }
 
     let admin = admin();
@@ -694,8 +597,7 @@ fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
             .unwrap_err();
         assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
     }
-    // THE CONTROL that makes the three refusals mean something: the same executor answers a legacy
-    // verb, so the `NotFound` above is the unbound chain and not a dead executor.
+
     assert_eq!(
         verbs
             .execute(
@@ -711,18 +613,6 @@ fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
     );
 }
 
-/// THE TWO MINTING VERBS ARE REFUSED ON THE GENERIC PATH, IN EVERY BUILD.
-///
-/// The two key mints are answered by the served handlers in `crate::keys`, which hold the replay
-/// cache: a retry inside the window must return the first response rather than mint a second
-/// credential. The generic dispatcher has none of that, so a caller that routes either verb through
-/// it hands the mint straight to the legacy catch-all and every retry mints again — a fresh admin
-/// credential per network hiccup, none of which the client asked for and only the last of which it
-/// sees.
-///
-/// A `debug_assert` said so in debug builds and said nothing in a release binary, which is the one
-/// build where it matters. The refusal is the same answer every other unresolvable precondition in
-/// this crate gets, and it is the same one in both profiles.
 #[test]
 fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_double_minting() {
     let admin = admin();
@@ -741,7 +631,6 @@ fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_doubl
         "a minting verb reached a governance seam through the generic path"
     );
 
-    // The control: another legacy mutation on the same executor still reaches the legacy seam.
     verbs
         .execute(
             KernelVerb::PostGroups,
@@ -758,16 +647,6 @@ fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_doubl
     );
 }
 
-/// The two 1.6.0 verbs the design binds as GETs are reads, and a read-only credential is what they
-/// ask for.
-///
-/// `verify` and `plane_facts` are the two new verbs the architecture document binds as `GET`
-/// — "GET for the two read-only verbs" — and everything that follows from a verb being a read
-/// follows for them: an operator holding a read-only admin credential is answered. Demanding `full`
-/// of them refuses the operator who was only ever allowed to look.
-///
-/// The control below is a mutating verb on the same executor, so the green above is these two
-/// being reads rather than the scope check being unwired.
 #[test]
 fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
     let admin = admin();
@@ -786,8 +665,6 @@ fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
         assert_eq!(body, b"new", "{verb:?} did not reach the new-verb seam");
     }
 
-    // The control: a mutating new verb still needs `full`, and with it is admitted (#77(9): no
-    // approval is waited for).
     let err = verbs
         .execute(
             KernelVerb::Adjust,
@@ -805,8 +682,6 @@ fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
     assert_eq!(body, b"new");
 }
 
-/// A store that records which recovery primitive it was asked to perform, so a test can say
-/// "nothing reached the store" and mean it rather than inferring it from a return value.
 struct RecordingStore(Mutex<Vec<&'static str>>);
 
 impl RecordingStore {
@@ -842,17 +717,10 @@ fn recovery_verbs() -> Verbs<FakeGovernance, RecordingStore> {
     )
 }
 
-/// The two disaster-recovery verbs are admitted before they reach the store, exactly as every
-/// other new verb is admitted before it reaches governance.
-///
-/// Where a verb's effect lands is not a reason for it to be admitted differently: a read-only
-/// caller is refused both, and the store is not touched. Handing the bound store out and
-/// trusting the caller to gate it made the check optional.
 #[test]
 fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
     let admin = admin();
 
-    // A read-only caller is refused both.
     let v = recovery_verbs();
     for err in [
         v.chain_break(&admin, "alice", VerbScope::ReadOnly, 0)
@@ -864,7 +732,6 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
     }
     assert!(v.store_for_test().reached().is_empty());
 
-    // Admitted, and only then does each one reach its own store primitive.
     let v = recovery_verbs();
     v.chain_break(&admin, "alice", VerbScope::Full, 0)
         .expect("admitted");
@@ -876,9 +743,6 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
     );
 }
 
-/// A node with NO store (no governance configured) is handed `None`, and each disaster-recovery
-/// verb, once admitted, is refused as a store failure: there is nothing for it to reach. The same
-/// admitted verb over a bound store lands (the tests above), so the refusal is the absence alone.
 #[test]
 fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
     let admin = admin();

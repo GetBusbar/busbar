@@ -2,29 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! DECLARED SECRET FIELDS: the settings paths a plugin's Statement names in `secret_refs`, as every
-//! host reads them.
-//!
-//! A path is `.`-separated. A segment `*` matches any object key or any array index, so
-//! `servers.*.env.*` names every environment value of every server. A path with no `*` is EXACT.
-//!
-//! * **Lending** ([`lend`]). Each exact path's value is taken out of the settings and lent, one
-//!   entry per path in the Statement's order (an unset one lends empty bytes), as hosts always
-//!   have. An object key is removed; an array slot becomes null to preserve the other indices.
-//!   Then each wildcard path's matches, in document order, are lent after them: every string
-//!   or secret reference it matches is lent and replaced in the settings by the marker
-//!   `{"$secret": <index into the lent secrets>}`, which the SDK's
-//!   [`crate::abi::sdk::cred::settings_lent`] reads back.
-//! * **Policing** ([`undeclared_reference`]). A secret reference (`{env:}`, `{file:}`,
-//!   `{module:, settings:}`) at a position no declared path names is refused: the plugin did not
-//!   declare the field secret, so the kernel will not resolve a secret into it (OWNER RULING,
-//!   CHIP-REVIEW-v4 change 2).
-//! * **Reference-capable, not-secret fields** ([`resolve_declared_fields`], lead ruling item 7a).
-//!   A Statement may also name paths that take a reference WITHOUT being secret (its extensions'
-//!   [`crate::abi::mechanism::extensions::EXT_REFERENCE_FIELDS`]; a store, exporter or hook
-//!   `url`). A reference there is resolved in place to its string ([`resolve_references`]); a
-//!   literal passes as written; the value is never lent and never refused as a secret literal. A
-//!   path named in both lists is a contradiction ([`contradiction`]), refused at load. A position a
-//!   secret path and a reference-capable path both name (through `*`) is secret.
 
 use serde_json::Value;
 use zeroize::Zeroize;
@@ -35,7 +12,7 @@ pub use crate::abi::sdk::cred::SECRET_MARKER;
 pub const WILDCARD: &str = "*";
 
 /// The single key that says "this object is the plugin's own data, not a reference":
-/// `{ literal: … }` (the kernel unwraps it; nothing under it is a reference).
+
 pub const LITERAL_KEY: &str = "literal";
 
 /// Whether the declared `path` has a `*` segment.
@@ -45,7 +22,7 @@ pub fn is_wildcard(path: &str) -> bool {
 }
 
 /// Whether `v` is a secret reference by shape: an object that reads as a
-/// [`crate::secret_ref::SecretRef`].
+
 #[must_use]
 pub fn is_reference(v: &Value) -> bool {
     v.is_object() && serde_json::from_value::<crate::secret_ref::SecretRef>(v.clone()).is_ok()
@@ -63,8 +40,7 @@ pub fn covers(path: &str, at: &[String]) -> bool {
 }
 
 /// The first position (`.`-joined) in `settings` that holds a secret reference no path in
-/// `declared` names, or `None`. A `{ literal: … }` object is the plugin's own data and is not
-/// looked into.
+
 #[must_use]
 pub fn undeclared_reference(settings: &Value, declared: &[String]) -> Option<String> {
     fn walk(v: &Value, at: &mut Vec<String>, declared: &[String]) -> Option<String> {
@@ -92,7 +68,7 @@ pub fn undeclared_reference(settings: &Value, declared: &[String]) -> Option<Str
 }
 
 /// The refusal for a secret reference at `field` (the operator's path to it) in the settings of
-/// `plugin`, which did not declare that field secret.
+
 #[must_use]
 pub fn undeclared_refusal(field: &str, plugin: &str) -> String {
     format!(
@@ -104,10 +80,7 @@ pub fn undeclared_refusal(field: &str, plugin: &str) -> String {
 }
 
 /// The first position (`.`-joined) a declared path names, EXACT or WILDCARD, whose value in `tree` is
-/// set and is not a secret reference: a literal written where the plugin declared a secret (a
-/// string, a number, a `{ literal: … }` wrapper, any object that is not a reference). `null` is
-/// unset. EVERY SECRET IS A REFERENCE, NEVER A LITERAL (security.md:316): a wildcard path names
-/// secret positions exactly as an exact one does (lead ruling, item 7b).
+
 #[must_use]
 pub fn declared_literal(tree: &Value, declared: &[String]) -> Option<String> {
     declared.iter().find_map(|path| {
@@ -122,8 +95,7 @@ pub fn declared_literal(tree: &Value, declared: &[String]) -> Option<String> {
 }
 
 /// The refusal for a literal at `field` (the operator's path to it), a position `plugin` declares
-/// secret: the core secret fields' own non-echoing words
-/// ([`crate::secret_ref::INLINE_LITERAL_REFUSAL`]), never a byte of the value.
+
 #[must_use]
 pub fn declared_literal_refusal(field: &str, plugin: &str) -> String {
     format!(
@@ -133,7 +105,7 @@ pub fn declared_literal_refusal(field: &str, plugin: &str) -> String {
 }
 
 /// The first path the reference-capable list `reference` names that the secret list `secret` also
-/// names, or `None`: a field is secret or reference-capable, never both (lead ruling item 7a).
+
 #[must_use]
 pub fn contradiction(secret: &[String], reference: &[String]) -> Option<String> {
     reference.iter().find(|p| secret.contains(p)).cloned()
@@ -149,7 +121,7 @@ pub fn contradiction_refusal(path: &str, plugin: &str) -> String {
 }
 
 /// Every position (its segments) under `tree` that a `reference` path names, that holds a secret
-/// reference, and that no `secret` path names, in the list's order and then document order.
+
 #[must_use]
 pub fn reference_positions(
     tree: &Value,
@@ -168,13 +140,7 @@ pub fn reference_positions(
 }
 
 /// RESOLVE the REFERENCE-CAPABLE positions of `tree` in place (lead ruling item 7a): each secret
-/// reference at a position a `reference` path names (and no `secret` path names) is replaced by the
-/// string `resolve(field, reference)` answers. A literal there is left as written; nothing is
-/// lent. The undeclared-reference and declared-literal refusals are the caller's
-/// ([`resolve_declared_fields`] runs both).
-///
-/// # Errors
-/// The first error `resolve` answers.
+
 pub fn resolve_references(
     tree: &mut Value,
     secret: &[String],
@@ -195,13 +161,7 @@ pub fn resolve_references(
 }
 
 /// RESOLVE a plugin's settings `tree` as the kernel does before they cross the ABI: a reference
-/// at a position `declared` does not name is refused ([`undeclared_refusal`], naming `plugin`), a
-/// literal at a declared position, exact or wildcard, is refused ([`declared_literal_refusal`]), and
-/// each reference at a declared position is replaced in place by the string
-/// `resolve(field, reference)` answers. Everything else is left as written.
-///
-/// # Errors
-/// The refusal, or the first error `resolve` answers.
+
 pub fn resolve_declared(
     tree: &mut Value,
     declared: &[String],
@@ -212,13 +172,7 @@ pub fn resolve_declared(
 }
 
 /// [`resolve_declared`] with the plugin's REFERENCE-CAPABLE, NOT-SECRET paths `reference` beside
-/// its secret paths `declared` (lead ruling item 7a): a reference at a reference-capable position
-/// is not undeclared and is resolved in place to its string ([`resolve_references`]); a literal
-/// there passes as written. A path in both lists refuses ([`contradiction_refusal`]) and resolves
-/// nothing.
-///
-/// # Errors
-/// The refusal, or the first error `resolve` answers.
+
 pub fn resolve_declared_fields(
     tree: &mut Value,
     declared: &[String],
@@ -251,14 +205,7 @@ pub fn resolve_declared_fields(
 }
 
 /// LEND the declared secrets out of `block` (see the module docs). `keep_exact`: an exact path's
-/// value stays in the settings (the secret kind's host leaves it), otherwise it is taken out. `exact(path, taken)` turns an
-/// exact path's taken-out value (`None` = unset) into its bytes; `wild(at, value)` turns one
-/// wildcard match (a string or a reference) at `at` into its bytes. The bytes are the caller's
-/// holder `T`: plain `Vec<u8>`, or a host-held `Secret` the resolver wrote into, which moves here
-/// and is never copied. On an error every byte lent so far is wiped.
-///
-/// # Errors
-/// The first error a callback answers.
+
 pub fn lend<T: Zeroize, E>(
     block: &mut Value,
     paths: &[String],
@@ -305,7 +252,7 @@ pub fn lend<T: Zeroize, E>(
 }
 
 /// Every position (its segments) under `v` that the declared `path` names and that holds a secret
-/// reference, in document order.
+
 #[must_use]
 pub fn declared_references(v: &Value, path: &str) -> Vec<Vec<String>> {
     let segs: Vec<&str> = path.split('.').collect();
@@ -329,7 +276,7 @@ fn at_mut_ref<'v>(v: &'v Value, at: &[String]) -> Option<&'v Value> {
 }
 
 /// Remove and answer the value at the exact `.`-separated `path` of `v`, if set. An array
-/// position becomes null so taking one secret cannot change another declared path's index.
+
 fn take_path(v: &mut Value, path: &str) -> Option<Value> {
     let (parent, last) = match path.rsplit_once('.') {
         Some((head, last)) => (
@@ -346,7 +293,7 @@ fn take_path(v: &mut Value, path: &str) -> Option<Value> {
 }
 
 /// Every position under `v` that `segs` names and that holds a string or a reference, in
-/// document order.
+
 fn matches(v: &Value, segs: &[&str], at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
     let mut found = Vec::new();
     named(v, segs, at, &mut found);

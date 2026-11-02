@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK CHAIN'S CALLS ON THE ONE DISPATCHER (THE DESIGN §11.7: hooks on the memory ABI, 1.5.5
-//! behaviour frozen): [`HookPolicy`], the routing seam's [`RoutingPolicy`] over one opened hook
-//! instance's contract [`HookCalls`] (whichever door the instance came in by — the composition
-//! root's `HookAxis` opened it). Each method builds the hook kind's fixed view
-//! ([`DecideView`] / [`NotifyFrame`]) from the borrowed projections, makes the call bounded by the
-//! hook's `timeout_ms`, and lowers the fixed answer back through the kernel's OWN 1.5.5 normalizing
-//! ([`wire`]): reject > restrict > abstain > order, the reject-status clamp (400-499, else 403), the
-//! reject-message sanitiser and 300-character cap, unknown candidate indices dropped, the rewrite
-//! parsed fail-closed, the status metrics bounded. The plugin side lowered its own reply to the
-//! fixed `out` (`abi::sdk::hook`); everything the 1.5.5 HOST did to a reply is done here.
-
 use busbar_contract::abi::hook::{
     VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
 };
@@ -26,26 +15,17 @@ use busbar_contract::hooks::{
 use std::sync::Arc;
 use std::time::Duration;
 
-/// ONE OPENED HOOK INSTANCE AS THE ROUTING SEAM CALLS IT.
 pub(crate) struct HookPolicy {
     calls: Arc<dyn HookCalls>,
-    /// The hook's registry name (metrics, `x-busbar-route`), owned by the policy for as long as it
-    /// lives: a decision that names it takes a clone of this handle, so nothing is leaked per open.
+
     name: Arc<str>,
-    /// THE STATIC CANDIDATE HALVES this hook was last handed (Q128 contract C7): each candidate
-    /// set's configured facts, built once and reused while a request's candidates are exactly
-    /// those ([`CandidateStatics::matches`]), so a `decide` builds only its per-request half. A
-    /// generation swap that changes any candidate's facts no longer matches and builds afresh: the
-    /// hook never sees a stale candidate. Newest first, at most [`STATIC_HALVES`].
+
     statics: std::sync::Mutex<Vec<Arc<CandidateStatics>>>,
 }
 
-/// How many candidate sets one hook keeps the static half of (one per pool it ranks, with room
-/// for the subsets a breaker trims).
 const STATIC_HALVES: usize = 16;
 
 impl HookPolicy {
-    /// The routing seam over `calls`, named `name` (the hook's registry name).
     pub(crate) fn policy(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
         Arc::new(Self {
             calls,
@@ -54,7 +34,6 @@ impl HookPolicy {
         })
     }
 
-    /// The static half of `candidates`: a kept one that matches them, else one built now and kept.
     fn statics_for(&self, candidates: &[Candidate<'_>]) -> Arc<CandidateStatics> {
         let mut kept = self
             .statics
@@ -81,8 +60,6 @@ impl std::fmt::Debug for HookPolicy {
     }
 }
 
-/// A reject's `(status, message)` as 1.5.5's host read it: a stated status clamped to 400-499
-/// (else 403), an absent one 403; the message sanitised and capped.
 fn reject_of(verbs: u32, status: u16, message: &str) -> (u16, String) {
     let status = if verbs & VERB_HAS_REJECT_STATUS != 0 {
         wire::clamp_reject_status(status)
@@ -92,7 +69,6 @@ fn reject_of(verbs: u32, status: u16, message: &str) -> (u16, String) {
     (status, wire::sanitize_reject_message(message))
 }
 
-/// Why no answer could be had, as the caller's `on_error` reads it.
 fn unanswered<O>(name: &str, budget: Duration, a: Answered<O>) -> String {
     match a {
         Answered::TimedOut => format!("hook plugin deadline ({budget:?}) exceeded"),
@@ -104,7 +80,6 @@ fn unanswered<O>(name: &str, budget: Duration, a: Answered<O>) -> String {
     }
 }
 
-/// LOWER a READY `decide` answer read from its frame (see [`decision`]).
 fn lower_decide(
     out: &busbar_contract::abi::hook::DecideOut,
     frame: &DecideFrame,
@@ -120,9 +95,6 @@ fn lower_decide(
     )
 }
 
-/// THE HOST'S HALF OF A `decide` ANSWER: reject > restrict > abstain > order, as 1.5.5's host
-/// normalized a reply (the 1.5.5 reply tests in `tests/wire_tests.rs` run through here). Each
-/// written part is read only when its verb asks for it.
 pub(super) fn decision(
     verbs: u32,
     reject_status: u16,
@@ -136,8 +108,6 @@ pub(super) fn decision(
         return RoutingDecision::Reject { status, message };
     }
     if verbs & VERB_RESTRICT != 0 {
-        // Each tag trimmed, empties dropped; none left restricts to nothing (the gate's
-        // `on_empty`), never allow-all.
         let tags_any = restrict_tags()
             .into_iter()
             .map(|t| t.trim().to_string())
@@ -152,7 +122,6 @@ pub(super) fn decision(
     RoutingDecision::from_ranked(order(), &valid)
 }
 
-/// LOWER a READY `transform` answer read from its frame (see [`transformed`]).
 fn lower_transform(
     out: &busbar_contract::abi::hook::TransformOut,
     frame: &DecideFrame,
@@ -165,8 +134,6 @@ fn lower_transform(
     )
 }
 
-/// THE HOST'S HALF OF A `transform` ANSWER: reject > rewrite > abstain, as 1.5.5's host read a
-/// transform reply; a rewrite that does not parse proceeds with the ORIGINAL body.
 pub(super) fn transformed(
     verbs: u32,
     reject_status: u16,
@@ -205,8 +172,7 @@ impl RoutingPolicy for HookPolicy {
                 frame,
                 ..
             } => Ok(lower_decide(&out, &frame, candidates)),
-            // FAILED (the hook said it could not answer), a deadline, a broken contract: the
-            // caller's `on_error` decides, never a silent abstain.
+
             other => Err(PolicyError::from(unanswered(&self.name, budget, other))),
         }
     }
@@ -220,7 +186,6 @@ impl RoutingPolicy for HookPolicy {
     }
 
     async fn transform(&self, req: &RoutingRequest<'_>, budget: Duration) -> TransformOutcome {
-        // A rewrite gate reads the prompt, not the candidate set.
         let ctx = RoutingContext {
             pool: req.pool,
             budget_remaining: None,
@@ -275,7 +240,6 @@ impl RoutingPolicy for HookPolicy {
     }
 }
 
-// v1.5.5's hook reply suite (M4 HOOK-PARITY), verbatim, run through this read-back.
 #[cfg(test)]
 #[path = "tests/wire_tests.rs"]
 mod wire_tests;

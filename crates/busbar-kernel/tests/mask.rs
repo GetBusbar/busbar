@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The masking forms the location grammar declares for a credential in the
-//! read cursor.
-//!
-//! Masking is decided by the location grammar rather than per plane, so every form is asked here
-//! what it does — including the one that does nothing, because it was never in the bytes.
-
 use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver};
 
 #[test]
@@ -31,13 +25,12 @@ fn every_location_form_says_how_it_is_masked() {
         .mask(),
         MaskKind::BoundedPrefix
     );
-    // A body signature has to see every byte it signs, so the unit does not open until the body has.
+
     assert!(ArrivalLocation::Signed {
         over: SignedOver::Both
     }
     .needs_whole_body());
-    // A path segment is bytes in the read cursor exactly as a header is, so it hides the same way:
-    // same-length fill, which leaves every offset already computed over the target where it was.
+
     assert_eq!(
         ArrivalLocation::PathSegment(0).mask(),
         MaskKind::SameLengthFill
@@ -46,13 +39,6 @@ fn every_location_form_says_how_it_is_masked() {
     assert!(!ArrivalLocation::Header("x").needs_whole_body());
 }
 
-/// Every location form is masked by the kind it is masked by.
-///
-/// Asserting only that the answer is a member of the closed set is an assertion no answer could
-/// fail — the previous test already pins that the set is the whole enum, so `ALL.contains(..)` was
-/// true of every value `mask()` can return. The kind is what decides whether a credential is still
-/// in the bytes a plane reads, so the expectation is a decision per form: `Query` masking `Nothing`
-/// would leave an API key in the read cursor with nothing to say so.
 #[test]
 fn every_location_form_masks_by_a_kind_the_closed_set_names() {
     let forms = [
@@ -70,8 +56,6 @@ fn every_location_form_masks_by_a_kind_the_closed_set_names() {
         },
     ];
     for form in forms {
-        // Exhaustive, with no catch-all: a location form added to the grammar stops compiling here
-        // until somebody decides how its span is hidden.
         let expected = match form {
             ArrivalLocation::Header(_)
             | ArrivalLocation::Query(_)

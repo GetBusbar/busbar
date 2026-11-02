@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTHORIZATION SERVER OVER THE DEPLOYMENT'S STORE: the library's own storage-conformance
-//! harness against [`SharedStorage`], two nodes over one store serving one server, and the signing
-//! key minted once per deployment.
-//!
-//! The store here is a double of the store's plane-record verbs and its single-use claims, over
-//! maps the test holds: every clone is the same store, so two planes built over two clones are two
-//! nodes on one deployment. It files records exactly as the linked in-tree store does: a record is
-//! kept at `(kind, parent or else id, seq)`, `get_plane_record` reads `(kind, id, 0)`, a list by
-//! parent reads the records whose parent it names, and a delete takes every sequence of an identity.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -25,11 +15,8 @@ use crate::config::OauthAsCfg;
 use crate::plane::{seam_build, AsPlane};
 use crate::shared::{Shared, SharedStorage, LABEL, VERSION_CLAIM_SECS};
 
-/// `(kind, parent or else id, seq)` to `(parent, body)`, as the linked in-tree store keys them.
 type Records = BTreeMap<(String, String, u64), (Option<String>, Vec<u8>)>;
 
-/// One answer the double holds back: the slot (`get` or `redeem`), the record kind it is for, and
-/// how long the answer takes after the store has decided it.
 type Stall = (&'static str, String, std::time::Duration);
 
 /// The double. Cheap to clone; every clone is the same store.
@@ -58,7 +45,6 @@ struct AtomicRecords {
     calls: Vec<Request>,
 }
 
-/// Backend work is owned by its task, independently of the client awaiting the answer.
 struct DecisionDelay {
     schema: String,
     before: Option<Arc<tokio::sync::Notify>>,
@@ -121,7 +107,6 @@ impl OneStore {
         Arc::new(self.clone())
     }
 
-    /// Redeem `(kind, token)` as another node would.
     fn redeem(&self, kind: &str, token: &str, expires_at: u64, _now: u64) -> bool {
         let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
         let store_now = std::time::SystemTime::now()
@@ -144,9 +129,6 @@ impl OneStore {
         }
     }
 
-    /// Hold back the next answer of `slot` for the kind `name` of the server's records by `by`: the
-    /// store decides the call at once and answers it `by` later, as a stalled node or a slow store
-    /// would.
     fn stall(&self, slot: &'static str, name: &str, by: std::time::Duration) {
         self.stalls.lock().unwrap_or_else(|p| p.into_inner()).push((
             slot,
@@ -163,7 +145,6 @@ impl OneStore {
         Some(stalls.remove(i).2)
     }
 
-    /// Every record of the server's kinds the store still holds.
     fn rows(&self) -> Vec<(String, String, u64)> {
         self.visible()
             .keys()
@@ -172,8 +153,6 @@ impl OneStore {
             .collect()
     }
 
-    /// Logical live rows: raw authority suppresses legacy rows, including after retirement.
-    /// Physical tombstones remain observable through `atomic.rows` for fencing assertions.
     fn visible(&self) -> Records {
         let mut rows = self.records.lock().unwrap().clone();
         for ((schema, key), value) in &logical_rows(&self.atomic.lock().unwrap().rows) {
@@ -189,8 +168,6 @@ impl OneStore {
         rows
     }
 
-    /// Age every record that says when it was written (an `at` member, at any depth) by `secs`,
-    /// as if it had been written that much earlier.
     fn age(&self, secs: u64) {
         fn older(v: &mut serde_json::Value, secs: u64) {
             match v {
@@ -231,8 +208,6 @@ impl OneStore {
         });
     }
 
-    /// The fixture's wall-clock adjustment changes logical cells, including their physical
-    /// descriptors/chunks. It does not relax the double's real per-record validation.
     fn rewrite_atomic(&self, mut change: impl FnMut(&str, &mut serde_json::Value)) {
         let mut state = self.atomic.lock().unwrap();
         for ((schema, key), body) in logical_rows(&state.rows) {
@@ -391,8 +366,7 @@ impl StoreCalls for OneStore {
             });
             return Box::pin(async move { receiver.await.expect("backend task answers") });
         }
-        // Filed as the linked in-tree store files it: under the parent when there is one, at its
-        // sequence position.
+
         let identity = record.parent.unwrap_or(record.id).to_string();
         self.records
             .lock()
@@ -500,7 +474,6 @@ fn block(signing_key: bool) -> serde_yaml::Value {
     .expect("the block serializes")
 }
 
-/// One node's generation over `store` (`None`: no store configured), after `prior`.
 fn node(
     store: Option<&OneStore>,
     prior: Option<&Arc<dyn std::any::Any + Send + Sync>>,
@@ -539,8 +512,6 @@ fn client(id: &str) -> oauth_as::client::Client {
     }
 }
 
-/// THE LIBRARY'S OWN CONTRACT, raced on real threads: atomic `take_*`, the four compare-and-swaps,
-/// the revocation barriers and cascades, the replay ledger and the sweep, every check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_backed_server_holds_the_storage_contract() {
     let violations = oauth_as::storage_conformance::StorageConformance::new(|| async {
@@ -554,8 +525,6 @@ async fn the_store_backed_server_holds_the_storage_contract() {
     assert!(violations.is_empty(), "{violations:#?}");
 }
 
-/// RED before the store-backed records: each node held its own `MemoryStorage`, so a client one node
-/// registered was unknown to the other, and a replayed proof was fresh on the second node.
 #[tokio::test]
 async fn two_nodes_on_one_store_are_one_authorization_server() {
     let store = OneStore::default();
@@ -596,7 +565,6 @@ async fn two_nodes_on_one_store_are_one_authorization_server() {
         "a proof node A accepted is fresh again on node B"
     );
 
-    // The consent screen: a session opened on A, an answer staked on B, spent once across both.
     a.open_session("busbar-operator", "session-1".to_string())
         .await;
     b.stake("session-1", "key-1".to_string(), true).await;
@@ -616,8 +584,6 @@ async fn two_nodes_on_one_store_are_one_authorization_server() {
     );
 }
 
-/// RED before: with no `signing_key`, each node generated its own key, so a token node A signed
-/// failed verification on node B.
 #[tokio::test]
 async fn two_nodes_on_one_store_sign_with_one_minted_key() {
     let store = OneStore::default();
@@ -637,8 +603,6 @@ async fn two_nodes_on_one_store_sign_with_one_minted_key() {
     assert_eq!(jwks(&a), jwks(&b), "the two nodes publish different keys");
 }
 
-/// The key does not roll: a reload and a restart over the same store sign with the key a token was
-/// signed under before them, so a verifier never refuses a valid unexpired token across either.
 #[tokio::test]
 async fn a_reload_and_a_restart_keep_the_minted_key() {
     let store = OneStore::default();
@@ -658,7 +622,6 @@ async fn a_reload_and_a_restart_keep_the_minted_key() {
     );
 }
 
-/// A configured `signing_key` always wins over the minted one.
 #[tokio::test]
 async fn a_configured_signing_key_overrides_the_minted_one() {
     use base64::Engine as _;
@@ -685,7 +648,6 @@ async fn a_configured_signing_key_overrides_the_minted_one() {
     );
 }
 
-/// Store capability refusal applies even when a configured signing key bypasses minting.
 #[tokio::test]
 async fn a_store_without_conditional_transactions_fails_closed() {
     struct Unsupported;
@@ -780,7 +742,6 @@ async fn a_store_without_conditional_transactions_fails_closed() {
         .is_err());
 }
 
-/// With no store configured the server keeps its records in this process, as it always did.
 #[tokio::test]
 async fn without_a_store_the_records_stay_in_process() {
     let a = plane(&node(None, None, Vec::new()));
@@ -799,8 +760,6 @@ async fn without_a_store_the_records_stay_in_process() {
         .is_none());
 }
 
-/// Backend decisions can arrive after the old lease window; an unexpired refresh token is taken
-/// once. Authorization-code lifetime is too short to witness a 120-second delayed spend.
 #[tokio::test(start_paused = true)]
 async fn a_late_refresh_take_conflicts_after_another_node_took_it() {
     let store = OneStore::default();
@@ -833,11 +792,10 @@ async fn a_late_refresh_take_conflicts_after_another_node_took_it() {
     );
 }
 
-/// A stale absent read cannot replace a key another node kept in the meantime.
 #[tokio::test(start_paused = true)]
 async fn a_key_minter_with_a_stale_read_uses_the_committed_key() {
     let store = OneStore::default();
-    // The raw read is absent; the following legacy-fallback read stalls.
+
     let a_store = store.clone();
     let a = tokio::spawn(async move {
         let shared = Shared::new(a_store.calls());
@@ -869,12 +827,6 @@ async fn a_key_minter_with_a_stale_read_uses_the_committed_key() {
     }
 }
 
-/// RED (audit core-oauth2 r4#2): the sweep reclaims what has lapsed. A client registers, takes a
-/// code, holds a token family that is revoked, opens a consent session and stakes an answer on it,
-/// claims a replay id, and is deleted; once every record, barrier and session has lapsed, a sweep
-/// leaves none of the server's live payloads behind. Raw authority retains credential-free unique
-/// retirement markers, which prevent legacy resurrection and ABA. Before the fix index rows, sessions, stakes, the
-/// family barrier and the client's bucket were kept forever.
 #[tokio::test]
 async fn a_sweep_past_every_expiry_leaves_no_live_payload_behind() {
     use oauth_as::store::RevocationWindow;
@@ -966,7 +918,6 @@ async fn a_sweep_past_every_expiry_leaves_no_live_payload_behind() {
         .await
         .expect("deletes"));
 
-    // Three hours on: every record, barrier, session and answer above has lapsed.
     store.age(3 * 3600);
     let later = now + 3 * hour;
     s.sweep_expired(later).await.expect("sweeps");
@@ -985,7 +936,6 @@ async fn a_sweep_past_every_expiry_leaves_no_live_payload_behind() {
     );
 }
 
-/// How many held-back point reads of the server's `bucket` records are still unspent.
 fn bucket_reads_left(store: &OneStore) -> usize {
     let bucket = format!("{LABEL}bucket");
     store
@@ -997,10 +947,6 @@ fn bucket_reads_left(store: &OneStore) -> usize {
         .count()
 }
 
-/// RED: the sweep judges each client's records on the body its listing already read, and reads a
-/// client's records again only when it has something to reclaim. Ten clients that hold nothing
-/// lapsed cost no point read; one whose code has lapsed is still read and swept. Before the fix
-/// the sweep read every client's records a second time, every minute, on every node.
 #[tokio::test]
 async fn the_sweep_reads_again_only_the_records_it_changes() {
     let store = OneStore::default();
@@ -1014,7 +960,7 @@ async fn the_sweep_reads_again_only_the_records_it_changes() {
     s.put_authorization_code(code("code-1", "lapsing"))
         .await
         .expect("issues a code");
-    // Every point read of a bucket from here spends one of these, so what is left counts them.
+
     for _ in 0..32 {
         store.stall("get", "bucket", std::time::Duration::ZERO);
     }
@@ -1047,11 +993,6 @@ fn code(code: &str, client_id: &str) -> oauth_as::authorization::AuthorizationCo
     )
 }
 
-/// A cell the sweep retired never blocks the cell made again under its id. The sweep
-/// retires an emptied bucket at version 2 under the claim on version 3, which stands for two
-/// minutes; a client whose records come back inside them climbs to version 3 again. Before the fix
-/// that write lost the retirement's claim on every attempt and answered a storage error (a login
-/// failing at the token endpoint); now the made-again cell's claims name an epoch of their own.
 #[tokio::test(start_paused = true)]
 async fn a_retired_cell_never_blocks_its_own_recreation() {
     let store = OneStore::default();
@@ -1064,8 +1005,7 @@ async fn a_retired_cell_never_blocks_its_own_recreation() {
         .await
         .expect("version 2")
         .is_some());
-    // Long enough ago that every claim on versions 1 and 2 has lapsed, and the sweep retires the
-    // emptied bucket, under the claim on version 3.
+
     tokio::time::advance(std::time::Duration::from_secs(VERSION_CLAIM_SECS + 60)).await;
     store.age(3600);
     s.sweep_expired(std::time::SystemTime::now())
@@ -1099,10 +1039,6 @@ async fn a_retired_cell_never_blocks_its_own_recreation() {
     );
 }
 
-/// With the store, a second answer to one request on one session is spent, once, as
-/// the in-process table spends it. Before the fix the spend claim named only the session and the
-/// request, so it stood from the first answer's spend and a second answer could never be spent:
-/// `/authorize` sent the operator back to the consent screen for the session's life.
 #[tokio::test]
 async fn a_second_answer_on_one_session_is_spent_once() {
     let store = OneStore::default();
@@ -1136,9 +1072,6 @@ async fn a_second_answer_on_one_session_is_spent_once() {
     );
 }
 
-/// In the deployment's store, a self-registered client whose bucket has held nothing
-/// for the idle period is reclaimed by the sweep, bucket and all. Before the fix a bucket holding a
-/// client never held nothing, so it was kept for good.
 #[tokio::test]
 async fn an_idle_self_registered_client_leaves_the_store() {
     use oauth_as::client::ClientId;
@@ -1161,7 +1094,7 @@ async fn an_idle_self_registered_client_leaves_the_store() {
         .await
         .expect("registers");
     let id = ClientId::new(info.client_id);
-    // A client stored with no registration (none of the server's own paths store one) is kept.
+
     p.server()
         .store()
         .put_client(client("agent-1"))
@@ -1199,7 +1132,6 @@ async fn an_idle_self_registered_client_leaves_the_store() {
     );
 }
 
-/// The keys of every row of the server's record kind `name` the store still holds.
 fn rows_of(store: &OneStore, name: &str) -> Vec<String> {
     let k = format!("{LABEL}{name}");
     store
@@ -1210,7 +1142,6 @@ fn rows_of(store: &OneStore, name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether any row of the server's record kind `name` names `word` in its body.
 fn names(store: &OneStore, name: &str, word: &str) -> bool {
     let k = format!("{LABEL}{name}");
     store
@@ -1220,10 +1151,6 @@ fn names(store: &OneStore, name: &str, word: &str) -> bool {
         .any(|(_, (_, body))| body.windows(word.len()).any(|w| w == word.as_bytes()))
 }
 
-/// A subject's index entry for a client is reclaimed once that client
-/// no longer holds a consent of the subject, and only then; once no client holds one, nothing of
-/// the subject's index is left. Two clients hold `alice`'s consent; one is withdrawn, then the
-/// other. Before the fix every subject index row was kept forever.
 #[tokio::test]
 async fn a_sweep_reclaims_a_subject_index_its_clients_no_longer_hold() {
     use oauth_as::store::RevocationWindow;
@@ -1284,10 +1211,6 @@ async fn a_sweep_reclaims_a_subject_index_its_clients_no_longer_hold() {
         .is_empty());
 }
 
-/// RED (audit core-oauth2, the sweep-abort note): one index row whose client's records cannot be
-/// read is said and skipped; it never ends the pass. A credential index row whose client's bucket
-/// does not decode comes first; a lapsed row of a later index must still be reclaimed. Before the
-/// fix the `?` on that read ended the whole index sweep.
 #[tokio::test]
 async fn one_unreadable_client_never_ends_the_index_sweep() {
     let store = OneStore::default();
@@ -1346,8 +1269,6 @@ fn refresh(value: &str) -> oauth_as::token::RefreshTokenRecord {
     record
 }
 
-/// The backend decides after the client future was dropped, past the old claim's lifetime.
-/// This uses an unexpired refresh token: authorization-code lifetimes cannot witness this race.
 #[tokio::test(start_paused = true)]
 async fn a_late_cancelled_write_cannot_undo_client_revocation() {
     let store = OneStore::default();
@@ -1364,7 +1285,7 @@ async fn a_late_cancelled_write_cannot_undo_client_revocation() {
     accepted.notified().await;
     writer.abort();
     assert!(writer.await.expect_err("client cancelled").is_cancelled());
-    drop(a); // A restart loses the volatile pending table; the backend comparison still fences it.
+    drop(a);
     tokio::time::advance(std::time::Duration::from_secs(VERSION_CLAIM_SECS + 60)).await;
     let now = std::time::SystemTime::now();
     b.delete_client(
@@ -1989,7 +1910,6 @@ async fn a_delayed_subject_sweep_cannot_detach_a_new_consent() {
     assert_eq!(b.consents_for_subject("alice").await.unwrap().len(), 1);
 }
 
-/// Inspect physical roots as logical rows; chunk schemas never become visible OAuth records.
 fn logical_rows(
     rows: &BTreeMap<(String, Vec<u8>), Vec<u8>>,
 ) -> BTreeMap<(String, Vec<u8>), Vec<u8>> {
@@ -2135,8 +2055,7 @@ async fn replacing_a_blind_large_index_reclaims_its_exact_old_generation() {
         .rows
         .keys()
         .any(|(s, _)| s == &crate::shared::records::parts_schema(&schema)));
-    // A concurrent blind publication can leave an unobserved generation. Inline replacement
-    // retires every generation, not just the one a preparatory read happened to observe.
+
     let mut orphan_key = crate::shared::digest("large-index").into_bytes();
     orphan_key.push(0);
     orphan_key.extend_from_slice(&[9; 32]);

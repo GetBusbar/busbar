@@ -34,7 +34,6 @@ fn returned_logs_survive_other_tickets_and_crossing_threads() {
     }
     let other_thread = Arc::clone(&retained);
     let copied = std::thread::spawn(move || {
-        // Read the actual current owner, not a saved raw range that a RED host may free.
         other_thread
             .owner(Owner::Host(host.handle))
             .with(ReplyKey::of(first), |r| r.texts[0].to_vec())

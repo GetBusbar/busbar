@@ -2,29 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CARRIER A CONNECTION RIDES (TRANSPORT-STACK (2); `BUSBAR-1.6.0.md` THE DESIGN §5): one carrier
-//! entry's slots (`listen`, `accept`, `dial`, `read`, `write`, `flush`, `shut`), driven host-side.
-//! The connector builds every connection as `carrier -> [TLS] -> framer`, and the carrier is the
-//! bottom of it: it dials, accepts, reads and writes over the host's I/O ([`crate::hostio`]), and
-//! this crate reaches the wire through it and nothing else.
-//!
-//! A connection is full-duplex, so it holds TWO sides (`abi::transport`: "TWO TICKETS PER
-//! CONNECTION"), each an inline ticket ([`Side`]) with at most one op in flight: `read` on the read
-//! side; `dial`, `write`, `flush` and `shut` on the write side. Every op is crossed INLINE on the
-//! task that polls the connection — no thread handoff. An op that answers PENDING registered
-//! the task's waker on its side's ticket; the next call on that side RESUMES it (`FLAG_RESUME`, the
-//! same op on the same ticket) before anything else is asked of it.
-//!
-//! EACH SIDE HAS ONE OWNER, AND NO LOCK (`BUSBAR-1.6.0.md` §11, M1 DISPATCH RULINGS: "No plugin
-//! code runs under a host lock"). The two halves are separate values a [`Carried`] owns outright,
-//! and every op takes the connection `&mut`: the task that holds the connection is the one task
-//! that drives each half, so no crossing ever waits on, or is waited on through, a host mutex.
-//! A close ([`Carried::close`], and its `Drop`) is made by that owner too, on its own thread, with
-//! nothing held: the exchanges that share a connection hand its close to whichever of them has it
-//! out, and never wait on it.
-//!
-//! How a call reaches the entry is not this crate's business: the entry's [`FramerDoor`] carries it
-//! ([`FramerDoor::carry`]) — the one dispatcher's crossing for a loaded plugin, compiled in or
-//! dropped in.
 
 use std::io;
 use std::sync::Arc;
@@ -44,7 +21,7 @@ use crate::framer::{Crossed, FramerDoor};
 use crate::hostio::{Admission, HostIo, OpenFailure};
 
 /// ONE SIDE of a carried connection: a ticket its entry's ops are driven on inline, and the task
-/// an op pending on it wakes.
+
 pub trait Side: Send + Sync {
     /// The ticket.
     fn ticket(&self) -> Ticket;
@@ -119,7 +96,7 @@ impl Driven {
     }
 
     /// Cross `call` on this side with `cx`'s waker registered: a RESUME when the same op pended on
-    /// it last. `Pending` keeps the op pending on the side.
+
     pub fn cross(
         &mut self,
         door: &dyn FramerDoor,
@@ -193,9 +170,7 @@ impl Dest {
 }
 
 /// THE CARRIER OF ONE CONNECTION: its entry, the host I/O it rides, the carrier's connection token,
-/// its two halves (the read side and the write side, each a value of its own, driven only through
-/// the `&mut` its one owner holds: no lock), and the host handle the dial made (a program's: its
-/// pid and exit are the host's to read).
+
 pub struct Carried {
     door: Arc<dyn FramerDoor>,
     io: Arc<HostIo>,
@@ -226,11 +201,7 @@ pub enum DialFailure {
 
 impl Carried {
     /// DIAL `dest` through the carrier `door`, the host admitting exactly `dest` for it: the
-    /// connection comes back at once, its connect settling under [`Carried::poll_connected`].
-    ///
-    /// # Errors
-    ///
-    /// The carrier or the host refused, or the socket could not be made.
+
     pub fn dial(
         door: Arc<dyn FramerDoor>,
         io: Arc<HostIo>,
@@ -290,19 +261,12 @@ impl Carried {
         };
         let mut o: ConnOut = blank_out();
         let c = wr.cross(door.as_ref(), Carry::Dial(&mut i, &mut o), None);
-        // A dial that PENDED is not wanted (it may not pend): cancel it, on its own ticket and
-        // while its admission still stands, so whatever the carrier's cancel makes or releases is
-        // still recorded under that ticket for the settle below. No host lock is held here.
+
         if c.is_none() {
             wr.cancel(door.as_ref());
         }
         let (handle, failure) = io.settle(wr.ticket());
-        // READY alone transfers the made handle to the connection. Every other end (the carrier
-        // refused or failed, the host recorded a failure, a fault, or the dial pended and was
-        // cancelled) leaves a handle the dial made with no owner: the host's socket or the
-        // spawned program would stay registered until the carrier's instance ends. It is retired
-        // now, after the settle and with no lock held; a handle the carrier already closed
-        // itself names nothing and is left alone.
+
         let ready = c.as_ref().is_some_and(|c| c.outcome == Outcome::Ready);
         let program_proven = !program
             || (failure.is_none()
@@ -340,7 +304,7 @@ impl Carried {
                 handle,
                 shut: false,
             }),
-            // The host's own record of an open that failed is the connector's words for it.
+
             _ if failure.is_some() => Err(match failure {
                 Some(OpenFailure::Refused(t)) => DialFailure::Refused(t),
                 Some(OpenFailure::Failed(t)) => DialFailure::Failed(t),
@@ -353,9 +317,7 @@ impl Carried {
     }
 
     /// THE KEY-RETIRED SIGNAL (`abi::transport::DEST_RETIRED`): tell the carrier `door` that the
-    /// member holding supervision key `key` is retired, so a supervising carrier forgets it. Nothing
-    /// is admitted for it (no `io.*` call it makes reaches anything) and its answer is not read: a
-    /// carrier that supervises nothing may refuse it. Never called under a host lock.
+
     pub fn retire_key(door: &Arc<dyn FramerDoor>, io: &HostIo, key: u64) {
         let Some(mut wr) = Driven::of(door.as_ref()) else {
             return;
@@ -379,10 +341,7 @@ impl Carried {
     }
 
     /// The connection `conn` the carrier `door` accepted (host handle `handle`).
-    ///
-    /// # Errors
-    ///
-    /// The entry is no carrier the host drives.
+
     pub fn accepted(
         door: Arc<dyn FramerDoor>,
         io: Arc<HostIo>,
@@ -415,7 +374,7 @@ impl Carried {
     }
 
     /// Whether the program a dial spawned has exited (without waiting for it); `false` for a
-    /// socket.
+
     #[must_use]
     pub fn program_exited(&self) -> bool {
         self.handle.is_some_and(|h| self.io.program_exited(h))
@@ -435,16 +394,13 @@ impl Carried {
     }
 
     /// The dial's connect settled (the carrier's `flush` on a fresh dial): `Ready(Err)` with the
-    /// far end's refusal, in the system's words.
+
     pub fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), String>> {
         self.poll_flush(cx).map_err(|e| e.to_string())
     }
 
     /// Every byte the carrier took is on the wire (`flush`).
-    ///
-    /// # Errors
-    ///
-    /// The carrier failed the connection.
+
     pub fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut i: ConnIn = blank_in();
         i.conn = self.conn;
@@ -466,10 +422,7 @@ impl Carried {
     }
 
     /// Offer `bytes` (`end` = they complete a frame of the carrier's own wire): how many it took.
-    ///
-    /// # Errors
-    ///
-    /// The carrier failed the connection.
+
     pub fn poll_write(
         &mut self,
         cx: &mut Context<'_>,
@@ -495,11 +448,7 @@ impl Carried {
     }
 
     /// The next bytes into `buf`, and whether they complete a frame of the carrier's own wire;
-    /// `(0, false)` is the clean end.
-    ///
-    /// # Errors
-    ///
-    /// The carrier failed the connection.
+
     pub fn poll_read(
         &mut self,
         cx: &mut Context<'_>,
@@ -524,8 +473,7 @@ impl Carried {
     }
 
     /// CLOSE: whatever pends on either side is cancelled, then the carrier's `shut`. Idempotent.
-    /// Made by the connection's owner (the `&mut`), so no other crossing on it can be in flight,
-    /// and no lock is held across any of the three.
+
     pub fn close(&mut self) {
         if std::mem::replace(&mut self.shut, true) {
             return;
@@ -542,11 +490,11 @@ impl Carried {
     }
 
     /// TAKE the dialled or accepted socket off the host's table as the byte stream moves on to the
-    /// kernel's own serving loop, and forget the carrier's connection.
+
     #[must_use]
     pub fn hand_up(mut self) -> Option<std::net::TcpStream> {
         let taken = self.handle.and_then(|h| self.io.take_stream(h));
-        // The carrier closes a handle the host no longer holds: nothing more.
+
         self.close();
         taken
     }

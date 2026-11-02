@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The walk's own proof.
-//!
-//! These are the previous release's failover, pick-order, exhaustion and probe tests, carried over
-//! and re-asserted against the ONE walk: the egress unit's stepper ([`Walk`]), driven directly
-//! where the claim is the walk's (its order, its terminals and their words, its deadline), and
-//! through the production far end that runs every attempt it takes where the claim is about what
-//! an attempt does to the walk (failover, the breaker's record, the budget, the dispatch record).
-//! What each one checks is unchanged; what it drives is a scripted connection table instead of a
-//! real far end.
-//!
-//! They live here, not in the egress crate, because driving a route step needs a `Pass<Route>` and
-//! minting one is legal only in this crate.
-
 mod harness;
 
 mod attempt_span_tests;
@@ -46,11 +33,8 @@ use crate::plane_driver::{
 
 pub(crate) use harness::*;
 
-/// The ceiling on a streamed answer every far end in this module runs under, seconds.
 pub(crate) const STREAM_CEILING_SECS: u64 = 300;
 
-/// A node in miniature: the walk's ports, the pools, a scripted connection table, and the paused
-/// runtime the far end runs on.
 pub(crate) struct Node {
     pub breaker: Arc<TestBreaker>,
     pub capacity: Arc<TestCapacity>,
@@ -59,16 +43,16 @@ pub(crate) struct Node {
     pub telemetry: Arc<TestTelemetry>,
     pub conns: Arc<TestConns>,
     pub pools: HashMap<String, Pool>,
-    /// The lane of each destination, by index: destination `n` is reached at `<lanes[n]>.test`.
+
     pub lanes: Vec<&'static str>,
     pub floor: WeightedFloor,
-    /// Every pool's request timeout as the walk reads it, seconds.
+
     pub timeout_secs: u64,
     pub affinity: Option<u64>,
-    /// A ranking hook's preference, for the pick-level cases (`Node::pick`); the walk names none.
+
     pub preference: Option<Vec<DestinationId>>,
     pub wants_stream: bool,
-    /// Where the body of every request the route handed the far end lies.
+
     pub sent_at: Mutex<Vec<usize>>,
     rt: tokio::runtime::Runtime,
 }
@@ -113,7 +97,6 @@ impl Routed {
 }
 
 impl Node {
-    /// A node whose destinations are these lanes, in order, so destination `n` is lane `n`.
     pub fn with_lanes(lanes: &[&'static str]) -> Self {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
@@ -139,20 +122,17 @@ impl Node {
         }
     }
 
-    /// Add a pool of these members.
     pub fn pool(&mut self, name: &str, members: Vec<Member>) -> &mut Self {
         self.pools
             .insert(name.to_string(), Pool::new(name, members));
         self
     }
 
-    /// Change a pool that is already in the table.
     pub fn tune(&mut self, name: &str, f: impl FnOnce(&mut Pool)) -> &mut Self {
         f(self.pools.get_mut(name).expect("the pool is in the table"));
         self
     }
 
-    /// The pools as the walk reads them: every one's request timeout is the node's.
     fn timed_pools(&self) -> HashMap<String, Pool> {
         let mut pools = self.pools.clone();
         for pool in pools.values_mut() {
@@ -161,7 +141,6 @@ impl Node {
         pools
     }
 
-    /// A fresh request context on this node's clock.
     pub fn request_ctx(&self) -> RequestCtx {
         RequestCtx::new(
             self.timeout_secs,
@@ -170,7 +149,6 @@ impl Node {
         )
     }
 
-    /// THE WALK over `pool`, starting now, stepped by hand.
     pub fn walker(&self, pool: &str) -> Walker<'_> {
         let pools = self.timed_pools();
         let walk = Walk::start(&ports(self, &pools), pool);
@@ -183,7 +161,6 @@ impl Node {
         }
     }
 
-    /// The production far end over this node: its ports, its pools, and a route per lane.
     pub fn egress(&self) -> Egress {
         Egress {
             caller: InstanceId(1),
@@ -220,7 +197,6 @@ impl Node {
         }
     }
 
-    /// The unit's route over `pool`.
     pub fn unit_route(&self, pool: &str) -> UnitRoute {
         UnitRoute {
             pool: pool.to_string(),
@@ -230,20 +206,15 @@ impl Node {
         }
     }
 
-    /// Route one unit over `pool` through the far end, attempt by attempt as the pump does, and
-    /// answer with what came back.
     pub fn route(&self, pool: &str) -> Routed {
         self.route_with(pool, |_, _| {})
     }
 
-    /// [`Node::route`], with `before` run ahead of every attempt's pick (its number from `1`): the
-    /// walk has started by then, so a test can spend its budget between two hops.
     pub fn route_with(&self, pool: &str, before: impl FnMut(&Node, u32)) -> Routed {
         let egress = self.egress();
         self.rt.block_on(self.route_on(&egress, pool, before))
     }
 
-    /// [`Node::route_with`] over `egress`, on the caller's runtime.
     pub async fn route_on(
         &self,
         egress: &Egress,
@@ -268,8 +239,7 @@ impl Node {
                         retry_after,
                     })
                 }
-                // A hook restriction's refusal, or a member credential refusal; neither
-                // occurs in these walk proofs.
+
                 Pick::Refused(_) => {
                     return Routed::Refused(Refusal {
                         status: 502,
@@ -290,7 +260,6 @@ impl Node {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(bound.body.as_ptr() as usize);
             if !far.send(&token, bound).await {
-                // Not sent, so nothing reached the caller: fail over, as the pump does.
                 continue 'attempt;
             }
             let mut served = Served {
@@ -320,8 +289,6 @@ impl Node {
         }
     }
 
-    /// Take a member, send it the request, poll its answer once, and drop the unit there — the
-    /// way a caller that goes away mid-send leaves one.
     pub fn abandon_mid_answer(&self, pool: &str) {
         let egress = self.egress();
         let token = pass::<Route>();
@@ -342,9 +309,6 @@ impl Node {
         drop(far);
     }
 
-    /// Take a member, send it the request, read the first piece of its answer, then poll for the
-    /// next once and drop the unit there — a CLIENT that goes away after its first byte. Answers
-    /// the first piece's bytes.
     pub fn cancel_after_first_piece(&self, pool: &str) -> Vec<u8> {
         let egress = self.egress();
         let token = pass::<Route>();
@@ -369,7 +333,6 @@ impl Node {
         first
     }
 
-    /// The destination of the member named `name` in `pool`.
     fn destination_of(&self, pool: &str, name: &str) -> DestinationId {
         self.pools
             .get(pool)
@@ -378,14 +341,12 @@ impl Node {
             .expect("the far end picked a member of the pool")
     }
 
-    /// One pick against these members, without a walk around it.
     pub fn pick<'a>(
         &'a self,
         pool: &'a str,
         members: &'a [Member],
         ctx: &mut RequestCtx,
     ) -> Option<busbar_kernel_egress::select::Picked<'a>> {
-        // Test-only: the route step's pass, as the walk's own pick is handed it.
         let token = pass::<Route>();
         busbar_kernel_egress::select::pick_among(
             &busbar_kernel_egress::select::PickInput {
@@ -404,7 +365,6 @@ impl Node {
     }
 }
 
-/// The walk's ports over a node and the pools it reads.
 fn ports<'p>(node: &'p Node, pools: &'p HashMap<String, Pool>) -> WalkPorts<'p> {
     WalkPorts {
         breaker: node.breaker.as_ref(),
@@ -415,7 +375,6 @@ fn ports<'p>(node: &'p Node, pools: &'p HashMap<String, Pool>) -> WalkPorts<'p> 
     }
 }
 
-/// One attempt's request, as a plane bound it for the far end.
 fn request(member: &str, pool: &str, attempt_no: u32) -> OutboundRequest {
     OutboundRequest {
         text: false,
@@ -430,26 +389,22 @@ fn request(member: &str, pool: &str, attempt_no: u32) -> OutboundRequest {
     }
 }
 
-/// THE WALK, stepped by hand over a node: every step is [`Walk::next`], and the queue terminal's
-/// wait is parked, awaited on the node's runtime and handed back, as the far end does it.
 pub(crate) struct Walker<'n> {
     node: &'n Node,
     pools: HashMap<String, Pool>,
     token: Pass<Route>,
     pub walk: Walk,
-    /// The unit's hooks' shape on every pick, as the far end passes it; `None` = no hooks.
+
     shape: Option<Box<dyn Shape>>,
 }
 
 impl Walker<'_> {
-    /// Every step from here shaped by `shape`, as a unit's hooks shape the far end's picks.
     #[must_use]
     pub fn shaped(mut self, shape: impl Shape + 'static) -> Self {
         self.shape = Some(Box::new(shape));
         self
     }
 
-    /// The walk's next step, its wait (if it is the queue's) already run.
     pub fn step(&mut self) -> Step {
         let Walker {
             node,
@@ -475,8 +430,6 @@ impl Walker<'_> {
         }
     }
 
-    /// Step to the queue terminal, park its wait, poll it once and drop it there — the way a
-    /// caller that goes away while its request is parked leaves the wait.
     pub fn abandon_wait(&mut self) {
         let Walker {
             node,
@@ -504,7 +457,6 @@ impl Walker<'_> {
         });
     }
 
-    /// The next step, which must be a member.
     pub fn take(&mut self) -> Taken {
         match self.step() {
             Step::Take(taken) => taken,
@@ -512,7 +464,6 @@ impl Walker<'_> {
         }
     }
 
-    /// The next step, which must be the walk's refusal.
     pub fn shed(&mut self) -> Shed {
         match self.step() {
             Step::Shed(shed) => shed,
@@ -521,7 +472,6 @@ impl Walker<'_> {
     }
 }
 
-/// A member on the destination of the same index, named for its lane, with weight one.
 pub(crate) fn member(destination: DestinationId, name: &str) -> Member {
     Member::new(destination, name, 1)
 }

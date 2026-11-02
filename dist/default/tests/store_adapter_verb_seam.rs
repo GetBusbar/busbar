@@ -1,27 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The store adapter's node-memory seam — the sealed new-verb replay cache the root's verb store
-//! answers through it — against a store at the PUBLISHED payload schema, from
-//! `busbar-plugin-loader`'s `src/tests/store_adapter_tests.rs` (whose module doc states the three
-//! things that file and this one prove together).
-//!
-//! The disaster-recovery verbs are not the adapter's (status row 187): the root's verb store answers
-//! them over the node's journal and the store's record slots, and its cells are the root's
-//! `durability_recovery` tests.
-//!
-//! It lives in the composition root's integration suite (ARCHITECT C4B-1, 2026-10-03), beside the
-//! root that binds the adapter.
-
 use busbar_plugin_loader::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
 use std::sync::Arc;
 
-/// The published store payload schema (v2). The loader refuses v2 at scan (ruling C21/ABI-o1); the
-/// adapter's shim rule is a property of the schema number, so this suite binds an adapter at it.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
-/// The `tracing` capture the store-adapter tests assert silence with, carried from
-/// `busbar-plugin-loader`'s `src/tests/abi2_store_ops_tests.rs` (where it stays for its own tests).
 mod event_log {
     use std::sync::{Arc, Mutex};
 
@@ -66,14 +50,10 @@ mod event_log {
 }
 use event_log::EventLog;
 
-/// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
-/// constructor the composition root calls.
 fn adapter_over_published_schema() -> StoreAdapter {
     StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA)
 }
 
-/// The kernel's universal test double (the build's default store), as the published operations'
-/// backing.
 fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
     Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new())
 }
@@ -93,7 +73,6 @@ impl TestClock {
     }
 }
 
-/// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
 fn adapter_at(clock: &TestClock) -> StoreAdapter {
     StoreAdapter::with_clock(backing(), PUBLISHED_STORE_SCHEMA, clock.shim_clock())
 }
@@ -102,7 +81,6 @@ fn replay_key(name: &str) -> (String, String) {
     ("set_operator_key".to_string(), name.to_string())
 }
 
-/// A committed sealed replay slot answers its bytes for the window and is gone after it.
 #[test]
 fn a_committed_slot_answers_inside_the_window_and_expires_after_it() {
     let clock = TestClock::default();
@@ -129,7 +107,6 @@ fn a_committed_slot_answers_inside_the_window_and_expires_after_it() {
     );
 }
 
-/// Run every seam method once, collecting failures rather than stopping at the first.
 fn sweep_every_seam_method(adapter: &StoreAdapter, failures: &mut Vec<String>) {
     let mut note = |what: &str, err: String| failures.push(format!("{what}: {err}"));
 
@@ -142,10 +119,6 @@ fn sweep_every_seam_method(adapter: &StoreAdapter, failures: &mut Vec<String>) {
     }
 }
 
-/// On the adapter's own surface: every seam it answers from node memory, invoked on a store at the
-/// published schema, answers with NO error and NO log line. Repeated, so the silence is the rule
-/// and not a warn-once latch's first pass. (The journal is not among them: the adapter is no
-/// shipper; the node's journal is kept by the store's record slots.)
 #[test]
 fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors() {
     let adapter = adapter_over_published_schema();

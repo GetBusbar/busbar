@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ENGINE'S IMPLEMENTATION of the neutral engine test-kit seam
-//! (`crate::test_support::engine_kit`): every verb is a thin delegate to the fixture or
-//! process-wide service a plane's tests used to name directly (`TestApp`, `GovState`, `metrics::init`,
-//! the call log, the audit ring, the admin contract table, the store-plugin fixture, `build_router`,
-//! `plane_host::engine_host`, `AppHandle`). A plane's test tree binds [`CORE_ENGINE_KIT`] in one
-//! function and reaches all of it through `crate::test_support::engine_kit::EngineTestKit` —
-//! the plane names this crate in exactly that one binding line and nowhere else.
-
 use super::{
     AdminScope, CostKit, EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed,
     TestAppKit,
@@ -23,10 +15,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// The engine's kit, as the `&'static` a plane's binding function hands back.
 pub static CORE_ENGINE_KIT: CoreEngineKit = CoreEngineKit;
 
-/// The engine's test-kit provider. Stateless: every service it reaches is process-wide already.
 pub struct CoreEngineKit;
 
 fn need(level: HookNeed) -> busbar_contract::plugin_rows::NeedLevel {
@@ -253,24 +243,18 @@ impl GovKit for crate::governance::GovState {
     }
 }
 
-/// The engine's concrete pricing table behind the neutral handle, BORROWED — the `&`-twin of
-/// [`cost_model`], for the registry verbs that only read the card.
 fn cost_model_ref(cost: &dyn CostKit) -> &crate::cost::CostModel {
     (cost as &dyn Any)
         .downcast_ref::<crate::cost::CostModel>()
         .expect("a CostKit the engine's own kit minted is a CostModel")
 }
 
-/// Take the engine's concrete pricing table back out of the neutral handle a plane held — the
-/// [`CostKit`] twin of [`gov_state`]. The `Arc` is kept whole (the fixture holds an
-/// `Arc<CostModel>` anyway), so a plane may hand the same handle to more than one App.
 pub(crate) fn cost_model(cost: Arc<dyn CostKit>) -> Arc<crate::cost::CostModel> {
     let any: Arc<dyn Any + Send + Sync> = cost;
     any.downcast::<crate::cost::CostModel>()
         .expect("a CostKit the engine's own kit minted is a CostModel")
 }
 
-/// Take the engine's concrete registry back out of the neutral handle a plane held.
 pub(crate) fn gov_state(gov: Arc<dyn GovKit>) -> Arc<crate::governance::GovState> {
     let any: Arc<dyn Any + Send + Sync> = gov;
     any.downcast::<crate::governance::GovState>()
@@ -355,7 +339,6 @@ impl EngineApp for crate::state::App {
     }
 }
 
-/// Take the engine's concrete snapshot back out of the neutral handle a plane held.
 fn app_of(app: Arc<dyn EngineApp>) -> Arc<crate::state::App> {
     let any: Arc<dyn Any + Send + Sync> = app;
     any.downcast::<crate::state::App>()

@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE MID-STREAM SECURITY UPGRADE (ldaps and StartTLS work as they did in
-//! 1.5.5; `abi::host::conn::connector::service::UPGRADE_SECURE`). Through the connector, over real
-//! TLS far ends whose certificates chain to a private CA:
-//!
-//! * a raw stream to a TLS far end does not round-trip in the clear, and does once it is upgraded
-//!   before any byte (TLS from the first byte, ldaps);
-//! * StartTLS: the plugin's own negotiation in the clear, then the upgrade, then TLS, with the far
-//!   end's certificate hash in the stream's facts;
-//! * the upgrade trusts the need's anchors: refused over the public roots alone, accepted with the
-//!   operator CA the need's `trust_from` names; any other trust reference is refused.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,8 +60,7 @@ fn acceptor(leaf: Vec<u8>, key: Vec<u8>) -> tokio_rustls::TlsAcceptor {
 }
 
 /// A far end on loopback that, per connection, reads `starttls` in the clear and answers `OK\n`
-/// (none when `starttls` is empty: TLS from the first byte), then runs the TLS handshake and echoes
-/// the first five bytes. Answers its address.
+
 async fn far_end(leaf: Vec<u8>, key: Vec<u8>, starttls: &'static [u8]) -> String {
     let acceptor = acceptor(leaf, key);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -103,7 +93,7 @@ async fn far_end(leaf: Vec<u8>, key: Vec<u8>, starttls: &'static [u8]) -> String
 }
 
 /// The process's connector shape over a RAW byte-stream door (no framing of its own, the plugin
-/// speaks its own protocol): every literal admitted, the default outbound trust.
+
 fn raw_connector() -> Connector {
     crate::tls::install_crypto_provider();
     let view = Transports::new(vec![Entry {
@@ -121,7 +111,7 @@ fn raw_connector() -> Connector {
 }
 
 /// An outbound raw need, the plugin naming its target, its trust from `trust_from`, declared with
-/// `pem` as what that path resolved to.
+
 fn declare(c: &Connector, trust_from: &str, pem: Option<&str>) {
     declare_class(c, trust_from, pem, crate::DEFAULT_CLASS);
 }
@@ -226,7 +216,7 @@ async fn gather(c: &Connector, id: ConnId, want: usize) -> Result<Vec<u8>, ConnE
 }
 
 /// RED: a raw stream to a far end that speaks TLS from the first byte does not round-trip in the
-/// clear; upgraded at once, before any byte (ldaps), it does.
+
 #[test]
 fn a_raw_stream_to_a_tls_far_end_round_trips_only_once_upgraded_at_establish() {
     let (ca, leaf, key) = private_ca();
@@ -253,9 +243,7 @@ fn a_raw_stream_to_a_tls_far_end_round_trips_only_once_upgraded_at_establish() {
 }
 
 /// RED: StartTLS. The plugin's own negotiation crosses in the clear, the upgrade secures the same
-/// stream from its next byte, the exchange then round-trips over TLS, and the stream's facts carry
-/// the far end's certificate hash (SHA-256 of its certificate, the channel-binding input), absent
-/// before the upgrade.
+
 #[test]
 fn starttls_upgrades_the_stream_mid_way_and_its_facts_carry_the_peer_cert_hash() {
     use sha2::Digest as _;
@@ -286,8 +274,7 @@ fn starttls_upgrades_the_stream_mid_way_and_its_facts_carry_the_peer_cert_hash()
 }
 
 /// RED: the upgrade trusts the need's anchors. A far end whose certificate chains to a private CA
-/// is refused over the public roots alone (a need with no `trust_from`) and accepted once the
-/// need's `trust_from` names that CA; a trust reference other than the need's own is refused.
+
 #[test]
 fn an_upgrade_to_a_private_ca_is_refused_without_trust_from_and_accepted_with_it() {
     let (ca, leaf, key) = private_ca();
@@ -324,9 +311,7 @@ fn self_signed() -> (Vec<u8>, Vec<u8>) {
 }
 
 /// RED (1.5.5's `rediss://…#insecure`): a self-signed far
-/// end is REFUSED by a verifying upgrade; with the operator's verify-off opt-in on an
-/// operator-infrastructure need it is ACCEPTED and carries bytes; the opt-in on a need of any other
-/// class is REFUSED.
+
 #[test]
 fn verify_off_accepts_a_self_signed_far_end_for_operator_infrastructure_only() {
     let (leaf, key) = self_signed();
@@ -363,8 +348,7 @@ fn verify_off_accepts_a_self_signed_far_end_for_operator_infrastructure_only() {
 const FORGED: &[u8] = b"FORGED-PLAINTEXT";
 
 /// A far end that reads `STARTTLS\n` in the clear and answers `OK\n` with [`FORGED`] behind it: in
-/// the same segment (`gap` = `None`), or as a segment of its own `gap` later; then the TLS
-/// handshake, and an echo of the first five bytes. Answers its address.
+
 async fn injecting_far_end(leaf: Vec<u8>, key: Vec<u8>, gap: Option<Duration>) -> String {
     let acceptor = acceptor(leaf, key);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -399,7 +383,7 @@ async fn injecting_far_end(leaf: Vec<u8>, key: Vec<u8>, gap: Option<Duration>) -
 }
 
 /// Read exactly `want` bytes with a caller buffer no longer than what is still wanted (a plugin
-/// reading a one-line answer), leaving whatever else the piece carried unread.
+
 async fn read_short(c: &Connector, id: ConnId, want: usize) -> Vec<u8> {
     let mut got = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -417,10 +401,7 @@ async fn read_short(c: &Connector, id: ConnId, want: usize) -> Vec<u8> {
 }
 
 /// RED: the far end's clear `OK\n` arrives
-/// with forged bytes behind it in ONE segment. The plugin reads its three-byte answer with a
-/// three-byte buffer, so the forged bytes are a short read's rest when it asks for the upgrade.
-/// The upgrade is refused and the stream fails: the forged bytes are never read, least of all as
-/// the verified far end's.
+
 #[test]
 fn an_upgrade_over_a_short_reads_unread_rest_is_refused_and_the_stream_fails() {
     let (ca, leaf, key) = private_ca();
@@ -445,8 +426,7 @@ fn an_upgrade_over_a_short_reads_unread_rest_is_refused_and_the_stream_fails() {
 }
 
 /// RED: the forged bytes come as a segment of their own after the clear
-/// `OK\n`, and a readiness wait takes them off the socket onto the line before the plugin asks for
-/// the upgrade. Parked and unread, they refuse the upgrade and fail the stream.
+
 #[test]
 fn an_upgrade_over_a_piece_parked_on_the_line_is_refused_and_the_stream_fails() {
     let (ca, leaf, key) = private_ca();
@@ -478,8 +458,7 @@ fn an_upgrade_over_a_piece_parked_on_the_line_is_refused_and_the_stream_fails() 
 }
 
 /// RED: the channel-binding input is the far end's certificate hashed
-/// as RFC 5929 section 4.1 `tls-server-end-point` says: with the certificate's signature hash. A
-/// leaf signed `ecdsa-with-SHA384` binds with SHA-384 (a SCRAM-*-PLUS server computes the same).
+
 #[test]
 fn a_sha384_signed_far_end_binds_with_sha384() {
     use sha2::Digest as _;

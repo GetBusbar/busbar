@@ -50,7 +50,6 @@ impl Default for WarnCapture {
 }
 
 impl WarnCapture {
-    /// A capture that admits DEBUG-and-above (DEBUG, INFO, WARN, ERROR).
     pub fn capturing_debug() -> Self {
         Self::at(Level::DEBUG)
     }
@@ -64,17 +63,14 @@ impl WarnCapture {
         }
     }
 
-    /// Every captured event so far, each as `"{message} {field}={value} ..."`.
     pub fn messages(&self) -> Vec<String> {
         self.messages.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
-    /// True when some captured event contains `needle`.
     pub fn contains(&self, needle: &str) -> bool {
         self.messages().iter().any(|m| m.contains(needle))
     }
 
-    /// How many captured events contain `needle` (a warn-once latch asserts this stays at 1).
     pub fn count(&self, needle: &str) -> usize {
         self.messages()
             .iter()
@@ -115,11 +111,9 @@ impl tracing::field::Visit for Rendered {
 
 impl Subscriber for WarnCapture {
     fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
-        // Never let a thread-local capture cache a callsite as disabled for the whole process.
         Interest::sometimes()
     }
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        // `Level` orders ERROR < WARN < INFO < DEBUG < TRACE (lower = more severe).
         *metadata.level() <= self.max_level
     }
     fn new_span(&self, _: &Attributes<'_>) -> Id {
@@ -141,7 +135,6 @@ impl Subscriber for WarnCapture {
     fn exit(&self, _: &Id) {}
 }
 
-/// The global default the first capture installs: interested in every callsite, records nothing.
 struct Interested;
 
 impl Subscriber for Interested {
@@ -161,9 +154,6 @@ impl Subscriber for Interested {
     fn exit(&self, _: &Id) {}
 }
 
-/// Make every callsite's interest permanently "yes", once per process (see the module note). A
-/// binary that already set a global default is past the failure mode this closes, so its error is
-/// ignored.
 fn ensure_capture_interest() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -172,8 +162,6 @@ fn ensure_capture_interest() {
     });
 }
 
-/// The gate's state: the owner thread and its reentrancy count, or `None` when free. Its mutex is
-/// held only for the bookkeeping, never across the code under test.
 struct CaptureGate {
     state: Mutex<Option<(ThreadId, usize)>>,
     cv: Condvar,
@@ -192,7 +180,6 @@ fn capture_gate() -> &'static CaptureGate {
 struct GateHold;
 
 impl GateHold {
-    /// Acquire a level, blocking while a DIFFERENT thread holds the gate.
     fn acquire() -> Arc<Self> {
         let gate = capture_gate();
         let me = std::thread::current().id();

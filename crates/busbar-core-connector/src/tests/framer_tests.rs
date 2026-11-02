@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host side of a framer: a full sink is re-called with no new bytes until every byte is out,
-//! once and in order; a deadline and the end are carried; `locate` and `encode` answer.
 
 use std::sync::Arc;
 
@@ -145,7 +144,7 @@ fn sdk_sink_keeps_deferred_final_reason_with_its_first_piece_after_an_interim() 
             |code| u8::try_from(code / 100).unwrap_or(0),
             |_| 0,
         );
-        // The protocol adapter classifies informational responses after the generic sink fill.
+
         for piece in &mut buffers.pieces[..out.yielded.pieces_len as usize] {
             if piece.code == 103 {
                 piece.flags |= PIECE_INTERIM;
@@ -192,7 +191,7 @@ fn a_full_sink_is_re_called_until_every_byte_is_out() {
 }
 
 /// WS-DIAL: a dialled framing's `begin` is handed the dial's opening head fields
-/// (`BeginIn::fields`), in order; a framing begun without any hands none.
+
 #[test]
 fn a_dial_hands_its_opening_head_fields_to_begin() {
     let door = Arc::new(TestDoor::identity("bytes"));
@@ -292,7 +291,7 @@ fn locate_and_encode_answer() {
 }
 
 /// RED: a framer that offers protocols for a secured target is located: the host gives its offer a
-/// buffer (a framer answering short for want of one never located an https target).
+
 #[test]
 fn a_framer_offering_protocols_for_a_secured_target_is_located() {
     let door = TestDoor::new(
@@ -311,8 +310,7 @@ fn a_framer_offering_protocols_for_a_secured_target_is_located() {
 }
 
 /// RED: an ACCEPTED framing's head slots come out typed (method, target, an absent authority),
-/// never as field lines; the same request slots on a DIALLED framing are the other side's, and
-/// refused.
+
 #[test]
 fn an_accepted_framing_yields_its_request_head_typed() {
     let knobs = Knobs {
@@ -344,8 +342,7 @@ fn an_accepted_framing_yields_its_request_head_typed() {
 }
 
 /// RED: the host reassembles a stream's field block and never takes PIECE_CONTINUED on the framer's
-/// word. A line ended with CR LF then a "continued" `:path` is a smuggled pseudo-field, refused; a
-/// continued piece with nothing before it is refused; a continuation inside a name is refused.
+
 #[test]
 fn a_continued_field_piece_is_judged_by_the_host_not_the_framer() {
     let mut l = FieldLines::default();
@@ -374,7 +371,7 @@ fn a_continued_field_piece_is_judged_by_the_host_not_the_framer() {
 }
 
 /// A long value split across pieces reassembles byte-identically, and the stream's next block
-/// starts clean.
+
 #[test]
 fn a_long_value_split_across_pieces_reassembles_byte_identically() {
     let block = b"x-long: abcdefghij\r\nx-b: 2\r\n";
@@ -399,7 +396,7 @@ fn a_long_value_split_across_pieces_reassembles_byte_identically() {
 }
 
 /// RED: a payload piece inside a stream's open field block is refused; a failed stream drops its
-/// open block, so its state does not outlive it (and the same stream id may start clean).
+
 #[test]
 fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block() {
     let fields = |continued, end| FieldPiece::Fields { continued, end };
@@ -422,8 +419,7 @@ fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block
 }
 
 /// A framer that keeps answering that it owes more (`YIELD_MORE`) and writes nothing FAULTs its
-/// framing after a bounded number of re-calls. Re-called with no bound, it spun the host worker
-/// forever.
+
 #[test]
 fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
     use std::sync::mpsc;
@@ -488,8 +484,6 @@ impl FramerDoor for TrailerDoor {
                 .unwrap()
                 .push((i.stream, i.len, i.flags, i.end_of_frame, resume));
             if i.len == 0 && !resume {
-                // A completed Pending crossing can still owe wire-room drains; the fixture's
-                // already-owned bytes remain in its inner sans-IO output queue.
                 return self.inner.inner.cross(call);
             }
         }
@@ -538,7 +532,7 @@ fn final_fields_keep_their_kind_and_custody_across_pending_and_drain() {
 }
 
 /// A framer whose dial `begin` calls the auth service (handle seq 0) on its framing's ticket: it
-/// answers PENDING while the auth is not ready, and READY (framing token 42) once the call answers.
+
 struct AuthDoor {
     facts: DoorFacts,
     host: Arc<AuthHost>,
@@ -552,7 +546,6 @@ impl FramerDoor for AuthDoor {
     }
 
     fn cross(&self, call: Call<'_>) -> Crossed {
-        // Ticket-less, the auth service is refused, so a begin cannot complete; the close answers.
         let outcome = match call {
             Call::Begin(..) => busbar_contract::abi::mechanism::call::Outcome::Refused,
             _ => busbar_contract::abi::mechanism::call::Outcome::Ready,
@@ -614,9 +607,7 @@ impl std::task::Wake for Woken {
 }
 
 /// RED (a framer pends only on a ticketed auth call): a TICKETED `begin` whose auth call answers
-/// not-ready PARKS, resumes on the ticket's wake with the same op on the same ticket, and
-/// completes; the auth runs EXACTLY ONCE across the not-ready (each re-issue reads the stored
-/// result; a re-issue as a new op would have run it again).
+
 #[test]
 fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
     use std::sync::atomic::Ordering;
@@ -688,10 +679,7 @@ fn noop_cx() -> std::task::Context<'static> {
 }
 
 /// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, emit): two streams on one dialled framing.
-/// The first stream's head emit calls the auth, which pends: the emit parks on ITS OWN ticket and
-/// holds that stream alone. The second stream's request goes out and its answer comes in while
-/// the first waits; then the first resumes on its ticket, carrying no new bytes, and goes out with
-/// exactly one auth call.
+
 #[test]
 fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
@@ -773,10 +761,7 @@ fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call
 }
 
 /// A MULTIPLEXING ACCEPTING FRAMER double: each byte an `ingest` carries names the stream a
-/// request head arrives on (`'1'`, `'3'`), yielded as one piece on that stream. A head on stream
-/// `1` calls the auth (handle seq `0`) on the op's ticket: while the auth is not ready the framer
-/// holds what it took and answers PENDING; its resume, carrying no bytes, yields what it held once
-/// the auth answers.
+
 struct MuxDoor {
     facts: DoorFacts,
     yield_writable: bool,
@@ -874,10 +859,7 @@ impl FramerDoor for MuxDoor {
 }
 
 /// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, ingest): on one accepted connection the first
-/// stream's head arrives and its auth pends: that ingest parks on its own ticket. The second
-/// stream's head arrives next and is read, ingested on another ticket and handed up before the
-/// first resumes; then the first resumes (carrying no bytes: the framer took them) and its head is
-/// handed up, with exactly one auth call.
+
 #[test]
 fn a_pending_ingest_holds_only_its_stream_and_the_next_stream_head_is_handed_up_first() {
     let door = Arc::new(MuxDoor::new());
@@ -925,7 +907,7 @@ fn a_pending_ingest_holds_only_its_stream_and_the_next_stream_head_is_handed_up_
 }
 
 /// THE OPENING BODY'S LENGTH (`EmitIn::body_len`): stated on a dialled framing's head emit when
-/// known; never on a plain emit, and never on an accepting framing.
+
 #[test]
 fn a_dialled_head_emit_states_its_body_length_and_nothing_else_does() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
@@ -959,8 +941,7 @@ fn a_dialled_head_emit_states_its_body_length_and_nothing_else_does() {
 }
 
 /// RED (NO TICKET-LESS PATH FOR AN AUTH-CALLING FRAMER): a framing whose binding has auth points is
-/// never begun ticket-less, whichever way it is asked for, and nothing crosses; on tickets, a dial
-/// hands the binding to `begin` (`BeginIn::points`, `BeginIn::auth`).
+
 #[test]
 fn a_binding_with_auth_points_is_refused_ticket_less() {
     use busbar_contract::abi::host::service::AuthRef;
@@ -999,7 +980,7 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
         &[],
         &lines,
     ));
-    // An entry that gives no ticket is ticket-less too.
+
     refused(Framing::begin_bound(
         door.clone(),
         SIDE_DIAL,
@@ -1026,7 +1007,7 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
             .is_ok(),
         "a binding with no auth is framed ticket-less as before"
     );
-    // On tickets the dial's binding reaches the framer's begin.
+
     let ticketed = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
     let (f, _) = Framing::begin_bound(ticketed.clone(), SIDE_DIAL, "t", &est, &[], &dial).unwrap();
     assert!(!f.parked());
@@ -1037,10 +1018,7 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
 }
 
 /// RED (Q128 arch u22 LOW 9; `busbar_contract::abi::transport`: "A framer that fills a buffer
-/// answers READY with `YIELD_MORE` and the host calls the same op again"): `encode` renders a
-/// whole message, statelessly, into one buffer sized for it, so it has no re-call to continue
-/// from. A framer answering it `YIELD_MORE` owes bytes the host cannot ask for, and the encode
-/// FAULTs. Taken as whole, the partial wire was sent as the message.
+
 #[test]
 fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
     let door = TestDoor::new(
@@ -1065,7 +1043,7 @@ fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
 }
 
 /// An INTERIM head (a `1xx` the framer flags interim) is never the answer's head: the final head
-/// that follows it is the one field block handed up as the head.
+
 #[test]
 fn an_interim_head_is_never_handed_up_as_the_final_head() {
     let door = Arc::new(TestDoor::new(
@@ -1100,8 +1078,7 @@ fn an_interim_head_is_never_handed_up_as_the_final_head() {
 }
 
 /// A `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never
-/// a frame: it is never handed up as a piece (relayed, it reached a reader as an empty body piece,
-/// ahead of the head on a dialled stream). The messages around it are handed up as they came.
+
 #[test]
 fn a_writable_piece_is_never_handed_up_as_a_frame() {
     let door = Arc::new(TestDoor::new(
@@ -1122,9 +1099,7 @@ fn a_writable_piece_is_never_handed_up_as_a_frame() {
 }
 
 /// RED (a transport's size answer): `locate`'s short answer names the buffer sizes it needs, and
-/// the contract admits up to 4 GiB each. The host bounds what it gives a locate answer and refuses
-/// a larger ask as the transport's FAULT: it never allocates what the transport named past that
-/// bound, and never asks again.
+
 #[test]
 fn a_locate_size_answer_past_the_hosts_bound_is_a_fault_never_an_allocation() {
     let needed = busbar_contract::abi::mechanism::check::MAX_BYTES;
@@ -1154,7 +1129,7 @@ fn a_locate_size_answer_past_the_hosts_bound_is_a_fault_never_an_allocation() {
 }
 
 /// GREEN twin: a short `locate` within the host's bound is asked again with the room it named,
-/// and located.
+
 #[test]
 fn a_short_locate_within_the_hosts_bound_is_asked_again_with_room() {
     let door = TestDoor::new(

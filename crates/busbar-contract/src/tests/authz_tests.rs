@@ -2,26 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The two-rung authorization lattice: its bit layout, its chain, and the laws its ceiling obeys.
-//! Moved with the lattice's last copy from `busbar-kernel-scope` (Q128 kernel-scope: one home per
-//! fact), so the one home is the one that is proven.
 
 use super::*;
 
-// ══ THE BITSET LAYOUT ════════════════════════════════════════════════════════════════════════════
-
-// The [`Grants`] bitset layout itself.
-//
-// `Grants` is a bitset whose meaning is POSITIONAL: a scope's bit is `1 << its index in
-// `Scope::ALL``, and `Grants::contains` reads that same bit back. Every other test in this crate
-// exercises the pair together, so any assignment that is internally consistent — including one
-// that hands `ReadOnly` the rung `Full` should have had — satisfies all of them. Two variants make
-// a swap a bijection, so a swap is invisible from the outside and stays invisible right up until a
-// third rung is added, at which point the swap stops being a bijection and starts being a scope
-// confusion. So the layout is pinned here directly, on the private constructor, rather than left to
-// be inferred from behaviour that cannot see it.
-
 /// Each scope's bit is the single bit at its own index in `Scope::ALL` — `ReadOnly` at the bottom
-/// rung (bit 0), `Full` above it (bit 1) — and no two scopes share one.
+
 #[test]
 fn each_scopes_bit_is_its_own_index_in_the_declared_chain() {
     assert_eq!(Scope::ReadOnly.bit(), 0b01, "ReadOnly is the bottom rung");
@@ -48,7 +33,7 @@ fn each_scopes_bit_is_its_own_index_in_the_declared_chain() {
 }
 
 /// The bit layout is what `Grants` stores, so pinning the bits pins the set: a single-scope grant
-/// holds that scope and nothing else, and the union holds both.
+
 #[test]
 fn grants_hold_exactly_the_bits_of_the_scopes_put_in_them() {
     assert!(Grants::of(Scope::ReadOnly).contains(Scope::ReadOnly));
@@ -72,8 +57,6 @@ fn grants_hold_exactly_the_bits_of_the_scopes_put_in_them() {
     );
 }
 
-// ══ THE CHAIN ═══════════════════════════════════════════════════════════════════════════════════
-
 /// `parse` drops the retired delegated tokens; `read-only`/`full` round-trip.
 #[test]
 fn scope_parse_drops_retired_tokens() {
@@ -87,7 +70,7 @@ fn scope_parse_drops_retired_tokens() {
 }
 
 /// The two-rung chain: `ReadOnly` does not satisfy a `Full` requirement, `Full` satisfies both, and
-/// a `Full` grant capped by a `ReadOnly` ceiling collapses to read-only.
+
 #[test]
 fn readonly_not_allow_full_full_allows_readonly() {
     assert!(!Scope::ReadOnly.allows(Scope::Full));
@@ -116,27 +99,6 @@ fn readonly_not_allow_full_full_allows_readonly() {
     assert!(!Scope::ReadOnly.dominates(Scope::Full));
 }
 
-// ══ NARROWING IS MONOTONE ════════════════════════════════════════════════════════════════════════
-// Narrowing is MONOTONE: applying a ceiling never authorizes anything the uncapped grants did not.
-//
-// A module ceiling (`max_admin_scope:`) is the operator's statement that whatever the role bindings
-// union to, this module's principals may not exceed it. That is only a ceiling if it can subtract
-// and never add. The existing cases check one instance of it — a `Full` grant capped to `ReadOnly`
-// collapses — which is the case where the answer is obvious. What is pinned here is the property
-// over the WHOLE lattice, so a ceiling operator that got an incomparable pair backwards, or that
-// defaulted to the top rung instead of the bottom, has nowhere to hide.
-//
-// Stated as three laws, each checked against every grant set and every ceiling the chain admits:
-//
-// 1. **Narrowing only removes.** Anything the capped grants authorize, the uncapped grants already
-//    authorized. This is the security direction, and it is the one an escalation would break.
-// 2. **Narrowing is idempotent.** Applying the same ceiling twice is applying it once. A ceiling
-//    that kept moving would make a principal's authority depend on how many times the config was
-//    reloaded.
-// 3. **Narrowing is order-independent.** Two ceilings applied in either order give the same
-//    answer, so a principal matching two ceilinged bindings has one authority rather than one per
-//    evaluation order.
-
 /// Every grant set over the two-rung chain: nothing, each scope alone, and both.
 fn every_grants() -> Vec<Grants> {
     let mut out = vec![Grants::default()];
@@ -164,9 +126,7 @@ fn a_ceiling_never_authorizes_anything_the_uncapped_grants_did_not() {
                     );
                 }
             }
-            // And the ceiling is a ceiling: nothing survives it that the ceiling itself does not
-            // authorize, which is the whole of what an operator writing `max_admin_scope:` is
-            // asking for.
+
             for needed in Scope::ALL {
                 if capped.allows(needed) {
                     assert!(
@@ -211,10 +171,7 @@ fn two_ceilings_give_the_same_answer_in_either_order() {
 }
 
 /// The union direction, stated as the other half of the same property: unioning role bindings only
-/// ever ADDS, and the union of two roles authorizes exactly what one or the other did.
-///
-/// The two together are what make the fold over a principal's bindings well-defined: union up, then
-/// meet down, and neither step can be reordered into an escalation.
+
 #[test]
 fn a_union_authorizes_exactly_what_one_or_the_other_role_authorized() {
     for held in every_grants() {

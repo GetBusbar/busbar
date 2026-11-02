@@ -1,20 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A memory-buffered log keeps its records without leaving working-directory files.
-//!
-//! Each no-directory case runs in a child whose working directory is a private empty directory.
-//! Checking that actual destination catches an accidental relative-path write; an unrelated temp
-//! directory would not. The mode, append, readback and shipping checks exercise the memory path.
-//! The post-exit checks observe residual files, not transient creation/deletion or writes to
-//! arbitrary absolute paths elsewhere.
-
 use busbar_kernel_wal::wal::{Mode, Wal};
 
 use super::fixtures::{durability_token, records, TempDir};
 
-/// A failed assertion, wait error or timeout still stops and reaps the child before its directories
-/// are removed. Output goes to files outside the observed directory, so no pipe can block exit.
 struct ChildGuard(Option<std::process::Child>);
 
 impl Drop for ChildGuard {
@@ -43,8 +33,6 @@ impl ChildGuard {
     }
 }
 
-/// Run this existing test alone with an empty working directory; inspect it after the child drops
-/// its log. The completion marker proves the exact test ran rather than an empty test selection.
 pub(super) fn in_empty_working_directory(test: &str, body: impl FnOnce()) {
     const CHILD: &str = "BUSBAR_WAL_NO_DIRECTORY_CHILD";
     const FINISHED: &str = "memory-directory-case-finished";
@@ -112,8 +100,7 @@ fn a_memory_buffered_log_creates_no_working_directory_file() {
             );
             assert_eq!(wal.mode(), Mode::MemoryBuffered);
             let token = durability_token();
-            // Enough records, and enough of them large enough to continue across frames, that any
-            // preallocation or segment roll would have to have happened by now.
+
             let mut expected = Vec::new();
             for batch in 0..8u64 {
                 let batch_records = records(1, batch * 4 + 1, 4, 900);
@@ -154,8 +141,6 @@ fn a_memory_buffered_log_ships_every_committed_batch_synchronously() {
 
 #[test]
 fn a_log_in_a_directory_does_write_files_there_and_nowhere_else() {
-    // The other half of the claim: naming a directory is the decision to use it, and when it is
-    // named the files appear in it rather than beside it.
     let dir = TempDir::new("on-disk");
     let inner = dir.path().join("wal");
     {
@@ -182,7 +167,6 @@ fn a_log_in_a_directory_does_write_files_there_and_nowhere_else() {
     );
     assert!(files[0].starts_with(&inner));
 
-    // And it reopens onto what it wrote.
     let wal = Wal::in_directory(
         &inner,
         Box::new(busbar_kernel_wal::ship::NullShipper::new()),

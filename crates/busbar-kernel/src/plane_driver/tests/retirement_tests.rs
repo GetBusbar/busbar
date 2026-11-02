@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Callbacks observe the real far-end mutex while its pinned owner is still live.
-
 use super::*;
 use std::sync::atomic::AtomicPtr;
 
@@ -219,7 +217,7 @@ async fn an_unwinding_close_still_retires_the_detached_resources_outside_the_mut
     let t = token();
     let _ = far.member(&t, 1).await;
     assert!(far.send(&t, request()).await);
-    // The detached attempt owns both reservations. A connector panic must not lose either.
+
     {
         let mut state = far.lock();
         let live = state.live.as_mut().unwrap();
@@ -261,7 +259,7 @@ async fn dropping_an_unanswered_far_end_retires_its_live_attempt_once() {
     let t = token();
     assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
     assert!(far.send(&t, request()).await);
-    // Every callback runs inside Drop while the pinned state allocation is still live.
+
     drop(far);
     probe.state.store(std::ptr::null_mut(), Ordering::Release);
     probe.assert_effects(&["close", "journal", "permit"]);
@@ -351,8 +349,6 @@ impl Breaker for WatchingBreaker {
 struct WatchingClock(Arc<Probe>);
 impl WatchingClock {
     fn check(&self, effect: &'static str) {
-        // Walk construction reads the clock before the far-end mutex exists. Every later clock
-        // call checks the pinned, live mutex; no released allocation is inspected.
         if !self.0.state.load(Ordering::Acquire).is_null() {
             self.0.check(effect);
         }
@@ -556,7 +552,7 @@ async fn returning_a_semaphore_permit_wakes_a_waiter_outside_the_state_mutex() {
     }
 
     let (mut r, probe) = watching(Script::Silent);
-    // This is the same owned semaphore primitive held by the root's production member permit.
+
     let slots = Arc::new(tokio::sync::Semaphore::new(1));
     r.egress.capacity = Arc::new(SemaphoreCapacity(slots.clone()));
     let far = Box::pin(r.egress.unit(route()));

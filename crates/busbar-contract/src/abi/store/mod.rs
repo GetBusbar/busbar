@@ -111,15 +111,11 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 3;
 
 /// The store kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
-/// the store table. A door states it as built
-/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
-/// `tests/layout_fingerprint.rs` holds it to its fold.
+
 pub const LAYOUT_FINGERPRINT: u64 = 0x56bdc8a89ba6e6e0;
 
 /// The store kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-/// crossing its table, each with every field. A struct `abi/store/` gains is listed here (gate
-/// `abi-location`).
+
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     HostBuf::LAYOUT,
     HostBlobs::LAYOUT,
@@ -165,8 +161,6 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
         record_scan, add_usage_batch, add_metering_batch
     ),
 ];
-
-// ── shared host-buffer shapes (mechanism memory class (i)) ────────────────────────────────────
 
 abi_struct! {
     /// A HOST-owned byte buffer a request-path result is written into: pointer + capacity. The plugin
@@ -233,10 +227,8 @@ abi_struct! {
 /// [`HostBytesOut::found`]: the record exists and was written.
 pub const FOUND: u32 = 1;
 /// [`HostBytesOut::found`] / [`LeasedBlobOut::found`]: no such record. `0`, so an `out` nobody
-/// wrote reads as absent, never as a record.
-pub const ABSENT: u32 = 0;
 
-// ── shared off-path result shapes (mechanism memory class (iv)) ───────────────────────────────
+pub const ABSENT: u32 = 0;
 
 abi_struct! {
     /// The `out` of an off-path single-record read: a plugin-owned blob held under `head.lease`.
@@ -306,8 +298,6 @@ pub const VERDICT_NO: u32 = 0;
 /// [`VerdictOut::verdict`]: yes.
 pub const VERDICT_YES: u32 = 1;
 
-// ── the Statement tail ───────────────────────────────────────────────────────────────────────
-
 abi_struct! {
     /// The store kind's Statement tail (B.1 "Tail": `durable_plane`, `fork_refusal`). Each fact is
     /// `0` (no) or `1` (yes). `ephemeral` is a Statement mark, not a tail fact
@@ -330,8 +320,7 @@ abi_struct! {
 
 impl StoreTail {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `StoreTail { …, ..StoreTail::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         head: KindTailHead::ZERO,
         durable_plane: 0,
@@ -340,28 +329,21 @@ impl StoreTail {
     };
 }
 
-// ── the cancel vocabulary ────────────────────────────────────────────────────────────────────
-
 /// [`CancelOut::disposition`](crate::abi::mechanism::lifecycle::CancelOut::disposition): the store
-/// cannot say whether the cancelled op applied. `0`, so an unwritten disposition is the safe
-/// reading: the kernel re-issues the op with the SAME `op_id`, and dedupe settles it.
+
 pub const CANCEL_UNKNOWN: u32 = 0;
 /// The cancelled op applied nothing.
 pub const CANCEL_NOT_APPLIED: u32 = 1;
 /// The cancelled op had committed; its original `out` is kept under its `op_id`, so a replay
-/// returns it. A [`DeadlineClass::WriteBehind`] op is never cancelled on client drop or reload.
+
 pub const CANCEL_APPLIED: u32 = 2;
 
-// ── diagnostics ──────────────────────────────────────────────────────────────────────────────
-
 /// The diagnostic id a store answers with REFUSED for an `op_id` replayed with a different body
-/// (m3-inputs "store v3 money slots", DEDUPE). A store declares it in its Statement's `diag_ids`.
+
 pub const DIAG_OPID_CONFLICT: &str = "STORE_OPID_CONFLICT";
 /// How long a store remembers an `op_id`, at least (m3-inputs "store v3 money slots", DEDUPE:
-/// "Retention ≥ 24h").
-pub const OP_ID_RETENTION_SECS: u64 = 24 * 60 * 60;
 
-// ── slots ────────────────────────────────────────────────────────────────────────────────────
+pub const OP_ID_RETENTION_SECS: u64 = 24 * 60 * 60;
 
 /// Declares the kind slot indices, the table, [`OPS`], [`NAMES`] and [`MAX_PAYLOAD`] from ONE
 /// list, so they cannot drift.

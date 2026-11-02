@@ -38,10 +38,7 @@ impl Loans {
     }
 
     /// Decode the initial full policy once. `None` means the host did not advertise this
-    /// protocol; the caller may keep its legacy guest-list behavior in that case alone.
-    ///
-    /// # Errors
-    /// An invalid policy or a current-generation acknowledgement without an initial full loan.
+
     pub fn from_initial(extensions: &[u8]) -> Result<Option<Self>, &'static str> {
         if extensions::get(extensions, EXT_GUEST_CURRENT).is_some() {
             return Err("the initial policy must be a full loan");
@@ -57,16 +54,7 @@ impl Loans {
     }
 
     /// Open a stream against the host's selected generation. Pin `Some(policy)` in the stream
-    /// before route matching, auth, or body handling, and retain it across PENDING and retries.
-    /// Call this for a new stream, not again at each auth step of an already pinned stream.
-    ///
-    /// Without a reply, lease an Open request into `out`, set `YIELD_MORE`, and return `None`.
-    /// The caller returns READY so the host can recall the operation with its policy reply;
-    /// the operation ticket correlates that reply with this stream opening.
-    ///
-    /// # Errors
-    /// A malformed or conflicting reply, a full policy for another listener, or an
-    /// acknowledgement of a listener/generation absent from this connection's cache.
+
     pub fn open(
         &mut self,
         ticket: Ticket,
@@ -82,8 +70,7 @@ impl Loans {
         {
             return Err("the operation is already opening another stream");
         }
-        // A consumed reply remains in the input when another auth step pends. A fresh stream
-        // asks for its own selection; it must never consume the preceding stream's reply.
+
         let reply = if self.opening.contains_key(&ticket) {
             (
                 extensions::get(extensions, EXT_GUEST_POLICY),

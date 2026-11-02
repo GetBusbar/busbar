@@ -1,6 +1,3 @@
-//! Physical bounded rows for logical OAuth cells. The descriptor, chunks, indexes and receipt
-//! share one conditional commit. Content-addressed bytes verify the initially observed version;
-//! a missing or corrupt old generation rechecks its root before retrying or refusing.
 use std::sync::Arc;
 
 use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation, Predicate, Request};
@@ -8,7 +5,7 @@ use busbar_contract::bounded::MAX_RECORD_BYTES;
 use oauth_as::store::StorageError;
 
 const MAGIC: &[u8] = b"\0oauth-cell\x01";
-/// Bound reconstruction by the existing ABI ceiling; the complete physical request must fit too.
+
 pub(super) const MAX_CELL_BYTES: usize =
     busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize;
 
@@ -89,9 +86,6 @@ pub(super) fn parts_schema(schema: &str) -> String {
     format!("{schema}.parts")
 }
 
-/// Translate only after logical planning (notably the previous bucket's user-code release).
-/// `observed` rows are cleanup metadata, NEVER additional logical preconditions. Retained physical
-/// requests bypass this function entirely when replayed.
 pub(super) fn physical(
     request: Arc<Request>,
     observed: &[Predicate],
@@ -115,8 +109,7 @@ pub(super) fn physical(
             Mutation::Put { schema, key, .. } | Mutation::Delete { schema, key } => (schema, key),
             Mutation::DeleteRange { .. } => continue,
         };
-        // An inline root publishes no chunks. Delete every old/unobserved generation atomically,
-        // including generations orphaned by overlapping blind large-index publications.
+
         let mut prefix = key.clone();
         prefix.push(0);
         chunks.push(Mutation::DeleteRange {
@@ -138,9 +131,7 @@ pub(super) fn physical(
             continue;
         };
         let header = descriptor.encode();
-        // Inline replacement's whole-prefix cleanup already covers this generation. A large
-        // replacement owns all its new chunks at commit, so deleting a DIFFERENT observed old
-        // generation needs no extra condition and can never delete its newly published data.
+
         if physical.mutations.iter().any(|m| {
             matches!(m,
             Mutation::Put { schema, key, value }
@@ -196,7 +187,7 @@ mod tests {
             vec![b'x'; MAX_CELL_BYTES + 1],
         );
         assert!(physical(oversized, &[]).is_err());
-        // Chunk-address and record framing overhead counts against the same existing ABI bound.
+
         let maximal = crate::shared::Shared::candidate(
             "cell.atomic.v1",
             "id",

@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR: the `env` source on the secret kind's table (`busbar_contract::abi::secret`), the nine
-//! lifecycle slots the SDK's generic lifecycle (`lifecycle: life(Env)`, [`Life`]) and `resolve` a
-//! [`SafeSlot`] — no `unsafe` in this crate.
-//!
-//! * `validate`, `open`, `refresh` — the source holds no settings and no state: any settings object
-//!   opens it.
-//! * `resolve` — a reference's `{ key: VAR }` to the variable's value, written by the SDK
-//!   ([`resolved`]) into the host's zeroed buffer and wiped here (the credential chip, row 6:
-//!   host-owned secret bytes; no lease, no copy left behind), or FAILED with its `ERROR_KIND_*` and
-//!   1.5.5's text. A value over the host's buffer is the short-buffer answer. It never pends.
-//! * `release`, `close`, `cancel`, `tick`, `retire`, `drive` — the SDK's.
-
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::door::{
     Rewrite, Statement, REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE,
@@ -26,7 +14,6 @@ use busbar_contract::abi::secret::{cancel, ResolveIn, ResolveOut};
 
 use crate::{error_kind, settings_of};
 
-/// A rewrite naming this source by its word ([`crate::WORD`]), in `class`, carrying `to`.
 const fn rewrite(class: u32, to: &'static str) -> Rewrite {
     Rewrite {
         class,
@@ -36,10 +23,6 @@ const fn rewrite(class: u32, to: &'static str) -> Rewrite {
     }
 }
 
-/// The names config gives this source (THE DESIGN §2, the Statement's `rewrites`; busbar step 2c,
-/// the sugar each secret plugin spells itself): the module alias (`module: env`), the
-/// reference sugar (`{ env: X }` becomes `{module: env, settings: {key: X}}`), what a
-/// refusal names its value, and its core role.
 const REWRITES: &[Rewrite] = &[
     rewrite(REWRITE_ALIAS, ""),
     rewrite(REWRITE_SUGAR, crate::KEY),
@@ -48,8 +31,6 @@ const REWRITES: &[Rewrite] = &[
     rewrite(REWRITE_SUGAR_ROLE, "fill"),
 ];
 
-/// This plugin's Statement: its name, version, the most resolves one instance holds in flight, and
-/// the names config gives it.
 pub const STATEMENT: Statement = Statement {
     rewrites: REWRITES.as_ptr(),
     rewrites_len: REWRITES.len(),
@@ -72,7 +53,6 @@ impl Life for Env {
     }
 }
 
-/// `resolve`: READY with the variable's value in the host's buffer, FAILED with its code and text.
 pub struct Resolve;
 
 impl SafeSlot for Resolve {
@@ -107,5 +87,4 @@ mod table {
     }
 }
 
-/// This plugin's door: the one a compiled-in build links and the dropped-in image exports.
 pub use table::door;

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Fault outputs are unjudged even when their pointers happen to name live static bytes.
 use super::*;
 use crate::conformance::{
     dispatcher, load, open, test_door, test_op, Leg, Subject, TestDoor, TestOp,

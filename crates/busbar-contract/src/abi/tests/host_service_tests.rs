@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host services' validators (`abi/host/service.rs`): one test per arm, each answer built to
-//! break exactly one rule.
-//!
-//! SAFETY for the validator calls below: every non-NULL answer slot and every reported
-//! in-cap span read belongs to the test's live initialized locals or to the host call
-//! just completed. Deliberately malformed metadata is rejected before any such read.
 
 use super::*;
 use crate::abi::mechanism::check::SPAN_ABSENT;
@@ -115,8 +110,7 @@ fn a_mirrored_outcome_that_differs_from_the_return_value_is_fault() {
 }
 
 /// These two answer checks read no raw data. Even stale nested pointers do not become readable
-/// merely because their containing request is borrowed; keeping these calls safe proves that
-/// only the validators that actually read through such pointers require an unsafe boundary.
+
 #[test]
 fn metadata_only_validators_do_not_read_nested_pointers() {
     let stale = core::ptr::dangling::<u8>();
@@ -542,9 +536,7 @@ impl ItemSpan {
 }
 
 /// THE SLOT ORDER, pinned: each service's field sits at the table index its `op` constant names,
-/// one function pointer apart after the two `u32` heads. Services are appended in landing order;
-/// a later append that reorders an earlier one fails here, and the loader's table (built field by
-/// field) follows the same order.
+
 #[test]
 fn every_service_field_sits_at_its_op_index() {
     use core::mem::{offset_of, size_of};
@@ -600,7 +592,7 @@ fn every_service_field_sits_at_its_op_index() {
 }
 
 /// RED ARM (`service.rs` `answer`, the `service.out.size` arm): an `out` whose `size` is not this
-/// layout's is `Foreign`, named by field.
+
 #[test]
 fn red_an_out_of_a_foreign_size_names_service_out_size() {
     let i = judge_in(TICKET);
@@ -613,7 +605,7 @@ fn red_an_out_of_a_foreign_size_names_service_out_size() {
 }
 
 /// RED ARM (`check_clock_now`, the `clock_now.reading` arm): a READY answer with a NULL reading slot
-/// is `NullWithCount`, named by field.
+
 #[test]
 fn red_a_ready_clock_answer_with_no_reading_names_clock_now_reading() {
     let o = out(Outcome::Ready);
@@ -628,7 +620,7 @@ fn red_a_ready_clock_answer_with_no_reading_names_clock_now_reading() {
 }
 
 /// RED ARM (`check_clock_now`, the `clock_now.reading.size` arm): a READY answer whose reading is
-/// not this layout's size is `Foreign`, named by field.
+
 #[test]
 fn red_a_ready_clock_answer_of_a_foreign_reading_names_clock_now_reading_size() {
     let o = out(Outcome::Ready);
@@ -649,7 +641,7 @@ fn red_a_ready_clock_answer_of_a_foreign_reading_names_clock_now_reading_size() 
 }
 
 /// `need.admit` never pends (on a ticket or not), READY carries no value, and REFUSED is its
-/// verdict against a need.
+
 #[test]
 fn need_admit_never_pends_and_answers_admitted_or_refused() {
     let at = |ticket| NeedAdmitIn {
@@ -694,7 +686,7 @@ fn verify_in(into: ServiceBufs) -> TrustVerifyIn {
 }
 
 /// `check_trust_verify`: a verdict that names what it refused carries its bytes; every verdict in
-/// range is legal on a ticketless call.
+
 #[test]
 fn a_trust_verify_verdict_naming_its_refusal_carries_bytes() {
     let mut buf = [0u8; 8];
@@ -714,7 +706,7 @@ fn a_trust_verify_verdict_naming_its_refusal_carries_bytes() {
 }
 
 /// RED ARM (`check_trust_verify`, the `trust_verify.out.len` arm): bytes with a verdict that names
-/// nothing, or any span, are a `Contradiction`.
+
 #[test]
 fn red_trust_verify_bytes_with_a_verdict_that_names_nothing_name_trust_verify_out_len() {
     let mut buf = [0u8; 8];
@@ -740,7 +732,7 @@ fn red_trust_verify_bytes_with_a_verdict_that_names_nothing_name_trust_verify_ou
 }
 
 /// `trust.verify` never pends: a PENDING answer, even on a ticket, is FAULT; a verdict past the
-/// last is FAULT.
+
 #[test]
 fn trust_verify_never_pends_and_its_verdicts_end_at_the_root_key() {
     let mut i = verify_in(bufs(&mut [], &mut []));
@@ -756,7 +748,7 @@ fn trust_verify_never_pends_and_its_verdicts_end_at_the_root_key() {
 }
 
 /// `records.secret`: a live or not-live secret in span `0` is legal; a value outside
-/// [`SECRET_NOT_LIVE`]..=[`SECRET_LIVE`] is FAULT; it may pend, so it is callable only on a ticket.
+
 #[test]
 fn records_secret_answers_live_or_not_live() {
     let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
@@ -812,7 +804,7 @@ fn a_work_open_answers_its_reference_in_one_span() {
     let mut o = out(Outcome::Ready);
     o.value = 1;
     o.len = WORK_REFERENCE_LEN as u64;
-    // No span: the reference is missing.
+
     assert_eq!(
         unsafe { check_work_open(&open, RawOutcome::of(Outcome::Ready), &o) }.unwrap_err(),
         fault(Rule::Contradiction, "work_open.out.items")
@@ -946,7 +938,7 @@ fn written(rotated: u8, faults: u8, written: u64) -> DiskWritten {
 }
 
 /// THE HOST'S CHECK OF A `disk.append` `in` (`check_disk_append_in`), one RED per arm: no key, a key
-/// or bytes as a count behind NULL, no result slot. A well-formed `in` passes.
+
 #[test]
 fn the_host_refuses_a_disk_append_in_with_no_key_a_null_range_or_no_result() {
     let mut w = written(0, 0, 0);
@@ -977,15 +969,14 @@ fn the_host_refuses_a_disk_append_in_with_no_key_a_null_range_or_no_result() {
         check_disk_append_in(&i).unwrap_err(),
         fault(Rule::Missing, "disk_append.result")
     );
-    // Empty bytes append nothing, and are legal.
+
     let mut i = good;
     i.bytes = empty_blob();
     assert_eq!(check_disk_append_in(&i), Ok(()));
 }
 
 /// `disk.append`'s ANSWER (`check_disk_append`): READY writes the whole of `bytes`, a known
-/// `rotated` and known fault bits into a result of this layout; FAILED writes nothing appended and
-/// names its step; it may pend on a ticket and never without one. One RED per arm.
+
 #[test]
 fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     let bytes = b"one line\n";
@@ -1004,16 +995,16 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
         check(written(DISK_ROTATED, DISK_FAULTS, len), &ready, TICKET),
         Ok(Filled::Written)
     );
-    // A partial append on READY.
+
     assert_eq!(
         rule(check(written(0, 0, len - 1), &ready, TICKET)),
         Rule::Contradiction
     );
-    // A foreign result.
+
     let mut foreign = written(0, 0, len);
     foreign.size += 8;
     assert_eq!(rule(check(foreign, &ready, TICKET)), Rule::Foreign);
-    // `rotated` outside {0, DISK_ROTATED}; a fault bit no one knows.
+
     assert_eq!(
         rule(check(written(2, 0, len), &ready, TICKET)),
         Rule::UnknownCode
@@ -1022,7 +1013,7 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
         check(written(0, 8, len), &ready, TICKET),
         Ok(Filled::Written)
     );
-    // FAILED: the step is named, nothing was appended, the rotation is still reported.
+
     let mut failed = out(Outcome::Failed);
     for step in [DISK_OPEN_FAILED, DISK_APPEND_FAILED] {
         failed.value = step;
@@ -1037,7 +1028,7 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
         rule(check(written(0, 0, 0), &failed, TICKET)),
         Rule::UnknownCode
     );
-    // PENDING on a ticket is legal; with none it is FAULT.
+
     let pending = out(Outcome::Pending);
     assert!(check(written(0, 0, 0), &pending, TICKET).is_ok());
     assert!(check(written(0, 0, 0), &pending, Ticket::NONE).is_err());
@@ -1084,7 +1075,7 @@ fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
 }
 
 /// `snapshot.read`'s buffer alignment is the scrape layout's: every record the host lays out in
-/// it (family, sample, label) is aligned at it and is a whole multiple of it.
+
 #[test]
 fn the_snapshot_alignment_is_the_scrape_layouts() {
     use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
@@ -1098,8 +1089,6 @@ fn the_snapshot_alignment_is_the_scrape_layouts() {
         assert_eq!(size % SNAPSHOT_ALIGN, 0);
     }
 }
-
-// ── the host auth handle ──────────────────────────────────────────────────────────────────────
 
 const A_REF: AuthRef = AuthRef { id: 7, mac: 0xfeed };
 const A_UNIT: UnitRef = UnitRef {
@@ -1221,7 +1210,7 @@ fn in_rule(r: Result<(), Fault>) -> Fault {
 }
 
 /// RED (exact sizes): an `in` whose stated size is one field short, or longer, is refused; another
-/// op is a contradiction; the exact size passes.
+
 #[test]
 fn red_an_exact_size_in_one_field_short_or_long_is_refused() {
     let exact = core::mem::size_of::<UnitRefuseIn>();
@@ -1357,7 +1346,7 @@ fn red_unit_hand_in_in_refuses_each_break() {
         in_rule(check_unit_hand_in_in(&i)),
         fault(Rule::NullWithCount, "head_view.query")
     );
-    // RED: the scheme is a code; one past the last, or a padding byte, is unknown.
+
     let mut i = ok;
     i.request.scheme = SCHEME_SECURE + 1;
     assert_eq!(
@@ -1379,8 +1368,7 @@ fn red_unit_hand_in_in_refuses_each_break() {
 }
 
 /// RED: each arm of the host's check of a `unit.refuse` `in`: an unknown cause, a line that
-/// disagrees with the cause, a unit with no line, no answer slot, and a request with no method or a
-/// malformed one (the refusal with no unit is shaped by the request, so it is always named).
+
 #[test]
 fn red_unit_refuse_in_refuses_each_break() {
     let mut a = refusal(0);
@@ -1437,10 +1425,7 @@ fn red_unit_refuse_in_refuses_each_break() {
 }
 
 /// RED: the caller's check of an `auth.call` answer: the flow, the unit, the answer's exact size,
-/// every span inside the bytes written with a present name and known flags, counts within caps.
-/// RED (the upstream's scheme, rule 1: a zero never grants): an `auth.call` off the peer point
-/// whose view declares no scheme is refused, a wholly zeroed view first among them, and is never
-/// read as plain; at the peer point there is no request and no scheme to declare.
+
 #[test]
 fn red_an_auth_call_whose_view_declares_no_scheme_is_refused() {
     use crate::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
@@ -1453,7 +1438,7 @@ fn red_an_auth_call_whose_view_declares_no_scheme_is_refused() {
         assert!(check_auth_call_in(&i).is_ok(), "scheme {scheme}");
     }
     let mut zeroed = ok;
-    // Every byte of the view zero, as a transport that never set it hands it.
+
     zeroed.request = HeadView {
         method: none(),
         target: none(),
@@ -1499,7 +1484,7 @@ fn red_auth_call_answer_refuses_each_break() {
         flow: FLOW_CONTINUE,
         unit: A_UNIT,
     };
-    // Two names to strip: a field line and a query key, names only.
+
     spans[0].name = Span { offset: 0, len: 4 };
     spans[0].flags = FIELD_SENSITIVE;
     spans[1].name = Span { offset: 4, len: 3 };
@@ -1602,8 +1587,7 @@ fn red_auth_call_answer_refuses_each_break() {
 }
 
 /// RED: at the peer point an `auth.call` answers ONLY continue or stop. An outbound binding's
-/// peer answer that carries a field (a name and a value: key material) or any byte is refused; the
-/// bare continue and the bare stop pass.
+
 #[test]
 fn red_a_peer_answer_that_carries_fields_or_bytes_is_refused() {
     use crate::abi::auth::{FIELD_SENSITIVE, POINT_PEER};
@@ -1627,7 +1611,7 @@ fn red_a_peer_answer_that_carries_fields_or_bytes_is_refused() {
         "a bare stop"
     );
     unsafe { (*i.answer).flow = FLOW_CONTINUE };
-    // A field the binding would add: `x-key: secret`, its name and its value in the bytes.
+
     unsafe {
         (*i.spans).name = Span { offset: 0, len: 5 };
         (*i.spans).value = Span { offset: 5, len: 6 };
@@ -1679,7 +1663,7 @@ fn red_unit_hand_in_answer_refuses_each_break() {
 }
 
 /// RED: the caller's check of a `unit.refuse` answer: the exact size, a status in range, no list or
-/// body a count behind NULL.
+
 #[test]
 fn red_unit_refuse_answer_refuses_each_break() {
     let mut a = refusal(404);
@@ -1729,7 +1713,7 @@ fn mint_in(ttl_secs: u64, into: ServiceBufs) -> TicketMintIn {
 }
 
 /// A mint asks a lifetime and a record within the cap; anything else is refused before the host
-/// mints.
+
 #[test]
 fn a_mint_asks_a_lifetime_and_a_record_within_the_cap() {
     let mut buf = [0u8; 8];
@@ -1737,12 +1721,12 @@ fn a_mint_asks_a_lifetime_and_a_record_within_the_cap() {
         check_ticket_mint_in(&mint_in(600, bufs(&mut buf, &mut []))),
         Ok(())
     );
-    // RED: no lifetime.
+
     assert_eq!(
         check_ticket_mint_in(&mint_in(0, bufs(&mut buf, &mut []))).map_err(|f| f.rule),
         Err(Rule::Missing)
     );
-    // RED: a record over the cap.
+
     let over = vec![0u8; MAX_TICKET_RECORD as usize + 1];
     let mut i = mint_in(600, bufs(&mut buf, &mut []));
     i.record = Blob {
@@ -1769,14 +1753,14 @@ fn a_minted_ticket_is_bytes_and_an_expiry() {
         unsafe { check_ticket_mint(&i, ready(&o), &o) },
         Ok(Filled::Written)
     );
-    // RED: nothing written.
+
     let mut empty = o;
     empty.len = 0;
     assert_eq!(
         rule(unsafe { check_ticket_mint(&i, ready(&empty), &empty) }),
         Rule::Contradiction
     );
-    // RED: no expiry.
+
     let mut never = o;
     never.value = 0;
     assert_eq!(
@@ -1806,14 +1790,14 @@ fn a_take_writes_a_record_only_when_a_ticket_admitted_the_unit() {
     );
     let none = out(Outcome::Ready);
     assert!(unsafe { check_ticket_take(&i, ready(&none), &none) }.is_ok());
-    // RED: NONE with bytes.
+
     let mut stray = none;
     stray.len = 3;
     assert_eq!(
         rule(unsafe { check_ticket_take(&i, ready(&stray), &stray) }),
         Rule::Contradiction
     );
-    // RED: a value outside NONE..=TAKEN.
+
     let mut odd = taken;
     odd.value = TICKET_TAKEN + 1;
     assert_eq!(

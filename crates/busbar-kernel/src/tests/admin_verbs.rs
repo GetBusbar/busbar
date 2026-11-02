@@ -1,7 +1,3 @@
-//! Tests for `admin_verbs.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
-
 use super::{connect_reply, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError};
 use crate::plane_driver::EngineHost;
 use crate::test_support::TestApp;
@@ -38,15 +34,8 @@ impl PlaneTrust for NanPlane {
     }
 }
 
-/// A view that will not serialize must not be answered as a success. Falling back to an empty
-/// object hands the caller a `200` with nothing in it AND writes `applied` to the audit -- a
-/// record of a look that succeeded whose answer nobody ever saw.
 #[tokio::test]
 async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
-    // The host is core's OWN fixture App, minted through the production seam: `NanPlane` never dials
-    // it (both `resolve` and `look` ignore the host), so this is a carrier for the `AdminReqCtx`
-    // field and nothing else. It used to be the plane test-kit's in-memory double, which has moved
-    // OUT of core to the one plane that drives it (1.6.0 #33: the kernel tests no plugin).
     let app = TestApp::new().build();
     let host: Arc<dyn EngineHost> = crate::plane_driver::engine_host(&app);
     let ctx = AdminReqCtx {

@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/config/secret.rs`.
-
 use super::*;
 
-/// A whitespace-only (or empty) `env:` NAME — not value — must be rejected at the settings-shape
-/// layer (`self_env_var_checked`), never silently treated as "no name given, fall through" or
-/// "look up an env var literally named '   '". Distinct from
-/// `linked_secret_hardening_tests::resolve_linked_env_empty_value_is_fail_closed`, which covers the
-/// RESOLVED VALUE being empty, not the configured variable name itself.
 #[test]
 fn env_whitespace_only_name_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
@@ -26,7 +19,6 @@ fn env_whitespace_only_name_is_rejected() {
     }
 }
 
-/// Same guard, `file:` PATH side.
 #[test]
 fn file_whitespace_only_path_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
@@ -43,10 +35,6 @@ fn file_whitespace_only_path_is_rejected() {
     }
 }
 
-/// `none` declares the ABSENCE of a credential, so every resolver refuses it rather than handing
-/// back an empty secret. A call site that permits a keyless upstream must say so explicitly
-/// (`SecretRef::is_none()`) — it may never learn it from an empty resolution, which is the exact
-/// confusion between "no credential" and "credential I could not read" this change removes.
 #[test]
 fn none_reference_has_no_value_to_resolve() {
     let r = SecretRef::none();
@@ -63,8 +51,6 @@ fn none_reference_has_no_value_to_resolve() {
     }
 }
 
-/// Deserialize: the `{env}` / `{file}` sugar desugars to the canonical module + settings; the
-/// canonical form parses; mixed / unknown / empty forms are rejected.
 #[test]
 fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
     let r: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();

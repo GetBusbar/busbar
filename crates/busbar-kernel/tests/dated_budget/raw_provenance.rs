@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Raw provenance through the real admission, accrual, budget, flush and hydration APIs.
-
 use super::*;
 use busbar_contract::records::UNIT_INPUT;
 use busbar_kernel::governance::{metering_bucket, SECS_PER_DAY, WINDOW_DAY};
@@ -110,7 +108,7 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), RAW_KEY);
     let gov = GovState::new(store.clone(), None).unwrap();
-    // Activation is still unknown: the old pinned opening serves counts in a later UTC day.
+
     let later = metering_bucket(busbar_kernel::store::now()) + SECS_PER_DAY;
     let opening = raw_cost(1.0, OPENING_FEE);
     let opening_grant = accrue(&gov, &opening, &key, later);
@@ -189,8 +187,6 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
         (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE)
     );
 
-    // Historical rows still have their original undated semantics. Their later-day window
-    // resolves temporally; an exact opening at the same numeric zero stays on its own card.
     let legacy = team_key(store.as_ref(), "vk_legacy_zero");
     restarted.record_usage_served_in_era(
         &second,

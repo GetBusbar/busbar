@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Negotiated raw-usage correction over ADD_USAGE_BATCH without a C layout change.
-//! The legacy batch must be empty and carry the same operation identity. A definitive answer
-//! requires the complete correlated result under a lease; plain READY never proves acceptance.
 
 pub use crate::records::correction::{
     canonical_ledger, canonical_metering, reserved_bucket, Decision, Request, UsageAddress,
@@ -37,9 +35,7 @@ pub fn supported(extensions: &[u8]) -> bool {
 }
 
 /// Decode recognized intent before reaching any legacy batch implementation.
-///
-/// # Errors
-/// Recognized malformed, duplicate or unsupported intent never falls back to an ordinary write.
+
 pub fn intent(extensions: &[u8]) -> Result<Option<Request>, &'static str> {
     let mut reader = Reader::new(extensions)?;
     let mut recognized = false;
@@ -80,9 +76,7 @@ pub fn encode_result(request: &Request, decision: Decision) -> Vec<u8> {
 }
 
 /// Read only a complete leased READY result for this exact immutable candidate.
-///
-/// # Errors
-/// Missing or malformed results and every correlation mismatch leave the outcome unknown.
+
 pub fn read_result(
     outcome: Outcome,
     leased: bool,

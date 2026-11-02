@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/config/overlay.rs`.
-
 use super::*;
 
 fn gate() -> HookCfg {
@@ -13,15 +11,13 @@ fn gate() -> HookCfg {
 }
 
 use crate::test_support::TestOverlayStore;
-/// A minimal RESOLVED config to merge overlays into (providers/models empty; registry empty).
+
 fn minimal_cfg() -> RootCfg {
     let deploy: super::super::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
     super::super::resolve(&deploy, &HashMap::new()).expect("minimal config resolves")
 }
 
-/// merge_into adds overlay hooks to the resolved registry + unions global names; an overlay
-/// hook with a base hook's name wins.
 #[test]
 fn merge_into_deploy() {
     let mut cfg = minimal_cfg();
@@ -30,7 +26,7 @@ fn merge_into_deploy() {
     cfg.hooks.insert("base_hook".to_string(), base);
     let doc = from_state(
         &HashMap::from([
-            ("base_hook".to_string(), gate()), // same name as a base hook → overlay wins
+            ("base_hook".to_string(), gate()),
             ("api_hook".to_string(), gate()),
         ]),
         &["api_hook".to_string(), "base_hook".to_string()],
@@ -40,7 +36,7 @@ fn merge_into_deploy() {
     assert!(cfg.hooks.contains_key("api_hook"));
     assert!(cfg.hooks.contains_key("base_hook"));
     assert_eq!(cfg.hooks["base_hook"].plugin, "test-hook", "overlay wins");
-    // global_hooks unioned, no duplicate of base_hook.
+
     assert_eq!(
         cfg.global_hooks
             .iter()
@@ -52,8 +48,6 @@ fn merge_into_deploy() {
     assert!(cfg.global_hooks.iter().any(|g| g == "api_hook"));
 }
 
-/// TOMBSTONE: a hook the API deleted (recorded in `deleted`) is removed from the effective config at
-/// boot even if it was defined in base config.yaml — so an API deletion survives a restart.
 #[test]
 fn merge_into_applies_tombstones() {
     let mut cfg = minimal_cfg();
@@ -73,8 +67,6 @@ fn merge_into_applies_tombstones() {
     assert!(!cfg.global_hooks.iter().any(|g| g == "base_hook"));
 }
 
-/// REGRESSION: `persist` must NOT overwrite a present-but-unreadable/corrupt overlay — that would
-/// drop accumulated deletion tombstones and silently resurrect a deleted hook on restart.
 fn group_with_budget() -> GroupCfg {
     serde_json::from_value(serde_json::json!({
         "limits": [ { "budget": 1000, "per": "month" } ]
@@ -82,8 +74,6 @@ fn group_with_budget() -> GroupCfg {
     .unwrap()
 }
 
-/// merge_into inserts overlay groups (an overlay group with a base group's name wins) and applies
-/// group tombstones LAST — an API-deleted group stays gone even if base config.yaml defined it.
 #[test]
 fn merge_into_groups_and_group_tombstones() {
     let mut cfg = minimal_cfg();
@@ -103,11 +93,6 @@ fn merge_into_groups_and_group_tombstones() {
     );
 }
 
-/// REGRESSION: a HOOK write must PRESERVE the groups section + its tombstones — the read-modify-write
-/// loads the whole doc and mutates only the hook section. Guards against "persist rebuilds the doc
-/// inline and silently drops groups".
-/// `OverlaySection::parse` is the ONE valid-name gate: `groups`/`hooks` round-trip, everything
-/// else is `None` (the reset endpoint 400s on it).
 #[test]
 fn overlay_section_parse_round_trips_and_rejects() {
     assert_eq!(
@@ -127,8 +112,6 @@ fn overlay_section_parse_round_trips_and_rejects() {
     }
 }
 
-/// `clear_section(Groups)` wipes the groups entries + tombstones and leaves the hooks section
-/// (and its tombstones) untouched — the per-section reset invariant.
 #[test]
 fn clear_section_wipes_one_section_only() {
     let mut doc = OverlayDoc {
@@ -153,19 +136,17 @@ fn clear_section_wipes_one_section_only() {
         vec!["gonehook".to_string()],
         "hook tombstones preserved"
     );
-    // And the symmetric case.
+
     doc.clear_section(OverlaySection::Hooks);
     assert!(doc.hooks.is_empty() && doc.global_hooks.is_empty() && doc.deleted.is_empty());
 }
 
-/// `section_is_empty` is true only when a section carries neither entries nor tombstones — the
-/// idempotent-no-op predicate the reset handler short-circuits on.
 #[test]
 fn section_is_empty_tracks_entries_and_tombstones() {
     let empty = OverlayDoc::default();
     assert!(empty.section_is_empty(OverlaySection::Groups));
     assert!(empty.section_is_empty(OverlaySection::Hooks));
-    // A lone tombstone (no live entry) still counts as non-empty (a base deletion to revert).
+
     let tombstoned = OverlayDoc {
         deleted_groups: vec!["x".to_string()],
         deleted: vec!["y".to_string()],
@@ -174,13 +155,11 @@ fn section_is_empty_tracks_entries_and_tombstones() {
     assert!(!tombstoned.section_is_empty(OverlaySection::Groups));
     assert!(!tombstoned.section_is_empty(OverlaySection::Hooks));
 }
-/// A minimal base `DeployCfg` (all uncovered sections at their defaults) to apply root overrides
-/// onto. Uses the real YAML parse path so the defaults match production exactly.
+
 fn minimal_deploy() -> DeployCfg {
     serde_yaml::from_str("providers: {}\nmodels: {}\n").expect("minimal deploy parses")
 }
 
-/// A `RootSettings` naming a couple of overrides, parsed from JSON exactly as the API body would.
 fn sample_root() -> RootSettings {
     serde_json::from_value(serde_json::json!({
         "listen": "0.0.0.0:9000",
@@ -191,14 +170,11 @@ fn sample_root() -> RootSettings {
     .expect("root settings parse")
 }
 
-/// `apply_to_deploy` overwrites ONLY the named fields; unset fields keep base values.
 #[test]
 fn root_apply_overwrites_only_named_fields() {
     let mut deploy = minimal_deploy();
     let base_admin_listen = deploy.admin_listen.clone();
-    // NON-DEFAULT base values, or this test cannot see the defect it guards: with an
-    // all-defaults base a whole-section clobber is indistinguishable from a per-field merge,
-    // which is why it passed for as long as the bug existed.
+
     deploy.limits.upstream_request_timeout_secs = 30;
     deploy.limits.request_body_max_bytes = 1_048_576;
     sample_root().apply_to_deploy(&mut deploy);
@@ -229,7 +205,6 @@ fn root_apply_overwrites_only_named_fields() {
     );
 }
 
-/// `is_empty` / `section_is_empty(Root)` track whether any override is set.
 #[test]
 fn root_is_empty_tracks_overrides() {
     assert!(RootSettings::default().is_empty());
@@ -239,12 +214,11 @@ fn root_is_empty_tracks_overrides() {
         ..Default::default()
     };
     assert!(!doc.section_is_empty(OverlaySection::Root));
-    // A root override does not make hooks/groups non-empty (independent sections).
+
     assert!(doc.section_is_empty(OverlaySection::Hooks));
     assert!(doc.section_is_empty(OverlaySection::Groups));
 }
-/// `clear_section(Root)` wipes only the root override; the hooks/groups sections survive. And the
-/// on-disk `clear_section` refuses a corrupt overlay (fail-closed, like the sibling sections).
+
 #[test]
 fn clear_root_section_only() {
     let mut doc = OverlayDoc {
@@ -257,8 +231,6 @@ fn clear_root_section_only() {
     assert!(doc.hooks.contains_key("h"), "hooks preserved");
 }
 
-/// `apply_root_to_deploy` is a no-op when the overlay has no root override, and applies it when
-/// present — the pre-resolve boot-merge half.
 #[test]
 fn apply_root_to_deploy_noop_and_active() {
     let mut deploy = minimal_deploy();
@@ -275,8 +247,6 @@ fn apply_root_to_deploy_noop_and_active() {
     assert_eq!(deploy.per_request_fee, 7, "root override applied");
 }
 
-/// An unknown key in a root-settings body is a loud reject (`deny_unknown_fields`), never a silent
-/// no-op — the same fail-closed posture as the DeployCfg surface.
 #[test]
 fn root_settings_rejects_unknown_field() {
     let r: Result<RootSettings, _> =
@@ -284,14 +254,10 @@ fn root_settings_rejects_unknown_field() {
     assert!(r.is_err(), "a typo'd root field is rejected");
 }
 
-/// PLUGIN VERSION PINS (1.5.0 rollback-friendly versioning): a `plugin_versions` pin lowers BOTH
-/// the per-name `min_versions` floor (third-party path) AND a PER-NAME `first_party_floors` entry
-/// (first-party path) when applied to a base `DeployCfg`. Each pin scopes its first-party
-/// override to its own name — there is no single global floor lowered for every first-party plugin.
 #[test]
 fn plugin_versions_pins_lower_the_floors() {
     let mut deploy = minimal_deploy();
-    // Base has a higher floor and no first-party floor override (the automatic default).
+
     deploy
         .plugins
         .min_versions
@@ -319,8 +285,7 @@ fn plugin_versions_pins_lower_the_floors() {
         Some("1.4.0"),
         "the third-party floor is LOWERED to the pinned version"
     );
-    // PER-NAME first-party floor overrides: each pinned name gets exactly its pinned version;
-    // there is no global floor, so an unpinned first-party plugin is unaffected.
+
     assert_eq!(
         deploy
             .plugins
@@ -339,9 +304,6 @@ fn plugin_versions_pins_lower_the_floors() {
     );
 }
 
-/// No pins ⇒ no per-name floor overrides (the automatic posture is untouched): `apply_root_to_deploy`
-/// (which also applies pins) leaves `first_party_floors` EMPTY when the overlay carries no pins, so
-/// every first-party plugin keeps the binary's own version as its floor.
 #[test]
 fn no_pins_leaves_first_party_floor_none() {
     let mut deploy = minimal_deploy();
@@ -351,8 +313,7 @@ fn no_pins_leaves_first_party_floor_none() {
         "with no pins the automatic first-party floor stands"
     );
 }
-/// `clear_section(PluginVersions)` wipes only the pins; the other sections survive — the durable
-/// half of `DELETE /api/v1/admin/overlay/plugin_versions` (lift every rollback pin).
+
 #[test]
 fn clear_plugin_versions_section_only() {
     let mut doc = OverlayDoc {
@@ -365,7 +326,6 @@ fn clear_plugin_versions_section_only() {
     assert!(doc.hooks.contains_key("h"), "hooks preserved");
 }
 
-/// The `plugin_versions` path segment parses to the section and round-trips its label.
 #[test]
 fn plugin_versions_section_parses() {
     assert_eq!(
@@ -490,7 +450,7 @@ fn refused_write_never_exposes_uncommitted_generation_and_replays_original_befor
     assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
     assert_eq!(fixture.read_bytes(), before);
     fixture.fail_writes(false);
-    // The previous immutable candidate is resolved, but this different edit is refused.
+
     assert!(persist_root(Some(&backend), &sample_root()).is_err());
     assert!(backend.read_required().unwrap().unwrap().root.is_none());
     assert!(persist_root(Some(&backend), &sample_root()).is_err());

@@ -1,83 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TELEMETRY BANK — per-thread metric cells for the request hot path, one scrape-time
-//! aggregator.
-//!
-//! ## Why this layer exists
-//!
-//! The request hot path used to update ~26 Prometheus metric sites through the `metrics` facade
-//! macros. Every one of those is a shared atomic in the global recorder's registry: at high RPS on
-//! many cores the increments ping-pong the metric cache lines between cores, and that contention
-//! measurably caps throughput (part of a measured −36% collapse from concurrency 64→1024). The fix
-//! is ONE proper layer, not N ad-hoc thread-local hacks:
-//!
-//! * **Per-thread bank** — each thread that emits owns a private block of pre-registered slots. A
-//!   hot-path write is a plain add into the thread's OWN cell: the cells are `AtomicU64` with
-//!   `Relaxed` ordering, but only the OWNING thread ever writes them (owner-writes-only), so in
-//!   steady state the cache line stays exclusive to its core. The atomic type exists purely so the
-//!   aggregator can READ other threads' cells safely during a concurrent scrape.
-//! * **Slot registration once per config generation** — label combinations are bounded (pools and
-//!   models come from config; outcomes/protocols/dispositions are fixed vocabularies), so slots are
-//!   interned ONCE when an `App` snapshot is built ([`AppSlots::build`]) and the hot path holds a
-//!   plain slot index. It never allocates and never builds a `metrics::Key`/label map. Re-applying a
-//!   config re-interns the same label sets to the SAME slots, so counts accumulate monotonically
-//!   across generations.
-//! * **One aggregator** — [`flush_to_recorder`] runs at scrape time (called from
-//!   `metrics::snapshot()`): it sums every thread's cells per slot and pushes the DELTA since the
-//!   last flush into the process-global recorder (`metrics::source`). The snapshot is read from the
-//!   SAME recorder as before, so metric names, labels, HELP text and values are identical to the
-//!   pre-bank output. Histogram slots buffer raw samples
-//!   per thread and drain them into the recorder at flush, so the summary/quantile rendering is
-//!   unchanged too (samples are just delivered at scrape time instead of request time).
-//!
-//! ## THE RULE — observation only
-//!
-//! If ENFORCEMENT depends on a count, it does NOT go through the bank. Budget cells, `max_concurrent`
-//! permits, rate windows, breaker failure counters — anything a decision reads — counts inline where
-//! the decision is made. The bank's cells are eventually-consistent by design (a thread's adds are
-//! only globally visible at the next scrape), which is exactly right for OBSERVATION and exactly
-//! wrong for enforcement. Adding a new observability counter tomorrow = registering a slot here; a
-//! new enforcement counter never touches this module.
-//!
-//! ## What stays on the plain `metrics` macros
-//!
-//! Cold-path and boot-path metrics keep the macro emission (migrating them is churn without
-//! benefit — they fire far off the steady-state request path or with runtime-resolved label
-//! vocabularies the config-time registration can't enumerate):
-//! * route-policy selection/rejection counters (`policy` can be an operator-defined hook name
-//!   resolved at hook-fire time; rejections additionally carry a dynamic clamped `status`),
-//! * webhook / tap backpressure drop counters (global anomaly signals),
-//! * the billing-truncation counter (anomaly path),
-//! * every scrape-time gauge in `metrics.rs` (they are already scrape-driven).
-//!
-//! [`AppSlots`] lookups fall back to the identical macro emission whenever a label value is not in
-//! the current generation's registered set (e.g. a custom ingress protocol, or unit tests driving a
-//! bare `App`), so output is preserved in every case — the bank is a fast path, never a gate.
-
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::state::App;
-
-// ── THE BANK, RE-EXPORTED BY IDENTITY FROM THE NEUTRAL SUBSTRATE ─────────────────────────────────
-//
-// The per-thread cells, the intern tables and the scrape-time aggregator moved DOWN to
-// `busbar_kernel::telemetry` (they name no `App` and feed the recorder install that moved with
-// them). These are the SAME items, re-exported at their historical `crate::telemetry::…` paths, so
-// every emit site below and every core call site elsewhere resolves unchanged.
-// The capacity knobs and per-thread storage the retention batteries below read directly. Test-only
-// on both sides of the seam, so core's shipped surface gains nothing.
-//
-// `HIST_DRAIN_THRESHOLD` is defined directly below (unconditionally `pub`), and
-// `hist_chunk_materialized` lives in `bank_internals` below, now that busbar-core's substrate is
-// absorbed into this crate. A `use busbar_kernel::telemetry::bank_internals::{..}` here is a
-// leftover from when this module lived in a separate `busbar-core` crate — `busbar_kernel::telemetry`
-// now names this very module, so the import collides with `HIST_DRAIN_THRESHOLD`'s own definition
-// (E0255) instead of importing anything new. Reach `bank_internals::hist_chunk_materialized`
-// directly where needed instead.
-
-// ── Per-App slot tables (registered once per config generation) ─────────────────────────────────
 
 /// The banked slots for one request family: `busbar_requests_total` (per outcome) and
 /// `busbar_request_duration_seconds`, for a fixed `(ingress_protocol, pool)` pair ON THE PLANE THIS
@@ -125,15 +52,6 @@ pub(crate) struct AppSlots {
 }
 
 impl AppSlots {
-    /// Register every hot-path slot for one config generation. Label spaces registered here are
-    /// exactly the bounded sets the emission sites can produce: configured pool names, configured
-    /// lane MODEL strings, the `"unresolved"` sentinel, and the fixed vocabularies above.
-    /// NEUTRAL LABEL PROJECTION inputs (money-path Phase 3-4 B): `pools` is each pool label paired
-    /// with its member lane indices, `by_model` is the direct-model index (model label → lane index),
-    /// and `lane_model` resolves a lane index to its model-string label. Expressed this way, banking
-    /// one plane's bounded label space names no `Lane`/`WeightedLane`, so telemetry did not need to
-    /// relocate along with the routing tables now that they live in the model plane's own crate.
-    /// Byte-identical banking to the prior table-typed form — the SAME pool/model/lane label sets.
     pub(crate) fn build<'a>(
         pools: &[(&'a str, Vec<usize>)],
         by_model: &[(&'a str, usize)],
@@ -145,11 +63,6 @@ impl AppSlots {
             UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL,
         };
 
-        // STATED by the caller, not assumed here: `lanes`/`pools`/`by_model` are one plane's
-        // routing tables, and the caller is the only place that knows whose. Assuming it would make
-        // this function silently wrong the day a second plane grows a bounded routing table worth
-        // banking, which is exactly the direction the plane spine is going.
-        // Ingress pool labels: configured pools, model-routed labels, and the pre-routing sentinel.
         let mut ingress_labels: Vec<&str> = pools.iter().map(|(pool, _)| *pool).collect();
         ingress_labels.extend(by_model.iter().map(|(model, _)| *model));
         ingress_labels.push(POOL_LABEL_UNRESOLVED);
@@ -180,8 +93,6 @@ impl AppSlots {
             request.insert(Box::from(*pool), families);
         }
 
-        // Engine labels: named pools walk their members; model-routed traffic is labeled by the
-        // lane's model string (`metric_pool_label` resolves the empty cell key to the model).
         let mut lane_map: HashMap<Box<str>, HashMap<usize, LaneFamily>> = HashMap::new();
         let engine_labels: Vec<(&str, Vec<usize>)> = pools
             .iter()
@@ -259,22 +170,6 @@ impl AppSlots {
     }
 }
 
-// ── Hot-path emit helpers (bank fast path, macro fallback) ──────────────────────────────────────
-
-/// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request, on ANY
-/// plane. The single emission site for the request families: the model plane calls it from
-/// `ingress::finish_inner` and every mounted plane calls it from `ingress::observe`.
-///
-/// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
-/// (`crate::plane_driver::dispatch::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
-/// with exactly the v1.5.4 label set `{ingress_protocol, pool, outcome}` — NO `plane` label — so a
-/// pure-model-plane `/metrics` scrape is byte-identical to v1.5.4. Every OTHER mounted plane emits the
-/// parallel `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families, which
-/// carry the extra `plane` label so `sum by (plane)` compares them — without ever altering the
-/// label identity of the two pre-existing model-plane families.
-///
-/// Bank fast path when `(plane, ingress_protocol, pool)` is in this generation's registered set (the
-/// bank holds only the model plane's label space); otherwise the cached-handle helpers in `metrics.rs`.
 pub(crate) fn request_finished(
     app: &App,
     plane: &str,
@@ -283,16 +178,12 @@ pub(crate) fn request_finished(
     outcome: &'static str,
     seconds: f64,
 ) {
-    // Mounted (non-model) planes emit on their OWN `busbar_plane_*` families, keeping the two
-    // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
-    // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
-    // relying on that miss, and it targets the correct (plane-labelled) family.
     if !crate::plane_driver::dispatch::is_fallback(plane) {
         crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
         crate::snapshot::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;
     }
-    // Model plane: bank fast path, else the cached-handle helpers — byte-identical series either way.
+
     let fam = app.tslots.request_family(plane, ingress_protocol, pool);
     let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
     match (fam, outcome_idx) {
@@ -305,11 +196,6 @@ pub(crate) fn request_finished(
     }
 }
 
-/// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request of the
-/// plane that serves the `pools` map (the fallback plane's 1.5.5 families, `{ingress_protocol,
-/// pool, outcome}` and no `plane` label), its outcome classified from the caller's `status`
-/// ([`outcome_of`]): the request families a unit served through that plane's door emits at its end,
-/// as the previous release's `ingress::finish_inner` emitted them.
 pub fn model_request_finished(
     app: &App,
     ingress_protocol: &str,
@@ -326,8 +212,7 @@ pub fn model_request_finished(
         outcome,
         seconds,
     );
-    // The best-effort request log, under the same compute gate the previous release's request path
-    // read (`ingress::finish_inner`): produced only when a configured export subscribes to it.
+
     if app
         .export_projections
         .wants_stream(busbar_contract::abi::export::ExportStream::Logs)
@@ -343,15 +228,6 @@ pub fn model_request_finished(
     }
 }
 
-// `upstream_attempt_on` / `upstream_failure_on` — THE EMIT for this family, on EVERY plane — MOVED
-// DOWN to the neutral substrate (`busbar_kernel::telemetry`) so a plane's own synchronous client
-// leg can name them without reaching into core. They take NO `&App` and
-// never did (both labels are operator-configured and bounded, so the emit is a pure `metrics` write);
-// that is exactly what let them relocate. Re-exported here so core's own `App`-holding wrappers
-// ([`upstream_attempt`]/[`upstream_failure`], which resolve the lane label out of `app.lanes`) and
-// `crate::telemetry::*` call sites resolve unchanged.
-
-/// `busbar_upstream_attempts_total` for one dispatch attempt on `(pool label, lane)`.
 pub fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {
     match app.tslots.lane_family(pool_label, lane_idx) {
         Some(fam) if fam.attempts.is_valid() => fam.attempts.incr(),
@@ -365,7 +241,6 @@ pub fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {
     }
 }
 
-/// `busbar_upstream_failures_total` for one classified failure on `(pool label, lane)`.
 pub fn upstream_failure(app: &App, pool_label: &str, lane_idx: usize, disposition: &'static str) {
     let fam = app.tslots.lane_family(pool_label, lane_idx);
     let di = DISPOSITIONS.iter().position(|d| *d == disposition);
@@ -382,7 +257,6 @@ pub fn upstream_failure(app: &App, pool_label: &str, lane_idx: usize, dispositio
     }
 }
 
-/// `busbar_breaker_trips_total` for one logical Closed→Open trip on `(pool label, lane)`.
 pub fn breaker_trip(app: &App, pool_label: &str, lane_idx: usize) {
     match app.tslots.lane_family(pool_label, lane_idx) {
         Some(fam) if fam.trips.is_valid() => fam.trips.incr(),
@@ -396,7 +270,6 @@ pub fn breaker_trip(app: &App, pool_label: &str, lane_idx: usize) {
     }
 }
 
-/// `busbar_failovers_total` for one failover event on `pool label`, by reason.
 pub fn failover(app: &App, pool_label: &str, reason: &'static str) {
     let slots = app.tslots.failover.get(pool_label);
     let ri = REASONS.iter().position(|r| *r == reason);
@@ -406,9 +279,6 @@ pub fn failover(app: &App, pool_label: &str, reason: &'static str) {
     }
 }
 
-/// `busbar_breaker_trips_total` for one logical Closed→Open trip on `(pool label, lane label)`: THE
-/// EMIT for this family on every plane, both labels operator-configured (see
-/// [`upstream_attempt_on`]).
 pub fn breaker_trip_on(pool_label: &str, lane_label: &str) {
     metrics::counter!(
         crate::snapshot::BREAKER_TRIPS_TOTAL,
@@ -418,8 +288,6 @@ pub fn breaker_trip_on(pool_label: &str, lane_label: &str) {
     .increment(1);
 }
 
-/// `busbar_failovers_total` for one failover event on `pool label`, by reason: THE EMIT for this
-/// family on every plane.
 pub fn failover_on(pool_label: &str, reason: &'static str) {
     metrics::counter!(
         crate::snapshot::FAILOVERS_TOTAL,
@@ -429,18 +297,11 @@ pub fn failover_on(pool_label: &str, reason: &'static str) {
     .increment(1);
 }
 
-/// `busbar_pool_queued`, the live wait-terminal depth of `pool label`: THE EMIT for a pool whose
-/// depth its walk keeps (a pool served through a plane's door; the engine's pools are read at
-/// scrape).
 pub fn pool_queued_on(pool_label: &str, depth: i64) {
     metrics::gauge!(crate::snapshot::POOL_QUEUED, "pool" => pool_label.to_owned())
         .set(depth as f64);
 }
 
-/// `busbar_translations_total` for one cross-protocol hop. Both names come from the fallback plane's
-/// declared dialects ([`declared_dialects`]), so the slots are config-independent: one
-/// process-lifetime table over `dialects × dialects` (from ≠ to), resolved by a short linear scan
-/// (≤30 static-str compares — no hash, no allocation). Any other name falls back to the macro.
 pub fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
     let table = SLOTS.get_or_init(|| {
@@ -476,11 +337,6 @@ pub fn translation(from: &str, to: &str) {
     }
 }
 
-/// THE DIALECT NAMES `plane` DECLARES (its registry row's `wire_format_names`: a door plane's are
-/// its Statement tail's `dialects`), in its order — the `ingress_protocol` / `from` / `to` label
-/// vocabulary the bank registers its families over. Read as declared data, never off a codec list
-/// (ARCHITECT ruling 2026-10-16 item 4; BUSBAR-1.6.0.md #49: the kernel knows no plane strings). A key
-/// no plane registers declares none.
 fn declared_dialects(plane: &str) -> &'static [&'static str] {
     crate::plane_driver::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)(d))
 }
@@ -489,18 +345,10 @@ fn declared_dialects(plane: &str) -> &'static [&'static str] {
 #[path = "tests/telemetry_tests.rs"]
 mod tests;
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-/// `busbar_upstream_attempts_total` — labels: pool (bounded), lane.
 pub const UPSTREAM_ATTEMPTS_TOTAL: &str = "busbar_upstream_attempts_total";
-/// `busbar_upstream_failures_total` — labels: pool (bounded), lane, disposition.
+
 pub const UPSTREAM_FAILURES_TOTAL: &str = "busbar_upstream_failures_total";
 
-/// `busbar_upstream_attempts_total` for one dispatch attempt on `(pool label, lane label)`.
-///
-/// BOTH LABELS ARE OPERATOR-CONFIGURED and therefore bounded: the pool label is a registration name
-/// out of the operator's config and the lane label is a transport/binding word off a closed axis.
-/// Neither is caller-supplied, so a client-supplied value here could never mint a time series per
-/// distinct string.
 pub fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
     metrics::counter!(
         UPSTREAM_ATTEMPTS_TOTAL,
@@ -510,17 +358,10 @@ pub fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
     .increment(1);
 }
 
-/// `busbar_plugin_label_refused_total`: a plugin stated a counter label outside the counters' bound,
-/// and its counters kept their own.
 pub fn plugin_label_refused() {
     metrics::counter!(crate::snapshot::PLUGIN_LABEL_REFUSED_TOTAL).increment(1);
 }
 
-/// `busbar_upstream_failures_total` for one classified failure on `(pool label, lane label)`.
-///
-/// THE EMIT for this family, on EVERY plane — see [`upstream_attempt_on`] for why there is no `&App`
-/// and why both labels are bounded. `disposition` is the model plane's own vocabulary (the
-/// [`DISPOSITIONS`]) and no plane gets one of its own.
 pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'static str) {
     metrics::counter!(
         UPSTREAM_FAILURES_TOTAL,
@@ -531,12 +372,6 @@ pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'st
     .increment(1);
 }
 
-/// THE HTTP STATUS → OUTCOME LABEL, in the neutral substrate. A pure `u16 → &'static str` fold over a
-/// CLOSED set of outcome words (`ok`, `exhausted`, `client_error`, `error`) — no `App`, no state — so
-/// every plane names it (`busbar_kernel::telemetry::outcome_of`) for its own request-completion
-/// label without reaching into `busbar-core`, and core's `crate::telemetry` re-exports it so its own
-/// call sites are unchanged. `503` is called out as `exhausted` (a pool ran dry) distinctly from the
-/// rest of the `5xx`/other band, exactly as before.
 pub fn outcome_of(status: u16) -> &'static str {
     match status {
         200..=299 => "ok",
@@ -546,70 +381,39 @@ pub fn outcome_of(status: u16) -> &'static str {
     }
 }
 
-// ── THE TELEMETRY BANK (relocated from busbar-core, verbatim) ────────────────────────────────────
-//
-// Per-thread metric cells for the request hot path plus the one scrape-time aggregator that folds
-// them into the process-global recorder. The bank names NO `App`: a slot is interned from a metric
-// name and a bounded label set, the per-thread storage is chunked `AtomicU64`/`Vec<f64>`, and the
-// flush talks only to the `metrics` facade — so it belongs beside the recorder install it feeds
-// (`crate::snapshot`), not beside the `App`-shaped emit wrappers that call into it. Core's
-// `crate::telemetry` re-exports every item below at its historical path, so every existing core call
-// site resolves unchanged and the exposition it produces is byte-identical.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::diag_warn;
 use crate::diagnostics::TELEMETRY_SLOT_TABLE_FULL;
 
-// ── Capacity ─────────────────────────────────────────────────────────────────────────────────────
-//
-// Slots are process-lifetime (the intern table is append-only; identical label sets re-registered by
-// a later config generation reuse their slot). Per-thread storage is CHUNKED and lazily allocated:
-// a thread only materializes the 8 KiB counter chunk / sample-buffer chunk that one of its slots
-// actually lands in, so a mostly-idle thread costs almost nothing. The caps below are far beyond any
-// real deployment (a pool contributes ~40 counter slots + ~6 histogram slots); if the table ever
-// fills — e.g. a pathological test suite churning thousands of distinct pool names — registration
-// degrades gracefully: it returns an INVALID slot and the emit helpers fall back to the macros.
 const COUNTER_CHUNK: usize = 1024;
-const COUNTER_CHUNKS: usize = 64; // 65,536 counter slots
+const COUNTER_CHUNKS: usize = 64;
 const HIST_CHUNK: usize = 256;
-const HIST_CHUNKS: usize = 32; // 8,192 histogram slots
-/// A per-thread histogram buffer that grows past this many samples between scrapes drains straight
-/// into the recorder (the old contended path) rather than growing without bound — correctness is
-/// preserved and the cost is amortized 1/N. Only reachable when scrapes stop while traffic doesn't.
+const HIST_CHUNKS: usize = 32;
+
 pub const HIST_DRAIN_THRESHOLD: usize = 65_536;
 
-/// Joins label values into the intern key — a control byte that cannot occur in a metric name,
-/// label key, or any of the (operator-bounded) label values, so the join is unambiguous.
 const KEY_SEP: char = '\u{1f}';
 
-// ── Fixed label vocabularies (indices into the per-family slot arrays) ──────────────────────────
-
-/// `outcome` values on `busbar_requests_total`. The classification itself is [`outcome_of`], which
-/// is the ONLY thing that produces one of these — see there for why it is a function.
 pub const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
 
-/// The `pool` label for every failure before a target resolved, so the label space stays finite.
 pub const POOL_LABEL_UNRESOLVED: &str = "unresolved";
 
-/// `disposition` value: a transient upstream failure.
 pub const DISPOSITION_TRANSIENT: &str =
     busbar_contract::upstream::Disposition::TransientUpstream.label();
-/// `disposition` value: one attempt's budget-clamped transport timeout fired.
+
 pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
-/// `disposition` value: the upstream is hard down.
+
 pub const DISPOSITION_HARD_DOWN: &str = busbar_contract::upstream::Disposition::HardDown.label();
 
-/// `disposition` values on `busbar_upstream_failures_total`.
 pub const DISPOSITIONS: [&str; 4] = [
     DISPOSITION_TRANSIENT,
     DISPOSITION_ATTEMPT_TIMEOUT,
     DISPOSITION_HARD_DOWN,
     busbar_contract::protocol::DISPOSITION_CONTEXT_LENGTH,
 ];
-/// `reason` values on `busbar_failovers_total`: the dispositions plus the transport error classes
-/// the pre-response failure arm records.
+
 pub const REASONS: [&str; 6] = [
     DISPOSITION_TRANSIENT,
     DISPOSITION_ATTEMPT_TIMEOUT,
@@ -618,8 +422,6 @@ pub const REASONS: [&str; 6] = [
     busbar_kernel_egress::upstream::ERR_NET_CONNECT,
     busbar_kernel_egress::upstream::ERR_NET_TIMEOUT,
 ];
-
-// ── Slot handles ─────────────────────────────────────────────────────────────────────────────────
 
 /// A registered counter cell. `Copy` — the hot path holds and passes these by value. An INVALID
 /// slot (registration hit the capacity cap) drops adds; the emit helpers check [`is_valid`] first
@@ -641,26 +443,12 @@ impl CounterSlot {
         self.0 != u32::MAX
     }
 
-    /// Owner-writes-only add into THIS thread's cell. Relaxed load+store (not `fetch_add`) is
-    /// sufficient and cheapest: the owning thread is the only writer, the atomic type only makes the
-    /// aggregator's concurrent reads defined. No-op for INVALID slots and during TLS teardown.
-    ///
-    /// DELIBERATELY unconditional even when metrics are off — unlike `HistogramSlot::record`, this
-    /// does NOT gate on `metrics::retaining()`. Counters are cumulative: an add from before the
-    /// recorder installs must still be reflected in the post-install total, so it cannot simply be
-    /// dropped the way an off-metrics histogram sample can. And unlike a histogram's raw-sample
-    /// buffer, a counter cell's footprint is bounded by thread count x chunk count, not by traffic
-    /// volume — an idle process's counters cost the same few bytes whether metrics are on or off, so
-    /// there is no unbounded-retention problem here to fix. (This is why `configure`'s doc comment
-    /// says "nothing UNBOUNDED is retained" rather than a literal "nothing is retained".)
     pub fn add(self, n: u64) {
         if !self.is_valid() {
             return;
         }
         let idx = self.0 as usize;
-        // `try_with`: an emission from a destructor after the thread's bank was torn down is
-        // dropped rather than panicking — the bank is observation-only (THE RULE), so a lost
-        // observation on thread death is acceptable where a panic is not.
+
         let _ = BANK.try_with(|bank| {
             let chunk = bank.counters[idx / COUNTER_CHUNK].get_or_init(new_counter_chunk);
             let cell = &chunk[idx % COUNTER_CHUNK];
@@ -683,31 +471,10 @@ impl HistogramSlot {
         self.0 != u32::MAX
     }
 
-    /// Buffer one observation in THIS thread's sample vector — but ONLY if something will ever
-    /// drain it. See [`Self::record_inner`] for the gating rationale; this wrapper just supplies
-    /// the live decision from `metrics::retaining()`.
     pub fn record(self, value: f64) {
         self.record_inner(value, crate::snapshot::retaining());
     }
 
-    /// `retaining` is passed in explicitly (rather than read here) so this is testable without
-    /// process-global `OnceLock` state: `metrics::HANDLE`/`ENABLED` can only be set once per
-    /// process, so a test can't reset them to exercise every branch — it can, however, call this
-    /// directly with a hand-picked `retaining`.
-    ///
-    /// When `retaining` is `false` (metrics off, or the recorder never installed / failed to
-    /// install), the sample is dropped immediately and the per-thread `HistChunk` for this slot is
-    /// never even materialized — nothing here will ever be drained (not by a scrape, not by the
-    /// `HIST_DRAIN_THRESHOLD` overflow backstop, not by anything else), so buffering it would only
-    /// grow memory with traffic volume for no eventual consumer. This is checked BEFORE the
-    /// `BANK`/`try_with` TLS access precisely so an off-metrics process never allocates a histogram
-    /// buffer it will never use.
-    ///
-    /// KNOWN RESIDUAL: if recorder install FAILS after the boot-window traffic already buffered
-    /// some samples (see `metrics::retaining`'s doc comment for that window), those already-buffered
-    /// samples are not proactively freed here — they sit until `HIST_DRAIN_THRESHOLD` or thread
-    /// exit reclaims them. Bounded by one ~200 ms window's traffic, and the install failure itself
-    /// is already logged (`tracing::error!` in `metrics::init_with`), so the cause is discoverable.
     pub fn record_inner(self, value: f64, retaining: bool) {
         if !self.is_valid() {
             return;
@@ -723,8 +490,6 @@ impl HistogramSlot {
                 .unwrap_or_else(|p| p.into_inner());
             buf.push(value);
             if buf.len() >= HIST_DRAIN_THRESHOLD {
-                // Scrapes have stopped but traffic hasn't: drain through the recorder inline
-                // (bounded memory beats bank locality when nobody is scraping).
                 let samples = std::mem::take(&mut *buf);
                 drop(buf);
                 drain_hist_overflow(self.0, samples);
@@ -733,9 +498,6 @@ impl HistogramSlot {
     }
 }
 
-// ── Per-thread bank ──────────────────────────────────────────────────────────────────────────────
-
-/// One lazily-allocated block of per-thread histogram sample buffers (see `ThreadBank::hists`).
 type HistChunk = Box<[Mutex<Vec<f64>>]>;
 
 struct ThreadBank {
@@ -758,9 +520,7 @@ impl Drop for LocalBank {
         if crate::snapshot::retaining() {
             return;
         }
-        // An offline process has no maintenance drain. Keep cumulative counts in the
-        // slot table before releasing this exited thread's storage. A simultaneous
-        // recorder install/flush observes either the bank or its retired totals.
+
         let reg = registry();
         let _flush = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
         reg.threads
@@ -818,19 +578,14 @@ thread_local! {
     };
 }
 
-// ── Global registry (intern table + thread list + aggregator state) ─────────────────────────────
-
 struct SlotDesc<H> {
     name: &'static str,
     labels: Vec<(&'static str, String)>,
-    /// The recorder handle, minted LAZILY at first flush — never before the recorder is installed
-    /// (a handle minted against the pre-install no-op recorder would be bound to it forever).
+
     handle: OnceLock<H>,
-    /// Counters only: the total already pushed into the recorder. Guarded by `flush_lock` (single
-    /// writer); atomic so the cold-path reader needs no lock.
+
     flushed: AtomicU64,
-    /// Counters only: the final totals of released banks (threads that exited), which no live bank
-    /// holds any more. Guarded by `flush_lock`, like `flushed`.
+
     retired: AtomicU64,
 }
 
@@ -847,9 +602,6 @@ impl<H> SlotTable<H> {
         }
     }
 
-    /// Intern `(name, labels)` → slot id. Identical label sets always resolve to the SAME slot, so
-    /// re-registration across config generations accumulates into the same cells. Returns `None`
-    /// at the capacity cap (`max`), after which callers degrade to the macro path.
     fn intern(
         &self,
         name: &'static str,
@@ -870,7 +622,6 @@ impl<H> SlotTable<H> {
         }
         let mut descs = self.descs.write().unwrap_or_else(|p| p.into_inner());
         if descs.len() >= max {
-            // Warn once per table, not per registration — the fallback path is correct, just slower.
             static WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !WARNED.swap(true, Ordering::Relaxed) {
@@ -900,8 +651,7 @@ struct Registry {
     counters: SlotTable<metrics::Counter>,
     hists: SlotTable<metrics::Histogram>,
     threads: Mutex<Vec<Arc<ThreadBank>>>,
-    /// Serializes flushes so the read-sum / delta-increment / store-flushed sequence is atomic per
-    /// slot (two concurrent scrapes must not double-count a delta).
+
     flush_lock: Mutex<()>,
 }
 
@@ -915,9 +665,6 @@ fn registry() -> &'static Registry {
     })
 }
 
-/// Register (or re-resolve) a counter slot for a bounded label set. Registration-time only — the
-/// hot path holds the returned slot. Label VALUES must come from operator-bounded vocabularies
-/// (the same cardinality contract as `metrics.rs`).
 pub fn counter_slot(name: &'static str, labels: &[(&'static str, &str)]) -> CounterSlot {
     match registry()
         .counters
@@ -928,7 +675,6 @@ pub fn counter_slot(name: &'static str, labels: &[(&'static str, &str)]) -> Coun
     }
 }
 
-/// Register (or re-resolve) a histogram slot. Same contract as [`counter_slot`].
 pub fn histogram_slot(name: &'static str, labels: &[(&'static str, &str)]) -> HistogramSlot {
     match registry()
         .hists
@@ -939,15 +685,9 @@ pub fn histogram_slot(name: &'static str, labels: &[(&'static str, &str)]) -> Hi
     }
 }
 
-// ── Aggregator ───────────────────────────────────────────────────────────────────────────────────
-
-/// Metric metadata for handles minted outside the `metrics` macros (the macros bake an equivalent
-/// static). Target/module only affect recorder-side filtering, which the Prometheus exporter
-/// ignores, so one shared value serves every slot.
 static METADATA: metrics::Metadata<'static> =
     metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
 
-/// The recorder key a slot's handle is minted under: its name and its label set, in order.
 fn key_of<H>(desc: &SlotDesc<H>) -> metrics::Key {
     let labels = desc
         .labels
@@ -964,9 +704,6 @@ fn mint_histogram(desc: &SlotDesc<metrics::Histogram>) -> metrics::Histogram {
     metrics::with_recorder(|r| r.register_histogram(&key_of(desc), &METADATA))
 }
 
-/// Overflow drain for a histogram buffer that outgrew [`HIST_DRAIN_THRESHOLD`]: push the samples
-/// through the recorder handle directly. Pre-install the recorder is a no-op sink (matching the
-/// macro behavior in the same situation), so the samples are dropped rather than hoarded.
 fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
     if !crate::snapshot::recorder_installed() {
         return;
@@ -988,22 +725,6 @@ fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
     }
 }
 
-/// TEST-ONLY drain serialisation — a MEASUREMENT guard, not a correctness one.
-///
-/// [`flush_to_recorder`] MOVES each thread's sample `Vec` out (`mem::take`) and DROPS it on the
-/// DRAINING thread, so the free is charged to whoever drains rather than to the thread that
-/// allocated the buffer. `test_observations_are_released_after_the_load_stops` reads per-THREAD
-/// jemalloc alloc/dealloc counters exactly so its measurement is immune to the rest of the suite —
-/// but that immunity does NOT survive another test draining ITS buffer: those frees land on the
-/// other thread and leave `allocated - deallocated` on the measuring thread permanently inflated.
-/// Measured under a loaded `cargo test --workspace`: 5.15 MiB of phantom retention against a 1 MiB
-/// tolerance (2.6 B/observation, versus the ~24 B/observation the real regression costs) — a pure
-/// measurement artefact of WHICH thread ran the drain, with the fix itself working correctly.
-///
-/// Holding this guard for the measured window makes that thread the only drainer, which is what the
-/// assertion always assumed. RE-ENTRANT, so the holder still drives its own drains through the
-/// ordinary `metrics::drain_pending()` entry point. Lock ORDER is always `drain_serial` →
-/// `flush_lock` (both acquisitions are at the top of their function), so there is no inversion.
 #[cfg(any(test, feature = "test-support"))]
 pub mod drain_serial {
     use std::cell::Cell;
@@ -1016,22 +737,16 @@ pub mod drain_serial {
         static HELD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// Held for as long as this thread needs exclusive drain rights. `None` = a re-entrant
-    /// acquisition whose outer guard owns the release.
     pub struct Guard(Option<MutexGuard<'static, ()>>);
 
     impl Drop for Guard {
         fn drop(&mut self) {
-            // Clear the flag BEFORE the inner `MutexGuard` field drops (fields drop after
-            // `Drop::drop`), so no other thread can take the lock while this one still claims it.
             if self.0.is_some() {
                 HELD.with(|h| h.set(false));
             }
         }
     }
 
-    /// Acquire exclusive drain rights, re-entrantly. `std::sync::ReentrantLock` is still unstable
-    /// (rust#121440), so this is the two-line equivalent for the one shape we need.
     pub fn lock() -> Guard {
         if HELD.with(Cell::get) {
             return Guard(None);
@@ -1042,12 +757,6 @@ pub mod drain_serial {
     }
 }
 
-/// THE aggregator: sum every thread's cells per slot and push the delta since the last flush into
-/// the process-global recorder. Called from `metrics::snapshot()` so every scrape (and every test
-/// that reads the snapshot) observes up-to-date bank totals. Deltas (not absolutes)
-/// so banked series compose additively with anything the macro fallback paths emitted on the same
-/// series. No-op until the recorder is installed — a handle minted before install would bind to
-/// the no-op recorder forever (same contract as the handle cache in `metrics.rs`).
 pub fn flush_to_recorder() {
     #[cfg(any(test, feature = "test-support"))]
     let _serial = drain_serial::lock();
@@ -1056,10 +765,7 @@ pub fn flush_to_recorder() {
     }
     let reg = registry();
     let _guard = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
-    // A bank only the registry still holds belongs to a thread that has exited (its thread-local
-    // `Arc` dropped with the thread), so nothing can write to it again: it is read one last time
-    // below and then released. The acquire fence pairs with that `Arc` drop, so the dead thread's
-    // final writes are visible to the read.
+
     let mut banks = reg.threads.lock().unwrap_or_else(|p| p.into_inner());
     let exited: Vec<_> = banks
         .extract_if(.., |b| Arc::strong_count(b) == 1)
@@ -1068,9 +774,6 @@ pub fn flush_to_recorder() {
     drop(banks);
     std::sync::atomic::fence(Ordering::Acquire);
 
-    // Counters: sum → delta → increment. A slot whose lifetime total is still zero is SKIPPED
-    // (no handle minted), so registering slots does not surface zero-valued series that the macro
-    // world would not have shown until first increment — /metrics output stays identical.
     let counter_descs = reg.counters.descs.read().unwrap_or_else(|p| p.into_inner());
     for (i, desc) in counter_descs.iter().enumerate() {
         let (chunk_i, off) = (i / COUNTER_CHUNK, i % COUNTER_CHUNK);
@@ -1080,7 +783,7 @@ pub fn flush_to_recorder() {
                 sum = sum.wrapping_add(chunk[off].load(Ordering::Relaxed));
             }
         }
-        // A released bank's final cells join the slot's retired base, which outlives the bank.
+
         let gone = exited.iter().filter_map(|b| b.counters[chunk_i].get());
         let gone = gone.fold(0u64, |t, c| t.wrapping_add(c[off].load(Ordering::Relaxed)));
         desc.retired.fetch_add(gone, Ordering::Relaxed);
@@ -1093,9 +796,6 @@ pub fn flush_to_recorder() {
     }
     drop(counter_descs);
 
-    // Histograms: drain each thread's sample buffer into the recorder. The recorder's own
-    // summary/histogram machinery then renders exactly what per-request `record()` calls would
-    // have produced — samples are merely delivered at scrape time instead of request time.
     let hist_descs = reg.hists.descs.read().unwrap_or_else(|p| p.into_inner());
     for (i, desc) in hist_descs.iter().enumerate() {
         let (chunk_i, off) = (i / HIST_CHUNK, i % HIST_CHUNK);
@@ -1118,8 +818,6 @@ pub fn flush_to_recorder() {
     }
 }
 
-/// THIS thread's bank as a weak handle, for the test that proves an exited thread's bank is released
-/// rather than kept for the process's life (item 567). Test build only.
 #[cfg(test)]
 pub(crate) fn this_threads_bank() -> std::sync::Weak<dyn std::any::Any + Send + Sync> {
     BANK.with(|bank| {
@@ -1128,24 +826,10 @@ pub(crate) fn this_threads_bank() -> std::sync::Weak<dyn std::any::Any + Send + 
     })
 }
 
-/// THE BANK'S INTERNALS, revealed to a TEST BUILD ONLY.
-///
-/// The capacity knobs and the per-thread storage itself are implementation detail — nothing outside
-/// this module emits through them. But the batteries that pin the retention contract (that
-/// `record_inner(_, false)` never materializes a chunk, and that staying under the overflow-drain
-/// backstop retains effectively nothing) have to READ the per-thread chunk state and the exact
-/// threshold they stay under, or they would be asserting against numbers copied by hand. This module
-/// is gated on the same test/`test-support` axis the rest of the test surface uses, so a shipped
-/// build reveals none of it.
 #[cfg(test)]
 pub mod bank_internals {
     pub use super::HIST_DRAIN_THRESHOLD;
 
-    /// Has THIS thread materialized the per-thread sample-buffer chunk `slot` lands in?
-    ///
-    /// The retention contract's sharpest edge: `record_inner(_, false)` must never allocate a chunk
-    /// nothing will ever drain. Reading that takes the slot's index and the thread's own chunk
-    /// vector, both of which stay private — this is the one question a battery gets to ask.
     pub fn hist_chunk_materialized(slot: super::HistogramSlot) -> bool {
         let idx = slot.0 as usize;
         super::BANK.with(|bank| bank.hists[idx / super::HIST_CHUNK].get().is_some())

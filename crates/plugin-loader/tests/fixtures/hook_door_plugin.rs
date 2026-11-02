@@ -1,31 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK KIND'S BOTH-WAYS FIXTURE, on the hook kind's memory ABI (`abi::hook`), built with the
-//! SDK's generic lifecycle (`lifecycle: life(L)`) and safe slots only.
-//!
-//! One source, compiled into plugin-loader's test build as a module (the LINKED doors) and built
-//! as two example `cdylib`s behind one `export_door!` line each (the DROPPED doors):
-//!
-//! * [`conforming`] (`hook_door`) — `decide` answers exactly one verb: REJECT with a status when
-//!   the request carries more messages than its settings allow, or names the session its settings
-//!   refuse, ABSTAIN otherwise.
-//! * [`broken`] (`hook_broken_door`) — the same plugin whose `decide` answers two verbs at once
-//!   (PREFER and REJECT), which `check_decide` refuses: the host must answer FAULT.
-//! * [`ordering`] (linked only) — the conforming plugin whose `decide` answers PREFER, for the
-//!   proof that a hook which declared `hook.orders: false` is refused when it orders.
-//! * [`untailed`] (linked only) — the conforming plugin whose Statement states no hook tail, which
-//!   the host refuses at load.
-//! * [`panicking`] (linked only) — the same plugin whose `decide` PANICS: the SDK's door catches
-//!   it and answers FAULT, which the hook axis answers as broken, never a verdict (PB-81).
-//! * [`configurable`] (linked only) — the conforming plugin whose `configure` acknowledges a pushed
-//!   `{"reject_over_messages": <n>}` and gates on it from then on.
-//!
-//! Both built doors state their tail ([`TAIL`]): a gate that asks for neither view.
-//! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`, plus an
-//! optional `"sleep_ms"` the conforming `decide` sleeps before it answers (a slow gate, for the
-//! loader's own budget and `max_inflight` proofs), and an optional `"reject_session": "<octets>"`
-//! (the request view's opaque session).
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
@@ -41,7 +16,6 @@ use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 
-/// The fixture's hook tail: a gate that asks for neither the prompt nor the user view.
 pub const TAIL: &Tail = &busbar_contract::abi::sdk::hook::tail(CLASS_GATE, PROMPT_NO, USER_NO);
 
 pub const ROUTE_PATH: &str = "/hooks/receiver/feedback";
@@ -61,27 +35,22 @@ pub const ROUTED_TAIL: &Tail =
         },
     ]);
 
-/// The conforming door's Statement name.
 pub const NAME: &str = "both-ways-hook";
-/// The broken door's Statement name.
+
 pub const BROKEN_NAME: &str = "both-ways-hook-broken";
-/// The ordering door's Statement name.
+
 pub const ORDERING_NAME: &str = "both-ways-hook-ordering";
-/// The untailed door's Statement name.
+
 pub const UNTAILED_NAME: &str = "both-ways-hook-untailed";
-/// The panicking door's Statement name.
+
 pub const PANICKING_NAME: &str = "both-ways-hook-panicking";
-/// The configurable door's Statement name.
+
 pub const CONFIGURABLE_NAME: &str = "both-ways-hook-configurable";
 
-/// The status a rejected request is answered with.
 pub const REJECT_STATUS: u16 = 429;
 
-/// Every door's Statement `max_inflight`.
 pub const MAX_INFLIGHT: u32 = 8;
 
-/// The instance: the most messages a request may carry before it is rejected, how long its
-/// `decide` sleeps first, and the session whose requests it rejects, if any.
 pub struct Gate(AtomicU64, u64, Option<Vec<u8>>, bool, String);
 
 impl Life for Gate {
@@ -167,7 +136,6 @@ impl Drop for BlockedCalls {
     }
 }
 
-/// `decide`, within the contract: exactly one verb.
 pub struct Decide;
 
 impl SafeSlot for Decide {
@@ -205,7 +173,6 @@ impl SafeSlot for Decide {
     }
 }
 
-/// `decide`, BROKEN: two verbs at once (`check_decide`: not exactly one).
 pub struct DecideBroken;
 
 impl SafeSlot for DecideBroken {
@@ -223,8 +190,6 @@ impl SafeSlot for DecideBroken {
     }
 }
 
-/// `decide`, ORDERING: PREFER (a hook that ranks), the verb a hook declaring `orders: false` never
-/// answers.
 pub struct DecideOrders;
 
 impl SafeSlot for DecideOrders {
@@ -242,7 +207,6 @@ impl SafeSlot for DecideOrders {
     }
 }
 
-/// `decide`, PANICKING: the slot body panics before it answers.
 pub struct DecidePanics;
 
 impl SafeSlot for DecidePanics {
@@ -255,8 +219,6 @@ impl SafeSlot for DecidePanics {
     }
 }
 
-/// `configure`, CONFIGURABLE: a pushed `reject_over_messages` is the gate's from now on, and its
-/// version acknowledged.
 pub struct Configure;
 
 pub struct Serve;
@@ -372,7 +334,6 @@ impl SafeSlot for Configure {
     }
 }
 
-/// Any other hook op: REFUSED.
 pub struct Refuse<I, O>(PhantomData<(I, O)>);
 
 impl<I: AbiIn, O: AbiOut> SafeSlot for Refuse<I, O> {
@@ -439,7 +400,6 @@ macro_rules! hook_door {
     };
 }
 
-/// The conforming hook plugin's door.
 pub mod conforming {
     hook_door!(@statement busbar_contract::abi::sdk::hook::statement_with_tail(
         busbar_contract::abi::sdk::door::statement(super::NAME, "1.6.0", super::MAX_INFLIGHT),
@@ -448,7 +408,6 @@ pub mod conforming {
         busbar_contract::abi::hook::ConfigureOut>, super::Serve);
 }
 
-/// The broken hook plugin's door.
 pub mod broken {
     hook_door!(@statement busbar_contract::abi::sdk::hook::statement_with_tail(
         busbar_contract::abi::sdk::door::statement(super::BROKEN_NAME, "1.6.0", super::MAX_INFLIGHT),
@@ -456,12 +415,10 @@ pub mod broken {
     ), super::DecideBroken);
 }
 
-/// The conforming plugin whose `decide` answers an order.
 pub mod ordering {
     hook_door!(super::ORDERING_NAME, super::DecideOrders);
 }
 
-/// The conforming plugin with NO hook tail: refused at load.
 pub mod untailed {
     hook_door!(
         @statement busbar_contract::abi::sdk::door::statement(
@@ -473,12 +430,10 @@ pub mod untailed {
     );
 }
 
-/// The conforming plugin whose `decide` panics.
 pub mod panicking {
     hook_door!(super::PANICKING_NAME, super::DecidePanics);
 }
 
-/// The conforming plugin whose `configure` sets its gate.
 pub mod configurable {
     hook_door!(
         @statement busbar_contract::abi::sdk::hook::statement_with_tail(

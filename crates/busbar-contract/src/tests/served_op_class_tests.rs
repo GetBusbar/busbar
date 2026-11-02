@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The nested-destination resolution ([`plane_serving`]) and its one-server guard
-//! ([`check_served_op_classes`]): a plane names the operation CLASS it needs one level down, and
-//! the host answers with the registered plane that declares it serves that class — never a plane
-//! the requester named.
 
 use super::*;
 
@@ -61,7 +58,7 @@ fn one_class_has_one_server() {
 }
 
 /// A plane keeps exactly the record kinds it declares — the verdict the
-/// administrative `plane_record_write` verb takes before it writes.
+
 #[test]
 fn a_plane_declares_the_record_kinds_it_keeps_and_no_other() {
     let keeps = PlaneDeclaration {

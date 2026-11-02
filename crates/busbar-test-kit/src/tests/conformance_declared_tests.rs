@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A store's declared secret paths (`store_door!(…, secret_refs: …)`), as a plugin's suite proves
-//! them: `{env: VAR}` at a declared field resolves as the kernel resolves it; anywhere else it is
-//! refused; and the store's host lends nothing (the kernel already resolved the settings).
-
 use std::sync::Arc;
 
 use crate::dispatch::kinds::store::Store;
@@ -128,9 +124,6 @@ mod referencing {
     );
 }
 
-/// REFERENCE-CAPABLE `url` (lead ruling item 7a), as a store's suite proves it: the door states it
-/// apart from its secret paths; `{env: VAR}` there resolves as the kernel resolves it, and a literal
-/// url passes as written.
 #[test]
 fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     let p = load(referencing::door);

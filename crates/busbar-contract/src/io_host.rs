@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOST'S I/O, AS THE HOST'S TWO HALVES SHARE IT (`abi::host::io`, `io.*`): the [`IoHost`] trait
-//! the host's connector implements over the OS handles it owns, and the plugin loader's `io` slots
-//! dispatch into. The loader names this, the connector names this, and neither names the other.
-//! Nothing here crosses the plugin boundary: the ABI a carrier sees is `abi::host::io`.
-//!
-//! `owner` names the calling instance (the loader's identity for it): a handle belongs to the
-//! instance whose call made it, and every call on a handle another instance owns is refused.
-//! `ticket` is the calling op's ticket: the host reads what it admitted for the dial that ticket
-//! runs. `waker` is the ticket's wake, registered by a call that answers `Pending`.
 
 use std::task::{Poll, Waker};
 
@@ -60,24 +52,18 @@ pub struct Ends {
 }
 
 /// THE HOST'S I/O over the OS handles it owns (module docs). Every method answers at once; one that
-/// may pend answers `Pending` only when nothing moved, `waker` registered for the direction.
+
 pub trait IoHost: Send + Sync {
     /// Begin reaching `addr` for the dial `ticket` runs; the handle, the connect in flight.
-    ///
-    /// # Errors
-    ///
-    /// Not admitted for the dial, or the system refused at once.
+
     fn open(&self, owner: u64, ticket: Ticket, addr: &str) -> IoResult<u64>;
 
     /// Bind `bind` for the listen `ticket` runs; the handle and the address bound.
-    ///
-    /// # Errors
-    ///
-    /// Not admitted, or the system could not bind it.
+
     fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, String)>;
 
     /// The next connection off `listener`, for the accept `ticket` runs: its handle and its far
-    /// end's address.
+
     fn accept(
         &self,
         owner: u64,
@@ -94,42 +80,27 @@ pub trait IoHost: Send + Sync {
     fn write(&self, owner: u64, handle: u64, bytes: &[u8], waker: &Waker) -> Poll<IoResult<usize>>;
 
     /// `Ready` once `handle` may make progress in `dir` (`abi::host::io::DIR_*`); for a stream
-    /// still connecting, `DIR_WRITE` is its connect settling (FAILED with the system's text).
+
     fn ready(&self, owner: u64, handle: u64, dir: u32, waker: &Waker) -> Poll<IoResult<()>>;
 
     /// Shut `how` (`DIR_*`) of `handle` down.
-    ///
-    /// # Errors
-    ///
-    /// Not the caller's handle, or the system refused.
+
     fn shut(&self, owner: u64, handle: u64, how: u32) -> IoResult<()>;
 
     /// Release `handle`; a spawned program is killed with it.
-    ///
-    /// # Errors
-    ///
-    /// Not the caller's handle.
+
     fn close(&self, owner: u64, handle: u64) -> IoResult<()>;
 
     /// Start `spawn` for the dial `ticket` runs; the duplex handle over its input and output.
-    ///
-    /// # Errors
-    ///
-    /// Not admitted for the dial, or the system could not start it.
+
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64>;
 
     /// `handle`'s ends: its local port and its far end's address (empty = none), and for a
-    /// spawned program whether the program ITSELF has exited (`io.ends`' `exited`), which a
-    /// descendant still holding its output does not hide.
-    ///
-    /// # Errors
-    ///
-    /// Not the caller's handle.
+
     fn ends(&self, owner: u64, handle: u64) -> IoResult<Ends>;
 
     /// Release every handle `owner` still holds, each as [`IoHost::close`] releases it: the
-    /// instance is gone (closed and let go, or quarantined) and can never close them itself. The
-    /// host calls it; a plugin's own `close` need not release its handles first.
+
     fn reap(&self, owner: u64) {
         let _ = owner;
     }

@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A STORE THAT NEVER PENDS, SERVED WHOLE: a store whose every op answers at once (in RAM, or on a
-//! local disk the host runs on its bounded disk lane) implements the 1.5.5 op set once, as its
-//! [`RecordStore`], and states only what the store v3 table adds beyond it here ([`SyncStore`]).
-//! The SDK serves it as a [`StoreSlots`]: every slot answers [`Step::Ready`] with the store's own
-//! answer, its [`Op`] untouched, and the connect step reaches nothing. No store writes the
-//! forwarding itself.
 
 use super::{OpResult, Scanned, Step, StoreSlots, Tail};
 use crate::abi::sdk::conn::Host;
@@ -19,7 +14,7 @@ use crate::records::{
 };
 
 /// What a never-pending store states beyond its [`RecordStore`]: the [`StoreSlots`] items the
-/// 1.5.5 op set has no counterpart for, each answered at once.
+
 pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     /// [`StoreSlots::TAIL`].
     const TAIL: Tail;
@@ -31,9 +26,7 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     const USAGE_CORRECTION: bool = false;
 
     /// [`StoreSlots::apply_usage_correction`], answered synchronously.
-    ///
-    /// # Errors
-    /// Unsupported by default; implementations commit replacements and receipt atomically.
+
     fn apply_usage_correction(
         &self,
         request: &super::correction::Request,
@@ -45,9 +38,7 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     }
 
     /// [`StoreSlots::record_transaction`], answered synchronously.
-    ///
-    /// # Errors
-    /// Unsupported by default; an implementation must commit rows and receipt atomically.
+
     fn record_transaction(
         &self,
         request: &super::conditional::Request,
@@ -59,21 +50,15 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     }
 
     /// [`StoreSlots::validate`].
-    ///
-    /// # Errors
-    /// The store's own refusal text.
+
     fn validate(settings: &[u8]) -> Result<(), String>;
 
     /// [`StoreSlots::open`].
-    ///
-    /// # Errors
-    /// Why the settings do not open a store.
+
     fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
 
     /// [`StoreSlots::open_with_secrets`], defaulting to opening without declared secrets.
-    ///
-    /// # Errors
-    /// Why the settings do not open a store.
+
     fn open_with_secrets(
         settings: &[u8],
         secrets: &[&[u8]],
@@ -84,9 +69,7 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     }
 
     /// [`StoreSlots::purge_usage_before`], refused when the backend does not implement it.
-    ///
-    /// # Errors
-    /// The backend's refusal.
+
     fn purge_usage_before(&self, before: u64) -> RecordStoreResult<u64> {
         let _ = before;
         Err(crate::records::RecordStoreError(
@@ -95,39 +78,27 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     }
 
     /// [`StoreSlots::append_plane_record_op`].
-    ///
-    /// # Errors
-    /// [`OpRefused`](super::OpRefused).
+
     fn append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
 
     /// [`StoreSlots::record_put`].
-    ///
-    /// # Errors
-    /// A backend text.
+
     fn record_put(&self, schema: &str, key: &[u8], value: &[u8]) -> Result<(), String>;
 
     /// [`StoreSlots::record_get`].
-    ///
-    /// # Errors
-    /// A backend text.
+
     fn record_get(&self, schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
 
     /// [`StoreSlots::record_scan`].
-    ///
-    /// # Errors
-    /// A backend text.
+
     fn record_scan(&self, schema: &str, prefix: &[u8], limit: u32) -> Result<Scanned, String>;
 
     /// [`StoreSlots::add_usage_batch`].
-    ///
-    /// # Errors
-    /// [`OpRefused`](super::OpRefused).
+
     fn add_usage_batch(&self, op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()>;
 
     /// [`StoreSlots::add_metering_batch`].
-    ///
-    /// # Errors
-    /// [`OpRefused`](super::OpRefused).
+
     fn add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()>;
 }
 

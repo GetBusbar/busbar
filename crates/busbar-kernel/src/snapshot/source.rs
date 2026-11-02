@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OBSERVATION SOURCE: the process recorder every emit site writes through the `metrics`
-//! facade, read in exactly one shape — the export kind's scrape snapshot ([`Family`]s, the whole
-//! recorder, kind then name). The kernel renders no exposition: the snapshot is handed to the
-//! export plugin whose sink carries the `metrics` stream, and the bytes an operator scrapes are that
-//! plugin's (`crate::export::scrape`).
-//!
-//! What it keeps is 1.5.5's recorder, observation for observation: counters (`u64`) and gauges
-//! (`f64`) as atomics; a gauge nothing re-sets for the idle window drops out (counters and
-//! distributions never do); every histogram as a SUMMARY — the 1.5.5 quantiles over a rolling window
-//! of `buckets` summaries `width` apart, plus the sum and count of every sample ever recorded. Each
-//! value is spelled as the export ABI carries it (`ScrapeSample::value`, the number's own `Display`)
-//! and each label value and HELP text escaped as the ABI's `Family` states.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -27,17 +14,12 @@ use metrics::{SharedString, Unit};
 use metrics_util::registry::{Generation, GenerationalStorage, Registry, Storage};
 use metrics_util::storage::{AtomicBucket, Summary};
 
-/// The quantiles every distribution reports (1.5.5's set).
 const QUANTILES: [f64; 7] = [0.0, 0.5, 0.9, 0.95, 0.99, 0.999, 1.0];
 
-/// Prometheus text-format summary fields (exposition_formats/#text-format-details), retained
-/// byte-for-byte from the historical recorder's presentation.
 pub(super) const QUANTILE_LABEL: &str = "quantile";
 const SUMMARY_SUM_SUFFIX: &str = "_sum";
 const SUMMARY_COUNT_SUFFIX: &str = "_count";
 
-/// One histogram's samples, each stamped with when it was recorded, until a drain folds them into
-/// its distribution's window.
 pub struct Samples(AtomicBucket<(f64, Instant)>);
 
 impl HistogramFn for Samples {
@@ -46,7 +28,6 @@ impl HistogramFn for Samples {
     }
 }
 
-/// Counters and gauges are atomics; a histogram holds its stamped samples.
 pub struct Stamped;
 
 impl<K> Storage<K> for Stamped {
@@ -74,9 +55,6 @@ struct Rolling {
 }
 
 impl Rolling {
-    /// Count `v` and place it in the summary whose span holds `at`, opening one when none does
-    /// (aligned to the newest span, the oldest dropped past `n`); a sample older than every span
-    /// is counted and summed only.
     fn add(&mut self, v: f64, at: Instant, width: Duration, n: u32) {
         self.count += 1;
         self.sum += v;
@@ -107,7 +85,6 @@ impl Rolling {
         }
     }
 
-    /// The merged summary of the spans still inside the window at `now`.
     fn window(&self, now: Instant, width: Duration, n: u32) -> Summary {
         let cutoff = now.checked_sub(width * n);
         let mut acc = Summary::with_defaults();
@@ -123,8 +100,6 @@ impl Rolling {
     }
 }
 
-/// THE RECORDER: what the emit sites write, the HELP text they describe, the distributions the
-/// drains fold, and when each gauge last moved.
 pub struct Source {
     registry: Registry<Key, GenerationalStorage<Stamped>>,
     help: Mutex<HashMap<String, String>>,
@@ -139,13 +114,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A name or label key with every character outside the data model's set (`[a-zA-Z_]` first, then
-/// also digits; `:` too in a metric name) replaced by `_`.
 fn sanitized(s: &str, colon: bool) -> String {
     let ok = |i: usize, c: char| {
         c.is_ascii_alphabetic() || c == '_' || (colon && c == ':') || (i > 0 && c.is_ascii_digit())
     };
-    // Sanitization never expands UTF-8. Reserve before writing a private name/key.
+
     let mut out = zeroize::Zeroizing::new(String::with_capacity(s.len()));
     for (i, c) in s.chars().enumerate() {
         out.push(if ok(i, c) { c } else { '_' });
@@ -153,11 +126,7 @@ fn sanitized(s: &str, colon: bool) -> String {
     std::mem::take(&mut *out)
 }
 
-/// A label value (`quotes`) or HELP text escaped as 1.5.5's recorder wrote it: a line feed as
-/// `\n`, a double quote in a label value as `\"`, and a backslash that escapes none of those
-/// doubled.
 fn escaped(s: &str, quotes: bool) -> String {
-    // Every input byte contributes at most two output bytes, including a held backslash.
     let capacity = s.len().checked_mul(2).expect("metric escape size overflow");
     let (mut out, mut held) = (
         zeroize::Zeroizing::new(String::with_capacity(capacity)),
@@ -190,8 +159,6 @@ fn escaped(s: &str, quotes: bool) -> String {
     std::mem::take(&mut *out)
 }
 
-/// A series' labels as the snapshot carries them: a key repeated keeps its first place and its
-/// last value.
 fn labels_of(key: &Key) -> Vec<(String, String)> {
     let mut labels: Vec<(&str, &str)> = Vec::new();
     for l in key.labels() {
@@ -204,8 +171,6 @@ fn labels_of(key: &Key) -> Vec<(String, String)> {
     labels.into_iter().map(sanitize).collect()
 }
 
-/// One raw recorder key's presentation. Escaped labels are not an identity: historical escaping
-/// can spell distinct raw values alike. Keep them only for output and its established ordering.
 struct Series {
     labels: Vec<(String, String)>,
     samples: Vec<Sample>,
@@ -231,7 +196,6 @@ impl Drop for SnapshotName {
 
 type Building = BTreeMap<(u8, SnapshotName), BTreeMap<Key, Series>>;
 
-/// One series' lines: `(suffix, extra label, value)` each.
 fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>, String)>) {
     let name = SnapshotName(sanitized(key.name(), true));
     let labels = zeroize::Zeroizing::new(labels_of(key));
@@ -261,8 +225,6 @@ fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>
 }
 
 impl Source {
-    /// A recorder whose distributions roll over `buckets` spans of `width`, and whose gauges drop
-    /// out after `gauge_idle` without a set.
     #[must_use]
     pub fn new(width: Duration, buckets: std::num::NonZeroU32, gauge_idle: Duration) -> Self {
         Source {
@@ -276,8 +238,6 @@ impl Source {
         }
     }
 
-    /// Fold every histogram's parked samples into its distribution (one is opened for a
-    /// histogram that has none yet).
     pub fn drain(&self) {
         let mut dists = lock(&self.distributions);
         for (key, h) in self.registry.get_histogram_handles() {
@@ -289,8 +249,6 @@ impl Source {
         }
     }
 
-    /// Whether the gauge `key` at `gen` is still exported: a gauge seen at the same generation for
-    /// longer than the idle window is deleted instead.
     fn fresh(&self, key: &Key, gen: Generation) -> bool {
         let now = Instant::now();
         let mut seen = lock(&self.gauges_seen);
@@ -309,9 +267,6 @@ impl Source {
         !idle
     }
 
-    /// THE SNAPSHOT the export kind's `scrape` reads: every family, counters then gauges then
-    /// summaries, by name within a kind, each family's series by their labels — a summary series
-    /// as its quantiles, `_sum` and `_count`.
     #[must_use]
     pub fn snapshot(&self) -> Vec<Family> {
         self.drain();
@@ -338,8 +293,7 @@ impl Source {
         let help = lock(&self.help);
         let family = |((kind, mut name), series): ((u8, SnapshotName), BTreeMap<Key, Series>)| {
             let mut series: Vec<_> = series.into_iter().collect();
-            // Preserve historical presentation ordering. A raw-key tie-breaker makes collisions
-            // deterministic without dropping either recorder handle's samples.
+
             series.sort_by(|(a_key, a), (b_key, b)| {
                 a.labels.cmp(&b.labels).then_with(|| a_key.cmp(b_key))
             });
@@ -364,8 +318,6 @@ impl Source {
     }
 }
 
-/// The process recorder is the one leaked [`Source`] (`crate::snapshot::init_with`); a test drives a
-/// leaked one of its own through `metrics::with_local_recorder`.
 impl Recorder for &'static Source {
     fn describe_counter(&self, name: KeyName, _: Option<Unit>, help: SharedString) {
         self.describe(&name, &help);

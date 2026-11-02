@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! [`exchange`] and [`send_and_ack`] through a scripted connector host: every service pends once
-//! and completes on the host's side, the op's re-entry re-issues each handle and reads the stored
-//! result, and no service ever runs twice. The host records what the framer was handed.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -88,7 +86,7 @@ fn answer(out: *mut ServiceOut, o: Outcome, value: u64, len: u64) -> RawOutcome 
 }
 
 /// Write one reply piece the way a connector host does: its bytes (reason, then the field block,
-/// or the body) into the plugin's buffer, its descriptor into the plugin's slot.
+
 fn play(io: ReplyIn, (kind, code, reason, fields, body): Scripted) -> u64 {
     let mut bytes = Vec::new();
     let mut piece = ReplyPiece {
@@ -133,7 +131,7 @@ fn take(framed: &mut Framed, io: RequestIn) -> u64 {
 }
 
 /// One scripted service: the first issue of a handle runs it (and pends, or refuses at once); a
-/// re-issue answers the stored result.
+
 fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: every service `in` leads with a `ServiceHead`.
     let head = unsafe { *input.cast::<ServiceHead>() };
@@ -305,7 +303,7 @@ const TICKET: Ticket = Ticket {
 };
 
 /// What one run of an op answered, how many entries it took, how often each service ran, and what
-/// the framer was handed.
+
 struct Run<T> {
     answered: Result<T, ConnFailure>,
     entries: u32,
@@ -390,8 +388,7 @@ fn http_reply() -> Vec<Scripted> {
 }
 
 /// RED: the request's head (method, target, fields) reaches the framer; its body streams and END
-/// ends it; the reply's reason crosses exactly as the peer sent it, a non-canonical phrase
-/// included; no service runs twice.
+
 #[test]
 fn a_request_reaches_the_framer_and_the_reply_comes_back_as_sent() {
     let _g = SERIAL
@@ -426,15 +423,14 @@ fn a_request_reaches_the_framer_and_the_reply_comes_back_as_sent() {
         ]
     );
     assert_eq!(reply.body, b"hello world");
-    // establish, head, body, end, four reads, close: nine services, each run once, and every one
-    // pended once, so the op entered once more than it made services.
+
     assert_eq!(r.runs.len(), 9);
     assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
     assert_eq!(r.entries, 10);
 }
 
 /// RED: the request's timeout is clamped to what is left of the op's deadline; `0` asks for all of
-/// it.
+
 #[test]
 fn a_request_timeout_is_clamped_to_the_ops_deadline() {
     let _g = SERIAL
@@ -478,7 +474,7 @@ fn a_request_timeout_is_clamped_to_the_ops_deadline() {
 }
 
 /// RED: a stream that is not framed refuses a request piece, and the host's text reaches the
-/// plugin verbatim.
+
 #[test]
 fn a_stream_that_is_not_framed_refuses_a_request() {
     let _g = SERIAL
@@ -521,7 +517,7 @@ fn a_pseudo_field_in_a_request_is_refused() {
 }
 
 /// RED: a pure-send transport's ack FAILURE (a code and the peer's text) reaches the plugin
-/// verbatim, as an answer, never as a lost request.
+
 #[test]
 fn a_pure_send_acks_its_failure_with_a_code_and_the_peers_text() {
     let _g = SERIAL
@@ -546,7 +542,7 @@ fn a_pure_send_acks_its_failure_with_a_code_and_the_peers_text() {
 }
 
 /// RED: a transport that answers a read with no reply piece breaks the every-request-is-acked
-/// rule: the plugin is told so, never left without an answer.
+
 #[test]
 fn a_transport_that_never_acks_is_a_conformance_failure() {
     let _g = SERIAL
@@ -582,7 +578,7 @@ fn an_observing_exchange_reads_its_streams_facts_before_the_close() {
     let observed = r.state.observed().expect("the facts were read");
     assert_eq!(observed.peer_key_pin.as_deref(), Some(OBSERVED_PIN));
     assert!(observed.client_identity && observed.secure);
-    // establish, head, body, end, four reads, facts, close: ten services, each run once.
+
     assert_eq!(r.runs.len(), 10);
     assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
 
@@ -598,8 +594,7 @@ fn an_observing_exchange_reads_its_streams_facts_before_the_close() {
 }
 
 /// RED (SEAM-4p): an exchange that names a REGISTRATION (`Exchange::as_member`) establishes its
-/// stream naming it (`EstablishIn::member`), so the host's per-registration private reach applies
-/// to its dial; one that names none establishes naming none.
+
 #[test]
 fn an_exchange_names_its_registration_on_its_establish() {
     let _g = SERIAL
@@ -628,7 +623,7 @@ fn an_exchange_names_its_registration_on_its_establish() {
 }
 
 /// `framed_fields` reads the fields back off the head the exchange will send, in order, and a raw
-/// send frames none: what the far end is handed, never a copy of the caller's request.
+
 #[test]
 fn the_framed_fields_are_the_head_the_exchange_sends() {
     let request = Request {
@@ -664,7 +659,7 @@ fn body_reply(first: usize, second: usize) -> Vec<Scripted> {
 }
 
 /// RED: a reply whose body passes the exchange's lowered limit is refused as one past `REPLY_MAX`
-/// is: the same failure, the same text.
+
 #[test]
 fn a_reply_over_the_exchanges_limit_is_refused() {
     let _g = SERIAL
@@ -720,7 +715,7 @@ impl Parks for Parked {
 }
 
 /// Run [`Op::exchange_bounded`] under `reply` to completion: re-entered from the top while it
-/// pends, as the op's wake re-enters it. What it answered, and how often it built its request.
+
 fn op_bounded(
     reply: Vec<Scripted>,
     limit: usize,
@@ -750,8 +745,7 @@ fn op_bounded(
 }
 
 /// RED (a plugin with a documented reply cap below `REPLY_MAX`, secret-vault's 1 MiB): an op's
-/// exchange takes the cap, and a reply past it is refused as it is read, through [`Op`], with the
-/// bound's own text. RED before: `Op` had no way to lower the ceiling (this did not compile).
+
 #[test]
 fn an_ops_bounded_exchange_refuses_a_reply_over_its_limit() {
     let _g = SERIAL
@@ -766,7 +760,7 @@ fn an_ops_bounded_exchange_refuses_a_reply_over_its_limit() {
 }
 
 /// The limit holds across the op's re-entries: a reply exactly at it passes whole, the resumed
-/// exchange keeping the ceiling it was built with.
+
 #[test]
 fn an_ops_bounded_exchange_passes_a_reply_at_its_limit() {
     let _g = SERIAL
@@ -865,7 +859,7 @@ fn a_refused_send_closes_its_stream() {
 }
 
 /// GREEN twin: an exchange that completes still closes its stream exactly once, last, and holds
-/// none after it; a send that is acked does the same.
+
 #[test]
 fn a_completed_exchange_closes_its_stream_once() {
     let _g = SERIAL
@@ -908,10 +902,7 @@ fn a_limit_above_reply_max_clamps() {
 }
 
 /// RED (Q128, a send-once caller's leak): an exchange that FAILS after it established its stream
-/// closes the stream before it answers, as a whole one does, so a caller that sends once and moves
-/// on holds nothing per failed delivery. The far end answers no reply piece; a stream that is not
-/// framed refuses the request. Each answers its failure with the host holding no stream. RED
-/// before: the failed exchange answered with its stream still held.
+
 #[test]
 fn a_failed_exchange_closes_its_stream_before_it_answers() {
     let _g = SERIAL
@@ -935,7 +926,7 @@ fn a_failed_exchange_closes_its_stream_before_it_answers() {
     );
     assert!(refused.answered.is_err(), "{:?}", refused.answered);
     assert_eq!(refused.held, 0, "a refused request left its stream held");
-    // A whole exchange closes its stream too.
+
     let whole = run(
         http_reply(),
         false,
@@ -954,8 +945,7 @@ fn wipes_on_drop<T: zeroize::ZeroizeOnDrop + ?Sized>(_: &T) {}
 fn wipeable<T: Zeroize>() {}
 
 /// Every buffer an exchange holds of the request or the reply wipes on drop: the head it frames,
-/// the body it sends, the raw bytes a send carries, the read buffer and the reply it gathers. The
-/// request, reply and ack a plugin hands in or is handed back are wipeable.
+
 #[test]
 fn every_buffer_an_exchange_holds_wipes_on_drop() {
     wipeable::<Request>();
@@ -977,7 +967,7 @@ fn every_buffer_an_exchange_holds_wipes_on_drop() {
 }
 
 /// RED: the read buffer is reused for every piece of the reply (and every replay of one); once the
-/// exchange completes it holds no byte of the reply, while the reply itself arrived whole.
+
 #[test]
 fn the_reused_read_buffer_keeps_no_reply_bytes() {
     let _g = SERIAL
@@ -1014,7 +1004,7 @@ fn the_head_is_framed_into_one_exact_allocation() {
 }
 
 /// The reply body grows as `Vec` grows it (the same capacities, so the same allocations), and
-/// holds the same bytes.
+
 #[test]
 fn the_reply_body_grows_as_a_vec_grows() {
     let mut wiped = Vec::new();
@@ -1052,7 +1042,7 @@ fn a_request_a_reply_and_an_ack_wipe_to_empty() {
 }
 
 /// RED: a reply whose stream resets after its head fails, and the exchange says the head was
-/// received and what status it carried: a failure reading the body, not a failed send.
+
 #[test]
 fn a_reset_after_the_head_reports_the_head_and_its_status() {
     let _g = SERIAL
@@ -1107,7 +1097,7 @@ fn a_send_failure_reports_no_head() {
 }
 
 /// RED: a reply whose body passes the exchange's bound is refused, and its head's status is still
-/// answered, so a driver judges the status before the body.
+
 #[test]
 fn a_reply_over_the_bound_still_reports_its_status() {
     let _g = SERIAL
@@ -1212,9 +1202,7 @@ fn a_sealed_body_replaces_the_requests_own() {
 }
 
 /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4), RED before the check: a credential the operator's
-/// URL requires secured goes out only to a secured target. A framed request is made whole when its
-/// stream opens, so a target whose scheme is not secure is refused before the open; a credential
-/// with no requirement goes out either way.
+
 #[test]
 fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_target() {
     use crate::abi::sdk::cred::{Cred, NOT_SECURE};
@@ -1253,7 +1241,7 @@ fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_target() {
 static HUGE: [u8; READ_CHUNK] = [b'x'; READ_CHUNK];
 
 /// A 2xx head, then body pieces with no end: the scripted host plays the last piece on every read
-/// after the script, so the body runs on for as long as the exchange reads.
+
 fn head_then_endless_body() -> Vec<Scripted> {
     vec![
         piece(REPLY_HEAD, 200, b"OK", b"x-a: 1\r\n", b""),
@@ -1262,10 +1250,7 @@ fn head_then_endless_body() -> Vec<Scripted> {
 }
 
 /// RED: a HEAD-ONLY exchange is judged on the reply's head, as 1.5.5 judged a webhook delivery. A
-/// 2xx head followed by a slow or huge body that never ends answers status 200 on the head read
-/// alone: no body is read or buffered, no `REPLY_OVER_BOUND`, and the stream is closed. Every entry
-/// after the head replays its read, and the replayed head ends the reads too; no service runs
-/// twice. An observing head-only exchange reads its facts before the close.
+
 #[test]
 fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
     let _g = SERIAL
@@ -1286,7 +1271,7 @@ fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
     assert!(reply.body.is_empty(), "no body is read");
     assert_eq!(reads(&r.ops), 1, "the head is the only piece read");
     assert_eq!(r.ops.last(), Some(&service::CLOSE), "the stream is closed");
-    // establish, head, body, end, one read, close: six services, each run once.
+
     assert_eq!(r.runs.len(), 6, "{:?}", r.runs);
     assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
     assert_eq!(r.entries, 7);
@@ -1306,7 +1291,7 @@ fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
     assert_eq!(facts.peer_key_pin.as_deref(), Some(OBSERVED_PIN));
     assert_eq!(reads(&observed.ops), 1);
     assert_eq!(observed.ops.last(), Some(&service::CLOSE));
-    // establish, head, body, end, one read, facts, close.
+
     assert_eq!(observed.runs.len(), 7, "{:?}", observed.runs);
     assert!(
         observed.runs.values().all(|&n| n == 1),
@@ -1321,8 +1306,7 @@ fn op_run(reply: Vec<Scripted>, limit: usize) -> Result<ExchangeResponse, super:
 }
 
 /// RED (SV-F): an op's exchange takes the reply limit, so a source can cap a reply (a vault read
-/// at 1 MiB) without buffering up to `REPLY_MAX`: past it the reply is refused as one past
-/// `REPLY_MAX` is; at it, it passes whole.
+
 #[test]
 fn an_ops_exchange_takes_its_reply_limit() {
     let _g = SERIAL
@@ -1364,7 +1348,7 @@ fn a_raw_exchange_dropped_while_it_pends_closes_its_stream() {
         state.stream().is_some(),
         "the exchange established its stream"
     );
-    // The op is given up: the host keeps no stored result of it, and the exchange is dropped.
+
     SCRIPT.lock().unwrap().as_mut().unwrap().stored.clear();
     drop(state);
     let s = SCRIPT.lock().unwrap().take().unwrap();

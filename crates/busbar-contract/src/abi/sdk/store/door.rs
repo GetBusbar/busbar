@@ -2,28 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE STORE DOOR: every slot of the store v3 table (`abi::store`) as a [`SafeSlot`] over a
-//! [`StoreSlots`] backend, and [`store_door!`](crate::store_door), which names them all in
-//! [`plugin_door!`](crate::plugin_door). A store crate invokes the macro once and holds no
-//! `unsafe`.
-//!
-//! What each slot does, the same for every store:
-//!
-//! * decodes the `in` (strings as UTF-8, records as the tree's JSON shapes); a malformed `in` is
-//!   REFUSED with its reason, and the store is not called;
-//! * a read with no side effect is sized after it reads;
-//! * writes a request-path result into the host's buffers (M-SB on
-//!   [`OutHead`](crate::abi::mechanism::call::OutHead)), and an off-path result under a LEASE the
-//!   host hands back to `release`; a secret blob's bytes are zeroed when its lease is released;
-//! * answers an `op_id` conflict REFUSED with the diagnostic
-//!   [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT).
-//!
-//! ERROR TEXT. A FAILED or REFUSED answer's `error` points at text the instance keeps in a
-//! reply owned by that ticket; another ticket never evicts it. The host copies it as the op returns.
-//!
-//! REQUEST-PATH RESULTS (THE DESIGN, the memory ABI's host-buffer rule):
-//! rows are written straight from the store's answer into the host's buffers. Returned text is
-//! boxed in its reply so even an inline rendered refusal cannot move while the host reads it.
-//! Reply-table capacities and stable text boxes are reused as host ticket slots are recycled.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -76,7 +54,7 @@ const DIAG_OPID: &[Diag] = &[Diag {
 }];
 
 /// The Statement tail of a store `B` (`abi::store::StoreTail`), for [`store_door!`](crate::store_door).
-/// `B::TAIL.ephemeral` is not a tail fact: [`marks`] states it.
+
 #[must_use]
 pub const fn tail<B: StoreSlots>() -> StoreTail {
     StoreTail {
@@ -91,8 +69,7 @@ pub const fn tail<B: StoreSlots>() -> StoreTail {
 }
 
 /// The Statement marks of a store `B`, for [`store_door!`](crate::store_door): an ephemeral store
-/// states [`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL) (One Statement: the fact
-/// lives on the Statement, not in the store tail).
+
 #[must_use]
 pub const fn marks<B: StoreSlots>() -> u64 {
     if B::TAIL.ephemeral {
@@ -102,13 +79,11 @@ pub const fn marks<B: StoreSlots>() -> u64 {
     }
 }
 
-// ── the instance ─────────────────────────────────────────────────────────────────────────────
-
 /// What an off-path answer handed the host, held until `release`. The blobs, strings and heads
-/// point into `bytes`, which this owns: a `Box`'s contents never move.
+
 struct Leased {
     bytes: Vec<Box<[u8]>>,
-    // The arrays the host reads through the `out`; held here, never read by the plugin.
+
     _blobs: Box<[Blob]>,
     _strs: Box<[AbiStr]>,
     secret: bool,
@@ -131,7 +106,7 @@ impl Drop for Leased {
 }
 
 /// The longest refusal text the door renders itself: a fixed phrase and at most two numbers
-/// (the longest, a UTF-8 refusal naming a 20-digit index, is 88 bytes).
+
 const RENDERED: usize = 96;
 
 /// A refusal text rendered into a fixed buffer, so a number in it costs no heap.
@@ -147,7 +122,7 @@ impl Rendered {
             bytes: [0; RENDERED],
             len: 0,
         };
-        // A text longer than the buffer stops at its last whole character.
+
         let _ = r.write_fmt(args);
         r
     }
@@ -192,8 +167,6 @@ impl Text {
     }
 }
 
-// Text::Rendered keeps bytes inline. Every previously emitted AbiStr must retain its address
-// when another text grows this vector, so each Text needs a separate stable allocation.
 #[derive(Default)]
 struct ReplyTexts {
     #[allow(clippy::vec_box)]
@@ -203,8 +176,6 @@ struct ReplyTexts {
 
 impl ReplyTexts {
     fn clear(&mut self) {
-        // The preceding answer was consumed before this ticket crossed again. Drop its owned
-        // strings outside the reply-table lock, retaining the boxes for allocation-free reuse.
         for text in &mut self.texts {
             **text = Text::render(format_args!(""));
         }
@@ -213,10 +184,7 @@ impl ReplyTexts {
 }
 
 /// One store instance as the door serves it: the backend and the error texts it keeps for the
-/// host. It is the store's [`Life`]: the SDK's one instance state, [`Held`], holds it beside the
-/// answers' leases and the host tables `open` was handed, and the generic lifecycle slots
-/// (`abi::sdk::life`) serve every lifecycle op but `open`, whose connect step may pend (THE
-/// DESIGN, the one kind-neutral SDK lifecycle: "a kind's local copy is deleted when it is ported").
+
 pub struct Served<B> {
     store: B,
     texts: Replies<ReplyTexts>,
@@ -261,7 +229,6 @@ fn reply_text(text: Text, held: &RefCell<ReplyTexts>) -> AbiStr {
     let mut held = held.borrow_mut();
     let index = held.used;
     if index == held.texts.len() {
-        // Only a new peak number of texts in one answer needs another stable allocation.
         held.texts.push(Box::new(text));
     } else {
         *held.texts[index] = text;
@@ -279,9 +246,7 @@ fn reply_text(text: Text, held: &RefCell<ReplyTexts>) -> AbiStr {
 mod reply_tests;
 
 /// THE STORE'S LIFECYCLE is the SDK's one ([`Life`]): `validate` is the store's own parse, a
-/// `refresh` is refused naming the restart (a store holds its settings for its lifetime; a reload
-/// opens a new instance), it asks for no tick and drives nothing, and a cancelled op's disposition is not
-/// known here (the kernel re-issues it under the same `op_id` and dedupe settles it).
+
 impl<B: StoreSlots> Life for Served<B> {
     const CANCEL: u32 = CANCEL_UNKNOWN;
 
@@ -307,9 +272,7 @@ impl<B: StoreSlots> Life for Served<B> {
     }
 
     /// The store's connect step ([`StoreSlots::connect`]) as the open's second step: it runs on
-    /// `open`'s ticket and may pend on the connector exactly as an op does (a PENDING needs a
-    /// ticket, and on wake 0 a connector service in flight, else FAULT). Its one connection closes
-    /// when the step answers (`Parked`'s drop).
+
     fn opening(
         &self,
         host: Option<&Host>,
@@ -344,9 +307,7 @@ impl<B: StoreSlots> Life for Served<B> {
     }
 
     /// REFUSED, naming the restart: the host never refreshes a store (`abi::mechanism::lifecycle`,
-    /// "which kinds the host refreshes"), so a READY here would claim settings were applied that
-    /// were not. A changed store section is applied by a restart (or a reload that opens a fresh
-    /// instance over it).
+
     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         Err(Refusal::refused(REFRESH_REFUSAL))
     }
@@ -358,7 +319,7 @@ pub const REFRESH_REFUSAL: &str =
      store) to apply them";
 
 /// What a store slot reads its instance through: the backend, its ticket's owned error texts and the
-/// SDK's one lease table, all held by the instance's [`Held`].
+
 struct Door<'a, B> {
     store: &'a B,
     held: &'a Held<Served<B>>,
@@ -369,8 +330,7 @@ struct Door<'a, B> {
 impl<'a, B: StoreSlots> Door<'a, B> {
     fn of(held: &'a Held<Served<B>>, ticket: Ticket) -> Self {
         let reply = ReplyKey::of(ticket);
-        // This is the next crossing for this ticket (or actual unticketed thread). A recycled
-        // host slot has no live operation or unconsumed answer from its preceding generation.
+
         let mut texts = held.life().texts.take(reply).unwrap_or_default();
         texts.clear();
         Self {
@@ -402,8 +362,6 @@ impl<'a, B: StoreSlots> Door<'a, B> {
         self.held.leases().keep_new(held)
     }
 }
-
-// ── answer helpers ───────────────────────────────────────────────────────────────────────────
 
 /// Every store `out`'s head.
 trait Head {
@@ -441,7 +399,7 @@ macro_rules! step {
 }
 
 /// The op's context for this entry: fresh, or resuming what it parked. `None` for a RESUME with
-/// nothing parked (FAULT: the op is never run afresh).
+
 fn op_enter<'a, B: StoreSlots>(
     instance: &Instance<'_, Held<Served<B>>>,
     s: &'a Held<Served<B>>,
@@ -459,7 +417,7 @@ fn op_enter<'a, B: StoreSlots>(
 }
 
 /// The op's answer, settled: PENDING parks its context (FAULT when it pends on no ticket, or on the
-/// connector with no service in flight); any other answer closes its connection.
+
 fn op_finish<B: StoreSlots>(
     instance: &Instance<'_, Held<Served<B>>>,
     cx: Op<'_>,
@@ -474,7 +432,7 @@ fn op_finish<B: StoreSlots>(
         instance.park(cx.into_parked());
         return Outcome::Pending;
     }
-    // Dropping the op's parked form closes its connection (`Parked`'s drop).
+
     drop(cx.into_parked());
     answer
 }
@@ -535,7 +493,7 @@ fn opt_text(l: Lent<'_, AbiStr>) -> Result<Option<&str>, Text> {
 }
 
 /// A record blob decoded. Its refusal carries the decoder's own words, so it is an owned text;
-/// no request-path slot decodes a blob.
+
 fn json<T: DeserializeOwned>(l: Lent<'_, Blob>) -> Result<T, Text> {
     serde_json::from_slice(l.bytes())
         .map_err(|e| Text::Owned(format!("a record blob does not decode: {e}")))
@@ -667,9 +625,7 @@ fn bytes_into(out: &mut HostBytesOut, mut buf: HostBuf<'_, u8>, value: Option<&[
 }
 
 /// A list into host buffers: `items` rows and one byte buffer they point into. Each row has `N`
-/// byte runs, borrowed from the store's answer; `row` builds the row from the addresses they
-/// landed at. Nothing is collected on the way. READY, or the short FAILED with every dimension's
-/// full size (the multi-dimension M-SB).
+
 fn list_into<'r, T: Copy, const N: usize>(
     out: &mut HostListOut,
     mut items: HostBuf<'_, T>,
@@ -737,8 +693,6 @@ fn record_slice(bytes: &[u8]) -> Result<&[u8], Text> {
     Ok(bytes)
 }
 
-// ── the lifecycle ────────────────────────────────────────────────────────────────────────────
-
 /// Declare one store op slot over the instance's [`Held`] store state.
 macro_rules! slot {
     ($(#[$m:meta])* $name:ident($in:ty, $out:ty) |$s:ident, $i:ident, $o:ident, $cx:ident| $body:block) => {
@@ -775,8 +729,6 @@ macro_rules! slot {
         }
     };
 }
-
-// ── the 1.5.5 op set ─────────────────────────────────────────────────────────────────────────
 
 slot!(
     /// `put_key` (slot 0).
@@ -938,8 +890,6 @@ slot!(
     }
 );
 
-// ── plane records ────────────────────────────────────────────────────────────────────────────
-
 slot!(
     /// `upsert_plane_record` (slot 17).
     UpsertPlaneRecord(UpsertPlaneRecordIn, OutHead) |s, i, o, cx| {
@@ -1062,8 +1012,6 @@ slot!(
     }
 );
 
-// ── the kernel-held records ──────────────────────────────────────────────────────────────────
-
 slot!(
     /// `record_put` (slot 26).
     RecordPut(RecordPutIn, OutHead) |s, i, o, cx| {
@@ -1131,8 +1079,6 @@ slot!(
         }
     }
 );
-
-// ── the count batches ────────────────────────────────────────────────────────────────────────
 
 slot!(
     /// `add_usage_batch` (slot 29): one `op_id`, the cells in order, atomically.

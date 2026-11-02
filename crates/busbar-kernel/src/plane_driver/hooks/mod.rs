@@ -62,50 +62,29 @@ use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOT
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hook_wire::HookStageProjection;
 
-/// THE HOST'S 1.5.5 REPLY NORMALIZING over one opened hook instance (THE DESIGN §11.7) — host logic,
-/// not a plugin's, so it lives in the host hook stage (P2 D4, ARCHITECT Q-D4-HOOKS 2026-10-04; it was
-/// the kernel's `hooks::plugin`).
 pub(crate) mod policy;
 
-// ── what the composition root hands the driver ──────────────────────────────────────────────────
-
-/// WHICH HOOKS BIND TO A UNIT: the composition root's hook configuration, asked once per unit at
-/// the head of its route leg.
 pub trait HookBinder: Send + Sync {
-    /// The hooks a unit routed over `bind.pool` binds, for its verified caller; `None` = none (the
-    /// unit pays nothing more).
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks>;
 
-    /// The order this plane's units run their request-stage hooks in (the plane's tail statement,
-    /// `abi::plane::TAIL_HOOKS_GATED`); [`HookOrder::Routed`] unless the binder says otherwise.
     fn order(&self) -> HookOrder {
         HookOrder::Routed
     }
 
-    /// GATE-FIRST: the hooks the deployment attached to the entry `container` the plane's
-    /// `project` names, for the verified `principal`; `None` = none (the unit pays nothing more).
     fn bind_gated(&self, container: &str, principal: Option<&str>) -> Option<GatedHooks> {
         let _ = (container, principal);
         None
     }
 
-    /// A unit refused at authentication: the `response` stage taps see the previous release's
-    /// synthetic `rejected_by_auth` completion, under the status the caller was answered with, in
-    /// the zeroed shape (no body was read), labelled with the dialect (the index into the plane's
-    /// dialects) the refusal was written in.
     fn denied(&self, dialect: u32, status: u16) {
         let _ = (dialect, status);
     }
 
-    /// The name of dialect `dialect` (the index into the plane's dialects), the label a hook of an
-    /// in-session sub-operation is told; empty when the binder names none.
     fn dialect(&self, dialect: u32) -> String {
         let _ = dialect;
         String::new()
     }
 }
-
-// ── the hook report ─────────────────────────────────────────────────────────────────────────────
 
 /// ONE UNIT'S HOOK FACTS, as its hook stage reports them: every hook that ran for it, in the order
 /// it ran, by the key the deployment configured it under (never the instance serving it), with its
@@ -118,18 +97,10 @@ pub struct HooksRan {
     pub hooks: Vec<HookApplied>,
 }
 
-/// `// contract:` where the hook stage reports what ran (THE DESIGN §1: the audit record's
-/// "controls (... hooks applied)"), shaped as the egress walk's dispatch report is.
-///
-/// A report never stops a unit: the hooks have already decided by the time it is made, and a
-/// unit's record is sealed with whatever reached it.
 pub trait HookJournal: Send + Sync {
-    /// Record the hooks one unit's stage ran.
     fn hooks_ran(&self, record: &HooksRan);
 }
 
-/// What one hook's answer did, as its head: a reject stops the unit, a rewrite, an order or a
-/// restrict changes it, anything else passes it.
 fn head_of(decided: &Decided) -> HookHead {
     match decided {
         Decided::Reject | Decided::RejectRequest { .. } => HookHead::Veto,
@@ -138,7 +109,6 @@ fn head_of(decided: &Decided) -> HookHead {
     }
 }
 
-/// One hook that ran, keyed `hook`.
 fn applied(hook: &str, head: HookHead, failed: bool) -> HookApplied {
     HookApplied {
         hook: hook.to_string(),
@@ -147,9 +117,6 @@ fn applied(hook: &str, head: HookHead, failed: bool) -> HookApplied {
     }
 }
 
-/// A rewrite's answer as the hook that gave it ran: a REJECT the engine minted for a load-bearing
-/// rewrite that could not answer ([`gated::rewrite_refusal`] keeps it unclamped; a hook's own
-/// status is clamped to 4xx, so it cannot spell it) is that hook's failure.
 fn rewrite_applied(hook: &str, outcome: &TransformOutcome) -> HookApplied {
     match outcome {
         TransformOutcome::Rewrite(_) => applied(hook, HookHead::Modify, false),
@@ -209,40 +176,35 @@ pub struct CallerKey {
     pub name: String,
 }
 
-/// A predicate over a tap's `groups:` scope: does it admit this unit's caller.
 pub type GroupScope = Arc<dyn Fn(&[String]) -> bool + Send + Sync>;
 
-/// A rewrite chain: each hook with its deadline, in order.
 pub type RewriteChain = Vec<(Duration, Arc<dyn RoutingPolicy>)>;
 
-/// The access amendment a hook handed the prompt leaves: `(hook, principal, dialect, identity)`.
 pub type HookRead = Arc<dyn Fn(&str, Option<&str>, &str, bool) + Send + Sync>;
 
-/// THE HOOKS ONE UNIT BINDS, as the binder resolved them.
 pub struct UnitHooks {
-    /// The unit's correlation id: every hook payload and tap of the unit carries it.
     pub request_id: u64,
-    /// The rewrite chain, the global gates then the pool's.
+
     pub rewrites: RewriteChain,
-    /// The decision gates, global then the pool's, stable-sorted by priority.
+
     pub gates: Vec<(u16, ResolvedPolicy)>,
-    /// The pool's base route policy (`None` = weighted).
+
     pub policy: Option<ResolvedPolicy>,
-    /// The stage taps.
+
     pub taps: StageTaps,
-    /// The caller's governance key, for a hook granted `user`.
+
     pub key: Option<CallerKey>,
-    /// The caller's rate headroom (a candidate's `rate_headroom`).
+
     pub rate_headroom: Option<f64>,
-    /// The caller's budget chain (the decision context's `budget`).
+
     pub budget: Vec<BudgetBucketState>,
-    /// The catalog signals some hook declared.
+
     pub requested: RequestedSignals,
-    /// The tap selection over a tap's `groups:` scope.
+
     pub groups: GroupScope,
-    /// The access amendment of a hook handed the prompt.
+
     pub reads: HookRead,
-    /// The dialect the unit arrived in, by name (the label of a view the plane could not read).
+
     pub dialect: String,
 }
 
@@ -258,7 +220,6 @@ impl std::fmt::Debug for UnitHooks {
 }
 
 impl UnitHooks {
-    /// No hook of any stage is bound.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rewrites.is_empty()
@@ -268,48 +229,39 @@ impl UnitHooks {
     }
 }
 
-/// THE BINDER OVER A STATIC HOOK CONFIGURATION: the global hooks and each pool's, resolved once
-/// for a generation (the composition root builds it from the deployment's `hooks:`), with the
-/// caller's key, headroom and budget asked of `caller` per unit.
 pub struct BoundHooks {
-    /// The global rewrite chain.
     pub rewrites: RewriteChain,
-    /// The global decision gates, sorted by priority.
+
     pub gates: Vec<(u16, ResolvedPolicy)>,
-    /// Each pool's own rewrite chain.
+
     pub pool_rewrites: std::collections::HashMap<String, RewriteChain>,
-    /// Each pool's own decision gates, in configuration order.
+
     pub pool_gates: std::collections::HashMap<String, Vec<(u16, ResolvedPolicy)>>,
-    /// Each pool's base route policy.
+
     pub pool_policies: std::collections::HashMap<String, ResolvedPolicy>,
-    /// The stage taps.
+
     pub taps: StageTaps,
-    /// The catalog signals some hook declared.
+
     pub requested: RequestedSignals,
-    /// The unit's correlation id, from the process's one counter.
+
     pub next_request_id: Arc<dyn Fn() -> u64 + Send + Sync>,
-    /// What the hooks may know of a verified caller.
+
     pub caller: Arc<dyn CallerFacts>,
-    /// The plane's dialects, in its tail's order (the label of an authentication refusal's tap).
+
     pub dialects: Vec<String>,
 }
 
-/// WHAT THE HOOKS MAY KNOW OF A VERIFIED CALLER, asked per unit: its governance key, its group
-/// binding (the tap selection), its rate headroom and its budget chain.
 pub trait CallerFacts: Send + Sync {
-    /// The caller's governance key.
     fn key(&self, principal: &str) -> Option<CallerKey>;
-    /// Whether a hook scoped to `groups` (empty = every caller) fires for the caller.
+
     fn in_groups(&self, principal: Option<&str>, groups: &[String]) -> bool;
-    /// The caller's rate headroom over `pool`.
+
     fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64>;
-    /// The caller's budget chain.
+
     fn budget(&self, principal: &str) -> Vec<BudgetBucketState>;
-    /// Leave the access amendment of a hook handed the prompt on the node's amendment journal,
-    /// field names only — through the host's own seat on it
-    /// ([`crate::plane_driver::EngineHost::hook_read`]).
+
     fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool);
-    /// Fire the `response` taps of a unit refused at authentication.
+
     fn denied_taps(&self, taps: &[TapEntry], request_id: u64, dialect: &str, status: u16) {
         let shape = StageShape::zeroed(request_id, "", dialect, false);
         fire_stage_taps_where(
@@ -330,7 +282,6 @@ pub trait CallerFacts: Send + Sync {
     }
 }
 
-/// The hooks one unit binds, before the caller's facts: `None` when no hook of any stage is bound.
 struct Parts {
     rewrites: RewriteChain,
     gates: Vec<(u16, ResolvedPolicy)>,
@@ -339,15 +290,12 @@ struct Parts {
     requested: RequestedSignals,
 }
 
-/// One scope's rewrite chain and gates.
 type Scope<'a> = (
     &'a [(Duration, Arc<dyn RoutingPolicy>)],
     &'a [(u16, ResolvedPolicy)],
 );
 
 impl Parts {
-    /// The global rewrites then the pool's; the global gates then the pool's, stable-sorted by
-    /// priority (ties keep the globals first, then configuration order).
     fn of(
         global: Scope<'_>,
         pool: Scope<'_>,
@@ -370,7 +318,6 @@ impl Parts {
         })
     }
 
-    /// The unit's hooks, with what `caller` knows of the verified principal.
     fn bind(
         self,
         bind: &Bind<'_>,
@@ -408,7 +355,6 @@ impl Parts {
     }
 }
 
-/// The `response` taps of a unit refused at authentication, labelled with the plane's dialect.
 fn denied_taps(
     caller: &dyn CallerFacts,
     taps: &[TapEntry],
@@ -467,21 +413,13 @@ impl HookBinder for BoundHooks {
     }
 }
 
-/// THE BINDER OVER THE DEPLOYMENT'S OWN HOOK CONFIGURATION: the engine host the composition root
-/// mints over the generation (its global and per-pool rewrites, gates, policies and taps, its
-/// declared signals and its one request-id counter), with what `caller` knows of a verified
-/// principal. A plane's own section-level attach (`<section>.hooks:`) binds beside the globals: its
-/// rewrites after the global ones and before the pool's, its gates in the one priority-sorted chain
-/// (THE DESIGN section 1: every plane gets every capability, its section's hooks included).
 pub struct HostHooks {
-    /// The generation's engine host.
     pub host: Arc<dyn crate::plane_driver::EngineHost>,
-    /// What the hooks may know of a verified caller.
+
     pub caller: Arc<dyn CallerFacts>,
-    /// The plane's dialects, in its tail's order.
+
     pub dialects: Vec<String>,
-    /// The plane's registry key: its section's own attach is resolved under it, at
-    /// [`crate::hooks::SECTION_SCOPE`]. Empty = no plane section (none bound).
+
     pub plane_key: String,
 }
 
@@ -495,7 +433,7 @@ impl HookBinder for HostHooks {
 
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
         let h = &*self.host;
-        // THE SECTION'S OWN ATTACH, then the pool's: one scope after the globals.
+
         let (mut rewrites, mut gates) = if self.plane_key.is_empty() {
             (Vec::new(), Vec::new())
         } else {
@@ -539,8 +477,6 @@ impl HookBinder for HostHooks {
         );
     }
 }
-
-// ── what the walk tells the hooks ───────────────────────────────────────────────────────────────
 
 /// ONE CANDIDATE, as the walk reports it to the hooks: its configuration and its live signals.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -611,13 +547,6 @@ pub struct Constraint {
 }
 
 impl Constraint {
-    /// The members of `members` (index, tags) a fallback pool keeps under these restricts, or the
-    /// fail-closed refusal of a required restrict nothing satisfies (the previous release's
-    /// `enforce_restricts`).
-    ///
-    /// # Errors
-    ///
-    /// The deciding restrict, when it is required and no member carries its tags.
     pub fn enforce<'m>(
         &self,
         members: impl IntoIterator<Item = (usize, &'m [String])> + Clone,
@@ -640,8 +569,6 @@ impl Constraint {
         Ok(kept.into_iter().map(|(idx, _)| idx).collect())
     }
 }
-
-// ── the plane's view of the request ─────────────────────────────────────────────────────────────
 
 /// THE PLANE'S PROJECTION of a unit's request, owned: what every hook payload of the unit is
 /// built from.
@@ -721,7 +648,6 @@ impl Projection {
         }
     }
 
-    /// The prompt view, under the content ceiling.
     fn prompt(&self) -> PromptProjection<'_> {
         content_capped(PromptProjection {
             system: self.system.as_deref().map(std::borrow::Cow::Borrowed),
@@ -738,7 +664,6 @@ impl Projection {
         })
     }
 
-    /// The request a hook is handed: the shape always; the prompt and the identity as granted.
     fn request<'a>(
         &'a self,
         request_id: u64,
@@ -765,7 +690,6 @@ impl Projection {
         }
     }
 
-    /// The stage taps' shape.
     fn shape<'a>(&'a self, request_id: u64, pool: &'a str) -> StageShape<'a> {
         StageShape {
             request_id,
@@ -816,7 +740,6 @@ pub(crate) struct Veto {
 pub mod gated;
 pub use gated::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 
-/// The shared refusal of a FAULT `project` (`busbar_contract::abi::plane::PROJECT_FAULT_*`).
 fn fault_veto() -> Stopped {
     veto(
         busbar_contract::abi::plane::PROJECT_FAULT_STATUS,
@@ -832,7 +755,6 @@ fn veto(status: u16, text: impl Into<String>) -> Stopped {
     })
 }
 
-/// [`veto`] by the hook named `hook`.
 fn veto_by(status: u16, text: impl Into<String>, hook: &str) -> Stopped {
     Stopped::Veto(Veto {
         status: u32::from(status),
@@ -841,7 +763,6 @@ fn veto_by(status: u16, text: impl Into<String>, hook: &str) -> Stopped {
     })
 }
 
-/// One stage object.
 fn stage_at<'a>(
     at: &'a str,
     model: Option<&'a str>,
@@ -861,8 +782,6 @@ fn stage_at<'a>(
         status,
     }
 }
-
-// ── the decision engine (the previous release's, dialect-blind) ─────────────────────────────────
 
 /// What one decision came to.
 #[derive(Debug, Clone, PartialEq)]
@@ -890,8 +809,6 @@ enum Decided {
     },
 }
 
-/// The warn-once latch of a failing hook, keyed `hook@pool`: the first failure warns, the rest log
-/// at debug until a success clears it.
 static FAULT_WINDOW: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -911,9 +828,6 @@ fn fault_clear(key: &str) {
     }
 }
 
-/// Map a ranking hook's answer: an order normalised against the candidates (an empty one
-/// abstains), a reject clamped and sanitised (for every producer), a restrict carried with its
-/// `on_empty`.
 fn map_answer(
     answer: RoutingDecision,
     name: std::sync::Arc<str>,
@@ -942,8 +856,6 @@ fn map_answer(
     }
 }
 
-/// A failed hook's terminal: `first` is the configured member order, a load-bearing hook refuses,
-/// anything else the walk's own pick.
 fn coerce_on_error(
     on_error: &PolicyOnError,
     candidates: &[Candidate<'_>],
@@ -961,13 +873,12 @@ fn coerce_on_error(
     }
 }
 
-/// What one decision is asked over.
 struct Asked<'a> {
     view: &'a Projection,
     hooks: &'a UnitHooks,
     pool: &'a str,
     candidates: &'a [Candidate<'a>],
-    /// The walk named its candidates (an empty pool, then, has nothing to rank).
+
     named: bool,
 }
 
@@ -980,15 +891,11 @@ impl Asked<'_> {
         }
     }
 
-    /// The access amendment of a hook handed the prompt, naming whose content it was: the
-    /// caller's governance key, as the previous release named it.
     fn read(&self, hook: &str, identity: bool) {
         let whose = self.hooks.key.as_ref().map(|k| k.id.as_str());
         (self.hooks.reads)(hook, whose, &self.view.dialect, identity);
     }
 
-    /// One decision of `resolved`, under its deadline, its failure walked down its on-error chain;
-    /// beside it, the hook as it ran ([`applied`], under its key): `None` when it was not asked.
     async fn decide(&self, resolved: &ResolvedPolicy) -> (Decided, Option<HookApplied>) {
         let ResolvedPolicy::Policy {
             policy,
@@ -1000,7 +907,6 @@ impl Asked<'_> {
             on_empty,
         } = resolved;
         if self.named && self.candidates.is_empty() {
-            // Nothing to rank: the walk's own exhaustion answers, and the hook is not asked.
             return (Decided::Weighted, None);
         }
         let req = self.view.request(
@@ -1073,13 +979,11 @@ impl Asked<'_> {
                     .await
             }
         };
-        // THE HOOK FAILED: what its on-error chain made of it is its head, and the failure is kept.
+
         let ran = applied(policy.name(), head_of(&decided), true);
         (decided, Some(ran))
     }
 
-    /// A failed hook's fallback chain: each link projected per its own grants, the first that
-    /// answers decides, every link failing lands on the terminal.
     async fn on_error_chain(
         &self,
         chain: &[FallbackHook],
@@ -1167,7 +1071,6 @@ impl Asked<'_> {
     }
 }
 
-/// The candidates the hooks are shown, from what the walk reports.
 fn candidates_of<'a>(
     facts: &'a [CandidateFacts],
     hooks: &UnitHooks,
@@ -1218,8 +1121,6 @@ fn candidates_of<'a>(
         .collect()
 }
 
-/// Narrow `keep` by one restrict: the members carrying one of its tags, or the decision `on_empty`
-/// makes when none does (`Ok(false)`: a weighted escape, `keep` unchanged).
 fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[String]) -> bool {
     let narrowed: HashSet<usize> = facts
         .iter()
@@ -1234,16 +1135,6 @@ fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[Strin
     true
 }
 
-// ── the stage, on the unit ──────────────────────────────────────────────────────────────────────
-
-/// A COMMITTED REWRITE AS IT CROSSES TO THE PLANE (`ProjectIn::rewrite`, and the in-session
-/// stage's answer): the hook's reply as `{"messages": [...], "tools": [...]}`, for the plane to
-/// apply in its own dialect. These bytes are never empty, so a committed rewrite never crosses as
-/// the absent blob ([`blob`] reads empty bytes as "no rewrite"); a reply naming no messages crosses
-/// as one, and the plane applies it as nothing, as 1.5.5 did
-/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines). The reply is
-/// serialized straight from the hook's values, never copied into a JSON tree first; its two keys
-/// keep the order a JSON object of them serializes in.
 fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
     #[derive(serde::Serialize)]
     struct Crossing<'a> {
@@ -1257,10 +1148,6 @@ fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
     .unwrap_or_default()
 }
 
-/// THE UNIT'S CORRELATION ID on its request span (v1.5.5 `proxy/engine/mod.rs:120` recorded it on
-/// `forward` as a native `u64`): on the `forward` its host opened around the unit when the current
-/// span is that one (status row 173: never a second span of the same name beneath it), else on a
-/// `forward` of the kernel's own, as before a host opened one.
 pub(crate) fn record_request_id(request_id: u64) {
     let current = tracing::Span::current();
     let hosts = current
@@ -1291,7 +1178,6 @@ type ProjectBytes = Vec<u8>;
 #[cfg(test)]
 type ProjectBytes = project_arena_custody_tests::ObservedArena;
 
-/// The buffers one `project` crossing lends.
 struct ProjectBufs {
     signals: Vec<SignalEntry>,
     messages: Vec<MessageView>,
@@ -1341,10 +1227,6 @@ const SIGNALS_CAP: usize = 16;
 const MESSAGES_CAP: usize = 64;
 
 impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
-    /// `project`, ticketless, with the one re-call a short answer earns; `rewrite` is a
-    /// request-stage hook's rewrite for the plane to apply first. `faultable`: a rewrite hook is
-    /// configured for the unit (or this call carries a rewrite), so the plane's FAULT is the shared
-    /// 500; otherwise a FAULT is [`Stopped::Unparseable`].
     fn project(&self, rewrite: Option<&[u8]>, faultable: bool) -> Result<Projection, Stopped> {
         let a = &self.arrival;
         let unit = self.lock().unit;
@@ -1416,10 +1298,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 i.arena_buf = bufs.arena.as_mut_ptr();
                 i.arena_cap = bufs.arena.len();
             });
-        // FAULT where a rewrite hook is configured (v1.5.5 `proxy/engine/mod.rs:728`, `:749`: the
-        // document is materialized before any hook runs, and a body that will not parse is the
-        // shared 500) or the call carried a rewrite: always the shared 500, whatever the hook's
-        // `on_error` says, and the body is never forwarded (`abi::plane::project_faults`).
+
         if busbar_contract::abi::plane::project_faults(outcome, faultable || rewrite.is_some()) {
             tracing::error!(
                 "the plane could not apply a request rewrite it must not leave unapplied; \
@@ -1427,10 +1306,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             );
             return Err(fault_veto());
         }
-        // The plane's own FAULT over a body it could not parse (`PROJECT_FAULT_UNPARSEABLE`), with
-        // no rewrite configured or carried, is no 500: the caller judges the request as 1.5.5
-        // judged a body it could not parse, a Null body (`proxy/engine/mod.rs:957-961`). Every
-        // other FAULT (a panic, no crossing, a quarantined or broken plane, no mark) is unreadable.
+
         if outcome == AbiOutcome::Fault {
             return Err(Stopped::Unparseable {
                 marked: busbar_contract::abi::plane::project_fault_unparseable(outcome, &o),
@@ -1439,9 +1315,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         if outcome != AbiOutcome::Ready {
             return Err(Stopped::Unreadable);
         }
-        // The dispatcher validated the answer against the buffers this call lent
-        // (`check_project`): every string lies in the arena written, every turn in the turn
-        // buffer. A string is read back as its offset into the arena, never through its pointer.
+
         let base = bufs.arena.as_ptr() as usize;
         let text = |s: AbiStr| -> String {
             if s.ptr.is_null() || s.len == 0 {
@@ -1498,11 +1372,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         })
     }
 
-    /// THE UNIT'S IN-SESSION HOOK STAGE, stated on the kernel's unit records as its route leg
-    /// starts ([`SessionStage`]): the instance, the pool the kernel routes it over
-    /// ([`FarEnd::pool`], else the walk's; never one the plane names), its verified principal and
-    /// dialect, and the binder, which binds the hooks of the live generation when the stage is
-    /// first used. A health probe states none (the kernel's own unit; no hook screens it).
     pub(crate) fn state_stage(&self, token: &Pass<Route>) {
         if self.arrival.claim == CLAIM_PROBE {
             return;
@@ -1511,10 +1380,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return;
         };
         let d = self.driver;
-        // A unit reaches its route leg only through the decode step, which refuses every unit
-        // its plane did not decode (`DecodeFailed`), so its dialect is always known here; a unit
-        // with none would state no stage, and the in-session services refuse a unit they do not
-        // hold by name, never binding it under some other dialect.
+
         let (unit, principal, arrived_in) = {
             let st = self.lock();
             let Some(arrived_in) = st.decoded.as_ref().map(|x| x.dialect) else {
@@ -1554,8 +1420,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let _held = d.services.units().staged(unit, Arc::new(stage));
     }
 
-    /// THE REQUEST STAGE, at the head of the route leg (module doc, steps 1-5), the hooks it ran
-    /// reported to the driver's hook journal however it ended ([`Self::report_hooks`]).
     pub(crate) async fn request_stage(&self, token: &Pass<Route>) -> Result<(), Stopped>
     where
         S: super::DriverSteps,
@@ -1566,8 +1430,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         stage
     }
 
-    /// THE HOOKS ONE UNIT RAN, in the order they ran, reported to the driver's hook journal under
-    /// the unit's key. A unit that ran none reports nothing: its record names none.
     pub(crate) fn report_hooks(&self, hooks: Vec<HookApplied>) {
         let Some(journal) = self.driver.hook_journal.as_ref() else {
             return;
@@ -1579,7 +1441,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         journal.hooks_ran(&HooksRan { unit, hooks });
     }
 
-    /// [`Self::request_stage`], each hook that ran pushed onto `ran` as it answered.
     async fn run_request_stage(
         &self,
         token: &Pass<Route>,
@@ -1591,13 +1452,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let Some(binder) = self.driver.hooks.as_ref() else {
             return Ok(());
         };
-        // A health probe is the kernel's own unit: no caller, no request a hook screens.
+
         if self.arrival.claim == CLAIM_PROBE {
             return Ok(());
         }
-        // A GATE-FIRST plane runs its entry's gates, then its rewrites (`gated`), at its screen
-        // before the door; a unit that reached no screen (a session opened at the door) runs them
-        // here.
+
         if binder.order() == HookOrder::Gated {
             if self.lock().screened {
                 return Ok(());
@@ -1625,32 +1484,22 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return Ok(());
         };
         self.lock().hooked_pool.clone_from(&walk_pool);
-        // The unit's correlation id, a native `u64` on the unit's request span (never a formatted
-        // string): the same value every hook payload and tap of the unit carries.
+
         record_request_id(hooks.request_id);
-        // A rewrite hook configured for the unit (a global or the pool's: v1.5.5 `:728`) has the
-        // plane materialize the request's document BEFORE any hook runs (`:749`): a FAULT is the
-        // shared 500 and no hook is invoked.
+
         let faultable = !hooks.rewrites.is_empty();
-        // An unmarked FAULT is a broken plane, never 1.5.5's Null body: unreadable.
+
         let first = self.project(None, faultable).map_err(|e| match e {
             Stopped::Unparseable { marked: false } => Stopped::Unreadable,
             other => other,
         });
         let mut view = match first {
             Ok(view) => view,
-            // FAULT with no rewrite configured (no hook, no pool rewrite): 1.5.5 materialized the
-            // document for the gates and, when it would not parse, the gates judged a Null body
-            // and the request proceeded (v1.5.5 `proxy/engine/mod.rs:957-961`); the base policy
-            // and the taps read no document (`.ok()`, `:170`, `:1330`). Only a configured rewrite
-            // made it the shared 500. The gates and the policy judge the zeroed view, the request
-            // proceeding.
+
             Err(Stopped::Unparseable { .. }) => {
                 Projection::empty(walk_pool.clone(), hooks.dialect.clone())
             }
-            // A request the plane cannot read is the request's failure where a hook must judge
-            // it (a rewrite, a gate, a route policy); a tap only observes, and observes the zeroed
-            // shape (the previous release's stage capture), the request proceeding.
+
             Err(Stopped::Unreadable)
                 if hooks.rewrites.is_empty()
                     && hooks.gates.is_empty()
@@ -1659,7 +1508,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 Projection::empty(walk_pool.clone(), hooks.dialect.clone())
             }
             Err(stopped) => {
-                // The unit's response taps still see it, in the zeroed shape.
                 let zeroed = Projection::empty(String::new(), hooks.dialect.clone());
                 self.lock().hooked = Some((hooks, zeroed));
                 return Err(stopped);
@@ -1672,7 +1520,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         };
         self.lock().hooked_pool.clone_from(&pool);
 
-        // 1. THE REWRITE CHAIN.
         for (timeout, hook) in &hooks.rewrites {
             let req = view.request(hooks.request_id, &pool, true, None);
             if req.prompt.is_some() {
@@ -1685,17 +1532,13 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
                     match self.project(Some(&bytes), true) {
-                        // Applied; or a rewrite naming no messages, which 1.5.5 read as no rewrite.
                         Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => {
                             if let Some(body) = &next.rewritten {
                                 self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
                             }
                             view = next;
                         }
-                        // The rewrite does not apply to the unit, in the plane's own word (READY,
-                        // no rewritten body, `PROJECT_REWRITE_NOT_APPLICABLE`): its operation has
-                        // no conversation to frame one into. The audited pass-through: the view
-                        // and the body stand as they were, the hook is on record as a pass.
+
                         Ok(next) if next.rewrite_not_applicable => {
                             gated::rewrite_not_applicable(hook.name(), ran);
                             tracing::warn!(
@@ -1705,13 +1548,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                             );
                         }
                         Err(fault @ Stopped::Veto(_)) => {
-                            // A FAULT project: the shared 500, never the hook's `on_error`.
                             self.lock().hooked = Some((hooks, view));
                             return Err(fault);
                         }
-                        // The plane refused the rewrite, or answered with no rewritten body and no
-                        // word that the rewrite does not apply: the request is refused, never
-                        // forwarded un-rewritten.
+
                         Ok(_) | Err(_) => {
                             let (status, message) = gated::refused_rewrite(&**hook, &pool, ran);
                             self.lock().hooked = Some((hooks, view));
@@ -1721,8 +1561,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 }
                 TransformOutcome::Reject { status, message } => {
                     self.lock().hooked = Some((hooks, view));
-                    // THE DESIGN §11.7 (HOOK Q1): a load-bearing rewrite that could not answer
-                    // keeps the shared 503; only a hook's own status is clamped to the 4xx band.
+
                     let (status, message) = gated::rewrite_refusal(status, &message);
                     return Err(veto(status, message));
                 }
@@ -1738,10 +1577,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
         }
 
-        // 2. THE GLOBAL REQUEST-STAGE TAPS, each handed the view its grant allows.
         fire_request_taps(&hooks, &view, &pool);
 
-        // 3. THE DECISION GATES, then 4. THE BASE POLICY.
         let all: Vec<CandidateFacts> = facts.map(|c| c.members).unwrap_or_default();
         let mut keep: HashSet<usize> = all.iter().map(|c| c.idx).collect();
         let mut constraint = Constraint::default();
@@ -1760,7 +1597,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return Err(stopped);
         }
 
-        // 5. THE CANDIDATE TAPS, then the walk's constraint.
         if !hooks.taps.candidate.is_empty() {
             fire_stage_taps_where(
                 &hooks.taps.candidate,
@@ -1783,7 +1619,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         Ok(())
     }
 
-    /// Steps 3 and 4: the gates reconciled, then the base policy when no gate ordered.
     async fn decide_route(
         &self,
         hooks: &UnitHooks,
@@ -1806,7 +1641,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             let judged =
                 futures::future::join_all(hooks.gates.iter().map(|(_, gate)| asked.decide(gate)))
                     .await;
-            // Every gate asked ran, in chain order, whichever of them wins below.
+
             let outcomes: Vec<Decided> = judged
                 .into_iter()
                 .map(|(decided, hook)| {
@@ -1814,7 +1649,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     decided
                 })
                 .collect();
-            // A REJECT WINS: the first in chain order surfaces.
+
             for outcome in &outcomes {
                 match outcome {
                     Decided::RejectRequest {
@@ -1848,7 +1683,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     _ => {}
                 }
             }
-            // RESTRICTS INTERSECT, in chain order.
+
             for outcome in &outcomes {
                 if let Decided::Restrict {
                     tags_any,
@@ -1899,8 +1734,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     }
                 }
             }
-            // THE LAST ORDER WINS, filtered to what the restricts left; one that filters to empty
-            // abstains to the base, never to a lower gate's order.
+
             for outcome in outcomes {
                 if let Decided::Order { order, name } = outcome {
                     let filtered: Vec<usize> =
@@ -2026,8 +1860,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         }
     }
 
-    /// THE `routing` STAGE TAP of one attempt: the member, the attempt number, what the walk has
-    /// left untried, and why the previous attempt failed over.
     pub(crate) fn routing_tap(
         &self,
         attempt_no: u32,
@@ -2059,8 +1891,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         );
     }
 
-    /// THE `response` STAGE TAP, once per unit: `gate` = the hooks refused it (the synthetic
-    /// `rejected_by_gate`), else a 2xx is `ok` and anything else `failed`.
     pub(crate) fn response_tap(&self, gate: bool, status: u32) {
         let mut st = self.lock();
         if st.responded {
@@ -2098,8 +1928,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 }
 
-/// Step 2: the global request-stage taps, fire-and-forget; a `prompt: ro` tap is handed the
-/// prompt view, every other tap the shape only. At most two views are built.
 fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
     let taps = &hooks.taps.request;
     if taps.is_empty() {
@@ -2128,38 +1956,21 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
     }
 }
 
-// ── the unit's hook stage, for its in-session sub-operations ────────────────────────────────────
-
-/// The role an in-session piece of content is shown to a gate under (`content.scan`).
 pub const CONTENT_ROLE: &str = "content";
-/// The FAILED answer of a stage whose runtime is gone.
+
 pub const STAGE_GONE: &str = "the unit's hook stage is no longer running";
 
-/// THE HOOK STAGE ONE UNIT BINDS FOR ITS IN-SESSION SUB-OPERATIONS (`hook.call`, `content.scan`;
-/// THE DESIGN §11.12, ARCHITECT H2 ruling on op 17): stated by the driver when the unit's route leg
-/// starts, from what the KERNEL recorded of the unit (its plane instance, the pool the walk routes
-/// it over, its verified principal) and the binder of the generation the unit runs under. It binds
-/// the unit's hooks once, on first use, and every later call (a resumed chain included) runs over
-/// that one binding: a reload never moves a unit to another generation's hooks.
-///
-/// A gate here is the previous release's request gate for a protocol that routes to one upstream
-/// (`hooks::gate`): the gates in priority order, the first reject stopping it (clamped to the 4xx
-/// band), a gate that cannot answer deciding by its own `on_error` (a load-bearing one answering
-/// the shared 503 refusal every seat answers), the candidate-set verbs having
-/// nothing to act on. A rewrite is the request stage's rewrite chain, one hook at a time: the
-/// rewrite goes back to the plane, which applies it in its own dialect and resumes after it.
 pub struct SessionStage {
     instance: Arc<str>,
     runtime: tokio::runtime::Handle,
     binder: Option<Arc<dyn HookBinder>>,
-    /// The label the unit's hooks are scoped by: its pool (routed order), or its entry (gate-first).
+
     pool: String,
-    /// The container a gate-first plane's hooks are bound for.
+
     container: String,
     principal: Option<String>,
     dialect: String,
-    /// The dialect the unit arrived in, as the index into the plane's dialects (what its hooks
-    /// are bound under).
+
     arrived_in: u32,
     bound: std::sync::OnceLock<Option<UnitHooks>>,
 }
@@ -2173,10 +1984,6 @@ impl std::fmt::Debug for SessionStage {
     }
 }
 
-/// A gate-first unit's hooks, as the in-session stage runs them: its entry's gates and rewrite
-/// chain, its caller's key; no tap and no route policy (the gate-first order has none), and a hook
-/// handed the prompt leaves the kernel's own access amendment; `dialect` is the name of the dialect
-/// the unit arrived in.
 fn gated_unit(g: GatedHooks, dialect: String) -> UnitHooks {
     UnitHooks {
         request_id: g.request_id,
@@ -2197,7 +2004,6 @@ fn gated_unit(g: GatedHooks, dialect: String) -> UnitHooks {
     }
 }
 
-/// A stage's owed answer: dropped unanswered (its task never ran) it answers FAILED.
 struct OwedStage(Option<crate::host_units::StageDone>);
 
 impl OwedStage {
@@ -2217,11 +2023,6 @@ impl Drop for OwedStage {
 }
 
 impl SessionStage {
-    /// The stage of a unit of instance `instance`, routed over `scope` for `principal`, its hooks
-    /// bound by `binder` (none = no hook binds) in the binder's order, run on `runtime`; the unit
-    /// arrived in dialect `arrived_in` (the index into the plane's dialects; its name is
-    /// `dialect`), and its hooks bind there. There is no default dialect: a stage is stated only for
-    /// a unit its plane decoded.
     #[must_use]
     pub fn new(
         instance: Arc<str>,
@@ -2250,8 +2051,6 @@ impl SessionStage {
         }
     }
 
-    /// The unit's hooks, bound once, in the binder's order: a gate-first plane's are the gates and
-    /// rewrites attached to the unit's entry, as its request stage binds them.
     fn hooks(&self) -> Option<&UnitHooks> {
         self.bound
             .get_or_init(|| {
@@ -2271,7 +2070,6 @@ impl SessionStage {
             .as_ref()
     }
 
-    /// The view a hook is shown of one sub-operation.
     fn view(&self, system: Option<String>, turns: Vec<(String, String)>) -> Projection {
         let total_chars = turns.iter().map(|(_, t)| t.chars().count()).sum::<usize>()
             + system.as_deref().map_or(0, |s| s.chars().count());
@@ -2283,7 +2081,6 @@ impl SessionStage {
         view
     }
 
-    /// Run `job` over the unit's hooks on the stage's runtime and answer through `done`.
     fn spawn<Fut>(
         self: Arc<Self>,
         done: crate::host_units::StageDone,
@@ -2299,7 +2096,6 @@ impl SessionStage {
         }));
     }
 
-    /// THE GATES over `view`, in priority order: the first reject stops it.
     async fn gate(&self, view: &Projection) -> crate::host_units::StageAnswer {
         use crate::host_units::StageAnswer;
         let Some(hooks) = self.hooks() else {
@@ -2345,13 +2141,12 @@ impl SessionStage {
                 tokio::time::timeout(*timeout, policy.decide(&req, &[], &ctx, *timeout)).await;
             match decided {
                 Ok(Ok(RoutingDecision::Reject { status, message })) => {
-                    // 1.5.5's one clamp rule (outside 400..=499 is 403), never a saturating one.
                     return StageAnswer::Stop {
                         status: clamp_reject_status(status),
                         words: sanitize_reject_message(&message),
                     };
                 }
-                // Nothing to rank or restrict for one sub-operation; only a reject applies.
+
                 Ok(Ok(_)) => {}
                 Ok(Err(_)) | Err(_) => {
                     tracing::warn!(
@@ -2359,9 +2154,7 @@ impl SessionStage {
                         pool = %self.pool,
                         "in-session gate could not answer; applying its on_error"
                     );
-                    // THE DESIGN §11.7: `on_error` stays 1.5.5's, one disposition on every seat; a
-                    // load-bearing gate that cannot answer is 1.5.5's retryable 503 and its words
-                    // (v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1012-1018).
+
                     if failed_call_refuses(on_error) {
                         return StageAnswer::Stop {
                             status: REQUIRED_HOOK_UNAVAILABLE_STATUS,
@@ -2374,9 +2167,6 @@ impl SessionStage {
         StageAnswer::Pass
     }
 
-    /// THE REWRITE CHAIN over `view`, from hook `from`: the first hook that rewrites answers its
-    /// index and the rewrite; a reject stops it; a hook that cannot answer is passed over, as the
-    /// request stage passes it over.
     async fn rewrite(&self, from: u32, view: &Projection) -> crate::host_units::StageAnswer {
         use crate::host_units::StageAnswer;
         let Some(hooks) = self.hooks() else {
@@ -2402,8 +2192,6 @@ impl SessionStage {
                     };
                 }
                 TransformOutcome::Reject { status, message } => {
-                    // THE DESIGN §11.7 (HOOK Q1): the shared 503 passes unclamped, as at the
-                    // request stage.
                     let (status, words) = gated::rewrite_refusal(status, &message);
                     return StageAnswer::Stop { status, words };
                 }

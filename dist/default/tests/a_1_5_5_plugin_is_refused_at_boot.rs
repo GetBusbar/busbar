@@ -1,31 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! C21 AT THE BOOT, END TO END: **a 1.5.5 JSON-contract plugin is refused at boot, naming the
-//! rebuild** (THE DESIGN §11.8, "No legacy loading"; ruling C21/ABI-o1).
-//!
-//! The loader's own suite proves the scan refuses the artifact. This drives the REAL binary: a
-//! published-1.5.5-shaped plugin of each JSON-contract kind (its manifest states that kind's 1.5.5
-//! payload version: store 2, auth 2, hook 1, export 2, secret 1) is dropped into `plugins.dir`, and the boot
-//! itself must stop, before anything serves, with a refusal that names the file, the kind, the
-//! version and the rebuild against the 1.6.0 SDK.
-//!
-//! RED against a loader that still admits the 1.5.5 floors: the process boots and serves, and the
-//! deadline below expires with no refusal. The `secret` arm is RED against a loader that admits the
-//! secret kind at its JSON-lane version (1, the 1.5.5 value): the vault plugin a 1.5.5 deployment
-//! dropped in still loaded on the cold lane until the P2 switch-over gave the secret kind its one
-//! version (2, THE DESIGN §11.2).
-
 #![cfg(unix)]
-// THE END-TO-END BOOT PROOF DRIVES THE REAL DATA DOOR, so it needs the door that declares
-// `pools:` — the plane that owns provider lanes — linked, exactly as
-// transport_dropped_in_serves.rs and the other boot-the-binary proofs gate. A single-plane or
-// no-transport build has no provider-lane wire codec and refuses its config at boot (BUSBAR-9007, or
-// the composition root not sealing a listener with no transport under it) BEFORE it ever scans the
-// plugins directory — correct product behaviour, not what this test measures. The loader's own suite
-// (crates/plugin-loader/src/tests) proves the one-version-per-kind refusal mechanism in EVERY build;
-// this proof is the end-to-end boot half, which only a build that boots a data door can exercise.
-// (THE DESIGN's no-legacy-loading rule; ruling C21/ABI-o1.)
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -36,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Each JSON-contract kind and the payload version its published 1.5.5 plugins state.
 const PUBLISHED_1_5_5: &[(&str, u32)] = &[
     ("store", 2),
     ("auth", 2),
@@ -45,7 +20,6 @@ const PUBLISHED_1_5_5: &[(&str, u32)] = &[
     ("secret", 1),
 ];
 
-/// How long a refused boot may take. A boot that has not stopped by then is serving.
 const DEADLINE: Duration = Duration::from_secs(60);
 
 fn fixture_dir(kind: &str) -> PathBuf {
@@ -68,8 +42,6 @@ fn fixture_dir(kind: &str) -> PathBuf {
     d
 }
 
-/// A valid config with the plugin subsystem on over this fixture's `plugins/`, unsigned plugins
-/// admitted, so the only thing that can refuse the artifact is its version.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -89,8 +61,6 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     .unwrap();
 }
 
-/// Boot the real binary over `dir`'s config: `Some((exit code, stderr))` when the process stopped
-/// by itself within [`DEADLINE`], `None` when it was still running (and is killed).
 fn boot(dir: &Path) -> Option<(i32, String)> {
     let mut child = Command::new(common::boot::exe())
         .env("MOCK_KEY", "test-key-value")

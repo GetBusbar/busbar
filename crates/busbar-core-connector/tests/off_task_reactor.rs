@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! EVERY PENDING IS WOKEN, OFF A TASK TOO: a socket registered by a thread that merely ENTERED a
-//! runtime it does not drive (a dispatcher worker inside the control runtime's context, while the
-//! control thread waits synchronously on that worker's op) goes on the process's one reactor the
-//! root installed, so its readiness wakes the caller. Registered on the entered runtime instead,
-//! its waker never fires while that runtime's own thread is blocked: the boot's `ready` of an auth
-//! plugin fetching its key set over the host connector waited out its deadline that way.
-//!
-//! Its own test binary: the process reactor is one per process, set once.
 
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -29,7 +22,7 @@ impl Wake for Signal {
 }
 
 /// A runtime driven by a thread of its own for the life of the process: the root's connector
-/// I/O thread.
+
 fn driven_reactor() -> tokio::runtime::Handle {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -43,8 +36,7 @@ fn driven_reactor() -> tokio::runtime::Handle {
 #[test]
 fn a_socket_registered_off_a_task_inside_an_undriven_runtime_is_woken_by_the_process_reactor() {
     install_process_reactor(driven_reactor());
-    // The control runtime: entered by the worker below, never driven while the test waits (its
-    // thread is the one blocked on the worker's op).
+
     let control = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -1,32 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TEST AUTH MODULES: in-process `kind: auth` modules a test chain names, answered by the test
-//! build's auth axis ([`super::outbound_auth::stand_in`], and around a root test binary's own
-//! opener, [`super::install_root_auth_axis`]) and exempt from the plugin pre-flight through the
-//! install record's [`crate::preflight::RootInstall::in_process_auth`]. Production names none of
-//! them: a chain entry naming one opens through the axis like any other module.
-
 use crate::auth::{AuthModule, AuthVerdict, Principal};
 
-/// `grp:<g>` identifies as `test:<g>` carrying exactly that group; anything else defers (`Pass`).
 pub const TEST_GROUPS_MODULE: &str = "test-groups-module";
 
-/// The admin chain's group module: the same credential grammar as [`TEST_GROUPS_MODULE`], so the
-/// e2e suite reaches group-mapped, NON-full admin principals (unreachable with the operator
-/// credential alone).
 pub const TEST_SCOPE_MODULE: &str = "test-scope-module";
 
-/// A stand-in for an operator's OIDC auth plugin: it identifies ANY non-empty credential and asks
-/// nothing about audience, exactly as the plugin ABI forces a real one to. Without a module of this
-/// shape no test can tell an audience check that runs from one that does not.
 pub const TEST_IDP_MODULE: &str = "test-idp-module";
 
-/// The role the [`TEST_IDP_MODULE`] stand-in asserts for every principal it identifies: a
-/// deployed IdP's role is one the operator bound under `role_bindings` (`TestApp::idp_chain`).
 pub const TEST_IDP_ROLE: &str = "idp-user";
 
-/// Whether `module` is one of the test auth modules (the install record's `in_process_auth`).
 #[must_use]
 pub fn answers(module: &str) -> bool {
     matches!(
@@ -35,7 +19,6 @@ pub fn answers(module: &str) -> bool {
     )
 }
 
-/// The test auth module named `module`, opened in process.
 #[must_use]
 pub fn open(module: &str) -> Option<Box<dyn AuthModule>> {
     match module {
@@ -46,7 +29,6 @@ pub fn open(module: &str) -> Option<Box<dyn AuthModule>> {
     }
 }
 
-/// `grp:<g>` -> `test:<g>` carrying the group `g`; anything else `Pass`.
 struct Groups(&'static str);
 
 impl AuthModule for Groups {
@@ -65,7 +47,6 @@ impl AuthModule for Groups {
     }
 }
 
-/// Any non-empty credential -> `idp:subject` carrying [`TEST_IDP_ROLE`]; none `Pass`.
 struct Idp;
 
 impl AuthModule for Idp {
@@ -84,8 +65,6 @@ impl AuthModule for Idp {
     }
 }
 
-/// `inner` with the test auth modules answered and opened in process ahead of its rows: the auth
-/// axis a test build reads (the stand-in's, or a root test binary's own opener's).
 #[must_use]
 pub fn around(
     inner: std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>,
@@ -93,7 +72,6 @@ pub fn around(
     std::sync::Arc::new(Around(inner))
 }
 
-/// See [`around`].
 struct Around(std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>);
 
 impl busbar_contract::auth_calls::AuthAxis for Around {

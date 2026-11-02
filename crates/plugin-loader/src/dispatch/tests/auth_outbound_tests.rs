@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `OutboundInstance` over a real auth door, loaded and opened through the one dispatcher: the
-//! binding `open_outbound` answers, the ONE `fields` call answered on the spot and submitted on a
-//! ticket (the same fields both ways), the short answer re-called once with the buffers it named, a
-//! refusal, the request's facts reaching the plugin, and the auth point the call is made at with
-//! the body lent only at `HeadBody`. Every answer passes the kind's own
-//! validator (`check_fields`) on the way back.
-
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,19 +27,17 @@ use crate::dispatch::{
     NO_BLOB,
 };
 
-/// The style whose fields fit the host's starting buffers.
 const BEARER: &str = "bearer";
-/// The style whose fields do not: seventeen fields, one over `FIELDS_MAX`.
+
 const WIDE: &str = "wide";
-/// The style that signs the body: it needs the `HeadBody` point.
+
 const SIGNED: &str = "signed";
-/// The style that presents the per-call scope its extensions blob states.
+
 const SCOPED: &str = "scoped";
 
 mod plugin {
     use super::*;
 
-    /// An outbound-only test plugin: its verdicts pass; its bindings are its style names.
     pub struct Outbound;
 
     impl VerifyPlugin for Outbound {
@@ -65,11 +56,8 @@ mod plugin {
         }
     }
 
-    /// The instance state the shared lifecycle serves.
     type Inst = Held<Verifier<Outbound>>;
 
-    /// `open_outbound`: `bearer` binds handle 1, `wide` handle 2, `signed` handle 3; any other
-    /// style FAILs.
     pub struct Open(PhantomData<Outbound>);
     impl SafeSlot for Open {
         type In = OpenOutboundIn;
@@ -93,10 +81,6 @@ mod plugin {
         }
     }
 
-    /// `fields`: handle 1 answers `authorization: Bearer <method> <authority><path>` (sensitive);
-    /// handle 2 answers seventeen fields, short until its buffers hold them; handle 3 answers
-    /// `x-signed: <point> <body>` (the body as lent, `-` when none); a passthrough on handle 1 is
-    /// REFUSED.
     pub struct Fields(PhantomData<Outbound>);
     impl SafeSlot for Fields {
         type In = FieldsIn;
@@ -207,8 +191,7 @@ mod plugin {
                     "auth.sealed_fields",
                     &[2],
                 )] = busbar_contract::abi::mechanism::extensions::entry("auth.sealed_fields", &[2]);
-                // Deliberately malformed runtime output: Statement concat rejects duplicates
-                // at declaration time, while this witness must reach the answer validator.
+
                 static DUPLICATE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
                     busbar_contract::abi::mechanism::extensions::encode(&[
                         ("auth.sealed_fields", &[1]),
@@ -331,7 +314,6 @@ impl EnvelopeSink for Quiet {
     fn dropped(&self, _: crate::dispatch::Dropped) {}
 }
 
-/// The test door, linked, adopted by a fresh dispatcher and opened: the instance under test.
 pub(crate) fn opened() -> OutboundInstance {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
         workers: 1,
@@ -423,8 +405,6 @@ fn open_outbound_answers_the_binding_and_refuses_a_style_it_does_not_serve() {
     assert!(err.contains("`nope`"), "{err}");
 }
 
-/// THE ONE CALL, both ways: on the spot and submitted on a ticket, the same fields, carrying the
-/// request's facts, the sensitive flag kept.
 #[test]
 fn fields_answers_alike_on_the_spot_and_on_a_ticket() {
     let a = opened();
@@ -455,7 +435,6 @@ fn query_placement_survives_direct_and_submitted_auth_answers() {
     }
 }
 
-/// A short answer is re-called once with the buffers it named, both ways.
 #[test]
 fn a_short_fields_answer_is_recalled_once_with_what_it_needs() {
     let a = opened();
@@ -467,8 +446,6 @@ fn a_short_fields_answer_is_recalled_once_with_what_it_needs() {
     assert_eq!(wide(futures_lite_block_on(a.fields(2, request(), 0))), 17);
 }
 
-/// A refusal is not an answer on the spot, and the submitted call answers it: a passthrough on a
-/// style that does not pass the caller's credential.
 #[test]
 fn a_refused_fields_is_refused_on_a_ticket_and_left_to_it_on_the_spot() {
     let a = opened();
@@ -488,8 +465,6 @@ fn a_refused_fields_is_refused_on_a_ticket_and_left_to_it_on_the_spot() {
     );
 }
 
-/// AUTH POINTS: the call carries the point it is made at; the body is lent at `HeadBody`, whole,
-/// both ways, and never at `Head` even when the request holds one.
 #[test]
 fn the_body_is_lent_at_head_body_and_never_at_head() {
     let a = opened();
@@ -526,7 +501,7 @@ fn the_body_is_lent_at_head_body_and_never_at_head() {
         a.fields_now(3, &at(AuthPoint::Head)).map(signed),
         Some(head)
     );
-    // An empty body at `HeadBody` is lent present and empty, never absent.
+
     let mut empty = request();
     empty.point = AuthPoint::HeadBody;
     empty.body = Some(Vec::new());
@@ -536,9 +511,6 @@ fn the_body_is_lent_at_head_body_and_never_at_head() {
     );
 }
 
-/// THE PER-CALL SCOPE REACHES THE PLUGIN (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a request's
-/// extensions blob is lent as `FieldsIn::head.extensions`, alike on the spot and on a ticket, and the
-/// style reads the scope under `EXT_SCOPE` byte for byte; a request that states none lends none.
 #[test]
 fn the_extensions_blob_carries_the_per_call_scope_to_the_plugin() {
     let a = opened();
@@ -575,7 +547,6 @@ fn the_extensions_blob_carries_the_per_call_scope_to_the_plugin() {
     );
 }
 
-/// Drive a future to completion on this thread, polling on every wake.
 fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

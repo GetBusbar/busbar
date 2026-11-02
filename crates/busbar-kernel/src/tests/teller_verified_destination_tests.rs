@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! RED-before-GREEN: Route and Meter must consume the SAME [`VerifiedDestination`] set the Verify
-//! step sealed — not a set they compute for themselves.
-//!
-//! Before the fix, [`Units::route`] and [`Units::meter`] took no destinations parameter at all: the
-//! set [`Units::verify`] sealed was threaded to Approve and Admit inside [`super::open_to_door`] and
-//! then simply dropped when that function returned only the [`busbar_contract::caps::Admission`]. A
-//! plane's own `route`/`meter` had no way to reach what Verify proved, so a real plane had to
-//! re-derive its own idea of "where this unit goes" from its own state — exactly the
-//! verify-then-act gap this test closes: the thing later steps act on is now provably the thing
-//! Verify sealed, because it is the only thing they are handed.
-
 use std::sync::Mutex;
 
 use busbar_contract::caps::{
@@ -68,22 +57,16 @@ fn encoded_frame() -> busbar_contract::caps::Frame {
     }
 }
 
-/// The lanes VERIFY seals — the sealed set the fix has to thread through.
 fn sealed_lanes() -> Vec<LaneId> {
     vec![LaneId::new("sealed-lane-a"), LaneId::new("sealed-lane-b")]
 }
 
-/// A lane no step ever seals — standing in for whatever a re-deriving Route would have computed on
-/// its own. Never appears in what `verify` seals, so the negative assertion below is not vacuous.
 const PLANE_OWN_IDEA: &str = "plane-derived-lane-never-sealed";
 
-/// The plane the battery drives the loop with. `verify` seals a two-lane set; `route` and `meter`
-/// each record exactly the destinations slice the LOOP handed them, so the test can compare what
-/// they received against what was sealed rather than trust that the two happen to agree.
 struct Fixture {
     route_seen: Mutex<Vec<VerifiedDestination>>,
     meter_seen: Mutex<Vec<VerifiedDestination>>,
-    /// Every audit fact the loop handed back with the audit door's own pass.
+
     audited_seen: Mutex<Vec<busbar_contract::caps::AuditFacts>>,
 }
 
@@ -233,17 +216,12 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
         taps: None,
     };
 
-    // RED before the fix: `Units::route`/`Units::meter` had no `destinations` parameter to record
-    // into `route_seen`/`meter_seen` at all — the fixture above does not even compile against the
-    // pre-fix trait. GREEN after: both fire and both record the sealed set.
     let ended = run_unit(&kernel, &fixture, &ctx(), run);
     assert!(
         matches!(ended, Ended::Settled { .. }),
         "the fixture's door always admits, so the unit must settle: {ended:?}"
     );
 
-    // What was actually sealed, reconstructed the same way the fixture built it — the value under
-    // test, not a re-statement of the assertion.
     let expected: Vec<VerifiedDestination> = sealed_lanes()
         .into_iter()
         .map(|lane| VerifiedDestination::seal(&Grant::<Dial>::mint(kernel.seal()), lane))
@@ -261,16 +239,12 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
         "Meter must fold what Route did against the SAME sealed set, not a re-derived one"
     );
 
-    // THE AUDIT DOOR HANDS ITS FACTS BACK ONCE, WITH ITS OWN PASS: the unit's record is sealed at
-    // its one line, after the door, and only that pass can seal it.
     assert_eq!(
         *fixture.audited_seen.lock().unwrap(),
         vec![audit_facts()],
         "the audit door's facts must reach whoever drives the unit exactly once"
     );
 
-    // The negative half of the proof: neither step saw the stand-in for "whatever a re-deriving
-    // Route would have computed on its own" — the sealed set won outright, not by coincidence.
     assert!(
         !route_seen
             .iter()

@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! One listener per inbound need, against REAL clients on real sockets: an accepted connection's
-//! bytes go through the framer begun on the accept side and the answer goes back on the piece's
-//! own stream, TLS is the connector's server with the framer's protocol offer, the connection cap
-//! closes the one past it without a byte, and a silent TLS client is dropped at its handshake
-//! deadline.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -137,7 +133,7 @@ fn a_failed_or_pending_listen_retires_the_socket_it_made() {
             let (handle, address) = door.bound.lock().unwrap().clone().unwrap();
             let retired = via.io.ends(crate::support::OWNER, handle).is_err();
             let stopped = Client::connect(&address).await.is_err();
-            // Reclaim the pre-fix leak before asserting.
+
             via.io.retire_listener(handle);
             assert!(result.is_err(), "the carrier did not finish listening");
             assert!(
@@ -323,7 +319,7 @@ fn plain(door: Arc<TestDoor>, limits: AcceptLimits) -> Listening {
 }
 
 /// A client's bytes reach the framer begun on `SIDE_ACCEPT`, and the answer the host emits on the
-/// piece's stream reaches the client byte-exact.
+
 #[test]
 fn an_accepted_connection_is_framed_on_the_accept_side_and_answered() {
     worker().block_on(async {
@@ -365,14 +361,13 @@ fn server(leaf: Vec<u8>, key: Vec<u8>) -> Arc<rustls::ServerConfig> {
             rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
         )
         .unwrap();
-    // The operator's config may pin its own offer; the listener's is the framer's.
+
     s.alpn_protocols = vec![b"x-config".to_vec()];
     Arc::new(s)
 }
 
 /// TLS on an inbound need is the connector's server: the client's handshake completes, the
-/// protocol agreed is the claiming framer's offer (not the server config's own), the name the
-/// client offered is an established fact, and the bytes cross encrypted both ways.
+
 #[test]
 fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
     crate::tls::install_crypto_provider();
@@ -446,7 +441,7 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
 }
 
 /// RED: the connection past the cap is accepted and closed at once, no byte written, while the
-/// ones held are still served; a slot frees when its connection is dropped.
+
 #[test]
 fn the_connection_past_the_cap_is_closed_without_a_byte() {
     worker().block_on(async {
@@ -466,7 +461,7 @@ fn the_connection_past_the_cap_is_closed_without_a_byte() {
         }
         assert_eq!(l.live(), 2);
         let mut third = Client::connect(addr).await.unwrap();
-        // The listener takes the third off the queue and closes it; nothing is admitted.
+
         let polled = tokio::time::timeout(Duration::from_millis(300), accept(&mut l)).await;
         assert!(polled.is_err(), "the one past the cap is never admitted");
         let mut buf = [0_u8; 8];
@@ -475,14 +470,14 @@ fn the_connection_past_the_cap_is_closed_without_a_byte() {
             .expect("closed at once, not held")
             .unwrap_or(0);
         assert_eq!(n, 0, "not a byte written to the one past the cap");
-        // The held ones are still served.
+
         let (mut c0, conn0) = held.remove(0);
         tokio::spawn(echo(conn0));
         c0.write_all(b"ping").await.unwrap();
         let mut got = [0_u8; 4];
         c0.read_exact(&mut got).await.unwrap();
         assert_eq!(&got, b"ping");
-        // Dropping one frees its slot for the next client.
+
         let (_c1, conn1) = held.remove(0);
         drop(conn1);
         let _c3 = Client::connect(addr).await.unwrap();
@@ -494,7 +489,7 @@ fn the_connection_past_the_cap_is_closed_without_a_byte() {
 }
 
 /// RED: a TLS client that never speaks is dropped at the handshake deadline (1.5.5's handshake
-/// timeout), never answered, and its slot frees.
+
 #[test]
 fn a_silent_tls_client_is_dropped_at_the_handshake_deadline() {
     crate::tls::install_crypto_provider();
@@ -535,7 +530,7 @@ fn a_silent_tls_client_is_dropped_at_the_handshake_deadline() {
 }
 
 /// 1.5.5's accept backoff: an aborted or interrupted accept retries at once; anything else backs
-/// off 5 ms, doubling to 250 ms, and a success resets it.
+
 #[test]
 fn accept_errors_back_off_as_1_5_5s_did() {
     worker().block_on(async {
@@ -556,8 +551,7 @@ fn accept_errors_back_off_as_1_5_5s_did() {
 }
 
 /// A STREAM listener (the root's own binds) hands each admitted socket up as it arrived, bytes
-/// untouched and nothing framed; the connection past the cap is closed without a byte; the slot
-/// the kernel holds frees when the served connection ends.
+
 #[test]
 fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
     use crate::listen::Admits;
@@ -585,7 +579,7 @@ fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
             &got, b"GET / HTTP/1.1\r\n",
             "the bytes as the client sent them"
         );
-        // One past the cap: accepted and closed, never admitted.
+
         let mut past = Client::connect(addr).await.unwrap();
         let polled = tokio::time::timeout(Duration::from_millis(300), l.admit()).await;
         assert!(polled.is_err(), "the one past the cap is never admitted");
@@ -606,10 +600,7 @@ fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
 }
 
 /// RED (`BUSBAR-1.6.0.md` l.477-478): THE LISTENER'S PROTOCOL OFFER IS THE ENTRY'S
-/// OFFER FOR ITS ACCEPTING SIDE. An entry that dials offering `x-two, x-one` and listens offering
-/// `x-one` alone answers the two apart, and a TLS client offering `x-two, x-one` to the need's
-/// listener (bound through the connector) agrees `x-one`: never the dial offer, never the server
-/// config's own (v1.5.5's client offered two protocols, its listener one).
+
 #[test]
 fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
     let door = TestDoor::new(
@@ -633,7 +624,7 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
         vec![b"x-one".to_vec()],
         "the accept offer is the entry's own, and not its dial offer"
     );
-    // The entry's own accept offer wins over the transport's registered list.
+
     assert_eq!(
         agreed_on_the_listener(door, vec![b"x-two".to_vec()]).as_deref(),
         Some(&b"x-one"[..]),
@@ -642,13 +633,7 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
 }
 
 /// RED (`BUSBAR-1.6.0.md` l.477-478): AN ENTRY THAT STATES NO ACCEPT OFFER
-/// LISTENS WITH THE TRANSPORT'S REGISTERED PROTOCOL LIST (the registry's `Entry::alpn`, the
-/// operator's settings dealt at boot), as a dial whose `locate` answers no offer dials with it
-/// (`compose`, "the registration's stands only for an entry that answers none"). A TLS listener
-/// whose entry answers no accepting offer still agrees a protocol off its registration: a client
-/// that needs one negotiated refuses a connection that agreed none. RED before the fix: the
-/// bind took the entry's accept offer alone (`accept_offer(..).unwrap_or_default()`), so the
-/// listener offered nothing and the handshake agreed no protocol.
+
 #[test]
 fn a_listener_whose_entry_states_no_accept_offer_offers_the_transports_list() {
     let door = TestDoor::new(
@@ -673,9 +658,7 @@ fn a_listener_whose_entry_states_no_accept_offer_offers_the_transports_list() {
 }
 
 /// What a TLS client offering `x-two, x-one` agrees with the listener the connector binds for an
-/// inbound need declared over `door`'s scheme (`sec`), the entry registered with the protocol list
-/// `registered`. The entry is a FRAMER (it names a secure layer), so its listener rides the address
-/// carrier the view holds beside it, as every connector does (`Connector::listen`).
+
 fn agreed_on_the_listener(door: TestDoor, registered: Vec<Vec<u8>>) -> Option<Vec<u8>> {
     use busbar_contract::conn::{ConnError, Conns as _, InstanceId, NeedId};
     const OWNER: InstanceId = InstanceId(1);
@@ -804,9 +787,7 @@ fn an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_offer
 }
 
 /// RED (T1, tcp TT1): A RETIRED LISTENER IS UNBOUND WHEN IT IS DROPPED. A listener bound through a
-/// carrier holds the host's listening handle the carrier made at `listen`; dropping the
-/// [`Listening`] (the need retired, the generation replaced) closes that handle at once, so the
-/// address stops accepting then, not when the carrier's instance closes.
+
 #[test]
 fn a_dropped_listener_stops_accepting_at_once() {
     worker().block_on(async {

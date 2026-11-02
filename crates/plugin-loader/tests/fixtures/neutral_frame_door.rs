@@ -1,30 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NEUTRAL FRAME DOOR: a test double that frames the host's socket (it composes over nothing),
-//! for the tests that need such a door beside their binary (the loader's dropped-in door through
-//! the registry, the connector driving a dropped-in socket framer, the root's dropped-in wire in the
-//! one fold). It lives with the tests and names no transport (spec Part 5 log, 2026-09-25 S10: "a
-//! plugin tests itself; the kernel never tests or names a plugin"), so no plugin leaving this repo
-//! takes these tests' fixture with it. An example, not a crate: `cargo test` builds it and it never
-//! ships.
-//!
-//! An IDENTITY framer on the transport kind's table (`busbar_contract::abi::transport`): the bytes
-//! the far side sent are one frame on stream `0` (the far side's end is `YIELD_ENDED`), the bytes
-//! handed to `emit`/`refuse` are the wire bytes, `encode` renders an envelope as its body alone
-//! (fields are refused), `detach`/`adopt` hand unconsumed bytes across, and `locate` reads
-//! `host:port` (or `frame://host:port`). No op pends or asks for a deadline; a full sink is
-//! back-pressure (`YIELD_MORE`). It states the FRAMER role and every carrier op is refused: it
-//! rides whatever carrier the connector dials or accepts with, and is never one.
-//!
-//! ONE STREAM (`SIDE_ACCEPT_STREAM`, ARCHITECT 4l): a framing begun on that side frames one stream
-//! whose head the host's own framer carries. Its messages are one length byte and that many bytes:
-//! `ingest` yields each whole message as a piece on stream `1`; `emit` frames a message (its bytes
-//! once one ends the frame); `refuse` closes the stream with the block `:status: 200`,
-//! `frame-status: <status>`, `frame-reason: <bytes>`; `finish` closes it with the block
-//! `frame-status`, `frame-message`, `frame-details` (hex) from the close's final tail. The claim's
-//! numbering is `frame`, codes `0..=9`.
-
 #![allow(unsafe_code)]
 
 use std::collections::{HashMap, VecDeque};
@@ -51,12 +27,8 @@ use busbar_contract::abi::transport::{
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
 
-// ── the statement ────────────────────────────────────────────────────────────────────────────────
-
-/// The claim this entry answers for: a neutral scheme no transport serves.
 pub const KEY: &str = "frame";
 
-/// The selector forms the claim reads: the port it arrived on.
 const SELECTOR_FORMS: &[SelectorForm] = &[SelectorForm::Port];
 const SELECTOR_CODES: [u8; SELECTOR_FORMS.len()] = form_codes(SELECTOR_FORMS);
 
@@ -64,10 +36,8 @@ const FACTS: &[AbiStr] = &[abi_str(tfacts::PEER)];
 
 const NONE: AbiStr = AbiStr::ZERO;
 
-/// The schemes this door claims, by name: the Statement's `claims`, the one place they are stated.
 const CLAIM_NAMES: &[AbiStr] = &[abi_str(KEY)];
 
-/// Each claimed scheme's row, by index into [`CLAIM_NAMES`].
 const CLAIMS: &[Claim] = &[Claim {
     selector_forms: AbiStr {
         ptr: SELECTOR_CODES.as_ptr(),
@@ -82,7 +52,6 @@ const CLAIMS: &[Claim] = &[Claim {
     ..Claim::ZERO
 }];
 
-/// The claim's numbering: `0` a stream that ended whole, `1..=9` any other end.
 const STATUS_ROWS: &[StatusRow] = &[
     StatusRow {
         class: STATUS_SUCCESS as u32,
@@ -96,9 +65,6 @@ const STATUS_ROWS: &[StatusRow] = &[
     },
 ];
 
-/// What the numbering means to the breaker: a classed claim states a fault table
-/// (`check_fault_cover`). Every end but the whole one is the caller's, so this neutral door trips
-/// nothing, as it read before the table was appended.
 const FAULT_ROWS: &[FaultRow] = &[FaultRow {
     lo: 1,
     hi: 9,
@@ -111,9 +77,7 @@ const TAIL: TransportTail = TransportTail {
         size: std::mem::size_of::<TransportTail>() as u32,
         ..KindTailHead::ZERO
     },
-    // An identity FRAMER (ARCHITECT ruling Q128 U7: the role is stated, never derived from
-    // composes_over). It answers no carrier op, so it states no carrier: a door stated a carrier is
-    // one the connector may pick as its address carrier, and this one would refuse every dial.
+
     role: ROLE_FRAMER,
     framing: FRAMING_STREAM,
     claim_rows: CLAIMS.as_ptr(),
@@ -126,12 +90,11 @@ const TAIL: TransportTail = TransportTail {
     status_rows_len: STATUS_ROWS.len(),
     fault_rows: FAULT_ROWS.as_ptr(),
     fault_rows_len: FAULT_ROWS.len(),
-    // The stride this framer writes its pieces at: the contract's it was built against.
+
     frame_piece_size: FRAME_PIECE_SIZE,
     ..TransportTail::ZERO
 };
 
-/// The door's Statement: the identity framer.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
     claims: CLAIM_NAMES.as_ptr(),
@@ -139,9 +102,6 @@ pub const STATEMENT: Statement = Statement {
     ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)
 };
 
-// ── the instance ─────────────────────────────────────────────────────────────────────────────────
-
-/// The framings this instance holds.
 pub struct Instance {
     framings: Mutex<HashMap<u64, Framing>>,
     next: AtomicU64,
@@ -186,9 +146,6 @@ fn err(out: &mut OutHead, text: &'static str) {
     out.error = abi_str(text);
 }
 
-// ── the lifecycle ────────────────────────────────────────────────────────────────────────────────
-
-/// `validate`: this framer reads no setting.
 pub struct Validate;
 impl RawSlot for Validate {
     type In = ValidateIn;
@@ -198,7 +155,6 @@ impl RawSlot for Validate {
     }
 }
 
-/// `open`.
 pub struct Open;
 impl RawSlot for Open {
     type In = OpenIn;
@@ -213,7 +169,6 @@ impl RawSlot for Open {
     }
 }
 
-/// `close`.
 pub struct Close;
 impl RawSlot for Close {
     type In = InHead;
@@ -227,7 +182,6 @@ impl RawSlot for Close {
     }
 }
 
-/// `cancel`: no framer op pends, so nothing is ever in flight to cancel.
 pub struct Cancel;
 impl RawSlot for Cancel {
     type In = CancelIn;
@@ -258,7 +212,6 @@ answer!(Tick, TickIn, TickOut, Outcome::Ready);
 answer!(Drive, DriveIn, OutHead, Outcome::Ready);
 answer!(Release, ReleaseIn, OutHead, Outcome::Ready);
 
-// A framer is not a carrier: the socket is the host's, so every carrier op is refused.
 answer!(Listen, ListenIn, ListenOut, Outcome::Refused);
 answer!(Accept, AcceptIn, AcceptOut, Outcome::Refused);
 answer!(Dial, DialIn, ConnOut, Outcome::Refused);
@@ -268,9 +221,6 @@ answer!(Flush, ConnIn, OutHead, Outcome::Refused);
 answer!(Shut, ShutIn, OutHead, Outcome::Refused);
 answer!(Arrival, ArrivalIn, ArrivalOut, Outcome::Refused);
 
-// ── the framer ───────────────────────────────────────────────────────────────────────────────────
-
-/// `locate`: `host:port` or `frame://host:port` is the authority; no name, no connection security.
 pub struct Locate;
 impl RawSlot for Locate {
     type In = LocateIn;
@@ -298,7 +248,6 @@ impl RawSlot for Locate {
     }
 }
 
-/// `begin`: a stream declares its own closing fields in the initial response block.
 pub struct Begin;
 impl RawSlot for Begin {
     type In = BeginIn;
@@ -315,7 +264,7 @@ impl RawSlot for Begin {
         if framing.stream {
             framing.outbound.extend(OPENING);
         }
-        // A short sink leaves the initial fields owned by this framing for its Timer drains.
+
         framing.answer(&i.sink, o);
         inst.framings
             .lock()
@@ -326,7 +275,6 @@ impl RawSlot for Begin {
     }
 }
 
-/// `adopt`: the bytes another framer left unconsumed are this connection's first frame.
 pub struct Adopt;
 impl RawSlot for Adopt {
     type In = AdoptIn;
@@ -344,7 +292,6 @@ impl RawSlot for Adopt {
     }
 }
 
-/// Run `op` on the framing `token` names and answer what it owes into `sink`.
 fn with(
     p: *mut c_void,
     token: u64,
@@ -362,7 +309,6 @@ fn with(
     Outcome::Ready
 }
 
-/// `ingest`: the bytes are one frame on stream `0`; the far side's end ends the connection.
 pub struct Ingest;
 impl RawSlot for Ingest {
     type In = IngestIn;
@@ -382,7 +328,6 @@ impl RawSlot for Ingest {
     }
 }
 
-/// `emit`: the bytes are the wire bytes.
 pub struct Emit;
 impl RawSlot for Emit {
     type In = EmitIn;
@@ -405,7 +350,6 @@ impl RawSlot for Emit {
     }
 }
 
-/// `refuse`: the refusal's bytes are the wire bytes.
 pub struct Refuse;
 impl RawSlot for Refuse {
     type In = RefuseIn;
@@ -430,7 +374,6 @@ impl RawSlot for Refuse {
     }
 }
 
-/// `timer`: this framer asks for no deadline; a call answers what is still owed.
 pub struct Timer;
 impl RawSlot for Timer {
     type In = FramingIn;
@@ -440,7 +383,6 @@ impl RawSlot for Timer {
     }
 }
 
-/// `finish`: the framing is forgotten; no frame follows.
 pub struct Finish;
 impl RawSlot for Finish {
     type In = FinishIn;
@@ -456,7 +398,6 @@ impl RawSlot for Finish {
             return Outcome::Failed;
         };
         if f.stream && !f.closed {
-            // The stream's close, rendered from the close's final tail alone.
             let all = raw(i.final_bytes, i.final_bytes_len);
             let at = |s: busbar_contract::abi::mechanism::call::Span| {
                 all.get(s.offset as usize..s.offset as usize + s.len as usize)
@@ -487,8 +428,6 @@ impl RawSlot for Finish {
     }
 }
 
-/// `detach`: every byte ingested and not yet answered, into `frame`, and the framing is forgotten.
-/// A sink too small for them answers `YIELD_MORE` and keeps the framing until the rest is taken.
 pub struct Detach;
 impl RawSlot for Detach {
     type In = FramingIn;
@@ -512,7 +451,6 @@ impl RawSlot for Detach {
     }
 }
 
-/// `encode`: a byte stream has no head, so the envelope is its body; fields are refused.
 pub struct Encode;
 impl RawSlot for Encode {
     type In = EncodeIn;
@@ -524,7 +462,6 @@ impl RawSlot for Encode {
         }
         let body = raw(i.body, i.body_len);
         if body.len() > i.sink.wire_cap {
-            // `encode` renders a whole message at once: the host gives it room for the body.
             err(
                 &mut o.head,
                 "encode: the wire buffer is smaller than the body",
@@ -538,7 +475,6 @@ impl RawSlot for Encode {
     }
 }
 
-/// Move `n` bytes off the front of `from` into the host buffer at `to`.
 fn copy_out(from: &mut VecDeque<u8>, to: *mut u8, n: usize) {
     if n == 0 {
         return;
@@ -554,7 +490,6 @@ fn copy_out(from: &mut VecDeque<u8>, to: *mut u8, n: usize) {
 }
 
 impl Framing {
-    /// One stream's whole messages, each a piece on stream `1`, and what is owed the far side.
     fn messages(&mut self, sink: &FramerSink, o: &mut FramerOut) -> Outcome {
         let (mut at, mut n) = (0usize, 0usize);
         while let Some(&len) = self.reading.first() {
@@ -586,8 +521,6 @@ impl Framing {
         self.inbound.extend(bytes);
     }
 
-    /// Answer into `sink` what this framing owes: wire bytes, then the inbound frame as one piece
-    /// (the one that drains it ends the frame), then the connection's end once nothing is left.
     fn answer(&mut self, sink: &FramerSink, o: &mut FramerOut) {
         let y = &mut o.yielded;
         let wire = self.outbound.len().min(sink.wire_cap);

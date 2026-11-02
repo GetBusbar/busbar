@@ -1,20 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `durability/amend.rs`: the node amendment journal survives a restart.
-//!
-//! A restart uses fresh host/App instances over one Store fixture. The child process isolates
-//! boot globals; no filesystem journal bridges the instances. Both boots call
-//! [`crate::root::boot::book`], and governance owns each amendment journal.
-
 use super::*;
 use busbar_kernel::audit::amend::{NodeAmendments, Reader};
 
-/// Which half of the restart the child process runs, and where.
 const PHASE: &str = "BUSBAR_TEST_AMEND_RESTART_PHASE";
 const DIR: &str = "BUSBAR_TEST_AMEND_RESTART_DIR";
 
-/// The hooks that read content.
 const HOOK: &str = "compressor";
 const LATE_HOOK: &str = "summarizer";
 
@@ -63,8 +55,6 @@ fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
     );
 }
 
-/// A hook named `hook` was handed one unit's content: one access on the journal `app` carries,
-/// recorded by the node's host as a served unit's is.
 fn access(app: &Arc<busbar_kernel::state::App>, hook: &str) {
     busbar_kernel::plane_driver::engine_host(app).hook_read(
         hook,
@@ -74,7 +64,6 @@ fn access(app: &Arc<busbar_kernel::state::App>, hook: &str) {
     );
 }
 
-/// The hooks `journal` holds an access of, oldest first.
 fn accessed(journal: &NodeAmendments) -> Vec<String> {
     journal
         .recent()
@@ -86,11 +75,6 @@ fn accessed(journal: &NodeAmendments) -> Vec<String> {
         .collect()
 }
 
-/// THE NODE'S BOOT, BY THE BOOT'S OWN FUNCTION: an `App` whose governance holds the stand-in
-/// store's record slots, then [`crate::root::boot::book`] over it — which rebuilds the App's own
-/// amendment journal from the chain and binds it to the book. The data directory is
-/// `BUSBAR_DATA_DIR`, which [`run_phase`] sets for the child process to `dir`. Answers the book and
-/// the booted App, whose `amendments` is the journal every phase seals on and reads back.
 fn boot(
     slots: &crate::root::store_double::RecordSlots,
     dir: &std::path::Path,
@@ -115,8 +99,6 @@ fn boot(
     (book.durability, app)
 }
 
-/// In a child process [`run_phase`] started: run its phase and answer `true`. In the test's own
-/// process: `false`, and the test goes on to start its phases.
 fn child_phase() -> bool {
     let (Ok(phase), Ok(dir)) = (std::env::var(PHASE), std::env::var(DIR)) else {
         return false;
@@ -125,7 +107,6 @@ fn child_phase() -> bool {
     true
 }
 
-/// ONE HALF OF THE RESTART, run in a child process of the test that names it.
 fn restart_phase(phase: &str, dir: &str) {
     if phase == "store" {
         store_phase();
@@ -133,7 +114,7 @@ fn restart_phase(phase: &str, dir: &str) {
     }
     let slots = crate::root::store_double::RecordSlots::new();
     let (book, app) = boot(&slots, std::path::Path::new(dir));
-    // The journal the boot rebuilt and bound: the one the booted App carries.
+
     let journal = Arc::clone(&app.amendments);
     match phase {
         "restart" => {
@@ -169,9 +150,7 @@ fn restart_phase(phase: &str, dir: &str) {
             );
             return;
         }
-        // U15: the on-demand verify sees an edit to the HELD amendment run. One access is sealed
-        // and `/verify` reports nothing; the held run is then edited in place, and `/verify` names
-        // the amendment chain.
+
         #[cfg(feature = "root-admin")]
         "tamper" => {
             access(&app, HOOK);
@@ -205,17 +184,10 @@ fn restart_phase(phase: &str, dir: &str) {
     drop(book);
 }
 
-/// The node the store-kept chain is written under in the `store` phase.
 const STORE_NODE: u64 = 31;
 
-/// How long one padding record's body is: big enough that a few hundred of them roll the memory
-/// log past one segment, small enough that 256 of them (one block of the store's scan) stay inside
-/// one scan.
 const PAD_BODY: usize = 100_000;
 
-/// The node's boot with NO DATA DIRECTORY over the configured store, as `root::boot` runs it: build
-/// over the store (resuming the chain it kept), rebuild the node amendment journal `journal`, share
-/// the book, bind it.
 fn store_boot(
     slots: &crate::root::store_double::RecordSlots,
     journal: &NodeAmendments,
@@ -233,7 +205,6 @@ fn store_boot(
     book
 }
 
-/// Wait until the store took everything the book's lane holds.
 fn store_drained(book: &Arc<Mutex<Durability>>) {
     let lane = book
         .lock()
@@ -247,9 +218,6 @@ fn store_drained(book: &Arc<Mutex<Durability>>) {
     );
 }
 
-/// THE `store` PHASE (audit R1#1): a node with no data directory whose chain outgrows one memory
-/// segment. The first boot seals an access, pads the journal past one segment, seals a second
-/// access, and stops; the second boot over the same store must see both, with no restart finding.
 fn store_phase() {
     let slots = crate::root::store_double::RecordSlots::new();
     let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
@@ -282,7 +250,6 @@ fn store_phase() {
         );
     }
 
-    // The restarted node's journal starts empty: what it holds is what the boot rebuilt.
     let journal = NodeAmendments::new();
     let restarted = store_boot(&slots, &journal);
     let durability = restarted.lock().unwrap_or_else(|p| p.into_inner());
@@ -298,9 +265,6 @@ fn store_phase() {
     );
 }
 
-/// A NODE WITH NO DATA DIRECTORY WHOSE CHAIN OUTGREW ONE MEMORY SEGMENT keeps its amendments across a
-/// restart (audit R1#1). The memory log keeps only its newest segment resident; the store keeps the
-/// rest, and every chain read after boot reads the whole of it. See the `store` phase.
 #[test]
 fn a_chain_past_one_memory_segment_keeps_its_amendments_over_the_store() {
     if child_phase() {
@@ -314,8 +278,6 @@ fn a_chain_past_one_memory_segment_keeps_its_amendments_over_the_store() {
     );
 }
 
-/// Run `phase` in a fresh process of this test binary: the test `test` again, which runs the phase
-/// ([`child_phase`]).
 fn run_phase(test: &str, phase: &str, dir: &std::path::Path) {
     let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
         .args([
@@ -337,7 +299,6 @@ fn run_phase(test: &str, phase: &str, dir: &std::path::Path) {
     );
 }
 
-/// U15: `GET /admin/verify` VERIFIES THE HELD AMENDMENT RUN ON DEMAND. See the `tamper` phase.
 #[cfg(feature = "root-admin")]
 #[test]
 fn verify_reports_an_edit_to_the_held_amendment_run() {
@@ -352,8 +313,6 @@ fn verify_reports_an_edit_to_the_held_amendment_run() {
     );
 }
 
-/// A content access survives fresh App and host instances over the same Store. Both use the
-/// production boot, with a legacy data directory configured that remains empty.
 #[test]
 fn a_content_access_survives_a_restart() {
     if child_phase() {
@@ -364,7 +323,6 @@ fn a_content_access_survives_a_restart() {
     run_phase(test, "restart", &dir.0);
 }
 
-/// A bare-shipper helper has no Store to rebuild from, so it binds no amendment persistence.
 #[test]
 fn without_a_store_the_amendment_journal_is_neither_rebuilt_nor_bound() {
     let mut durability = build_with_cards(

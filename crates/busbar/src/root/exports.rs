@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT AXIS, THE ROOT'S (the opener seam: a kind's
-//! `<Kind>Axis` is the contract's, implemented HERE over the ONE dispatcher and the registry, and
-//! installed through the kernel's `RootInstall`). [`EXPORTS`] answers the contract's `ExportAxis`
-//! over the registry boot scanned and linked (`linked::dropped_from_config`, kept by
-//! `linked::register_exports`) and the process's one dispatcher (`root::dispatch`), through the
-//! loader's export rows. It is installed with the root rows before the registry exists, so it reads
-//! the registry on each question: before boot keeps one, and in a build with neither a plugins
-//! directory nor a linked sink, no export module resolves.
-//!
-//! An instance OPENED to deliver logs to its own file under `plugins.logs` and declares its needs
-//! on the process's one connector (`root::connector::the()`), so it is opened only once that
-//! connector is built; a module only probed or checked while a configuration is judged binds with
-//! neither.
-
 use busbar_contract::export_calls::{ExportAxis, ExportCalls, Probed};
 use std::sync::Arc;
 
@@ -24,10 +10,8 @@ use crate::root::loader::export_axis::ExportRows;
 #[derive(Debug)]
 pub struct RootExports;
 
-/// The export axis the root rows carry (`busbar_kernel::preflight::RootInstall::export_axis`).
 pub static EXPORTS: RootExports = RootExports;
 
-/// The registry's export rows on the process's one dispatcher; `None` before boot keeps a registry.
 fn rows() -> Option<ExportRows<'static>> {
     let registry = crate::root::linked::dropped()?;
     Some(ExportRows::new(

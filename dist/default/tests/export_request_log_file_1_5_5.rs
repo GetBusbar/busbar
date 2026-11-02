@@ -1,23 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE REQUEST-LOG FILE, BYTE FOR BYTE AS 1.5.5 WROTE IT**.
-//!
-//! The shipped binary boots with the request-log FILE sink (`module: request-log-file`, the linked
-//! `busbar-export-file` door) and serves two OpenAI chat completions through a loopback upstream that
-//! answers 200. The sink never opens a path: it hands the request's line to the host's `disk.append`
-//! under its declared destination key, and the host's bounded disk lane appends it to the
-//! operator's file. The file must hold EXACTLY what published 1.5.5 wrote for the same request — the
-//! oracle's golden `export|request-log-file|jsonl` cell (`testing/shadow-oracle/golden/1.5.5`), one
-//! JSON line ended by `\n` (1.5.5's `writeln!`), field order and field set unchanged — under the
-//! cell's own masks (`latency_ms`, `ts`).
-//!
-//! RED (the door-only sink before the host served `disk.append`): every line was dropped with
-//! BUSBAR-7074 and the file was never created.
-
 #![cfg(unix)]
-// The config serves `providers:`/`models:`, so the build must link the plane door that declares
-// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -28,12 +12,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// The 1.5.5 golden cell this test is judged against.
 const GOLDEN: &str = include_str!(
     "../../../testing/shadow-oracle/golden/1.5.5/cells/export__request-log-file__jsonl.json"
 );
 
-/// The line 1.5.5 appended, as the golden cell recorded it (masked).
 fn golden_line() -> String {
     let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
     cell["body"]["json"]["steps"]
@@ -46,8 +28,6 @@ fn golden_line() -> String {
         .to_string()
 }
 
-/// The cell's masks: each `"<key>":<number>` of `latency_ms`, `as_of` and `ts` becomes
-/// `"<key>":<<key>>`.
 fn masked(text: &str) -> String {
     let mut out = text.to_string();
     for key in ["latency_ms", "as_of", "ts"] {
@@ -68,7 +48,6 @@ fn masked(text: &str) -> String {
     out
 }
 
-/// A loopback OpenAI upstream: every request is answered 200 with one chat completion.
 fn upstream() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the upstream");
     let port = listener.local_addr().expect("its address").port();
@@ -164,7 +143,6 @@ export:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -173,7 +151,6 @@ impl Drop for Reap {
     }
 }
 
-/// One raw HTTP/1.1 exchange: the status, or `None` when no connection could be made.
 fn exchange(port: u16, request: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -216,8 +193,7 @@ fn the_request_log_file_holds_the_1_5_5_line_byte_for_byte() {
     );
     let audit = dir.join("audit.jsonl");
     let golden = format!("{}\n", golden_line());
-    // Two requests, one after the other: each appends its own line (a second delivery is a new
-    // append on the host's disk lane, never the first one's stored answer redeemed again).
+
     for n in 1..=2 {
         let deadline = Instant::now() + Duration::from_secs(30);
         let status = loop {
@@ -236,7 +212,6 @@ fn the_request_log_file_holds_the_1_5_5_line_byte_for_byte() {
         };
         assert_eq!(status, 200, "log:\n{}", log_of(&dir));
 
-        // The append is off the request path: poll for the line.
         let deadline = Instant::now() + Duration::from_secs(10);
         let written = loop {
             let bytes = std::fs::read(&audit).unwrap_or_default();
@@ -352,7 +327,6 @@ fn config_reload_moves_the_open_file_exporter_and_can_move_it_back() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The mask is the cell's: a number under a masked key is replaced, nothing else moves.
 #[test]
 fn the_mask_replaces_only_the_masked_numbers() {
     assert_eq!(

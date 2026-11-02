@@ -1,19 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ADMIN LISTENER WITH `admin_tls.client_ca` REFUSES A CLIENT THAT OFFERS NO CERTIFICATE, end
-//! to end: over the REAL binary, mutual TLS on `admin_listen` is enforced at the handshake, before
-//! any HTTP and before the admin credential is looked at. The unit cells prove the rustls
-//! config (`busbar_core_connector::tls`) and the boot guard (`admin_plane_boot_guard`); this is the
-//! one cell that boots a node with `admin_tls.client_ca` and speaks to its admin port as a client.
-//!
-//! Four clients, one node: a client with a certificate from the named CA is answered (and the node
-//! is up), a client that offers no certificate is refused, a client whose certificate chains to a
-//! different CA is refused, and a client speaking plaintext to the admin port is given no HTTP
-//! answer. The admin token is presented by every client, so what refuses the three is the handshake
-//! and not the credential.
 #![cfg(unix)]
-// The fixture boots a REAL server with a provider row, as root_listeners_are_the_connectors.rs gates.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -24,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// The admin surface's token.
 const ADMIN_TOKEN: &str = "admin-mtls-certless-token";
 
 fn fixture_dir() -> PathBuf {
@@ -42,7 +29,6 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// A CA and a leaf it signs for `sans`: (ca_pem, leaf_pem, leaf_key_pem).
 fn ca_and_leaf(sans: &[&str]) -> (String, String, String) {
     let ca_key = rcgen::KeyPair::generate().unwrap();
     let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
@@ -58,7 +44,6 @@ fn ca_and_leaf(sans: &[&str]) -> (String, String, String) {
     (ca_pem, leaf.pem(), leaf_key.serialize_pem())
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -71,7 +56,6 @@ fn log(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("out.log")).unwrap_or_default()
 }
 
-/// A reqwest client trusting `server_ca_pem`, presenting `identity` (leaf then key) when given.
 fn client(server_ca_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .add_root_certificate(reqwest::Certificate::from_pem(server_ca_pem.as_bytes()).unwrap())
@@ -87,8 +71,7 @@ fn client(server_ca_pem: &str, identity: Option<(&str, &str)>) -> reqwest::Clien
 #[test]
 fn admin_listener_with_admin_tls_client_ca_rejects_certless_client() {
     let dir = fixture_dir();
-    // The admin listener's own certificate (self-signed, trusted by the clients as a root) and the
-    // CA its clients' certificates must chain to.
+
     let server_key = rcgen::KeyPair::generate().unwrap();
     let server_cert = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()])
         .unwrap()
@@ -110,8 +93,7 @@ fn admin_listener_with_admin_tls_client_ca_rejects_certless_client() {
     )
     .unwrap();
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());
-    // `admin_require_mtls` is left at its default (on): the node serves the admin port only with a
-    // client CA named.
+
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -166,7 +148,6 @@ models:
         let token = format!("Bearer {ADMIN_TOKEN}");
         let valid = client(&server_pem, Some((&client_leaf, &client_key)));
 
-        // The node is up when a client with a certificate from the named CA is answered.
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if let Some(s) = node.0.try_wait().expect("try_wait") {
@@ -190,8 +171,6 @@ models:
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        // A client that trusts the server and presents the admin token but NO certificate is
-        // refused at the handshake: no HTTP response of any status.
         let certless = client(&server_pem, None)
             .get(&url)
             .header("authorization", &token)
@@ -202,7 +181,7 @@ models:
             "a certless client was answered: {:?}",
             certless.map(|r| r.status())
         );
-        // So is one whose certificate chains to a different CA.
+
         let impostor = client(&server_pem, Some((&other_leaf, &other_key)))
             .get(&url)
             .header("authorization", &token)
@@ -213,7 +192,7 @@ models:
             "a client certificate from another CA was answered: {:?}",
             impostor.map(|r| r.status())
         );
-        // Plaintext HTTP to the admin port is given no HTTP answer.
+
         let mut plain = TcpStream::connect(("127.0.0.1", admin)).unwrap();
         plain
             .set_read_timeout(Some(Duration::from_secs(10)))
@@ -233,7 +212,6 @@ models:
             String::from_utf8_lossy(&got)
         );
 
-        // The refusals did not take the listener down: the valid client is still served.
         let again = valid
             .get(&url)
             .header("authorization", &token)

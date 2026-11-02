@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SETTINGS EACH PLUGIN DECLARES PUBLIC, handed to the kernel
-//! (`busbar_kernel::config::settings_public`) before the first configuration is read: every
-//! loadable plugin's settings schema, linked or dropped in, read by the loader
-//! (`boot::public_settings`), under every word a `module:` may name it by. Every setting a schema
-//! does not declare `x-busbar-public` is sensitive.
-
 use std::collections::BTreeSet;
 
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -36,10 +30,6 @@ impl busbar_kernel::config::settings_public::PublicSettings for Table {
     }
 }
 
-/// Every row `linked` and `dropped` declare, each plugin once (a linked row first).
-///
-/// # Errors
-/// A settings schema the pack rules refuse, naming the plugin.
 fn table(linked: &Linked, dropped: Option<&PluginRegistry>) -> Result<Table, String> {
     let mut doors: Vec<(DoorFn, Vec<&str>)> = Vec::new();
     doors.extend(linked.secrets.iter().map(|d| (*d, Vec::new())));
@@ -93,9 +83,6 @@ fn table(linked: &Linked, dropped: Option<&PluginRegistry>) -> Result<Table, Str
     Ok(Table(rows))
 }
 
-/// Hand the kernel the public settings of every plugin `linked` and `dropped` hold. A plugin whose
-/// settings schema the pack rules refuse (a credential declared public) refuses the boot (exit 2),
-/// naming it.
 pub fn install(linked: &Linked, dropped: Option<&'static PluginRegistry>) {
     match table(linked, dropped) {
         Ok(t) => busbar_kernel::config::settings_public::install(Box::leak(Box::new(t))),

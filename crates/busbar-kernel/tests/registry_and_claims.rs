@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The registry, its generations, and the boot-time question every pair of claims has to answer.
-
 use std::sync::Arc;
 
 use busbar_kernel::grammar::{Segment, Selector};
@@ -28,8 +26,6 @@ impl Plugin for Fake {
     }
 }
 
-/// A claim on a transport with a selector, and the scheme every fixture here shares. The overlap
-/// question is about the transport and the selector; the rest of a claim does not enter it.
 fn claim(transport: &'static str, selector: Selector) -> Claim {
     Claim {
         transport,
@@ -44,8 +40,6 @@ fn plane(key: &'static str) -> Arc<dyn Plugin> {
     Arc::new(Fake(key, PluginKind::Plane))
 }
 
-/// One selector of every closed form. The overlap check has to be total over the cross-product of
-/// these, which is what this fixture is for.
 fn every_form() -> Vec<Selector> {
     vec![
         Selector::ExactPath("/a/b"),
@@ -64,12 +58,6 @@ fn every_form() -> Vec<Selector> {
     ]
 }
 
-/// The fixture's own totality check: an exhaustive match with no catch-all, so a selector form
-/// added to the grammar stops this file compiling until it has a representative in `every_form`.
-///
-/// Without it the fixture was a hand-kept list, and the walk below is only over the forms the list
-/// happens to name: a new form would have been added to the grammar, evaluated by the boot check,
-/// and never once asked here whether its overlap answer is total, reflexive or symmetric.
 fn form_of(selector: &Selector) -> &'static str {
     match selector {
         Selector::ExactPath(_) => "exact-path",
@@ -108,7 +96,6 @@ fn overlap_is_total_reflexive_and_symmetric_over_every_form_pair() {
     for left in &forms {
         assert!(overlaps(left, left), "{left:?} does not overlap itself");
         for right in &forms {
-            // Total: every pair has an answer, and it is the same answer either way round.
             assert_eq!(
                 overlaps(left, right),
                 overlaps(right, left),
@@ -133,8 +120,7 @@ fn two_claims_that_could_both_match_at_different_precedence_are_resolved_not_ref
             ),
         },
     ];
-    // The variable segment covers the literal one, so they do overlap — and the sealed order has
-    // something to say about it, so the pair is settled rather than refused.
+
     let sealed = seal_claims(&claims);
     assert!(sealed.refused.is_empty());
     assert_eq!(sealed.resolved.len(), 1);
@@ -172,11 +158,9 @@ fn claims_whose_scheme_sets_share_nothing_never_collide() {
     two.scheme = Some("two-key");
     two.scheme_alternatives = &["request-signature"];
 
-    // The selectors are the same string; only the credential populations differ.
     assert!(overlaps(&one.selector, &two.selector));
     assert!(!claims_overlap(&one, &two));
 
-    // A claim that declares NO scheme reads no credential, so it rules nothing out and collides.
     let mut open = two;
     open.scheme = None;
     open.scheme_alternatives = &[];
@@ -185,8 +169,6 @@ fn claims_whose_scheme_sets_share_nothing_never_collide() {
 
 #[test]
 fn an_anchored_fragment_outranks_the_same_length_floating_one() {
-    // The two literals are the same length, so specificity alone ties them. A suffix matches a
-    // strict subset of what the same literal matches floating, and the order says so.
     assert!(
         precedence(&Selector::PathSuffix("/v1/audio/speech"))
             > precedence(&Selector::PathContains(":generateContent"))
@@ -224,14 +206,10 @@ fn one_plane_may_overlap_its_own_claims_and_they_are_ordered_most_specific_first
         },
     ];
     assert!(check_claims(&claims).is_ok());
-    // The literal path is tried before the pattern that could also match it.
+
     assert_eq!(precedence_order(&claims), vec![1, 0]);
 }
 
-/// A pattern is a plane's own `&'static [PathSeg]` and nothing bounds how many open segments it
-/// names. Enough of them and the tail discount runs past the pattern's own score, which is an
-/// arithmetic the seal must survive: a panic here is a node that will not boot because a plugin
-/// wrote an absurd claim, and a wrap is that claim outranking every other claim in the tree.
 #[test]
 fn a_pattern_of_nothing_but_open_segments_still_ranks_below_a_literal_path() {
     const ALL_TAIL: &[Segment] = &[Segment::Tail; 128];
@@ -287,15 +265,14 @@ fn a_key_may_be_registered_once_per_kind() {
 #[test]
 fn a_deployment_is_bootstrapped_exactly_once() {
     let fingerprint = [7u8; 32];
-    // First boot of a deployment whose store holds no bootstrap: mint.
+
     assert_eq!(bootstrap(None, None), BootstrapVerdict::Mint);
-    // A second bootstrap attempt on a store that already holds one does NOT mint again.
+
     assert_eq!(
         bootstrap(Some(fingerprint), Some(fingerprint)),
         BootstrapVerdict::AlreadyOurs
     );
-    // And a node that does not hold the deployment's keyset refuses to serve rather than minting a
-    // second one, which is the failure where nodes quietly stop trusting each other.
+
     assert_eq!(
         bootstrap(Some(fingerprint), Some([9u8; 32])),
         BootstrapVerdict::KeysetMissing
@@ -306,8 +283,6 @@ fn a_deployment_is_bootstrapped_exactly_once() {
     );
 }
 
-/// A plane door's claim as the host reads it: the target and flags through the contract's one
-/// mapping onto the claim grammar.
 fn door_claim(target: &'static str, flags: u32) -> Claim {
     let selector = busbar_contract::abi::plane::check::claim_selector(target, flags, |v| {
         Box::leak(v.into_boxed_slice())
@@ -316,8 +291,6 @@ fn door_claim(target: &'static str, flags: u32) -> Claim {
     claim("wire", selector)
 }
 
-/// RED: within one plane, a door's EXACT claim is tried before its PATTERN claim over the same
-/// path, which is tried before its PREFIX claim. The sealed precedence is the grammar's, unchanged.
 #[test]
 fn a_door_exact_claim_beats_its_pattern_which_beats_its_prefix() {
     use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_PATTERN};
@@ -340,7 +313,6 @@ fn a_door_exact_claim_beats_its_pattern_which_beats_its_prefix() {
     assert_eq!(precedence_order(&claims), vec![2, 1, 0]);
 }
 
-/// RED: two planes' door pattern claims that can match one path at equal precedence refuse boot.
 #[test]
 fn two_door_pattern_claims_at_equal_precedence_refuse_boot() {
     use busbar_contract::abi::plane::CLAIM_PATTERN;
@@ -366,9 +338,6 @@ fn two_door_pattern_claims_at_equal_precedence_refuse_boot() {
     assert!(check_claims(&disjoint).is_ok());
 }
 
-/// THE CLASS DECIDES FIRST (audit kernel-K5 #12): no claim, however long, outranks a claim of a more
-/// specific class. A pattern of many literal segments stays below every exact path; a long one-level
-/// prefix stays below every pattern; a long suffix stays below every header claim.
 #[test]
 fn a_long_claim_never_outranks_a_more_specific_class() {
     const MANY_LITERALS: &[Segment] = &[Segment::Lit("a"); 64];

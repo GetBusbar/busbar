@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE'S DEADLINE CLASSES, over a store door whose ops PEND and never wake:
-//!
-//! * a WriteBehind op (`add_usage_batch`) to a hung store does NOT hold a reload drain, which
-//!   waits only on Call/Stream/Connection ops (H5: its own deadline class);
-//! * a Call-class op (`record_get`) to the same hung store DOES hold the drain.
-//!
-//! (A synchronous bridge call that PENDS is no longer FAULT: it is submitted on a ticket and
-//! completes on the wake, ARCHITECT ruling 2026-10-03 on Q-L14-1; `store_v3_pend_tests` proves it.)
-//!
-//! Every other slot is the memory store's, through the store SDK.
-
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,7 +15,6 @@ use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
-/// `add_usage_batch`: PENDING, and no wake ever comes.
 struct HangsWriteBehind;
 impl RawSlot for HangsWriteBehind {
     type In = AddUsageBatchIn;
@@ -36,7 +24,6 @@ impl RawSlot for HangsWriteBehind {
     }
 }
 
-/// `record_get`: PENDING, and no wake ever comes.
 struct HangsCall;
 impl RawSlot for HangsCall {
     type In = RecordGetIn;
@@ -132,7 +119,6 @@ fn open() -> (LoadedStore, Arc<Dispatcher>) {
     )
 }
 
-/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
 fn mint() -> OpId {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     OpId::from_parts(

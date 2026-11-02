@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE FRAMER'S SINK FILL: what a framing owes the host ([`Owed`]: wire bytes, frame [`Piece`]s, a
-//! deadline, its end) handed into the host's `FramerSink` as far as it holds ([`fill`]).
-//!
-//! Generic over the frame buffer `B` the framer's pieces carry (`::hyper::body::Bytes` under
-//! [`hyper_io!`](crate::hyper_io), a `Vec<u8>` elsewhere), so the contract names no buffer crate:
-//! the framer says how a split piece keeps its rest ([`Owed::rest`]).
 
 use std::collections::VecDeque;
 
@@ -149,8 +144,7 @@ impl<B: From<String>> Piece<B> {
 }
 
 /// The `emit` just answered left its stream's queue at its high-water mark (`YIELD_STREAM_FULL`):
-/// the host holds that stream's emits until a [`Piece::writable`] or the stream's last piece. Set
-/// after [`fill`], on `emit` only.
+
 pub fn mark_stream_full(o: &mut Out<'_, FramerOut>) {
     let mut y = o.get().yielded;
     y.flags |= YIELD_STREAM_FULL;
@@ -160,7 +154,7 @@ pub fn mark_stream_full(o: &mut Out<'_, FramerOut>) {
 /// What a framing owes the host, as [`fill`] reads it; `B` is its pieces' frame buffer.
 pub trait Owed<B> {
     /// Write as many wire bytes owed to the far side as `into` has room for, straight into it
-    /// ([`HostBuf::stream`]), and owe only the rest.
+
     fn wire_into(&mut self, into: &mut HostBuf<'_, u8>);
     /// Whether wire bytes are still owed after a take.
     fn wire_pending(&self) -> bool;
@@ -175,11 +169,7 @@ pub trait Owed<B> {
 }
 
 /// Hand the host what `f` owes it, as far as the sink holds: wire bytes, then pieces (a piece that
-/// does not fit whole is split, its end-of-frame on its last part; a field block only where a
-/// continuation extends a value), each stream's head words in its head slots ahead of its head's
-/// first piece, then the yield flags. `class_of` maps a piece's status code to its class (the
-/// framer's status table); `fault_of` maps it to the breaker's fault reading (the framer's fault
-/// table, `FAULT_NONE` off it).
+
 pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
     f: &mut F,
     sink: Lent<'_, FramerSink>,
@@ -201,10 +191,7 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
         let Some(piece) = f.pieces().front_mut() else {
             break;
         };
-        // A head's words ride its stream's head slots, in the answer that carries the head's first
-        // piece, their bytes in the frame ahead of the piece's. A host that takes no slots (or a
-        // frame too small to hold them together with a first piece) is not handed them. Decide
-        // how much of BOTH fits before consuming either, so a deferred piece keeps its words.
+
         let mut send_head = false;
         let mut head_len = 0;
         if let Some(words) = piece.head.as_ref() {
@@ -227,9 +214,6 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
         };
         let mut take = cut(frame.cap() - frame_len - head_len);
         if take == 0 && !bytes.is_empty() && frame_len == 0 {
-            // If the whole sink cannot hold words and a first fragment, omit the optional words.
-            // A field name longer than even the whole frame is cut for the host to refuse,
-            // rather than leaving the framing unable to make progress.
             send_head = false;
             take = cut(frame.cap());
             if take == 0 {
@@ -241,7 +225,6 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
         }
         if let Some(words) = piece.head.take() {
             if send_head {
-                // The words fit the frame's room and `heads < heads_cap`.
                 let mut span = |b: &B| {
                     let b = b.as_ref();
                     let at = frame_len;
@@ -265,18 +248,17 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
         }
         let whole = take == bytes.len();
         let mut flags = if piece.writable {
-            // A signal about the stream: it ends no frame.
             PIECE_WRITABLE
         } else if whole {
             PIECE_END_OF_FRAME
         } else {
             0
         };
-        // A failure frame may span pieces like any other; its LAST piece says the stream failed.
+
         if piece.failed && whole {
             flags |= PIECE_STREAM_FAILED;
         }
-        // The stream's end is said, never inferred from an empty piece.
+
         if piece.end {
             flags |= PIECE_END;
         }
@@ -312,7 +294,7 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
             fp.declared_len = declared;
         }
         fp.flags = flags;
-        // The words and `take` bytes fit together, and `n < pieces_cap`.
+
         frame.extend(&bytes[..take]);
         pieces.push(fp);
         frame_len += take;
@@ -320,7 +302,6 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
         if whole {
             f.pieces().pop_front();
         } else {
-            // The rest opens mid-line unless what was taken ended one.
             piece.continued = !bytes[..take].ends_with(b"\n");
             F::rest(&mut piece.bytes, take);
         }
@@ -345,15 +326,13 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
 }
 
 /// How much of a field block's `bytes` a sink with `room` may take: all of it when it fits, else
-/// the furthest cut at a line's start or inside a value, so a continued piece always extends a
-/// value (the host refuses any other continuation). `in_value`: the bytes open inside a value.
-/// `0`: no cut fits.
+
 #[must_use]
 pub fn field_cut(bytes: &[u8], room: usize, in_value: bool) -> usize {
     if bytes.len() <= room {
         return bytes.len();
     }
-    // 0 = a line's start, 1 = a name, 2 = a value.
+
     let mut at = if in_value { 2 } else { 0 };
     let mut best = 0;
     for (i, &b) in bytes[..room].iter().enumerate() {

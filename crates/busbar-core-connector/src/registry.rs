@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE REGISTRY VIEW: which transport entry serves which scheme, and as which of its claims
-//! (`BUSBAR-1.6.0.md` THE DESIGN, §5: one plugin is one entry, the schemes it serves are its claims;
-//! two entries claiming one scheme refuse boot; no transport names another).
-//!
-//! Each entry comes with its registration: the protocols its connections offer in the TLS
-//! handshake (the operator's settings, dealt at boot). Every layer an entry composes over must be
-//! claimed by an entry here, or the view refuses it: a connection built over a layer nobody serves
-//! would describe a stack that does not exist.
 
 use std::sync::Arc;
 
@@ -96,11 +89,7 @@ pub struct Transports {
 
 impl Transports {
     /// The view over `entries`.
-    ///
-    /// # Errors
-    ///
-    /// Two entries claim one scheme, an entry states no claim, or an entry composes over a claim
-    /// no entry serves.
+
     pub fn new(entries: Vec<Entry>) -> Result<Self, ViewRefusal> {
         let view = Self { entries };
         let mut seen: Vec<(&str, &str)> = Vec::new();
@@ -153,9 +142,7 @@ impl Transports {
     }
 
     /// THE CARRIER OF A NETWORK ADDRESS: the first entry, in registration order, that is a CARRIER
-    /// whose own claim selects on the local port ([`crate::framer::DoorFacts::ported`]). A framer's
-    /// connection, and every listener, ride it; `None` = no such carrier is loaded, and nothing
-    /// dials or binds an address.
+
     #[must_use]
     pub fn address_carrier(&self) -> Option<&Entry> {
         self.entries.iter().find(|e| {

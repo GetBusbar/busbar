@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Inspection receipts in the service store's existing ticket/result epoch. No completion handle
-//! can alias these records. A caller has one current query; increasing IDs replace consumed ones.
-
 use super::*;
 use busbar_contract::abi::mechanism::inspection::InspectionRequest;
 
@@ -25,7 +22,7 @@ impl ServiceStore {
             .and_then(|h| h.inspections.get(&caller))
             .is_some_and(|kept| !kept.cancelled)
     }
-    /// The epoch and immutable receipt lent to this crossing. Unit binding is host-derived.
+
     pub(crate) fn inspection_input(
         &self,
         caller: usize,
@@ -65,8 +62,6 @@ impl ServiceStore {
         Ok(answer)
     }
 
-    /// Reserve a copied request before reading the provider. `false` is an exact replay, which
-    /// neither reads the provider again nor wakes the ticket again.
     pub(crate) fn inspection_begin(
         &self,
         caller: usize,
@@ -110,8 +105,6 @@ impl ServiceStore {
         Ok(true)
     }
 
-    /// Commit once, only if the original request still owns this epoch. Provider code ran with
-    /// no store lock held. A cancel, new operation or recycled ticket discards late completion.
     pub(crate) fn inspection_complete(
         &self,
         caller: usize,
@@ -135,8 +128,6 @@ impl ServiceStore {
         true
     }
 
-    /// Cancel this caller's inspection without disturbing other held driver service exchanges.
-    /// Keep its ID tombstone until the epoch ends, so its request cannot start again.
     pub(crate) fn inspection_cancel(&self, caller: usize, ticket: Ticket) {
         let receipt = {
             let mut map = self.lock(ticket);
@@ -180,7 +171,7 @@ mod tests {
             generation: 9,
         };
         store.held.track(ticket);
-        store.keep(ticket, 1); // the ordinary completion handle's sequence is also 1.
+        store.keep(ticket, 1);
         let a = request(&store, 11, ticket, Some(5));
         assert_eq!(store.inspection_begin(11, Some(5), &a), Ok(true));
         assert_eq!(store.held.held(ticket), 1);

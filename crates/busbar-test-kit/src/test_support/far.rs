@@ -77,7 +77,7 @@ struct Script {
 }
 
 static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
-/// One far end at a time: the script is process-wide.
+
 static SERIAL: Mutex<()> = Mutex::new(());
 
 /// THE SCRIPTED FAR END, held for the test's scope ([`Far::answering`]); its slots are installed
@@ -88,14 +88,11 @@ pub struct Far {
 }
 
 impl Far {
-    /// A far end that answers every request `status`, no reason and no fields, then `body`.
     #[must_use]
     pub fn answering(status: u16, body: &[u8]) -> Self {
         Self::replying(status, &[], body)
     }
 
-    /// A far end that answers every request `status` with the fields `fields` (`(name, value)`,
-    /// in order), then `body`.
     #[must_use]
     pub fn replying(status: u16, reply_fields: &[(&[u8], &[u8])], body: &[u8]) -> Self {
         let one = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
@@ -116,19 +113,16 @@ impl Far {
         Self { _one: one }
     }
 
-    /// Every request sent whole, in order.
     #[must_use]
     pub fn sent(&self) -> Vec<Sent> {
         with(|s| s.sent.clone())
     }
 
-    /// How many requests were sent whole: what a plugin that POSTs posted.
     #[must_use]
     pub fn posts(&self) -> usize {
         with(|s| s.sent.len())
     }
 
-    /// Streams established and not yet closed: `0` once every exchange closed its stream.
     #[must_use]
     pub fn held(&self) -> i64 {
         with(|s| s.held)
@@ -172,8 +166,6 @@ fn spanned(buf: &[u8], s: FrameSpan) -> &[u8] {
     buf.get(at..at.saturating_add(len)).unwrap_or(&[])
 }
 
-/// One service: the first issue of a handle runs it and PENDS (its result stored); a re-issue
-/// answers the stored result.
 fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     // SAFETY: every service `in` leads with a `ServiceHead` (the connector ABI).
     let head = unsafe { *input.cast::<ServiceHead>() };
@@ -256,7 +248,6 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
                 _ => Vec::new(),
             };
             if bytes.len() > io.len {
-                // A piece larger than the read the SDK lent: script a smaller reply.
                 return answer(out, Outcome::Failed, 0, 0);
             }
             // SAFETY: `io.buf` holds `io.len` writable bytes and `io.piece` a writable descriptor,

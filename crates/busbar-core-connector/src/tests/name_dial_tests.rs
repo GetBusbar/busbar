@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A NEED DIALS A HOSTNAME THROUGH THE ONE DESTINATION GUARD, END TO END (`BUSBAR-1.6.0.md` THE
-//! DESIGN, connections). A plugin's view of
-//! the connection table (`HostConns`, over the host's lowered slots) opens a need whose target is a
-//! NAME; the connector judges the authority through the deployment's one judge
-//! (`process::GuardJudge`), the name resolves off the caller's thread, and the connector dials
-//! exactly the pinned address. The open answers at once with the dial in flight; the resolution
-//! wakes the reader's ticket; a refusal the name decides answers the open, and an answered address
-//! the guard refuses answers the read — 1.5.5's refusal timing. The far ends here are on loopback,
-//! so the fixture allowlists loopback (the guard refuses it by default).
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,7 +24,7 @@ const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(0);
 
 /// A resolver answering from a fixed table, off the caller's thread, after a pause — so the open
-/// is always in flight when the first read finds it.
+
 struct Table(Vec<(&'static str, IpAddr)>);
 
 impl Resolve for Table {
@@ -55,7 +47,7 @@ impl Resolve for Table {
 }
 
 /// The connector serving a byte-exact door, its dials judged by the one guard over `allow` and
-/// `resolver`.
+
 fn connector_over(
     allow: &[&str],
     resolver: Arc<dyn Resolve>,
@@ -122,7 +114,7 @@ fn host(c: &Arc<Connector>) -> ConnHost {
 }
 
 /// The plugin's view of `host`'s table. `host` must not move while the view is used: the view's
-/// context points at it.
+
 fn table(host: &ConnHost) -> HostConns {
     // SAFETY: the host's own slots over the context it minted; `host` outlives every call and
     // stays in place.
@@ -130,7 +122,7 @@ fn table(host: &ConnHost) -> HostConns {
 }
 
 /// THE PROOF: a hostname target opens at once, the read before the resolution answers is Pending,
-/// the resolution wakes the ticket, and the bytes round-trip over the address the judge pinned.
+
 #[test]
 fn a_need_dials_a_hostname_through_the_one_guard() {
     worker().block_on(async {
@@ -169,9 +161,7 @@ fn a_need_dials_a_hostname_through_the_one_guard() {
 }
 
 /// A NAME'S ADDRESSES ARE TRIED IN TURN (oracle wire.tls client-hello cells, store.boot postgres
-/// localhost): `localhost` answering `::1` first where the far end listens on `127.0.0.1` only. The
-/// pinned `::1` refuses the connect, and the dial moves on to the name's next admitted address, as
-/// 1.5.5's client did. RED before: the open failed on the first refusal.
+
 #[test]
 fn a_refused_connect_moves_on_to_the_names_next_address() {
     worker().block_on(async {
@@ -205,7 +195,7 @@ fn a_refused_connect_moves_on_to_the_names_next_address() {
 }
 
 /// Ask `c` whether `id`'s dial has landed until it answers, as `ESTABLISH` asks on the plugin's
-/// ticket.
+
 async fn landed(c: &Connector, id: ConnId) -> Result<(), ConnError> {
     for _ in 0..2000 {
         match DeclaredConns::landed(c, OWNER, id, 7) {
@@ -217,13 +207,7 @@ async fn landed(c: &Connector, id: ConnId) -> Result<(), ConnError> {
 }
 
 /// A LIBPQ MULTI-HOST URL'S ENDPOINTS, as `ESTABLISH` answers them (oracle
-/// `store.boot|postgres|multi-host`: `127.0.0.1:1,127.0.0.1:<port>`): an open answers with its
-/// dial in flight, and the dial's landing is what the plugin's connect waits on. The first
-/// endpoint REFUSES the connect: its landing answers the refusal, its cause the connect's, so the
-/// plugin closes it and opens the next; the second lands and carries the bytes. Each endpoint is
-/// the plugin's own open, judged as every open is: nothing wider is admitted. RED before: the
-/// connector named no landing (the table's default answered every open landed), so the refused
-/// endpoint was the plugin's connection and the second was never dialled.
+
 #[test]
 fn a_refused_endpoint_fails_its_landing_and_the_next_endpoint_lands() {
     worker().block_on(async {
@@ -274,8 +258,7 @@ fn a_refused_endpoint_fails_its_landing_and_the_next_endpoint_lands() {
 }
 
 /// The system resolver, through the same path: `localhost` resolves, is judged, and is dialled at
-/// the address it answered first. The guard refuses the `localhost` name itself under
-/// `block_private_addresses` unless the allowlist names it (RFC 6761), so this deployment names it.
+
 #[test]
 fn a_need_dials_localhost_through_the_system_resolver() {
     use std::net::ToSocketAddrs;
@@ -310,10 +293,7 @@ fn a_need_dials_localhost_through_the_system_resolver() {
 }
 
 /// RED: a refusal the name decides answers the open itself, before any resolution; a name whose
-/// answer is a cloud metadata address (a rebinding) opens with its dial in flight and is refused on
-/// the read that finds the judgement — nothing is ever dialled. (A name that does not resolve is a
-/// failure, not a refusal:
-/// [`a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal`].)
+
 #[test]
 fn a_name_the_judge_refuses_is_never_dialled() {
     worker().block_on(async {
@@ -350,7 +330,7 @@ fn a_name_the_judge_refuses_is_never_dialled() {
 }
 
 /// A resolver that fails every name until `up` is set, then answers [`Table`]'s way: a collector's
-/// DNS briefly down, then back.
+
 struct Flaky {
     up: Arc<std::sync::atomic::AtomicBool>,
     table: Table,
@@ -367,16 +347,7 @@ impl Resolve for Flaky {
 }
 
 /// RED (1.5.5 `otlp_resolves_to_internal`, v1.5.5
-/// `crates/busbar/src/observability.rs:588-590`, test `:1482-1490`: "A resolution FAILURE is not a
-/// rejection. A collector whose DNS is briefly down is an availability event, not a security one
-/// ... disabling trace export over a transient blip would be the wrong trade"): a loopback-allowed
-/// need (the OTLP collector's class) whose collector name does not resolve opens with its dial in
-/// flight and its read answers a FAILED connection (`Fault`, a FAILED outcome to the plugin, which
-/// the OTLP sink drops as one batch), never `Refused` (a REFUSED outcome, which the sink reads as
-/// the run's answer and disables trace export on): nothing is dialled, and the failure stays that
-/// connection's answer. The next exchange resolves afresh and, the name back, reaches the collector
-/// — 1.5.5's next batch. RED ARM: a name the guard refuses on its answer (a rebinding to cloud
-/// metadata) is still `Refused`. RED on the connector that answered every pended verdict `Refused`.
+
 #[test]
 fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
     worker().block_on(async {
@@ -434,12 +405,12 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
             "and stays its answer"
         );
         t.close(id).unwrap();
-        // RED ARM: the guard's own refusal of an answer is a refusal still.
+
         up.store(true, Ordering::SeqCst);
         let id = open("rebind.test:80").expect("opens, its judgement pending");
         assert_eq!(read(&t, id).await, Err(ConnError::Refused));
         t.close(id).unwrap();
-        // The name back, the next exchange reaches the collector.
+
         let id = open(&target).expect("opens");
         assert_eq!(t.write(id, b"span", false, false), Ok(4));
         assert_eq!(read(&t, id).await.expect("the echo"), b"span");
@@ -448,7 +419,7 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
 }
 
 /// One read of `id` straight on the connector (the table a plugin's ESTABLISH reaches, where its
-/// `within` rides), driving the connection by reads alone.
+
 async fn read_direct(c: &Arc<Connector>, id: ConnId) -> Result<Vec<u8>, ConnError> {
     let mut buf = [0_u8; 64];
     for _ in 0..2000 {
@@ -483,7 +454,7 @@ async fn counting_echo() -> (u16, Arc<AtomicU64>) {
 }
 
 /// THE LANDING RULE, GREEN: a dial stated `within` the address set the plugin's `dest.judge`
-/// answered lands on the address the judge pins in it, and the bytes round-trip.
+
 #[test]
 fn a_judged_address_set_pins_the_dial() {
     worker().block_on(async {
@@ -512,9 +483,7 @@ fn a_judged_address_set_pins_the_dial() {
 }
 
 /// THE LANDING RULE, RED: the name was judged at one address and answers another at dial time
-/// (a rebinding). The open is REFUSED at the connect, before any byte leaves: the far end accepts
-/// no connection, and the bytes written while the dial was in flight never reach it. An IP literal
-/// outside the set is refused at once. RED on the connector that held the pin only to the class.
+
 #[test]
 fn a_rebound_name_is_refused_before_its_bytes_leave() {
     worker().block_on(async {
@@ -567,7 +536,7 @@ fn a_rebound_name_is_refused_before_its_bytes_leave() {
 }
 
 /// THE LANDING RULE, EMPTY: no set states no pin, so the same answer as the RED above (a name
-/// resolving to an address nobody judged before) dials as it always did.
+
 #[test]
 fn an_empty_address_set_keeps_the_dial_as_it_was() {
     worker().block_on(async {
@@ -595,8 +564,7 @@ fn an_empty_address_set_keeps_the_dial_as_it_was() {
 }
 
 /// RED (the destination guard): under the default, a name resolving to loopback is refused after
-/// its one resolution, on the read that finds the judgement, before any socket: the far end
-/// accepts nothing and the bytes written meanwhile never leave.
+
 #[test]
 fn a_name_resolving_to_loopback_is_refused_before_any_socket() {
     worker().block_on(async {
@@ -656,8 +624,7 @@ fn the_same_name_dials_when_allowlisted() {
 }
 
 /// THE DESIGN §5 egress-class table: the same name, when the need's
-/// CONFIG names it (`target_from`, a store/secret/auth plugin's connection), is the operator's own
-/// destination and dials with no allowlist; the name a plugin names per open (above) stays refused.
+
 #[test]
 fn a_config_named_target_on_loopback_is_trusted() {
     worker().block_on(async {
@@ -680,8 +647,7 @@ fn a_config_named_target_on_loopback_is_trusted() {
 }
 
 /// RED (THE DESIGN §5 destination guard: "refused unless allowlisted"
-/// holds for the provider class): a PROVIDER need whose config names a target on loopback is not
-/// lifted to operator infrastructure; it is refused before any socket until the allowlist names it.
+
 #[test]
 fn a_config_named_provider_target_on_loopback_is_refused_until_allowlisted() {
     use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;

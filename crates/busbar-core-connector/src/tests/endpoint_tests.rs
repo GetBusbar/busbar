@@ -79,8 +79,7 @@ fn a_neighbour_of_a_metadata_host_passes() {
 }
 
 /// RED: a URL-shaped target is judged on its HOST, not its scheme, and the one shared metadata list
-/// covers Azure's WireServer and the `metadata.internal` names the private list here never had. A
-/// target with no readable host is refused rather than waved through unjudged.
+
 #[test]
 fn a_url_target_and_every_shared_metadata_host_is_refused() {
     for target in [
@@ -98,7 +97,7 @@ fn a_url_target_and_every_shared_metadata_host_is_refused() {
 }
 
 /// RED: IPv6 link-local, fe80::/10, is refused in every spelling, as predev's private list refused
-/// it (metadata and link-local are refused on every need); the addresses just outside the /10 pass.
+
 #[test]
 fn ipv6_link_local_is_refused_in_every_spelling() {
     for (target, host) in [
@@ -118,11 +117,7 @@ fn ipv6_link_local_is_refused_in_every_spelling() {
 }
 
 /// A socket-path target (`ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi`) and an opaque host whose spelling
-/// decodes to a forbidden code point (`%25`, `%40`) are refused HERE, before any entry locates or
-/// dials them, with the same refusal and the same words as before the contract read such a host as
-/// `url`'s opaque host: the target names no host. Every dial path (`Planned::locate`,
-/// `Planned::carried`, `Connector::admits_pinned`) runs this check first, so none of them is
-/// dialled as a host named `/var/run/...` or `%2Fvar...`.
+
 #[test]
 fn a_socket_path_or_opaque_forbidden_host_target_is_refused_as_naming_no_host() {
     for target in [

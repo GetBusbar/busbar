@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The plugin side of the host's I/O table: a table of test slots answers each shape, and the SDK
-//! reads it as the rules say.
 
 use super::*;
 use std::ffi::c_void;
@@ -177,7 +176,7 @@ fn ends_answers_the_local_port_and_the_peer_bytes() {
 }
 
 /// `io.ends` on a program's handle reads the program's own exit from `exited`: the code once it
-/// exited, `None` while it runs (a host that predates the byte wrote it zero, so it reads `None`).
+
 #[test]
 fn program_exit_reads_the_exited_byte_and_the_code() {
     assert_eq!(io(Ticket::NONE).program_exit(7), Ok(Some(3)));
@@ -186,7 +185,7 @@ fn program_exit_reads_the_exited_byte_and_the_code() {
 }
 
 /// The public safe entry receives only borrowed Rust strings, including nested arguments and
-/// environment values. The actual ABI slot reads them while the wrapper's temporary lists live.
+
 #[test]
 fn spawn_lends_owned_strings_and_nested_lists_until_the_slot_returns() {
     let table = IoSlots {

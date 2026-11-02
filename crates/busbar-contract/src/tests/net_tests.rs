@@ -2,13 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The URL and host reader, over every bypass spelling the host-parsing audit found: each row is a
-//! string two parsers read differently, and the row states the reading the dialling stack takes.
 
 use super::*;
 use std::net::{IpAddr, Ipv4Addr};
 
 /// One row: the input, then what [`parse_url`] reads (scheme, userinfo, host, port, path), then
-/// whether the host is private-or-loopback and whether it is a cloud-metadata endpoint.
+
 type Row = (
     &'static str,
     (&'static str, bool, &'static str, Option<u16>, &'static str),
@@ -20,14 +19,12 @@ type Row = (
 #[test]
 fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
     let rows: &[Row] = &[
-        // The authority ends at `#` under RFC 3986, so the `@` after it is not a userinfo marker.
         (
             "ldaps://evil.example#@127.0.0.1",
             ("ldaps", false, "evil.example", None, "#@127.0.0.1"),
             false,
             false,
         ),
-        // `?`, `#`, a trailing dot, a percent-encoded name and a `\` all end or reshape the host.
         (
             "https://127.0.0.1?x",
             ("https", false, "127.0.0.1", None, "/?x"),
@@ -64,14 +61,12 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             true,
             false,
         ),
-        // The consent-screen case: the browser dials `evil.example`, not `trusted.example`.
         (
             "https://evil.example\\@trusted.example/cb",
             ("https", false, "evil.example", None, "/@trusted.example/cb"),
             false,
             false,
         ),
-        // A real userinfo is reported, split at the last `@`, and never kept.
         (
             "https://user:pw@host.example/",
             ("https", true, "host.example", None, "/"),
@@ -90,7 +85,6 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             false,
             false,
         ),
-        // IPv6 brackets.
         (
             "https://[::1]:8443/x",
             ("https", false, "::1", Some(8443), "/x"),
@@ -121,7 +115,6 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             true,
             true,
         ),
-        // The alternate IPv4 spellings: the host reads as written, and means the address.
         (
             "https://2130706433/",
             ("https", false, "2130706433", None, "/"),
@@ -164,7 +157,6 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             true,
             true,
         ),
-        // The WHATWG first step: padding trimmed, tabs deleted, slashes after the scheme skipped.
         (
             "  https://10.0.0.1 ",
             ("https", false, "10.0.0.1", None, "/"),
@@ -189,7 +181,6 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             false,
             false,
         ),
-        // The one metadata list: names with a trailing dot and any case, Azure's public address.
         (
             "https://metadata.google.internal./",
             ("https", false, "metadata.google.internal", None, "/"),
@@ -266,7 +257,7 @@ fn a_string_with_no_readable_host_is_refused_with_its_reason() {
 }
 
 /// A dial target reads as a URL when it is one and as a bare authority otherwise, so a scheme is
-/// never read as the host.
+
 #[test]
 fn a_dial_target_never_reads_its_scheme_as_the_host() {
     for (target, want) in [
@@ -314,7 +305,7 @@ fn every_literal_spelling_names_its_address() {
 }
 
 /// IPv6 link-local is its own fact, not a metadata one: `host_is_link_local_v6` holds fe80::/10 in
-/// every spelling the reader takes, and `host_is_cloud_metadata` does not claim it.
+
 #[test]
 fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
     for host in ["fe80::1", "FE80::a9fe:a9fe", "fe80::1%eth0", "febf:ffff::1"] {
@@ -333,7 +324,7 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
 }
 
 /// A SOCKET LITERAL is exactly what the standard parser accepts: every row agrees with
-/// `SocketAddr`'s own answer, and states it.
+
 #[test]
 fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
     for (s, want) in [
@@ -344,7 +335,6 @@ fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
         ("[2001:db8::1]:80", true),
         ("[::ffff:127.0.0.1]:80", true),
         ("[fe80::1%eth0]:80", false),
-        // A numeric scope id is the standard grammar's; a named zone is not.
         ("[fe80::1%2]:80", true),
         ("0x7f.1:80", false),
         ("127.1:80", false),
@@ -373,7 +363,7 @@ fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
 }
 
 /// AN IP LITERAL (v4 or v6) is exactly what the standard parser accepts: every row agrees with
-/// `IpAddr`'s own answer, and states it.
+
 #[test]
 fn an_ip_literal_is_exactly_what_the_standard_parser_accepts() {
     for (s, want) in [
@@ -410,9 +400,7 @@ fn an_ip_literal_is_exactly_what_the_standard_parser_accepts() {
 }
 
 /// THE VERBATIM HOST READER keeps what the shared reader normalises: a trailing root dot stays
-/// (`example.com.` is not `example.com`), a percent-encoded host is not decoded, and an IPv6
-/// literal is unbracketed as `Ipv6Addr` displays it; the authority is read exactly as
-/// `parse_url` reads it. RED against `url_host`, which drops the dot.
+
 #[test]
 fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
     use crate::net::{url_host, url_host_verbatim};
@@ -441,7 +429,7 @@ fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
 }
 
 /// THE ONE AUTHORITY SPLIT reads v1.5.5's authority: it ends at `/`, `?`, `#` and (no scheme, or a
-/// web scheme) `\`; the userinfo runs to the authority's last `@`; a generic scheme keeps its `\`.
+
 #[test]
 fn the_authority_ends_where_the_dialling_stack_ends_it() {
     fn at(url: &str) -> (Option<&str>, Option<&str>, &str, &str) {
@@ -472,7 +460,7 @@ fn the_authority_ends_where_the_dialling_stack_ends_it() {
         at("HTTPS://h.example"),
         (Some("HTTPS"), None, "h.example", "")
     );
-    // The authority the split reads is the host the WHATWG reader reads.
+
     for url in [
         "https://evil.example\\@victim.example/p",
         "https://u:p@host.example/x",
@@ -487,7 +475,7 @@ fn the_authority_ends_where_the_dialling_stack_ends_it() {
 }
 
 /// The address value types a plugin names through the contract ARE `std::net`'s: a plugin that
-/// switches its `std::net::SocketAddr` to `busbar_contract::net::SocketAddr` reads the same value.
+
 #[test]
 fn the_contract_address_values_are_the_std_types() {
     let v4: Result<super::Ipv4Addr, super::AddrParseError> = "127.0.0.1".parse();
@@ -508,8 +496,7 @@ fn the_contract_address_values_are_the_std_types() {
 }
 
 /// An IDN host reads as its UTS #46 punycode name, the name busbar 1.5.5 dialled and sent as its
-/// `Host` (its `url` 2.5.8 mapped the host before the dial): written in Unicode, percent-encoded,
-/// with a port, under a generic scheme, or ending in a full-width root dot.
+
 #[test]
 fn an_idn_host_reads_as_its_punycode_name() {
     for (input, host, port) in [
@@ -556,8 +543,7 @@ fn an_idn_host_reads_as_its_punycode_name() {
 }
 
 /// A mixed-case IDN normalises the way `url` normalises it: UTS #46 lower-cases the whole name,
-/// its ASCII labels too, and a full-width spelling of an address reads as the address, so the
-/// predicates judge what the dial reaches.
+
 #[test]
 fn a_mixed_case_idn_normalises_the_way_url_does() {
     for (input, host) in [
@@ -577,7 +563,7 @@ fn a_mixed_case_idn_normalises_the_way_url_does() {
 }
 
 /// A WHATWG-forbidden host is refused, written as itself or produced by the UTS #46 mapping, and
-/// so is a code point UTS #46 disallows.
+
 #[test]
 fn a_whatwg_forbidden_host_is_refused() {
     for input in [
@@ -616,8 +602,7 @@ fn an_ascii_host_is_unchanged() {
 }
 
 /// A non-special scheme's non-ASCII host is `url` 2.5.8's OPAQUE host, byte for byte
-/// (`Host::parse_opaque`: the spelling, every non-ASCII and C0-control byte as upper-case `%XX`),
-/// not a punycode name: 1.5.5 read an `ldap` host so, and this reader changes no `ldap` outcome.
+
 #[test]
 fn a_non_special_idn_host_reads_as_urls_opaque_host() {
     for (input, host, port) in [
@@ -635,8 +620,7 @@ fn a_non_special_idn_host_reads_as_urls_opaque_host() {
         assert_eq!((got.host.as_str(), got.port), (host, port), "{input:?}");
         assert_eq!(target_host(input).as_deref(), Some(host), "{input:?}");
     }
-    // `url` checks an opaque host before any decode, so a `%25` stands, as written. Such a host
-    // names no host a dial reaches: as a dial target it reads none, as before the opaque reading.
+
     for (input, host, port) in [
         ("ldap://a%25b.example:389", "a%25b.example", Some(389)),
         ("ldaps://dir%25.example", "dir%25.example", None),
@@ -659,7 +643,7 @@ fn a_non_special_idn_host_reads_as_urls_opaque_host() {
 }
 
 /// A bare `host[:port]` dial target with a non-ASCII host reads as its punycode name, as a URL
-/// under a special scheme does: the name its dial reaches.
+
 #[test]
 fn a_bare_idn_authority_reads_as_its_punycode_name() {
     for (input, host) in [
@@ -680,8 +664,7 @@ fn a_bare_idn_authority_reads_as_its_punycode_name() {
         extract_normalized_authority_host("b\u{fc}cher\u{ff1c}.example:1"),
         None
     );
-    // The 1.5.5 validators' reader of a web URL reads the name the dial reaches too: a host read as
-    // written was judged as a name no dial reaches (`ｌｏｃａｌｈｏｓｔ` passed for `localhost`).
+
     assert_eq!(
         extract_normalized_host("https://b\u{fc}cher.example/").as_deref(),
         Some("xn--bcher-kva.example")
@@ -697,8 +680,7 @@ fn a_bare_idn_authority_reads_as_its_punycode_name() {
 }
 
 /// `url` 2.5.8'S IPv4 READING (`url/src/host.rs` `ends_in_a_number`, `parse_ipv4addr`): the short,
-/// octal and hex forms read as the address `url` dials, a domain as none, and a host that ends in a
-/// number but is no address refused.
+
 #[test]
 fn url_host_ipv4_reads_a_host_as_url_2_5_8_reads_it() {
     let v4 = |s: &str| s.parse::<Ipv4Addr>().expect("an address");
@@ -734,9 +716,7 @@ fn url_host_ipv4_reads_a_host_as_url_2_5_8_reads_it() {
 }
 
 /// THE HOST A DESTINATION JUDGE COMPARES: a non-ASCII host is the ASCII name or address UTS #46
-/// maps it to; an ASCII host, an alternate IPv4 spelling and an IPv6 literal (a zone id included)
-/// are what the guard always compared; a host `url` reads as an address the address reader does not
-/// (or refuses) is unjudgeable.
+
 #[test]
 fn judged_host_maps_to_what_a_url_client_dials() {
     for (host, judged) in [
@@ -779,7 +759,7 @@ fn judged_host_maps_to_what_a_url_client_dials() {
 }
 
 /// file: hosts are read opaque; no file: URL is dialled or judged. A non-ASCII local-file URL host
-/// reads as `url`'s opaque host, not as a punycode name, and an ASCII one is read as before.
+
 #[test]
 fn a_local_file_url_host_reads_opaque() {
     for (input, host, path) in [
@@ -799,10 +779,7 @@ fn a_local_file_url_host_reads_opaque() {
 }
 
 /// RED (HIGH, the percent-escape the judge did not decode): a host reaches the judge decoded, so a
-/// `%` left in one is an escape a decoding client reads and this reading does not. `%6c%6fcalhost`
-/// was judged as an unknown name (and admitted unresolved) while a decoding client dials
-/// `localhost`; every such host is unjudgeable now. A `%` opening an IPv6 literal's zone id is that
-/// literal, as before.
+
 #[test]
 fn judged_host_refuses_a_percent_outside_an_ipv6_zone_id() {
     for escaped in [

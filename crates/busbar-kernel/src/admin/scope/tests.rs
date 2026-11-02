@@ -3,8 +3,6 @@
 
 use super::*;
 
-/// The authorization matrix, ported from 1.5.5's `required_scope_matrix` test: reads (+ the two
-/// dry-run POSTs) are read-only, every mutation is full, unknown methods fail closed to full.
 #[test]
 fn required_scope_matrix() {
     for path in [
@@ -63,7 +61,6 @@ fn required_scope_matrix() {
 ///    this one is handed the recorded request path, which carries `?query`.
 #[test]
 fn the_scope_matrix_matches_the_enforced_one_verbatim() {
-    // 1. Non-canonical verbs fail CLOSED, never fold into a read.
     for verb in ["get", "Get", "gEt", "head", "Head", "post", "Post"] {
         assert_eq!(
             admin_required_scope(verb, "/api/v1/admin/keys"),
@@ -71,7 +68,7 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
             "`{verb}` is an extension method, not a read: it must fail closed to full"
         );
     }
-    // Not even for the dry-run paths, where a folded `post` used to be the gate's own condition.
+
     for verb in ["post", "Post", "POSt"] {
         assert_eq!(
             admin_required_scope(verb, "/api/v1/admin/config/validate"),
@@ -80,8 +77,6 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
         );
     }
 
-    // 2. The dry-run paths carry no method gate at all — the enforced matrix answers `read-only`
-    //    for them whatever the verb, and so does this one.
     for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
         for path in [
             "/api/v1/admin/config/validate",
@@ -95,8 +90,6 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
         }
     }
 
-    // 3. A query string never changes which row a request is. `GET /audit?limit=4` and
-    //    `GET /audit` are one operation, and so are the dry-run POSTs with and without one.
     assert_eq!(
         admin_required_scope("POST", "/api/v1/admin/config/validate?strict=1"),
         Scope::ReadOnly,
@@ -110,7 +103,7 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
         admin_required_scope("GET", "/api/v1/admin/audit?limit=4"),
         Scope::ReadOnly
     );
-    // And the query cannot be used to smuggle a mutation into a dry-run row either.
+
     assert_eq!(
         admin_required_scope("POST", "/api/v1/admin/config/apply?dry=/config/validate"),
         Scope::Full,
@@ -122,8 +115,6 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
     );
 }
 
-/// Every admin operation 1.5.5 published, read off the 1.5.5 document in the oracle corpus
-/// (`testing/shadow-oracle/fixtures/openapi-1.5.5.json`): `(method, path, x-busbar-required-scope)`.
 fn operations_1_5_5() -> Vec<(String, String, Scope)> {
     const OPENAPI_1_5_5: &str =
         include_str!("../../../../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");
@@ -150,8 +141,6 @@ fn operations_1_5_5() -> Vec<(String, String, Scope)> {
     ops
 }
 
-/// The table test: `required_scope` reproduces every one of the 66 1.5.5 admin operations, read off
-/// the 1.5.5 document, and the document's own read-only/full split is exactly 34/32.
 #[test]
 fn required_scope_matches_every_pinned_admin_operation() {
     let ops = operations_1_5_5();
@@ -174,9 +163,6 @@ fn required_scope_matches_every_pinned_admin_operation() {
     }
 }
 
-/// Every path in the 1.5.5 document is `ADMIN_PREFIX`-rooted and every method is one of the five
-/// HTTP verbs the admin API actually uses — a sanity check on the data's own shape, independent of
-/// `required_scope`.
 #[test]
 fn admin_scope_table_rows_are_well_formed() {
     for (method, path, _) in operations_1_5_5() {

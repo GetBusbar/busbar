@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE EXPORT KIND'S ANSWER VALIDATORS, beside the shapes they judge: one pure `check_<op>` per
-//! answer, `u64` math, no statics, each answering the shared [`Fault`] (one [`Rule`] and one
-//! distinct field per arm). The dispatcher turns an `Err` into FAULT; no host re-implements a
-//! check.
-//!
-//! Per outcome: a blob's or list's pointer/length pairing and its size are judged on every outcome
-//! (a PENDING or REFUSED `out` the host zeroed passes them). A lease (memory class iv) is judged on
-//! READY only: required exactly when the answer carries material. `scrape` is the one op with a
-//! short path: its `needed` is non-zero only on FAILED, under the short-buffer rule
-//! ([`OutHead`](crate::abi::mechanism::call::OutHead)).
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
@@ -25,18 +16,13 @@ use crate::abi::mechanism::check::{
 pub const HARD_MAX_HEADERS_OUT_LEN: u64 = 128;
 
 /// Validates `deliver`'s `out` (the shared [`OutHead`]; `deliver` reads nothing back beyond it).
-/// A FAILED answer's error text is judged; other outcomes state nothing here.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_deliver(out: &OutHead) -> Result<(), Fault> {
     failed_error(out, "deliver.error")
 }
 
 /// Validates `scrape`'s `out` against the capacity [`super::ScrapeIn::cap`] gave the plugin.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_scrape(out: &ScrapeOut, cap: usize) -> Result<(), Fault> {
     result(
         out.head.outcome.outcome(),
@@ -50,25 +36,19 @@ pub fn check_scrape(out: &ScrapeOut, cap: usize) -> Result<(), Fault> {
 }
 
 /// Validates `status`'s `out`.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
     leased_blob!(out, "status", status)
 }
 
 /// Validates `check`'s `out`.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_check(out: &CheckOut) -> Result<(), Fault> {
     leased_blob!(out, "check", findings)
 }
 
 /// Validates `serve`'s `out`.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
     let (h, n) = (out.headers_out, out.headers_out_len);
     served(&out.head, h, n, HARD_MAX_HEADERS_OUT_LEN, &out.body)
@@ -78,11 +58,7 @@ pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
 pub const HARD_MAX_ROUTES: u64 = 64;
 
 /// Validates the export Statement tail's lists, before any entry is read: a count never comes
-/// with a NULL pointer, `streams` holds at most one of each [`ExportStream`], and `routes` at most
-/// [`HARD_MAX_ROUTES`]. The loader checks the entries with [`check_tail_entries`].
-///
-/// # Errors
-/// The rule the tail breaks.
+
 pub fn check_tail(t: &Tail) -> Result<(), Fault> {
     listed(t.streams, t.streams_len, "tail.streams")?;
     if t.streams_len as u64 > ExportStream::ALL.len() as u64 {

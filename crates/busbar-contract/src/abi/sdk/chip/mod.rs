@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CHIP'S RECIPES (the chip design, its section on recipe classes): every auth step a plugin needs, performed by the
-//! credential, answering a [`Seal`] or a yes/no. A raw stream's recipe builds the WHOLE auth message
-//! from public inputs, so the plugin cannot choose where credential-derived bytes sit on the wire.
-//!
-//! Until row 4 the recipes run in the plugin's own image; from row 4 the same calls cross the ABI
-//! to the secret plugin and nothing a plugin wrote against this module changes.
 
 pub mod aws4;
 pub(crate) mod digests;
@@ -82,16 +77,13 @@ fn b64(bytes: &[u8]) -> Bytes {
 }
 
 /// A fresh 24-character PostgreSQL SCRAM nonce (printable ASCII excluding comma).
-///
-/// # Errors
-/// The operating system could not provide cryptographic randomness.
+
 pub fn pg_scram_nonce() -> Result<String, Refused> {
     let mut nonce = String::with_capacity(24);
     while nonce.len() < 24 {
         let mut random = [0u8; 32];
         getrandom::fill(&mut random).map_err(|_| Refused("no randomness for the SCRAM nonce"))?;
         for b in random {
-            // Rejection sampling gives each of postgres-protocol's 93 characters equal weight.
             if b >= 186 {
                 continue;
             }
@@ -106,15 +98,13 @@ pub fn pg_scram_nonce() -> Result<String, Refused> {
 }
 
 /// What a SCRAM exchange left to check: the server's signature, held until the server-final
-/// message arrives. Use it once.
+
 #[allow(missing_debug_implementations)]
 pub struct ScramLink(Held<Zeroizing<[u8; 32]>>);
 
 impl ScramLink {
     /// Whether `server_final` (`v=<base64>`) proves the server knew the password.
     pub fn verify(self, server_final: &str) -> bool {
-        // A verifier is the first attribute; an error, duplicate, or malformed extension
-        // cannot accompany it. Keep extension parsing deterministic and allocation-free.
         let mut attrs = server_final.split(',');
         let Some(v) = attrs.next().and_then(|a| a.strip_prefix("v=")) else {
             return false;
@@ -307,7 +297,7 @@ impl Cred {
     }
 
     /// Whether `presented` equals the credential, compared over SHA-256 digests so neither content
-    /// nor length leaks through timing.
+
     pub fn verify_eq(&self, presented: &[u8]) -> bool {
         let a = digests::sha256(&[self.wire()]);
         let b = digests::sha256(&[presented]);
@@ -315,8 +305,7 @@ impl Cred {
     }
 
     /// `text` with every occurrence of the credential replaced by `[redacted]`: for a destination
-    /// that echoes what it was sent (a server error quoting a password). Text without it comes
-    /// back unchanged.
+
     pub fn redact_echo(&self, text: &str) -> String {
         let needle = self.wire();
         if needle.is_empty() || needle.len() > text.len() {
@@ -346,10 +335,7 @@ impl Cred {
     }
 
     /// Postgres `PasswordMessage` carrying the password in clear (AuthenticationCleartextPassword).
-    ///
-    /// # Errors
-    /// [`PG_CLEARTEXT_REFUSED`]: the operator's `require_auth` does not allow `password` (ruling
-    /// S4; none written allows only SCRAM-SHA-256).
+
     pub fn pg_password_message(&self) -> Result<Seal, Refused> {
         self.pg_allows(PgAuth::Password, PG_CLEARTEXT_REFUSED)?;
         if self.wire().contains(&0) {
@@ -359,10 +345,7 @@ impl Cred {
     }
 
     /// Postgres `PasswordMessage` for AuthenticationMD5Password:
-    /// `"md5" + hex(md5(hex(md5(password + user)) + salt))`.
-    ///
-    /// # Errors
-    /// [`PG_MD5_REFUSED`]: the operator's `require_auth` does not allow `md5` (ruling S4).
+
     pub fn pg_md5_message(&self, user: &str, salt: [u8; 4]) -> Result<Seal, Refused> {
         self.pg_allows(PgAuth::Md5, PG_MD5_REFUSED)?;
         let inner = digests::md5(&[self.wire(), user.as_bytes()]);
@@ -374,15 +357,7 @@ impl Cred {
     }
 
     /// Postgres `SASLResponse` carrying the SCRAM-SHA-256 client-final message (RFC 5802, 7677),
-    /// and the link that checks the server-final message. `client_first_bare` is what the client
-    /// sent (`n=,r=<nonce>`); `server_first` is the server's reply; `channel_binding` is the GS2
-    /// header plus any binding data (`b"n,,"` without binding).
-    /// Passwords use SASLprep's Unicode 3.2 profile, retaining the original bytes
-    /// if preparation fails or maps the password to empty, as PostgreSQL does.
-    ///
-    /// # Errors
-    /// The server's message is malformed, does not extend the client nonce, or names an iteration
-    /// count outside 4096..=1000000; or the operator's `require_auth` leaves SCRAM-SHA-256 out.
+
     pub fn pg_scram_sha256(
         &self,
         client_first_bare: &str,
@@ -396,12 +371,7 @@ impl Cred {
     }
 
     /// PostgreSQL store counterpart with its native positive iteration range 1..=100000.
-    /// Password preparation uses the shared frozen Unicode 3.2 profile; modern-Unicode native
-    /// preparation may differ. The public generic recipe retains its existing iteration policy.
-    ///
-    /// # Errors
-    /// A malformed SCRAM exchange, a nonpositive/leading-zero count, a count above 100000,
-    /// or a method excluded by the operator's auth floor.
+
     pub fn pg_scram_sha256_postgres(
         &self,
         client_first_bare: &str,
@@ -454,7 +424,7 @@ impl Cred {
                 "the SCRAM iteration count is outside 4096..=1000000",
             ));
         }
-        // PostgreSQL keeps the original bytes when UTF-8 or SASLprep is invalid.
+
         let prepared = saslprep::password(self.wire());
         let password = prepared.as_deref().map_or(self.wire(), |s| s.as_bytes());
         let salted = pbkdf2_sha256(password, &salt, iterations);
@@ -525,7 +495,7 @@ impl Cred {
     }
 
     /// A seal of the password in clear (or encrypted to a key nobody pinned): it goes out in the
-    /// open only when `open` (the operator's socket, pin or switch), else only secured (ruling S5).
+
     fn mysql_seal(&self, bytes: Bytes, open: bool) -> Seal {
         let seal = self.seal(bytes);
         if open {
@@ -567,11 +537,7 @@ impl Cred {
     }
 
     /// A MySQL `HandshakeResponse41` packet, whole, header included.
-    ///
-    /// # Errors
-    /// The packet would not fit one MySQL packet; or it answers `mysql_old_password` or
-    /// `mysql_clear_password` and the operator did not allow it ([`MYSQL_OLD_REFUSED`],
-    /// [`MYSQL_CLEAR_REFUSED`]).
+
     pub fn mysql_handshake_response(&self, h: &MysqlHandshake<'_>) -> Result<Seal, Refused> {
         self.mysql_allows(h.auth)?;
         let mut caps = h.capabilities | CLIENT_PLUGIN_AUTH;
@@ -632,11 +598,7 @@ impl Cred {
     }
 
     /// A MySQL auth-switch response packet for `auth` over the switch request's `nonce`, whole.
-    ///
-    /// # Errors
-    /// `mysql_old_password` or `mysql_clear_password` the operator did not allow
-    /// ([`MYSQL_OLD_REFUSED`], [`MYSQL_CLEAR_REFUSED`]); else never in practice (the scramble is at
-    /// most 32 bytes).
+
     pub fn mysql_auth_switch_response(
         &self,
         seq: u8,
@@ -649,14 +611,7 @@ impl Cred {
     }
 
     /// A MySQL packet carrying the password in clear, NUL-terminated: `caching_sha2_password` full
-    /// authentication over a secured or unix-socket link, or `mysql_clear_password`, whole.
-    ///
-    /// RULING S5: it goes out in the open only over the unix socket the operator's URL names, or
-    /// when the operator enabled the cleartext plugin; otherwise the seal goes out only where the
-    /// host connector reports the connection secured ([`Seal::secure_required`]).
-    ///
-    /// # Errors
-    /// The password does not fit one MySQL packet.
+
     pub fn mysql_clear_packet(&self, seq: u8) -> Result<Seal, Refused> {
         let mut p = Zeroizing::new(self.wire().to_vec());
         p.push(0);
@@ -667,18 +622,7 @@ impl Cred {
 
 impl Cred {
     /// A MySQL packet for `caching_sha2_password` full authentication on a link with no TLS: the
-    /// password (NUL-terminated) XORed with the `nonce`, RSA-OAEP-encrypted to the server's PEM
-    /// public key, whole.
-    ///
-    /// RULING S5: the key comes from the server on a link with no TLS, so it is trusted only when
-    /// the operator pinned it (`server_public_key_sha256`). With no pin the seal goes out in the
-    /// open only over the operator's unix socket, else only where the host connector reports the
-    /// connection secured ([`Seal::secure_required`]).
-    ///
-    /// # Errors
-    /// An empty nonce, a key that does not parse, a key that is not the pinned one
-    /// ([`MYSQL_RSA_PIN_MISMATCH`]), a password too long for the key, or no randomness for the
-    /// OAEP seed.
+
     pub fn mysql_rsa_packet(
         &self,
         seq: u8,

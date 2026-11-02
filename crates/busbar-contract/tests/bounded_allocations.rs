@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! What filling a bounded list costs.
-//!
-//! Its own test binary, because proving this needs a counting global allocator and a global
-//! allocator belongs to the whole binary it is installed in. And ONE test, because the counter is
-//! global too: a second test running on another thread allocates into the same count, and a
-//! measurement taken while it does reads that thread's work as this one's.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -38,9 +33,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 /// An empty list is free.
-///
-/// The overwhelmingly common case on this ABI: a default-constructed facts or patch value whose
-/// bounded field the plugin never touches.
+
 fn an_untouched_bounded_list_allocates_nothing() {
     let before = ALLOCATIONS.load(Ordering::Relaxed);
     let list: BoundedVec<u8, MAX_LEGS> = BoundedVec::new();
@@ -50,10 +43,7 @@ fn an_untouched_bounded_list_allocates_nothing() {
 }
 
 /// Filling one to its declared capacity is one allocation, not a doubling sequence.
-///
-/// The capacity is part of the type and the list refuses past it, so every reallocation on the way
-/// to a size that was known at compile time is waste: this was four allocations and three copies
-/// for eight bytes.
+
 fn filling_a_bounded_list_to_capacity_takes_one_allocation() {
     let mut list: BoundedVec<u8, MAX_LEGS> = BoundedVec::new();
 
@@ -88,7 +78,7 @@ fn a_list_built_with_its_declared_capacity_never_reallocates() {
 }
 
 /// The three measurements, one after another on one thread: no other test's allocations can
-/// land in a window this binary is counting.
+
 #[test]
 fn bounded_lists_allocate_exactly_what_their_capacity_says() {
     an_untouched_bounded_list_allocates_nothing();

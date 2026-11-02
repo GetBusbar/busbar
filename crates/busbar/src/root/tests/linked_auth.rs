@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH AXIS'S LINKED ROW: the
-//! operator credential resolves through the auth kind's registry by the key configuration names,
-//! and the row that answers it is the one this composition root links (`auths` in the manifest).
-//! The kernel names no auth module and links none, so every test here that needs the operator
-//! credential to answer lives beside the row: the admin door judged on BOTH carriers, the chain
-//! composing past it, the rotation of its token on apply, and the refusals when the row is gone.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,12 +10,8 @@ use busbar_kernel::config::{self, AuthCfg, AuthChainEntry, RoleBindingCfg, Secre
 use busbar_kernel::governance::GovState;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-/// The operator's token in every fixture here.
 const TOKEN: &str = "admintok";
 
-/// Link this build's auth rows onto the kernel's auth axis, as `register_planes` does at boot (the
-/// first install stands, and every install in this binary is this one table). The linked protocol declarations go in too: a config fixture's provider names the registry's
-/// residual-default dialect, and which test installed it first must not decide a verdict.
 fn link() {
     busbar_kernel::preflight::install_linked_auth(
         crate::LINKED.auths,
@@ -32,21 +21,15 @@ fn link() {
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
 }
 
-/// The operator credential's provider key, read AFTER the root's words are handed in. Before the
-/// first [`link`] the kernel answers with its test-build stand-in words, so a key read first and
-/// linked second names a provider no row answers, and every verdict below would judge the wrong
-/// chain.
 fn op() -> &'static str {
     link();
     config::operator_provider()
 }
 
-/// An app whose governance holds the operator token, with `chain` as its admin chain, and `extra`
-/// external admin modules beside it.
 fn app(chain: &[&str], extra: Vec<(&str, Box<dyn AuthModule>)>) -> Arc<busbar_kernel::state::App> {
     link();
     let store = Arc::new(MemoryStore::new());
@@ -60,8 +43,6 @@ fn app(chain: &[&str], extra: Vec<(&str, Box<dyn AuthModule>)>) -> Arc<busbar_ke
     app.build()
 }
 
-/// `GET /api/v1/admin/info` over the real router with the given carriers: (status, body), the body
-/// prefixed by its `content-type` and `content-length` when the answer is a refusal.
 async fn probe(
     app: Arc<busbar_kernel::state::App>,
     bearer: Option<&str>,
@@ -96,14 +77,11 @@ async fn probe(
     }
 }
 
-/// A refusal's comparable bytes: its content type, its length and its body, the body normalised to
-/// JSON value form so the golden's recorded JSON compares to it.
 fn refusal(content_type: &str, content_length: &str, body: &str) -> String {
     let body: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
     format!("{content_type} {content_length} {body}")
 }
 
-/// A 1.5.5 golden cell (`testing/shadow-oracle/golden/1.5.5`, recorded from the published binary).
 fn golden_cell(cell: &str) -> serde_json::Value {
     let path = std::path::Path::new(env!("BUSBAR_CORE_DIR"))
         .join("../../testing/shadow-oracle/golden/1.5.5/cells")
@@ -112,7 +90,6 @@ fn golden_cell(cell: &str) -> serde_json::Value {
     serde_json::from_str(&text).expect("golden json")
 }
 
-/// The admin 401 exactly as 1.5.5 served `GET /api/v1/admin/info` with no credential.
 fn unauthorized() -> String {
     let cell = golden_cell("admin.ops__GetInfo__unauth.json");
     assert_eq!(cell["status"], 401);
@@ -123,10 +100,6 @@ fn unauthorized() -> String {
     )
 }
 
-/// An external admin module that identifies ANY presented credential as a roleless principal — the
-/// shape an IdP arm behind the operator credential takes. It earns no grant (no binding), so a
-/// request it identifies is a 403, which is how a test tells "the chain reached this arm" from "the
-/// chain denied" (a 401).
 struct AnyCredential;
 
 impl AuthModule for AnyCredential {
@@ -141,7 +114,6 @@ impl AuthModule for AnyCredential {
     }
 }
 
-/// The operator credential's row is on the auth axis under the configuration's key.
 #[test]
 fn the_operator_credentials_row_is_linked_under_its_config_key() {
     link();
@@ -152,11 +124,6 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
     );
 }
 
-/// THE SHIPPED DEFAULT INBOUND STYLE: the linked rows state exactly one, and its
-/// carrier marks are 1.5.5's client-token lines in 1.5.5's precedence order (the Bearer on
-/// `authorization`, then `x-api-key`, then `x-goog-api-key`). The kernel names none of them; RED
-/// before the header auth states them (no row states the style, so the walk reads nothing). And the
-/// operator credential's row states 1.5.5's two admin lines, Bearer first.
 #[test]
 fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     link();
@@ -176,14 +143,6 @@ fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     );
 }
 
-/// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer, `keys` and
-/// the operator credential's word (oracle cell `admin.ops|GetInfo|ok`): the build also links
-/// OUTBOUND-ONLY auth plugins on the auth axis, and a row that declares no
-/// inbound capability is not an auth-chain module an operator can name, so it is not listed. RED
-/// before the fix: the outbound-only header row's name was listed third. The default build also
-/// links the INBOUND webhook-signature row, an auth-chain module an operator names,
-/// so it is listed after 1.5.5's two. The case rides every linked auth row (`linked_every_auth`,
-/// build.rs): every outbound-only row is then linked, and none of them is listed.
 #[cfg(linked_every_auth)]
 #[test]
 fn the_info_auth_modules_are_the_inbound_rows_only() {
@@ -205,10 +164,6 @@ fn the_info_auth_modules_are_the_inbound_rows_only() {
     );
 }
 
-/// THE PROBE EXT-AUTHADMIN ran, over the row the root links: every carrier combination answers as
-/// 1.5.5 did — the operator token on EITHER carrier admits, a wrong one on either refuses with the
-/// frozen 401 body, and a request carrying both is judged on both (the right header admits past a
-/// wrong Bearer, and past a Bearer in another scheme's grammar).
 #[tokio::test]
 async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -234,10 +189,6 @@ async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
     }
 }
 
-/// THE ADMIN CHAIN ENDS AT THE OPERATOR CREDENTIAL ON ANY WRONG TOKEN, as 1.5.5's did. `Reject` is
-/// TERMINAL in the admin chain, and the operator credential's module rejects every presented
-/// mismatch whatever its shape: a JWS-shaped wrong token is refused there with the frozen 401 and
-/// never reaches an IdP arm configured behind it.
 #[tokio::test]
 async fn the_chain_ends_at_the_operator_credential_on_any_wrong_token() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -265,17 +216,12 @@ async fn the_chain_ends_at_the_operator_credential_on_any_wrong_token() {
     );
 }
 
-/// RED ARM — REMOVE THE ROOT ROW AND THE ADMIN DOOR REFUSES. The same app, with its operator
-/// credential opened from a registry that does not hold the root's row: the operator token that
-/// admits above is now refused with the frozen 401, on both carriers. The kernel had no other way
-/// to answer it.
 #[tokio::test]
 async fn without_the_root_row_the_operator_token_is_refused() {
     busbar_kernel_testkit::test_support::metrics::init();
     let op = op();
     let with_row = app(&[op], Vec::new());
-    // What `busbar_kernel::auth::open_operator` answers when the registry holds no row under the operator
-    // credential's key (the kernel's own tests pin that `open` over an empty registry yields it).
+
     let mut without_row = (*with_row).clone();
     without_row.admin_modules = Arc::new(AdminAuthChain {
         modules: HashMap::new(),
@@ -298,7 +244,6 @@ async fn without_the_root_row_the_operator_token_is_refused() {
     }
 }
 
-/// The 1.5.5 golden cell's refusal line (`[error] …`), as the published binary printed it.
 fn golden_refusal(cell: &str) -> String {
     let cell = golden_cell(cell);
     let stderr = cell["effects"]["stderr"]
@@ -312,11 +257,6 @@ fn golden_refusal(cell: &str) -> String {
     line.to_string()
 }
 
-/// A CONFIG NAMING AN UNREGISTERED AUTH MODULE IS REFUSED WITH 1.5.5'S BYTES. With plugins off, a
-/// provider whose `module:` no row answers is refused, and the refusal lists the built-ins exactly
-/// as 1.5.5 did (`keys | admin-tokens`) — the operator credential is still a built-in to the
-/// configuration, although the kernel links no module for it. Compared to the golden cell the
-/// published 1.5.5 binary recorded (BOOT-133), byte for byte.
 #[test]
 fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
     link();
@@ -336,8 +276,6 @@ fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
     assert_eq!(err, golden_refusal("boot.refusal__BOOT-133__boot.json"));
 }
 
-/// A role name shadowing the operator principal id is refused while the operator credential's row is
-/// linked (it is the principal that row mints), exactly as 1.5.5's default build refused it.
 #[test]
 fn a_role_shadowing_the_operator_principal_is_refused() {
     link();
@@ -361,9 +299,6 @@ fn a_role_shadowing_the_operator_principal_is_refused() {
     );
 }
 
-/// The operator credential is a SECRET REFERENCE; `validate()` checks its MODULE resolves (env |
-/// file) without resolving the value (moved from the kernel with the row it needs: without one, the
-/// configured token is itself refused).
 #[test]
 fn the_operator_token_ref_is_checked_by_shape_only() {
     link();
@@ -400,15 +335,10 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
     );
 }
 
-/// Build a minimal, valid RootCfg whose admin token and signing key are `file:` secret refs, so a
-/// rotation is "write different bytes to the same path". Used by the 3 tests below (moved from the
-/// kernel with the row they need: without one, the configured token is itself refused at validate).
 fn cfg_with_credentials(
     token_path: &std::path::Path,
     key_path: &std::path::Path,
 ) -> busbar_kernel::config::RootCfg {
-    // `api_key: none` — this fixture's provider is never contacted, so it declares no credential
-    // rather than naming a variable it knows is unset (which now refuses boot).
     let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
         busbar_kernel::config::SecretRef::none(),
     );
@@ -431,8 +361,6 @@ fn cfg_with_credentials(
     cfg
 }
 
-/// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
-/// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
 #[test]
 fn admin_token_secret_ref_re_resolves_on_apply() {
     link();
@@ -454,7 +382,6 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
         "boot accepts the resolved token"
     );
 
-    // THE ROTATION: the operator replaces the secret behind the ref, then reloads.
     std::fs::write(&token_path, "tok-v2").unwrap();
     let next = busbar_kernel_testkit::app::build_once(
         cfg_with_credentials(&token_path, &key_path),
@@ -476,8 +403,7 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
         Some(busbar_contract::redacted::sha256_hex(b"tok-v1").as_str()),
         "the pre-rotation admin token is no longer accepted"
     );
-    // The applied generation's admin chain judges the ROTATED token: its operator credential was
-    // opened over the digest this apply resolved.
+
     use busbar_contract::authz::Scope;
     assert!(
         busbar_kernel::auth::dry_run_admin_scope(&next, &bearer("tok-v2")).allows(Scope::Full),
@@ -490,9 +416,6 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The same for `auth.signing_key`: after rotating the key material and re-applying, a token minted
-/// under the OLD key no longer verifies and a freshly-minted one does. A resolution FAILURE on
-/// apply is fail-closed — the apply is refused rather than silently keeping the old key.
 #[test]
 fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     link();
@@ -523,7 +446,6 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         "valid pre-rotation"
     );
 
-    // THE ROTATION: new key material behind the same ref, then reload.
     std::fs::write(&key_path, hex::encode([9u8; 32])).unwrap();
     busbar_kernel_testkit::app::build_once(
         cfg_with_credentials(&token_path, &key_path),
@@ -551,7 +473,6 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         "the engine mints AND verifies under the rotated key (signer and verifier swap as one unit)"
     );
 
-    // FAIL-CLOSED: an unresolvable ref refuses the apply outright.
     std::fs::remove_file(&key_path).unwrap();
     let err = match busbar_kernel_testkit::app::build_once(
         cfg_with_credentials(&token_path, &key_path),
@@ -567,11 +488,6 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// #37: a `token:` secret ref that resolves to EMPTY or WHITESPACE must refuse to start. The
-/// documented boot guard for this was lost when the admin token became a SecretRef, and the
-/// consequence is worse than "the admin API is silently locked": the digest is taken over the blank
-/// string, so `admin_token_hash` becomes `Some(sha256(""))` — a real credential that an empty
-/// presented token satisfies. An env var expanding to nothing would hand over the admin surface.
 #[test]
 fn blank_admin_token_refuses_to_start() {
     link();
@@ -596,9 +512,6 @@ fn blank_admin_token_refuses_to_start() {
             "the refusal names the admin credential: {err}"
         );
         if !blank.is_empty() {
-            // A WHITESPACE-only value must be refused AS whitespace-only, not merely refused. The
-            // `file:` source resolves it untouched, as 1.5.5 did, and the admin credential's own
-            // trim guard ("EMPTY/whitespace-only", 1.5.5's) is the refusal this case owes.
             assert!(
                 err.contains("whitespace"),
                 "a whitespace-only token must be refused as whitespace-only: {err}"
@@ -606,7 +519,6 @@ fn blank_admin_token_refuses_to_start() {
         }
     }
 
-    // A real token still boots, and the digest is of the real value (not of the blank string).
     let token_path = dir.join("admin.token");
     std::fs::write(&token_path, "real-token").unwrap();
     let app =
@@ -625,22 +537,11 @@ fn blank_admin_token_refuses_to_start() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The operator credential chosen BY MODULE: an `admin_auth:` provider under another name whose
-/// `module:` is the operator credential's (`ops: { module: admin-tokens, token: ... }`) is the
-/// operator credential. Built from configuration through the real build, it admits the operator
-/// token on either carrier with full scope and refuses a wrong one with the frozen 401. Dispatching
-/// on the provider NAME skipped it and refused every admin request.
 #[tokio::test]
 async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential() {
     renamed_provider_is_the_operator_credential(op()).await;
 }
 
-/// ONE PLUGIN, ONE IDENTITY: the operator credential's module named by its CANONICAL
-/// name (the manifest name its release tarball carries, its row's `linked-canonical` value) is the
-/// operator credential exactly as its key is — the same provider, the same full scope, the same
-/// carriers, the same refusal — because the kernel compares the plugin the module resolves to, not
-/// the spelling. RED before: the token on that provider was refused as misplaced, and nothing
-/// opened the operator credential behind it.
 #[tokio::test]
 async fn the_operator_module_named_by_its_canonical_name_is_the_operator_credential() {
     let op = op();
@@ -654,8 +555,6 @@ async fn the_operator_module_named_by_its_canonical_name_is_the_operator_credent
     renamed_provider_is_the_operator_credential(canonical).await;
 }
 
-/// `admin_auth: [ops]`, `ops: { module: <module>, token: <file> }`, built from configuration: the
-/// operator credential, on both carriers, at full scope; a wrong token refused with the frozen 401.
 async fn renamed_provider_is_the_operator_credential(module: &str) {
     link();
     busbar_kernel_testkit::test_support::metrics::init();
@@ -672,7 +571,7 @@ async fn renamed_provider_is_the_operator_credential(module: &str) {
     auth.admin_auth[0].name = "ops".to_string();
     auth.admin_auth[0].module = module.to_string();
     cfg.admin_auth = vec!["ops".to_string()];
-    // The definition the resolved entry came from, as config.yaml would carry it.
+
     let ops: config::IdentityProviderCfg =
         serde_yaml::from_str(&format!("module: {module}")).expect("ops");
     cfg.identity_providers.insert("ops".to_string(), ops);
@@ -703,22 +602,16 @@ async fn renamed_provider_is_the_operator_credential(module: &str) {
     );
 }
 
-/// The other half: a provider NAMED like the operator credential but backed by another module is
-/// that module, consulted under its own ceiling. It identifies what it identifies (a roleless
-/// principal with no grant: 403) and the operator token confers nothing through it. Dispatching on
-/// the name ran the operator credential instead and never asked the configured module.
 #[tokio::test]
 async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module() {
     busbar_kernel_testkit::test_support::metrics::init();
     let op = op();
-    // `admin_auth: [<op>]` with `<op>: { module: any-credential }`, as the build resolves it: the
-    // provider is recorded as backed by that module, and the module is opened under its name.
+
     let named_op = || {
         let base = app(&[op], Vec::new());
         let defs = [(op, AnyCredential.name())].into_iter();
         let is_op = |m: &str| config::names_operator(m);
-        // The operator row's carriers, as the build opened them: the admin lines the candidate
-        // the configured module is lent is read from.
+
         let operator = Operator::open(op, defs, &is_op, false, None, |_| unreachable!())
             .expect("opens")
             .with_carriers(base.admin_modules.operator.carriers().to_vec());
@@ -750,14 +643,6 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
     );
 }
 
-// ── THE ROOT-ADMIN LOOP'S DOOR IS THE SAME LIVE ADMIN CHAIN ──────
-// The loop's authenticate step used to run a hardcoded `[admin-tokens]` chain built once at boot,
-// whatever `admin_auth` said: `admin_auth: []` answered 401 where 1.5.5 answered 200 (1.5.5
-// `auth/mod.rs:847-848`, scope Full at `:1067-1068`), an external admin module was never asked, and
-// `PUT /api/v1/admin/admin-auth` never reached it. Each cell below walks the WHOLE loop over the
-// production door (`live_admin_door`) on a live `AppHandle`.
-
-/// The answer the mounted surface gives once the loop admits: a 200 the door could not have written.
 #[cfg(feature = "root-admin")]
 struct Answers200;
 
@@ -776,12 +661,9 @@ impl crate::root::units_admin::AdminDispatch for Answers200 {
     }
 }
 
-/// 1.5.5's admin 401 body, the frozen envelope the loop writes at its door.
 #[cfg(feature = "root-admin")]
 const DOOR_401: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
 
-/// Walk `method path` with the given carriers through the root-admin loop whose door is the live
-/// chain on `handle`: (status, body).
 #[cfg(feature = "root-admin")]
 fn through_the_loop(
     handle: &Arc<busbar_kernel::state::AppHandle>,
@@ -820,8 +702,6 @@ fn through_the_loop(
 #[cfg(feature = "root-admin")]
 const INFO: (&str, &str) = ("GET", "/api/v1/admin/info");
 
-/// (a) `admin_auth: []` IS OPEN on the loop, as in 1.5.5: a read and a write answer, with no
-/// credential, even on a node whose governance holds an operator token.
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
@@ -831,9 +711,6 @@ fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
     assert_eq!(through_the_loop(&handle, write, None, None).0, 200);
 }
 
-/// (b) + (3) THE OPERATOR TOKEN ON THE LOOP, BOTH CARRIERS, AS 1.5.5 JUDGED THEM: no credential is
-/// the door's 401 in 1.5.5's bytes; either carrier admits; a request carrying both is judged on
-/// both (the right header admits past a wrong Bearer and past a Bearer in another grammar).
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
@@ -860,11 +737,6 @@ fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
     }
 }
 
-/// (c) AN EXTERNAL ADMIN MODULE ON THE CHAIN IS CONSULTED BY THE LOOP, and its verdict decides: a
-/// credential it identifies (roleless, so no grant) is the authorization ending, 403 — not the
-/// door's 401 the hardcoded chain answered — and one the chain refuses is still the door's 401.
-/// The external module stands first: behind the operator credential it would never see a token,
-/// since the operator credential rejects every presented mismatch (1.5.5's chain rule).
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_external_admin_module_is_consulted_by_the_loop() {
@@ -892,9 +764,6 @@ fn an_external_admin_module_is_consulted_by_the_loop() {
     }
 }
 
-/// (d) THE CHAIN IS READ LIVE: swapping the snapshot's admin chain (what `PUT
-/// /api/v1/admin/admin-auth` applies) changes the loop's next answer, with no new node. The
-/// generations are real builds (`build_once`), so every plane's swap hook sees the runtime it owns.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_swapped_admin_chain_is_the_loops_next_door() {
@@ -943,14 +812,6 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE DATA-PLANE CHAIN ON THE AUTH AXIS: a provider backed by the linked operator door — a REAL plugin on the auth kind's memory
-/// ABI — opened through the root's auth axis is ONE chain position the request path submits and
-/// awaits, lent the request's head and its candidate credential: the right token identifies under
-/// the provider's name, a wrong one is REFUSED, another scheme's grammar and none pass (and the
-/// all-pass chain denies).
-///
-/// Not vacuous: the same door lent NO head (the candidate alone) cannot see the Bearer this plugin
-/// reads off its `authorization` line, and the right token is denied — the head reaches the door.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     use busbar_kernel::auth::{AuthMiddleware, ChainHead, ChainVerdict};
@@ -1003,7 +864,6 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     );
 }
 
-/// A request's head presenting `token` as its Bearer: what the admin chain's dry run judges.
 fn bearer(token: &str) -> axum::http::HeaderMap {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
@@ -1013,20 +873,6 @@ fn bearer(token: &str) -> axum::http::HeaderMap {
     headers
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_role_bound_principal_governed_like_a_virtual_key`
-/// 1.5.5: with governance on and an external data-plane module on the
-/// chain, a role-bound principal is governed through a SYNTHESIZED key exactly like a virtual key:
-/// its binding's pool ACL admits the granted pool (200) and refuses another (403); a binding that
-/// omits `allowed_pools` grants every pool; an explicit `allowed_pools: []` grants nothing (401);
-/// and an identified principal whose roles earn no binding is refused outright (401, fail closed).
-///
-/// Walked here through the served steps: the data-plane chain judges the request's credential
-/// (the test chain's `grp:<role>` module), the verdict resolves to a governance key through the
-/// module's `role_bindings` (`resolve_data_plane_identity`), and the door's grant judges the pool
-/// the unit names with that key.
-///
-/// RED: a role binding's pool ACL stops gating (an ungranted pool served), an omitted grant stops
-/// meaning every pool, or an empty or absent binding admits the principal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_role_bound_principal_governed_like_a_virtual_key() {
     use busbar_contract::abi::plane::ROUTE_POOL;
@@ -1043,9 +889,9 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
             ..Default::default()
         },
     );
-    // OMITTED allowed_pools = ALL pools.
+
     table.insert("batch".to_string(), RoleBindingCfg::default());
-    // Explicit [] = NO pools (the empty set, fail closed).
+
     table.insert(
         "locked".to_string(),
         RoleBindingCfg {
@@ -1073,11 +919,10 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         busbar_contract::section::RESERVED_POOLS_KEY,
     )
     .expect("the pools");
-    // What the caller reads: the identity refusal's 401, the grant's 403, else served.
+
     let answer = |credential: &'static str, pool: &'static str| {
         let (auth, app, pools) = (Arc::clone(&auth), Arc::clone(&app), pools.clone());
         async move {
-            // The test module judges the credential handed beside the head, never the head's own line.
             let headers = axum::http::HeaderMap::new();
             let head = ChainHead::of_parts("POST", "/v1/chat/completions", &headers);
             let verdict = AuthMiddleware::run_chain_on_request_path(
@@ -1108,7 +953,6 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         }
     };
 
-    // Pool ACL from the role binding: gpool-a serves, gpool-b is denied.
     assert_eq!(
         answer("grp:pool-users", "gpool-a").await,
         200,
@@ -1119,7 +963,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         403,
         "ungranted pool is denied"
     );
-    // OMITTED allowed_pools grants every pool.
+
     assert_eq!(
         answer("grp:batch", "gpool-a").await,
         200,
@@ -1130,13 +974,13 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         200,
         "omitted allowed_pools grants all"
     );
-    // Explicit [] grants the EMPTY SET: no data-plane access at all.
+
     assert_eq!(
         answer("grp:locked", "gpool-a").await,
         401,
         "allowed_pools [] grants nothing"
     );
-    // Fail closed: an identified principal whose roles earn no binding is rejected.
+
     assert_eq!(
         answer("grp:strangers", "gpool-a").await,
         401,
@@ -1144,12 +988,6 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     );
 }
 
-/// THE CLIENT-TOKEN LINES ON THE DATA LISTENER, end to end through the linked default inbound style: a key minted by `keys` is admitted on each of 1.5.5's three lines alone (the
-/// Bearer on `authorization`, raw on `x-api-key` and on `x-goog-api-key`), the Bearer wins when it
-/// and `x-api-key` are both present (oracle cell `http.crosscut|bearer-and-x-api-key`), and a bad
-/// credential on any line is 1.5.5's 401. A present non-Bearer `authorization` (a SigV4 signature
-/// header) falls through to `x-api-key`, as a signed-request SDK's key-carrying shape needs. RED before
-/// the header auth states its lines: no line yields a credential, so every request is 401.
 #[tokio::test]
 async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
@@ -1242,5 +1080,4 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
     server.abort();
 }
 
-/// One carrier case: what it shows, the request lines it carries, and the status it is answered.
 type CarrierCase = (&'static str, Vec<(&'static str, String)>, u16);

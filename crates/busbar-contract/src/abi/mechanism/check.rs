@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SHARED ANSWER-VALIDATOR HELPERS: the one [`Fault`], the per-op [`OpContract`] and its [`contract!`] builder, and the
-//! pure checks every kind's `check_<op>` is built from. u64 arithmetic, no statics. The dispatcher
-//! turns an `Err` into FAULT; no host re-implements a check.
-//!
-//! THE SHORT-BUFFER RULE, with its multi-buffer form, is stated once, on
-//! [`OutHead`](super::call::OutHead); [`result`] and [`results`] enforce it, and [`within`] is the
-//! check for an op with no short path.
 
 use super::call::{AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome};
 use super::decl::abi_op;
@@ -28,12 +22,11 @@ pub const SPAN_ABSENT: u32 = u32::MAX;
 pub const MAX_BYTES: u64 = u32::MAX as u64;
 
 /// The largest blob, or byte `needed`, one answer of the secret, hook or export kind may state
-/// (16 MiB).
+
 pub const HARD_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The most entries one Statement list (or one list a kind's tail states) may hold. A count above
-/// it is refused before any entry is read, so a plugin's stated length can never walk the host
-/// past the plugin's own data.
+
 pub const STATEMENT_LIST_MAX: usize = 1024;
 
 /// Which rule an answer broke.
@@ -98,11 +91,7 @@ pub enum Filled {
 }
 
 /// A host-buffer result under the short-buffer rule: `written`, `needed`, the `cap` the host gave and the kind's
-/// `max` for `needed`.
-///
-/// # Errors
-///
-/// The rule the pair breaks.
+
 pub const fn result(
     outcome: Outcome,
     written: u64,
@@ -148,14 +137,7 @@ pub struct Dim {
 }
 
 /// A multi-dimension host-buffer answer under the multi-buffer short-answer rule: the short answer is FAILED with
-/// EVERY `needed` at its dimension's full size and AT LEAST ONE above its cap (a dimension that fits
-/// reports its full size, which is legal), nothing written. FAULT when no `needed` exceeds its cap,
-/// when any exceeds its max, or when any is non-zero on another outcome. Otherwise every `written`
-/// fits its cap.
-///
-/// # Errors
-///
-/// The rule the answer breaks; `group` names the answer for the whole-answer rules.
+
 pub fn results(outcome: Outcome, group: &'static str, dims: &[Dim]) -> Result<Filled, Fault> {
     for d in dims {
         if d.needed > d.max {
@@ -181,10 +163,7 @@ pub fn results(outcome: Outcome, group: &'static str, dims: &[Dim]) -> Result<Fi
 }
 
 /// A length with no short path: at most its capacity.
-///
-/// # Errors
-///
-/// [`Rule::OverCap`].
+
 pub const fn within(len: u64, cap: u64, field: &'static str) -> Result<(), Fault> {
     if len > cap {
         return Err(fault(Rule::OverCap, field));
@@ -193,10 +172,7 @@ pub const fn within(len: u64, cap: u64, field: &'static str) -> Result<(), Fault
 }
 
 /// A list: a count above zero never comes with a NULL pointer.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`].
+
 pub fn listed<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), Fault> {
     if len > 0 && ptr.is_null() {
         return Err(fault(Rule::NullWithCount, field));
@@ -205,12 +181,7 @@ pub fn listed<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), F
 }
 
 /// A plugin's `'static` list, before any slice is built over it: at most [`STATEMENT_LIST_MAX`]
-/// entries, and a pointer aligned for `T` (a slice over a misaligned pointer is undefined
-/// behaviour, whatever is read through it). A NULL pointer is [`listed`]'s question.
-///
-/// # Errors
-///
-/// [`Rule::OverMax`] above the cap; [`Rule::Misaligned`] for a misaligned pointer with a count.
+
 pub fn bounded<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), Fault> {
     if len > STATEMENT_LIST_MAX {
         return Err(fault(Rule::OverMax, field));
@@ -251,19 +222,13 @@ pub unsafe fn reported<'a, T>(
 }
 
 /// A string: a length above zero never comes with a NULL pointer.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`].
+
 pub fn text(s: AbiStr, field: &'static str) -> Result<(), Fault> {
     listed(s.ptr, s.len, field)
 }
 
 /// Every string of a list, by [`text`].
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`] for the first string counted with a NULL pointer.
+
 pub fn texts(list: &[AbiStr], field: &'static str) -> Result<(), Fault> {
     for s in list {
         text(*s, field)?;
@@ -272,10 +237,7 @@ pub fn texts(list: &[AbiStr], field: &'static str) -> Result<(), Fault> {
 }
 
 /// An index into a list of `len`.
-///
-/// # Errors
-///
-/// [`Rule::IndexOutOfRange`].
+
 pub const fn index(i: u32, len: u64, field: &'static str) -> Result<(), Fault> {
     if i as u64 >= len {
         return Err(fault(Rule::IndexOutOfRange, field));
@@ -284,10 +246,7 @@ pub const fn index(i: u32, len: u64, field: &'static str) -> Result<(), Fault> {
 }
 
 /// A code in `lo..=hi`.
-///
-/// # Errors
-///
-/// [`Rule::UnknownCode`].
+
 pub const fn code(v: u64, lo: u64, hi: u64, field: &'static str) -> Result<(), Fault> {
     if v < lo || v > hi {
         return Err(fault(Rule::UnknownCode, field));
@@ -296,10 +255,7 @@ pub const fn code(v: u64, lo: u64, hi: u64, field: &'static str) -> Result<(), F
 }
 
 /// Bits within `known`.
-///
-/// # Errors
-///
-/// [`Rule::UnknownCode`].
+
 pub const fn bits(v: u64, known: u64, field: &'static str) -> Result<(), Fault> {
     if v & !known != 0 {
         return Err(fault(Rule::UnknownCode, field));
@@ -308,11 +264,7 @@ pub const fn bits(v: u64, known: u64, field: &'static str) -> Result<(), Fault> 
 }
 
 /// A span `(offset, len)` inside the first `bound` bytes, or absent ([`SPAN_ABSENT`], `len == 0`);
-/// checked arithmetic.
-///
-/// # Errors
-///
-/// [`Rule::SpanNotAbsent`], [`Rule::SpanOutOfBounds`].
+
 pub const fn span(offset: u32, len: u32, bound: u64, field: &'static str) -> Result<(), Fault> {
     if offset == SPAN_ABSENT {
         if len != 0 {
@@ -327,10 +279,7 @@ pub const fn span(offset: u32, len: u32, bound: u64, field: &'static str) -> Res
 }
 
 /// A byte range `(offset, len)` inside the first `bound` bytes; checked arithmetic.
-///
-/// # Errors
-///
-/// [`Rule::SpanOutOfBounds`].
+
 pub const fn range(offset: u64, len: u64, bound: u64, field: &'static str) -> Result<(), Fault> {
     match offset.checked_add(len) {
         Some(end) if end <= bound => Ok(()),
@@ -339,10 +288,7 @@ pub const fn range(offset: u64, len: u64, bound: u64, field: &'static str) -> Re
 }
 
 /// A weight: finite and not negative.
-///
-/// # Errors
-///
-/// [`Rule::NotFinite`].
+
 pub fn weight(w: f64, field: &'static str) -> Result<(), Fault> {
     if !w.is_finite() || w < 0.0 {
         return Err(fault(Rule::NotFinite, field));
@@ -351,10 +297,7 @@ pub fn weight(w: f64, field: &'static str) -> Result<(), Fault> {
 }
 
 /// The first `n` elements of a host buffer.
-///
-/// # Errors
-///
-/// [`Rule::OverCap`] when the buffer holds fewer.
+
 pub fn first<'a, T>(buf: &'a [T], n: u64, field: &'static str) -> Result<&'a [T], Fault> {
     usize::try_from(n)
         .ok()
@@ -363,11 +306,7 @@ pub fn first<'a, T>(buf: &'a [T], n: u64, field: &'static str) -> Result<&'a [T]
 }
 
 /// A plugin-owned blob: a length above zero never comes with a NULL pointer, and never exceeds
-/// [`HARD_MAX_BYTES`]. `null` and `over` name the two arms.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`], [`Rule::OverMax`].
+
 pub fn blob(b: &Blob, null: &'static str, over: &'static str) -> Result<(), Fault> {
     if b.len > 0 && b.ptr.is_null() {
         return Err(fault(Rule::NullWithCount, null));
@@ -379,11 +318,7 @@ pub fn blob(b: &Blob, null: &'static str, over: &'static str) -> Result<(), Faul
 }
 
 /// The lease rule (memory class iv): on READY, a lease is required exactly when the answer
-/// carries material; other outcomes carry no lease rule. `missing` and `spurious` name the arms.
-///
-/// # Errors
-///
-/// [`Rule::Missing`], [`Rule::Contradiction`].
+
 pub fn lease(
     outcome: RawOutcome,
     lease: u64,
@@ -404,10 +339,7 @@ pub fn lease(
 }
 
 /// A FAILED answer's error text by [`text`]; other outcomes state nothing here.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`].
+
 pub fn failed_error(head: &OutHead, field: &'static str) -> Result<(), Fault> {
     if head.outcome.0 == (Outcome::Failed as u8) {
         return text(head.error, field);
@@ -416,11 +348,7 @@ pub fn failed_error(head: &OutHead, field: &'static str) -> Result<(), Fault> {
 }
 
 /// The `serve` answer of the hook and export kinds: the `headers_out` list (at most `max_headers`
-/// entries), the body [`blob`], and the [`lease`] over both.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn served(
     head: &OutHead,
     headers_out: *const AbiStr,
@@ -465,10 +393,7 @@ macro_rules! leased_blob {
 pub(crate) use leased_blob;
 
 /// A string that must be present: non-empty, and never counted with a NULL pointer.
-///
-/// # Errors
-///
-/// [`Rule::Missing`], [`Rule::NullWithCount`].
+
 pub fn named(s: AbiStr, field: &'static str) -> Result<(), Fault> {
     if s.len == 0 {
         return Err(fault(Rule::Missing, field));
@@ -477,10 +402,7 @@ pub fn named(s: AbiStr, field: &'static str) -> Result<(), Fault> {
 }
 
 /// A string that must be absent.
-///
-/// # Errors
-///
-/// [`Rule::Contradiction`].
+
 pub const fn absent(s: AbiStr, field: &'static str) -> Result<(), Fault> {
     if s.len != 0 {
         return Err(fault(Rule::Contradiction, field));
@@ -488,13 +410,8 @@ pub const fn absent(s: AbiStr, field: &'static str) -> Result<(), Fault> {
     Ok(())
 }
 
-// ── THE STATEMENT'S LISTS (the design's One Statement: marks, rewrites, sections, needs) ──────
-
 /// The marks: only known flag bits; every word mark of a known class, and named.
-///
-/// # Errors
-///
-/// The rule a mark breaks.
+
 pub fn check_marks(marks: u64, words: &[MarkWord]) -> Result<(), Fault> {
     bits(marks, MARKS_KNOWN, "statement.marks")?;
     words.iter().try_for_each(check_mark_word)
@@ -509,12 +426,7 @@ abi_op! {
 }
 
 /// The rewrites: a known class and a named `from`; `to` is absent for an alias, optional for a
-/// sugar (the settings key its value lands under), and named for a key move and for each later
-/// sugar class (its shown placeholder, what its value names, its core role).
-///
-/// # Errors
-///
-/// The rule a rewrite breaks.
+
 pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
     rewrites.iter().try_for_each(check_rewrite)
 }
@@ -538,11 +450,7 @@ fn rewrite_to(r: &Rewrite) -> Result<(), Fault> {
 }
 
 /// The sections: each named, known flags, and at most one declaring section (a plane has exactly
-/// one: [`crate::abi::plane::check::check_sections`]).
-///
-/// # Errors
-///
-/// The rule the sections break.
+
 pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
     sections.iter().try_for_each(check_section)?;
     if sections
@@ -604,12 +512,7 @@ abi_op! {
 }
 
 /// A need's response head rule ([`Need::keep_mode`]):
-/// - [`KEEP_NAMED`]: a bounded list of kept names, each a lower-case token and none hop-by-hop or
-///   credential-bearing ([`NEVER_KEPT`]: [`Rule::Foreign`], a field that is not the plugin's to
-///   read); no deny list ([`Rule::Contradiction`]).
-/// - [`KEEP_ALL_EXCEPT_DENIED`]: a bounded list of denied names, each a lower-case token; no kept
-///   list ([`Rule::Contradiction`]).
-/// - any other mode: [`Rule::UnknownCode`]. The padding is `0`.
+
 fn keep_response_headers(n: &Need) -> Result<(), Fault> {
     const KEPT: &str = "need.keep_response_headers";
     const DENIED: &str = "need.deny_response_headers";
@@ -641,7 +544,7 @@ fn keep_response_headers(n: &Need) -> Result<(), Fault> {
 }
 
 /// A need's list of response head field names: at most [`KEEP_RESPONSE_HEADERS_MAX`], each a
-/// lower-case token; with `kept`, none of [`NEVER_KEPT`].
+
 fn header_names(
     ptr: *const AbiStr,
     len: usize,
@@ -709,8 +612,6 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     // SAFETY (each `list`): the caller's contract.
     let families = unsafe { list(st.families, st.families_len, "statement.families") }?;
     for f in families {
-        // A family's NULL label keys with a count are the loader's own refusal; their bounds are
-        // checked here, before any reader builds a slice over them.
         bounded(
             f.label_keys,
             f.label_keys_len,
@@ -724,8 +625,7 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     check_rewrites(unsafe { list(st.rewrites, st.rewrites_len, "statement.rewrites") }?)?;
     let sections = unsafe { list(st.sections, st.sections_len, "statement.sections") }?;
     check_statement_sections(sections)?;
-    // A SELECTING SECTION IS A PLANE'S FACT (what config carries to use it): any other kind
-    // stating it is refused, never silently ignored.
+
     if sections.iter().any(|s| s.flags & SECTION_SELECTS != 0)
         && st.kind != super::KindCode::Plane as u32
     {

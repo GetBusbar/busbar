@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Negotiated, atomic conditional record writes over the existing RECORD_GET carrier.
-//!
-//! Every predicate observes the pre-mutation snapshot. Duplicate addresses within either list
-//! and overlapping mutation selectors are refused; predicates may overlap any mutation. A store checks the applied
-//! receipt before the predicates, then commits all mutations and that receipt atomically. A
-//! condition conflict changes nothing and records nothing. The existing applied-only, 24-hour
-//! dedupe rule applies: after an ambiguous answer replay exactly the same id and body, never
-//! infer application from current rows. Only a definitive condition conflict permits replanning.
-//! No ordinary record write or replay-token claim implements this operation.
 
 use super::dedupe::{Body, Dedupe};
 use crate::abi::mechanism::call::Outcome;
@@ -154,10 +146,7 @@ pub enum Decision {
 
 impl Request {
     /// Validate the semantics and existing record-byte bound. No batch-count limit is imposed.
-    ///
-    /// # Errors
-    /// Unknown version, empty lists, duplicate or overlapping selectors, invalid range length,
-    /// or an invalid record value.
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.version != VERSION {
             return Err("unsupported record transaction version");
@@ -243,19 +232,14 @@ impl Request {
     }
 
     /// Encode one bounded, versioned request. Lengths and counts are little-endian `u64`.
-    ///
-    /// # Errors
-    /// Invalid semantics or an encoding beyond the existing ABI byte bound.
+
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         let mut encoded = self.encode_held()?;
         Ok(std::mem::take(&mut *encoded))
     }
 
     /// Encode under wiping custody, including every allocation retired during growth. Retain
-    /// this owner for validation, hashing and adapter temporaries that do not transfer bytes.
-    ///
-    /// # Errors
-    /// The same semantic or byte-bound refusal as [`Self::encode`].
+
     pub fn encode_held(&self) -> Result<Zeroizing<Vec<u8>>, &'static str> {
         self.validate()?;
         let mut writer = Writer(SecretBytes::default());
@@ -293,7 +277,7 @@ impl Request {
                 writer.push(&exact_key_length.to_le_bytes())?;
             }
         }
-        // Include the enclosing keyed entry in the same existing ABI bound.
+
         if extensions::entry_len(INTENT, &writer.0) as u64 > HARD_MAX_BYTES {
             return Err("record transaction exceeds ABI byte bound");
         }
@@ -301,9 +285,7 @@ impl Request {
     }
 
     /// Decode one complete request, refusing unknown versions and trailing or truncated bytes.
-    ///
-    /// # Errors
-    /// Invalid wire bytes or invalid request semantics.
+
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let mut reader = Reader::new(bytes)?;
         let version = u32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| WIRE)?);
@@ -405,12 +387,8 @@ pub fn supported(statement_extensions: &[u8]) -> bool {
 }
 
 /// Decode input intent before an ordinary GET. Malformed recognized intent never falls back.
-///
-/// # Errors
-/// Malformed, duplicate or unsupported transaction intent.
+
 pub fn intent(input_extensions: &[u8]) -> Result<Option<Request>, &'static str> {
-    // Preserve the ordinary extensions reader's tolerance when this key is absent. Once the key
-    // is recognized, the complete framing is checked before anything can reach the backend.
     let mut reader = Reader::new(input_extensions)?;
     let mut recognized = false;
     while !reader.0.is_empty() {
@@ -450,10 +428,7 @@ pub fn encode_result(request: &Request, decision: Decision) -> Vec<u8> {
 }
 
 /// Validate a complete leased READY result against the exact immutable candidate.
-///
-/// # Errors
-/// Every non-READY answer, missing lease/result, malformed result, or correlation mismatch.
-/// These errors never prove application; the caller retains the exact id and body for replay.
+
 pub fn read_result(
     outcome: Outcome,
     leased: bool,

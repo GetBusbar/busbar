@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The dated budget ledger (OWNER RULING Q14, #79): a cell's segments price at the card in force
-//! when each was earned, through the one function, and agree with the dated metering read.
 
 use std::collections::BTreeMap;
 
@@ -38,9 +37,7 @@ fn input(n: u64) -> BTreeMap<String, u64> {
 }
 
 /// **THE WORKED EXAMPLE.** 300,000 tokens before an edit from 20 to 10 micro-units a token, 900,000
-/// after. The card in force when each was earned prices them at 600 + 900 = 1,500; the current card
-/// alone reprices all 1,200,000 at 1,200. The dated cell answers 1,500, and it is the SAME figure
-/// the dated metering read's one function answers for the same consumption at the same instants.
+
 #[test]
 fn a_card_edit_mid_window_prices_each_segment_at_the_card_it_was_earned_under() {
     let history = edited(card(20.0, 0), card(10.0, 0));
@@ -82,7 +79,7 @@ fn a_card_edit_mid_window_prices_each_segment_at_the_card_it_was_earned_under() 
 }
 
 /// With no history installed every segment prices at the live card, which is exactly the one
-/// function at that card — the undated derivation, to the micro-unit.
+
 #[test]
 fn with_no_history_the_cell_prices_as_the_undated_derivation() {
     let live = card(3.0, 2);
@@ -110,7 +107,7 @@ fn the_fee_base_splits_by_the_era_each_request_was_admitted_under() {
     let history = edited(card(0.0, 5), card(0.0, 7));
     let live = card(0.0, 7);
     let mut eras = FeeEras::<u64>::default();
-    eras.charge(0); // undated: the remainder
+    eras.charge(0);
     eras.charge(0);
     eras.charge(EDIT_MS);
     let total = 3;
@@ -131,32 +128,29 @@ fn the_fee_base_splits_by_the_era_each_request_was_admitted_under() {
 }
 
 /// MONEY-AUDIT D-3/F-5: a refund returns the fee of the era its request was CHARGED in, not the
-/// newest era's. Two requests admitted under E1 and E2; the E1 one fails: E2's request stays billed.
-/// Era zero comes off the undated remainder, which the caller's total carries.
+
 #[test]
 fn a_refund_takes_the_era_its_request_was_charged_in() {
     let (e1, e2) = (EDIT_MS, EDIT_MS + 5);
     let mut eras = FeeEras::<u64>::default();
     eras.charge(e1);
     eras.charge(e2);
-    eras.refund(e1); // the caller's total goes 2 -> 1 in the same step
+    eras.refund(e1);
     assert_eq!(
         eras.split(1).collect::<Vec<_>>(),
         vec![(e1, 0), (e2, 1), (0, 0)],
         "the E1 request's fee came back; the E2 request is still billed at E2"
     );
 
-    // An undated request (era zero: no history installed when it was admitted) beside a dated
-    // one: its refund comes off the undated remainder and leaves the dated request billed.
     let mut eras = FeeEras::<u64>::default();
     eras.charge(0);
     eras.charge(e1);
-    eras.refund(0); // 2 -> 1
+    eras.refund(0);
     assert_eq!(eras.split(1).collect::<Vec<_>>(), vec![(e1, 1), (0, 0)]);
 }
 
 /// A segment whose era began before the window resolves at the window's start: the card in force
-/// when the window opened, never an older one.
+
 #[test]
 fn an_era_older_than_the_window_resolves_at_the_window_start() {
     let history = edited(card(20.0, 0), card(10.0, 0));
@@ -177,8 +171,7 @@ fn an_era_older_than_the_window_resolves_at_the_window_start() {
 }
 
 /// The segment in force NOW prices at the caller's live card, which carries the open classes a
-/// deployment configured (item 123); a present card silent about a hit class still REFUSES (#42)
-/// for a segment resolved to an older entry.
+
 #[test]
 fn the_in_force_segment_prices_at_the_live_card_and_an_older_one_at_its_own() {
     let history = edited(card(1.0, 0), card(1.0, 0));
@@ -227,7 +220,7 @@ fn a_segment_no_entry_covers_refuses() {
 }
 
 /// A Store confirmation may arrive after another window begins. The recorded serving identity
-/// prices the old counts, while the newly activated identity prices only its own counts.
+
 #[test]
 fn exact_opening_and_config_counts_keep_their_prices_across_later_windows() {
     use crate::cost::RawRateEra;
@@ -439,7 +432,7 @@ fn an_old_entry_row_can_straddle_a_nominal_configuration_cutover() {
         appended_at: cutover,
         author: Author::Config { policy_epoch: 1 },
     });
-    // Both halves are old-entry raw counts: the Store result was unknown through the cutover.
+
     let before = input(100_000);
     let after = input(200_000);
     let total = BTreeMap::from([("input".to_string(), before["input"] + after["input"])]);

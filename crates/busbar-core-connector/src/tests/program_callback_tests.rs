@@ -11,8 +11,6 @@ fn observed(member: &Arc<super::super::Member>) -> Arc<Probe> {
     let weak = Arc::downgrade(member);
     let driver = std::thread::current().id();
     Probe::new(move || {
-        // A reactor callback on another thread may coincide with a legal guarded publication.
-        // This witness checks callbacks invoked on the thread actually making that publication.
         std::thread::current().id() == driver
             && weak.upgrade().is_some_and(|member| {
                 member.state.try_lock().is_err() || member.fan.wakers.try_lock().is_err()
@@ -68,7 +66,7 @@ fn a_program_connection_return_notifies_the_actual_busy_reader_after_unlocking()
         let (member, _) = held.lease.as_ref().unwrap();
         let probe = observed(member);
         let waker = probe.waker();
-        // Hold the connection as a carrier crossing does; the public read must file its waiter.
+
         let conn = { member.lock().live.as_mut().unwrap().conn.take().unwrap() };
         assert!(c
             .poll_read(OWNER, id, &mut Context::from_waker(&waker), &mut [0; 1])
@@ -76,7 +74,7 @@ fn a_program_connection_return_notifies_the_actual_busy_reader_after_unlocking()
         assert_eq!(member.lock().missed.len(), 1);
         member.lock().live.as_mut().unwrap().conn = Some(conn);
         let before = probe.wakes.load(Ordering::SeqCst);
-        // This actual write hands the connection out and back through Member::crossing.
+
         assert_eq!(c.write(OWNER, id, b"x", false, false), Ok(1));
         assert!(probe.wakes.load(Ordering::SeqCst) > before);
         assert!(member.lock().missed.is_empty());

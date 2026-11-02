@@ -1,20 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A 1.5.5-shaped config (no `data_dir`, no `peers`, no `keyset_ref`) boots a busbar that is
-//! indistinguishable from 1.5.5 on the two surfaces a local ledger would first show up on:
-//!
-//! * the `/metrics` exposition carries no `busbar_ledger_*`, `busbar_journal_*`, `busbar_hold_*`
-//!   or `busbar_wal_*` series;
-//! * the boot log carries no keyset / data-dir / WAL line (no probe, no "keyset missing", no
-//!   "data dir not writable", no record-rate warning).
-//!
-//! Nothing of the kind exists in the tree today, so this is the tripwire: the first ledger series
-//! or boot line that leaks onto a plain 1.5.5 deployment turns it red.
 #![cfg(unix)]
-// The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
-// no wire codec compiled in and fail-closes at boot, which is correct product behaviour, not a
-// regression. Full-feature builds run it.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -25,10 +12,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// A fresh, isolated fixture directory (pid + nanos, like the sibling harnesses). Deliberately does
-/// NOT spell "data-dir"/"data_dir" (or any other `LEDGER_BOOT_WORDS` entry): the boot log prints this
-/// path (e.g. the overlay file location), and a fixture name containing the tripwire vocabulary would
-/// make the test flag its own path as a leak.
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-neutrality-fixture-{}-{}",
@@ -53,9 +36,6 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// The 1.5.5 shape (the shadow oracle's own config, cut down): one provider, one model, keys on
-/// the data plane, an admin token, prometheus export, memory store (the default). No
-/// 1.6.0-additive key anywhere.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -102,11 +82,8 @@ models:
     .unwrap();
 }
 
-// Deliberately does not spell "data-dir"/"data_dir": see `fixture_dir`'s comment on why the tripwire
-// vocabulary must not appear anywhere this fixture's own material could echo into the boot log.
 const ADMIN_TOKEN: &str = "neutrality-fixture-admin";
 
-/// The series prefixes a local ledger would introduce; none may appear on a 1.5.5 config.
 const LEDGER_SERIES: &[&str] = &[
     "busbar_ledger_",
     "busbar_journal_",
@@ -114,7 +91,6 @@ const LEDGER_SERIES: &[&str] = &[
     "busbar_wal_",
 ];
 
-/// The boot-line vocabulary a local ledger would introduce; none may appear on a 1.5.5 config.
 const LEDGER_BOOT_WORDS: &[&str] = &[
     "keyset",
     "data_dir",
@@ -138,9 +114,6 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
 
-    // The BEFORE picture, taken with every file the TEST creates already on disk — the configs, the
-    // signing key and the log the child will write into. Everything that appears between here and
-    // the AFTER picture below was put there by the node.
     let before = snapshot(&dir);
     assert!(
         before.len() >= 3,
@@ -149,10 +122,6 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         before.len()
     );
     let mut child = Command::new(common::boot::exe())
-        // The directory the assertion below reads is only the directory a stray file lands in if
-        // it is also the directory the node was started in: a journal opened at a RELATIVE path
-        // follows the process, not the config. Every path the node is given here is absolute, so
-        // moving the process into the fixture changes nothing except where a mistake would show.
         .current_dir(&dir)
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
@@ -163,7 +132,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         .stderr(log_err)
         .spawn()
         .expect("spawn busbar");
-    // Any panic from here on prints the node's whole log (its stdout and stderr) with it.
+
     let _dump = common::boot::DumpOnPanic(&log_path);
 
     let booted = wait_for(Duration::from_secs(30), || {
@@ -180,18 +149,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         "busbar did not reach 'listening' (data and admin) within 30s; log:\n{}",
         read_to_string(&log_path)
     );
-    // The boot log line lands the instant ANY of the per-core SO_REUSEPORT workers starts listening,
-    // not when every worker (and the process-wide metrics recorder behind them) is warm: the kernel
-    // can hand an early connection to a worker whose accept loop is live before the recorder install
-    // (a background thread's one-time clock calibration, started at config load) has completed.
-    // The host scrape's contract (`busbar_kernel::export::scrape`) is that such a scrape is REFUSED
-    // (non-`200`, retriable),
-    // never a `200` with an empty body — so unlike the pre-fix version of this test, we do not need
-    // to retry PAST an untrustworthy early response to reach a trustworthy one: any `200` this test
-    // sees is required to already be the full exposition, and a scrape that lands on a cold worker
-    // answers non-`200` instead, which the retry below simply waits out.
 
-    // Mint one virtual key through the admin API, exactly as an operator would.
     let (_, minted) = http_request(
         &format!("127.0.0.1:{admin_port}"),
         "POST",
@@ -205,9 +163,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         .and_then(|rest| rest.split('"').next())
         .unwrap_or_else(|| panic!("the admin API must mint a key: {minted}"))
         .to_string();
-    // One request through the whole request path first (the provider is unreachable, so it ends
-    // as an upstream failure): the exposition then carries the request-path series, which is
-    // exactly where a ledger series would first register.
+
     let chat = http_request(
         &format!("127.0.0.1:{data_port}"),
         "POST",
@@ -217,10 +173,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         ),
         Some(&token),
     );
-    // The scrape (key-authenticated on the data listener in 1.5.5). A scrape landing on a cold
-    // worker (see the boot-window note above) is REFUSED, not answered empty, so we retry only to
-    // wait out that refusal — every `200` collected along the way is checked below, never trusted
-    // blindly just because the status line said 200.
+
     let data_addr = format!("127.0.0.1:{data_port}");
     let mut status = 0u16;
     let mut body = String::new();
@@ -258,7 +211,6 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         leaked.join("\n")
     );
 
-    // Stop, then read the WHOLE log (boot + drain) for ledger vocabulary.
     let pid = child.id().to_string();
     let _ = Command::new("kill").arg("-TERM").arg(&pid).status();
     let exited = wait_for(Duration::from_secs(15), || {
@@ -281,21 +233,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
          without data_dir; found:\n{}",
         leaked_lines.join("\n")
     );
-    // THE DIRECTORY IS THE SAME DIRECTORY.
-    //
-    // This used to be a three-word denylist — `keyset`, `wal`, `journal` — over the fixture dir's
-    // TOP LEVEL. Two things are wrong with that, and both are the same thing: it asks whether a
-    // file matching three names appeared, when the question is whether ANY file appeared. A node
-    // that persisted to `state/`, `db/`, `.busbar/`, `ledger.sqlite` or a bare `0000000001.log`
-    // left the denylist untouched, and a subdirectory left it untouched by construction because
-    // the scan did not descend. So the test now compares the WHOLE TREE, before and after: a
-    // config without a data dir persists NOTHING, which means the set of paths under the fixture
-    // is identical on both sides.
-    //
-    // `config.yaml` is the one exception, and it is not really one: the node rewrites it in place
-    // when it normalises the 1.5.5 overlay, so its CONTENT changes while its path does not. Paths
-    // are what is compared, so it needs no carve-out — it is named here so a reader knows the
-    // comparison was made with that behaviour in view rather than in ignorance of it.
+
     let after = snapshot(&dir);
     let appeared: Vec<&String> = after.difference(&before).collect();
     let vanished: Vec<&String> = before.difference(&after).collect();
@@ -324,11 +262,6 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// EVERY PATH UNDER `dir`, RECURSIVELY, relative to `dir` and with a trailing `/` on directories.
-///
-/// Recursion is the point. A node that persists does not necessarily persist beside the config: it
-/// makes a directory and persists inside it, and a scan that reads only the top level sees one new
-/// name it does not recognise, or — if the name is not on a denylist — nothing at all.
 fn snapshot(dir: &Path) -> BTreeSet<String> {
     fn walk(base: &Path, at: &Path, out: &mut BTreeSet<String>) {
         let Ok(entries) = std::fs::read_dir(at) else {
@@ -353,7 +286,6 @@ fn snapshot(dir: &Path) -> BTreeSet<String> {
     out
 }
 
-/// One HTTP request against the booted process: (status, body text).
 fn http_request(
     addr: &str,
     method: &str,
@@ -385,7 +317,6 @@ fn http_request(
     })
 }
 
-/// Poll `cond` until it returns true or `budget` elapses; returns whether it became true.
 fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
@@ -397,7 +328,6 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// Read a file to a String, tolerating a not-yet-flushed/partial log (returns what's there).
 fn read_to_string(path: &Path) -> String {
     let mut s = String::new();
     if let Ok(mut f) = std::fs::File::open(path) {

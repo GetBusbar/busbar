@@ -76,9 +76,6 @@ fn consumed_secure_datagram_waits_as_a_continuation_and_is_not_reingested() {
             let sealed = packet(&mut far, host_addr, PLAINTEXT);
             let before = host.secure.as_ref().unwrap().ingest_calls();
 
-            // Measure the existing complete crossing reservation for setup only. Leave exactly
-            // that much credit beside one independent reader allocation: the first reserve fits,
-            // but opening plaintext transfers positive custody before a second ABI reserve.
             let probe = Memory::new(Some(usize::MAX));
             host.memory(Arc::clone(&probe));
             assert!(host.prepare_output());
@@ -102,8 +99,6 @@ fn consumed_secure_datagram_waits_as_a_continuation_and_is_not_reingested() {
             let id = port.add(host).unwrap();
 
             let yielded = if queued {
-                // Queue the packet through the real trusted ingress API while an earlier empty
-                // Emit owns publication. Retire that turn before applying this test's pressure.
                 let input = crate::datagram::Across {
                     stream: 1,
                     bytes: Vec::new(),
@@ -209,7 +204,6 @@ fn consumed_secure_datagram_waits_as_a_continuation_and_is_not_reingested() {
             assert_eq!(received(&port, id), before + 1);
             assert_eq!(door.st.lock().unwrap().secured, vec![PLAINTEXT.to_vec()]);
 
-            // The same healthy association admits the next distinct sealed input immediately.
             let next = b"next independent secure packet";
             let sealed = packet(&mut far, host_addr, next);
             let yielded = answered(port.raw_datagram(far.addr, &sealed, now, &|_, _| {}), id);

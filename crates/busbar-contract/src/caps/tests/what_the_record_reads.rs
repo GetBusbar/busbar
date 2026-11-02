@@ -2,24 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! What each of these types SAYS about itself, read back.
-//!
-//! Every rendering in this crate is hand-written, and each is written for a reader who has nothing
-//! else: the operator looking at a refused admission, the transport author reading a log line while
-//! an accrual is being turned away. A rendering that quietly produced nothing would leave each of
-//! them with an empty string where the only evidence was, and every one of them was reachable
-//! without a test naming it. The canary's rendering is the kernel's and is read back there.
-//!
-//! A rendering that needs a minted hold to read — the hold's own, with its principal and figures —
-//! is read back in the kernel's file of the same name.
-//!
-//! The tests in this file that have to MINT a token live in the kernel, under the same file name
-//! in `busbar-kernel/src/tests/caps_tests/` (construction `token-sealed`); what stays here needs
-//! no seal.
 
 use crate::caps::*;
 
 /// Every way an accrual is turned away, with its rendering. Hand-kept, so the cell below holds it to
-/// the enum's own variants (Law 8).
+
 const REFUSALS: &[(AccrualRefused, &str)] = &[
     (AccrualRefused::ParentNotAdmitted, "parent not admitted"),
     (AccrualRefused::ParentExited, "parent already exited"),
@@ -35,9 +22,6 @@ const CELL_ERRORS: &[(CellError, &str)] = &[
 
 #[test]
 fn every_refusal_the_cell_can_give_says_which_one_it_was() {
-    // Three ways an accrual is turned away and three ways a hold is, each read off a log line by
-    // somebody deciding whether a child has to post late. A rendering that collapsed them would
-    // make the two decisions indistinguishable.
     let refusals = REFUSALS;
     for (refusal, spelling) in refusals {
         assert_eq!(refusal.to_string(), *spelling);

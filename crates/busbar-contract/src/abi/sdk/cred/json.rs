@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! JSON WHOSE STRING MEMBERS MAY BE CREDENTIALS (the chip design, its sections on secrets at rest and on
-//! the fresh-verification changes: "the show-once mint is JSON-safe"): a plugin that is handed a credential in a JSON reply (a minted token) and hands
-//! it on in a JSON answer never holds it as text.
-//!
-//! * [`json_reply`] reads a reply body into the plugin's own type: every [`Cred`] member is
-//!   captured as the parser meets it, the public members are read as usual, and the error names
-//!   the class of the failure and where it is, never a value ([`JsonReplyError`]).
-//! * [`SealedJson`] is a JSON object whose members are public values or [`Cred`]s, encoded by the
-//!   SDK into a [`SealedWrite`] exactly as `serde_json::to_vec` writes the same object.
-//! * [`SealedWrite::stream_into`] moves a sealed answer into the host buffer the call fills (a
-//!   plane's `reply_buf`).
-//!
-//! THE IN-PROCESS RESIDUAL. The bytes a [`SealedJson`] encodes are the answer: the host's buffer
-//! receives them in clear, as the destination must. The SDK copies them there from its own
-//! zeroizing buffer and the plugin never reads them. A capture parses in this process too:
-//! `serde_json` unescapes an escaped string through a scratch buffer of its own that is freed, not
-//! wiped; an unescaped string (every token the providers mint) is copied straight from the body
-//! into the credential.
 
 use core::fmt;
 
@@ -89,11 +72,7 @@ impl fmt::Display for JsonReplyError {
 impl std::error::Error for JsonReplyError {}
 
 /// Read a JSON reply `body` into `T`. Every [`Cred`] member of `T` is captured as it is read (from
-/// the body straight into the credential's zeroizing buffer); the error names a class and a
-/// position, never a value.
-///
-/// # Errors
-/// The body is not JSON, or does not match `T`.
+
 pub fn json_reply<T: DeserializeOwned>(body: &[u8]) -> Result<T, JsonReplyError> {
     use serde_json::error::Category;
     serde_json::from_slice(body).map_err(|e| JsonReplyError {
@@ -110,7 +89,7 @@ pub fn json_reply<T: DeserializeOwned>(body: &[u8]) -> Result<T, JsonReplyError>
 
 impl Cred {
     /// Whether it begins with `prefix`: a public format marker (a provider's `ek_` on the tokens it
-    /// mints), checked on a captured token with no getter. Answers only that.
+
     #[must_use]
     pub fn starts_with(&self, prefix: &[u8]) -> bool {
         self.wire().starts_with(prefix)
@@ -192,12 +171,8 @@ impl SealedJson {
     }
 
     /// The encoded object, ready to write.
-    ///
-    /// # Errors
-    /// A credential member is not UTF-8 text.
+
     pub fn encoded(&self) -> Result<SealedWrite, NotJsonText> {
-        // Measured first, then written into a buffer of exactly that size: a growing buffer would
-        // leave the credential behind in every allocation it outgrew.
         let mut len = 0;
         self.write(&mut |b| len += b.len())?;
         let mut buf = Zeroizing::new(Vec::with_capacity(len));
@@ -211,9 +186,8 @@ impl SealedJson {
     }
 
     /// Hand the encoding to `put`, piece by piece. A credential's piece is encoded into a buffer
-    /// wiped on drop.
+
     fn write(&self, put: &mut dyn FnMut(&[u8])) -> Result<(), NotJsonText> {
-        // A `Value` or a `str` always serializes: the one refusal is a credential that is not text.
         let json = |v: &dyn erased::Json| Zeroizing::new(v.to_json());
         put(b"{");
         for (i, (name, member)) in self.members.iter().enumerate() {

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Explicit consumption of terminal host-service results on a long-lived driver ticket.
-//! This uses MAIN extensions; completion handles and every C layout remain unchanged.
 
 use crate::abi::mechanism::{
     extensions,
@@ -170,7 +169,7 @@ pub fn read_ack(bytes: &[u8]) -> Result<Option<Acknowledgement>, Error> {
             },
             seq: u32::from_le_bytes(record[1..].try_into().map_err(|_| Error::Invalid)?),
         };
-        // Host services and connector calls share one issue-number namespace.
+
         if !seen.insert(handle.seq) {
             return Err(Error::Invalid);
         }

@@ -2,29 +2,22 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE EXPORT KIND'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` THE DESIGN, the
-//! export kind ABI): the [`ExportCalls`] trait the plugin loader implements over one opened
-//! export instance and the kernel feeds and scrapes through, and the scrape snapshot
-//! ([`Family`]/[`Sample`]) the kernel builds from its recorders. The kernel names this, the loader
-//! names this, and neither names the other. Nothing here crosses the plugin boundary: the export
-//! kind's ABI is `abi::export`, and the loader lowers these types to it.
 
 use zeroize::Zeroize;
 
 /// JSON list of declared route paths requesting a first-party snapshot consumer's
-/// public namespace grant. The host still reserves its own routes and verifies trust.
+
 pub const EXT_PUBLIC_ROUTES: &str = "listener.public_routes";
 
 /// JSON list of public route paths retained by the boot instance after config removal.
 pub const EXT_PERSISTENT_ROUTES: &str = "listener.persistent_routes";
 
 /// The settings key that states an export instance's in-flight bound: how many deliveries the host
-/// runs at once for that instance (the frozen 1.5.x request-log webhook sink's
-/// `max_inflight_deliveries`). The host bounds the instance by it, within the plugin's declared
-/// `max_inflight`; unset, the host's default bound applies ([`DEFAULT_INFLIGHT`]).
+
 pub const INFLIGHT_KEY: &str = "max_inflight_deliveries";
 
 /// The in-flight bound of an export instance whose settings state none: 1.5.5's default for its
-/// request-log sinks (the webhook's `max_inflight_deliveries`, the file sink's in-flight appends).
+
 pub const DEFAULT_INFLIGHT: u32 = 64;
 
 /// One metric family of a host recorder's snapshot, in the recorder's render order. The loader
@@ -61,7 +54,6 @@ impl Drop for Family {
         self.name.zeroize();
         self.help.zeroize();
         self.unit.zeroize();
-        // Each sample wipes its own initialized strings before its allocation is released.
     }
 }
 
@@ -116,14 +108,7 @@ pub fn kind_of(word: &str) -> Option<u8> {
 }
 
 /// THE RECORDER SNAPSHOT (K9a S6): a host recorder's text exposition — each family's `# HELP`
-/// (optional), `# TYPE`, its samples and a blank line — read into [`Family`]s, in order, LOSSLESSLY:
-/// every label value and every number as the recorder spelled it, so rendering them back in the same
-/// format reproduces the recorder's bytes. Anything that cannot be placed — a sample outside a typed
-/// family, a `# TYPE` word outside the vocabulary, an unclosed family — is refused rather than
-/// approximated. The kernel reads its recorders through it.
-///
-/// # Errors
-/// The first line that cannot be placed, numbered.
+
 pub fn parse_families(exposition: &str) -> Result<Vec<Family>, String> {
     if !exposition.is_empty() && !exposition.ends_with('\n') {
         return Err("the exposition does not end with a newline".into());
@@ -277,24 +262,22 @@ pub enum Delivered {
 /// ONE EXPORT INSTANCE'S CALLS, as the kernel makes them.
 pub trait ExportCalls: Send + Sync {
     /// Apply settings to this instance. A refusal retains its current settings and bindings.
-    ///
-    /// # Errors
-    /// The instance refused the refresh or cannot refresh in place.
+
     fn refresh(&self, settings: &serde_json::Value, generation: u64) -> Result<(), String> {
         let _ = (settings, generation);
         Err("this export instance does not support refresh".into())
     }
 
     /// The streams this instance carries (its Statement tail's `streams[]`), as
-    /// [`crate::abi::export::ExportStream`] bytes.
+
     fn streams(&self) -> &[u8];
 
     /// The routes this instance serves (its Statement tail's `routes[]`), in the route vocabulary
-    /// every kind declares in.
+
     fn routes(&self) -> &[crate::abi::mechanism::route::Route];
 
     /// Declared routes outside the instance namespace, granted only to the first-party
-    /// snapshot consumer. These are host metadata read from the Statement extensions.
+
     fn public_routes(&self) -> &[String] {
         &[]
     }
@@ -305,90 +288,64 @@ pub trait ExportCalls: Send + Sync {
     }
 
     /// Hand one already-projected JSON line for `stream` to the instance, OFF the request path:
-    /// the line joins the instance's bounded queue, and the host coalesces queued lines into
-    /// `deliver` batches (JSON LINES, one host-minted `op_id` each) in the write-behind deadline
-    /// class. `hold` is dropped when the line's batch has answered (or the line was shed).
+
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered;
 
     /// Whether this instance takes each `traces` line's full span record as its reserved `span`
-    /// member (status row 173; K9e-2: everything the previous release's exporter sent for a span,
-    /// whatever `fields:` selected). An instance that takes none is handed the projected line
-    /// alone, byte for byte as before.
+
     fn takes_span_records(&self) -> bool {
         false
     }
 
     /// Render `families` as this instance's exposition text, through `scrape`, on the calling
-    /// thread (request path). `Err` names why the instance did not render.
-    ///
-    /// # Errors
-    /// The instance failed, was refused, faulted, or answered short twice.
+
     fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String>;
 
     /// Render the HOOK `families` (`/metrics/hooks`) as this instance's exposition text, through
-    /// `scrape` with [`crate::abi::export::SCRAPE_FLAG_HOOK_FAMILIES`] set, on the calling thread.
-    /// An instance with no hook rendering answers `Err`.
-    ///
-    /// # Errors
-    /// The instance renders no hook families, failed, was refused, faulted, or answered short twice.
+
     fn scrape_hooks(&self, families: &[Family]) -> Result<Vec<u8>, String> {
         let _ = families;
         Err("this instance renders no hook families".to_string())
     }
 
     /// Ask the instance for its `status` (what it reports when the host renders its status
-    /// exposition): the 1.5.5 status JSON, or `None` when it has none. Its envelope's metrics and
-    /// diagnostics are folded by the host as every reply's are.
+
     fn status(&self) -> Option<Vec<u8>>;
 
     /// Dispatch one request to the instance's own routes, through `serve`. The host enforced
-    /// the route's auth before this call.
-    ///
-    /// # Errors
-    /// The instance failed, was refused or faulted.
+
     fn serve(&self, req: &ServeRequest<'_>) -> Result<Served, String>;
 
     /// The admission this instance stated for its deliveries: whether it takes deliveries this run,
-    /// its in-flight bound (`0`: the host's) and its gate's name (empty: the module's). `None` =
-    /// the host's defaults. (A memory-ABI instance states none; its `max_inflight` is the
-    /// dispatcher's.)
+
     fn admission(&self) -> Option<(bool, u64, String)> {
         None
     }
 
     /// START the instance: its door's `ready` (discovery at boot) is awaited HERE, when the host
-    /// starts its PUSH sinks (after the app is built, before any listener binds), not when it was
-    /// opened. That is where 1.5.5 configured its exporters, so what a sink says of its own target
-    /// lands in busbar's log where 1.5.5 printed it, once. Nothing by default.
-    ///
-    /// # Errors
-    /// The instance's `ready` did not answer READY: the plugin's own text, which refuses the boot.
+
     fn start(&self) -> Result<(), String> {
         Ok(())
     }
 
     /// The host shed a line for this instance before handing it over: an instance that declared a
-    /// shed counter has it counted. Nothing by default.
+
     fn shed(&self) {}
 }
 
 /// What [`ExportAxis::probe`] answers of a module: the streams its sink declares (`None` when it
-/// will not load here) and its own validation of the instance's settings, verbatim.
+
 pub type Probed = (Option<Vec<u8>>, Vec<String>);
 
 /// THE EXPORT AXIS, as the kernel asks it: every `kind: export` row the composition root admitted
-/// (compiled in or dropped in, one registration), resolved by `module:` name or alias. The root
-/// implements it over its plugin registry and the process's one dispatcher and installs it once;
-/// the kernel opens, probes and checks export instances through it and names nothing behind it.
+
 pub trait ExportAxis: Send + Sync {
     /// `None` when no `kind: export` row names `module`; else what [`Probed`] states, asked while
-    /// the configuration is resolved (`instance` names the configured instance in any refusal).
+
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed>;
 
     /// The sink's own checks across every configured `instances` of `module`, at `phase`
-    /// ([`crate::abi::export::CHECK_PHASE_LIMITS`] | `_INSTANCES`), each line verbatim; `None`
-    /// when `module` is not an export row. Settings are borrowed so their zeroizing owners remain
-    /// alive through the check rather than yielding unguarded plaintext copies.
+
     fn check(
         &self,
         module: &str,
@@ -397,10 +354,7 @@ pub trait ExportAxis: Send + Sync {
     ) -> Option<Vec<String>>;
 
     /// OPEN one instance of `module` with `settings`, under the host's instance `label` (unique per
-    /// opened instance: the name every host service keys its caller by).
-    ///
-    /// # Errors
-    /// Why it will not open, naming the module.
+
     fn open(
         &self,
         module: &str,
@@ -415,16 +369,14 @@ pub trait ExportAxis: Send + Sync {
     fn first_party(&self, module: &str) -> bool;
 
     /// Whether `module`'s row states the `one_instance` mark
-    /// ([`crate::abi::mechanism::door::MARK_ONE_INSTANCE`]): at most one instance may be
-    /// configured. The kernel then asks the module's own `check` at the limits phase while the
-    /// configuration is resolved, and renders its findings verbatim. None by default.
+
     fn one_instance(&self, module: &str) -> bool {
         let _ = module;
         false
     }
 
     /// The routes `module`'s row declares (its Statement's `routes`), read without opening an
-    /// instance: what a configuration apply that adds an instance would mount. None by default.
+
     fn routes(&self, module: &str) -> Vec<crate::abi::mechanism::route::Route> {
         let _ = module;
         Vec::new()
@@ -443,23 +395,20 @@ pub trait ExportAxis: Send + Sync {
     }
 
     /// The `module:` words of the export rows this build LINKS, in the order the composition root
-    /// registered them: what an unknown-exporter refusal lists. None by default.
+
     fn linked_modules(&self) -> Vec<String> {
         Vec::new()
     }
 
     /// The settings paths `module`'s Statement declares secret (its `secret_refs`, `.`-separated,
-    /// `*` = any key or index; [`crate::secret_fields`]). The export host lends nothing: a reference
-    /// written at one of these paths is resolved IN PLACE before the settings reach the sink's
-    /// probe, check or open. None by default.
+
     fn secret_refs(&self, module: &str) -> Vec<String> {
         let _ = module;
         Vec::new()
     }
 
     /// The REFERENCE-CAPABLE, NOT-SECRET settings paths `module`'s Statement states (its
-    /// extensions' `reference_fields`, lead ruling item 7a): a reference there is resolved in
-    /// place to its string, a literal passes as written. None by default.
+
     fn reference_fields(&self, module: &str) -> Vec<String> {
         let _ = module;
         Vec::new()

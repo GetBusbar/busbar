@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! FIFO publication is independent of exclusive association custody. A producer returns its
-//! association after each checked batch; callbacks enqueue feedback and never await one another.
 
 use super::*;
 use std::future::Future;
@@ -76,11 +75,8 @@ impl PublicationState {
 
 #[derive(Default)]
 pub(super) struct Queue {
-    // Both heads are inline in the pairing. Every live job still owns exactly one Node;
-    // transferring a back list changes links without allocating storage or moving jobs.
-    // Oldest first, including deferred source input prepended by the actor.
     front: Option<Box<Node>>,
-    // Newest first. Reverse existing links into front only when front is exhausted.
+
     back: Option<Box<Node>>,
 }
 
@@ -256,7 +252,7 @@ impl Pairing {
         drop(retired);
     }
     /// Register a synchronous reader/driver for genuine storage retirement. `false` explicitly
-    /// fails only this pairing when no existing publication or reader can release custody.
+
     pub fn wait_storage(&self, waker: &std::task::Waker, generation: u64) -> bool {
         self.memory.register(waker);
         let progress = {
@@ -288,7 +284,7 @@ impl Pairing {
         }
     }
     /// Reserve before growing accepted input. `capacity` is requested capacity, rather than
-    /// payload length. Include the old live capacity when a growth temporarily retains both.
+
     pub fn reserve_input(&self, capacity: usize) -> Result<Custody, SubmitError> {
         self.reserve_input_from(None, capacity)
     }
@@ -343,7 +339,7 @@ impl Pairing {
     }
 
     /// Queue already charged application input without copying or claiming delivery. The
-    /// reservation remains with this input until the destination framer actually takes it.
+
     pub fn submit_owned(
         self: &Arc<Self>,
         leg: Leg,
@@ -355,8 +351,7 @@ impl Pairing {
     }
 
     /// As [`Self::submit_owned`], retaining the source's bounded admission guard until actual
-    /// input taking or explicit cancellation. Include the guard's requested allocation layout
-    /// in `reserve_input` before allocating it. Guard destruction runs outside pairing locks.
+
     pub fn submit_owned_guarded(
         self: &Arc<Self>,
         leg: Leg,
@@ -369,7 +364,7 @@ impl Pairing {
     }
 
     /// Transfer early/gathered bytes into their producer job. `preaccepted` has already been
-    /// recorded with `retain_input`; only the remaining new bytes are accepted by this call.
+
     pub fn submit_preaccepted_owned(
         self: &Arc<Self>,
         leg: Leg,
@@ -411,7 +406,7 @@ impl Pairing {
     }
 
     /// Borrowed application write: wait before copying when live publication can free credit,
-    /// then await the honest output result. Cancellation after acceptance ends the pairing.
+
     pub async fn send(self: &Arc<Self>, leg: Leg, stream: u64, bytes: &[u8], text: bool) -> bool {
         let Ok(custody) = self.input_credit_for(leg, bytes.len()).await else {
             return false;
@@ -440,7 +435,7 @@ impl Pairing {
     }
 
     /// Wait for fresh input credit without copying or accepting its bytes. Cancellation while
-    /// waiting leaves the input with its caller and never ends an unrelated accepted write.
+
     pub async fn input_credit(&self, capacity: usize) -> Result<Custody, SubmitError> {
         self.input_credit_from(None, capacity).await
     }
@@ -479,8 +474,7 @@ impl Pairing {
         let future = Box::pin(async move {
             let mut guard = driving;
             guard.pairing.drive_publication().await;
-            // Quiescence can admit a new actor before this completed future is dropped.
-            // This guard owns cancellation of its own task only.
+
             guard.armed = false;
         });
         if !caller.is_some_and(|caller| caller.schedule(future)) {
@@ -495,7 +489,7 @@ impl Pairing {
     }
 
     /// Queue checked output in FIFO order. No framer callback runs before this method returns;
-    /// the scheduler crosses one producer batch at a time after its association is returned.
+
     pub fn publish(self: &Arc<Self>, leg: Leg, mut yielded: Yielded, now: Instant) -> SessionBatch {
         let owns_storage = yielded.pieces.capacity() != 0
             || yielded.heads.capacity() != 0
@@ -503,8 +497,6 @@ impl Pairing {
             || yielded.interim.capacity() != 0
             || yielded.flow.capacity() != 0;
         if self.memory.limit().is_some() && !yielded.custody.tracked() && owns_storage {
-            // An opening batch or legacy caller transfers existing owned storage into the
-            // pairing here. Reserve its actual capacities before parsing/copying any heads.
             let credit = yielded
                 .adoption_bound()
                 .and_then(|bytes| self.memory.reserve(bytes));
@@ -528,7 +520,7 @@ impl Pairing {
         let continuing = yielded.continuing;
         let piece_custody = std::mem::take(&mut yielded.piece_custody);
         let producer = std::mem::take(&mut yielded.producer);
-        // Retire ignored wire while the transferred storage/producer custody is still live.
+
         drop(yielded);
         let mut retired = Vec::new();
         let (pieces, owners, schedule, caller) = {
@@ -538,9 +530,7 @@ impl Pairing {
             let mut piece_custody = piece_custody.into_iter();
             for piece in pieces {
                 let owner = piece_custody.next().unwrap_or_else(|| custody.clone());
-                // Only payload is a LINE frame: the same predicate `Bridge::sort` crosses by, so
-                // a field block, a failed stream's reason or a stream's end is never counted
-                // accepted here and never queued there (a handed job would be uncounted).
+
                 let line = state
                     .bridge
                     .lines(leg)
@@ -621,8 +611,6 @@ impl Pairing {
         };
         drop(retired);
         if schedule {
-            // Construct the guard before spawn, so cancellation before first poll closes the
-            // accepted episode too. The real caller schedules on its captured reactor/tracker.
             self.schedule_publication(caller);
         }
         SessionBatch {
@@ -634,14 +622,14 @@ impl Pairing {
     }
 
     /// Completed or partial publication counters for this connection. A successful ABI Emit
-    /// means its original bytes were taken; these counters separately describe its output.
+
     #[must_use]
     pub fn publication_outcome(&self) -> PublicationOutcome {
         self.lock().publications.outcome.clone()
     }
 
     /// Await actual publication quiescence, or explicit terminal failure. Channel ownership
-    /// may remain with readers after success and continues to count against the memory limit.
+
     pub async fn published(&self) -> PublicationOutcome {
         loop {
             let changed = self.published.notified();
@@ -709,8 +697,7 @@ impl Pairing {
                     self.published.notify_waiters();
                     return;
                 }
-                // Completed output precedes newer source input. Outputs themselves retain
-                // their breadth-first FIFO order across both legs.
+
                 if current.is_none() {
                     current = state
                         .publications
@@ -749,8 +736,6 @@ impl Pairing {
             };
             let Some(sink) = sink else {
                 if leg == Leg::Upstream {
-                    // A settled dial publishes its heads before attaching. Retain its output
-                    // until successful attach instead of racing that admission boundary.
                     if self.awaiting_attachment() {
                         self.memory.progress_changed();
                         attached.await;
@@ -775,11 +760,7 @@ impl Pairing {
                 return;
             }
             let input = current.as_ref().map(|job| &job.across);
-            // The recall this crossing resumes is consumed here, under the same lock that
-            // hands the leg to the sink, never cleared after it. An independent producer can
-            // publish a new continuation while the crossing is outside the lock; that newer
-            // recall stays set for this same actor to drain. A crossing that does not finish
-            // the owed recall (`Credit`) restores what it consumed.
+
             let owed = {
                 let mut state = self.lock();
                 state.publications.waiting_attachment = false;
@@ -850,8 +831,7 @@ impl Pairing {
                             drop(job);
                         }
                     }
-                    // This enqueues feedback only. It cannot await this producer or cross a
-                    // destination while the source's exclusive association is still out.
+
                     let session = self.publish(leg, yielded, now);
                     if let Err(error) = sink.channels(session, now) {
                         self.publication_failed(error);
@@ -859,9 +839,7 @@ impl Pairing {
                     }
                     if current.as_ref().is_some_and(|job| job.original) {
                         let job = current.take().expect("the held source input");
-                        // A close that ran while this batch was published has already drained
-                        // the queues and counted this job's bytes cancelled; requeueing it now
-                        // would strand its custody and admission until the pairing is dropped.
+
                         let retired = {
                             let mut state = self.lock();
                             if state.closed {
@@ -877,8 +855,7 @@ impl Pairing {
                         }
                     }
                 }
-                // The owed recall was consumed before the crossing; anything newer that was
-                // published meanwhile is still set and is crossed by the next iteration.
+
                 Ok(LineStep::Complete) => {}
                 Err(error) => {
                     if let Some(job) = current.take() {

@@ -14,15 +14,12 @@ fn debug_and_display_never_reveal_the_secret() {
     assert_eq!(format!("{r}"), "[REDACTED]");
     assert!(!format!("{r:?}").contains(secret));
     assert!(!format!("{r}").contains(secret));
-    // And it is reachable only through the explicit audit point, under a kernel seal: the test
-    // harness presents the dev-only test seal (#65), and mints no token of its own — a mint is the
-    // kernel's alone (`token-sealed:kernel-seal`).
+
     assert_eq!(r.expose(&crate::plugin::TestKernelSeal), secret);
 }
 
 /// RED (Part 2 #54, coordinator ruling 2026-10-14): `Debug`, `Display` and `to_string` render the
-/// literal `[REDACTED]`, byte for byte what 1.5.5's `Redacted` printed (`crates/api/src/redacted.rs:61`
-/// at v1.5.5), for a `String` and a byte secret alike — a log line reads as it did.
+
 #[test]
 fn debug_display_and_to_string_are_the_1_5_5_bytes() {
     let text = Secret::new("sk-live-0001".to_string());
@@ -40,11 +37,11 @@ fn debug_display_and_to_string_are_the_1_5_5_bytes() {
 }
 
 /// A struct that embeds a `Secret` field and derives `Debug` inherits the redaction — proving
-/// the guarantee is STRUCTURAL (the whole point: no call site has to remember to redact).
+
 #[test]
 fn embedded_in_a_derived_debug_struct_is_redacted() {
     #[derive(Debug)]
-    #[allow(dead_code)] // fields are read via the derived Debug, which dead-code analysis ignores
+    #[allow(dead_code)]
     struct Holder {
         id: String,
         token: Secret<String>,
@@ -74,36 +71,29 @@ fn clone_and_eq_operate_on_the_secret() {
 }
 
 /// Equality is CONSTANT-TIME: it routes through the crate's `constant_time_eq` over the secret
-/// bytes rather than a plain `==`. This asserts the correctness contract that primitive must uphold
-/// for every case — equal, equal-length-but-differing, and different-length secrets — so the
-/// comparison stays a genuine equality even after being made timing-safe.
+
 #[test]
 fn eq_is_constant_time_and_correct() {
-    // Equal secrets compare equal.
     assert_eq!(
         Secret::new("sk-abc-123".to_string()),
         Secret::new("sk-abc-123".to_string())
     );
-    // Equal length, differing bytes (the case a data-dependent `memcmp` would short-circuit) — the
-    // constant-time compare still returns not-equal.
+
     assert_ne!(
         Secret::new("sk-abc-123".to_string()),
         Secret::new("sk-abc-124".to_string())
     );
-    // Differing lengths compare not-equal.
+
     assert_ne!(
         Secret::new("sk-abc".to_string()),
         Secret::new("sk-abc-123".to_string())
     );
-    // Empty vs empty is equal.
+
     assert_eq!(Secret::new(String::new()), Secret::new(String::new()));
 }
 
 /// `Drop` for `Secret<T>` MUST actually call `T::zeroize` — the whole point of the wrapper is
-/// that the backing memory is overwritten when it goes out of scope, not left as freed-but-intact
-/// plaintext. A test type that records whether `zeroize` ran (rather than asserting on process
-/// memory, which isn't reliably observable from safe Rust) pins this directly: mutating the `Drop`
-/// body to a no-op `()` must fail this test.
+
 #[test]
 fn drop_actually_calls_zeroize() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,9 +117,6 @@ fn drop_actually_calls_zeroize() {
     );
 }
 
-// The credential-primitive suite that came with `constant_time_eq` and `sha256_hex` when
-// `busbar-api` retired (it was that crate's `auth` test module).
-
 #[test]
 fn constant_time_eq_basics() {
     assert!(constant_time_eq("secret", "secret"));
@@ -145,12 +132,7 @@ fn sha256_hex_is_lowercase_64() {
 }
 
 /// KNOWN-ANSWER VECTORS. The shape assertions above -- 64 chars, lower-case -- are satisfied by a
-/// `sha256_hex` that hashed the wrong bytes, truncated and padded, or returned a fixed 64-char hex
-/// constant; the second one compares the value to a transform of itself. Every admin and plugin
-/// credential compare in the tree routes through this function
-/// (the admin-token auth plugin's constant-time compare), and
-/// until this test nothing anywhere pinned its actual output. The two vectors are FIPS 180-2's,
-/// so they are checkable against any independent implementation rather than against ours.
+
 #[test]
 fn sha256_hex_matches_the_published_test_vectors() {
     assert_eq!(
@@ -166,9 +148,7 @@ fn sha256_hex_matches_the_published_test_vectors() {
 crate::own_seal!(Own);
 
 /// A PLUGIN'S OWN SECRET (Part 2 #54, coordinator ruling on #1192): the same `Secret`, under the
-/// crate's own seal. It reads back under that seal, and keeps every guarantee a kernel-owned
-/// secret has: `Debug`, `Display` and `to_string` render `[REDACTED]`, equality is constant-time
-/// over the bytes, and a clone is an equal secret.
+
 #[test]
 fn a_secret_the_crate_holds_reads_back_only_under_its_own_seal_and_stays_redacted() {
     let held: Secret<String, Own> = Secret::held("sk-own-0001".to_string());
@@ -178,7 +158,7 @@ fn a_secret_the_crate_holds_reads_back_only_under_its_own_seal_and_stays_redacte
     assert_eq!(held.to_string(), "[REDACTED]");
     assert!(held == held.clone());
     assert!(held != Secret::<String, Own>::held("sk-own-0002".to_string()));
-    // A kernel-owned secret is still read only under a kernel seal.
+
     let kernel = Secret::new("sk-live".to_string());
     assert_eq!(kernel.expose(&crate::plugin::TestKernelSeal), "sk-live");
 }

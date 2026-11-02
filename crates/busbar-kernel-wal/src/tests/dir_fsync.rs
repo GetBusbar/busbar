@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A directory fsync that fails is an error, wherever the log makes directory durability.
-//!
-//! The entry a creation, a rename or an unlink changes is only durable once the directory holding
-//! it is fsynced. Swallowing that fsync's failure hands the caller a success the medium did not
-//! give: a publish reported durable whose rename a power loss can undo, a segment handed out whose
-//! name a power loss can take with every acknowledged record in it, a quarantine copy reported kept
-//! while recovery cuts the only other copy of the bytes. The one failure that is not the caller's
-//! is a filesystem saying it does not support the operation at all. (The same rule for every other
-//! file busbar publishes is the loader's `durable` module's, and its cases are there.)
 
 use std::path::{Path, PathBuf};
 
@@ -25,7 +17,7 @@ use crate::wal::{Mode, Wal};
 const EIO: i32 = 5;
 
 /// A scratch path under the system temp directory, removed on drop. Not created: a test that wants
-/// it to exist creates it.
+
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -57,9 +49,7 @@ impl Drop for Scratch {
 }
 
 /// **A SEGMENT WHOSE DIRECTORY FSYNC FAILS IS NOT HANDED OUT, AND NOT LEFT BEHIND.** RED before the
-/// fix: the factory swallowed the failure and handed out a segment whose name a power loss could
-/// take with every record acknowledged in it. Left behind, the file would be found existing by the
-/// next open, which would skip the fsync for good.
+
 #[test]
 fn a_segment_whose_directory_fsync_fails_is_not_handed_out() {
     let scratch = Scratch::new("segment");
@@ -88,8 +78,7 @@ fn a_segment_whose_directory_fsync_fails_is_not_handed_out() {
 }
 
 /// **A QUARANTINE COPY WHOSE DIRECTORY FSYNC FAILS IS NOT KEPT, SO THE SEGMENT IS NOT CUT.** RED
-/// before the fix: the quarantine answered `Ok` over a copy whose name a power loss could take, and
-/// recovery then cut the only other copy of the damaged bytes out of the segment.
+
 #[test]
 fn a_quarantine_whose_directory_fsync_fails_leaves_the_segment_uncut() {
     let scratch = Scratch::made("quarantine");
@@ -104,7 +93,7 @@ fn a_quarantine_whose_directory_fsync_fails_leaves_the_segment_uncut() {
             bytes.extend_from_slice(&frame);
         }
     }
-    // The second record's payload is damaged; the two behind it verify.
+
     bytes[FRAME_BYTES + 200] ^= 0xFF;
     std::fs::write(&segment, &bytes).unwrap();
 
@@ -134,9 +123,7 @@ fn a_quarantine_whose_directory_fsync_fails_leaves_the_segment_uncut() {
 }
 
 /// **A DATA DIRECTORY CREATED SEVERAL LEVELS DEEP HAS EVERY NEW DIRECTORY'S ENTRY FSYNCED.** RED
-/// before the fix: the factory created the tree with `std::fs::create_dir_all` and fsynced only the
-/// leaf's parent, so an intermediate entry — and the whole log under it — could be lost to the first
-/// power loss. It now goes through the one durable `create_dir_all`.
+
 #[test]
 fn a_deep_data_directory_has_every_directory_it_creates_fsynced() {
     let scratch = Scratch::made("deep");
@@ -151,11 +138,7 @@ fn a_deep_data_directory_has_every_directory_it_creates_fsynced() {
 }
 
 /// **CREATING A SEGMENT FSYNCS THE DIRECTORY THAT HOLDS IT; OPENING ONE THAT EXISTS DOES NOT.**
-///
-/// RED before the fix: the factory opened (and so created) `<index>.wal` with no directory fsync,
-/// so a segment rolled into could vanish from the directory after a power loss even though every
-/// write in it had synced. Measured on the factory a durable log uses, for the first segment and
-/// for a roll's next one.
+
 #[test]
 fn a_created_segment_has_its_holding_directory_fsynced_and_a_reopened_one_does_not() {
     let scratch = Scratch::new("segdir");

@@ -55,12 +55,7 @@
 use serde_json::Value;
 
 /// The JSON-RPC 2.0 standard error codes this module can produce.
-///
-/// Defined HERE and re-exported by every reader of the envelope rather than re-declared, so `-32600`
-/// cannot come to mean two things in one binary. A protocol's own extension codes stay with the
-/// protocol that defines them: they are not JSON-RPC's.
-///
-/// `-32700`: the body is not JSON at all.
+
 pub const PARSE_ERROR: i64 = -32700;
 /// `-32600`: the body is JSON and is not an envelope this reader will honour.
 pub const INVALID_REQUEST: i64 = -32600;
@@ -104,20 +99,8 @@ pub struct Invalid {
 }
 
 /// Read a parsed JSON body as a JSON-RPC 2.0 envelope.
-///
-/// ## The ORDER of these checks is load-bearing
-///
-/// `jsonrpc` and `method` are validated BEFORE `id` is looked at. That is not stylistic: a message
-/// that fails either of them is not a JSON-RPC message at all, so "is this a notification?" is not
-/// yet a question with an answer, and section 5's *"error in detecting the id"* clause is exactly the case
-/// it describes — answer, with `id` echoed if one was legible and `Null` if not.
-///
-/// Only once the message IS a JSON-RPC message does the absence of `id` mean *notification*, at
-/// which point section 4.1's MUST NOT applies with no exception for "but the rest of it was wrong".
+
 pub fn read(value: &Value) -> Result<Envelope, Invalid> {
-    // A top-level array is a BATCH. No protocol this reader serves carries batches, and refusing
-    // explicitly beats reading `method` off an array as absent — which would answer the wrong
-    // question with the wrong message.
     let Some(obj) = value.as_object() else {
         return Err(Invalid {
             code: INVALID_REQUEST,
@@ -127,8 +110,6 @@ pub fn read(value: &Value) -> Result<Envelope, Invalid> {
         });
     };
 
-    // The id AS THE RESPONSE SHOULD ECHO IT, computed once. A legible id is echoed on the refusals
-    // below; anything else collapses to Null, per section 5.
     let echo = match obj.get("id") {
         Some(id) if is_legible_id(id) => id.clone(),
         _ => Value::Null,
@@ -151,12 +132,12 @@ pub fn read(value: &Value) -> Result<Envelope, Invalid> {
     let method = method.to_string();
 
     match obj.get("id") {
-        // section 4.1. NO id member — and note this is `get`, not a truthiness test: the difference
-        // between "the member is absent" and "the member is present and null" is the difference
-        // between the two arms below, and it is the distinction implementations most often lose,
-        // often to a single `.unwrap_or(Value::Null)`.
+
+
+
+
         None => Ok(Envelope::Notification { method }),
-        // A null id is refused for every caller. See the module header for why.
+
         Some(Value::Null) => Err(Invalid {
             code: INVALID_REQUEST,
             message: "`id` must not be null. A response echoing a null id is indistinguishable \
@@ -169,8 +150,8 @@ pub fn read(value: &Value) -> Result<Envelope, Invalid> {
             id: id.clone(),
             method,
         }),
-        // A bool, array or object id. section 4 permits only a String, a Number or NULL, so this is not a
-        // discouraged id — it is not an id.
+
+
         Some(_) => Err(Invalid {
             code: INVALID_REQUEST,
             message: "`id` must be a string or a number.",
@@ -180,12 +161,10 @@ pub fn read(value: &Value) -> Result<Envelope, Invalid> {
 }
 
 /// Whether a value is an id a response can be correlated by: a String or a Number, per section 4, minus
-/// the NULL that section 5 has already spent on another meaning.
+
 fn is_legible_id(id: &Value) -> bool {
     id.is_string() || id.is_number()
 }
-
-// ══ THE RESPONSE HALF ════════════════════════════════════════════════════════════════════════════
 
 /// What a RESPONSE envelope carries, once it has been read AND correlated to the request that was
 /// sent. Section 5: *"Either the `result` member or `error` member MUST be included, but both members
@@ -246,27 +225,7 @@ impl std::fmt::Display for NotAnAnswer {
 }
 
 /// Read a parsed JSON body as the JSON-RPC 2.0 RESPONSE to a request whose id was `sent_id`.
-///
-/// ## The ORDER is load-bearing here too, and for a sharper reason than on the request side
-///
-/// `jsonrpc` and `id` are checked BEFORE `result` or `error` is looked at, so that the payload of a
-/// message that does not belong to this dispatch is never read at all. A reader that pulled
-/// `result` out first and correlated afterwards would already have handed the value to a `match`
-/// arm, and every such arm is a place the payload can escape.
-///
-/// ## What each refusal is
-///
-/// - **not an object / `jsonrpc` not `"2.0"`** — not a JSON-RPC message, so section 5 does not
-///   describe it and nothing in it can be trusted to mean what it looks like.
-/// - **no `id` member** — section 5 makes it REQUIRED on a Response. A response with no `id` is
-///   uncorrelatable by construction; it is also the exact shape a NOTIFICATION has, and a
-///   notification is a thing nobody may send in answer to a request.
-/// - **`"id": null`** — section 5 spends `null` on "I could not tell which request this was". It is
-///   a legible statement, and what it states is that this is not an answer to any request. Accepting
-///   it as one is accepting the sender's own admission that it does not know.
-/// - **a mismatched `id`** — the answer to a DIFFERENT request. This is the arm that matters: it is
-///   the difference between serving a caller their own answer and serving them somebody else's.
-/// - **both / neither of `result` and `error`** — section 5 forbids both and requires one.
+
 pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswer> {
     let refuse = |reason: String| {
         Err(NotAnAnswer {
@@ -314,9 +273,6 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
         Some(_) => {}
     }
 
-    // `"error": null` is treated as ABSENT rather than as an error, because peers do emit it
-    // alongside a `result`. That is why the both-present check below is written against the same
-    // non-null filter: otherwise every such peer would trip it.
     let error = obj.get("error").filter(|e| !e.is_null());
     let result = obj.get("result");
     match (result, error) {
@@ -344,15 +300,7 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
 }
 
 /// Whether a response's `id` names the request that was sent.
-///
-/// A String matches a String and a Number matches a Number; nothing else matches anything, so a
-/// bool, array or object `id` can never correlate. The one deliberate looseness is INSIDE the
-/// number case: JSON has a single number type, so `1` and `1.0` are the same value, and
-/// `serde_json`'s own `Number` equality — which compares the parsed REPRESENTATION — would refuse a
-/// peer that echoed `1` as `1.0`. Refusing a correct answer is as much a correlation failure as
-/// accepting a wrong one, so the comparison is on the numeric value. Integers never pass through
-/// floating-point rounding: a mixed pair compares the float's exact integral value against the
-/// integer. There is no cross-type coercion, and `"1"` never matches `1`.
+
 fn same_id(got: &Value, sent: &Value) -> bool {
     match (got, sent) {
         (Value::String(a), Value::String(b)) => a == b,
@@ -374,19 +322,13 @@ fn integer_matches_float(integer: &serde_json::Number, float: &serde_json::Numbe
         .map(i128::from)
         .or_else(|| integer.as_u64().map(i128::from));
     match (integer, float.as_f64()) {
-        // i128 contains the entire i64/u64 ID range. An integral float in that range converts
-        // exactly; outside i128's range the cast saturates to values no i64/u64 ID can equal.
         (Some(integer), Some(float)) => float.fract() == 0.0 && float as i128 == integer,
         _ => false,
     }
 }
 
 /// The JSON-RPC error envelope, as a value.
-///
-/// ONE builder for every caller and every code, because the pairing of `id` with `error` is the
-/// contract and a second builder is a second place for them to disagree. `id` is a `Value` and not
-/// an `Option`, deliberately: section 5 makes the member REQUIRED on a Response, so there is no shape this
-/// function could be asked for in which omitting it is right.
+
 pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
     let mut error = serde_json::Map::new();
     error.insert("code".into(), Value::from(code));
@@ -402,16 +344,7 @@ pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> V
 }
 
 /// WHETHER `origin` MAY DRIVE THIS DEPLOYMENT.
-///
-/// The DNS-rebinding attack is a page served from an ATTACKER's origin — `http://evil.example` —
-/// whose hostname the attacker has made resolve to busbar's address, driving the plane with
-/// whatever ambient credential the browser attaches. That page's `Origin` header is
-/// `http://evil.example`, never `http://localhost`: a browser sends a loopback `Origin` only for a
-/// document that was itself served from loopback, which is a document already inside the trust
-/// boundary. So loopback origins carry no rebinding risk, and refusing them would refuse the local
-/// inspector and the local agent — the two clients an operator tries first — for no security gain.
-///
-/// The port is deliberately not constrained: any local port is the same trust boundary.
+
 #[must_use]
 pub fn origin_admitted(origin: &str, allowed: &[String]) -> bool {
     is_loopback_origin(origin) || allowed.iter().any(|a| a == origin)
@@ -423,13 +356,10 @@ fn is_loopback_origin(origin: &str) -> bool {
         .or_else(|| origin.strip_prefix("https://"))
     {
         Some(rest) => rest.split('/').next().unwrap_or(""),
-        // `null` and every non-http scheme. `Origin: null` is what a sandboxed iframe and a
-        // `file://` document send, and treating it as local would admit exactly the contexts that
-        // deliberately have no origin.
+
         None => return false,
     };
     let host = host.rsplit_once(':').map_or(host, |(h, port)| {
-        // Only strip a trailing `:port`; `[::1]` has colons of its own and must survive intact.
         if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() {
             h
         } else {
@@ -446,11 +376,7 @@ const UNITLESS_UNAUTHENTICATED: &[u8] =
 const UNITLESS_BODY_TOO_LARGE: &[u8] = br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"request body exceeds the maximum allowed size"}}"#;
 
 /// THE JSON-RPC RENDERING OF A KERNEL REFUSAL THAT NAMES NO UNIT: the exact bytes v1.5.5 answered
-/// when it refused a request before any unit was made, for the reason codes
-/// ([`crate::abi::plane::RefusalCode`]) that had a body of their own (no credential, and a body
-/// over the cap: [`INVALID_REQUEST`], `id` null, the section 5 value for an unattributable
-/// failure); `None` for every other reason. The renderer decides to answer with it; the bytes live
-/// here once, beside the envelope they are an instance of.
+
 #[must_use]
 pub fn unitless_kernel_body(reason: u32) -> Option<&'static [u8]> {
     use crate::abi::plane::RefusalCode;
@@ -463,18 +389,6 @@ pub fn unitless_kernel_body(reason: u32) -> Option<&'static [u8]> {
     }
 }
 
-// ══ THE ENVELOPE WRITERS ══════════════════════════════════════════════════════════════════════════
-//
-// The four envelopes a plane writes, straight to bytes: no `Value` tree is built for the envelope,
-// and the members it carries (`id`, `result`, `params`, `data`) go in as the JSON bytes the caller
-// already holds. Each writes exactly what `serde_json::to_vec(&json!({ "jsonrpc": "2.0", ... }))`
-// writes over the same members: serde_json's map orders its keys (no `preserve_order`), so the
-// envelope's members come out sorted (`error`, `id`, `jsonrpc`, `method`, `params`, `result`), the
-// error object's too (`code`, `data`, `message`), and a string is escaped by serde_json itself.
-// Members passed as bytes are copied verbatim, so they are serde_json's compact bytes when the
-// caller wrote them with it, and the far end's own bytes when it spliced them out.
-
-// Compact JSON-RPC members retain the historical serde_json map ordering.
 const ID_PREFIX: &[u8] = b"{\"id\":";
 const RESULT_MEMBER: &[u8] = b",\"jsonrpc\":\"2.0\",\"result\":";
 const ERROR_PREFIX: &[u8] = b"{\"error\":{\"code\":";
@@ -507,7 +421,7 @@ impl std::io::Write for JsonLength {
 }
 
 /// Count and emit the same borrowed envelope twice. The first pass retains no payload; the second
-/// can only write within the initialized, guarded output slice, so no write can grow an allocation.
+
 fn envelope_bytes(write: impl Fn(&mut dyn std::io::Write) -> std::io::Result<()>) -> Vec<u8> {
     let mut length = JsonLength::default();
     write(&mut length).expect("JSON-RPC envelope length overflow");
@@ -522,12 +436,11 @@ fn envelope_bytes(write: impl Fn(&mut dyn std::io::Write) -> std::io::Result<()>
 }
 
 fn push_str(out: &mut dyn std::io::Write, value: &str) -> std::io::Result<()> {
-    // serde_json escapes directly into the writer; no escaped String is ever materialized.
     serde_json::to_writer(out, value).map_err(std::io::Error::other)
 }
 
 /// A success response: `{"id":<id>,"jsonrpc":"2.0","result":<result>}`. `id` and `result` are
-/// JSON bytes.
+
 #[must_use]
 pub fn result_bytes(id: &[u8], result: &[u8]) -> Vec<u8> {
     envelope_bytes(|out| {
@@ -540,8 +453,7 @@ pub fn result_bytes(id: &[u8], result: &[u8]) -> Vec<u8> {
 }
 
 /// An error response:
-/// `{"error":{"code":<code>,"data":<data>,"message":<message>},"id":<id>,"jsonrpc":"2.0"}`, with
-/// no `data` member when `data` is `None`. `id` and `data` are JSON bytes.
+
 #[must_use]
 pub fn error_bytes(id: &[u8], code: i64, message: &str, data: Option<&[u8]>) -> Vec<u8> {
     envelope_bytes(|out| {
@@ -560,7 +472,7 @@ pub fn error_bytes(id: &[u8], code: i64, message: &str, data: Option<&[u8]>) -> 
 }
 
 /// A request: `{"id":<id>,"jsonrpc":"2.0","method":<method>,"params":<params>}`, with no `params`
-/// member when `params` is `None`. `id` and `params` are JSON bytes.
+
 #[must_use]
 pub fn request_bytes(id: &[u8], method: &str, params: Option<&[u8]>) -> Vec<u8> {
     envelope_bytes(|out| {
@@ -572,7 +484,7 @@ pub fn request_bytes(id: &[u8], method: &str, params: Option<&[u8]>) -> Vec<u8> 
 }
 
 /// A notification: `{"jsonrpc":"2.0","method":<method>,"params":<params>}`, with no `params`
-/// member when `params` is `None`. `params` is JSON bytes.
+
 #[must_use]
 pub fn notification_bytes(method: &str, params: Option<&[u8]>) -> Vec<u8> {
     envelope_bytes(|out| {

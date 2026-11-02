@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE RECORD CHAINS ON THE DOOR'S RECORD PATH (`BUSBAR-1.6.0.md` Part 3 §5 and THE DESIGN's
-//! route pump: "A record kind the plane declares as chained keeps its declared framing ...; the
-//! host frames and verifies its chain"). A put to a chained kind is an APPEND: the host frames the
-//! prelude (previous digest, the scope when the declaration says so, the sequence) in the declared
-//! framing, joins the plane's own bytes, seals and stores it; `records.list` hands every chain back
-//! VERIFIED, a chain that does not verify announced by one span keyed by its scope.
-
 use std::time::Duration;
 
 use super::tests::Mem;
@@ -20,7 +13,6 @@ use busbar_contract::kinds::RecordBytes;
 
 use crate::governance::MemoryStore;
 
-/// Runs every job at once, on the caller's thread: a write is in the store when its call returns.
 struct Inline;
 
 impl Offload for Inline {
@@ -29,10 +21,8 @@ impl Offload for Inline {
     }
 }
 
-/// The chained kind.
 const EV: RecordSchemaId = RecordSchemaId::new("ev");
 
-/// The instance's label.
 const INST: &str = "inst";
 
 fn me() -> Caller {
@@ -43,7 +33,6 @@ fn me() -> Caller {
     }
 }
 
-/// Services over `store`, with `inst` admitted declaring `ev` chained in `framing` with `flags`.
 fn services_over(store: &Arc<MemoryStore>, framing: u32, flags: u32) -> KernelServices {
     let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(store))))
@@ -65,17 +54,14 @@ fn services_over(store: &Arc<MemoryStore>, framing: u32, flags: u32) -> KernelSe
     s
 }
 
-/// The services, declaring `ev` pipe-separated with its scope digested, over a fresh store.
 fn rig() -> (KernelServices, Arc<MemoryStore>) {
     let store = Arc::new(MemoryStore::new());
     let s = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
     (s, store)
 }
 
-/// Where a write's acknowledgement lands.
 type Answered = Arc<Mutex<Option<Result<(), &'static str>>>>;
 
-/// Append `bytes` to the chain `scope` and answer its acknowledgement.
 fn append(s: &KernelServices, scope: &[u8], bytes: &[u8]) -> Result<(), &'static str> {
     let got: Answered = Arc::default();
     let into = Arc::clone(&got);
@@ -94,7 +80,6 @@ fn append(s: &KernelServices, scope: &[u8], bytes: &[u8]) -> Result<(), &'static
     answered.expect("the write was answered")
 }
 
-/// What `records.list` answers for `prefix`, as `(key, value)` pairs.
 fn listed(s: &KernelServices, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let slot: Arc<Mutex<Option<Stored>>> = Arc::default();
     let into = Arc::clone(&slot);
@@ -121,17 +106,14 @@ fn listed(s: &KernelServices, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         .collect()
 }
 
-/// The listed key of record `seq` of the chain `scope`.
 fn record_of(scope: &str, seq: u64) -> Vec<u8> {
     format!("{scope}/{seq:020}").into_bytes()
 }
 
-/// Where the store holds record `seq` of the chain `scope`.
 fn stored_at(scope: &str, seq: u64) -> Vec<u8> {
     record_key(INST, &record_of(scope, seq))
 }
 
-/// Replace the first `from` in the stored bytes at `key` by `to`, behind the host's back.
 fn tamper(store: &MemoryStore, key: &[u8], from: &[u8], to: &[u8]) {
     let held = store
         .record_get(EV, key)
@@ -151,9 +133,6 @@ fn tamper(store: &MemoryStore, key: &[u8], from: &[u8], to: &[u8]) {
         .unwrap();
 }
 
-/// EACH APPEND IS ITS OWN RECORD: two puts to one chain's scope are two records, sequenced by the
-/// host, and the list answers each under `<scope>/<seq>` with the plane's own bytes. (Before the
-/// host read the declaration, the second put overwrote the first under the scope's key.)
 #[test]
 fn each_append_to_a_chained_kind_is_its_own_record() {
     let (s, _store) = rig();
@@ -169,9 +148,6 @@ fn each_append_to_a_chained_kind_is_its_own_record() {
     );
 }
 
-/// THE RED ARM: a row edited in the store behind the host is REPORTED when the chain is read back.
-/// The list announces the broken chain by a span keyed by its scope (a break's words, never empty)
-/// ahead of its records, and still hands the records back: a detection never deletes.
 #[test]
 fn a_tampered_row_is_reported_when_its_chain_is_read() {
     let (s, store) = rig();
@@ -205,9 +181,6 @@ fn a_tampered_row_is_reported_when_its_chain_is_read() {
     );
 }
 
-/// A RESTART RESUMES PAST A BREAK: services built afresh over the tampered store take the next
-/// append on the broken chain's tail (the write is never refused: a refusal would turn detection
-/// into deletion), and the break stays reported.
 #[test]
 fn a_tampered_chain_is_resumed_on_restore_and_still_reported() {
     let (s, store) = rig();
@@ -226,8 +199,6 @@ fn a_tampered_chain_is_resumed_on_restore_and_still_reported() {
     );
 }
 
-/// The framing is the declaration's: a length-prefixed chain with no scope in its digest seals and
-/// verifies too, and an edit to it is reported the same way.
 #[test]
 fn a_length_prefixed_chain_without_its_scope_verifies_and_reports_an_edit() {
     let store = Arc::new(MemoryStore::new());
@@ -239,9 +210,6 @@ fn a_length_prefixed_chain_without_its_scope_verifies_and_reports_an_edit() {
     assert_eq!(listed(&s, b"log")[0].0, b"log", "the edit is reported");
 }
 
-/// THE HOST FRAMES THE DECLARED PRELUDE: each stored record carries the chain fields the host
-/// minted (the sequence, the link, the digest over `prev|scope|seq` and the plane's bytes), never
-/// a value the plane chose.
 #[test]
 fn the_host_seals_each_record_over_the_declared_prelude() {
     let (s, store) = rig();
@@ -272,8 +240,6 @@ fn the_host_seals_each_record_over_the_declared_prelude() {
     assert_eq!(e2.hash(), expect(e1.hash(), 2, "|160|task.working"));
 }
 
-/// AN EMPTY APPEND DROPS THE CHAIN: its records are tombstoned (read as absent), and the next
-/// append starts it again at sequence 1. A chain whose scope it prefixes is untouched.
 #[test]
 fn an_empty_append_drops_the_chain_whole() {
     let (s, _store) = rig();
@@ -294,9 +260,6 @@ fn an_empty_append_drops_the_chain_whole() {
     );
 }
 
-/// A DROPPED CHAIN SCANS EMPTY IN THE STORE (ARCHITECT 2026-10-21, slot 26: an empty `record_put`
-/// removes the row): the drop's strikes remove its rows, so a raw scan of the kind finds none of
-/// them, not one empty row per record the chain ever held.
 #[test]
 fn a_dropped_chain_scans_empty_in_the_store() {
     let (s, store) = rig();
@@ -311,16 +274,6 @@ fn a_dropped_chain_scans_empty_in_the_store() {
     );
 }
 
-/// A CHAIN DROPPED AND BEGUN AGAIN NEVER MEETS ITS OLD CLAIMS (the fleet's one writer per
-/// position, kept with slot 26's rule): the drop's strikes remove its rows, so the plane's kind has
-/// nothing left to count, and the chain's LIFE is the host's own row instead. The re-begun chain's
-/// first record takes the very position the old first record did, whose claim is still held, and
-/// it is stored all the same, in the next life; the life lives in the store, under the host's kind,
-/// never in the plane's.
-///
-/// RED while the life was the count of the scope's empty rows: the drop left none, the re-begun
-/// chain was back in life `0`, every attempt lost the old claim, and the append answered
-/// `WRITE_FAILED`.
 #[test]
 fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
     use crate::host_chains::{decode, life_key, position_token, ChainFraming, CHAIN_LIFE_SCHEMA};
@@ -376,7 +329,7 @@ fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
         vec![(record_of("t1", 1), b"|2|b".to_vec())],
         "a fresh chain at seq 1, verifying"
     );
-    // A second drop raises the life again; the chain begins a third time.
+
     append(&s, b"t1", b"").unwrap();
     append(&s, b"t1", b"|3|c").expect("the third life takes its first record");
     assert_eq!(
@@ -385,9 +338,6 @@ fn a_chain_dropped_and_begun_again_never_meets_its_old_claims() {
     );
 }
 
-/// **A DROP ON ONE NODE IS SEEN BY EVERY NODE.** The life is read from the store, not from a
-/// node's memory: node `b`, which never held the chain, begins it again after node `a` dropped it,
-/// and takes the position in the life `a` raised, not in the life `a`'s old claims were taken in.
 #[test]
 fn a_chain_dropped_on_one_node_is_begun_again_on_another() {
     let store = Arc::new(MemoryStore::new());
@@ -408,8 +358,6 @@ fn a_chain_dropped_on_one_node_is_begun_again_on_another() {
     );
 }
 
-/// A chained kind refuses what it cannot hold: a key that is no scope, bytes too large to keep with
-/// their chain fields, and a single-record read (a chain is read whole).
 #[test]
 fn a_chained_kind_refuses_what_it_cannot_hold() {
     let (s, _store) = rig();
@@ -443,10 +391,6 @@ fn a_chained_kind_refuses_what_it_cannot_hold() {
     );
 }
 
-/// TWO INSTANCES NEVER SHARE A CHAIN, AND A KIND NOT DECLARED CHAINED IS NOT ONE (carried from the
-/// call-log chain's cells when the kernel kept one chain mechanism): a second instance declaring the
-/// same kind starts its own chain at sequence 1 under its own label, and a kind the instance did not
-/// declare chained is put, never appended.
 #[test]
 fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
     let (s, store) = rig();
@@ -502,7 +446,7 @@ fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
             .is_none(),
         "the other instance's append never advanced this chain"
     );
-    // A kind this instance declared but not chained is a put under its own key.
+
     let plain = services_with_plain_kind(&store);
     let got: Answered = Arc::default();
     let into = Arc::clone(&got);
@@ -523,7 +467,6 @@ fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
         .is_some());
 }
 
-/// Services over `store` with `inst` admitted declaring `plain`, a kind it does not chain.
 fn services_with_plain_kind(store: &Arc<MemoryStore>) -> KernelServices {
     let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(store))))
@@ -539,13 +482,6 @@ fn services_with_plain_kind(store: &Arc<MemoryStore>) -> KernelServices {
     s
 }
 
-/// **TWO NODES APPENDING TO ONE CHAIN CONTINUE EACH OTHER'S RECORDS, NEVER OVERWRITE THEM.** Two
-/// services over one store hold their own position caches. Node `b` appends after node `a`; node
-/// `a`'s cached position is then stale, and its next append must take the position after `b`'s
-/// record rather than store over it.
-///
-/// RED while an append stored at its cached position unclaimed: node `a` wrote its record over
-/// node `b`'s, which was lost without a word.
 #[test]
 fn two_nodes_appending_to_one_chain_continue_each_other_and_never_overwrite() {
     let store = Arc::new(MemoryStore::new());
@@ -618,7 +554,6 @@ fn exhausted_chain_life_refuses_drop_without_deleting_its_records() {
     );
 }
 
-/// A node that already cached a tail must observe another node's completed drop too.
 #[test]
 fn a_cached_writer_observes_a_remote_completed_drop() {
     let store = Arc::new(MemoryStore::new());
@@ -633,7 +568,6 @@ fn a_cached_writer_observes_a_remote_completed_drop() {
     );
 }
 
-/// An unreadable occupied tail is preserved; later evidence continues beyond its key.
 #[test]
 fn an_unreadable_occupied_tail_does_not_wedge_future_evidence() {
     let (s, store) = rig();

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Virtual-key management API. Admin CRUD over `/api/v1/admin/keys`, guarded by the
-//! configured admin token (enforced in `auth_middleware`, not here). Mutations refresh the
-//! `GovState` cache. Responses never include a key's `generation_hash`; the plaintext secret is returned
-//! exactly once, on creation.
-
 use axum::body::Bytes;
 use axum::extract::Path;
 use axum::http::{header::CONTENT_TYPE, StatusCode};
@@ -14,15 +9,6 @@ use busbar_contract::redacted::Secret;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
-/// Deserialize a field as a "double option" so the three JSON intents stay distinguishable:
-/// - field ABSENT: the `#[serde(default)]` on the field supplies the OUTER `None`.
-/// - field present `null`: this fn is invoked and yields `Some(None)` (an explicit clear).
-/// - field present value: this fn is invoked and yields `Some(Some(v))` (an explicit set).
-///
-/// Serde calls a field's deserializer ONLY when the key is present, so the absent case never reaches
-/// here (it is covered by the field default). This is the standard `double_option` pattern; it lets
-/// PATCH express "clear this cap back to unlimited" (`null`) distinctly from "leave it unchanged"
-/// (omit), which a single `Option<T>` cannot represent.
 fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
@@ -45,42 +31,6 @@ use busbar_kernel::diagnostics::{
 use busbar_kernel::governance::claims::ClaimSet;
 use busbar_kernel::governance::{NewKeySpec, VirtualKey};
 
-/// Per-key-id gate serializing the existence-sensitive critical sections of the key store.
-///
-/// `delete_key` is the only operation that flips a key from existing to absent, but its check-then-act
-/// (`usage_for` lookup → `delete_key`) and `update_key`'s check-then-act (the store's `get_key` →
-/// `put_key` UPSERT) BOTH read existence and then write, with no rows-affected signal from the store
-/// to make either atomic. Two hazards follow, and BOTH are closed by serializing every such section
-/// on the key id it touches:
-/// - Two concurrent DELETEs of one id would otherwise both observe `Some` and both return 200 (the
-///   second SQL delete no-ops) — a misleading audit trail of two revocations of one row.
-/// - A PATCH interleaved with a DELETE would otherwise RESURRECT the revoked key: the PATCH reads
-///   the row (exists), the DELETE removes it, then the PATCH's `put_key` UPSERT re-inserts it. Under
-///   this gate the PATCH's lookup→put runs to completion before any DELETE (so the row is gone
-///   afterward), or after it (so the PATCH's `get_key` returns `None` → 404 and never re-puts).
-///
-/// The proper store-layer fix is an UPDATE-ONLY `put`/`update` (`UPDATE … WHERE id=?` that affects 0
-/// rows when absent, never an upsert), which would need no lock at all. `GovState::update_key`
-/// (`governance/state.rs`) EXISTS and is what the PATCH runs, but it still finishes with a `put_key`
-/// UPSERT, so it is not that fix and the race it would close is still open. This gate is the
-/// admin-side guard that
-/// closes the resurrection race from the admin surface.
-///
-/// PER KEY ID, AND NO LOCK ACROSS THE STORE (§11.13 M1): every hazard above is two operations on
-/// ONE key id, so the gate is a claim on that id ([`ClaimSet`]), not a process-wide lock. The
-/// set's mutex is held only to claim and release an id; the store calls run with no lock held, so
-/// a store call that does not come back holds up only the operations on its own key.
-///
-/// CANCELLATION SAFETY: the claim is a blocking wait, NOT an async one, and it
-/// is acquired INSIDE each operation's `spawn_blocking` closure — bound to the SYNCHRONOUS store
-/// mutation, not to the async handler future. An earlier design held an async guard across the
-/// cancellable outer `.await`; if the client dropped the request, the guard was dropped while the
-/// already-scheduled (and thus uncancellable) `spawn_blocking` closure kept running its lookup→write,
-/// re-opening the very resurrection / double-revoke races this gate closes. Acquiring the lock inside
-/// the blocking closure means the gate is held for the entire lookup→write regardless of any
-/// outer-future drop: `spawn_blocking`, once scheduled, runs to completion. A blocking claim is
-/// used precisely because it is taken on a blocking thread with no async runtime in scope. A
-/// holder that panics releases its claim as it unwinds.
 static EXISTENCE_GATE: ClaimSet<String> = ClaimSet::new();
 
 /// `POST /keys` body (1.5.0 signed-token keys): PURE AUTH + a signed expiring token. A minted
@@ -128,50 +78,20 @@ pub(crate) struct CreateKeyReq {
     issue_aws_credential: bool,
 }
 
-// `MintPolicy`/`RoleCeiling`/`MintRequest`/`apply_mint_ttl_ceiling`/`DEFAULT_KEY_TTL_SECS`
-// RELOCATED to `busbar_kernel::governance::mint_policy` (1.6.0 de-alias, stage 2a): core mint-policy
-// infrastructure read on the hot mint path (`state.rs`'s `App::mint_policy`, `auth/exchange.rs`,
-// `auth/token.rs`), never admin-surface vocabulary. Imported below so the mint-handler call sites in
-// this file are unchanged; byte-identical move (same values, same decisions, same messages).
 use busbar_kernel::governance::mint_policy::{MintRequest, DEFAULT_KEY_TTL_SECS};
-
-// `parse_duration_secs` RELOCATED to `busbar_kernel::config::parse` (1.6.0 de-vocab): it is a neutral
-// config-parsing helper (`config_validate`, `config::named_map`), not admin-surface vocabulary.
-// Imported below (`use busbar_kernel::config::parse::parse_duration_secs;`) so the mint-TTL call sites in
-// this file are unchanged.
 
 #[cfg(test)]
 #[path = "tests/parse_duration_secs_tests.rs"]
 mod parse_duration_secs_tests;
 
-// The `ERR_TYPE_NOT_FOUND`/`ERR_TYPE_INVALID_REQUEST` wire error-type tokens RELOCATED to
-// `busbar_kernel::taxonomy` (1.6.0 de-vocab): they are core's own ingress error taxonomy, consumed by
-// `ingress::dispatch`/`ingress::arrival_host`/`router`, not the admin HTTP API. See the module doc
-// there. Byte-identical rename: the constant string VALUES are unchanged.
-
-/// Maximum byte lengths for admin-API path / body fields (defense-in-depth DB/log-bloat guards).
-/// A real minted key id is `vk_` + 16 hex chars (19 chars); 64 is generous headroom.
-/// 256 chars for a key name is far past any reasonable label.
 const MAX_KEY_NAME_LEN: usize = 256;
 const MAX_KEY_ID_LEN: usize = 64;
 
-// SCRAPE BREAK: mint-time `labels` are echoed VERBATIM as Prometheus label names on every
-// key metric series (metrics.rs `base_labels`). An unvalidated map is a scrape-integrity hole:
-// - a label named `key`/`bucket`/`model`/`tier` (the RESERVED names busbar itself attaches)
-// duplicates a label on the series, which breaks the WHOLE /metrics exposition (a duplicate
-// label name is invalid Prometheus text -> every scrape fails, not just this key);
-// - a name that is not a valid Prometheus label name (`^[a-zA-Z_][a-zA-Z0-9_]*$`) is rejected by
-// the exposition encoder for the same all-or-nothing effect;
-// - an unbounded count / length bloats every scrape and the store row.
-// So validate at the mint ingress (the one write path) and 400 anything unsafe.
-/// Label names busbar itself attaches to key metric series - an operator label may not shadow them.
 const RESERVED_METRIC_LABELS: &[&str] = &["key", "bucket", "model", "tier"];
 const MAX_LABEL_COUNT: usize = 16;
 const MAX_LABEL_NAME_LEN: usize = 64;
 const MAX_LABEL_VALUE_LEN: usize = 256;
 
-/// Validate the mint-time `labels` map. Returns `Err(message)` (a 400 body) for a reserved/invalid
-/// name, an over-count map, or an over-long name/value. `Ok(())` when every label is scrape-safe.
 fn validate_mint_labels(labels: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
     if labels.len() > MAX_LABEL_COUNT {
         return Err(format!(
@@ -212,13 +132,11 @@ fn validate_mint_labels(labels: &std::collections::BTreeMap<String, String>) -> 
 #[path = "tests/validate_mint_labels_tests.rs"]
 mod validate_mint_labels_tests;
 
-/// A valid Prometheus label name: `^[a-zA-Z_][a-zA-Z0-9_]*$` (non-empty, ASCII-alnum + underscore,
-/// never leading with a digit). Hand-rolled to avoid a regex dependency on the mint path.
 fn is_valid_label_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
-        _ => return false, // empty or bad first char
+        _ => return false,
     }
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
@@ -266,31 +184,13 @@ pub(crate) enum KeyAudit<'a> {
     },
 }
 
-/// The `resource` for a MINT that was refused before any key existed — there is no id to name, and
-/// inventing one would put a row in the log for a key that never was.
 pub(crate) const KEY_RESOURCE_NONE: &str = "key:-";
 
-/// Project an [`AdminError`] onto the frozen v1 wire, NAMING the taxonomy CONDITION it came from,
-/// and — for a mutating operation — writing that operation's `rejected` audit row.
-/// This is the keys surface's ONLY error door, and it is the SAME `err_json` every other v1 handler
-/// funnels through — so keys and non-keys emit the identical envelope, the identical `code` for the
-/// same condition, and are seen by the identical drift machinery.
-///
-/// It replaces a SECOND vocabulary (`error_response(status, ERR_TYPE_*, msg)`), which re-derived the
-/// frozen `code` enum from `*_error` tokens in a second place. That split made the keys responses
-/// invisible to the OpenAPI projection and let the two banks drift; naming a `Cond`
-/// here is what makes each keys emission observable to `contract::taxonomy` (design D route 2).
-///
-/// Folding the audit row in here is the same move for the same reason: one door, one row, no
-/// per-arm remembering. See [`KeyAudit`].
 fn key_err(who: KeyAudit<'_>, e: &AdminError, cond: Cond) -> Response {
     record_key_refusal(who);
     crate::v1::json::err_json_cond(e, cond)
 }
 
-/// The audit half of [`key_err`], usable on its own by the one refusal door that cannot name a
-/// [`Cond`]: a failed transaction is `AdminError::Internal`, which `taxonomy::err_kind_of`
-/// classifies as ALGORITHMIC, so there is nothing to declare — but the mutation was still refused.
 fn record_key_refusal(who: KeyAudit<'_>) {
     if let KeyAudit::Mutation {
         verb,
@@ -302,10 +202,6 @@ fn record_key_refusal(who: KeyAudit<'_>) {
     }
 }
 
-/// 500 for an internal store/DB failure. The detailed error (which may embed raw SQL fragments,
-/// column/table names, or paths from the store backend) is logged server-side via `tracing::error!`;
-/// the HTTP body carries only a generic message so internal storage details are never disclosed to
-/// the client (even an authenticated admin). `op` names the operation for log correlation.
 fn internal_error(op: &str, e: &busbar_kernel::governance::RecordStoreError) -> Response {
     diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = op, error = %e, "admin store operation failed");
     crate::v1::json::err_json(&AdminError::Internal)
@@ -315,30 +211,12 @@ fn internal_error(op: &str, e: &busbar_kernel::governance::RecordStoreError) -> 
 #[path = "tests/internal_error_tests.rs"]
 mod internal_error_tests;
 
-// ── Admin API (the FROZEN surface — /api/v1/admin/*) ─────────────────────────────────────────────────
-//
-// The keys handlers below are mounted ONLY at the canonical `/api/v1/admin/keys*` routes (via the
-// `crate::v1::json::JsonV1` router), and speak the ONE frozen v1 contract
-// (`crate::v1::contract`): the `{error:{code,message}}` envelope with the stable code
-// enum. The module tree (`transport`, `restart`, `v1`, `keys`) is declared by this crate's `lib.rs`;
-// `planeverbs`/`versions`/`v1::contract`/`v1::json` (envelope primitives) STAYED in busbar-core.
-
-/// Key metadata for API responses — deliberately omits `generation_hash`.
-/// A key record's ETag: a short digest of its mutable metadata. Changes whenever any PATCHable
-/// field changes, so `If-Match` detects a concurrent modification (409, no lost update).
 fn key_etag(k: &VirtualKey) -> String {
     let meta = key_meta(k);
     busbar_contract::sha256_hex(meta.to_string().as_bytes())[..16].to_string()
 }
 
-/// Parse the optional `If-Match` header for a KEY mutation (PATCH/DELETE `/keys/{id}`): the key's
-/// own ETag from a prior GET (16 lowercase hex chars — see `key_etag`), quotes/weak-prefix
-/// stripped. `*` (RFC 7232: "any current representation") matches any existing key, i.e. no guard —
-/// `Ok(None)`. Anything that cannot be a key ETag is a 400 `invalid_request` — the SAME terminal
-/// the config-plane parser gives a malformed guard, never a retriable-looking 409 that a client
-/// with a header bug would re-read and retry forever. Shared by PATCH and DELETE so
-/// the two verbs can never diverge on grammar.
-#[allow(clippy::result_large_err)] // Err = the ready-to-return 400 Response (callers just return it)
+#[allow(clippy::result_large_err)]
 fn parse_key_if_match(
     who: KeyAudit<'_>,
     headers: &axum::http::HeaderMap,
@@ -365,9 +243,6 @@ fn parse_key_if_match(
 }
 
 fn key_meta(k: &VirtualKey) -> Value {
-    // 1.5.0 keys are PURE AUTH bindings: id / name / allowed_pools / group / labels. Keys carry no
-    // limits (all enforcement flows through the bound group). `allowed_pools` keeps the intent:
-    // JSON `null` = all pools; `[]` = no pools.
     let mut meta = json!({
         "id": k.id,
         "name": k.name,
@@ -382,8 +257,7 @@ fn key_meta(k: &VirtualKey) -> Value {
         "created_at": k.created_at,
         "labels": k.labels,
     });
-    // Each plane-kind grant the key holds, under its own `allowed_{kind}s` field (W9) — the same
-    // partition the key's stored row carries. A key holding none (every 1.5.5 key) gains no field.
+
     let mut by_kind: std::collections::BTreeMap<String, Vec<&str>> =
         std::collections::BTreeMap::new();
     for s in k
@@ -405,11 +279,6 @@ fn key_meta(k: &VirtualKey) -> Value {
     meta
 }
 
-/// Lift the plane-kind grant fields (`allowed_{kind}s`, W9) off a mint body: the body without them,
-/// and the grant they state (`None` when the body names none; `Some(list)` when it names at least
-/// one, the list possibly empty; a field whose value is `null` is omitted, as an `Option` field
-/// reads it). `None` (refused) for a body that is not an object, a grant field of a kind no installed
-/// plane declares, or a grant that is not a list of names.
 fn lift_plane_grants(
     body: Value,
 ) -> Option<(Value, Option<Vec<busbar_contract::records::ScopeRef>>)> {
@@ -443,17 +312,6 @@ fn lift_plane_grants(
     Some((Value::Object(fields), plane))
 }
 
-/// `enabled` alone cannot distinguish a reversible PAUSE (`PATCH {enabled:false}`) from either
-/// of the two PERMANENT states (`revoke`, `delete`) — all three land on `enabled == false`. This
-/// derives the disambiguating value from the same internal state the engine already tracks, in
-/// tombstone-first priority (a tombstoned row is also denylisted, by `revoke`-then-delete, so the
-/// checks must not be reordered):
-/// - `deleted_at.is_some()`  → **tombstoned** (`DELETE /keys/{id}`: denylisted + hard-deleted; the row
-///   is kept only so billing/audit attribution keeps resolving).
-/// - else `gov.is_revoked()` → **revoked** (`POST /keys/{id}/revoke`: denylisted, permanent, binding
-///   row kept).
-/// - else `!enabled`          → **disabled** (`PATCH {enabled:false}`: reversible, not denylisted).
-/// - else                     → **active**.
 fn key_state(k: &VirtualKey, gov: &busbar_kernel::governance::GovState) -> &'static str {
     if k.deleted_at.is_some() {
         "tombstoned"
@@ -466,15 +324,6 @@ fn key_state(k: &VirtualKey, gov: &busbar_kernel::governance::GovState) -> &'sta
     }
 }
 
-/// Governance-off semantics: ONE rule across the keys surface, chosen so no
-/// status is ambiguous —
-/// - collection READS (`GET /keys`) answer 200 with an EMPTY page (`disabled_empty_list`): with
-///   governance off the keyspace is truthfully empty, and a 404 on a collection reads as a
-///   mount/path error to every REST client;
-/// - single-resource READS keep 404 `not_found` (also truthful — no such key exists);
-/// - WRITES (create/patch/delete/rotate/revoke) answer 409 `conflict` (`disabled_write`): the request
-///   conflicts with the server's configured state, with an actionable message. Previously every
-///   handler returned 404 — making `not_found` mean two different things forever.
 fn disabled_write(who: KeyAudit<'_>) -> Response {
     key_err(
         who,
@@ -487,7 +336,6 @@ fn disabled_write(who: KeyAudit<'_>) -> Response {
     )
 }
 
-/// `GET /keys` with governance off: the truthful empty page in the standard cursor envelope.
 fn disabled_empty_list() -> Response {
     json_response(
         StatusCode::OK,
@@ -495,7 +343,6 @@ fn disabled_empty_list() -> Response {
     )
 }
 
-/// Single-resource read with governance off: no key can exist, so `not_found` is truthful.
 fn disabled_read() -> Response {
     key_err(
         KeyAudit::Read,
@@ -504,10 +351,6 @@ fn disabled_read() -> Response {
     )
 }
 
-/// Bound a path `id` (the virtual-key id from `/api/v1/admin/keys/{id}`). Admin-gated, but an unbounded id
-/// flows into a store lookup / log lines — cap it as defense-in-depth (DB/log-bloat guard). A real
-/// minted id is `vk_` + 16 hex chars (19 chars), so [`MAX_KEY_ID_LEN`] is generous headroom. Returns
-/// a 400 response when too long, `None` when acceptable.
 fn reject_overlong_id(who: KeyAudit<'_>, id: &str) -> Option<Response> {
     if id.len() > MAX_KEY_ID_LEN {
         Some(key_err(
@@ -524,29 +367,15 @@ fn reject_overlong_id(who: KeyAudit<'_>, id: &str) -> Option<Response> {
 #[path = "tests/reject_overlong_id_tests.rs"]
 mod reject_overlong_id_tests;
 
-/// 500 for a `spawn_blocking` task that failed to run to completion (cancelled or panicked). The
-/// blocking store closures here don't panic in normal operation, but a `JoinError` must NOT
-/// propagate as an `unwrap()` on the request path — map it to a generic 500 (details logged).
 fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
     diag_error!(ADMIN_STORE_TASK_JOIN_FAILED, operation = op, error = %e, "admin store task failed to join");
     crate::v1::json::err_json(&AdminError::Internal)
 }
 
-/// The request header carrying a client-chosen idempotency token on the two replayable admin
-/// mutations (key mint + key rotate).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
-/// THE NODE'S REPLAY CACHE for the two replayable key mutations: one process-lifetime
-/// [`crate::idempotency::IdempotencyCache`], handed to these handlers as a request extension (the
-/// composition root builds it once and inserts it on every request; [`crate::v1::json`]'s router
-/// supplies a per-router one to a mount that supplies none). It holds the committed 201/200 object,
-/// which carries the once-shown secret, and its in-flight sentinel is stepped over by the sweep, so
-/// a mint stuck past the replay window is still refused to a retry as in flight rather than minted
-/// twice. The secret never goes to the store: what outlives this process is the store claim
-/// ([`durable`]).
+
 pub type KeyReplayCache = crate::idempotency::IdempotencyCache<Value>;
 
-/// Keep mutation, audit and replay settlement under one owner after the request disconnects.
-/// Dropping the caller's join handle detaches this task; it does not cancel the mutation owner.
 async fn complete_key_mutation(
     op: &'static str,
     mutation: impl std::future::Future<Output = Response> + Send + 'static,
@@ -557,8 +386,6 @@ async fn complete_key_mutation(
     }
 }
 
-/// Claim `key` in the configured store before a mint or rotate becomes irreversible (see
-/// [`durable`]), off the async workers.
 async fn claim_in_store(
     store: std::sync::Arc<dyn busbar_kernel::governance::RecordStore>,
     key: (String, String),
@@ -569,9 +396,6 @@ async fn claim_in_store(
         .unwrap_or_else(|e| Err(Refused::Unavailable(format!("the claim did not run: {e}"))))
 }
 
-/// Settle a held claim in the configured store, off the async workers. A store that does not keep
-/// it is logged as an error: the key then reads as in flight until the claim lapses, never as free
-/// to run again.
 async fn settle_in_store(
     store: std::sync::Arc<dyn busbar_kernel::governance::RecordStore>,
     claim: Option<Claim>,
@@ -591,7 +415,6 @@ async fn settle_in_store(
     diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "idempotency.settle", error = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
 }
 
-/// The answer to a store claim that was not granted. Never a second run of the mutation.
 fn claim_refused(who: KeyAudit<'_>, refused: Refused) -> Response {
     let ran = match refused {
         Refused::InFlight | Refused::Retained(_) => {
@@ -623,28 +446,8 @@ fn claim_refused(who: KeyAudit<'_>, refused: Refused) -> Response {
     )
 }
 
-/// The label a cap rejection uses for the UNBOUND (no `group:`) key bucket.
 const UNBOUND_BUCKET_LABEL: &str = "(no group)";
 
-/// THE `limits.max_keys_per_principal` CHOKE POINT — the one place any path that can add a key to a
-/// principal's bucket asks "is this bucket already full?". Called by the MINT (`POST /keys`) and by
-/// the REBIND (`PATCH /keys/{id}`), both from inside their `config_transaction`'s deferred step, so
-/// the count and the write that follows it are one atomic critical region. A store failure
-/// propagates and the caller FAILS CLOSED — never admit past a ceiling we could not verify.
-///
-/// `group` names the bucket: `Some(g)` for a bound key, `None` for the UNBOUND bucket (which is
-/// capped too — see below). `exclude_id` is the key being MOVED, so a rebind does not count the
-/// mover twice; `None` on the mint path (nothing to exclude). Returns `Some((bucket_label, n))`
-/// when the bucket is at or over `cap`. `cap == 0` = unlimited (the default) and short-circuits.
-///
-/// Two defect classes die here rather than at N call sites:
-///
-/// * The count is of LIVE keys only: a disabled or revoked key holds no usable credential,
-///   so counting it forever made the cap a ONE-WAY RATCHET (a principal that revoked ten keys
-///   could never mint again, and the documented remedy "revoke or delete an existing key" was
-///   simply false for `revoke`). Enabled + not-denylisted is exactly "can still authenticate".
-/// * The UNBOUND bucket is counted. A groupless key escapes the whole limit tree, so
-///   exempting it from the key-count cap as well made the ceiling evadable by omitting one field.
 fn check_key_cap(
     gov: &busbar_kernel::governance::GovState,
     cap: usize,
@@ -652,16 +455,13 @@ fn check_key_cap(
     exclude_id: Option<&str>,
 ) -> busbar_kernel::governance::RecordStoreResult<Option<(String, usize)>> {
     if cap == 0 {
-        return Ok(None); // unlimited
+        return Ok(None);
     }
     let n = gov
         .all_keys()?
         .iter()
         .filter(|k| k.group.as_deref() == group)
         .filter(|k| Some(k.id.as_str()) != exclude_id)
-        // SELF-SERVE keys (`user:<sub>`) are EXCLUDED: a principal always has exactly one (the
-        // token-exchange mint is an idempotent upsert on the current epoch), so it must never
-        // consume an admin `max_keys_per_principal` ceiling. See `SELF_KEY_GROUP_PREFIX`.
         .filter(|k| {
             k.group
                 .as_deref()
@@ -676,14 +476,13 @@ fn check_key_cap(
     Ok(None)
 }
 
-/// POST /api/v1/admin/keys — mint a virtual key. Returns the plaintext secret ONCE.
 pub(crate) async fn create_key(
     axum::extract::State(handle): axum::extract::State<
         std::sync::Arc<busbar_kernel::state::AppHandle>,
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
-    // The node's replay cache.
+
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
     body: Bytes,
 ) -> Response {
@@ -701,43 +500,31 @@ async fn create_key_owned(
     replays: std::sync::Arc<KeyReplayCache>,
     body: Bytes,
 ) -> Response {
-    // A fresh snapshot for the mint's pool/group READS; the auto-provision path (below) swaps
-    // through `handle` and re-loads inside its own lock, so binding always sees the provisioned leaf.
     let app = handle.load();
     let actor = principal.actor_id().to_string();
-    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
-    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+
     let who = KeyAudit::Mutation {
         verb: "key.create",
         resource: KEY_RESOURCE_NONE,
         actor: &actor,
     };
-    // IDEMPOTENT MINT (optional `Idempotency-Key`): a retried POST with the same key inside the
-    // ~10min window returns the FIRST response verbatim (including the once-shown secret — the
-    // standard idempotency contract: a retry is the same request, not a second mint) instead of
-    // double-creating. Bounded: stale entries are swept on every use.
+
     let idem_key = headers
         .get(IDEMPOTENCY_KEY_HEADER)
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
         .map(str::to_string);
-    // Scope both the cache and Store claim to principal AND operation. The header is arbitrary:
-    // storing it raw would let a create header spell a rotate's framed key and replay its secret.
+
     let idem_ckey: Option<(String, String)> = idem_key
         .as_ref()
         .map(|k| (actor.clone(), crate::idempotency::create_replay_key(k)));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
         match replays.probe(ck.clone(), busbar_kernel::store::now()) {
-            // The first (and only) probe of a request that presented no key replays nothing.
             Probe::NoKey => {}
-            // A COMPLETED prior mint (the real 201 object): replay it verbatim.
+
             Probe::Replay(cached) => return json_response(StatusCode::CREATED, cached),
-            // An IN-FLIGHT reservation: a concurrent request with the same key is still minting.
-            // Reject rather than double-mint (the TOCTOU a separate check+insert allowed); the
-            // client's retry succeeds once the first completes. The sentinel is never swept for age
-            // (see `IdempotencyCache::probe`), so a mint that outlives the replay window is still
-            // refused here instead of being minted a second time.
+
             Probe::InFlight => {
                 return key_err(
                     who,
@@ -747,25 +534,14 @@ async fn create_key_owned(
                     Cond::IdempotencyInFlight,
                 );
             }
-            // First time: the reservation was taken under the cache's own lock hold, so a
-            // concurrent request observes it instead of an empty slot. Dropped before the mint is
-            // handed to the blocking half it clears the sentinel (a parse/validation refusal must
-            // not leave a stuck in-flight key).
+
             Probe::Reserved(r) => idem_reservation = Some(r),
         }
     }
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
-    // Parse the body via the depth-guarded `busbar_kernel::json` seam, NOT axum's stock `Json<T>` extractor,
-    // whose `JsonRejection` body echoes the raw serde `Display` — a fragment of the offending input.
-    // This body carries SECRETS (an AWS secret_access_key, the bearer being minted), so any parse
-    // failure maps to a GENERIC 400, logging only the byte length via `parse_err_log` (never the raw
-    // error, never an input fragment).
-    // The plane-kind grant fields (`allowed_{kind}s`, W9) are lifted off the body before the rest
-    // is read as `CreateKeyReq`, whose `deny_unknown_fields` (and published schema) stay exactly
-    // 1.5.5's. A grant field of a kind no installed plane declares, or one that is not a list of
-    // names, is refused as an unknown or malformed field is: the same generic 400.
+
     let parsed = busbar_kernel::json::parse::<Value>(&body)
         .ok()
         .and_then(lift_plane_grants)
@@ -789,9 +565,7 @@ async fn create_key_owned(
             );
         }
     };
-    // Bound the key name. It is admin-gated, but an unbounded `name` persists verbatim into the
-    // store (DB-bloat / log-line-bloat vector) — cap it as defense-in-depth. MAX_KEY_NAME_LEN chars
-    // is far past any reasonable label.
+
     if req.name.len() > MAX_KEY_NAME_LEN {
         return key_err(
             who,
@@ -799,14 +573,11 @@ async fn create_key_owned(
             Cond::Overlong,
         );
     }
-    // Labels are echoed verbatim as Prometheus label NAMES on this key's metric series; an
-    // unsafe name (reserved, or not a valid label name) or an oversized map breaks the WHOLE scrape.
-    // Reject at the mint ingress (see `validate_mint_labels`).
+
     if let Err(msg) = validate_mint_labels(&req.labels) {
         return key_err(who, &AdminError::Validation(msg), Cond::InvalidLabels);
     }
-    // SIGNED-TOKEN keys require a signing key. Without one, mint cannot issue a token - fail
-    // loud rather than persist a binding no token can be issued for.
+
     if !gov.signing_enabled() {
         return key_err(
             who,
@@ -819,11 +590,7 @@ async fn create_key_owned(
             Cond::NoSigningKey,
         );
     }
-    // A RECOVERABLE credential (`issue_aws_credential`) is stored sealed under the at-rest key
-    // (`credentials.at_rest`). Without one, refuse before anything is written, saying what to
-    // configure; the refusal is audited like every other mint refusal. It rides the declared
-    // `Conflict / NoSigningKey` condition (a mint key the config does not provide), so the frozen
-    // error taxonomy and openapi document stay as 1.5.5 published them.
+
     if req.issue_aws_credential && !gov.at_rest_enabled() {
         return key_err(
             who,
@@ -831,9 +598,7 @@ async fn create_key_owned(
             Cond::NoSigningKey,
         );
     }
-    // `expires_in` and `expires_at` are mutually exclusive; resolve the token expiry (Unix secs).
-    // `explicit` records whether the operator NAMED a lifetime (so the policy ceiling refuses an
-    // over-ask but only clamps the default — see `apply_mint_ttl_ceiling`).
+
     let now = busbar_kernel::store::now();
     let (exp, explicit) = match (req.expires_in.as_deref(), req.expires_at) {
         (Some(_), Some(_)) => {
@@ -861,22 +626,12 @@ async fn create_key_owned(
         }
         (None, None) => (now.saturating_add(DEFAULT_KEY_TTL_SECS), false),
     };
-    // Enforce the mint POLICY (`auth.policy:`, 1.6.0) CORE-SIDE (never the UI's job; review M2/M4):
-    // the block-level TTL ceiling AND the caller's per-role `mint_ceilings` (pools/TTL/mode — the
-    // delegated-app-admin cap, review H2/H3). An explicit TTL over-ask is refused, a default clamped;
-    // a pool/mode outside the role ceiling is refused. Empty policy ⇒ unchanged behavior. Cond reuses
-    // the mint-endpoint's declared `KeyExpiryFields` family so no new error is introduced into the
-    // frozen admin taxonomy / openapi.json.
+
     let requested_ttl = exp.saturating_sub(now);
     let caller_roles: &[String] = principal.0.as_ref().map_or(&[], |p| p.roles.as_slice());
-    // The binding mode this admin mint WILL stamp on the key (below, into `NewKeySpec`). An
-    // admin-minted key is an app/service token, always `time-bound`. Bound ONCE here and threaded
-    // both into the ceiling check and the stamp so the mode the policy is checked against is exactly
-    // the mode the key is minted with — the per-role `binding_modes` ceiling is reachable and refuses
-    // a caller whose role may not mint this mode.
+
     let requested_binding_mode = busbar_kernel::governance::SELF_KEY_BINDING_MODE_APP;
-    // The grant as the key will hold it: naming any grant field makes it exhaustive across kinds,
-    // so its pools are what the ceiling judges (`[]` when only another kind was named).
+
     let (requested_pools, grants_other_kinds) =
         busbar_kernel::governance::mint_policy::requested_grant(
             busbar_kernel::governance::grant_scopes(
@@ -897,8 +652,7 @@ async fn create_key_owned(
         Ok(ttl) => now.saturating_add(ttl),
         Err(msg) => return key_err(who, &AdminError::Validation(msg), Cond::KeyExpiryFields),
     };
-    // `allowed_pools` (intent carried INTACT into the binding): OMITTED = all pools (`None`);
-    // an explicit `[]` = NO pools; a list scopes it. NON-FATAL typo diagnostic on each named pool.
+
     let allowed_pools = req.allowed_pools;
     for pool in allowed_pools.iter().flatten() {
         if !app
@@ -916,30 +670,8 @@ async fn create_key_owned(
             );
         }
     }
-    // ── THE MINT TRANSACTION ─────────────────────────────────────────────────────────────────────
-    // Group resolution, the auto-provision swap, the anti-sprawl cap and the key's store write are
-    // ONE `config_transaction` section. Three defect classes die here by construction:
-    //
-    // * The bound group's existence check and the key's store write share ONE continuous lock hold.
-    // The old shape resolved the group under the mutation lock, RELEASED it on return, then
-    // re-acquired the lock and re-verified the group BY HAND — a copied prose contract a third
-    // bind path would have had to copy again. There is nothing left to re-verify: the lock is
-    // never released between the check and the bind, so a concurrent group DELETE either lands
-    // first (this body sees the group gone → fail closed) or is blocked until the key is bound
-    // (then DELETE's bound-key guard sees it → 409).
-    // * `max_keys_per_principal` is read from `txn.app()` — the FRESH post-lock snapshot — not from
-    // the pre-lock extractor `app`. A settings apply landing between the request's snapshot and
-    // this enforcement can no longer make the mint enforce a stale ceiling: there is no older
-    // snapshot in scope to read.
-    // * The cap COUNT and the mint run together in ONE deferred step of this transaction, so N
-    // concurrent callers at the boundary are serialized — each sees the writes of those before it
-    // and only the first `cap - current` mints succeed. (No `EXISTENCE_GATE` claim: the minted id
-    // is fresh, so no other operation can name it yet.) `>= cap` is a
-    // `409` (a retry can't fix it without deleting a key), and a store failure counting keys
-    // FAILS CLOSED — never mint past a ceiling we could not verify.
-    //
+
     if req.group.is_none() && req.parent.is_some() {
-        // `parent` without `group` has nothing to root — a loud 400 beats silently ignoring it.
         return key_err(
             who,
             &AdminError::Validation(
@@ -950,11 +682,7 @@ async fn create_key_owned(
             Cond::ParentWithoutGroup,
         );
     }
-    // (1.5.2 scope collapse: the delegated-mint-must-bind refusal is GONE. Only a `full` credential
-    // can reach `POST /keys` now — there is no narrower `mint` scope to hand out uncapped keys — so
-    // an operator minting an unbound key is a legitimate act by the tree's owner, no longer gated.)
-    /// What the mint's blocking half produced: the key (bearer-only or with AWS credentials), or the
-    /// anti-sprawl ceiling it hit.
+
     enum MintOutcome {
         TokenOnly(Box<(busbar_kernel::governance::VirtualKey, Secret<String>)>),
         Aws(
@@ -971,12 +699,7 @@ async fn create_key_owned(
             cap: usize,
         },
     }
-    // Keys carry NO inline limits; enforcement flows through the bound group.
-    // An admin-minted key IS an APP/service token (1.6.0): stamp PROVENANCE (minted-by the
-    // authenticated caller) so it can be re-attested / bulk-revoked by provenance (review H2/H3), and
-    // the `time-bound` binding mode (bounded by `exp`, no IdP-subject tie — distinct from the
-    // self-serve personal user-bound key). Attribution metadata only: never read by enforcement, and
-    // `key_meta` does not echo it, so the admin response shape is unchanged.
+
     let spec = NewKeySpec {
         name: req.name,
         allowed_pools,
@@ -986,8 +709,7 @@ async fn create_key_owned(
         minted_by: Some(actor.clone()),
         binding_mode: Some(requested_binding_mode.to_string()),
     };
-    // The second credential (1.5.5's `issue_aws_credential`) is the one the linked host-held
-    // credentials' verifier states the shape of: its kind and shape, never a format of this crate's.
+
     let issued = req
         .issue_aws_credential
         .then(|| app.auth.issued_credential());
@@ -995,8 +717,7 @@ async fn create_key_owned(
     let want_parent = req.parent.clone();
     let gov = gov.clone();
     let txn_actor = actor.clone();
-    // Before the mint becomes irreversible the key is claimed in the store too, so a retry after a
-    // restart or on another node is refused rather than minted a second time.
+
     let replay_store = gov.store();
     let claim = match idem_reservation.as_ref() {
         Some(r) => {
@@ -1007,20 +728,19 @@ async fn create_key_owned(
         }
         None => None,
     };
-    // The detached owner finishes the claim even if the request disconnects while queued on the
-    // config lock. An owner panic must still retain the sentinel: the blocking write may land.
+
     if let Some(r) = idem_reservation.as_mut() {
         r.in_flight();
     }
     let res = crate::v1::json::config_transaction(&handle, move |txn| {
         let current = txn.app();
-        // MINT-TIME group resolution (self-service): a bound `group` must exist NOW — a dangling
-        // binding would make every request on the new key fail closed at admission. When it does not
-        // exist AND `parent` is given, AUTO-PROVISION it as a leaf under `parent` (materializing the
-        // `user:<sub>` personal budget bucket on first self-mint) through the SAME
-        // validate-at-the-door group-write path, so validation / cost rebuild / overlay persistence
-        // hold. When it exists and `parent` is given, `parent` must match the actual parent (409
-        // otherwise). A key with NO group is authed + unlimited — nothing to resolve.
+
+
+
+
+
+
+
         let provisioned = match want_group.as_deref() {
             Some(group) => {
                 crate::v1::json::plan_mint_group(
@@ -1032,21 +752,21 @@ async fn create_key_owned(
             }
             None => None,
         };
-        // ANTI-SPRAWL CAP — see `check_key_cap` for what counts. Read from the FRESH snapshot, so a
-        // concurrent apply cannot leave this mint enforcing a stale cap.
+
+
         let cap = current.max_keys_per_principal;
-        // The BUCKET this mint lands in. `None` is the UNBOUND bucket, capped too — a groupless key
-        // escapes the limit tree entirely, so leaving it uncapped makes the cap evadable by simply
-        // omitting `group`.
+
+
+
         let cap_group = spec.group.clone();
         let did_provision = provisioned.is_some();
-        // WHAT THE AUTO-PROVISION COMMITTED, carried INTO the post-commit step. The provision is
-        // recorded at COMMIT time, not after the whole transaction succeeds: once the swap is
-        // visible to in-flight requests there is no honest compensation (un-persisting is itself
-        // fallible), so a mint that fails downstream must still leave an audited, version-bumped
-        // group — the same state an explicit `POST /groups` + failed `POST /keys` leaves, and the
-        // retry then simply binds to it. `config_version` comes from the committed snapshot itself,
-        // not a post-lock-release `handle.load()` that a concurrent mutation could have moved.
+
+
+
+
+
+
+
         let provision_record = provisioned.as_ref().map(|installed| {
             (
                 installed.clone(),
@@ -1055,10 +775,10 @@ async fn create_key_owned(
                 txn_actor.clone(),
             )
         });
-        // The blocking half: cap count + mint, one deferred step of the transaction.
+
         let mint = move || {
-            // RUNS AFTER the commit-and-swap (it is `commit_then`'s follow-on step) and BEFORE the
-            // fallible mint below, so the record exists whatever the mint does.
+
+
             if let Some((installed, group, parent, actor)) = provision_record {
                 audit::AUDIT.record_by(
                     "group.provision",
@@ -1073,9 +793,9 @@ async fn create_key_owned(
                     return Ok(MintOutcome::AtCap { group, n, cap });
                 }
                 if let Some(issued) = &issued {
-                    // Issues the verifier's public id + secret alongside the signed token. A build
-                    // whose verifiers state no shape issues none: fail closed, as a mint that
-                    // cannot draw its credential.
+
+
+
                     let Some((kind, shape)) = issued else {
                         return Err(busbar_kernel::governance::RecordStoreError(
                             "no linked auth plugin states the shape of the credential to issue"
@@ -1099,8 +819,8 @@ async fn create_key_owned(
             )))
         };
         match provisioned {
-            // Auto-provision: PERSIST-then-SWAP the new leaf, THEN bind the key to it — both inside
-            // this one guard, so the leaf cannot be deleted between being created and being bound.
+
+
             Some(installed) => {
                 let group = want_group.clone().unwrap_or_default();
                 Ok(crate::v1::json::Outcome::commit_then(
@@ -1119,35 +839,22 @@ async fn create_key_owned(
     .await;
     let (minted, provisioned_group) = match res {
         Ok(v) => v,
-        // Fail-closed: an auto-provision that was rejected leaves nothing behind, and a mint that
-        // failed after one committed is reported here. `group.provision`'s own REJECTED row is
-        // written at the two sites that used to write it (a failed build, a failed persist).
-        //
-        // The refusal row is written HERE rather than via `key_err`, because everything arriving at
-        // this door is either `AdminError::Internal` or a refusal raised inside the transaction —
-        // neither carries a `Cond`, so the envelope stays untagged.
+
         Err(e) => {
             record_key_refusal(who);
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
-            // Internal includes a lost store reply or a panic after the write. Keep that durable
-            // claim ambiguous; only an explicit pre-mutation refusal is safe to release.
+
             if !matches!(e, AdminError::Internal) {
                 settle_in_store(replay_store, claim, Settled::Released).await;
             }
             return crate::v1::json::err_json(&e);
         }
     };
-    // NOTE: the `group.provision` audit + version records are written INSIDE the transaction, at
-    // commit time (see `provision_record` above) — not here. Writing them here made them
-    // conditional on the mint that follows the commit ALSO succeeding, which is exactly how a
-    // committed config change ended up with no trail.
+
     let (key, token, aws) = match minted {
         MintOutcome::AtCap { group, n, cap } => {
-            // Same reasoning as the `Err(e)` arm above: the transaction committed (if it
-            // auto-provisioned) but the mint itself was refused by the cap check — a fail-closed
-            // outcome of the completed await, not a cancellation. Safe to free the reservation.
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
@@ -1178,20 +885,14 @@ async fn create_key_owned(
         &actor,
     );
     let mut body = key_meta(&key);
-    // A freshly minted key is deterministically "active" — `mint_signed`/
-    // `mint_signed_with_credential` always set `enabled: true` and `deleted_at: None`, and the id is a fresh
-    // CSPRNG draw that cannot already be on the revocation denylist. No `gov.is_revoked` round-trip
-    // needed (and `gov` is not in scope here — moved into the mint closure above).
+
     body["state"] = json!("active");
-    // The busbar-SIGNED token IS the key credential, shown exactly once.
+
     body["token"] = json!(token.expose(&busbar_kernel::seal::lend()));
     body["expires_at"] = json!(exp);
-    // Tell the caller whether this mint AUTO-PROVISIONED its group leaf (self-service), so a
-    // portal can distinguish "bound to an existing bucket" from "created your personal bucket + bound".
+
     body["group_provisioned"] = json!(provisioned_group);
     if let Some((access_key_id, secret_access_key)) = aws {
-        // The AccessKeyId is NOT secret (it travels in plaintext in the SigV4 header); the AWS SECRET
-        // access key is shown ONCE here only, mirroring the token.
         body["aws_access_key_id"] = json!(access_key_id);
         body["aws_secret_access_key"] =
             json!(secret_access_key.expose(&busbar_kernel::seal::lend()));
@@ -1233,11 +934,6 @@ pub(crate) struct UpdateKeyReq {
     group: Option<Option<String>>,
 }
 
-/// PATCH /api/v1/admin/keys/{id}: enable/disable a key or rebind/unbind its group. `enabled` is
-/// the primary use (disabling a key WITHOUT destroying its usage history, which `DELETE` would).
-/// Admin-gated by the auth middleware (every `/admin/*` path requires the admin token). A rebind
-/// target is validated to EXIST (mint parity): otherwise PATCH would be a back door minting a
-/// dangling binding that fails every request closed. 404 if the key is absent.
 pub(crate) async fn update_key(
     axum::extract::State(handle): axum::extract::State<
         std::sync::Arc<busbar_kernel::state::AppHandle>,
@@ -1262,34 +958,26 @@ async fn update_key_owned(
     body: Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
-    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+
     let resource = format!("key:{id}");
     let who = KeyAudit::Mutation {
         verb: "key.patch",
         resource: &resource,
         actor: &actor,
     };
-    // Fast-fail BEFORE parsing the body if governance is off (the authoritative re-check happens under
-    // the config-mutation lock below, against the live App).
+
     if handle.load().governance.is_none() {
         return disabled_write(who);
     }
     if let Some(resp) = reject_overlong_id(who, &id) {
         return resp;
     }
-    // OPTIMISTIC CONCURRENCY (optional `If-Match`): the caller's ETag is compared against the
-    // CURRENT record — a stale tag is a 409, never a lost update. The compare must be ATOMIC with
-    // the write, so it is deferred INTO the gated write closure below (a separate pre-read here
-    // would leave a window in which a concurrent PATCH mutates the row between the check and this
-    // write, defeating the guard). Absent header = the transitional unguarded path.
+
     let if_match = match parse_key_if_match(who, &headers) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    // Parse via the depth-guarded `busbar_kernel::json` seam, not axum's `Json<T>` (whose rejection body
-    // echoes the raw serde error / an input fragment). Any failure maps to a GENERIC 400, logging
-    // only the byte length via `parse_err_log` — no raw error, no input fragment.
+
     let req: UpdateKeyReq = match busbar_kernel::json::parse(&body) {
         Ok(req) => req,
         Err(_) => {
@@ -1305,51 +993,19 @@ async fn update_key_owned(
             );
         }
     };
-    // MINT-PARITY validation: a rebind target must exist in the top-level groups block NOW - a
-    // dangling binding would fail every request on this key closed at admission. Only a present
-    // VALUE is checked (`Some(Some(name))`); a present `null` (unbind) and an absent field need no
-    // check.
-    //
-    // The existence check and the store write are ONE `config_transaction` section, so a group
-    // cannot be DELETED between validating it and persisting the binding: group create/DELETE run
-    // through the SAME choke point (and DELETE refuses while keys are still bound), and the check
-    // reads the FRESH post-lock snapshot rather than the extractor's (possibly pre-swap) one.
-    // Serialized this way a rebind and a group delete cannot interleave: either the rebind lands
-    // first (then DELETE sees the bound key → 409) or the delete lands first (then this check sees
-    // the group gone → 400).
-    //
-    // RESURRECTION RACE: `update_key` is a check-then-act (`get_key` → `put_key`, and `put_key`
-    // UPSERTs on the PRIMARY KEY, so it INSERTs a missing row rather than no-opping). A PATCH that
-    // reads an extant key, then has a concurrent DELETE remove the row before its `put_key` runs,
-    // would re-create the just-revoked key. The blocking closure holds the same `EXISTENCE_GATE`
-    // `delete_key` uses across the whole lookup→put section so PATCH and DELETE cannot interleave.
-    //
-    // CANCELLATION SAFETY: the gate is locked INSIDE the blocking closure so its lifetime is bound
-    // to the synchronous `gov.update_key` mutation, not to this cancellable async handler. If the
-    // client drops the request the already-scheduled closure still runs to completion holding the
-    // gate — a dropped outer future can never release it mid-write. The If-Match compare and the
-    // write run TOGETHER under the gate, so the record the ETag was checked against is the same
-    // record that gets updated.
+
     enum UpdateOutcome {
-        /// The updated row plus its `state`, computed INSIDE the gated closure below (where
-        /// `gov` — and therefore `gov.is_revoked`, needed to tell a disabled key from a revoked one —
-        /// is in scope; the outer `match` below is outside the transaction closure and has no `gov`).
         Updated(Box<busbar_kernel::governance::VirtualKey>, &'static str),
         NotFound,
         EtagStale,
-        /// The destination bucket (rebind target, or the key's own group on a re-enable) is
-        /// already at `limits.max_keys_per_principal`.
-        AtCap {
-            group: String,
-            n: usize,
-            cap: usize,
-        },
+
+        AtCap { group: String, n: usize, cap: usize },
     }
     let res = crate::v1::json::config_transaction(&handle, move |txn| {
         let current = txn.app();
         let Some(gov) = current.governance.clone() else {
-            // Unreachable in practice — governance is process-lifetime and is reused across every
-            // swap, so the pre-parse fast-fail above already answered. Fail closed anyway.
+
+
             return Err(AdminError::Conflict(
                 "governance is not enabled on this server; enable `governance:` in config.yaml to \
                  manage virtual keys"
@@ -1365,17 +1021,17 @@ async fn update_key_owned(
             }
         }
         let (enabled, group) = (req.enabled, req.group);
-        // The anti-sprawl ceiling, read from the FRESH post-lock snapshot exactly as the mint does.
+
         let cap = current.max_keys_per_principal;
         Ok(txn.store_write(move || {
             let _existence_guard = EXISTENCE_GATE.claim(id.clone());
             let outcome = (|| -> busbar_kernel::governance::RecordStoreResult<UpdateOutcome> {
-                // ONE read of the pre-image, inside the gate: it answers If-Match staleness,
-                // existence, AND the cap guard below, so the three cannot disagree about which
-                // record they are talking about.
-                // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id: this
-                // runs under `EXISTENCE_GATE`, where a fresh single-row store read is exactly what
-                // the If-Match compare below needs (see `Store::get_key`).
+
+
+
+
+
+
                 let Some(before) = gov.store().get_key(&id)? else {
                     return Ok(UpdateOutcome::NotFound);
                 };
@@ -1384,24 +1040,24 @@ async fn update_key_owned(
                         return Ok(UpdateOutcome::EtagStale);
                     }
                 }
-                // ANTI-SPRAWL CAP ON EVERY PATCH THAT ADDS A LIVE KEY TO A BUCKET.
-                // `max_keys_per_principal` was enforced only at MINT,
-                // so a PATCH could walk a principal past its own ceiling one rebind at a time —
-                // mint N keys under an empty group, then rebind them all onto the capped one.
-                //
-                // Guarding only the REBIND left the same ratchet hole open on the OTHER field:
-                // `check_key_cap` counts LIVE keys (enabled + not denylisted, by design so a
-                // revoke frees a slot), so `PATCH {"enabled": false}` × N followed by N fresh mints
-                // and then `PATCH {"enabled": true}` × N walks the bucket to 2N with every
-                // individual request passing the guard. RE-ENABLING is an admission, exactly like a
-                // rebind, and is gated here as one.
-                //
-                // The predicate is the general one both cases are instances of: check the cap iff
-                // this PATCH would ADD a live key to its destination bucket — i.e. the key is live
-                // afterwards AND was not already counted in that bucket (it was dead, or it was
-                // live in a different bucket). A no-op re-save, a disable, and a rebind of an
-                // already-dead key are all untouched, so an at-cap bucket stays editable. The mover
-                // is excluded from the count for the same reason.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 let revoked = gov.is_revoked(&before.id);
                 let dest_group = match group.as_ref() {
                     Some(g) => g.clone(),
@@ -1461,8 +1117,8 @@ async fn update_key_owned(
                 Cond::AtKeyCap,
             )
         }
-        // The only 400 this body can raise is the dangling rebind target; anything else is the
-        // generic store failure, which carries no condition of its own.
+
+
         Err(e @ AdminError::Validation(_)) => key_err(who, &e, Cond::RebindTargetMissing),
         Err(e @ AdminError::Conflict(_)) => key_err(who, &e, Cond::GovernanceOff),
         Err(e) => {
@@ -1472,19 +1128,10 @@ async fn update_key_owned(
     }
 }
 
-/// GET /api/v1/admin/keys — list key metadata (no secrets/hashes). Optional filters:
-/// `?enabled=true|false` (by enabled state), `?prefix=vk_ab` (by key-id prefix),
-/// `?group=<name>` (keys bound to that group: a `user:<sub>` leaf's keys are one person's
-/// keys; a team group's are the team's; the customer's self-service tool re-scopes from here).
 pub(crate) async fn list_keys(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    // Strict query parsing FIRST: a malformed filter/cursor is a loud 400 on every
-    // server — governance-off must not fork the validation behavior (200-empty only for a VALID
-    // query).
-    // An unparseable filter value is a loud 400, never a silently-dropped filter (which would
-    // return MORE keys than the caller asked for).
     let enabled = match q.get("enabled") {
         None => None,
         Some(v) => match v.parse::<bool>() {
@@ -1499,17 +1146,9 @@ pub(crate) async fn list_keys(
         },
     };
     let prefix = q.get("prefix").cloned();
-    // Group filter: exact bound-group match. No existence check against the registry — a key can
-    // reference a group another node's config no longer has, and listing "keys of `g`" must still
-    // find them (that dangling state is exactly what an operator would be hunting).
+
     let group = q.get("group").cloned();
-    // PAGINATION: the ONE cursor envelope shared by every admin list —
-    // `?limit=` bounds the page, `?cursor=` (opaque) resumes after the prior one, and the response is
-    // `{items, next_cursor}` (next_cursor present iff more rows remain). No `total`, no `?offset=` —
-    // one pagination grammar across keys/audit/versions/topology.
-    // Default 200 / hard cap 1000 — the SAME limit policy as the audit/versions lists (one
-    // pagination grammar, one limit policy; an unbounded default response is exactly what
-    // pagination exists to prevent).
+
     let limit = match q.get("limit") {
         None => crate::v1::contract::LIST_LIMIT_DEFAULT,
         Some(v) => match v.parse::<usize>() {
@@ -1539,10 +1178,7 @@ pub(crate) async fn list_keys(
         },
         None => 0,
     };
-    // Secondary point: a tombstoned key otherwise vanishes from this list with no marker —
-    // "it is gone" and "it never existed" looked the same. `?include=tombstoned` opts in to seeing
-    // them (each row's now-additive `state` reads `"tombstoned"`); default behaviour (their
-    // continued silent omission from a plain `GET /keys`) is unchanged, so this is purely additive.
+
     let include_tombstoned = match q.get("include") {
         None => false,
         Some(v) if v == "tombstoned" => true,
@@ -1560,9 +1196,7 @@ pub(crate) async fn list_keys(
     let gov = gov.clone();
     let res = tokio::task::spawn_blocking(move || {
         let keys = gov.all_keys()?;
-        // `state` is derived HERE, on the blocking pool, where `gov` — and therefore
-        // `gov.is_revoked` — is in scope; the outer match below is past the `.await` and has no
-        // `gov` of its own (it was moved into this closure).
+
         Ok::<_, busbar_kernel::governance::RecordStoreError>(
             keys.into_iter()
                 .map(|k| {
@@ -1577,11 +1211,6 @@ pub(crate) async fn list_keys(
         Ok(Ok(keys)) => {
             let mut filtered: Vec<_> = keys
                 .iter()
-                // TOMBSTONE (1.5.0): `gov.all_keys()` -> `Store::list_keys` is deliberately
-                // unfiltered (billing/audit attribution needs tombstoned rows to keep resolving by
-                // id) — the admin LISTING is the caller responsible for filtering live-only by
-                // default, same as every other "does this key exist" surface on this handler set.
-                // `?include=tombstoned` opts back in.
                 .filter(|(k, _)| include_tombstoned || k.deleted_at.is_none())
                 .filter(|(k, _)| enabled.is_none_or(|e| k.enabled == e))
                 .filter(|(k, _)| prefix.as_deref().is_none_or(|p| k.id.starts_with(p)))
@@ -1591,8 +1220,7 @@ pub(crate) async fn list_keys(
                         .is_none_or(|g| k.group.as_deref() == Some(g))
                 })
                 .collect();
-            // Deterministic page boundaries: sort by id (the store's iteration order is not a
-            // pagination contract).
+
             filtered.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
             let total = filtered.len();
             let page: Vec<_> = filtered
@@ -1605,7 +1233,7 @@ pub(crate) async fn list_keys(
                     v
                 })
                 .collect();
-            // More rows past this page → hand back the next opaque cursor; else None (end of list).
+
             let end = start.saturating_add(page.len());
             let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
             json_response(
@@ -1618,36 +1246,23 @@ pub(crate) async fn list_keys(
     }
 }
 
-/// What the rotate's blocking section settled.
 enum RotateOutcome {
-    /// Re-minted: the key's state and the new credential.
     Rotated(
         &'static str,
         Box<busbar_kernel::governance::RotatedCredential>,
     ),
-    /// No live key under that id.
+
     Unknown,
-    /// The key's binding is past the caller's mint ceiling; nothing was re-minted.
+
     PastCeiling(String),
 }
 
-/// POST /api/v1/admin/keys/{id}/rotate — re-issue an existing key's CREDENTIAL in place: the id (and
-/// with it budgets, rate windows, usage, audit attribution) is unchanged, the PREVIOUS credential
-/// stops authenticating immediately and fleet-wide, and the new one is returned exactly once,
-/// exactly like mint. 404 for an unknown id. An attached AWS SigV4 credential is not touched
-/// (separate lifecycle).
-///
-/// A 1.5.0 signed-token key answers with `{token, expires_at}` (a fresh token at a new binding
-/// generation — every previously-issued token for the subject is now rejected); a legacy
-/// hashed-secret key answers with `{secret}`. Rotation NEVER converts the former into the latter:
-/// arming a hashed bearer secret on a signed-token key would add a second, weaker, non-expiring
-/// credential to a key deliberately minted without one.
 pub(crate) async fn rotate_key(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
-    // See `create_key`'s identical parameter.
+
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
 ) -> Response {
     complete_key_mutation(
@@ -1665,8 +1280,7 @@ async fn rotate_key_owned(
     replays: std::sync::Arc<KeyReplayCache>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
-    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+
     let resource = format!("key:{id}");
     let who = KeyAudit::Mutation {
         verb: "key.rotate",
@@ -1676,17 +1290,7 @@ async fn rotate_key_owned(
     if let Some(resp) = reject_overlong_id(who, &id) {
         return resp;
     }
-    // IDEMPOTENT ROTATE (optional `Idempotency-Key`): rotate is the one other
-    // destructive, secret-bearing POST — a network-level retry without this mints TWICE and the
-    // first (lost) response's secret is silently dead. Same mechanics as create's idempotent mint
-    // (principal-scoped cache + in-flight reservation), with the cache key additionally scoped by
-    // operation + key id so a create and a rotate sharing a header value can never replay each
-    // other's response. Built through `idempotency::rotate_replay_key` rather than a raw
-    // `format!("rotate:{id}:{k}")`: `id` and `k` are both caller-controlled free text, and an
-    // unescaped colon join lets two DIFFERENT `(id, k)` pairs produce the SAME string (e.g.
-    // `id="x", k="b:c"` and `id="x:b", k="c"` both join to `"rotate:x:b:c"`), which would let one
-    // caller be served another's cached (and secret-bearing) rotate response. The length-prefixed
-    // encoding `rotate_replay_key` uses makes every such join unambiguous.
+
     let idem_ckey: Option<(String, String)> = headers
         .get(IDEMPOTENCY_KEY_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -1714,27 +1318,14 @@ async fn rotate_key_owned(
     };
     let gov = gov.clone();
     let gid = id.clone();
-    // rotate is a check-then-act (get_key → mint → put_key over the UPSERT primitive), so it must
-    // hold EXISTENCE_GATE for the same reason update_key/delete_key do: without it a concurrent
-    // delete that lands between rotate's read and write is clobbered by rotate's put — RESURRECTING
-    // a revoked key with a fresh secret. Gate acquired INSIDE the closure for cancellation safety
-    // (a scheduled spawn_blocking runs to completion even if the handler future is dropped).
-    // A ROTATE IS A MINT OF THE KEY'S OWN BINDING, judged by the mint's ceiling
-    // (`auth.policy.max_ttl`, `auth.policy.mint_ceilings.<role>`): the re-minted token is a working
-    // credential for every pool the key is bound to, under the mode it was minted with. So the
-    // caller's ceiling is asked about exactly that binding — read under the gate, the same read the
-    // rotate makes — and a binding past it is refused before anything is re-minted, as `POST /keys`
-    // refuses it: a delegated admin held to some pools cannot obtain a token for others by rotating
-    // a key it could never have minted. The lifetime is the default a mint with no `expires_in` /
-    // `expires_at` receives (rotate takes no body), clamped to the ceiling, never refused, so a
-    // rotate is answered exactly as before wherever no ceiling is configured.
+
     let now = busbar_kernel::store::now();
     let caller_roles: Vec<String> = principal
         .0
         .as_ref()
         .map_or_else(Vec::new, |p| p.roles.clone());
     let policy = std::sync::Arc::clone(&app.mint_policy);
-    // Claimed in the store before the rotate becomes irreversible, as the mint is.
+
     let replay_store = gov.store();
     let claim = match idem_reservation.as_ref() {
         Some(r) => {
@@ -1745,16 +1336,14 @@ async fn rotate_key_owned(
         }
         None => None,
     };
-    // The detached owner finishes replay settlement after a disconnect. If that owner panics,
-    // retain the sentinel because the blocking mutation may already have landed.
+
     if let Some(r) = idem_reservation.as_mut() {
         r.in_flight();
     }
     let res = tokio::task::spawn_blocking(
         move || -> Result<RotateOutcome, busbar_kernel::governance::RecordStoreError> {
             let _existence_guard = EXISTENCE_GATE.claim(gid.clone());
-            // A tombstoned row is not rotatable (`GovState::rotate_key`), so it answers unknown
-            // before any ceiling is asked about it.
+
             let Some(key) = gov
                 .store()
                 .get_key(&gid)?
@@ -1777,11 +1366,7 @@ async fn rotate_key_owned(
                 Ok(ttl) => ttl,
                 Err(msg) => return Ok(RotateOutcome::PastCeiling(msg)),
             };
-            // `state` is derived HERE (where `gov` is in scope, moved into this closure) rather
-            // than after the `.await` below — a rotated key can still be `disabled` or `revoked`
-            // (rotate does not touch `enabled` or the denylist, only tombstoned keys refuse to
-            // rotate at all, see `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed,
-            // not just `enabled`.
+
             Ok(match gov.rotate_key(&gid, now.saturating_add(ttl))? {
                 Some(rotated) => {
                     RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
@@ -1796,19 +1381,17 @@ async fn rotate_key_owned(
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
             let mut body = key_meta(&rotated.key);
             body["state"] = json!(state);
-            // Shown exactly once, exactly like mint. 1.5.0 has exactly one bearer-credential shape,
-            // so rotation always re-issues a signed token.
+
             body["token"] = json!(rotated.token.expose(&busbar_kernel::seal::lend()));
             body["expires_at"] = json!(rotated.exp);
-            // COMMIT the idempotency slot with the real response (replaces the reservation) and
-            // disarm the drop-guard — a retry inside the window replays THIS body verbatim.
+
             if let Some(r) = idem_reservation.take() {
                 r.commit(body.clone(), busbar_kernel::store::now());
             }
             settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
             json_response(StatusCode::OK, body)
         }
-        // These explicit refusals precede the write, so their claims are safe to release.
+
         Ok(Ok(RotateOutcome::Unknown)) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
@@ -1827,13 +1410,11 @@ async fn rotate_key_owned(
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
-            // A store error may follow a committed rotation (including a cache-reconcile failure).
-            // Leave the durable claim unsettled rather than permitting another credential issue.
+
             record_key_refusal(who);
             internal_error("rotate_key", &e)
         }
-        // A rotate that did not run to completion may or may not have landed: its store claim is
-        // left unsettled, so a retry is refused as in flight until the claim lapses.
+
         Err(e) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
@@ -1844,11 +1425,6 @@ async fn rotate_key_owned(
     }
 }
 
-/// POST /api/v1/admin/keys/{id}/revoke - REVOKE a signed-token key WITHOUT deleting its binding /
-/// usage history (1.5.0). Adds the subject to the durable revocation denylist so every outstanding
-/// token for it is rejected immediately (stateless verify + denylist read), while `GET /keys/{id}`
-/// still shows the (now-revoked) binding for the record. Idempotent - revoking an already-revoked
-/// key is 200. `DELETE /keys/{id}` is the revoke-AND-forget variant.
 pub(crate) async fn revoke_key(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
@@ -1863,8 +1439,7 @@ async fn revoke_key_owned(
     id: String,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
-    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+
     let resource = format!("key:{id}");
     let who = KeyAudit::Mutation {
         verb: "key.revoke",
@@ -1879,16 +1454,11 @@ async fn revoke_key_owned(
     }
     let gov = gov.clone();
     let id_for_task = id.clone();
-    // The subject must name an existing binding (a revoke for a nonexistent key is a 404, not a
-    // silent denylist entry for a typo'd id). Then denylist it durably.
+
     let res = tokio::task::spawn_blocking(
         move || -> busbar_kernel::governance::RecordStoreResult<bool> {
-            // Hold EXISTENCE_GATE across the existence check and the denylist write, matching
-            // update_key/rotate_key/delete_key. Without it, a concurrent `delete_key` can dispose of the
-            // key in the window between this check-then-act, producing a phantom `key.revoke APPLIED`
-            // audit record for a key another operation already fully disposed of (audit non-repudiation).
             let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
-            // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
+
             let exists = gov.store().get_key(&id_for_task)?.is_some();
             if !exists {
                 return Ok(false);
@@ -1915,20 +1485,12 @@ async fn revoke_key_owned(
     }
 }
 
-/// POST /api/v1/admin/signing-key/rotate - ROTATE the busbar key-signing key. Rotation is
-/// REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops
-/// verifying (its `kid`/signature no longer matches), so every outstanding key must be re-minted.
-/// 1.5.0 is single-key, so this reports the intent and the current kid; the actual key swap is an
-/// operator action (replace `auth.signing_key` / the persisted key file and restart or reload) so
-/// that a fleet rotates in lockstep. Returns the current kid and the revoke-all warning; a future
-/// keyset makes this a live in-process swap.
 pub(crate) async fn rotate_signing_key(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
-    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+
     let who = KeyAudit::Mutation {
         verb: "signing_key.report",
         resource: "signing-key",
@@ -1944,14 +1506,7 @@ pub(crate) async fn rotate_signing_key(
             Cond::NothingToRotate,
         );
     };
-    // `signing_key.report`, not `signing_key.rotate`: this endpoint rotates NOTHING. It reads the
-    // current kid and returns the operator instructions below. Recording it as `rotate`/`applied`
-    // told anyone reading the log that every outstanding token had been revoked.
-    //
-    // The row stays, rather than being dropped as a non-mutation, because the log exists so a
-    // credential probing the surface leaves a trail — and a valid admin token calling this
-    // repeatedly is exactly that. Dropping it would also make this the only `KeyAudit::Mutation`
-    // verb in the file that audits its refusals but not its successes.
+
     audit::AUDIT.record_by(
         "signing_key.report",
         "signing-key",
@@ -1971,10 +1526,6 @@ pub(crate) async fn rotate_signing_key(
     )
 }
 
-/// GET /api/v1/admin/keys/{id} — one key's metadata (id/name/pools/budgets/limits/enabled; never the
-/// secret or generation_hash). 404 when no key with `id` exists. Fills the single-key read gap in the key
-/// surface; it stays on the legacy `{type}` envelope + `key_meta` shape so
-/// it is consistent with the sibling key routes (the full `{code}`-envelope migration is a follow-up).
 pub(crate) async fn get_key(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     Path(id): Path<String>,
@@ -1987,10 +1538,7 @@ pub(crate) async fn get_key(
     }
     let gov = gov.clone();
     let id2 = id.clone();
-    // The synchronous store read runs on the blocking pool (the SQLite backend is sync). O(1) row
-    // lookup via `Store::get_key`, not a full-table `all_keys()` scan filtered by id.
-    // `state` is derived HERE too, alongside the read — `gov.is_revoked` needs `gov`, which is
-    // moved into this closure and unavailable after the `.await` below.
+
     let res = tokio::task::spawn_blocking(move || {
         gov.store()
             .get_key(&id2)
@@ -2000,9 +1548,7 @@ pub(crate) async fn get_key(
     match res {
         Ok(Ok(Some((state, k)))) => {
             let etag = key_etag(&k);
-            // ETag lives ONLY in the HTTP `ETag` header (RFC 7232), not duplicated into the JSON
-            // body — one authoritative surface, matching how config/hooks/auth expose their
-            // concurrency token.
+
             let mut meta = key_meta(&k);
             meta["state"] = json!(state);
             let mut resp = json_response(StatusCode::OK, meta);
@@ -2021,12 +1567,6 @@ pub(crate) async fn get_key(
     }
 }
 
-/// GET /api/v1/admin/keys/{id}/usage — the key's BUDGET-window counters (the enforcement view:
-/// spend/tokens/requests against its own budget window; the fleet FinOps series lives on `/usage`)
-/// plus `rate_headroom`: the fraction `[0,1]` of the tightest `requests`/`tokens` limit across
-/// the key's group chain still available in each limit's own window (`null` when the chain has no
-/// such limit): a client can back off BEFORE hitting a 429 instead of discovering the cap by
-/// tripping it (key-06).
 pub(crate) async fn key_usage(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     Path(id): Path<String>,
@@ -2040,23 +1580,15 @@ pub(crate) async fn key_usage(
     let now = busbar_kernel::store::now();
     let gov2 = gov.clone();
     let id2 = id.clone();
-    // One blocking hop fetches BOTH the usage counters and the key record (the record feeds the
-    // in-memory `rate_headroom` read, which needs the configured caps).
+
     let cost = app.cost.clone();
     let res = tokio::task::spawn_blocking(move || {
-        // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
         let key = gov2.store().get_key(&id2)?;
-        // TOMBSTONE (1.5.0): `get_key` can still answer for a deleted key — attribution rows
-        // survive on purpose. The admin-facing "does this key exist" surface must not, though: a
-        // tombstoned key reads as absent here, same as an unknown id, so DELETE stays a real
-        // removal from every reader's point of view.
+
         let Some(key) = key.filter(|k| k.deleted_at.is_none()) else {
             return Ok::<_, busbar_kernel::governance::RecordStoreError>(None);
         };
-        // DERIVED at read time: spend_cents = ledger x CURRENT rate card (+ fee x requests) - a
-        // rate-card correction changes this number on the very next read (tokens are the truth).
-        // The key's own attribution bucket, exactly as `usage_for` reads it, with the money
-        // refusal kept TYPED so an unpriced class is named below (Q25b).
+
         let usage = gov2.derived_bucket_usage_priced(
             &cost,
             &id2,
@@ -2073,16 +1605,10 @@ pub(crate) async fn key_usage(
             Cond::Unpriced,
         ),
         Ok(Ok(Some((Ok(u), key)))) => {
-            // Headroom derives from the key's GROUP CHAIN (keys carry no caps of their own):
-            // the tightest requests/tokens limit across the chain, `null` when unlimited.
-            // Pool-less read: a per-pool cap is not a property of the key as a whole, so
-            // pool-scoped buckets are excluded from this overview figure.
             let headroom = key
                 .as_ref()
                 .and_then(|k| gov.rate_headroom(&app.cost, k, None, now));
-            // Label the numbers: a key's attribution bucket accrues in the ALL-TIME
-            // window (its limits, if any, live on the bound group's own windows), plus when the
-            // read was taken, so a consumer can cache, align, and reset-detect without guessing.
+
             json_response(
                 StatusCode::OK,
                 json!({
@@ -2108,9 +1634,6 @@ pub(crate) async fn key_usage(
     }
 }
 
-/// DELETE /api/v1/admin/keys/{id} — revoke a key. Returns 404 when no key with `id` exists (REST/OpenAPI
-/// contract), so a typo'd or already-deleted id is distinguishable from an actual revocation rather
-/// than masquerading as a spurious 200.
 pub(crate) async fn delete_key(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
@@ -2127,8 +1650,7 @@ async fn delete_key_owned(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
-    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+
     let resource = format!("key:{id}");
     let who = KeyAudit::Mutation {
         verb: "key.delete",
@@ -2141,39 +1663,12 @@ async fn delete_key_owned(
     if let Some(resp) = reject_overlong_id(who, &id) {
         return resp;
     }
-    // Optimistic concurrency (optional `If-Match` — every mutation verb on the surface honors
-    // it): the caller's ETag is compared against the CURRENT record inside the gated critical
-    // section below, so the delete only lands on the exact record state the caller last read.
+
     let if_match = match parse_key_if_match(who, &headers) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    // Existence check before delete: the key RECORD is looked up first and `None` means not-found.
-    // The store's `delete_key` does now error on an unknown id (the trait settled that), but this
-    // check still has to be here and cannot be replaced by it: an ALREADY-TOMBSTONED row is
-    // idempotent `Ok(())` at the store layer while this endpoint must answer 404 for it, and a
-    // store error carries no way to tell those apart. Use the public GovState API rather than
-    // reaching into the store. The record (not a bare existence bit) is needed anyway: the optional
-    // If-Match guard compares its ETag.
-    //
-    // Both store calls (the lookup and the delete) run on ONE `spawn_blocking` task so neither
-    // blocks a Tokio worker thread, matching the request-path discipline. Running them on the same
-    // task also keeps the lookup→delete pair tighter than two separately-scheduled awaits would.
-    //
-    // TOCTOU: `GovState`/store expose no rows-affected signal, so a *bare* check-then-act would let
-    // two concurrent DELETEs of the same id both observe `Some` and both return 200 (the second SQL
-    // delete no-ops) — a misleading audit trail implying two revocations of one row. The store-layer
-    // `changes()` signal does not exist, so the race is closed here instead: serialize
-    // every delete's lookup→delete critical section on its key id in `EXISTENCE_GATE`. The same
-    // gate also serializes `update_key`'s lookup→put, so a PATCH cannot resurrect a key this DELETE
-    // removes (see `EXISTENCE_GATE`). The loser of a delete race observes `Ok(None)` and correctly
-    // returns 404. Operations on other keys are not held up (§11.13 M1).
-    //
-    // CANCELLATION SAFETY: the gate is locked INSIDE the `spawn_blocking` closure, so the whole
-    // lookup→delete runs under the lock on the blocking thread. `spawn_blocking` is uncancellable once
-    // scheduled, so even if the client drops this request the critical section completes while still
-    // holding the gate — the gate can never be released mid-sequence by an outer-future drop.
-    /// The three delete outcomes the gated critical section distinguishes.
+
     enum DeleteOutcome {
         Deleted,
         NotFound,
@@ -2184,16 +1679,11 @@ async fn delete_key_owned(
     let task_actor = actor.clone();
     let res = tokio::task::spawn_blocking(move || {
         let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
-        // The key RECORD (not just existence) is read under the gate: the If-Match compare must be
-        // atomic with the delete, exactly like PATCH's compare-and-put. O(1) row lookup instead of
-        // a full-table `all_keys()` scan filtered by id.
+
         let key = gov.store().get_key(&id_for_task)?;
         match key {
             None => Ok(DeleteOutcome::NotFound),
-            // TOMBSTONE (1.5.0): `get_key` returns a deleted key's row forever (billing/admin
-            // attribution needs it to), so a second DELETE — or N concurrent ones — must not treat
-            // an already-tombstoned row as "found, proceed": that is exactly what made every
-            // concurrent delete report 204 and made a second delete report 204 instead of 404.
+
             Some(k) if k.deleted_at.is_some() => Ok(DeleteOutcome::NotFound),
             Some(k) => {
                 if let Some(expected) = &if_match {
@@ -2201,12 +1691,7 @@ async fn delete_key_owned(
                         return Ok(DeleteOutcome::EtagStale);
                     }
                 }
-                // REVOKE-THEN-DELETE (1.5.0): add the subject to the denylist BEFORE removing the
-                // binding, so a signed token for this key is rejected even in the window between
-                // the denylist write and the binding removal (and stays rejected via the durable
-                // denylist even if a stale in-memory binding lingered on another node). A denylist
-                // write failure is fatal to the delete (fail-closed: never report a delete that did
-                // not durably revoke).
+
                 gov.revoke(&id_for_task, "key deleted")?;
                 match gov.delete_key(&id_for_task) {
                     Ok(()) => Ok(DeleteOutcome::Deleted),
@@ -2227,8 +1712,7 @@ async fn delete_key_owned(
     match res {
         Ok(Ok(DeleteOutcome::Deleted)) => {
             audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_APPLIED, &actor);
-            // 204 No Content — the SAME success shape as `DELETE /api/v1/admin/hooks/{name}` (was a
-            // bespoke `200 {"deleted": id}` found nowhere else on the surface). (contract H4.)
+
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(Ok(DeleteOutcome::NotFound)) => {
@@ -2253,21 +1737,14 @@ async fn delete_key_owned(
     }
 }
 
-/// THE KEY-CAP CHOKE POINT, class-level. Every path that can add
-/// a key to a principal's bucket — the mint and the rebind — asks `check_key_cap`, so these cases
-/// pin the shared predicate rather than one call site.
 #[cfg(test)]
 #[path = "tests/key_cap_tests.rs"]
 mod key_cap_tests;
 
-// The admin-surface e2e tests authenticate through the operator credential's test registry row
-// (`test_seams::ensure_seam`).
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
 
-// The auto-provision POST-COMMIT FAILURE branch. Drives the
-// handler directly (no HTTP), so it needs no admin-token module.
 #[cfg(test)]
 #[path = "tests/provision_tests.rs"]
 mod provision_tests;

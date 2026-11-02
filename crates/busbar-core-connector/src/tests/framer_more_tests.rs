@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Drive the actual host loops. A finite sentinel ends a defective implementation too, so a
-//! missing resource bound fails an assertion instead of leaving an unbounded test worker.
 
 use super::*;
 use std::mem::size_of;

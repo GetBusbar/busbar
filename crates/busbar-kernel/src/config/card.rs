@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RATE CARD AS THE CONFIGURATION SPELLS IT: the four fields a deployment prices with, lifted
-//! out of the rest of the configuration so the card can be held, compared and stored on its own
-//! (MONEY-DESIGN section 3a, owner ruling 2026-10-25).
-//!
-//! The configuration is the source of the card, as in 1.5.5 (owner ruling 2026-10-26). The
-//! fleet-shared history holds a [`CardFields`] per entry: whenever the card a build resolves
-//! differs from the card in force, a dated entry is appended, effective from that moment, so usage
-//! is always priced with the card in force when it happened.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -83,7 +74,6 @@ struct StoredCard {
 }
 
 impl CardFields {
-    /// The card a deployment document configures.
     #[must_use]
     pub fn of_deploy(deploy: &DeployCfg) -> Self {
         CardFields {
@@ -94,7 +84,6 @@ impl CardFields {
         }
     }
 
-    /// This card with an overlay root section's card fields laid over it, as boot merges them.
     #[must_use]
     pub fn with_overlay(mut self, root: Option<&super::overlay::RootSettings>) -> Self {
         if let Some(root) = root {
@@ -108,8 +97,6 @@ impl CardFields {
         self
     }
 
-    /// PRICE A GENERATION WITH THIS CARD: the resolved configuration's three card fields are
-    /// replaced by this card's, composed as [`super::resolve`] composes them.
     pub fn apply_to(&self, cfg: &mut RootCfg) {
         cfg.rate_card = busbar_kernel_ledger::cost::compose_plane_cards(
             self.rate_card.as_ref(),
@@ -119,7 +106,6 @@ impl CardFields {
         cfg.plane_fees = self.plane_fees.clone();
     }
 
-    /// The card a resolved configuration prices with, read back off its composed fields.
     #[must_use]
     pub fn of_root(cfg: &RootCfg) -> Self {
         Self::from_composed(
@@ -129,8 +115,6 @@ impl CardFields {
         )
     }
 
-    /// The card a COMPOSED card map spells (`compose_plane_cards`'s form: plane-qualified lanes and
-    /// presence keys), with its flat fee and plane fees, split back into the flat and plane cards.
     #[must_use]
     pub fn from_composed(
         composed: Option<&BTreeMap<String, RateEntryCfg>>,
@@ -147,7 +131,6 @@ impl CardFields {
                 for (key, entry) in map {
                     let (plane, lane) = busbar_kernel_ledger::cost::split_plane_lane(key);
                     match (plane.is_empty(), lane.is_empty()) {
-                        // `"<sep>"`: the flat card's presence key.
                         (true, true) => {
                             flat.get_or_insert_with(BTreeMap::new);
                         }
@@ -155,7 +138,7 @@ impl CardFields {
                             flat.get_or_insert_with(BTreeMap::new)
                                 .insert(lane.to_string(), entry.clone());
                         }
-                        // `"<plane><sep>"`: that plane's presence key.
+
                         (false, true) => {
                             planes.entry(plane.to_string()).or_default();
                         }
@@ -177,7 +160,6 @@ impl CardFields {
         }
     }
 
-    /// The composed card map a generation prices with.
     #[must_use]
     pub fn composed(&self) -> Option<BTreeMap<String, RateEntryCfg>> {
         busbar_kernel_ledger::cost::compose_plane_cards(
@@ -186,7 +168,6 @@ impl CardFields {
         )
     }
 
-    /// The fields on which `self` and `other` differ, as an operator reads them.
     #[must_use]
     pub fn differing_fields(&self, other: &CardFields) -> Vec<String> {
         let mut out = Vec::new();
@@ -214,7 +195,6 @@ impl CardFields {
         out
     }
 
-    /// The stored bytes: canonical JSON, so two equal cards are two equal byte strings.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut planes: BTreeMap<String, PlaneCardFields> = BTreeMap::new();
@@ -232,11 +212,6 @@ impl CardFields {
         serde_json::to_vec(&stored).unwrap_or_default()
     }
 
-    /// The card from its stored bytes.
-    ///
-    /// # Errors
-    ///
-    /// The bytes are not a stored card.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         let stored: StoredCard =
             serde_json::from_slice(bytes).map_err(|e| format!("not a stored rate card: {e}"))?;
@@ -256,13 +231,11 @@ impl CardFields {
         Ok(card)
     }
 
-    /// The card's digest: SHA-256 of its stored bytes.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         sha256(&self.to_bytes())
     }
 
-    /// The card's rates as the rate-apply seam carries them, owned.
     #[must_use]
     pub fn rates(&self) -> CardRates {
         let composed = busbar_kernel_ledger::cost::compose_plane_cards(
@@ -286,7 +259,6 @@ impl CardFields {
     }
 }
 
-/// SHA-256 of `bytes`: the one digest the card history's records carry.
 #[must_use]
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
@@ -311,7 +283,6 @@ pub struct CardRates {
 }
 
 impl CardRates {
-    /// The neutral view the rate-apply seam carries.
     #[must_use]
     pub fn raw(&self) -> crate::rate_apply::RawRates<'_> {
         crate::rate_apply::RawRates {
@@ -324,10 +295,6 @@ impl CardRates {
     }
 }
 
-/// WHO OR WHAT CHANGED THE CARD, for the history entry a change appends: set by the path that
-/// commits a configuration ("config/reload by <actor>", "boot of node N", ...), on the thread the
-/// commit runs on. Thread-local because a config transaction's whole apply phase runs on one
-/// blocking thread.
 pub(crate) mod origin {
     use std::cell::RefCell;
 

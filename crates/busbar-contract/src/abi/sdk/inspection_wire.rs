@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Opt-in, read-only host facts through the existing main-call extensions. These are Rust
-//! values and a versioned byte codec, never C layouts or stored records. A receipt is a copied
-//! observation, not a lease on future host policy. The host owns caller, unit and ticket custody.
 
 use crate::abi::mechanism::{extensions, ticket::Ticket};
 
@@ -120,7 +118,7 @@ pub struct InspectionReceipt {
 }
 
 /// Maximum carrier IDs fitting BOTH request and full correlated receipt, with the existing
-/// extension bytes retained. The result follows the existing byte budget, not a second count cap.
+
 #[must_use]
 pub fn max_carrier_sessions(existing_extension_bytes: usize) -> usize {
     let request_overhead = 30 + extensions::entry_len(EXT_REQUEST, &[]);

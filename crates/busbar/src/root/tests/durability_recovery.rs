@@ -1,48 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TWO DISASTER-RECOVERY VERBS, PROVEN ACROSS A RESTART OVER A REAL STORE. Each cell boots a node's book over the build's linked ephemeral
-//! store, opened through its door on the store axis exactly as boot opens the configured store,
-//! runs one verb through the verb store the boot binds ([`node_verb_store`]), boots a SECOND book
-//! over the SAME store, and reads the effect back from the store and the chain — never from the
-//! first node's memory.
-//!
-//! RED before the fix: the verbs answered `Ok` from the loader adapter's node-memory `Recovery`
-//! counters, so the restarted node found no operator break on its chain, and a restore that
-//! restored nothing was acknowledged.
-
 use super::*;
 use crate::root::durability::{build_on_store, wait_for, DurabilityConfig, JournalLane};
 use busbar_contract::caps::AdminVerb;
 use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
 use busbar_kernel_seams::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
 
-/// The store's label, as the configuration names it.
 const STORE: &str = "configured";
 
-/// This node's id on the store: the same across the restart, as the store's node registry gives
-/// a host back its id.
 const NODE: u64 = 31;
 
-/// One opened store: the 1.5.5 op set and the v3 slots of ONE instance.
 struct Opened {
     records: Arc<dyn busbar_contract::records::RecordStore>,
     calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
 }
 
-/// The build's linked ephemeral store, opened through its door on the store axis, as boot opens it.
 fn ephemeral_store() -> Opened {
     let axis = crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: {
             let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
                 crate::root::loader::dispatch::DispatchConfig::default(),
             ));
-            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+
             let _ = d.lend_seal(busbar_kernel::seal::lend());
             d
         },
         logs: crate::root::boot::plugin_logs().clone(),
-        // The build's ephemeral store declares no need: it serves with no connection table.
+
         conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
         mint: busbar_kernel::door::op_id,
     };
@@ -66,9 +51,6 @@ fn ephemeral_store() -> Opened {
     }
 }
 
-/// C6: THE STORE'S V3 CALLS SERVE THE KEY, CREDENTIAL, DENYLIST AND LEGACY-READ OPS AS THE 1.5.5
-/// OP SET DID, over one door-opened store: what one surface writes the other reads back the same,
-/// so a caller moved off the synchronous bridge reads and writes what it did before.
 #[test]
 fn the_v3_key_credential_and_denylist_ops_answer_as_the_op_set_did() {
     use busbar_contract::records::VirtualKey;
@@ -167,13 +149,10 @@ fn the_v3_key_credential_and_denylist_ops_answer_as_the_op_set_did() {
     );
 }
 
-/// The verbs unit's admin token, as the kernel mints one for the length of an admin verb.
 fn admin() -> Grant<AdminVerb> {
     busbar_kernel_testkit::test_support::tokens::grant::<AdminVerb>()
 }
 
-/// One boot of node [`NODE`] over `store`: its book, resumed from the chain the store kept, and the
-/// verb store the boot binds over that book and that store.
 fn boot(store: &Opened) -> (Arc<Mutex<Durability>>, Arc<dyn VerbStore + Send + Sync>) {
     let lane = JournalLane::start(Arc::clone(&store.calls), STORE).expect("the lane starts");
     let book = Arc::new(Mutex::new(
@@ -189,7 +168,6 @@ fn boot(store: &Opened) -> (Arc<Mutex<Durability>>, Arc<dyn VerbStore + Send + S
     (book, verbs)
 }
 
-/// Wait until the store took everything the book's lane holds, then stop the node.
 fn stop(book: Arc<Mutex<Durability>>) {
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     assert!(
@@ -201,7 +179,6 @@ fn stop(book: Arc<Mutex<Durability>>) {
     );
 }
 
-/// The chain the book holds, read and verified.
 fn verified_chain(book: &Arc<Mutex<Durability>>) -> Vec<JournalRecord> {
     book.lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -210,9 +187,6 @@ fn verified_chain(book: &Arc<Mutex<Durability>>) -> Vec<JournalRecord> {
         .expect("the chain verifies")
 }
 
-/// **`chain_break` IS A FACT IN THE CHAIN, AND SURVIVES A RESTART.** The verb seals an operator
-/// break on the node's journal; a node booted again over the same store walks a chain that still
-/// verifies and carries exactly one deliberate operator break.
 #[test]
 fn a_chain_break_is_on_the_chain_after_a_restart_over_the_same_store() {
     let store = ephemeral_store();
@@ -239,7 +213,6 @@ fn a_chain_break_is_on_the_chain_after_a_restart_over_the_same_store() {
     );
 }
 
-/// The `tracing` events one closure fires on this thread, rendered `LEVEL message field=value ...`.
 fn events_of(run: impl FnOnce()) -> Vec<String> {
     #[derive(Clone, Default)]
     struct EventLog(Arc<Mutex<Vec<String>>>);
@@ -279,10 +252,6 @@ fn events_of(run: impl FnOnce()) -> Vec<String> {
     lines
 }
 
-/// **`store_restore` REFUSES, AND NOTHING CHANGES ACROSS A RESTART.** The configured store has no
-/// restore operation, so the verb answers a store failure — never `Ok` — with one error line naming
-/// it and nothing put on the chain; a node booted again over the same store finds no operator break
-/// and no floor.
 #[test]
 fn a_store_restore_is_refused_and_changes_nothing_across_a_restart() {
     let store = ephemeral_store();
@@ -323,16 +292,12 @@ fn a_store_restore_is_refused_and_changes_nothing_across_a_restart() {
     );
 }
 
-/// C6: THE STORE'S V3 CALLS ANSWER THE PLANE PARENTS AND THE RETENTION PURGE AS THE 1.5.5 OP SET
-/// DID, over one door-opened store: the same parents, then the same records purged, so a caller
-/// moved off the synchronous bridge reads and purges what it read and purged before.
 #[test]
 fn the_v3_plane_parents_and_purge_answer_as_the_op_set_did() {
     use busbar_contract::records::{PlaneDisposition, PlaneRecord};
     const KIND: &str = "c6-probe";
     let store = ephemeral_store();
-    // A parented row is placed by `(parent, seq)`, so two rows under one parent take two seqs: at
-    // one seq the second would be the first rewritten, and the store would hold two rows, not three.
+
     let row = |id: &str, parent: &str, seq: u64, ts: u64| PlaneRecord {
         kind: KIND.to_string(),
         id: id.to_string(),

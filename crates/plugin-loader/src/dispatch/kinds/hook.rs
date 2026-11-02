@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK KIND: `abi/hook/`. Every kind op is checked by its `check_<op>`. `decide` and
-//! `transform` write into host buffers [`DecideIn`] names, so their checks take the caps from that
-//! `in`, and they are the two ops with a short-buffer path (a `*_needed` above its cap);
-//! `configure` is checked against the version [`ConfigureIn`] pushed. No hook check reads a slice
-//! a plugin-reported count names, so none is built here. The Statement's hook facts (its tail's
-//! class and grants, its `MARK_WORD_HOOK` words) are read once at bind into [`HookFacts`].
-
 use busbar_contract::abi::hook::{
     self, slot, validate, ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn,
     ServeIn, ServeOut, StatusOut, Tail, TransformOut, CLASS_GATE, CLASS_TAP, PROMPT_RW, USER_RO,
@@ -21,30 +14,18 @@ pub use busbar_contract::hook_calls::HookFacts;
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
-/// A `'static` Statement string, copied; `None` when malformed.
 fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
-/// The hook tail's last frozen size: it has not grown since 1.6.0 froze it, so it is this host's
-/// (THE KIND TAIL GROWTH RULE, `abi::mechanism::door::tail_read_len`): a tail appended to later
-/// still loads a plugin built against this one, its appended fields read absent.
 const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
 
-/// The refusal of a hook Statement that states no kind tail.
 pub const NO_TAIL: &str =
     "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
 
-/// The refusal of a hook tail stating `requested_signals` (H7).
 pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the signals a hook is \
      lent are the operator's `hooks:` configuration, never its tail; a hook states none";
 
-/// WHAT A HOOK STATES ABOUT ITSELF, read once at bind: its name, its tail's class and grants and
-/// the hook words its `MARK_WORD_HOOK` marks claim. Read back through
-/// [`crate::dispatch::Plugin::context`].
-///
-/// A hook Statement with NO kind tail is refused ([`NO_TAIL`], ARCHITECT Q-SO8): every 1.6.0 hook
-/// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
 fn read(st: &Statement) -> Result<HookContext, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
     if st.kind_tail.is_null() {

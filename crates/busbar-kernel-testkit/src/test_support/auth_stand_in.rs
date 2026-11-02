@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TEST STAND-INS ONLY: an in-process [`AuthModule`] as a chain position's [`AuthCalls`]. A test
-//! build composes an auth chain from in-process modules without a loaded plugin; every plugin a
-//! shipped build opens comes through the auth axis on the auth kind's memory ABI (THE DESIGN §11.6).
-//! The module's `authenticate` is made on the caller's thread and answered on the spot.
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -17,7 +12,6 @@ use busbar_contract::auth_calls::{
     AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
 };
 
-/// An in-process test module as [`AuthCalls`].
 pub struct InProcessAuth {
     module: Arc<dyn AuthModule>,
     name: String,
@@ -33,7 +27,6 @@ impl std::fmt::Debug for InProcessAuth {
 }
 
 impl InProcessAuth {
-    /// The adapter over `module`.
     #[must_use]
     pub fn new(module: Box<dyn AuthModule>) -> Self {
         let facts = if module.cacheable() {
@@ -49,7 +42,6 @@ impl InProcessAuth {
     }
 }
 
-/// A module's verdict as the chain reads it.
 fn verified(v: AuthVerdict) -> Verified {
     match v {
         AuthVerdict::Identify(p) => Verified::Identity(VerifiedIdentity {
@@ -90,7 +82,6 @@ impl AuthCalls for InProcessAuth {
     }
 }
 
-/// A verify answered on the spot.
 struct Answered(Option<VerifyAnswer>);
 
 impl Future for Answered {

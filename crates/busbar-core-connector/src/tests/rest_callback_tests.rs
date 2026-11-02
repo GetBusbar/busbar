@@ -41,7 +41,7 @@ fn a_public_read_of_busy_rest_clones_and_retires_its_waiter_after_unlocking() {
             .await
             .unwrap();
         held.landed();
-        // An existing read owns Rest, with its mutex released, exactly as a carrier crossing does.
+
         let (reading, _) = Reading::begin(&held.rest, Waker::noop()).unwrap();
         let weak = Arc::downgrade(&held);
         let probe = Probe::new(move || {

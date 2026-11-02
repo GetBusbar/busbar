@@ -1,22 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A REGISTRATION'S PEER-KEY PIN AND CLIENT IDENTITY, END TO END THROUGH THE HOST: a registration written as an
-//! operator writes it, read by the host's one reader of its anchors ([`super::registration_anchors`])
-//! under the trust keys and the `trust_from` path a REAL linked plane door states, sealed on the
-//! in-tree connector over this build's linked wires, and dialled over real TLS to a far end on
-//! loopback.
-//!
-//! * A far end whose certificate's key is not the one a `cert_spki` pin names is refused after its
-//!   handshake and before a request byte is written; the matching pin is reached.
-//! * An `mtls` registration's `client_identity` (`{cert, key}`, secret references the host
-//!   resolves) is presented in the handshake, and a far end that requires a client certificate
-//!   accepts it. With no identity sealed, the host does not refuse the dial: the far end refuses the
-//!   handshake (the plane's own section reading is what refuses `mtls` without `client_identity:`).
-//!
-//! The plane door is found by what its Statement states (a pin mechanism that pins the far end's key
-//! and a member-target need whose `trust_from` names a member path), never by name.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,14 +22,8 @@ use crate::root::loader::dispatch::kinds::plane::{Plane, ServedFacts};
 
 const OWNER: InstanceId = InstanceId(7);
 
-/// What the far end saw on one connection: `None`, its handshake failed; else whether the dialler
-/// presented a client certificate, and every request byte it read before the dialler's head ended
-/// or the dialler left.
 type Saw = Option<(bool, Vec<u8>)>;
 
-/// The linked plane door whose Statement seals a peer-key pin and a client identity per
-/// registration, bound on a probe: what it states, and the member-target need whose `trust_from`
-/// names the registration's client identity.
 fn sealing_plane() -> (ServedFacts, NeedId) {
     use crate::root::loader::dispatch::{
         load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
@@ -86,8 +64,6 @@ fn sealing_plane() -> (ServedFacts, NeedId) {
         .expect("a linked plane door seals a peer-key pin and a client identity per registration")
 }
 
-/// The registration key a pin is written under, and the mechanism tokens that pin the far end's
-/// key, as `served` declares them.
 fn pin_key(served: &ServedFacts) -> (&'static str, Vec<&'static str>) {
     let decl = served
         .trust_keys
@@ -103,8 +79,6 @@ fn pin_key(served: &ServedFacts) -> (&'static str, Vec<&'static str>) {
     (decl.key, peer)
 }
 
-/// A test root and one leaf it issued: the leaf's PEM chain, its key's PEM, and its key's pin
-/// taken off the key pair itself (never off the certificate the connector walks).
 struct Issued {
     der: Vec<u8>,
     pem: String,
@@ -113,7 +87,6 @@ struct Issued {
     pin: String,
 }
 
-/// A private CA: its DER, and the leaves it issues.
 struct Pki {
     ca_der: Vec<u8>,
     issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
@@ -147,9 +120,6 @@ impl Pki {
     }
 }
 
-/// A TLS far end on loopback serving `leaf` (requiring a client certificate under `pki`'s root when
-/// `mutual`), agreeing `http/1.1`, answering `200 ok` to a whole request head: its port, and what
-/// it saw on each connection, reported once that connection is done.
 async fn far_end(pki: &Pki, leaf: &Issued, mutual: bool) -> (u16, UnboundedReceiver<Saw>) {
     busbar_core_connector::tls::install_crypto_provider();
     let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
@@ -209,8 +179,6 @@ async fn far_end(pki: &Pki, leaf: &Issued, mutual: bool) -> (u16, UnboundedRecei
     (port, rx)
 }
 
-/// The in-tree connector over this build's linked wires, judging with a guard that admits
-/// loopback, trusting `pki`'s root, with `need` declared on the transport `served` states for it.
 fn connector(pki: &Pki, served: &ServedFacts, need: NeedId) -> Connector {
     let dest = crate::root::connector::guard_for(&Destinations {
         block_private_addresses: false,
@@ -242,7 +210,6 @@ fn connector(pki: &Pki, served: &ServedFacts, need: NeedId) -> Connector {
     c
 }
 
-/// A PEM file of this test's own holding `value`: its path.
 fn pem_on_disk(name: &str, value: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "busbar-registration-pin-{name}-{}",
@@ -252,9 +219,6 @@ fn pem_on_disk(name: &str, value: &str) -> PathBuf {
     path
 }
 
-/// A registration as an operator writes it: its target at `url`, its pin `{mechanism, key}`, and,
-/// when given, its client identity `{cert: {file}, key: {file}}` under the key `served`'s
-/// `trust_from` names for `need`.
 fn registration(
     served: &ServedFacts,
     need: NeedId,
@@ -268,8 +232,7 @@ fn registration(
         busbar_contract::section::member_target(served.need_targets[at]).expect("a target");
     let trust =
         busbar_contract::section::member_target(served.need_trust[at]).expect("a trust path");
-    // A file secret reference, built by the contract's own constructor and written as it
-    // serializes (`{module, settings}`, a spelling the reference's reader accepts).
+
     let file = |p: &Path| -> Value {
         serde_yaml::to_value(busbar_contract::secret_ref::SecretRef::file(
             p.display().to_string(),
@@ -291,8 +254,6 @@ fn registration(
     Value::Mapping(r)
 }
 
-/// Read `entry`'s anchors off `registration` through the host's one reader, and seal them on `c`
-/// for `need` at `origin`, as the composition seals a registration member's.
 fn seal(
     c: &Connector,
     served: &ServedFacts,
@@ -309,8 +270,6 @@ fn seal(
     anchors
 }
 
-/// One GET over `need` to `url` naming registration `entry`, read to its end: the connection (when
-/// it opened) and the status and body, or the refusal.
 async fn exchange(
     c: &Connector,
     need: NeedId,
@@ -350,7 +309,6 @@ async fn exchange(
     }
 }
 
-/// What the far end saw on the connection it finished next.
 async fn saw(rx: &mut UnboundedReceiver<Saw>) -> Saw {
     tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
@@ -358,11 +316,6 @@ async fn saw(rx: &mut UnboundedReceiver<Saw>) -> Saw {
         .expect("the far end runs")
 }
 
-/// RED-AND-GREEN, THE PEER-KEY PIN THROUGH THE HOST: a registration pinning the key the far end
-/// serves is reached, and the connection's facts carry that key; another registration of the same
-/// section at the same far end, pinning a key the far end does not serve (a valid chain under the
-/// trusted root, the right name), is refused after the handshake and before any request byte
-/// reaches the far end, its facts still naming the key the far end served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_registrations_peer_key_pin_refuses_a_far_end_serving_another_key_and_reaches_its_own() {
     let (served, need) = sealing_plane();
@@ -419,11 +372,6 @@ async fn a_registrations_peer_key_pin_refuses_a_far_end_serving_another_key_and_
     );
 }
 
-/// RED-AND-GREEN, `mtls` THROUGH THE HOST: a registration whose `client_identity` names its
-/// certificate and key as secret references is resolved by the host, sealed, and presented in the
-/// handshake; a far end requiring a client certificate accepts it and is reached. A registration of
-/// the same section pinning the same key with NO identity is not refused by the host (its anchors
-/// carry the pin alone): the far end refuses the handshake, and nothing it serves is read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn an_mtls_registration_presents_its_client_identity_and_one_with_none_is_refused_by_the_far_end(
 ) {

@@ -70,7 +70,6 @@ fn dispatcher() -> Arc<Dispatcher> {
         .clone()
 }
 
-/// Secret instance whose real CLOSE callback waits for the test's release.
 pub struct Closing;
 
 impl Life for Closing {
@@ -94,7 +93,6 @@ impl Life for Closing {
     }
 }
 
-/// Unused conforming resolve slot; this regression exercises lifecycle calls.
 pub struct Resolve;
 
 impl SafeSlot for Resolve {

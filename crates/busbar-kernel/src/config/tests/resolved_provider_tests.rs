@@ -1,10 +1,3 @@
-//! THE RESOLVED PROVIDER (row 155 B1b; ARCHITECT ruling, option (b)): a catalog definition merged
-//! with its deployment carries the keys the kernel owns typed and every other key of the entry as
-//! ONE opaque table, merged by the neutral rule (a string map merges member by member, the
-//! deployment's member winning; every other value the deployment sets replaces the catalog's).
-//! BUSBAR-1.6.0.md #49 (the kernel names no plane string), THE DESIGN §4 ("its dialect fields go to
-//! the planes that use the provider").
-
 use serde_json::json;
 
 use super::providers::{merge_tables, ProviderTable, CORE_PROVIDER_KEYS};
@@ -17,9 +10,6 @@ fn table(value: serde_json::Value) -> ProviderTable {
     }
 }
 
-/// RED (base: the resolved provider typed every plane key, so there was no table to read): the
-/// plane keys of a catalog entry and its deployment arrive as one table, merged by the neutral
-/// rule, and no kernel-owned key is in it.
 #[test]
 fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutral_rule() {
     let def: ProviderDef = serde_yaml::from_str(
@@ -33,8 +23,7 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
          model_capabilities: [{models: [m2*]}]\npath: /v1/x\n",
     )
     .expect("a deployment");
-    // Exercise the neutral merge directly. Boot additionally judges opaque options through a
-    // loaded plane; this unit test deliberately has no provider-speaking plane installed.
+
     let p = ResolvedProvider::merge(&def, &dep);
     assert_eq!(
         serde_json::Value::Object(p.table.clone()),
@@ -44,7 +33,7 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
             "model_capabilities": [{"models": ["m2*"]}],
         })
     );
-    // The kernel-owned keys stay typed, merged as 1.5.5 merged them.
+
     assert_eq!(p.base_url, "https://api.example.com");
     assert_eq!(p.path.as_deref(), Some("/v1/x"));
     assert_eq!(p.api_key.env_var(), Some("K"));
@@ -56,9 +45,6 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
     }
 }
 
-/// The neutral rule names no key: a string map merges member by member, the deployment's member
-/// winning; a map that is not a string map, a list and a scalar are replaced whole; a key only one
-/// side sets is kept.
 #[test]
 fn the_neutral_merge_rule_is_stated_by_shape_alone() {
     let merged = merge_tables(
@@ -90,9 +76,6 @@ fn the_neutral_merge_rule_is_stated_by_shape_alone() {
     );
 }
 
-/// A deployment that sets none of the plane keys leaves the catalog's table as written; one that
-/// sets an empty string map leaves the catalog's map whole (1.5.5: the deployment's entries were
-/// added to the catalog's, and none is none).
 #[test]
 fn an_unset_or_empty_deployment_leaves_the_catalog_table() {
     let catalog = table(json!({"protocol": "proto-a", "error_map": {"429": "rate_limit"}}));

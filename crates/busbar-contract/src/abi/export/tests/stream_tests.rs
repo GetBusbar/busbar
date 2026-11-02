@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE STREAM TYPE FOR BOTH LANES: the export kind's tail order (the discriminant) and the frozen
-//! token order (`ALL`, serde, `as_token`) are one order.
 
 use super::*;
 

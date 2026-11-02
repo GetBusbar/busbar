@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE UPSTREAM LEG OF A HELD SESSION: the connection
-//! table's composed open over a datagram framer's need, for the unit its walk serves
-//! (`OpenDesc::unit`), whose caller leg the root registered under that unit key
-//! ([`crate::Connector::pair`]).
-//!
-//! The open runs under the one egress walk, in this order: the dialling association begins and
-//! answers its own description; ONE exchange carries it as its body to the walk's target, over the
-//! framer that serves the target's scheme, with the walk's auth fields and member, judged and
-//! pinned as every dial is ([`crate::Connector`]'s dial); the far end's head is the reader's, as any
-//! answer's is. A success answer's body is the far end's description: it settles the association
-//! (every candidate it advertises judged before any byte goes there), the upstream's lines must
-//! mirror the caller's, and the leg is attached to the session's [`Pairing`]; from then on a read
-//! is the leg's channel messages and a write goes to its channel. Any other answer is relayed whole
-//! as the far end's status and nothing is attached: no partial bridge survives a failed open.
-//!
-//! The whole composed open is bounded by the open's `timeout_ms`: an association not keyed by then
-//! answers [`ConnError::Timeout`]. A failed association fails the read; the session's end closes
-//! the pairing, which closes both legs once.
 
 use std::future::Future as _;
 use std::pin::Pin;
@@ -50,8 +33,7 @@ pub(crate) fn after_next_write_take(hook: impl FnOnce() + 'static) {
 /// The most datagrams one drive reads before it yields.
 const READS_PER_DRIVE: usize = 256;
 /// The channel messages a leg holds for a reader that has not read them, at which it stops
-/// draining its port (back-pressure: the far end's own reliability holds what it sent until the
-/// reader catches up); a message the association already yielded is never dropped.
+
 const MAX_READY: usize = 1024;
 /// The most bytes of the far end's description the open buffers before its end.
 const MAX_DESCRIPTION: usize = 64 * 1024;
@@ -61,10 +43,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Take the next channel message a reader has not read into `buf`: how many bytes, and whether
-/// they end the message. The rest of a message longer than `buf` stays first in line.
+
 pub(crate) fn take_ready(ready: &Mutex<Messages>, buf: &mut [u8]) -> Option<(usize, bool)> {
-    // The same guard owns the cursor and removal: another reader cannot take the next message
-    // in between, and a partial read retains the original allocation and its reservation.
     let mut queue = lock(ready);
     let message = &mut queue.first.as_mut()?.message;
     let transfer = message.custody.copying();
@@ -77,7 +57,7 @@ pub(crate) fn take_ready(ready: &Mutex<Messages>, buf: &mut [u8]) -> Option<(usi
     let end = message.end && complete;
     let retired = if complete { queue.pop_front() } else { None };
     drop(queue);
-    // Reader custody can notify the actor. Retire payload and metadata outside the queue lock.
+
     drop(retired);
     drop(transfer);
     Some((n, end))
@@ -175,7 +155,7 @@ struct Held {
 }
 
 /// An association out of its slot. Only an unwind drops it still holding the association: the
-/// leg is then closed, and the association finished with no lock held.
+
 struct Taken<'l> {
     leg: &'l UpstreamLeg,
     framing: Option<DatagramFraming>,
@@ -213,7 +193,7 @@ pub(crate) struct UpstreamLeg {
 
 impl UpstreamLeg {
     /// THE HAND-OFF: take the association out, `run` it on `arg` with no lock held, and bring it
-    /// back. Found out, `out` answers; closed, `closed` answers. Both run without a host lock.
+
     fn turn<A, R>(
         &self,
         arg: A,
@@ -308,8 +288,7 @@ impl UpstreamLeg {
     }
 
     /// Register this connection's latest read context before checking the ready queue, matching
-    /// Line::FanOut's registration for one held stream and the reactor's read direction. Replacing
-    /// a context neither grows custody nor wakes an old poll without progress.
+
     fn wait_ready(&self, waker: &Waker) {
         let incoming = waker.clone();
         let displaced = {
@@ -320,7 +299,7 @@ impl UpstreamLeg {
                 held.reader.replace(incoming)
             }
         };
-        // Waker cloning/destruction may call reader code; neither crosses a host guard.
+
         drop(displaced);
     }
 
@@ -342,13 +321,7 @@ impl UpstreamLeg {
     }
 
     /// Take what the leg's association yielded through the pairing: line frames go across, the
-    /// channel heads name the write channel, the channel messages wait for the reader, every one
-    /// of them, an empty message as an empty message. A channel's end is no message; a channel
-    /// that FAILED fails the leg (its reason is never the reader's payload).
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Fault`]: a channel of the leg failed.
+
     fn take(
         &self,
         pairing: &Arc<Pairing>,
@@ -388,8 +361,7 @@ impl UpstreamLeg {
         let mut queued = false;
         for g in pieces {
             let owner = owners.next().unwrap_or_else(|| fallback.clone());
-            // Closing takes this same handoff before clearing the ready queue. No channel
-            // output can be inserted after that clear, including after a reentrant LINE close.
+
             let held = lock(&self.framing);
             if held.closing {
                 drop(held);
@@ -437,7 +409,7 @@ impl UpstreamLeg {
     }
 
     /// Read every datagram waiting on the port, keep the association's clock, flush, and arm the
-    /// next wake. `Err` once the association failed or was closed.
+
     fn drive(
         &self,
         pairing: &Arc<Pairing>,
@@ -445,16 +417,13 @@ impl UpstreamLeg {
         due: Option<Instant>,
     ) -> Result<(), ConnError> {
         let now = Instant::now();
-        // BACK-PRESSURE: at the queue's bound the port is not drained; the reader's next read
-        // takes a message and drives again.
+
         let room = MAX_READY.saturating_sub(lock(&self.ready).len());
         let yielded = self.turn(
             (),
             |()| Ok(None),
             |()| Err(ConnError::Closed),
             |f, ()| {
-                // The buffer is the holder's while it has the association: no lock is held
-                // across the framer's crossings.
                 let mut buf = std::mem::take(&mut *lock(&self.recv));
                 let read = self.read_port(pairing, f, cx, &mut buf, room, now);
                 *lock(&self.recv) = buf;
@@ -507,8 +476,7 @@ impl UpstreamLeg {
                 if yielded.is_some() {
                     let mut held = lock(&self.framing);
                     held.publishing = true;
-                    // A ready receive did not register port interest. Even a LINE-only batch
-                    // owes the reader another drive, after this producer's final continuation.
+
                     held.drive_waiting = true;
                 }
                 Ok(yielded)
@@ -523,7 +491,7 @@ impl UpstreamLeg {
 
 impl UpstreamLeg {
     /// Read until the first checked batch. Reserve before the port relinquishes a datagram;
-    /// another datagram waits until the actor finishes this producer's continuation.
+
     fn read_port(
         &self,
         pairing: &Pairing,
@@ -552,12 +520,11 @@ impl UpstreamLeg {
                     {
                         LineStep::Batch { yielded, .. } => return Ok(Some(yielded)),
                         LineStep::Complete => {}
-                        // prepare_output succeeded before the port relinquished these bytes.
-                        // A fresh credit refusal here cannot be replayed as an unread datagram.
+
                         LineStep::Credit => return Err(ConnError::Fault),
                     }
                 }
-                // A per-datagram error (an unreachable far end reported back): the port stands.
+
                 Poll::Ready(Err(_)) => f.release_output_reservation(),
                 Poll::Pending => {
                     f.release_output_reservation();
@@ -565,8 +532,7 @@ impl UpstreamLeg {
                 }
             }
         }
-        // The fairness bound can stop on Complete or per-datagram errors without ever polling
-        // Pending. Return custody first, then wake the reader once to drain or arm the port.
+
         lock(&self.framing).drive_waiting = true;
         Ok(None)
     }
@@ -582,8 +548,7 @@ fn wake(missed: impl IntoIterator<Item = Waker>) {
 impl LegSink for UpstreamLeg {
     fn line(&self, across: Across, now: Instant) {
         let _ = now;
-        // Compatibility entry point: accepted storage joins the same actor as real callers.
-        // The actor itself always uses poll_line and never re-enters this callback.
+
         let Some(pairing) = self.pairing.upgrade() else {
             return;
         };
@@ -635,8 +600,6 @@ impl LegSink for UpstreamLeg {
     }
 
     fn close(&self) {
-        // Dropping the association finishes its framing: here, with no lock held, or by the
-        // holder that has it out, as it brings it back.
         let (framing, waiting) = {
             let mut held = lock(&self.framing);
             held.closing = true;
@@ -653,7 +616,7 @@ impl LegSink for UpstreamLeg {
 }
 
 /// A pending batch remains ordered while exclusive framer custody has already returned home.
-/// Unwind and terminal cancellation release the barrier and notify actual waiting contexts.
+
 struct ChannelPublication<'a> {
     leg: &'a UpstreamLeg,
     producer: Option<crate::publication::ProducerCustody>,
@@ -739,7 +702,7 @@ pub(crate) struct Dialled {
 
 impl Dialled {
     /// The leg over `framing` (begun, its description sent as the exchange's body) on `port`, for
-    /// `pairing`, bounded by `due`.
+
     pub(crate) fn new(
         mut framing: DatagramFraming,
         port: ReadyPort,
@@ -776,19 +739,13 @@ impl Dialled {
     }
 
     /// One piece the exchange answered, judged: `Some(piece)` for the reader, `None` when the
-    /// piece was the host's (the far end's description) and the reader reads on.
-    ///
-    /// # Errors
-    ///
-    /// A description that does not settle the association, or lines that do not mirror the
-    /// caller's: the open fails and nothing is attached.
+
     pub(crate) fn exchanged(&self, piece: Piece, bytes: &[u8]) -> Result<Option<Piece>, ConnError> {
         let mut phase = lock(&self.phase);
         let Phase::Exchanging { ok, answer } = &mut *phase else {
             return Ok(Some(piece));
         };
         match (piece.kind, *ok) {
-            // The head is the reader's: it carries the far end's status, as any answer's does.
             (PieceKind::Fields, None) => {
                 if piece.status.is_some() || piece.end {
                     *ok = Some(
@@ -798,7 +755,7 @@ impl Dialled {
                 }
                 Ok(Some(piece))
             }
-            // A refused exchange is relayed whole: the dialect renders the far end's status.
+
             (_, Some(false)) => {
                 if piece.kind == PieceKind::Completion {
                     *phase = Phase::Over;
@@ -809,8 +766,6 @@ impl Dialled {
             }
             (PieceKind::Body, Some(true)) => {
                 if answer.len().saturating_add(bytes.len()) > MAX_DESCRIPTION {
-                    // Past its bound the description settles nothing: the open fails, and
-                    // nothing is attached.
                     *phase = Phase::Over;
                     drop(phase);
                     self.pairing.close();
@@ -851,7 +806,6 @@ impl Dialled {
         let now = Instant::now();
         let yielded = self.leg.turn(
             (),
-            // Out: nothing else drives the association while its exchange is in flight.
             |()| Err(ConnError::Pending),
             |()| Err(ConnError::Closed),
             |f, ()| {
@@ -863,8 +817,7 @@ impl Dialled {
                 Ok(y)
             },
         )?;
-        // Keep admission in flight through attach, including a receiver wake between
-        // publishing negotiated heads and installing the upstream leg.
+
         let admission = (yielded.producer.clone(), yielded.custody.clone());
         self.leg.take(&self.pairing, yielded, now)?;
         let leg: Arc<dyn LegSink> = Arc::clone(&self.leg) as Arc<dyn LegSink>;
@@ -878,11 +831,7 @@ impl Dialled {
     }
 
     /// A read once the leg runs: the next channel message, or Pending with `waker` woken when the
-    /// port or the clock has more.
-    ///
-    /// # Errors
-    ///
-    /// The leg closed, its association failed, or it was not keyed within the open's bound.
+
     pub(crate) fn read(&self, waker: &Waker, buf: &mut [u8]) -> Result<Piece, ConnError> {
         self.running(waker)?;
         self.leg.wait_ready(waker);
@@ -917,12 +866,7 @@ impl Dialled {
     }
 
     /// A write once the leg runs: gathered until `end`, then accepted as one bounded queued
-    /// message on the leg's channel. Acceptance does not claim completed output delivery;
-    /// the next read or wait exposes terminal publication failure.
-    ///
-    /// # Errors
-    ///
-    /// The leg is not running yet ([`ConnError::Pending`]), or it closed, or names no channel.
+
     pub(crate) fn write(&self, bytes: &[u8], end: bool, text: bool) -> Result<usize, ConnError> {
         match &*lock(&self.phase) {
             Phase::Running => {}
@@ -934,8 +878,7 @@ impl Dialled {
         if gather.writing {
             return Err(ConnError::Pending);
         }
-        // A message is bounded as a write is (THE DESIGN §5, writes are back-pressured): one
-        // gathered past the bound is refused, and what was gathered of it is let go.
+
         if gather.bytes.len().saturating_add(bytes.len()) > crate::compose::WRITE_BUFFER_BYTES {
             let old = std::mem::take(&mut gather.bytes);
             let custody = std::mem::take(&mut gather.custody);
@@ -946,8 +889,7 @@ impl Dialled {
             drop(custody);
             return Err(ConnError::Refused);
         }
-        // Pending takes none of this call's bytes. Earlier accepted parts stay gathered until
-        // a channel is named and the caller re-offers this final part.
+
         let stream = if end {
             Some((*lock(&self.leg.channel)).ok_or(ConnError::Pending)?)
         } else {
@@ -963,8 +905,7 @@ impl Dialled {
             leg: Arc::downgrade(&self.leg),
             notify: false,
         };
-        // Reserve for simultaneous old and new allocations before copying accepted parts or
-        // this call's bytes. Failure leaves this call unaccepted and restores the old prefix.
+
         let total = prefix.len() + bytes.len();
         let preaccepted = prefix.len();
         let reuse = reserved && prefix.capacity() >= total;
@@ -1024,8 +965,6 @@ impl Dialled {
         let stream = stream.expect("an ending write checked its channel");
         self.leg.turn(
             (message, custody, writing),
-            // Out: nothing is taken; the gathered message is as it was before these bytes, and the
-            // caller re-offers them after its next read or wait.
             |(mut message, custody, writing)| {
                 message.truncate(message.len() - bytes.len());
                 let mut gather = lock(&self.gather);
@@ -1056,8 +995,6 @@ impl Dialled {
                         Some(Box::new(writing)),
                     )
                     .map_err(|error| match error {
-                        // Owned submission has already consumed this allocation. Never turn
-                        // an unexpected refusal into a request to replay those bytes.
                         SubmitError::Pending | SubmitError::Exhausted => {
                             self.fail(ConnError::Fault)
                         }
@@ -1164,20 +1101,7 @@ impl Dialled {
 }
 
 /// THE EXCHANGE BODY OF A COMPOSED OPEN: what goes
-/// to the far end beside the dialling association's own `description`.
-///
-/// - An open with no body sends the description as the whole body.
-/// - An open with a body states its head's `content-type` as `multipart/form-data` with a
-///   `boundary`, and its body is the form's leading parts, ending with the opened header block of
-///   the part that carries the description. The exchange body is that body, the description, and
-///   the form's closing delimiter.
-///
-/// The connector frames the form and names no part: the opener's body names them.
-///
-/// # Errors
-///
-/// [`ConnError::Refused`] for a body under any other content type, a form with no boundary, or a
-/// description that holds the form's delimiter.
+
 pub(crate) fn composed_body(
     fields: &[(&str, &[u8])],
     body: &[u8],
@@ -1204,7 +1128,7 @@ pub(crate) fn composed_body(
 }
 
 /// The `boundary` of a `multipart/form-data` content type (RFC 7578, RFC 2046 section 5.1.1),
-/// unquoted; `None` for any other content type, or one with no usable boundary.
+
 fn form_boundary(content_type: &str) -> Option<String> {
     let mut params = content_type.split(';');
     if !params
@@ -1220,7 +1144,7 @@ fn form_boundary(content_type: &str) -> Option<String> {
             .eq_ignore_ascii_case("boundary")
             .then(|| value.trim().trim_matches('"').to_string())
     })?;
-    // RFC 2046: 1 to 70 characters from the boundary alphabet.
+
     let fits = (1..=70).contains(&boundary.len())
         && boundary
             .bytes()

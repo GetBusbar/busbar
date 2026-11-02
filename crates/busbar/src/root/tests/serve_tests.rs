@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33): a request the decisions
-//! plane's door claims reaches that plane's driver through its route on the data router (mounted at
-//! the router's construction, ARCHITECT Q-SW1), behind the deployment's auth gate, is admitted and
-//! charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
-//! pieces), leaves through the host chokepoint (the plane's egress walk over the process's
-//! connector: the destination guard's judgement and pin, the breaker, the dispatch record) to a
-//! real far end, and comes back a served 200 whose money record is posted: the governance ledger
-//! holds the admitted request and the node's book the unit's one line with the decision the far end
-//! reported. The plane is the decisions plane's own door, linked (compiled in) and bound through the
-//! loader's one load, its need declared on the connector, as its door row binds it. The dropped-in
-//! fold of the same door is the plane crate's own conformance suite (`tests/conformance.rs`, one
-//! transcript through both loads); this harness builds no cdylib of it.
-//!
-//! The `mcp` module below is the `root-mcp` leg's loop cells (`qa/capability-equality.json`, U14):
-//! the MCP plane's door, composed here the same way, each core capability driven through the data
-//! router and asserted where it lands.
-//!
-//! The `session_door` module below is the session door's root-leg cells (ARCHITECT 2026-10-05 Q1):
-//! the linked plane door that meters audio, served end to end the same way.
-
 #[tokio::test]
 async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
@@ -168,8 +148,7 @@ use crate::root::loader::dispatch::{
 use crate::root::plane_node::{Node, NodeEndPost};
 
 #[cfg(feature = "plane-decisions")]
-/// The deployment's dated card history the served unit is pinned to at its door: one entry, no
-/// price (billing off: the counts are the unit's fact and price at nothing).
+
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
         let holder = crate::root::kernel::RootHistory::default();
@@ -185,24 +164,23 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     });
 
 #[cfg(feature = "plane-decisions")]
-/// The decisions plane's one claim, with one model configured.
+
 pub(super) const CLAIMED: &str = "/v1/systemone";
 
 #[cfg(feature = "plane-decisions")]
-/// The provider's credential, as its file holds it.
+
 const CREDENTIAL: &str = "sk-door-test";
 
 #[cfg(feature = "plane-decisions")]
-/// The far end's answer: a decision, and the one unit it reports using.
+
 const ANSWER: &str = r#"{"id":"d-1","decision":"approve","usage":{"units":1}}"#;
 
 #[cfg(feature = "plane-decisions")]
-/// A far end's transient failure, as [`far_end_failing_first`] answers it.
+
 const UNAVAILABLE: &str = r#"{"error":"unavailable"}"#;
 
 #[cfg(feature = "plane-decisions")]
-/// A POST of the caller's decision state to `path` on `router`, with `token` as its bearer or with
-/// none: the response.
+
 pub(super) async fn send(
     router: &axum::Router,
     path: &str,
@@ -224,15 +202,13 @@ pub(super) async fn send(
 }
 
 #[cfg(feature = "plane-decisions")]
-/// A far end on loopback answering every request with [`ANSWER`]; what it was sent comes back on
-/// the channel, one request head per connection.
+
 pub(super) async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     far_end_failing_first(0).await
 }
 
 #[cfg(feature = "plane-decisions")]
-/// [`far_end`], but its first `failures` connections are answered with a bare transient failure
-/// (503, no `Retry-After`) instead of [`ANSWER`].
+
 async fn far_end_failing_first(
     failures: usize,
 ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
@@ -257,12 +233,11 @@ enum Answer {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// How the far end answers its `n`th connection (from zero).
+
 type Script = Arc<dyn Fn(usize) -> Answer + Send + Sync>;
 
 #[cfg(feature = "plane-decisions")]
-/// A far end on loopback answering its `n`th connection as `script` says; what it was sent comes
-/// back on the channel, one request head per connection, before it answers.
+
 async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -278,7 +253,7 @@ async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::Unbounded
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 16 * 1024];
                 let mut got = Vec::new();
-                // The head, then the body its content-length states.
+
                 loop {
                     let Ok(n) = socket.read(&mut buf).await else {
                         return;
@@ -307,7 +282,6 @@ async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::Unbounded
                 let (line, body) = match answer {
                     Answer::Says(line, body) => (line, body),
                     Answer::Holds => {
-                        // Held past any bound a test waits for; the socket closes with the task.
                         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                         return;
                     }
@@ -326,17 +300,12 @@ async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::Unbounded
 }
 
 #[cfg(feature = "plane-decisions")]
-/// THE EXIT TEST: a keyed caller's claimed request is SERVED through the decisions door, 200, the
-/// far end's answer relayed as it came, and the unit's money posted on both books.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-served";
     let (port, mut heard) = far_end().await;
 
-    // THE CONNECTOR, over every linked transport door (the default distribution links the http
-    // framer's door: the `connector-door` row), its dials judged by a destination guard that admits
-    // loopback (a far end on this host).
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
@@ -357,11 +326,9 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     )
     .expect("the connector builds");
 
-    // THE DECISIONS DOOR, linked, bound through the loader's one load, its need declared on the
-    // connector.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
-    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = Arc::new(
@@ -381,7 +348,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
     let section_key = plane.served().section;
 
-    // THE MONEY: a signing governance book with one minted key, the node's book bound.
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
@@ -413,8 +379,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         ))
     };
 
-    // THE PROVIDER the one model names, as the deployment configures it: the far end on loopback,
-    // its credential a file reference, no `auth:` (so the decisions dialect's default style).
     let key_file = std::env::temp_dir().join(format!("busbar-serve-door-{}", std::process::id()));
     std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
     let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
@@ -452,10 +416,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         upgrades: Vec::new(),
     };
 
-    // THE COMPOSITION, AS PRODUCTION SEALS IT: the door opened with its section (one model),
-    // driven, and its egress sealed by the composition itself — the member's provider resolved,
-    // its style the dialect's default, its need the one that style names, its credential bound by
-    // the linked auth plugin serving that style. Nothing is sealed by hand.
     let mut sections = BTreeMap::new();
     sections.insert(
         section_key,
@@ -489,12 +449,11 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         .governance(Arc::clone(&gov))
         .cost(CostModel::flat(1))
         .build();
-    // THE DATA ROUTER, BUILT WITH THE DOOR'S ROUTES (Q-SW1: its construction, no static).
+
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
 
-    // THE SERVED REQUEST, as the keyed caller.
     let response = send(
         &router,
         CLAIMED,
@@ -513,7 +472,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "the far end's answer, relayed as it came"
     );
 
-    // THE FAR END HEARD THE PLANE'S REQUEST, through the connector.
     let head = heard.recv().await.expect("the far end was dialled");
     assert!(head.starts_with("POST /v1/systemone "), "{head}");
     assert!(
@@ -530,9 +488,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "the caller's body: {head}"
     );
 
-    // THE MONEY RECORD: the request admitted on the governance ledger, the unit's facts closed on
-    // the money steps and the node, and its one audit record carrying the decision the far end
-    // reported.
     let usage = gov
         .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
         .expect("a read")
@@ -544,7 +499,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "its money facts closed at its end"
     );
     assert_eq!(post.open_units(), 0, "its node facts closed at its end");
-    // ITS ONE AUDIT RECORD carries the decision the far end reported, by class.
+
     let records = book
         .durability
         .lock()
@@ -565,15 +520,12 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// THE MOUNT: the door's claim is a route on the data router only when the router is built with
-/// it; a path the door does not claim is the router's own. An unkeyed caller on the door's claim (it
-/// takes a credential) is refused before anything is charged, rendered by the plane.
 #[tokio::test]
 async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door";
     let app = busbar_kernel_testkit::test_support::TestApp::new().build();
-    // RED ARM: a data router built without the door's routes does not hand the claim to the plane.
+
     let (bare, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), Vec::new(), 1 << 20, 0, false);
     let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
@@ -581,7 +533,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
 
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
-    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = Arc::new(
@@ -592,8 +544,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                // This row only routes (no request reaches the provider): the plane's need is not
-                // declared, bound as a probe.
+
                 conns: crate::root::loader::dispatch::ConnTable::Probe,
             },
         )
@@ -601,8 +552,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
-    // Composed with no egress, the host states no provider's protocol at open, so the model states
-    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
+
     sections.insert(
         section,
         serde_yaml::from_str(&format!(
@@ -655,10 +605,6 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// ONE MOUNT PER (PATH, METHOD) (SEAM-L(l), ported from 5ad225bc89): a door claiming one verb and
-/// path over two carriers (an endpoint answered as a document or as an event stream) is one route
-/// on the data listener, the first in its claim order; the data router builds with it. RED: each
-/// claim mounted its own route, and the router refused the second as an overlapping method route.
 #[tokio::test]
 async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let _one = PUBLISHING.lock().await;
@@ -666,7 +612,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
-    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = Arc::new(
@@ -677,8 +623,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                // This row only routes (no request reaches the provider): the plane's need is not
-                // declared, bound as a probe.
+
                 conns: crate::root::loader::dispatch::ConnTable::Probe,
             },
         )
@@ -686,8 +631,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
-    // Composed with no egress, the host states no provider's protocol at open, so the model states
-    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
+
     sections.insert(
         section,
         serde_yaml::from_str(&format!(
@@ -708,7 +652,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         &app.serve_tables,
     )
     .expect("the door plane composes");
-    // The same verb and path again, over a second carrier.
+
     let claims = &mut served.planes[0].snapshot.claims;
     let mut twin = claims[0].clone();
     twin.carrier = format!("{}-stream", twin.carrier);
@@ -727,7 +671,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         seen.contains(&(CLAIMED.to_string(), "POST")),
         "the claim is a route: {seen:?}"
     );
-    // The data router builds with them (an overlapping method route would panic here).
+
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
     let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
@@ -737,13 +681,6 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     );
 }
 
-/// THE SESSION DOOR'S ROOT-LEG CELLS (ARCHITECT 2026-10-05 Q1): the session door, served as
-/// production composes it — the browser's ephemeral-secret mint, a keyed caller, the door's DIRECT
-/// route to the top-level catalog model its section's `session.model` names, the provider's own
-/// credential presented by the auth plugin, the caller's spend posted against the key that
-/// presented it. The door is found among the linked plane doors by the audio class it meters; the
-/// module is compiled where the build links that door, and there a door not found is a failure,
-/// never a skip. The secret-source scan (`secret_source.rs`) drives the same door.
 #[cfg(linked_section_streams)]
 pub(super) mod session_door {
     use std::collections::BTreeMap;
@@ -768,8 +705,6 @@ pub(super) mod session_door {
     use crate::root::serve::planes_tests::{composed_services, PUBLISHING};
     use crate::root::serve::{compose_planes, DoorEgress};
 
-    /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
-    /// price (billing off: the counts are the unit's fact and price at nothing).
     static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
         std::sync::LazyLock::new(|| {
             let holder = crate::root::kernel::RootHistory::default();
@@ -784,35 +719,20 @@ pub(super) mod session_door {
             holder
         });
 
-    /// The provider's credential, as its file holds it.
     const CREDENTIAL: &str = "sk-door-test";
 
-    /// The session door's mint claim.
     const MINT: &str = "/v1/realtime/client_secrets";
 
-    /// The session door's sideband claim: an upgrade line that attaches to a call the SDP door
-    /// placed for the same caller, and to no other (ARCHITECT ruling 2026-10-23 on Part 2 #45).
     const SIDEBAND: &str = "/v1/realtime/sideband/{call_id}";
 
-    /// The session door's plain OpenAI Realtime socket, as a caller opens it: a WS upgrade on
-    /// `GET /v1/realtime`, its `?model=` on the query, a session attached to no call (ARCHITECT
-    /// ruling 2026-10-23 on Part 2 #45: plain server-to-server OpenAI Realtime over WS is its own
-    /// door, not the sideband).
     const REALTIME: &str = "/v1/realtime?model=m-cap";
 
-    /// The provider's answer to the mint: an ephemeral secret and its expiry.
     const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
 
-    /// The deployment's public base URL the session door fronts.
     const PUBLIC: &str = "http://gw.test";
 
-    /// The billable class the session door meters a caller's audio under: how the harness finds that
-    /// door among the linked plane doors without spelling the plane.
     const AUDIO_CLASS: &str = "audio_seconds_in";
 
-    /// A POST of `body` (JSON) to `path` on `router`, with `token` as its bearer or with none,
-    /// answered within [`ANSWER_BOUND`]: a door that held a call at its provider fails the cell
-    /// instead of holding the job.
     async fn send_body(
         router: &axum::Router,
         path: &str,
@@ -834,10 +754,8 @@ pub(super) mod session_door {
             .expect("the router answers")
     }
 
-    /// How long a cell waits on a door's answer, or on the bytes of its body, before it fails.
     const ANSWER_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
 
-    /// `response`'s body, read to its end within [`ANSWER_BOUND`].
     async fn body_of(response: axum::response::Response) -> axum::body::Bytes {
         tokio::time::timeout(
             ANSWER_BOUND,
@@ -857,19 +775,14 @@ pub(super) mod session_door {
         Holds,
     }
 
-    /// How the far end answers its `n`th connection (from zero).
     type FarScript = Arc<dyn Fn(usize) -> Far + Send + Sync>;
 
-    /// A far end on loopback answering every request 200 with `answer` (JSON); what it was sent comes
-    /// back on the channel, one request (head and body) per connection.
     async fn far_end_answering(
         answer: &'static str,
     ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         far_end_scripted(Arc::new(move |_| Far::Says("200 OK", answer))).await
     }
 
-    /// A far end on loopback answering its `n`th connection as `script` says; what it was sent comes
-    /// back on the channel, one request (head and body) per connection, before it answers.
     async fn far_end_scripted(
         script: FarScript,
     ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
@@ -887,7 +800,7 @@ pub(super) mod session_door {
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 16 * 1024];
                     let mut got = Vec::new();
-                    // The head, then the body its content-length states.
+
                     loop {
                         let Ok(n) = socket.read(&mut buf).await else {
                             return;
@@ -916,7 +829,6 @@ pub(super) mod session_door {
                     let (line, body) = match answer {
                         Far::Says(line, body) => (line, body),
                         Far::Holds => {
-                            // Held past any bound a test waits for; the socket closes with the task.
                             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                             return;
                         }
@@ -934,8 +846,6 @@ pub(super) mod session_door {
         (port, heard)
     }
 
-    /// The env whose `test-hook` is the kernel's in-process hook double (`prompt: rw`, `user: ro`):
-    /// its `settings:` choose its answer.
     fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel_testkit::test_support::test_hook_env(
             &["test-hook"],
@@ -946,8 +856,6 @@ pub(super) mod session_door {
         )
     }
 
-    /// A deployment-wide `kind: gate` on the in-process hook double, answering `reply` to every
-    /// decision it is asked for.
     fn global_gate(reply: serde_json::Value) -> busbar_kernel::config::HookCfg {
         serde_json::from_value(serde_json::json!({
             "kind": "gate",
@@ -967,16 +875,15 @@ pub(super) mod session_door {
         .expect("a hook document")
     }
 
-    /// The session door, served as production composes it, and what each root-leg cell reads.
     pub(in crate::root::serve) struct SessionDoor {
         router: axum::Router,
         heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         gov: Arc<GovState>,
         pub(in crate::root::serve) app: Arc<busbar_kernel::state::App>,
         key: busbar_contract::records::VirtualKey,
-        /// The key's data-plane token.
+
         plain: String,
-        /// What a config apply refreshes the served door onto (`DoorApply::apply`).
+
         pub(in crate::root::serve) live: Arc<crate::root::serve::DoorApply>,
         money: Arc<PlaneMoney>,
         post: Arc<NodeEndPost>,
@@ -1007,8 +914,6 @@ pub(super) mod session_door {
         upstream_model: Option<&'static str>,
     }
 
-    /// The linked plane door that meters audio (the session door), bound under `instance`; `None` in
-    /// a build that links none.
     fn session_door(
         instance: &'static str,
         dispatcher: &Arc<Dispatcher>,
@@ -1035,8 +940,6 @@ pub(super) mod session_door {
         })
     }
 
-    /// The process's connector over every linked transport door, its destination guard letting
-    /// the loopback far end through.
     fn connector() -> Arc<busbar_core_connector::Connector> {
         let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
             block_private_addresses: false,
@@ -1059,9 +962,6 @@ pub(super) mod session_door {
         .expect("the connector builds")
     }
 
-    /// The linked session door's Statement name (the plane door that meters audio, bound only to
-    /// read it); `None` in a build that links none. It holds the publishing lock, so it is called
-    /// outside a runtime.
     pub(in crate::root::serve) fn name() -> Option<String> {
         let _one = PUBLISHING.blocking_lock();
         let instance = "session-door-name";
@@ -1070,7 +970,6 @@ pub(super) mod session_door {
             .map(|plane| plane.name().to_owned())
     }
 
-    /// [`session_keyed`] over a provider credential its file holds; the composition must succeed.
     async fn session_served(instance: &'static str, budget: Option<u64>) -> Option<SessionDoor> {
         session_with(
             instance,
@@ -1082,8 +981,6 @@ pub(super) mod session_door {
         .await
     }
 
-    /// [`session_composed`] under `opts`, over a provider credential its file holds; the composition
-    /// must succeed.
     async fn session_with(instance: &'static str, opts: Opts) -> Option<SessionDoor> {
         let key_file = std::env::temp_dir().join(format!(
             "busbar-serve-door-{instance}-{}",
@@ -1098,7 +995,6 @@ pub(super) mod session_door {
         })
     }
 
-    /// [`session_composed`] with the defaults but `budget`.
     pub(in crate::root::serve) async fn session_keyed(
         instance: &'static str,
         budget: Option<u64>,
@@ -1115,22 +1011,11 @@ pub(super) mod session_door {
         .await
     }
 
-    /// [`SessionDoor`]: the linked session door (the plane door that meters audio) bound through
-    /// the loader's one load, its needs declared on the connector over every linked transport door;
-    /// a signing governance book with one key (in a group whose all-time budget is `budget`, the
-    /// door's per-request fee one, or no group and no fee); a provider on the protocol the door
-    /// states a bearer default for, its credential the secret reference `api_key` (YAML), on a
-    /// loopback far end answering the mint, reached through the catalog model its section's
-    /// `session.model` names; the door composed under [`PUBLIC`] with its egress sealed by the
-    /// composition itself, and its claims mounted on the data router. `None` in a build that links
-    /// no session door; the composition's refusal is answered rather than panicked on: what the
-    /// root's boot dies on.
     async fn session_composed(
         instance: &'static str,
         opts: Opts,
         api_key: &str,
     ) -> Option<Result<SessionDoor, String>> {
-        // The scrape's `/metrics` is mounted on a test app built with the recorder installed.
         busbar_kernel_testkit::test_support::metrics::init();
         let budget = opts.budget;
         let (port, heard) = match (opts.far_end, opts.far) {
@@ -1147,9 +1032,7 @@ pub(super) mod session_door {
         )?;
         let plane_name = plane.name().to_owned();
         let section_key = plane.served().section;
-        // THE PROVIDER'S PROTOCOL, read off the door's Statement rather than spelled here: the last
-        // dialect it states a `bearer` default outbound style for (its far-end spellings follow its
-        // arrival dialects), so this harness names no dialect.
+
         let protocol = {
             let served = plane.served();
             served
@@ -1269,9 +1152,7 @@ pub(super) mod session_door {
             stream_ceiling_secs: 600,
             catalog: Some(&catalog),
             models: None,
-            // The linked claims that open at an upgrade, as production composes them: a session
-            // door's provider is dialled in its line's own scheme. This harness drops no transport
-            // into a plugins directory, so the dropped-in rows are none.
+
             upgrades: crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]),
         };
         let mut sections = BTreeMap::new();
@@ -1279,15 +1160,12 @@ pub(super) mod session_door {
             section_key,
             serde_yaml::from_str("session: {model: m-cap}").expect("a section"),
         );
-        // The deployment's `models:` beside it, as the root hands the kernel-owned sections a door
-        // plane may read (`door_steps::kernel_sections`).
+
         sections.insert(
             busbar_contract::section::RESERVED_MODELS_KEY,
             serde_yaml::from_str(&models_yaml).expect("the models section"),
         );
-        // THE KERNEL'S HOOK STAGE over this cell's generation (the App built below), when the cell
-        // defines hooks: the door's tail states its hook order, and the stage binds the deployment's
-        // hooks to each unit.
+
         let live_app: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::App>>> = Arc::default();
         let stage = (!opts.hooks.is_empty()).then(|| crate::root::serve::HookStage {
             host: {
@@ -1303,8 +1181,7 @@ pub(super) mod session_door {
             gov: Arc::clone(&gov),
             journal: None,
         });
-        // THE ADMIN TABLE the door is published into, lent to the App built below as the root
-        // lends the boot generation its own.
+
         let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
@@ -1335,8 +1212,7 @@ pub(super) mod session_door {
         let app = groups
             .iter()
             .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
-        // Each hook defined and attached deployment-wide (the runtime global list `pools.hooks:`
-        // lowers to), its gates resolved into the generation as the production build resolves them.
+
         let app = if opts.hooks.is_empty() {
             app
         } else {
@@ -1349,10 +1225,7 @@ pub(super) mod session_door {
         };
         let app = app.governance(Arc::clone(&gov)).cost(cost).build();
         let _ = live_app.set(Arc::clone(&app));
-        // The door's claims as production mounts them: its request routes, and its session routes
-        // (an upgrade line's claim, mounted as a GET session route).
-        // No transport is dropped into a plugins directory here: the linked rows alone carry the
-        // upgrade lines and the offered auth points, as production composes both.
+
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
         let offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
         let mounts =
@@ -1382,12 +1255,10 @@ pub(super) mod session_door {
     }
 
     impl SessionDoor {
-        /// The keyed caller's mint through the door: its response.
         pub(in crate::root::serve) async fn mint(&self) -> axum::response::Response {
             send_body(&self.router, MINT, Some(&self.plain), "{}").await
         }
 
-        /// The requests the governance book admitted for the key, this window.
         fn requests(&self) -> u64 {
             self.gov
                 .usage_for(&self.app.cost, &self.key.id, busbar_kernel::store::now())
@@ -1396,8 +1267,6 @@ pub(super) mod session_door {
                 .requests
         }
 
-        /// The units SERVED on the session door's route (`m-cap`), by their one audit record: the
-        /// units whose counts the ledger took.
         fn lines(&self) -> usize {
             let records = self
                 .book
@@ -1418,7 +1287,6 @@ pub(super) mod session_door {
                 .count()
         }
 
-        /// The real `/metrics` scrape on the data router, as the keyed caller.
         async fn scrape(&self) -> String {
             use tower::ServiceExt as _;
             let req = axum::http::Request::builder()
@@ -1440,7 +1308,6 @@ pub(super) mod session_door {
             String::from_utf8(body.to_vec()).expect("the exposition is UTF-8")
         }
 
-        /// The audit records sealed on the node's book, oldest first.
         fn audit_records(&self) -> Vec<busbar_kernel_audit::AuditRecord> {
             self.book
                 .durability
@@ -1450,18 +1317,15 @@ pub(super) mod session_door {
                 .clone()
         }
 
-        /// A keyed mint read to its end: its status, and whether the provider heard it.
         async fn mint_once(&mut self) -> (StatusCode, bool) {
             let response = self.mint().await;
             let status = response.status();
             let _ = body_of(response).await;
-            // A dial the provider heard arrives before its answer was written back.
+
             (status, self.heard.try_recv().is_ok())
         }
     }
 
-    /// The sum of `family`'s series on `exposition` whose `lane` label is the catalog route's (the
-    /// lane the door's DIRECT route names, ending in its catalog model).
     fn counted(exposition: &str, family: &str) -> f64 {
         exposition
             .lines()
@@ -1476,16 +1340,10 @@ pub(super) mod session_door {
             .sum()
     }
 
-    /// The provider's transient failure, as its far end words it.
     const UNAVAILABLE: &str = r#"{"error":{"message":"overloaded","type":"server_error"}}"#;
 
-    /// How many failing mints the route's breaker cell is given to open before the run calls it
-    /// stuck.
     const MAX_FAILURES: usize = 8;
 
-    /// Mint until the route's breaker cell refuses a mint before its dial, the provider failing every
-    /// dial it hears: the dials it heard first, each one refused to the caller. `None` if the cell
-    /// never opened.
     async fn trip(s: &mut SessionDoor) -> Option<usize> {
         for n in 0..=MAX_FAILURES {
             let (status, heard) = s.mint_once().await;
@@ -1497,7 +1355,6 @@ pub(super) mod session_door {
         None
     }
 
-    /// One request an hour, for the caller's group.
     fn one_an_hour() -> busbar_kernel::config::groups::LimitCfg {
         busbar_kernel::config::groups::LimitCfg {
             metric: busbar_kernel::config::groups::LimitMetric::Requests,
@@ -1511,16 +1368,6 @@ pub(super) mod session_door {
         }
     }
 
-    /// THE SESSION DOOR'S MINT, SERVED (its root leg, ARCHITECT 2026-10-05 Q1): a keyed caller's
-    /// `POST /v1/realtime/client_secrets` is one unit the door carries (ARRIVAL), admitted for the
-    /// key its token resolves (AUTHENTICATE), dialled to the destination the guard judged (VERIFY)
-    /// on the DIRECT route to the catalog model its section's `session.model` names (ROUTE), sent
-    /// WITH THE PROVIDER'S OWN CREDENTIAL and never the caller's token (EGRESS-AUTH), charged to
-    /// the key that presented it (METER, GOVERNANCE-BUDGET), and closed once with its one line on
-    /// the node's book (AUDIT, EXIT). (The door's audience binding is the deployment's mount
-    /// table's, judged end to end by the oracle's wrong-audience mint cell.)
-    ///
-    /// RED ARM: the same request with no credential is refused before anything is dialled or charged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_mint_is_served_under_the_providers_credential() {
         let _one = PUBLISHING.lock().await;
@@ -1576,10 +1423,6 @@ pub(super) mod session_door {
         assert_eq!(s.lines(), 1, "its one record carries its counts");
     }
 
-    /// ADMIT, at the session door (its root leg): a key whose group budget is already spent is
-    /// refused at admission — over budget, before the provider is dialled, charged nothing, no line
-    /// written — while a key with room is served (the mint cell above). RED: a door that dialled
-    /// before admission would have reached the far end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_spent_key_is_refused_at_the_session_door_before_any_dial() {
         let _one = PUBLISHING.lock().await;
@@ -1602,10 +1445,6 @@ pub(super) mod session_door {
         assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
-    /// BREAKER-TRIP, at the session door: a provider failing every mint records each failure into
-    /// the ONE breaker cell of the door's route, and the cell OPENS: the next mint is refused before
-    /// it is dialled, and the provider's failures are counted under the route's lane on the scrape.
-    /// RED: a breaker port that records no failure leaves the cell closed, and every mint is dialled.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_provider_opens_the_breaker_cell_of_the_doors_route() {
         let _one = PUBLISHING.lock().await;
@@ -1640,10 +1479,6 @@ pub(super) mod session_door {
         assert_eq!(s.post.open_units(), 0, "every unit's node facts closed");
     }
 
-    /// BREAKER-FASTFAIL, at the session door: once the route's breaker cell has opened, the next
-    /// mint is refused BEFORE its dial and at once: the provider, which now holds every connection
-    /// open unanswered, is never dialled, and the refusal comes back in well under a second. RED: a
-    /// breaker port that admits an open cell dials the provider, which holds the mint past the bound.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_provider_is_refused_at_the_session_door_before_the_dial_at_once() {
         let _one = PUBLISHING.lock().await;
@@ -1668,7 +1503,6 @@ pub(super) mod session_door {
             .await
             .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
 
-        // From here a dialled provider never answers: only the breaker can answer the next mint.
         holding.store(true, std::sync::atomic::Ordering::SeqCst);
         let started = std::time::Instant::now();
         let response = tokio::time::timeout(std::time::Duration::from_secs(5), s.mint())
@@ -1686,11 +1520,6 @@ pub(super) mod session_door {
         );
     }
 
-    /// HOOKS-GATE, at the session door: a deployment-wide decision gate that rejects is asked about
-    /// the mint after admission and before the route's dial, and its veto is the caller's answer —
-    /// the hook's own status — with the provider never dialled and the unit closed. RED: a door
-    /// whose units the hook stage never reaches dials the provider and serves the mint (the
-    /// ungated mint cell above is the control).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_gate_hook_refuses_the_mint_before_the_provider_is_dialled() {
         let _one = PUBLISHING.lock().await;
@@ -1724,11 +1553,6 @@ pub(super) mod session_door {
         assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
-    /// AUDIT-CHAIN, at the session door: every mint, served or refused, seals ONE record on the
-    /// node's tamper-evident audit chain under the door's one operation class, the second linked to
-    /// the first, and the chain walks clean; a record altered after its seal breaks the walk. The
-    /// refusal is the kernel's own, inside the loop: the caller's group allows one request an hour.
-    /// RED: a loop whose audit pass is never handed back to the node seals nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_session_door_mint_served_or_refused_seals_one_record_on_one_chain() {
         let _one = PUBLISHING.lock().await;
@@ -1791,9 +1615,6 @@ pub(super) mod session_door {
         );
     }
 
-    /// METRICS, at the session door: a served mint's dial to the provider appears on the real
-    /// `/metrics` scrape, once, under the door's route lane. RED: an egress whose telemetry counts no
-    /// attempt leaves the scrape where it was.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_served_mint_counts_its_upstream_attempt_under_the_doors_route() {
         let _one = PUBLISHING.lock().await;
@@ -1818,9 +1639,6 @@ pub(super) mod session_door {
         );
     }
 
-    /// APPROVE, at the session door: a key whose grant does not reach the door's pool is refused at
-    /// approval — before the provider is dialled, charged nothing, no line written — while a key with
-    /// the grant is served (the mint cell above). RED: a door that skipped approval would dial.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_key_short_of_the_doors_grant_is_refused_before_any_dial() {
         let _one = PUBLISHING.lock().await;
@@ -1845,10 +1663,6 @@ pub(super) mod session_door {
         assert_eq!(s.lines(), 0, "no record carries counts");
     }
 
-    // ── a live session through the door's session route, on a real listener ──────────────────────
-
-    /// SHA-1 of `data` (RFC 3174), for the one place RFC 6455 asks for it: the far end's
-    /// `Sec-WebSocket-Accept`.
     fn sha1(data: &[u8]) -> [u8; 20] {
         let mut h: [u32; 5] = [
             0x6745_2301,
@@ -1904,7 +1718,6 @@ pub(super) mod session_door {
         out
     }
 
-    /// The `Sec-WebSocket-Accept` answering `key` (RFC 6455 section 4.2.2).
     fn ws_accept(key: &str) -> String {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(sha1(
@@ -1912,7 +1725,6 @@ pub(super) mod session_door {
         ))
     }
 
-    /// Read an HTTP head (through its blank line) off `socket`; `None` at end of stream.
     async fn read_head(socket: &mut tokio::net::TcpStream) -> Option<String> {
         let mut got = Vec::new();
         let mut byte = [0u8; 1];
@@ -1925,8 +1737,6 @@ pub(super) mod session_door {
         Some(String::from_utf8_lossy(&got).into_owned())
     }
 
-    /// Read one WebSocket frame off `socket`, unmasking it: its opcode and payload; `None` at end of
-    /// stream.
     async fn read_frame(socket: &mut tokio::net::TcpStream) -> Option<(u8, Vec<u8>)> {
         let mut head = [0u8; 2];
         socket.read_exact(&mut head).await.ok()?;
@@ -1959,7 +1769,6 @@ pub(super) mod session_door {
         Some((opcode, payload))
     }
 
-    /// One text frame as a client sends it (masked, RFC 6455 section 5.3).
     fn client_text(text: &str) -> Vec<u8> {
         let bytes = text.as_bytes();
         let mask = [0x37u8, 0xFA, 0x21, 0x3D];
@@ -1976,7 +1785,6 @@ pub(super) mod session_door {
         frame
     }
 
-    /// One text frame as a server sends it (unmasked, RFC 6455 section 5.1).
     fn server_text(text: &str) -> Vec<u8> {
         let bytes = text.as_bytes();
         let mut frame = vec![0x81u8, u8::try_from(bytes.len()).expect("a short frame")];
@@ -1984,27 +1792,16 @@ pub(super) mod session_door {
         frame
     }
 
-    /// The provider's opening event: the session it created, sent the moment its upgrade is
-    /// answered and before it reads anything, as the provider's protocol has it speak first.
     const FAR_OPENING: &str = r#"{"type":"session.created","session":{"id":"sess_door_0001"}}"#;
 
-    /// A provider on loopback speaking WebSocket: it accepts each dial's upgrade, speaks first
-    /// ([`FAR_OPENING`]), as the provider does, and reports every TEXT frame it is sent on the
-    /// channel, in order. A far end is held for a session's next turns once it has answered
-    /// (`plane_driver::session`); its switching response is that answer (HEAD-FIELDS: the ws
-    /// transport hands it up as the stream's head), its opening event the first message after it.
     async fn far_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         far_socket_opening(Some(FAR_OPENING)).await
     }
 
-    /// [`far_socket`], but a provider that answers the upgrade and does NOT speak first: it sends
-    /// nothing until it is spoken to.
     async fn far_socket_silent() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         far_socket_opening(None).await
     }
 
-    /// The provider [`far_socket`] and [`far_socket_silent`] start: `opening`, where it names one,
-    /// is the event it sends the moment its upgrade is answered.
     async fn far_socket_opening(
         opening: Option<&'static str>,
     ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
@@ -2057,8 +1854,6 @@ pub(super) mod session_door {
         (port, heard)
     }
 
-    /// The next text the provider heard that is not the session's own configuration, within a few
-    /// seconds; `None` when nothing more arrives.
     async fn next_heard(
         heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
     ) -> Option<String> {
@@ -2072,12 +1867,6 @@ pub(super) mod session_door {
         }
     }
 
-    /// DECODE, at the session door (its root leg): a live session opened through the door's session
-    /// route, on a real listener, carries each client event the plane reads to the provider, and a
-    /// frame the plane cannot read reaches the provider on no wire — the session stays open, and the
-    /// next readable event is carried after it, in order. RED ARM: the readable events either side
-    /// of the unreadable frame must arrive, so a door that dropped every frame, or one that closed
-    /// the session on a bad one, fails here; a door that relayed the unreadable frame fails on it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_carries_what_the_plane_reads_and_no_frame_it_cannot() {
         let _one = PUBLISHING.lock().await;
@@ -2100,7 +1889,6 @@ pub(super) mod session_door {
             let _ = axum::serve(listener, router.into_make_service()).await;
         });
 
-        // The session door's plain realtime socket, as a keyed caller opens it.
         let route = REALTIME;
         let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
         let open = format!(
@@ -2228,13 +2016,6 @@ pub(super) mod session_door {
         let _ = serving.await;
     }
 
-    /// HEAD-FIELDS (`BUSBAR-1.6.0.md` l.736: a transport always hands the response head up as the
-    /// first `Fields` piece), at the session door's root leg: a provider that answers the upgrade
-    /// (`101`) and does NOT speak first has ANSWERED, so the session's far end is held from its
-    /// switching response and every turn the caller sends reaches it, in order, though the
-    /// provider never says a word. RED ARM: on the ws transport that discarded the switching
-    /// response the far end counted as answered only once it spoke, so every turn after the first
-    /// waited on a provider that never would, and the second event never arrived.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_carries_turns_to_a_provider_that_does_not_speak_first() {
         let _one = PUBLISHING.lock().await;
@@ -2298,16 +2079,6 @@ pub(super) mod session_door {
         }
     }
 
-    /// MONEY (Q128 arch u64; THE DESIGN section 7, "the plane reports the units it did"), at the
-    /// session door's root leg: a caller's GA `session.update` sets the uplink to µ-law through
-    /// `session.audio.input.format`, the provider reads 8 bytes a millisecond from then on, and the
-    /// session's one sealed line bills what it read: six seconds of µ-law (48 000 bytes) are 6
-    /// `audio_seconds_in`. A session holds nothing on the book's chain (no hold, no settlement:
-    /// `Node::open_borrowed`), so its one line is the record its end seals with the counts the
-    /// plane reported (`Node::seal_session`, THE DESIGN section 7: "the session's end writes ONE
-    /// sealed line"), and that record is what this cell reads. RED ARM: the plane read only the
-    /// legacy `input_audio_format`, counted the 48 000 bytes at PCM16's 48 a millisecond, and the
-    /// line billed 1 second of the 6 served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_bills_a_ga_mulaw_uplink_at_mulaw() {
         use base64::Engine as _;
@@ -2353,7 +2124,7 @@ pub(super) mod session_door {
             .write_all(&client_text(update))
             .await
             .expect("the caller's GA update");
-        // One second of µ-law (8 000 bytes) a frame, six frames.
+
         let second = base64::engine::general_purpose::STANDARD.encode(vec![0x7f_u8; 8_000]);
         let append = format!(r#"{{"type":"input_audio_buffer.append","audio":"{second}"}}"#);
         for n in 0..6 {
@@ -2366,7 +2137,7 @@ pub(super) mod session_door {
                 .unwrap_or_else(|| panic!("second {n} reaches the provider"));
             assert!(carried.contains("input_audio_buffer.append"), "{carried}");
         }
-        // The caller closes: the session ends and its one line is sealed.
+
         caller
             .write_all(&[0x88, 0x80, 0x37, 0xFA, 0x21, 0x3D])
             .await
@@ -2383,8 +2154,6 @@ pub(super) mod session_door {
                     .map(|l| l.quantity)
             });
             if seconds.is_some() || std::time::Instant::now() > deadline {
-                // What the session's end sealed, so a red names whether its line was never sealed
-                // or was sealed without the audio the provider read.
                 let sealed: Vec<String> = records
                     .iter()
                     .map(|r| format!("{:?} {:?}", r.outcome.unit_end, r.usage.lines))
@@ -2400,13 +2169,8 @@ pub(super) mod session_door {
         );
     }
 
-    /// The call the far end's SDP answer places, where its `Location` says it lives.
     const PLACED_CALL: &str = "rtc_root0001";
 
-    /// A provider on loopback that places calls and serves its realtime socket: a `POST` (the SDP
-    /// offer) is answered `201` with an SDP answer and a `Location` naming [`PLACED_CALL`]; a
-    /// WebSocket upgrade is answered `101`. It reports `OFFER <head>` for each offer, `DIAL <request
-    /// line>` for each upgrade, and `TEXT <payload>` for every text frame a socket is sent.
     async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2428,7 +2192,6 @@ pub(super) mod session_door {
                             .then(|| value.trim().to_string())
                     });
                     let Some(key) = key else {
-                        // The SDP offer: its body, then the placed call.
                         let length = head
                             .lines()
                             .find_map(|l| {
@@ -2481,8 +2244,6 @@ pub(super) mod session_door {
         (port, heard)
     }
 
-    /// The next report from [`far_calls_and_socket`] that is not a session's own configuration,
-    /// within a few seconds; `None` when nothing more arrives.
     async fn next_report(
         heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
     ) -> Option<String> {
@@ -2496,8 +2257,6 @@ pub(super) mod session_door {
         }
     }
 
-    /// A keyed caller's WebSocket open of `route` on the listener at `addr`: the socket, and the
-    /// head the door answered with (`None` when the door closed without one).
     async fn open_socket(
         addr: std::net::SocketAddr,
         route: &str,
@@ -2516,15 +2275,6 @@ pub(super) mod session_door {
         (caller, head)
     }
 
-    /// THE SIDEBAND ATTACHES ONLY TO A PLACED CALL (busbar row 159, the session door's audit round
-    /// 2: "The sideband door attaches to no call"; ARCHITECT ruling 2026-10-23 on
-    /// `BUSBAR-1.6.0.md` Part 2 #45), at the session door's root leg: a sideband naming a call the
-    /// SDP door never placed reaches the provider on no dial; once the caller's own offer has placed
-    /// a call through `POST /v1/realtime/calls` (the provider's answer naming it in `Location`), a
-    /// sideband naming that call dials the provider's socket ATTACHED to it
-    /// (`/v1/realtime?call_id=<id>`) and carries the caller's events there. RED ARM: the sideband
-    /// that dialled a bare `/v1/realtime` for any call id opened a new provider session for the
-    /// unplaced call, and attached to nothing for the placed one.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_sideband_attaches_only_to_a_placed_call() {
         use tower::ServiceExt as _;
@@ -2550,7 +2300,6 @@ pub(super) mod session_door {
         });
         let append = r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#;
 
-        // A call no offer placed: refused, and the provider is never dialled for it.
         let unplaced = SIDEBAND.replace("{call_id}", "rtc_unplaced0001");
         let (mut caller, head) = open_socket(addr, &unplaced, &plain).await;
         if head
@@ -2567,7 +2316,6 @@ pub(super) mod session_door {
         );
         drop(caller);
 
-        // The caller's own offer places the call.
         let offer = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=root-offer\r\nt=0 0\r\n";
         let req = axum::http::Request::builder()
             .method("POST")
@@ -2599,7 +2347,6 @@ pub(super) mod session_door {
             "{posted}"
         );
 
-        // The sideband naming the placed call dials the provider's socket attached to it.
         let attached = SIDEBAND.replace("{call_id}", PLACED_CALL);
         let (mut caller, head) = open_socket(addr, &attached, &plain).await;
         assert!(
@@ -2627,13 +2374,6 @@ pub(super) mod session_door {
         );
     }
 
-    /// THE PROVIDER IS TOLD THE UPSTREAM MODEL (`BUSBAR-1.6.0.md` Part 2 #51: a model entry's
-    /// `upstream_model` overrides its name on the wire; ARCHITECT rulings 2026-10-23, R-6: a plane
-    /// that reads sections beside its own is handed them keyed), at the session door's root leg: a
-    /// deployment whose catalog entry for the session model names an `upstream_model` has a plain
-    /// session dial the provider's realtime socket with that wire name, never the catalog alias.
-    /// RED ARM: the door was handed its section bare, never read the `models:` beside it, and
-    /// dialled `?model=m-cap`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_dials_the_session_models_upstream_name() {
         let _one = PUBLISHING.lock().await;
@@ -2678,15 +2418,6 @@ pub(super) mod session_door {
     }
 }
 
-/// THE ROOT-MCP LEG'S LOOP CELLS (U14): the MCP plane served through its memory-ABI door, composed by
-/// this file's composition (`compose_planes`, `door_routes`) on the kernel's plane driver, each core
-/// capability of the capability-equality matrix (`qa/capability-equality.json`, the `mcp-client` and
-/// `mcp-server` columns) driven through the data router the door's claims mount on and asserted
-/// where the capability lands: the breaker cell and its walk, the hook stage, the call log's chain
-/// and the kernel's audit chain, the governance book, the `/metrics` exposition, the trust state,
-/// the connector's destination guard and the plane's argument guard, the member's auth binding, and
-/// the caller's catalogue. The door rig is `door_steps`' own (`tool_door::Rig`), one composition
-/// per case.
 #[cfg(linked_axis_plane_door)]
 mod tools_door {
     use std::sync::Arc;
@@ -2704,12 +2435,10 @@ mod tools_door {
 
     type Heard = tokio::sync::mpsc::UnboundedReceiver<String>;
 
-    /// Keep the TLS listener alive while retaining the existing wire receiver oracles.
     fn take_heard(server: &mut TlsToolServer) -> Heard {
         std::mem::replace(&mut server.heard, tokio::sync::mpsc::unbounded_channel().1)
     }
 
-    /// One registration with the real leaf's SPKI pin, retaining its explicit approvals.
     fn registration(server: &str, peer: &TlsToolServer, extra: &str) -> serde_yaml::Value {
         let port = peer.port;
         let pin = &peer.pin;
@@ -2721,7 +2450,6 @@ mod tools_door {
         .expect("a section")
     }
 
-    /// A `tools/call` of `tool` (its published name) with `arguments`.
     fn call_of(tool: &str, arguments: serde_json::Value) -> String {
         serde_json::json!({
             "jsonrpc": "2.0", "id": 41, "method": "tools/call",
@@ -2736,7 +2464,6 @@ mod tools_door {
         .to_string()
     }
 
-    /// A `tools/list`, as a caller sends it.
     fn listing() -> String {
         serde_json::json!({
             "jsonrpc": "2.0", "id": 42, "method": "tools/list",
@@ -2748,7 +2475,6 @@ mod tools_door {
         .to_string()
     }
 
-    /// `tool` called on `rig` as `token`: the status and the JSON-RPC answer.
     async fn call(
         rig: &Rig,
         token: &str,
@@ -2768,7 +2494,6 @@ mod tools_door {
         (status, answer)
     }
 
-    /// What the server heard since the last drain, as `list` / `call` / `other`.
     fn drain(heard: &mut Heard) -> Vec<&'static str> {
         std::iter::from_fn(|| heard.try_recv().ok())
             .map(|r| {
@@ -2783,12 +2508,10 @@ mod tools_door {
             .collect()
     }
 
-    /// The raw requests the server heard since the last drain.
     fn wire(heard: &mut Heard) -> Vec<String> {
         std::iter::from_fn(|| heard.try_recv().ok()).collect()
     }
 
-    /// A tool server answering its tool list as approved and every `tools/call` with `status`.
     async fn answering_calls_with(status: u16) -> TlsToolServer {
         TlsToolServer::replying(Arc::new(move |r: &str| {
             if r.contains("\"tools/list\"") {
@@ -2801,12 +2524,10 @@ mod tools_door {
         .await
     }
 
-    /// The registration `server`'s lane on `rig`'s plane: the breaker cell, the metrics label.
     fn lane(rig: &Rig, server: &str) -> String {
         format!("{}{PLANE_LANE_SEP}{server}", rig.plane_key)
     }
 
-    /// The sum of every `/metrics` sample of `family` whose labels carry every `(key, value)`.
     fn scraped(family: &str, labels: &[(&str, &str)]) -> f64 {
         busbar_kernel_testkit::test_support::export_axis::render()
             .lines()
@@ -2820,20 +2541,12 @@ mod tools_door {
             .sum()
     }
 
-    /// THE CALLS THAT TRIP A MEMBER'S CELL under the door's breaker ladder: the trip's minimum
-    /// outcome count, every one a failure. Below it a transient failure benches nothing: the plane
-    /// declares it (`declares.breaker`, ARCHITECT Q4), the 1.5.5 MCP client leg's posture — a cell
-    /// refuses on a TRIP (error rate at its threshold over at least this many outcomes) and nothing
-    /// less.
     fn trip_calls() -> usize {
         busbar_kernel::store::pool_breaker_cfg(None)
             .trip
             .min_requests
     }
 
-    /// `tool` called on `rig` against a server failing every call, calls `from..trip_calls()`:
-    /// each one fails, and each one REACHES THE SERVER — below the trip threshold the member's cell
-    /// stays closed — the last of them being the one that trips it.
     async fn fail_to_the_trip(rig: &Rig, tool: &str, heard: &mut Heard, from: usize) {
         for n in from..trip_calls() {
             let (status, answer) = call(rig, &rig.bound_token(), tool, serde_json::json!({})).await;
@@ -2845,12 +2558,6 @@ mod tools_door {
         }
     }
 
-    /// BREAKER-TRIP: a registration whose server answers a call with a transient failure records
-    /// that answer into ITS breaker cell (the walk's, keyed by the member's lane): the failure is
-    /// counted on `/metrics` under that lane. One failure benches nothing (1.5.5): the calls up to
-    /// the trip each reach the server, and the one that crosses the trip threshold opens the cell,
-    /// so the next call to it is refused as the open breaker without reaching the server — and a
-    /// healthy registration on the same door, its own cell, is untouched and still served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door() {
         busbar_kernel_testkit::test_support::metrics::init();
@@ -2931,10 +2638,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// BREAKER-FASTFAIL: once a member's cell is open (tripped: the failures that cross the trip
-    /// threshold, each of which reached the server), a call is refused BEFORE dispatch, in
-    /// milliseconds — no byte reaches the server and no attempt's timeout is waited out — and the
-    /// refusal is the open breaker's, rendered in the plane's words.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_tool_server_is_refused_before_dispatch_without_waiting() {
         let _one = PUBLISHING.lock().await;
@@ -2944,7 +2647,7 @@ mod tools_door {
         let rig = port_server.rig(instance, registration("flaky", &port_server, ""), &|app| {
             app
         });
-        // The failures that open the cell: each reached the server.
+
         fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
 
         let started = Instant::now();
@@ -2956,7 +2659,7 @@ mod tools_door {
         )
         .await;
         let took = started.elapsed();
-        // The served engine's tripped-server refusal: `503`, `-32030`, `upstream_unavailable`.
+
         assert_eq!(status.as_u16(), 503, "{answer}");
         assert_eq!(answer["error"]["code"], -32030, "{answer}");
         assert_eq!(
@@ -2977,14 +2680,6 @@ mod tools_door {
         assert!(rig.all_ended(), "the refused unit ended");
     }
 
-    /// FAILOVER-REROUTE: a pool of two registrations walked by the kernel's ONE walk, in the pool's
-    /// DECLARED ORDER (the root states each member's tier as its index; predev's MCP engine walked
-    /// `failover::InOrder`, busbar-mcp `reroute.rs:292`). The primary's transient failure fails the
-    /// call over to its twin before the caller hears anything (the pool names the tool repeatable).
-    /// One failure benches nothing (1.5.5): the primary is tried FIRST on every call, until its
-    /// failures cross the trip threshold — every call still answered by the twin — and its cell,
-    /// then open, keeps every NEXT call off it entirely: the walk admits the twin first, and the
-    /// primary is never touched again.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk() {
         let _one = PUBLISHING.lock().await;
@@ -3022,7 +2717,6 @@ mod tools_door {
         );
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
-        // The first call: the primary is tried first, and the call fails over to its twin.
         let (status, answer) = call(
             &rig,
             &rig.bound_token(),
@@ -3042,10 +2736,6 @@ mod tools_door {
             "and the call failed over to its twin"
         );
 
-        // Below the trip the primary is not benched and is the FIRST member of every call (declared
-        // order, never a rotation): each call tries it, and each of its failures is still answered by
-        // the twin, until its failures trip its cell. RED under a rotation: every other call would
-        // skip the primary.
         let mut failed = 1;
         let mut sent = 1;
         while failed < trip_calls() {
@@ -3072,7 +2762,6 @@ mod tools_door {
             assert_eq!(calls(&mut good_heard), 1, "call {sent}: the twin served it");
         }
 
-        // Tripped: the primary's open cell keeps every next call off it.
         for n in 0..3 {
             let (status, answer) = call(
                 &rig,
@@ -3102,9 +2791,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// The `tools:` section `section` with the pool `name` of `members` (in that order, `repeatable`
-    /// naming the tools it may repeat) handed to it AS THE ROOT HANDS a named-definition section its
-    /// unified pools (`with_pools`: each member `{name, tier}`, its tier its declared index).
     fn pooled(
         section: serde_yaml::Value,
         name: &str,
@@ -3128,13 +2814,6 @@ mod tools_door {
         sections.remove(key).expect("the section is handed back")
     }
 
-    /// A POOL IS WALKED IN ITS DECLARED ORDER: with both members healthy, every call is served by
-    /// the PRIMARY (the first member the pool names) and the twin is never reached. Predev's MCP
-    /// engine walked a tool pool `failover::InOrder` (busbar-mcp `reroute.rs:292`:
-    /// `busbar_kernel::failover::InOrder::new(&s.tried, self.members.len())`); on the door the root
-    /// states each member's tier as its declared index and the kernel's walk takes the lowest tier
-    /// that can take the request. RED: the weighted rotation the walk falls back to with no tier
-    /// sends every other call to the twin.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_pool_serves_every_call_from_its_primary_while_it_is_healthy() {
         let _one = PUBLISHING.lock().await;
@@ -3200,10 +2879,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// ONE BLIP BENCHES NOTHING (ARCHITECT Q4; the 1.5.5 MCP client leg): a sole member whose server
-    /// answers one call with a transient failure is NOT benched for a cooldown — the plane states
-    /// it (`declares.breaker`), the root applies it to the plane's cells — so the very next call
-    /// reaches the server and is served. Only a TRIP refuses a member.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn one_transient_failure_does_not_bench_a_sole_member() {
         let _one = PUBLISHING.lock().await;
@@ -3267,11 +2942,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// RED (ARCHITECT timeout ruling; SEAM.UPSTREAM-FAILURE-IS-TOOL-ERROR): a registration's
-    /// `timeout:` is its member's attempt bound. A server that takes the relayed `tools/call` and
-    /// never answers it is answered to the caller WITHIN that bound, as the call's failure (the
-    /// battery's two defensible shapes: an `isError` result or a JSON-RPC error, correlated) — not
-    /// at the walk's own budget, and not by a hung seam.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stalled_tool_server_is_answered_within_its_timeout() {
         let _one = PUBLISHING.lock().await;
@@ -3317,8 +2987,7 @@ mod tools_door {
             answer["id"], 41,
             "the caller's own call is answered: {status} {answer}"
         );
-        // ARCHITECT ruling on the answer: the `-32030 upstream_unavailable` shape is kept, and its
-        // account says the call WAS dispatched and the server's timeout ran out on it.
+
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answer}");
         assert_eq!(answer["error"]["code"], -32030, "{answer}");
         assert_eq!(
@@ -3334,10 +3003,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// RED W11 (docs/mcp.md: `timeout:` defaults to `30s`, a core default): a registration that
-    /// writes NO `timeout:` is bounded all the same. A server that takes the relayed `tools/call`
-    /// and never answers it is answered to the caller at the 30 s default, in the timed-out words,
-    /// not at the walk's 120 s budget.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stalled_tool_server_with_no_timeout_is_answered_at_the_default() {
         let _one = PUBLISHING.lock().await;
@@ -3387,14 +3052,11 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// RED's control (ARCHITECT ruling on the timed-out answer): a dial that FAILS — the server
-    /// answered its tool list, then stopped listening — keeps the not-dispatched words; only a
-    /// dispatched call whose timeout ran out says it was dispatched.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_dial_keeps_the_not_dispatched_words() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-dial-failed";
-        // Verification is served over TLS, then the listener closes before the call's dial.
+
         let port_server = TlsToolServer::once().await;
         let rig = port_server.rig(
             instance,
@@ -3423,11 +3085,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// HOOKS-TAP: a `prompt: rw` transform hook attached to the door's section rewrites the call's
-    /// arguments at the kernel's hook stage BEFORE the member is dialled: the server receives the
-    /// arguments the hook wrote and never the caller's, and the rewritten call is still the one
-    /// served unit. The identical deployment with no hook carries the caller's arguments (the
-    /// control).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rewrite_hook_rewrites_the_arguments_on_the_composed_door() {
         let _one = PUBLISHING.lock().await;
@@ -3489,9 +3146,6 @@ mod tools_door {
         assert!(tapped.all_ended(), "every unit ended");
     }
 
-    /// HOOKS-GATE: a gating hook attached to the door's section decides the call at the kernel's
-    /// hook stage BEFORE dispatch: its rejection is the caller's answer, at the hook's own status and
-    /// in its own words, the server is never reached and nothing is charged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_gate_hook_refuses_the_call_before_it_is_dispatched() {
         let _one = PUBLISHING.lock().await;
@@ -3528,8 +3182,6 @@ mod tools_door {
         assert!(gated.all_ended(), "the refused unit ended");
     }
 
-    /// The call log's chained records on `rig`, oldest first: each record's sequence, read back
-    /// through the host's verified read (a broken link fails the read).
     fn call_chain(rig: &Rig, want: usize) -> Vec<u64> {
         let (_, records) = crate::root::serve::planes_tests::chained_records(
             &rig.store,
@@ -3547,11 +3199,6 @@ mod tools_door {
         records.into_iter().map(|r| r.1).collect()
     }
 
-    /// AUDIT-CHAIN: every call through the door lands in two tamper-evident chains. The plane's
-    /// CALL LOG is a chained kind: each call's record is appended to the host's record chain, each
-    /// one linking the digest before it. And the unit's AUDIT ROW is written on the kernel's own
-    /// audit chain under the principal the kernel verified: a served call `applied`, a refused one
-    /// `rejected`, each row linked to the row before it on the chain.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain() {
         let _one = PUBLISHING.lock().await;
@@ -3595,8 +3242,6 @@ mod tools_door {
             "the refused call never made an upstream leg"
         );
 
-        // THE CALL LOG: three records, one chain, each linking the one before (the host's
-        // verified read refuses a chain whose links do not hold).
         let chain = call_chain(&rig, 3);
         assert_eq!(
             chain.len(),
@@ -3607,7 +3252,6 @@ mod tools_door {
             assert_eq!(pair[1], pair[0] + 1, "consecutive: {chain:?}");
         }
 
-        // THE KERNEL'S AUDIT CHAIN: the rows, attributed to the verified key.
         let log = &busbar_kernel::audit::auditlog::AUDIT_LOG;
         let action = surface("audit_action_tool_call");
         let resource = |tool: &str| format!("{}:{tool}", surface("audit_resource_tool"));
@@ -3641,10 +3285,6 @@ mod tools_door {
         }
     }
 
-    /// DECODE: a body the door cannot read as a JSON-RPC envelope is refused at its decode and never
-    /// becomes a call on the wire — the caller hears a refusal (a client-error status, or the
-    /// envelope's own error answer) and the tool server hears nothing — while the well-formed
-    /// `tools/call` beside it on the same door is served and goes out exactly once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_body_that_is_not_an_envelope_is_refused_at_decode_and_never_sent() {
         let _one = PUBLISHING.lock().await;
@@ -3701,10 +3341,6 @@ mod tools_door {
         assert_eq!(calls(&mut heard), 1, "the well-formed call went out once");
     }
 
-    /// AUTHENTICATE: behind the deployment's closed key chain, a call carrying no credential and a
-    /// call carrying a bearer this deployment never minted are both refused `401` before the door —
-    /// the tool server hears neither — and the key the deployment minted is carried through the
-    /// door to the server exactly once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn only_a_caller_the_chain_authenticates_reaches_the_tool_server() {
         let _one = PUBLISHING.lock().await;
@@ -3760,8 +3396,7 @@ mod tools_door {
             .map(|r| r.to_ascii_lowercase())
             .collect();
         assert_eq!(sent.len(), 1, "the minted key's call went out once");
-        // The token the tool server receives is audience-bound: the one busbar's own subject token
-        // was exchanged for, bound to that server's resource, never the caller's.
+
         assert!(
             sent[0].contains("authorization: bearer tok-authed_read_file"),
             "the exchanged token reached the server: {}",
@@ -3782,10 +3417,6 @@ mod tools_door {
         }
     }
 
-    /// VERIFY: a caller whose grant names ANOTHER server is refused inside the unit, and the refused
-    /// server is never dialled — neither its tool endpoint nor the token endpoint its
-    /// `token_exchange:` registration would have been asked for a credential sees a byte — while the
-    /// server its grant does name is served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_grant_for_another_server_is_refused_before_its_server_or_token_endpoint_is_touched()
     {
@@ -3823,9 +3454,6 @@ mod tools_door {
                 name: "granted-only".to_string(),
                 ..Default::default()
             },
-            // Both grants pass for every capability (docs/mcp.md, "Both must pass"): the key holds
-            // the server grant for `granted` alone, and the tool grant for a tool on EACH server,
-            // so the one thing `fenced_read_file` lacks is its server's grant.
             Some(&[
                 ("scope_server", "granted"),
                 ("scope_tool", "granted_read_file"),
@@ -3853,9 +3481,6 @@ mod tools_door {
         assert!(drain(&mut granted_heard).contains(&"call"));
     }
 
-    /// ROUTE: a sole registration whose server answers a call with a bare `503` ends the unit with a
-    /// failure the caller reads, after exactly ONE attempt at the one registered target — no silent
-    /// success and no retry storm — and the unit ends.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_single_target_answering_503_fails_the_unit_after_exactly_one_attempt() {
         let _one = PUBLISHING.lock().await;
@@ -3886,8 +3511,6 @@ mod tools_door {
         assert!(rig.all_ended(), "the unit ended");
     }
 
-    /// METER: one served `tools/call` writes exactly ONE metering row, under the presenting key,
-    /// attributed to the registered server and this plane, counting one successful request.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_served_call_writes_one_metering_row_naming_its_registered_server_and_plane() {
         let _one = PUBLISHING.lock().await;
@@ -3937,8 +3560,6 @@ mod tools_door {
         );
     }
 
-    /// A key minted on `rig`'s book under `spec`, its grants exactly `scopes` (`(grant kind row,
-    /// value)`, `None` = every scope): its bearer token.
     fn key_on(
         rig: &Rig,
         spec: busbar_kernel::governance::NewKeySpec,
@@ -3967,10 +3588,6 @@ mod tools_door {
         )
     }
 
-    /// GOVERNANCE-BUDGET: a call's spend is attributed to the key that PRESENTED it — the key whose
-    /// group holds a one-request budget on the plane's per-request fee is charged, another key on the
-    /// same door is not — and once that budget is spent the next call is refused BEFORE it is
-    /// dispatched, `429` over budget, the server never reached, while the other key is still served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_call_is_charged_to_the_presenting_key_and_a_spent_budget_refuses_it() {
         use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
@@ -4059,9 +3676,7 @@ mod tools_door {
             answer["error"]["data"]["reason"], "budget_exhausted",
             "refused as over budget, in the plane's words: {answer}"
         );
-        // THE WAIT (ARCHITECT Q5): the admission's window reset reaches the plane's refusal as
-        // `retry_after_s` and the door renders it as `Retry-After`, a whole number of seconds and
-        // never 0.
+
         let wait = head
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
@@ -4088,11 +3703,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// DISPOSITION: the walk classifies the member's answer. A caller fault (a `4xx` the server
-    /// answers the call with) is relayed to the plane as it came and NEVER recorded against the
-    /// member — call after call reaches the server and no failure is counted on its lane — while a
-    /// transient failure (`503`) is recorded and counted under its disposition, and the failures
-    /// that cross the trip threshold open the cell (one alone benches nothing, 1.5.5).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_client_fault_answer_is_relayed_and_never_penalizes_the_member() {
         busbar_kernel_testkit::test_support::metrics::init();
@@ -4194,11 +3804,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// METRICS: the door's traffic is on the real `/metrics` exposition, under the plane's own label.
-    /// The door mounted as the composition root dispatches it (its folded row in the plane registry,
-    /// its claims on the mount table): a served call counts one request of the plane on the
-    /// plane-labelled request family the front door is observed by (`mcp-server`), and one upstream
-    /// attempt under the member's lane, the plane's key and its registration (`mcp-client`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane() {
         use crate::root::door_steps::tests::door_boundary;
@@ -4214,7 +3819,7 @@ mod tools_door {
         let rig = port_server.rig(instance, tools, &|app| {
             door_boundary::dispatched(app, row, &slot)
         });
-        // The door binds its resource's audience, so its caller presents a token minted for it.
+
         let audience = (row.admission)(&*slot)
             .map(|a| a.audience)
             .expect("the door binds an audience under the public base URL");
@@ -4261,7 +3866,6 @@ mod tools_door {
         );
     }
 
-    /// The published tool names `token`'s caller is listed on `rig`.
     async fn listed(rig: &Rig, token: &str) -> Vec<String> {
         let (status, body) =
             send_as(&rig.router, Some(token), &listing(), "tools/list", None).await;
@@ -4277,11 +3881,6 @@ mod tools_door {
         names
     }
 
-    /// TRUST-PINNING: the registration pins each approved tool's schema digest. Verify-on-call
-    /// (`verify_ttl: 0s`) judges the server's LIVE list before every call: while it matches the pin
-    /// the call is served; once the schema moves under the approval (the rug-pull) the drift is
-    /// detected, the tool demoted — gone from the caller's catalogue — and the call refused as
-    /// quarantined before it is sent, with no operator present.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rug_pulled_tool_is_detected_demoted_and_refused_before_it_is_sent() {
         let _one = PUBLISHING.lock().await;
@@ -4332,11 +3931,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// NET-GUARD: every destination the door derives is judged. The CONNECTOR'S destination guard (a
-    /// deployment refusing private addresses) refuses a registration's private address at the dial —
-    /// nothing reaches the server — unless that registration alone was granted its private reach
-    /// (`allow_private`); and the plane's ARGUMENT guard refuses a call whose arguments carry a cloud
-    /// metadata URL before the call is sent.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_destination_guard_and_the_argument_guard_refuse_before_anything_is_sent() {
         let _one = PUBLISHING.lock().await;
@@ -4362,8 +3956,7 @@ mod tools_door {
             serde_json::json!({}),
         )
         .await;
-        // The guard refuses the verifying dial, so the server could not be reached: the call fails
-        // as an upstream failure (ARCHITECT Q3 (c)), never served.
+
         assert_eq!(status, StatusCode::OK, "{answer}");
         assert_eq!(answer["result"]["isError"], true, "never served: {answer}");
         assert!(
@@ -4404,15 +3997,8 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// The environment variable the token-exchange registration names busbar's own subject token by.
     const SUBJECT: &str = "BUSBAR_SERVE_DOOR_EGRESS_SUBJECT";
 
-    /// EGRESS-AUTH: the credential each member presents is the one its registration PLANS, injected
-    /// by the kernel's one call to the member's auth binding — never the caller's token passed
-    /// through on its own. A registration stating none presents nothing; a `token_exchange:`
-    /// registration presents the token busbar's OWN subject token was exchanged for, bound to that
-    /// server's resource, and the caller's credential reaches neither the server nor the
-    /// authorization server. MCP refuses a `passthrough` registration before any upstream HTTP.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_member_presents_only_the_credential_its_registration_plans() {
         let _one = PUBLISHING.lock().await;
@@ -4506,10 +4092,6 @@ mod tools_door {
         }
     }
 
-    /// CATALOGUE: what a caller may SEE and CALL is its grant's, answered by the one catalogue walk.
-    /// Three keys on one door, one server publishing three approved tools: each key's listing is
-    /// exactly the tools its grants reach, a key granted nothing is listed nothing, and a tool
-    /// outside the caller's grant is refused as not granted before the server is dialled.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_grant_sees_and_calls_only_its_own_catalogue() {
         let _one = PUBLISHING.lock().await;
@@ -4576,13 +4158,10 @@ mod tools_door {
         assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
     }
 
-    /// The wire field a grant of the door's scope kind `row` (`scope_server` / `scope_tool`) is
-    /// minted and bound under: the frozen `allowed_{kind}s` convention.
     fn grant_field(row: &str) -> String {
         busbar_contract::records::scope_kinds::wire_field_for(surface(row))
     }
 
-    /// One admin request on `rig`'s admin router: its status and JSON body.
     #[cfg(linked_section_pools)]
     async fn over_admin(
         rig: &Rig,
@@ -4614,7 +4193,6 @@ mod tools_door {
         (status, serde_json::from_slice(&bytes).unwrap_or_default())
     }
 
-    /// A mint body named `name` carrying each `(wire field, value)` of `grants`.
     fn mint_body(name: &str, grants: &[(&str, serde_json::Value)]) -> serde_json::Value {
         let mut body = serde_json::Map::new();
         body.insert("name".to_string(), serde_json::json!(name));
@@ -4624,13 +4202,6 @@ mod tools_door {
         serde_json::Value::Object(body)
     }
 
-    /// W9 — PER-TOOL GRANTS ARE SET AT MINT, THROUGH THE ADMIN API. The three states hold for the
-    /// door's own scope kinds exactly as they hold for `allowed_pools`: a key minted naming one
-    /// server and one tool reaches that tool and is refused another as not granted before the server
-    /// is dialled; a key minted with the tool grant `[]` reaches nothing; a key minted naming no
-    /// grant reaches everything, and its mint and read-back bodies carry no plane grant field at all
-    /// (the 1.5.5 body). A grant field no plane declares, or a grant that is not a list of names, is
-    /// refused as any unknown or malformed mint field is.
     #[cfg(linked_section_pools)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tool_grant_minted_over_the_admin_api_reaches_only_that_tool() {
@@ -4651,8 +4222,7 @@ mod tools_door {
             surface("stat_digest"),
         ))
         .expect("a section");
-        // The door's row in the plane registry, as the composition root installs it, and the
-        // operator credential the admin router authenticates `x-admin-token` with.
+
         registry(row());
         busbar_kernel::preflight::install_linked_auth(
             crate::LINKED.auths,
@@ -4665,7 +4235,6 @@ mod tools_door {
         let rig = port_server.rig(instance, tools, &|app| app.admin_chain(chain.clone()));
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
 
-        // EXACTLY THOSE: one server, one tool.
         let (status, reader) = over_admin(
             &rig,
             "POST",
@@ -4709,7 +4278,6 @@ mod tools_door {
         assert_eq!(read[&tool], serde_json::json!(["cat_read_file"]), "{read}");
         assert_eq!(read[&server], serde_json::json!(["cat"]), "{read}");
 
-        // NOTHING: the tool grant `[]`.
         let (status, nobody) = over_admin(
             &rig,
             "POST",
@@ -4728,7 +4296,6 @@ mod tools_door {
             "the ungranted call was never dialled"
         );
 
-        // EVERYTHING: no grant named, and the 1.5.5 body (no plane grant field).
         let (status, everyone) =
             over_admin(&rig, "POST", "/keys", Some(mint_body("everyone", &[]))).await;
         assert_eq!(status, 201, "{everyone}");
@@ -4757,8 +4324,6 @@ mod tools_door {
             );
         }
 
-        // REFUSED: a kind no plane declares, and a grant that is not a list of names, answer as an
-        // unknown mint field does.
         let (unknown_status, unknown) = over_admin(
             &rig,
             "POST",
@@ -4787,10 +4352,6 @@ mod tools_door {
         }
     }
 
-    /// W9 — A ROLE BINDING GRANTS THE DOOR'S SCOPE KINDS AS A MINT DOES. `role_bindings.<p>.<role>`
-    /// takes the same `allowed_{kind}s` fields, and the principal re-keyed through it reaches exactly
-    /// the granted tool, is refused another as not granted before the server is dialled, is admitted
-    /// nowhere when the binding grants `[]`, and reaches everything when the binding names no grant.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_role_binding_grants_the_tools_a_minted_key_does() {
         let _one = PUBLISHING.lock().await;
@@ -4823,7 +4384,7 @@ mod tools_door {
             };
             busbar_kernel::governance::synthesize_principal_key(&principal, Some(&table))
         };
-        // The re-keyed grant, carried onto a key on the rig's book: its bearer token.
+
         let presenting = |granted: &busbar_contract::records::VirtualKey| {
             let (mut key, token) = rig
                 .gov
@@ -4878,15 +4439,6 @@ mod tools_door {
         assert_eq!(status, StatusCode::OK, "{answer}");
     }
 
-    // ── THE WALK'S EXHAUSTION ON THIS DOOR: PREDEV'S BYTES ──────────────────────────────────────
-    //
-    // The kernel hands every plane the walk's own sentence for an exhausted walk
-    // (`RefusalIn.text`); this door's baseline is predev's (spec l.4452), which said the reason's
-    // own word there. Each cell below drives a `tools/call` to an exhausted walk on one path the
-    // door's refusal slot takes, and pins the bytes predev serves on it.
-
-    /// The `tools/call` of `tool` with the tasks extension declared (a call that creates a task
-    /// where its tool supports one).
     fn task_call_of(tool: &str) -> String {
         let mut call: serde_json::Value =
             serde_json::from_str(&call_of(tool, serde_json::json!({}))).expect("the call");
@@ -4895,7 +4447,6 @@ mod tools_door {
         call.to_string()
     }
 
-    /// `tasks/get` of `task_id` on `rig`, the extension declared: the status and the JSON-RPC body.
     async fn task_get(rig: &Rig, task_id: &str) -> (u16, serde_json::Value) {
         let verb = serde_json::json!({
             "jsonrpc": "2.0", "id": 43, "method": "tasks/get",
@@ -4923,7 +4474,6 @@ mod tools_door {
         )
     }
 
-    /// `tasks/get` of `task_id` until the task is terminal (or the test gives up): its body.
     async fn task_settled(rig: &Rig, task_id: &str) -> serde_json::Value {
         for _ in 0..600 {
             let (_, body) = task_get(rig, task_id).await;
@@ -4938,7 +4488,6 @@ mod tools_door {
         panic!("task {task_id} never settled");
     }
 
-    /// A tool server answering its tool list as approved and holding every `tools/call` unanswered.
     async fn stalling_calls() -> TlsToolServer {
         TlsToolServer::replying(Arc::new(|r: &str| {
             if r.contains("\"tools/list\"") {
@@ -4951,7 +4500,6 @@ mod tools_door {
         .await
     }
 
-    /// Wait for the server to hear a `tools/call`.
     async fn heard_a_call(heard: &mut Heard) {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
@@ -4965,8 +4513,6 @@ mod tools_door {
         .expect("the call reached the server");
     }
 
-    /// Publish generation 2 of `rig`'s door over the `tools:` section `section` (the operator's
-    /// reload): the plane's catalogue moves; the kernel's sealed egress does not.
     fn reload(rig: &Rig, section: &serde_yaml::Value) {
         use crate::root::loader::dispatch::{in_head, out_head, Frame};
         use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome, BLOB_JSON};
@@ -4996,10 +4542,6 @@ mod tools_door {
         assert!(snapshot.is_some(), "generation 2 is published");
     }
 
-    /// EXHAUSTED, THE SERVER RESOLVED (the control the two cells after it stand beside): a tripped
-    /// server's call is refused as the served engine refused it, `503` / `-32030` /
-    /// `upstream_unavailable` with its sentence and the wait, byte for byte as predev serves it; the
-    /// walk's own sentence never reaches the caller.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_servers_exhausted_walk_is_refused_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
@@ -5044,9 +4586,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// EXHAUSTED ON ITS HELD GENERATION: reload changes the catalogue for a new request while an
-    /// already dispatched call keeps its original server and timeout. Its refusal names that held
-    /// server, the dispatched timeout and exact retry bound; a fresh listing sees only the reload.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_timed_out_walk_keeps_its_held_catalogue_after_an_operator_reload() {
         let _one = PUBLISHING.lock().await;
@@ -5070,8 +4609,7 @@ mod tools_door {
             .await
         });
         heard_a_call(&mut heard).await;
-        // The reload: the server is registered under another name, so the stalled call's tool is no
-        // longer one the catalogue publishes.
+
         reload(&rig, &registration("other", &port_server, ""));
         assert_eq!(
             listed(&rig, &rig.bound_token()).await,
@@ -5108,10 +4646,6 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// EXHAUSTED UNDER A TASK (the continuation's refusal): a task whose call is dispatched to a
-    /// server that never answers fails when its continuation's walk is exhausted, and `tasks/get`
-    /// states the failure as predev stated it: `-32603`, the upstream call failed, and the reason's
-    /// own word.
     #[cfg(linked_section_pools)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tasks_exhausted_walk_fails_the_task_in_predevs_bytes() {
@@ -5154,9 +4688,6 @@ mod tools_door {
         );
     }
 
-    /// EXHAUSTED UNDER A TASK, THE SERVER TRIPPED: a task created on a tool whose server's cell is
-    /// open fails as predev failed it, its `tasks/get` stating `-32603`, the upstream call failed,
-    /// and the reason's own word.
     #[cfg(linked_section_pools)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_task_on_a_tripped_server_fails_in_predevs_bytes() {
@@ -5202,39 +4733,35 @@ mod tools_door {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// What a served door's data router needs kept alive beside it, and what a test reads back off
-/// the composition it served through.
+
 pub(super) struct Serving {
     pub(super) router: axum::Router,
     pub(super) token: String,
-    /// The kernel's swap handle: the generation a config apply refreshes the door onto.
+
     pub(super) handle: Arc<busbar_kernel::state::AppHandle>,
-    /// What a config apply refreshes the served door onto (`DoorApply::apply`).
+
     pub(super) live: Arc<super::DoorApply>,
-    /// The door plane's egress as the composition sealed it: its members' breaker cells.
+
     egress: Arc<busbar_kernel::plane_driver::Egress>,
-    /// The plane's key, which its lanes are named under.
+
     plane: String,
-    /// The node's book: the journal, the ledger and the audit chain its units seal onto.
+
     book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
-    /// The governance book the caller's key is charged on, and that key.
+
     gov: Arc<GovState>,
     key: String,
-    /// The app the data router serves (its cost model prices the key's usage).
+
     app: Arc<busbar_kernel::state::App>,
-    /// The operation classes the door's plane tail states, in its order.
+
     op_classes: Vec<&'static str>,
 }
 
 #[cfg(feature = "plane-decisions")]
 impl Serving {
-    /// The one model's lane, `(plane key, m)`: its member's name, and on a direct route the pool
-    /// its breaker cell is keyed under.
     fn lane(&self) -> String {
         format!("{}{PLANE_LANE_SEP}m", self.plane)
     }
 
-    /// Whether the model's member's breaker cell would take a request now (the walk's own filter).
     fn ready(&self) -> bool {
         (self.egress.breaker)().ready(
             &self.lane(),
@@ -5244,7 +4771,6 @@ impl Serving {
         )
     }
 
-    /// The seconds of cooldown the member's breaker cell has left; zero for a closed cell.
     fn cooldown(&self) -> u64 {
         (self.egress.breaker)().cooldown_remaining(
             &self.lane(),
@@ -5254,7 +4780,6 @@ impl Serving {
         )
     }
 
-    /// The real `/metrics` scrape on the data router, as the keyed caller.
     async fn scrape(&self) -> String {
         use tower::ServiceExt as _;
         let req = axum::http::Request::builder()
@@ -5276,18 +4801,17 @@ impl Serving {
         String::from_utf8(body.to_vec()).expect("the exposition is UTF-8")
     }
 
-    /// The audit records sealed on the node's book, oldest first.
     fn audit_records(&self) -> Vec<busbar_kernel_audit::AuditRecord> {
         self.book.lock().expect("unpoisoned").audit_records.clone()
     }
 }
 
 #[cfg(feature = "plane-decisions")]
-/// The model's one member: the first (and only) entry its egress seals.
+
 const MEMBER: busbar_contract::DestinationId = busbar_contract::DestinationId::new(0);
 
 #[cfg(feature = "plane-decisions")]
-/// The sum of `family`'s series on `exposition` whose `lane` label is `lane`.
+
 fn counted(exposition: &str, family: &str, lane: &str) -> f64 {
     let lane = format!("lane=\"{lane}\"");
     exposition
@@ -5298,16 +4822,13 @@ fn counted(exposition: &str, family: &str, lane: &str) -> f64 {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// THE DECISIONS DOOR SERVED OVER `linked`, composed as the exit test above composes it (the
-/// connector over the linked transport doors, the door bound through the loader's one load, one
-/// model whose provider is the far end on `port`, a keyed caller): the composition reads the door
-/// plane's declared facts off `linked`.
+
 async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: u16) -> Serving {
     serve_limited(linked, instance, port, Vec::new()).await
 }
 
 #[cfg(feature = "plane-decisions")]
-/// [`serve_over`], its caller's key bound to a group that states `limits`.
+
 async fn serve_limited(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -5318,9 +4839,7 @@ async fn serve_limited(
 }
 
 #[cfg(feature = "plane-decisions")]
-/// [`serve_limited`], the plane stating its own per-request fee (its section's reserved
-/// `fees.per_request`, #47), in minor units, and the caller's key minted with `allowed_pools`
-/// (`None` = every pool).
+
 async fn serve_governed(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -5343,8 +4862,7 @@ async fn serve_governed(
 }
 
 #[cfg(linked_section_decisions)]
-/// [`serve_over`], the one provider's credential the secret reference `api_key` (YAML), the
-/// composition's refusal answered rather than panicked on: what the root's boot dies on.
+
 pub(super) async fn serve_keyed(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -5355,7 +4873,7 @@ pub(super) async fn serve_keyed(
 }
 
 #[cfg(linked_section_decisions)]
-/// [`serve_governed`] over the provider credential `api_key`, the composition's refusal answered.
+
 async fn serve_configured(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -5365,7 +4883,6 @@ async fn serve_configured(
     allowed_pools: Option<Vec<String>>,
     api_key: &str,
 ) -> Result<Serving, String> {
-    // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
     busbar_kernel_testkit::test_support::metrics::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
@@ -5388,7 +4905,7 @@ async fn serve_configured(
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
-    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = Arc::new(
@@ -5407,8 +4924,7 @@ async fn serve_configured(
         .expect("the linked door binds"),
     );
     let section_key = plane.served().section;
-    // The plane's dialect word and its operation classes, as its door's plane tail states them
-    // (BUSBAR-1.6.0.md l.247): the door is the crate's one public item (l.3567).
+
     let dialect = plane.served().dialects[0];
     let op_classes = plane.served().op_classes;
 
@@ -5561,12 +5077,11 @@ async fn serve_configured(
 }
 
 #[cfg(feature = "plane-decisions")]
-/// The decisions door's `declares` section stating the breaker fact false (ARCHITECT Q4).
+
 const STATES_NO_BENCH: &str = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
 
 #[cfg(feature = "plane-decisions")]
-/// The linked table with the decisions door's row stating `declares` (the
-/// `[package.metadata.busbar.linked-declares]` row a plane's door crate names).
+
 fn declaring(declares: &'static str) -> crate::root::linked::Linked {
     crate::root::linked::Linked {
         plane_door_declares: vec![(
@@ -5580,7 +5095,7 @@ fn declaring(declares: &'static str) -> crate::root::linked::Linked {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// The decisions door's Statement name: the name the root finds its declared facts by.
+
 pub(super) fn decisions_name() -> String {
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     busbar_contract::abi::mechanism::rendering::read(&row.statement)
@@ -5589,7 +5104,7 @@ pub(super) fn decisions_name() -> String {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// One call, then the far end's next request head when it reached the far end.
+
 async fn call_once(
     serving: &Serving,
     heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -5601,15 +5116,6 @@ async fn call_once(
 }
 
 #[cfg(feature = "plane-decisions")]
-/// THE PLANE'S BREAKER FACT, READ BY THE ROOT (ARCHITECT Q4): a door plane whose `declares`
-/// states `bench_below_trip_threshold: false` keeps its sole member in service through one
-/// transient failure below the trip threshold — the 503 reaches the caller, and the NEXT call
-/// reaches the far end and is served. The root names no plane: it finds the fact by the door's
-/// Statement name. RED with the fact absent (the arm below).
-///
-/// A row that also states `needs` (the conformance suite's and the fleet render's) reads the same
-/// fact: the root reads the row through the one reader of a declares document, which checks and
-/// drops `needs` (ARCHITECT ruling (b)). RED ARM: a malformed `needs` is refused, naming the row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_one_503() {
     let _one = PUBLISHING.lock().await;
@@ -5657,16 +5163,11 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
 }
 
 #[cfg(feature = "plane-decisions")]
-/// ABSENT, THE DEFAULT HOLDS: a door plane whose `declares` states no breaker fact (or that has no
-/// `declares` row at all, as the decisions door has none in the shipped table) keeps the host's
-/// default cell: one transient failure benches the sole member for its cooldown, so the next call
-/// is refused without reaching the far end, exactly as before the fact existed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-breaker-absent";
-    // The door's row states a `declares` section without the fact; the shipped table has no row
-    // for it (the MCP door's row states the fact for the MCP plane alone).
+
     let silent = declaring("{}");
     assert_eq!(
         crate::root::linked::door_breaker(&silent, None, &decisions_name()).expect("it reads"),
@@ -5701,12 +5202,6 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
     );
 }
 
-// ── THE DOOR SERVING THE `pools` MAP: ITS CAPABILITY CELLS (Q128 U14) ───────────────────────────
-//
-// The capability-equality matrix's root column for this plane, witnessed on its door path: each
-// cell below drives a keyed caller through the data router built with the door's claims, the
-// kernel's hook stage, the model-serving walk over the kernel's lane cells and the node's book
-// (`super::hook_seat_tests::rig`), and reads the capability where the kernel keeps it.
 #[cfg(linked_driver_proofs)]
 use super::hook_seat_tests::{
     chunk, far_end_answering as seat_far_end, far_end_scripted, rig, word as door_word, RigOpts,
@@ -5715,20 +5210,15 @@ use super::hook_seat_tests::{
 #[cfg(linked_driver_proofs)]
 use super::planes_tests::PUBLISHING as ONE_PUBLISHER;
 
-/// A served chat completion, marked by the member that answered it.
 #[cfg(linked_driver_proofs)]
 const SERVED_BY_TWIN: &str = r#"{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"served-by-the-twin"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
 
-/// A far end that cannot serve now.
 #[cfg(linked_driver_proofs)]
 const OVERLOADED: &str = r#"{"error":{"message":"overloaded","type":"server_error"}}"#;
 
-/// A far end refusing the request itself.
 #[cfg(linked_driver_proofs)]
 const MALFORMED: &str = r#"{"error":{"message":"bad request","type":"invalid_request_error"}}"#;
 
-/// BREAKER-TRIP: a member whose far end fails records into the kernel's ONE breaker cell for its
-/// (pool, lane), and the cell opens: the walk's failure benched it.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_trips_a_failing_members_breaker_cell() {
@@ -5757,8 +5247,6 @@ async fn the_pools_door_trips_a_failing_members_breaker_cell() {
     );
 }
 
-/// BREAKER-FASTFAIL: a tripped member is refused before dispatch, at once: the next unit never
-/// dials it, and its twin serves.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
@@ -5792,8 +5280,6 @@ async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
     );
 }
 
-/// FAILOVER-REROUTE: a second interchangeable candidate is tried before the first byte, through
-/// the one walk: the first member fails, the twin's answer is the caller's.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
@@ -5821,9 +5307,6 @@ async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
     assert_eq!((down.served(), twin.served()), (1, 1));
 }
 
-/// DISPOSITION: the far end's answer is classified before it is relayed: a refusal of the request
-/// itself is the caller's own fault, relayed with its status, never failed over and never charged
-/// to the member's breaker cell.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
@@ -5854,8 +5337,6 @@ async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
     );
 }
 
-/// EGRESS-AUTH: the member's credential is the one the egress mechanism binds and injects; the
-/// caller's own token never crosses.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_injects_the_members_credential_not_the_callers() {
@@ -5879,10 +5360,6 @@ async fn the_pools_door_injects_the_members_credential_not_the_callers() {
     );
 }
 
-/// A FAILOVER LANE PRESENTS ITS OWN CREDENTIAL (security use case: every lane is reached with its
-/// own key): the primary member, configured with its own key, answers 500, the walk fails over to
-/// the second member, configured with a different key, and the caller is served. Each far end saw
-/// exactly its own member's key; the failover hop never carries the primary's, nor the caller's.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failover_lane_presents_its_own_credential_never_the_primarys() {
@@ -5929,7 +5406,6 @@ async fn a_failover_lane_presents_its_own_credential_never_the_primarys() {
     );
 }
 
-/// METRICS: the door's traffic appears on the scrape, under the pool and lane it was served on.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
@@ -5978,8 +5454,6 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
     );
 }
 
-/// GOVERNANCE-BUDGET: the unit's spend is attributed to the presenting key, and a key whose budget
-/// is spent is refused before any far end is dialled.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
@@ -6011,12 +5485,6 @@ async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
     assert_eq!(far.served(), 1, "the refused unit dialled nothing");
 }
 
-/// A FAILED UNIT'S FEE COMES BACK AND ITS ADMISSION SLOT DOES NOT (legacy
-/// `chain::the_refund_is_the_terminal_doors_and_it_lands_on_the_ledger`, item 366): the key's group
-/// charges a flat 1-cent fee per request; a unit whose far end answers 503 keeps its admitted
-/// request on the ledger, while the fee base the admission charged is refunded (spend 0) and
-/// nothing is billable.
-/// RED: the fee kept for an answer that was never delivered, or the admission slot refunded too.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_refunds_a_failed_units_fee_and_keeps_its_admission() {
@@ -6033,7 +5501,7 @@ async fn the_pools_door_refunds_a_failed_units_fee_and_keeps_its_admission() {
     )
     .await;
     assert_ne!(rig.chat().await.0, 200, "the far end fails");
-    // The refund lands when the unit ends, after its admission is on the ledger.
+
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     let mut ledger = rig.ledger_after(0).await;
     while (ledger.0 == 0 || ledger.1 != 0) && tokio::time::Instant::now() < deadline {
@@ -6046,7 +5514,6 @@ async fn the_pools_door_refunds_a_failed_units_fee_and_keeps_its_admission() {
     assert_eq!(billable, 0, "nothing billable");
 }
 
-/// AUDIT-CHAIN: every unit the door serves seals exactly one record on the node's chain.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_seals_one_audit_record_per_unit() {
@@ -6066,14 +5533,6 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
 }
 
-/// AUDIT-CHAIN, ON ONE TAMPER-EVIDENT CHAIN (Law 10, status row 178): every unit the pools door
-/// answers, served (a dispatched completion) or refused inside the loop (a key whose budget the
-/// first unit spent), seals ONE record on the node's audit chain, the second the first's
-/// successor; the chain walks clean, and a record altered after its seal (the served unit re-told
-/// as the refused one) breaks the walk. This is the claim the node-axis cell made, on the door
-/// path CI's test build runs.
-/// RED: a door whose audit pass never reaches the node seals nothing; a refusal sealed off the
-/// chain leaves one record, or two that are not linked.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident_chain() {
@@ -6133,14 +5592,6 @@ async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident
     );
 }
 
-/// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
-/// ruling): the node's journal is kept by a configured store that refuses, and the lane to it is
-/// full, so a new unit through the door is answered 503 with the reason, in the caller's dialect
-/// (the plane's `refusal` renders it for the target, kind `overloaded`, the bytes the node's
-/// handed path answered: `ingress_error(dialect, 503, overloaded, reason)`), before anything is
-/// dispatched or charged, and nothing the journal holds is dropped. RED before the fix: the door
-/// answered a bare 502 (`plane_panic`) with an empty body, because nothing asked the node's
-/// `journal_refusal` before the borrowed drive declined the unit.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_refuses_a_new_unit_503_with_the_reason_while_its_journal_is_full() {
@@ -6181,7 +5632,6 @@ async fn the_pools_door_refuses_a_new_unit_503_with_the_reason_while_its_journal
     );
 }
 
-/// HOOKS-GATE: a rejecting gate refuses the door's traffic before dispatch.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
@@ -6201,14 +5651,6 @@ async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
     assert_eq!(far.served(), 0, "nothing was dispatched");
 }
 
-/// A GATE'S VETO KEEPS THE ADMISSION AND GIVES THE FEE BACK, AS 1.5.5 DID (legacy
-/// `approve::a_veto_refuses_at_approve_which_is_before_the_door`): v1.5.5 admitted and charged a
-/// unit before its gates ran (`ingress/dispatch.rs` `governance_guard` ahead of
-/// `forward_with_pool_parsed`, whose gates fire at `proxy/engine/mod.rs:946`), and the vetoed
-/// answer's non-2xx end refunded the flat fee (`finish_admitted`); the hook stages run at the head
-/// of the route leg after admit (K5, BUSBAR-1.6.0.md). So a vetoed unit answers the gate's status,
-/// dials nothing, keeps its admitted request and nets no spend.
-/// RED: the vetoed unit's fee kept, its admission dropped, or a far end dialled.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_gate_veto_keeps_the_admission_and_refunds_the_fee() {
@@ -6239,8 +5681,6 @@ async fn the_pools_doors_gate_veto_keeps_the_admission_and_refunds_the_fee() {
     assert_eq!(billable, 0, "nothing billable");
 }
 
-/// HOOKS-TAP: the rewrite and observe hooks run over the door's payloads: the request-stage tap
-/// sees the request as the global rewrite left it.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
@@ -6265,11 +5705,6 @@ async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
     assert!(!text.contains("the original prompt"), "{text}");
 }
 
-/// A HOOK NEVER SEES A CREDENTIAL (hooks.md: "Never the secret/token, under any configuration";
-/// guardrails: caller secrets are excluded from the hook payload): a keyed caller whose request also
-/// carries `x-api-key`, `proxy-authorization` and `cookie` fields reaches the far end, and the
-/// request-stage tap, which holds the prompt grant, is delivered a projection that carries none of
-/// the caller's credentials, no auth field name, and not the provider's own key.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hook_payload_never_carries_auth_headers() {
@@ -6334,8 +5769,6 @@ async fn hook_payload_never_carries_auth_headers() {
     }
 }
 
-/// CATALOGUE: what a restricted key may SEE is the one catalogue walk's answer: the pool it may
-/// reach and that pool's members, never a model it cannot reach.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches() {
@@ -6371,18 +5804,12 @@ async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches()
     );
 }
 
-/// THE DROPPED-CONTROLS AUDIT ROW ON THE DOOR (ARCHITECT, Q128 gap): a TRANSLATE attempt that
-/// cannot carry a control the caller set writes 1.5.5's `egress.control_unrepresentable` row,
-/// outcome `degraded`, `<control> on <dialect>`; an answer member the caller's dialect has no form
-/// for writes `<path> from <dialect>`. Both reach the kernel's audit chain through the plane's
-/// `RECORD_AUDIT` write. RED arm: a request that sets nothing the far dialect drops writes no row.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-dropped-controls";
-    // The far dialect is the plane's own door word (`untranslatable_dialect`), and so is its answer:
-    // a message whose usage carries a member the caller's dialect has no form for.
+
     let far_dialect = door_word("untranslatable_dialect");
     let far = seat_far_end(200, door_word("untranslatable_answer")).await;
     let rig = rig(
@@ -6441,11 +5868,6 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
     );
 }
 
-/// THE RANKING SIGNALS ON THE DOOR (ARCHITECT, Q128 gap): the hooks see each candidate as 1.5.5's
-/// projection fed it: the pool member's tier and tags, the lane's latency signal once a sample is
-/// recorded, its free concurrency, its remaining budget, and, where the generation declares them,
-/// its breaker state, error rate and p95 latency in the routing pool. RED before: every one of them
-/// was empty on the door path.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_hooks_see_each_candidates_standing() {
@@ -6496,9 +5918,6 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
     );
 }
 
-/// A far end's clean event stream: each of `events` one frame, the stream ending with no abort. The
-/// served pools door's rehomed cells (the walk's and the money's) share this one spelling of the
-/// mock's stream answer rather than each naming the wire's variant.
 #[cfg(linked_driver_proofs)]
 fn event_stream(events: Vec<String>) -> busbar_kernel_testkit::test_support::MockResponse {
     busbar_kernel_testkit::test_support::MockResponse::Sse {
@@ -6507,12 +5926,6 @@ fn event_stream(events: Vec<String>) -> busbar_kernel_testkit::test_support::Moc
     }
 }
 
-// ── F25 REHOME: THE WALK AND THE BREAKER ON THE SERVED POOLS DOOR ───────────────────────────────
-//
-// The previous release's engine tests of the walk (failover, exhaustion, the first-byte boundary)
-// and of the far end's disposition (what a far answer records on the member's breaker cell), each
-// driven here as a keyed caller's request through the composed door to real far ends on loopback,
-// its figures read where the kernel keeps them: the lane store's snapshot and its pool cells.
 #[cfg(linked_driver_proofs)]
 mod pools_door_walk_and_breaker {
     use super::*;
@@ -6522,12 +5935,10 @@ mod pools_door_walk_and_breaker {
     use axum::http::StatusCode;
     use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
-    /// The store's clock.
     fn now() -> u64 {
         busbar_kernel::store::now()
     }
 
-    /// A recording far end answering its requests with `replies`, in order.
     async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
         let state = Arc::new(MockServerState::new());
         for reply in replies.into_iter().rev() {
@@ -6537,12 +5948,10 @@ mod pools_door_walk_and_breaker {
         (state, server)
     }
 
-    /// The port a mock listens on.
     fn port_of(server: &MockServer) -> u16 {
         server.address().port()
     }
 
-    /// The messages dialect's answer, its text `text`.
     fn messages_answer_saying(text: &str) -> serde_json::Value {
         let mut answer: serde_json::Value =
             serde_json::from_str(door_word("messages_answer")).expect("the answer is JSON");
@@ -6550,13 +5959,11 @@ mod pools_door_walk_and_breaker {
         answer
     }
 
-    /// A caller's request in the messages dialect on pool `p`, streamed when `stream`.
     fn messages_request(stream: bool) -> serde_json::Value {
         serde_json::json!({"model": "p", "max_tokens": 100, "stream": stream,
             "messages": [{"role": "user", "content": "hi"}]})
     }
 
-    /// One request in the messages dialect on pool `p`.
     async fn send_messages(rig: &DoorRig, stream: bool) -> (u16, axum::http::HeaderMap, String) {
         let (status, head, body) = rig
             .send(
@@ -6568,16 +5975,12 @@ mod pools_door_walk_and_breaker {
         (status, head, String::from_utf8_lossy(&body).to_string())
     }
 
-    /// `n` raw event payloads `event-0` .. `event-<n-1>`.
     fn events(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("event-{i}")).collect()
     }
 
-    /// The far-end error map the previous release's tests configured: a billing code and a rate
-    /// limit code, as a provider states them.
     const ERROR_MAP: &str = "error_map:\n  '1113': billing\n  '1302': rate_limit";
 
-    /// A port nothing listens on: every dial to it is refused.
     fn refusing_port() -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         listener.local_addr().expect("its address").port()
@@ -6585,13 +5988,6 @@ mod pools_door_walk_and_breaker {
 
     use super::super::hook_seat_tests::DoorRig;
 
-    /// A NULL `stream_options` IS UPGRADED (F25 row 2; legacy
-    /// `assemble::a_null_stream_options_is_upgraded_so_the_upstream_reports_usage`): a same-dialect
-    /// streamed chat spelling `"stream_options": null` reaches the far end carrying
-    /// `stream_options.include_usage: true` (1.5.5 upgraded it like an absent key, so the far end
-    /// reports usage and the ledger reads it), and the caller, who did not opt in, is served the
-    /// answer ("Hi", 200) without the usage chunk (`completion_tokens` never reaches it). RED: the
-    /// null forwarded verbatim, or the usage chunk relayed to the caller.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_upgrades_a_null_stream_options_and_keeps_the_usage_chunk_back() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -6639,12 +6035,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// THE CALLER'S CREDENTIALS NEVER CROSS (F25 row 81; legacy
-    /// `client_header_forwarding_tests::caller_credential_is_replaced_by_the_lane_credential`): a
-    /// caller presenting `authorization: Bearer busbar-caller-key` and the same key in `x-api-key`,
-    /// `x-goog-api-key` and `api-key` on a chat route is relayed to a far end that sees
-    /// `authorization: Bearer sk-seats` (the member's own key) and none of the other three
-    /// carriers. RED: any carrier of the caller's key reaching the far end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_replaces_every_caller_credential_with_the_members() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -6693,13 +6083,6 @@ mod pools_door_walk_and_breaker {
         }
     }
 
-    /// A POOL WHOSE DIALS ARE ALL REFUSED ANSWERS AS AN ALL-DOWN POOL (F25 row 97; legacy
-    /// `dial_refusal_failover_tests::an_all_refused_pool_answers_as_an_all_down_pool`): a pool of
-    /// two members whose dials the destination judge refuses answers the caller the SAME status
-    /// (503) and the same body (its request id aside) as a pool of two members whose ports refuse
-    /// the connection, and both members were tried in both (the same failures recorded), the
-    /// refused far ends never reached. RED: a judged refusal answering anything the all-down pool
-    /// does not, or stopping after one member.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_answers_an_all_refused_pool_as_an_all_down_pool() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -6767,14 +6150,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// AN UNMAPPED MEMBER IS AUDITED BY ITS WIRE PATH (F25 row 113; legacy
-    /// `egress_dropped_controls_audit_tests::openai_to_anthropic_unmapped_members_are_audited_by_wire_path`):
-    /// a chat caller setting `logit_bias` and sending a content part of a type no dialect knows
-    /// (`x_future_part`) onto a member of the messages dialect is forwarded with
-    /// `messages[0].content` holding ONE part (the unknown part dropped, not replaced), and two
-    /// `degraded` `egress.control_unrepresentable` rows are written for the caller:
-    /// `logit_bias on <dialect>` and `messages[].content[].type=x_future_part on <dialect>`. RED:
-    /// either row missing, or the request refused.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_audits_an_unmapped_content_part_by_its_wire_path() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -6790,7 +6165,7 @@ mod pools_door_walk_and_breaker {
             RigOpts {
                 members: &[(port_of(&server), 1)],
                 dialect: Some(far_dialect),
-                // The caller's own parts reach the translation: no rewrite seat replaces them.
+
                 no_rewrite: true,
                 ..RigOpts::default()
             },
@@ -6846,11 +6221,6 @@ mod pools_door_walk_and_breaker {
         }
     }
 
-    /// EVERY PIECE OF AN EVENT-STREAM ARRIVES (F25 row 152; legacy
-    /// `forward_pool_integration_tests::test_sse_incremental_arrival`): a member of the messages
-    /// dialect sending ten events `event-0` .. `event-9` answers the caller 200, its
-    /// content-type exactly `text/event-stream`, with exactly ten `data: event-` lines. RED: a
-    /// piece lost, merged or rewritten on the relay.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_relays_every_event_of_a_streamed_answer() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -6884,11 +6254,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// A FAULT BEFORE THE FIRST BYTE FAILS OVER (F25 row 156; legacy
-    /// `forward_pool_integration_tests::test_pre_first_byte_failover`): member 0 answers HTTP 500
-    /// `{"error":"lane 0 failed"}` before any byte, member 1 streams `event-0` .. `event-2`: the
-    /// caller is served 200 and member 0's cell is in its transient cooldown (not ready). RED: the
-    /// 500 relayed, or member 0 left ready.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_fails_over_a_fault_before_the_first_byte_and_cools_the_member() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -6920,12 +6285,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// A CUT AFTER THE FIRST BYTE IS NOT FAILED OVER (F25 row 157; legacy
-    /// `forward_pool_integration_tests::test_midstream_abort_records_and_no_failover`): member 0
-    /// streams `event-0` of five and the stream aborts; member 1 would answer. The caller has its
-    /// 200 and an `event: error` frame, member 0's failure is recorded (err > 0, a cooldown), and
-    /// member 1 was never dialled (err 0). RED: a second attempt on member 1, or no failure
-    /// recorded on member 0.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_records_a_cut_after_the_first_byte_and_does_not_fail_over() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -6969,13 +6328,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// A PASSTHROUGH 401 IS THE CALLER'S, AN OWN-CREDENTIAL 401 IS THE MEMBER'S (F25 row 158; legacy
-    /// `forward_pool_integration_tests::test_section6_passthrough_401_no_trip_vs_token_mode`): a
-    /// pool reaching its member with the caller's own credential relays the far end's 401 and
-    /// leaves the member untouched (ready, err 0, streak 0, not dead); the same 401 to a member
-    /// reached with its own credential is relayed as a 401 and takes the member down (not ready,
-    /// recoverable: not dead). RED: a passthrough 401 tripping the member, or an own-credential 401
-    /// leaving it ready.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_trips_on_an_own_credential_401_but_not_on_a_passthrough_one() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7031,11 +6383,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// PASSTHROUGH FORWARDS THE CALLER'S TOKEN (F25 row 160; legacy
-    /// `forward_pool_integration_tests::test_passthrough_forwards_caller_token`): a pool whose
-    /// members are reached with the caller's own credential serves 200, and the far end's
-    /// `authorization` is the caller's token as a bearer credential, never the member's configured
-    /// key (`sk-seats`). RED: the configured key presented on a passthrough pool.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_forwards_the_callers_token_on_a_passthrough_pool() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7059,11 +6406,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// EACH MEMBER IS TRIED ONCE (F25 row 161; legacy
-    /// `forward_pool_integration_tests::test_failover_exclusions`): a two-member pool whose far
-    /// ends answer every request 500 answers the caller 503, and the members' error counts sum to
-    /// exactly 2: each tried once, none retried within the request. RED: a tried member picked
-    /// again (a sum above 2), or the walk stopping early.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_tries_each_member_once_before_its_terminal() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7088,11 +6430,6 @@ mod pools_door_walk_and_breaker {
         assert_eq!((fars[0].served(), fars[1].served()), (1, 1));
     }
 
-    /// THE HOP CAP BOUNDS THE WALK (F25 row 162; legacy
-    /// `forward_pool_integration_tests::test_failover_cap`): a three-member pool, every far answer
-    /// 500, under the default failover settings, answers 503 after exactly three attempts (the
-    /// members' error counts sum to 3, each member dialled once). RED: a walk past the cap or a
-    /// member retried.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_caps_the_walk_at_one_attempt_per_member() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7118,11 +6455,6 @@ mod pools_door_walk_and_breaker {
         assert!(fars.iter().all(|far| far.served() == 1));
     }
 
-    /// A CALLER'S FAULT IS NEVER RETRIED ON ANOTHER MEMBER: a two-member pool whose far ends both
-    /// answer a 400 relays the first 400 to the caller, and exactly one member was dialled; the
-    /// walk does not try the second for a fault that is the caller's own. Rehomes
-    /// the retired engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_client_fault_no_failover_two_lanes`.
-    /// RED: the second member dialled, or the 400 replaced by a terminal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_never_retries_a_callers_fault_on_another_member() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7155,7 +6487,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// One member of the messages dialect stating [`ERROR_MAP`], its far end answering `reply`.
     async fn mapped_member(
         instance: &'static str,
         reply: MockResponse,
@@ -7175,12 +6506,6 @@ mod pools_door_walk_and_breaker {
         (rig, answer, server)
     }
 
-    /// A MAPPED BILLING CODE IS A RECOVERABLE HARD-DOWN (F25 row 169; legacy
-    /// `forward_pool_integration_tests::test_disposition_hard_down_billing_code`): a provider
-    /// mapping code `1113` to `billing` whose far end answers 402 `{"error":{"code":"1113",
-    /// "message":"insufficient balance"}}` takes the member down (not ready), recoverable (not
-    /// dead), its reason `billing / insufficient balance`. RED: the member left ready, marked dead,
-    /// or its reason not the class and the far end's message.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_takes_a_member_down_on_a_mapped_billing_code() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7203,11 +6528,6 @@ mod pools_door_walk_and_breaker {
         assert_eq!(snap.dead_reason, "billing / insufficient balance");
     }
 
-    /// A MAPPED RATE-LIMIT CODE IS TRANSIENT (F25 row 170; legacy
-    /// `forward_pool_integration_tests::test_disposition_transient_rate_limit_code`): a 429 whose
-    /// body carries the mapped code `1302` cools the member (not ready), counts one failure
-    /// (err > 0, streak exactly 1) and leaves it alive. RED: no failure recorded, a streak other
-    /// than 1, or the member marked dead.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_cools_a_member_on_a_mapped_rate_limit_code() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7228,10 +6548,6 @@ mod pools_door_walk_and_breaker {
         assert!(!snap.dead);
     }
 
-    /// A BARE 429 IS TRANSIENT (F25 row 171; legacy
-    /// `forward_pool_integration_tests::test_disposition_transient_rate_limit_no_code`): a 429
-    /// with no provider code cools the member (not ready) and counts a failure (err > 0). RED: a
-    /// 429 recording nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_cools_a_member_on_a_bare_rate_limit() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7249,10 +6565,6 @@ mod pools_door_walk_and_breaker {
         assert!(rig.app.store.snapshot(0, now()).err > 0);
     }
 
-    /// A SERVER ERROR IS TRANSIENT (F25 row 172; legacy
-    /// `forward_pool_integration_tests::test_disposition_transient_server_error`): a 500
-    /// `{"error":"server error"}` cools the member (not ready), counts a failure (err > 0) and
-    /// leaves it alive. RED: a 500 recording nothing or killing the member.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_cools_a_member_on_a_server_error() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7271,13 +6583,6 @@ mod pools_door_walk_and_breaker {
         assert!(!snap.dead);
     }
 
-    /// A REFUSED OWN CREDENTIAL IS A HARD-DOWN, ANSWERED IN THE CALLER'S OWN WORDS (F25 row 173;
-    /// legacy `forward_pool_integration_tests::test_disposition_hard_down_auth`): a far end
-    /// answering 401 to the member's own credential takes the member down (not ready),
-    /// recoverable (not dead), its reason naming `auth`; the caller gets a 401 in its own
-    /// dialect's envelope (`type: error`, `error.type: authentication_error`), the dialect's own
-    /// auth-failure sentence, never the far end's body and never the word `lane`. RED: the far
-    /// end's body relayed, internal vocabulary on the wire, or the member left ready.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_takes_a_member_down_on_a_refused_own_credential() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7312,11 +6617,6 @@ mod pools_door_walk_and_breaker {
         assert!(!message.contains("lane"), "{answer}");
     }
 
-    /// THE PROVIDER'S CODE, NOT THE STATUS, DRIVES THE CLASS (F25 row 174; legacy
-    /// `forward_pool_integration_tests::test_disposition_code_drives_classification`): a member
-    /// mapping `1113` to `billing` answered 402 with code `1113` is taken down (not ready); a
-    /// member with no mapping answered 400 `{"error":"not a known error"}` relays the 400 and
-    /// stays ready (the caller's fault). RED: both read by their status alone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_classifies_by_the_mapped_code_not_the_status() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7367,12 +6667,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// A CALLER'S FAULT IS RELAYED VERBATIM AND COUNTED APART (F25 row 177; legacy
-    /// `forward_pool_integration_tests::test_client_fault_400_relayed_verbatim_no_penalty`): a far
-    /// end of the caller's dialect answering 400 `{"error":"invalid_request","message":"bad
-    /// input"}` reaches the caller as that 400 with those very bytes; the member's cell stays
-    /// closed, err 0, streak 0, no cooldown, and its client-fault counter reads exactly 1. RED: a
-    /// penalty on the member, a rewritten body, or the fault not counted.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_relays_a_callers_fault_verbatim_and_counts_it_apart() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7409,10 +6703,6 @@ mod pools_door_walk_and_breaker {
         assert_eq!(snap.client_fault, 1, "the caller's fault is counted apart");
     }
 
-    /// EXHAUSTION IS A 503 NAMING ITS WAIT (F25 row 179; legacy
-    /// `forward_pool_integration_tests::test_exhaustion_status_503_with_retry_after`): a
-    /// two-member pool whose far ends both answer 429 (code `1302`) in one request answers 503
-    /// with a `Retry-After` of whole seconds, at least 1. RED: a relayed 429, or no Retry-After.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_sheds_an_exhausted_pool_with_a_retry_after() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7444,16 +6734,12 @@ mod pools_door_walk_and_breaker {
         assert!(wait >= 1, "at least one second: {wait}");
     }
 
-    /// A CLOCK THE TEST HOLDS: its whole seconds stay where the test put them, so every reading
-    /// the walk takes (an admission, a cooldown it records, the wait a shed advertises) is the same
-    /// instant; its sub-second readings and its sleeps are real, so a bounded wait still ends.
     struct HeldClock {
         secs: u64,
         origin: std::time::Instant,
     }
 
     impl HeldClock {
-        /// The door egress's clock, held at `secs`.
         fn at(secs: u64) -> Arc<dyn busbar_kernel_egress::ports::Clock> {
             Arc::new(HeldClock {
                 secs,
@@ -7480,15 +6766,8 @@ mod pools_door_walk_and_breaker {
         }
     }
 
-    /// The instant the held clock reads: well before the wall clock, so a cooldown recorded on the
-    /// wall clock instead of the walk's reads as years long at it.
     const HELD_AT: u64 = 1_700_000_000;
 
-    /// ONE FAILURE BELOW THE TRIP AGAINST THE SOLE MEMBER OF POOL `p`, the walk's clock held at
-    /// [`HELD_AT`]: the far end answers `reply` and then would serve. Asserts what 1.5.5 did: the
-    /// cell stays Closed (the default breaker trips on an error rate over at least five outcomes),
-    /// cooling for a cooldown in `band`; the next call is refused 503 without reaching the far end,
-    /// its `Retry-After` the cooldown exactly.
     async fn benched_once(
         instance: &'static str,
         reply: MockResponse,
@@ -7542,20 +6821,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// A SINGLE-MEMBER POOL BENCHES ITS MEMBER ON ONE FAILURE BELOW THE TRIP, AS 1.5.5 DID: one 429
-    /// against the sole member of pool `p` leaves the cell Closed but cooling, and the next call is
-    /// refused 503 naming the cooldown as its `Retry-After` ([`benched_once`]).
-    ///
-    /// The wait, derived from v1.5.5:
-    /// - `crates/busbar/src/store/in_memory/breaker.rs:714-724`: every Closed failure that does not
-    ///   trip stores `now + compute_cooldown_with_retry_after(..)`; there is no single-member arm.
-    /// - `breaker.rs:281-388`: the streak is bumped to 1 first, so the backoff is `15 * 2^1 = 30`,
-    ///   jittered by `±(30 / 10) = ±3` and clamped to `[15, 120]`: 27..=33. A stated wait `W` is a
-    ///   floor over it: `max(27..=33, W)`, so a stated 60 is exactly 60.
-    /// - `crates/busbar/src/proxy/engine/walk.rs:49-64`: the shed advertises the soonest genuine
-    ///   cooldown remaining among the admissible members, at least 1: here the sole member's.
-    ///
-    /// A REGRESSION GUARD of that parity, without and with a stated wait (60 s), on the held clock.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_single_member_pool_benches_one_failure_below_the_trip_with_1_5_5s_wait() {
         benched_once(
@@ -7580,12 +6845,6 @@ mod pools_door_walk_and_breaker {
         .await;
     }
 
-    /// THE COOLDOWN A TRANSIENT FAILURE ARMS AND THE WAIT A SHED ADVERTISES READ ONE CLOCK, the
-    /// walk's: one 500 against the sole member of pool `p` is recorded at the walk's `now`, as
-    /// 1.5.5's store took the record's `now_time` (`availability.rs:500-513`), so at the walk's
-    /// clock the member cools for 1.5.5's 27..=33 and the shed names that same wait. RED: the
-    /// failure recorded on the store's own wall-clock read, which at the held clock reads as a
-    /// cooldown years long.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_transient_failure_is_benched_on_the_walks_clock() {
         benched_once(
@@ -7599,11 +6858,6 @@ mod pools_door_walk_and_breaker {
         .await;
     }
 
-    /// A SESSION PINNED TO A TRIPPED MEMBER YIELDS (F25 row 187; legacy
-    /// `forward_pool_integration_tests::test_sticky_yields_when_tripped`): with member 0's cell
-    /// open (cooldown 600 s) before the requests, every session is served 200 by the healthy member
-    /// 1, whichever member its key would pin, and member 0 receives nothing: affinity is a
-    /// preference, never a pin past an open breaker. RED: a session routed to the tripped member.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_yields_a_session_pinned_to_a_tripped_member() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7654,7 +6908,6 @@ mod pools_door_walk_and_breaker {
         assert_eq!(healthy.served(), 8);
     }
 
-    /// The messages dialect's context-length refusal naming a window of `window` tokens.
     fn too_long(window: u64) -> MockResponse {
         MockResponse::ServerError {
             status: StatusCode::BAD_REQUEST,
@@ -7663,12 +6916,6 @@ mod pools_door_walk_and_breaker {
         }
     }
 
-    /// A CONTEXT-LENGTH REFUSAL FAILS OVER WITHOUT A PENALTY (F25 row 203; legacy
-    /// `forward_pool_integration_tests::test_context_length_failover_no_penalty`): two members of
-    /// the messages dialect with no stated window; member 0 answers 400 `prompt is too long:
-    /// 250000 tokens > 200000 maximum`, member 1 answers 200: the caller is served 200 and neither
-    /// member is in a cooldown. RED: the refusal relayed, or member 0 penalized for a request too
-    /// big for it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_fails_a_context_length_refusal_over_without_a_penalty() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7699,11 +6946,6 @@ mod pools_door_walk_and_breaker {
         }
     }
 
-    /// THE LARGER WINDOW SERVES (F25 row 204; legacy
-    /// `forward_pool_integration_tests::test_prefers_larger_context_max`): member 0 states
-    /// `context_max: 8000`, member 1 `context_max: 200000`; member 0 answers 400 `prompt is too
-    /// long: 250000 tokens > 8000 maximum`: member 1 serves the 200 and member 0 stays ready. RED:
-    /// no failover to the larger window, or the smaller member penalized.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_serves_a_too_long_request_from_the_larger_window() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7736,11 +6978,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// NO LARGER WINDOW: THE TERMINAL, AND NO PENALTY (F25 row 205; legacy
-    /// `forward_pool_integration_tests::test_same_size_pool_exhausts`): two members both stating
-    /// `context_max: 8000`, both answering 400 `prompt is too long: 250000 tokens > 8000 maximum`:
-    /// the caller gets 503 and neither member is in a cooldown. RED: a member penalized, or the
-    /// walk answering anything but its terminal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_ends_a_too_long_request_at_its_terminal_without_a_penalty() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7768,11 +7005,6 @@ mod pools_door_walk_and_breaker {
         }
     }
 
-    /// A CLEAN STREAM END IS ONE SUCCESS (F25 row 206; legacy
-    /// `forward_pool_integration_tests::test_clean_sse_end_records_success_not_failure`): eight
-    /// clean streamed answers of the messages dialect (start, a `Hi` delta, usage 3/2, stop) on one
-    /// member leave its snapshot at err 0 and ok exactly 8, the member ready. RED: a clean end
-    /// recorded as a failure, or a success counted twice or not at all.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_records_one_success_per_clean_stream_end() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7809,11 +7041,6 @@ mod pools_door_walk_and_breaker {
         assert!(rig.app.store.ready_in("p", 0, now()));
     }
 
-    /// PASSTHROUGH WITH NO CALLER CREDENTIAL PRESENTS NONE (F25 row 342; legacy
-    /// `ingress_indistinguishability_tests::test_passthrough_no_caller_token_selects_empty_not_lane_key`):
-    /// on an open front door, a passthrough pool whose provider HAS an operator key, reached by a
-    /// caller presenting no credential, serves 200 and the far end receives NO `authorization` at
-    /// all, never the operator's key. RED: the operator's key (or a bare `Bearer`) presented.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_presents_no_credential_for_a_passthrough_caller_with_none() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7853,13 +7080,6 @@ mod pools_door_walk_and_breaker {
         }
     }
 
-    /// A REAL MID-STREAM FAILURE STAYS WITH ITS MEMBER (F25 row 452; legacy
-    /// `ingress_integration_tests::test_real_mid_stream_failure_does_not_fail_over_to_second_member`):
-    /// member 1 of a streamed pool sends `MEMBER-1-REAL-FIRST-FRAME` and its connection then
-    /// fails: the caller has its 200, member 1's frame, never `MEMBER-2-MUST-NEVER-APPEAR`, and a
-    /// trailing frame that is the caller dialect's error envelope; member 1's error count rises by
-    /// exactly one. RED: a fresh attempt on member 2 after the first byte, no in-band error, or a
-    /// failure counted other than once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_keeps_a_real_mid_stream_failure_with_its_member() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7917,11 +7137,6 @@ mod pools_door_walk_and_breaker {
         );
     }
 
-    /// A TRIPPED PRIMARY IS NEVER DIALLED; ITS TWIN SERVES (F25 row 586; legacy
-    /// `reroute_pool_tests::a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untouched`):
-    /// a two-member pool whose primary's breaker is open before the request serves 200 `from the
-    /// twin`; the primary's far end receives NO request, the twin's receives it. RED: the tripped
-    /// primary dialled (even if it then fails over).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_reroutes_a_tripped_primary_to_its_twin_without_dialling_it() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -7960,13 +7175,6 @@ mod pools_door_walk_and_breaker {
     }
 }
 
-// ── F25 REHOME: THE FRONT DOOR'S REFUSALS IN EVERY CALLER DIALECT ───────────────────────────────
-//
-// The previous release's engine tests of what a caller is told before any far end is dialled: a
-// credential the door refuses, a spent budget, a rate limit, a pool the key may not reach, a
-// misdirected ad-hoc route, each rendered in the caller's own dialect. Each is driven here through
-// the composed door, the refusal real (the governance book enforcing a configured group), the
-// dialects' paths and bodies the plane's own door words.
 #[cfg(linked_driver_proofs)]
 mod pools_door_refusals {
     use super::*;
@@ -7975,7 +7183,6 @@ mod pools_door_refusals {
 
     use super::super::hook_seat_tests::{DoorRig, FarEnd};
 
-    /// One group limit of `amount` `metric` per `per`.
     fn limit(metric: LimitMetric, amount: u64, per: LimitWindow) -> LimitCfg {
         LimitCfg {
             metric,
@@ -7989,19 +7196,15 @@ mod pools_door_refusals {
         }
     }
 
-    /// A door word that is a JSON request body.
     fn body_word(key: &str) -> serde_json::Value {
         serde_json::from_str(door_word(key)).expect("a JSON request body")
     }
 
-    /// A chat-shaped request on pool `p`.
     fn chat_on_p() -> serde_json::Value {
         serde_json::json!({"model": "p", "max_tokens": 16,
             "messages": [{"role": "user", "content": "hi"}]})
     }
 
-    /// Every caller dialect's path onto pool `p` and a request in that dialect: chat, messages,
-    /// the second chat surface, the respond surface, generate, converse.
     fn every_dialect() -> Vec<(&'static str, serde_json::Value)> {
         vec![
             ("/v1/chat/completions", chat_on_p()),
@@ -8013,19 +7216,15 @@ mod pools_door_refusals {
         ]
     }
 
-    /// A body as JSON.
     fn json_of(body: &[u8]) -> serde_json::Value {
         serde_json::from_slice(body)
             .unwrap_or_else(|e| panic!("a JSON envelope ({e}): {}", String::from_utf8_lossy(body)))
     }
 
-    /// A head field as text.
     fn field<'h>(head: &'h axum::http::HeaderMap, name: &str) -> Option<&'h str> {
         head.get(name).and_then(|v| v.to_str().ok())
     }
 
-    /// A canonical UUID-v4: five dash-separated lowercase-hex groups 8-4-4-4-12, version nibble 4,
-    /// variant nibble 8, 9, a or b.
     fn assert_uuid_v4_shaped(id: &str) {
         let groups: Vec<&str> = id.split('-').collect();
         assert_eq!(
@@ -8045,7 +7244,6 @@ mod pools_door_refusals {
         );
     }
 
-    /// One request carrying `x-api-key: wrong-token` and the previous release's body.
     async fn with_wrong_key(rig: &DoorRig, path: &str) -> (u16, axum::http::HeaderMap, Vec<u8>) {
         rig.send_bare(
             "POST",
@@ -8057,7 +7255,6 @@ mod pools_door_refusals {
         .await
     }
 
-    /// A rig over one far end (which no refusal below may reach).
     async fn keyed(instance: &'static str) -> (DoorRig, FarEnd) {
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let rig = rig(
@@ -8071,17 +7268,6 @@ mod pools_door_refusals {
         (rig, far)
     }
 
-    /// THE REFUSED CREDENTIAL IN EVERY DIALECT'S OWN ENVELOPE (F25 row 64; legacy
-    /// `auth_native_envelope_tests::test_unauthorized_response_is_json_with_native_envelope`): a
-    /// caller presenting a wrong key is refused before routing, in its path's dialect: generate on
-    /// the beta and the stable path, 400 `application/json`, `error.code` 400, `error.status`
-    /// `INVALID_ARGUMENT`; messages 401, `type: error`, `error.type: authentication_error`; chat 401,
-    /// no top-level `type`, `error.type: authentication_error`, `error.code: invalid_api_key`; the
-    /// respond surface `error.code: invalid_api_key` with an `error.param`; the second chat
-    /// surface a bare top-level `message`, no `error`, no `type`; converse 403 with
-    /// `x-amzn-errortype: AccessDeniedException`, a UUID-v4 `x-amzn-requestid` and
-    /// `__type: AccessDeniedException`, no `error`. Nothing is dialled. RED: any dialect answered
-    /// in another's envelope, or with another status.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_wrong_key_in_every_dialects_own_envelope() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8144,12 +7330,6 @@ mod pools_door_refusals {
         assert_eq!(far.served(), 0, "no refusal is dialled");
     }
 
-    /// THE SECOND CHAT SURFACE AND THE RESPOND SURFACE REFUSE A WRONG KEY NATIVELY (F25 row 68;
-    /// legacy `auth_native_envelope_tests::test_cohere_and_responses_ingress_token_mode_native_401`):
-    /// `x-api-key: wrong-token` on the second chat surface is 401 `application/json`, a bare
-    /// top-level `message`, no `error` and no `type`; on the respond surface 401
-    /// `application/json`, `error.type: authentication_error`, `error.code: invalid_api_key`. RED:
-    /// either answered in another dialect's envelope.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_wrong_key_on_the_second_chat_and_respond_surfaces() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8174,12 +7354,6 @@ mod pools_door_refusals {
         assert_eq!(answer["error"]["code"], "invalid_api_key", "{answer}");
     }
 
-    /// CONVERSE REFUSES A WRONG BEARER WITH A 403 (F25 row 69; legacy
-    /// `auth_native_envelope_tests::test_bedrock_ingress_wrong_token_is_403_native_envelope`):
-    /// `Authorization: Bearer wrong-token` on the converse path is 403 (never 401),
-    /// `x-amzn-errortype: AccessDeniedException`, a UUID-v4 `x-amzn-requestid`, content-type
-    /// `application/json`, body `__type: AccessDeniedException`. RED: a 401, or either head field
-    /// missing or another value.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_wrong_bearer_on_converse_with_a_403() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8203,11 +7377,6 @@ mod pools_door_refusals {
         assert_eq!(json_of(&body)["__type"], "AccessDeniedException");
     }
 
-    /// GENERATE REFUSES A WRONG KEY AS A BAD ARGUMENT, ON BOTH ITS PATHS (F25 row 70; legacy
-    /// `auth_native_envelope_tests::test_gemini_ingress_wrong_token_is_native_bad_key_envelope`):
-    /// `x-goog-api-key: wrong-token` on the beta and the stable generate path is 400
-    /// `application/json`, `error.code` 400, `error.status: INVALID_ARGUMENT`. RED: either path
-    /// answered 401 or in another envelope.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_wrong_key_on_both_generate_paths_as_a_bad_argument() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8237,8 +7406,6 @@ mod pools_door_refusals {
         }
     }
 
-    /// A rig whose key's group `bgrp` caps its all-time budget at 100 cents with 250 cents (250
-    /// requests at a one-cent fee) already spent and hydrated.
     async fn over_budget(instance: &'static str) -> (DoorRig, FarEnd) {
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let limits = [limit(LimitMetric::Budget, 100, LimitWindow::Total)];
@@ -8255,7 +7422,6 @@ mod pools_door_refusals {
         (rig, far)
     }
 
-    /// A rig whose key's group admits no request a minute.
     async fn over_rpm(instance: &'static str) -> (DoorRig, FarEnd) {
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let limits = [limit(LimitMetric::Requests, 0, LimitWindow::Minute)];
@@ -8271,12 +7437,6 @@ mod pools_door_refusals {
         (rig, far)
     }
 
-    /// A SPENT GROUP BUDGET IN THE MESSAGES DIALECT (F25 row 140; legacy
-    /// `forward_pool_integration_tests::test_governance_budget_over_quota`): a key in group `bgrp`,
-    /// its 100-cent all-time cap spent (250 cents seeded and hydrated), posting on the messages path
-    /// is refused 429 before any far dial, `application/json`, body `type: error`, `error.type:
-    /// billing_error` (the dialect's own billing word, never another dialect's quota token). RED:
-    /// the request admitted, another status, or another error type.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_in_the_messages_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8293,9 +7453,6 @@ mod pools_door_refusals {
         assert_eq!(far.served(), 0, "refused before any far dial");
     }
 
-    /// A SPENT BUDGET ON CHAT (F25 row 141; legacy
-    /// `forward_pool_integration_tests::test_budget_over_quota_openai_envelope`): 429,
-    /// `application/json`, `error.type: insufficient_quota`. RED: another status or type.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_on_chat() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8308,10 +7465,6 @@ mod pools_door_refusals {
         assert_eq!(answer["error"]["type"], "insufficient_quota", "{answer}");
     }
 
-    /// A SPENT BUDGET ON THE RESPOND SURFACE (F25 row 142; legacy
-    /// `forward_pool_integration_tests::test_budget_over_quota_responses_envelope`): 429,
-    /// `error.type` and `error.code` both `insufficient_quota` (the code never null). RED: a null
-    /// code, another type or status.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_on_the_respond_surface() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8330,9 +7483,6 @@ mod pools_door_refusals {
         assert_eq!(answer["error"]["code"], "insufficient_quota", "{answer}");
     }
 
-    /// A SPENT BUDGET ON THE SECOND CHAT SURFACE (F25 row 143; legacy
-    /// `forward_pool_integration_tests::test_budget_over_quota_cohere_envelope`): 429, a string
-    /// top-level `message`, no `error`, no `type`. RED: a wrapped envelope.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_on_the_second_chat_surface() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8354,9 +7504,6 @@ mod pools_door_refusals {
         );
     }
 
-    /// A SPENT BUDGET ON GENERATE (F25 row 144; legacy
-    /// `forward_pool_integration_tests::test_budget_over_quota_gemini_envelope`): 429,
-    /// `error.code` 429, `error.status: RESOURCE_EXHAUSTED`. RED: another code or status word.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_on_generate() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8375,12 +7522,6 @@ mod pools_door_refusals {
         assert_eq!(answer["error"]["status"], "RESOURCE_EXHAUSTED", "{answer}");
     }
 
-    /// A SPENT BUDGET ON CONVERSE (F25 row 145; legacy
-    /// `forward_pool_integration_tests::test_budget_over_quota_bedrock_envelope`): 1.5.5's 400,
-    /// `x-amzn-errortype: ServiceQuotaExceededException`, an `x-amzn-requestid`, body `__type:
-    /// ServiceQuotaExceededException` (OWNER 2026-10-27: a spent budget is the non-retryable quota
-    /// refusal the plane declares in its refusal table, not the `ThrottlingException` every AWS SDK
-    /// retries). RED: a 429 throttle, or either field missing or another value.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_on_converse() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8402,10 +7543,6 @@ mod pools_door_refusals {
         assert_eq!(json_of(&body)["__type"], "ServiceQuotaExceededException");
     }
 
-    /// THE REQUESTS-A-MINUTE LIMIT (F25 row 146; legacy
-    /// `forward_pool_integration_tests::test_governance_rate_limit_429`): a key in a group allowing
-    /// 2 requests a minute is let through twice (each served), and its third request is refused 429
-    /// with a `Retry-After`. RED: a third admission, or a refusal without its wait.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_the_request_past_its_groups_rate() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8421,7 +7558,7 @@ mod pools_door_refusals {
             },
         )
         .await;
-        // Not across a minute's roll: start the three requests well inside one window.
+
         let into_window = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("after the epoch")
@@ -8442,10 +7579,6 @@ mod pools_door_refusals {
         assert_eq!(far.served(), 2);
     }
 
-    /// AN EXHAUSTED RATE ON CHAT (F25 row 147; legacy
-    /// `forward_pool_integration_tests::test_rate_limit_429_openai_native_envelope`): 429,
-    /// `application/json`, a `Retry-After`, `error.type: rate_limit_error`. RED: another type, or
-    /// no wait.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_an_exhausted_rate_on_chat() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8459,9 +7592,6 @@ mod pools_door_refusals {
         assert_eq!(far.served(), 0);
     }
 
-    /// AN EXHAUSTED RATE ON THE RESPOND SURFACE (F25 row 148; legacy
-    /// `forward_pool_integration_tests::test_rate_limit_429_responses_native_envelope`): 429, a
-    /// `Retry-After`, `error.type: rate_limit_error`. RED: another type, or no wait.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_an_exhausted_rate_on_the_respond_surface() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8479,10 +7609,6 @@ mod pools_door_refusals {
         assert_eq!(json_of(&body)["error"]["type"], "rate_limit_error");
     }
 
-    /// AN EXHAUSTED RATE ON THE SECOND CHAT SURFACE (F25 row 149; legacy
-    /// `forward_pool_integration_tests::test_rate_limit_429_cohere_native_envelope`): 429, a
-    /// `Retry-After`, a string top-level `message`, no `error`, no `type`. RED: a wrapped
-    /// envelope, or no wait.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_an_exhausted_rate_on_the_second_chat_surface() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8505,10 +7631,6 @@ mod pools_door_refusals {
         );
     }
 
-    /// AN EXHAUSTED RATE ON GENERATE (F25 row 150; legacy
-    /// `forward_pool_integration_tests::test_rate_limit_429_gemini_native_envelope`): 429, a
-    /// `Retry-After`, `error.code` 429, `error.status: RESOURCE_EXHAUSTED`. RED: another code or
-    /// status word, or no wait.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_an_exhausted_rate_on_generate() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8528,10 +7650,6 @@ mod pools_door_refusals {
         assert_eq!(answer["error"]["status"], "RESOURCE_EXHAUSTED", "{answer}");
     }
 
-    /// AN EXHAUSTED RATE ON CONVERSE (F25 row 151; legacy
-    /// `forward_pool_integration_tests::test_rate_limit_429_bedrock_native_envelope`): 429, a
-    /// `Retry-After`, `x-amzn-errortype: ThrottlingException`, an `x-amzn-requestid`, body
-    /// `__type: ThrottlingException`. RED: either field missing or another value, or no wait.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_an_exhausted_rate_on_converse() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8554,11 +7672,6 @@ mod pools_door_refusals {
         assert_eq!(json_of(&body)["__type"], "ThrottlingException");
     }
 
-    /// NO INTERNAL PREFIX ON A FORWARD-LAYER ERROR, IN ANY DIALECT (F25 row 354; legacy
-    /// `ingress_indistinguishability_tests::test_forward_layer_errors_carry_no_router_prefix`): in
-    /// every caller dialect, a pool whose members are all down, and (for the dialects naming their
-    /// model in the body) a pool that does not exist, answer a body that never carries the
-    /// internal `router:` prefix. RED: the prefix on any of them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_puts_no_internal_prefix_on_a_forward_layer_error() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8595,8 +7708,6 @@ mod pools_door_refusals {
         }
     }
 
-    /// The previous release's leak check: a governance refusal body never says `virtual key`, the
-    /// key's id, the pool's name or the product's name.
     fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
         assert!(!body.contains("virtual key"), "{body}");
         assert!(!body.contains(key_id), "the key id: {body}");
@@ -8604,13 +7715,6 @@ mod pools_door_refusals {
         assert!(!body.to_lowercase().contains("busbar"), "{body}");
     }
 
-    /// GOVERNANCE REFUSALS LEAK NO INTERNAL VOCABULARY (F25 row 427; legacy
-    /// `ingress_integration_tests::test_governance_rejection_bodies_leak_no_internal_vocab`): a key
-    /// restricted to another pool is refused 403; a key whose group has a zero all-time budget is
-    /// refused 429 on chat and 400 `ServiceQuotaExceededException` on converse (OWNER 2026-10-27); a key whose group
-    /// allows no request a minute is refused 429 with a `Retry-After`; and none of those bodies
-    /// says `virtual key`, the key's id, the pool's name or the product's name. RED: a refusal of
-    /// another status, or any of those words on the wire.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_doors_governance_refusals_leak_no_internal_vocabulary() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8685,12 +7789,6 @@ mod pools_door_refusals {
         assert_eq!(far.served(), 0, "no refusal is dialled");
     }
 
-    /// A PROVIDER SEGMENT THAT IS NOT THE MODEL'S IS A 400 IN THE CALLER'S ENVELOPE (F25 row 462;
-    /// legacy `ingress_integration_tests::test_adhoc_provider_mismatch_400_anthropic_envelope_via_router`):
-    /// an ad-hoc messages route `/<provider>/<model>/...` naming model `m0` under provider `oai1`
-    /// (not the model's) is refused 400, content-type starting `application/json`, body `type:
-    /// error`, `error.type: invalid_request_error`. RED: the model served anyway, or another
-    /// status or envelope.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_an_ad_hoc_route_naming_the_wrong_provider() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8725,11 +7823,6 @@ mod pools_door_refusals {
         assert_eq!((first.served(), second.served()), (0, 0));
     }
 
-    /// AN EXHAUSTED RATE ON EVERY CALLER DIALECT (F25 row 468; legacy
-    /// `ingress_integration_tests::test_governance_rate_limit_429_native_envelope_all_ingress`): a
-    /// key whose group allows no request a minute is refused 429 with a `Retry-After` on all six
-    /// caller dialects; generate's `error.status` is `RESOURCE_EXHAUSTED`, converse carries
-    /// `x-amzn-errortype` and `x-amzn-requestid`. RED: any dialect answered otherwise.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_an_exhausted_rate_in_every_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8750,12 +7843,6 @@ mod pools_door_refusals {
         assert_eq!(far.served(), 0);
     }
 
-    /// A SPENT BUDGET ON EVERY CALLER DIALECT (F25 row 469; legacy
-    /// `ingress_integration_tests::test_governance_over_budget_native_envelope_all_ingress`): a key
-    /// over its group's all-time budget is refused 429 on chat, messages, the second chat surface,
-    /// the respond surface and generate, and 400 with body `__type: ServiceQuotaExceededException` on
-    /// converse (OWNER 2026-10-27: the plane's declared quota refusal). RED: any dialect answered
-    /// otherwise.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_in_every_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8773,11 +7860,6 @@ mod pools_door_refusals {
         assert_eq!(far.served(), 0);
     }
 
-    /// A KEY NAMING A GROUP NOBODY CONFIGURED FAILS CLOSED (F25 row 473; legacy
-    /// `ingress_integration_tests::test_missing_group_fails_closed_at_ingress`): a governed key whose
-    /// group `ghost` is not configured is refused 429 (never admitted uncapped), and the body names
-    /// the fix: `group 'ghost' is not configured`. RED: the request served, or the missing group
-    /// not named.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_fails_closed_on_a_key_naming_an_unconfigured_group() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8801,11 +7883,6 @@ mod pools_door_refusals {
         assert_eq!(far.served(), 0);
     }
 
-    /// PB-19, THE RENDERED REFUSAL IS THE DIRECT ADMISSION'S, BYTE FOR BYTE: a key naming a group
-    /// this node's config does not know is refused by the pools door with exactly the status, kind
-    /// and message the kernel's one limit-refusal spelling renders for the direct admission's own
-    /// `MissingGroup` block over the same book and card — nothing reworded on the door path — and
-    /// the far end is never dialled.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_doors_missing_group_refusal_is_the_direct_admissions_bytes() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8832,8 +7909,6 @@ mod pools_door_refusals {
         let (direct_status, direct_kind, direct_message, _) =
             busbar_kernel::ingress::limit_refusal("", &blocked);
 
-        // The over-quota kind is OpenAI's own `insufficient_quota`, which the chat dialect's native
-        // envelope carries as both its `type` and its `code` (1.5.5's pairing, never a null code).
         assert_eq!(direct_kind, "insufficient_quota");
 
         let (status, _, body) = rig.chat().await;
@@ -8854,14 +7929,10 @@ mod pools_door_refusals {
     }
 }
 
-// ── what only the plane reads, the kernel routes on (ARCHITECT Q1 ArriveOut, 2026-10-05) ────────
-
-/// A streamed far end's head: chunked, so a far end that closes before its last chunk CUT it.
 #[cfg(linked_driver_proofs)]
 const STREAM_HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
                            transfer-encoding: chunked\r\nconnection: close\r\n\r\n";
 
-/// The streamed answer's frames, in order: a delta, the stop, the usage, the end.
 #[cfg(linked_driver_proofs)]
 const FRAMES: [&str; 4] = [
     r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}"#,
@@ -8870,13 +7941,11 @@ const FRAMES: [&str; 4] = [
     "[DONE]",
 ];
 
-/// One event-stream frame, as a chunk.
 #[cfg(linked_driver_proofs)]
 fn frame(data: &str) -> Vec<u8> {
     chunk(format!("data: {data}\n\n").as_bytes())
 }
 
-/// A stream that pauses `pause_ms` after its first frame, then ends cleanly.
 #[cfg(linked_driver_proofs)]
 fn stream_pausing(pause_ms: u64) -> SeatScript {
     SeatScript {
@@ -8891,25 +7960,12 @@ fn stream_pausing(pause_ms: u64) -> SeatScript {
     }
 }
 
-/// A caller's chat on pool `p` asking for its answer streamed.
 #[cfg(linked_driver_proofs)]
 fn streamed_chat() -> serde_json::Value {
     serde_json::json!({"model": "p", "stream": true, "max_tokens": 16,
         "messages": [{"role": "user", "content": "hi"}]})
 }
 
-/// THE STREAM CEILING, NOT THE POOL'S TIMEOUT, bounds a streamed answer (the plane states
-/// `ROUTE_STREAM`; v1.5.5 bounded a stream's whole send by the stream ceiling): a stream that
-/// outlives its pool's two-second failover timeout is delivered whole. Before the plane stated the
-/// stream, the door cut it at the pool's timeout.
-///
-/// The pool's timeout is two seconds, not one, because the walk's deadline is whole wall-clock
-/// seconds (`RequestCtx::expired`, as 1.5.5's): a one-second budget whose walk starts late in a
-/// wall second is spent at the next second boundary, so the first pick could find it expired (a
-/// 503 request-timeout shed before anything is dialled) whenever that boundary fell between the
-/// walk's start and its pick. Two seconds leaves the pick at least one whole second; the far end's
-/// three-second pause still outlives the whole budget, so a door that bounded the stream by it
-/// would cut the answer.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_timeout() {
@@ -8936,9 +7992,6 @@ async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_time
     );
 }
 
-/// THE STREAM CEILING CUTS a streamed answer that outlives it, however long its pool's timeout
-/// (RED before the plane stated `ROUTE_STREAM`: the door read the stream as buffered and waited the
-/// pool's timeout out).
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_cuts_a_stream_at_the_stream_ceiling() {
@@ -8973,9 +8026,6 @@ async fn the_pools_door_cuts_a_stream_at_the_stream_ceiling() {
     );
 }
 
-/// A MID-STREAM CUT IS NOT A REFUND (Part 2 #62): a streamed answer the far end cuts after its
-/// first byte reached the caller keeps the member's lifetime budget unit it spent (RED before the
-/// plane stated `ROUTE_STREAM`: the door refunded it as a buffered answer's).
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte() {
@@ -9007,8 +8057,6 @@ async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_by
     );
 }
 
-/// THE CONTROL: a buffered answer the far end cuts reaches the caller whole or not at all, so its
-/// budget unit is given back (v1.5.5 `engine/mod.rs:329-353`).
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_refunds_the_budget_unit_of_a_buffered_answer_cut() {
@@ -9037,12 +8085,9 @@ async fn the_pools_door_refunds_the_budget_unit_of_a_buffered_answer_cut() {
     assert_eq!(rig.app.store.lane_budget_remaining(0), Some(5));
 }
 
-/// A whole same-dialect answer that reports 1500 + 90 tokens.
 #[cfg(linked_driver_proofs)]
 const WHOLE: &str = r#"{"id":"chatcmpl-9","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1500,"completion_tokens":90,"total_tokens":1590}}"#;
 
-/// A far end that answers [`WHOLE`] under its full length but writes only `prefix` of it, then
-/// holds the connection `hold_ms` and closes (a cut).
 #[cfg(linked_driver_proofs)]
 fn whole_cut_after(prefix: usize, hold_ms: u64) -> SeatScript {
     SeatScript {
@@ -9059,10 +8104,6 @@ fn whole_cut_after(prefix: usize, hold_ms: u64) -> SeatScript {
     }
 }
 
-/// OWNER RULING Q31, oracle cell `route.failover|fo|primary-cut-body` (legacy
-/// `nonstream_drop_billing_tests`, rows 338/342): a same-dialect non-stream answer the far end cuts
-/// AFTER its `usage` bills exactly what the far end reported; one cut BEFORE its `usage` reported
-/// nothing and bills nothing, never a floor over the relayed bytes.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_reported() {
@@ -9096,11 +8137,6 @@ async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_repo
     assert_eq!(rig.tokens_after().await, 0, "no report, no charge");
 }
 
-/// Legacy row 338: a same-dialect non-stream answer the CALLER drops mid-relay bills no tokens, as
-/// 1.5.5 billed none (v1.5.5 `crates/busbar/src/proxy/response_body.rs:620-625`: a partially
-/// buffered same-protocol body is not billed on a mid-buffer drop). ARCHITECT ruling 2026-10-15:
-/// v1.5.5 wins over item 367's relayed floor (Q33 (a), told, never signed), and no floor is added
-/// (#77(2)).
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_nothing_for_a_non_stream_answer_the_caller_dropped_mid_relay() {
@@ -9134,9 +8170,9 @@ async fn the_pools_door_bills_nothing_for_a_non_stream_answer_the_caller_dropped
         .expect("a frame")
         .expect("relayed");
     assert!(first.data_ref().is_some_and(|b| !b.is_empty()));
-    // THE DISCONNECT: the caller goes before the answer's end.
+
     drop(body);
-    // The driver finishes a buried unit at the start of its next one.
+
     let rig = std::sync::Arc::new(rig);
     let next = {
         let rig = std::sync::Arc::clone(&rig);
@@ -9150,13 +8186,6 @@ async fn the_pools_door_bills_nothing_for_a_non_stream_answer_the_caller_dropped
     next.abort();
 }
 
-// ── F25 REHOME: THE MONEY A SERVED UNIT LEAVES ──────────────────────────────────────────────────
-//
-// The previous release's engine tests of what a unit bills: the tokens a whole, cut or dropped
-// answer reports, the fee a refused or failed unit keeps or never takes, the metering row a
-// streamed unit writes, and the limits the ledger then enforces. Each is driven here through the
-// composed door, its figures read off the key's ledger, the group's bucket, the metering series
-// and the unit's sealed audit record.
 #[cfg(linked_driver_proofs)]
 mod pools_door_money {
     use super::*;
@@ -9171,12 +8200,10 @@ mod pools_door_money {
 
     use super::super::hook_seat_tests::DoorRig;
 
-    /// The store's clock.
     fn now() -> u64 {
         busbar_kernel::store::now()
     }
 
-    /// A recording far end answering its requests with `replies`, in order.
     async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
         let state = Arc::new(MockServerState::new());
         for reply in replies.into_iter().rev() {
@@ -9186,7 +8213,6 @@ mod pools_door_money {
         (state, server)
     }
 
-    /// One group limit of `amount` `metric` per `per`.
     fn limit(metric: LimitMetric, amount: u64, per: LimitWindow) -> LimitCfg {
         LimitCfg {
             metric,
@@ -9200,13 +8226,10 @@ mod pools_door_money {
         }
     }
 
-    /// The messages dialect's whole answer reporting 1500 + 90 tokens.
     fn answer_1590() -> &'static str {
         door_word("messages_answer_usage")
     }
 
-    /// A far end that announces `body` whole but writes only its first `prefix` bytes, holds the
-    /// connection `hold_ms`, and closes (a cut).
     fn cut_after(body: &str, prefix: usize, hold_ms: u64) -> SeatScript {
         SeatScript {
             head: format!(
@@ -9222,13 +8245,11 @@ mod pools_door_money {
         }
     }
 
-    /// A caller's request in the messages dialect on pool `p`.
     fn messages_on_p(stream: bool) -> serde_json::Value {
         serde_json::json!({"model": "p", "max_tokens": 50, "stream": stream,
             "messages": [{"role": "user", "content": "hi"}]})
     }
 
-    /// A rig over one member of the messages dialect at `port`.
     async fn messages_member(instance: &'static str, port: u16) -> DoorRig {
         rig(
             instance,
@@ -9241,7 +8262,6 @@ mod pools_door_money {
         .await
     }
 
-    /// The unit's sealed record whose finish is `finish`, once sealed (bounded).
     async fn sealed_as(
         rig: &DoorRig,
         finish: busbar_kernel_audit::FinishClass,
@@ -9264,9 +8284,6 @@ mod pools_door_money {
         }
     }
 
-    /// The token figures a sealed record reports: each token line's class and quantity. The token
-    /// classes are the contract's four reserved units (`records::RESERVED_UNITS`: input, output,
-    /// cache read, cache write), the names a record line carries them under.
     fn token_lines(record: &busbar_kernel_audit::AuditRecord) -> Vec<(String, u64)> {
         record
             .usage
@@ -9277,7 +8294,6 @@ mod pools_door_money {
             .collect()
     }
 
-    /// The tokens a sealed record reports, summed.
     fn reported(record: &busbar_kernel_audit::AuditRecord) -> u64 {
         token_lines(record)
             .iter()
@@ -9285,7 +8301,6 @@ mod pools_door_money {
             .sum()
     }
 
-    /// Start three requests well inside one minute's window.
     async fn inside_one_minute() {
         let into_window = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -9297,13 +8312,6 @@ mod pools_door_money {
         }
     }
 
-    /// A WHOLE ANSWER DROPPED BY ITS CALLER BILLS NO TOKENS (F25 row 28; legacy
-    /// `nonstream_drop_billing_tests::a_same_protocol_nonstream_body_dropped_mid_relay_bills_no_tokens_as_in_1_5_5`):
-    /// a same-dialect whole answer (usage 1500/90) whose caller goes after its first bytes, the
-    /// prefix before `"stop_reason"` relayed verbatim, bills no tokens, as 1.5.5 billed none (v1.5.5
-    /// `crates/busbar/src/proxy/response_body.rs:620-625`; ARCHITECT ruling 2026-10-15 retired item
-    /// 367's relayed floor, #77(2)); the unit ends Partial, and its sealed record reports that same
-    /// nothing. RED: any token billed, or the record disagreeing with the ledger.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_nothing_for_a_whole_answer_its_caller_dropped() {
         use http_body_util::BodyExt as _;
@@ -9339,9 +8347,9 @@ mod pools_door_money {
             whole.as_bytes()[..prefix].to_vec(),
             "the prefix relays verbatim"
         );
-        // THE DISCONNECT: the caller goes before the answer's end.
+
         drop(body);
-        // The driver finishes a buried unit at the start of its next one.
+
         let rig = Arc::new(rig);
         let next = {
             let rig = Arc::clone(&rig);
@@ -9362,11 +8370,6 @@ mod pools_door_money {
         );
     }
 
-    /// A WHOLE ANSWER RELAYED WHOLE BILLS ITS OWN USAGE ONCE (F25 row 29; legacy
-    /// `nonstream_drop_billing_tests::a_same_protocol_nonstream_body_relayed_whole_bills_its_own_usage_once`):
-    /// a same-dialect whole answer reporting 1500 + 90 reaches the caller as those very bytes, the
-    /// key's ledger holds exactly 1590 tokens (counted once), and the unit ends Complete. RED: a
-    /// rewritten body, a figure other than 1590, or the end not Complete.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_a_whole_answer_its_own_usage_once() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9395,10 +8398,6 @@ mod pools_door_money {
         assert_eq!(reported(&record), 1590);
     }
 
-    /// A WHOLE ANSWER THE FAR END CUTS BEFORE ITS USAGE BILLS NOTHING (F25 row 31; legacy
-    /// `nonstream_drop_billing_tests::a_nonstream_body_cut_by_the_upstream_before_its_usage_bills_nothing`):
-    /// the far end closes before `"stop_reason"` (no usage reported): the ledger holds 0 tokens, the
-    /// unit ends Partial, and its record reports no tokens. RED: a floor or any figure billed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_nothing_for_a_whole_answer_cut_before_its_usage() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9424,10 +8423,6 @@ mod pools_door_money {
         );
     }
 
-    /// A WHOLE ANSWER THE FAR END CUTS AFTER ITS USAGE BILLS WHAT IT REPORTED (F25 row 32; legacy
-    /// `nonstream_drop_billing_tests::a_nonstream_body_cut_by_the_upstream_after_its_usage_bills_what_it_reported`):
-    /// the far end closes one byte short of the end, after its usage (1500/90): the ledger holds
-    /// exactly 1590, and the unit ends Partial. RED: 0, a floor, or the end sealed Complete.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_what_a_cut_whole_answer_reported() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9446,7 +8441,6 @@ mod pools_door_money {
         let _ = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
     }
 
-    /// The far end's chat answer (usage 100 in, 60 out) the two token-limit cells are answered with.
     fn chat_160() -> serde_json::Value {
         serde_json::json!({
             "model": "glm-4.5",
@@ -9456,8 +8450,6 @@ mod pools_door_money {
         })
     }
 
-    /// A rig whose key's group allows 30 tokens a minute, its one member (the default dialect)
-    /// answering `replies`.
     async fn thirty_tokens_a_minute(
         instance: &'static str,
         replies: Vec<MockResponse>,
@@ -9477,11 +8469,6 @@ mod pools_door_money {
         (rig, server)
     }
 
-    /// A TRANSLATED WHOLE ANSWER'S TOKENS ARE CHARGED, AND THE TOKEN LIMIT THEN REFUSES (F25 row
-    /// 133; legacy `forward_pool_integration_tests::test_cross_protocol_nonstream_records_tokens_for_tpm`):
-    /// a messages caller served by a member of another dialect reporting 160 tokens gets its 200,
-    /// the far end's model name preserved, and its key's group (30 tokens a minute) refuses the
-    /// next request 429. RED: the translated usage not charged, so the limit never refuses.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_charges_a_translated_answers_tokens_against_the_token_limit() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9518,11 +8505,6 @@ mod pools_door_money {
         assert_eq!(status, 429, "the charged tokens make the limit refuse");
     }
 
-    /// A TRANSLATED STREAM'S TOKENS ARE CHARGED AT ITS END, AND THE TOKEN LIMIT THEN REFUSES (F25
-    /// row 134; legacy `forward_pool_integration_tests::test_cross_protocol_stream_records_tokens_for_tpm`):
-    /// a streamed messages caller served by a member of another dialect whose last frame reports
-    /// 160 tokens gets its 200 stream, and its key's group (30 tokens a minute) refuses the next
-    /// request 429. RED: the stream-end usage not charged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_charges_a_translated_stream_tokens_against_the_token_limit() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9563,12 +8545,6 @@ mod pools_door_money {
         );
     }
 
-    /// AN OVER-CAP ANSWER KEEPS ITS BUDGET UNIT (F25 row 360; legacy
-    /// `ingress_indistinguishability_tests::test_truncated_body_does_not_refund_budget`): with the
-    /// translation cap at 4096 bytes, a member of another dialect (lifetime budget 1) answering a
-    /// body over the cap is a 500 to the messages caller, and the member's budget unit stays spent
-    /// (remaining 0): our cap, not the far end's fault, is never refunded. RED: the unit refunded
-    /// (remaining 1).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_keeps_the_budget_unit_of_an_over_cap_answer() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9596,8 +8572,7 @@ mod pools_door_money {
             RigOpts {
                 members: &[(server.address().port(), 1)],
                 lane_budget: Some(1),
-                // The cap reaches the door as the deployment's `limits` (its settings), not as
-                // the process-wide install above, which only the kernel's own reads see.
+
                 request_body_max_bytes: Some(CAP),
                 ..RigOpts::default()
             },
@@ -9619,11 +8594,6 @@ mod pools_door_money {
         );
     }
 
-    /// A POOL-ACCESS REFUSAL IS COUNTED AND CHARGES NO FEE (F25 row 424; legacy
-    /// `ingress_integration_tests::test_governance_rejection_is_counted_via_finish`): a key allowed
-    /// only another pool is refused 403 on `p`; the refusal raises `busbar_requests_total` under
-    /// `outcome="client_error"` and the request-duration count, and the key's ledger takes no fee
-    /// (spend 0, nothing billable). RED: the refusal invisible to the scrape, or a fee charged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_a_pool_refusal_and_charges_no_fee() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9667,12 +8637,6 @@ mod pools_door_money {
         assert_eq!(far.served(), 0);
     }
 
-    /// A ZERO BUDGET NAMES ITS GROUP AND CHARGES NOTHING (F25 row 472; legacy
-    /// `ingress_integration_tests::test_group_blocked_429_names_the_budget_group`): a key in group
-    /// `finance`, whose all-time budget is 0, is refused 429; the body carries `insufficient_quota`
-    /// and names the blocking bucket, `group 'finance' budget per total exhausted`, never the key's
-    /// id; and the key's recorded requests stay 0. RED: the bucket unnamed, the key id on the wire,
-    /// or the refused request recorded.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_names_the_blocking_group_and_records_nothing() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9701,13 +8665,6 @@ mod pools_door_money {
         assert_eq!(requests, 0, "the refused request is not recorded");
     }
 
-    /// A STREAM WITH NO USAGE FRAME BILLS ZERO TOKENS IN EVERY DIALECT (F25 row 618; legacy
-    /// `stream_no_usage_bills_zero_tests::stream_without_usage_frame_bills_zero_on_every_dialect`):
-    /// for each of the six caller dialects, a streamed answer whose far end sends no usage frame is
-    /// served 200, the key's ledger holds 0 tokens and no token spend (its spend is the request fee
-    /// alone), and exactly one metering row is written for the key: model `m0`, requests 1, every
-    /// token tier (input, output, cache read, cache write) 0. RED: tokens invented, a second row,
-    /// or no row.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_zero_tokens_for_a_stream_with_no_usage_in_every_dialect() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9803,13 +8760,6 @@ mod pools_door_money {
         }
     }
 
-    /// A SPENT BUDGET REFUSES AND CHARGES NOTHING, SO NOTHING IS REFUNDED (F25 row 657; legacy
-    /// `admit::over_budget_refuses_with_no_charge_and_nothing_to_refund`): group `bgrp`'s all-time
-    /// bucket seeded with 250 requests at a one-cent fee (250 cents, over its 100-cent cap); its key
-    /// is refused 429, and afterwards the group's bucket still reads 250 requests, 250 cents, 250 on
-    /// its durable row and 250 billable, the key's own ledger 0 throughout; the refusal is sealed as
-    /// `OverBudget` at the Admit step. RED: any counter moved by the refusal, or the refusal stamped
-    /// at another step or reason.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_refuses_a_spent_budget_without_charging_anything() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9863,13 +8813,6 @@ mod pools_door_money {
         );
     }
 
-    /// THE STREAMED AND THE FAILED UNIT LEAVE THE MONEY WHERE 1.5.5 LEFT IT (F25 row 691; legacy
-    /// `chain::the_chain_leaves_the_money_where_the_legacy_plane_leaves_it`): a streamed unit whose
-    /// far end reports 11 in and 7 out accrues 18 tokens and one admitted request, and writes ONE
-    /// metering row for the key (model `m0`, in 11, out 7, cache 0 and 0, requests 1, billable 1);
-    /// a unit whose far end fails keeps its admitted request, accrues no tokens and writes no
-    /// metering row. RED: the stream's tokens not accrued or accrued twice, a failed unit's slot
-    /// refunded, or a row for a unit that delivered nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_leaves_a_streamed_and_a_failed_units_money_where_1_5_5_left_it() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -9953,14 +8896,6 @@ mod pools_door_money {
         );
     }
 
-    /// A STREAM THAT DIED BILLS WHAT IT STREAMED AND KEEPS ITS FEE (F25 row 720; legacy
-    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`; owner
-    /// ruling 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."):
-    /// a streamed answer whose far end reports its usage (11 in, 7 out) and is then cut before its
-    /// end bills those 18 tokens, as its plane ledgered them; it keeps its one request and its one
-    /// fee (billable 1, the 200 that went out is not reversed), and its sealed record reports one
-    /// line per streamed tier: input 11, output 7. RED: the streamed tokens dropped, the fee
-    /// reversed, or the tiers merged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_a_dead_stream_tokens_and_keeps_its_fee() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10009,11 +8944,6 @@ mod pools_door_money {
         );
     }
 
-    /// A 2XX STREAM IS SEALED WITH THE END ITS TAP SAW, NOT THE END ITS STATUS LINE CLAIMS (legacy
-    /// `chain::a_stream_audited_at_its_end_seals_the_class_the_tap_reported`): both answers go out
-    /// under a 200 status line, yet a stream cut after its first frame is sealed `Partial` and a
-    /// transfer that failed before its first byte is sealed `Error`; neither is sealed `Complete`.
-    /// RED: a record sealed from the status line (`Complete`) for an answer that never completed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_seals_a_2xx_stream_with_the_end_its_tap_saw() {
         for (instance, pieces, finish) in [
@@ -10057,10 +8987,6 @@ mod pools_door_money {
     }
 }
 
-/// SESSION AFFINITY (legacy rows 2-4; v1.5.5 `affinity_header_for` and the sticky position): the
-/// plane states the session key it reads (the pool's header, `x-session-id` by default, else chat's
-/// body `system`) and the kernel pins every unit with that key to one member; a unit without one
-/// is spread by the weighted floor.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_pins_a_session_to_one_member() {
@@ -10100,7 +9026,7 @@ async fn the_pools_door_pins_a_session_to_one_member() {
         1,
         "one member served the whole session: {pinned:?}"
     );
-    // The body's `system` is the key when no header names one.
+
     let system = serde_json::json!({"model": "p", "max_tokens": 16, "system": "be brief",
         "messages": [{"role": "user", "content": "hi"}]});
     let before = served();
@@ -10119,7 +9045,7 @@ async fn the_pools_door_pins_a_session_to_one_member() {
         1,
         "one member served the system-keyed session: {moved:?}"
     );
-    // No key: the weighted floor spreads the units.
+
     let before = served();
     for _ in 0..3 {
         assert_eq!(rig.chat().await.0, 200);
@@ -10129,8 +9055,6 @@ async fn the_pools_door_pins_a_session_to_one_member() {
     assert!(moved >= 2, "unkeyed units spread: {before:?} -> {after:?}");
 }
 
-/// A POOL'S OWN AFFINITY HEADER (`affinity.header_name`) is the one its sessions are read from; the
-/// default header is then no key.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
@@ -10184,13 +9108,6 @@ async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
     );
 }
 
-// ── F25 REHOME: WHAT THE SERVED POOLS DOOR COUNTS, ROUTES, PROBES AND SHOWS ─────────────────────
-//
-// The previous release's engine tests of the scrape a served unit leaves (its request count, its
-// duration, its bounded pool label), of the routes a request may take (a fallback pool, an ad-hoc
-// provider route, a model named directly), of the queue and the recovery probe, of the signals the
-// ranking hooks are shown, and of the record an error end seals: each driven here through the
-// composed door to real far ends on loopback.
 #[cfg(linked_driver_proofs)]
 mod pools_door_counts_and_routes {
     use super::*;
@@ -10206,12 +9123,10 @@ mod pools_door_counts_and_routes {
 
     use super::super::hook_seat_tests::DoorRig;
 
-    /// The store's clock.
     fn now() -> u64 {
         busbar_kernel::store::now()
     }
 
-    /// A recording far end answering its requests with `replies`, in order.
     async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
         let state = Arc::new(MockServerState::new());
         for reply in replies.into_iter().rev() {
@@ -10221,18 +9136,15 @@ mod pools_door_counts_and_routes {
         (state, server)
     }
 
-    /// The messages dialect's answer.
     fn messages_answer() -> serde_json::Value {
         serde_json::from_str(door_word("messages_answer")).expect("the answer is JSON")
     }
 
-    /// A caller's request in the messages dialect naming `model`.
     fn messages_naming(model: &str) -> serde_json::Value {
         serde_json::json!({"model": model, "max_tokens": 16,
             "messages": [{"role": "user", "content": "hi"}]})
     }
 
-    /// One request through the door as the keyed caller, its body sent as these very bytes.
     async fn send_bytes(rig: &DoorRig, path: &str, body: &str) -> u16 {
         use tower::ServiceExt as _;
         let req = axum::http::Request::builder()
@@ -10253,8 +9165,6 @@ mod pools_door_counts_and_routes {
         status
     }
 
-    /// The pre-routing refusals counted so far: `busbar_requests_total` under the bounded
-    /// `unresolved` pool label and the `client_error` outcome.
     fn unresolved_client_errors() -> f64 {
         metric_sum(
             busbar_kernel::snapshot::REQUESTS_TOTAL,
@@ -10262,13 +9172,11 @@ mod pools_door_counts_and_routes {
         )
     }
 
-    /// A port nothing listens on.
     fn refusing_port() -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         listener.local_addr().expect("its address").port()
     }
 
-    /// A rig over one far end that answers every request.
     async fn serving(instance: &'static str) -> (DoorRig, super::super::hook_seat_tests::FarEnd) {
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let rig = rig(
@@ -10282,12 +9190,6 @@ mod pools_door_counts_and_routes {
         (rig, far)
     }
 
-    /// A SERVED UNIT IS COUNTED, TIMED AND ITS ATTEMPT COUNTED (F25 rows 372 and 401; legacy
-    /// `ingress_integration_tests::test_finish_emits_request_metrics` and
-    /// `ingress_integration_tests::test_served_request_increments_hot_path_metrics`): a 200 chat on
-    /// pool `p` raises `busbar_requests_total{pool="p",outcome="ok"}`, the request-duration
-    /// histogram's count under `pool="p"`, and `busbar_upstream_attempts_total{pool="p",lane="m0"}`.
-    /// RED: a served request missing from any of the three series.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_times_and_attributes_a_served_unit() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10328,15 +9230,8 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// AN UNKNOWN MODEL NEVER BECOMES A LABEL (F25 row 398; legacy
-    /// `ingress_integration_tests::test_unresolved_model_uses_bounded_pool_label_not_raw_string`):
-    /// a chat naming `zzz-unbounded-cardinality-probe-9f3a` is a 404, the scrape never carries that
-    /// string, and the request is counted under `pool="unresolved"`. RED: the caller's raw model
-    /// string on the scrape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_an_unknown_model_under_the_bounded_label() {
-        // The bounded sentinel is deliberately shared by all unknown models. Run this exact
-        // request in a fresh process so another request cannot supply its counter increase.
         const CHILD: &str = "BUSBAR_T065_UNKNOWN_MODEL_CHILD";
         if std::env::var_os(CHILD).is_none() {
             struct Child(std::process::Child);
@@ -10408,10 +9303,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// A MALFORMED BODY IS COUNTED (F25 row 399; legacy
-    /// `ingress_integration_tests::test_body_model_parse_error_is_observable`): a chat whose body is
-    /// `{ this is not json ` is a 400 and raises `busbar_requests_total{pool="unresolved",
-    /// outcome="client_error"}`. RED: a pre-routing refusal invisible to the scrape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_a_malformed_body() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10426,11 +9317,6 @@ mod pools_door_counts_and_routes {
         assert!(after > before, "{before} -> {after}");
     }
 
-    /// AN UNRESOLVABLE INVOKE BODY IS COUNTED (F25 row 400; legacy
-    /// `ingress_integration_tests::test_bedrock_invoke_unresolvable_body_is_observable`): an invoke
-    /// on the converse dialect's model-scoped path whose body matches no known shape
-    /// (`{"nonsense":1}`) is a 400 and raises the `unresolved` / `client_error` count. RED: the
-    /// refusal invisible to the scrape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_an_unresolvable_invoke_body() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10449,10 +9335,6 @@ mod pools_door_counts_and_routes {
         assert!(after > before, "{before} -> {after}");
     }
 
-    /// A MISSING MODEL IS COUNTED (F25 row 404; legacy
-    /// `ingress_integration_tests::test_body_model_missing_model_is_observable`): a chat with no
-    /// `model` is a 400 and raises the `unresolved` / `client_error` count. RED: the refusal
-    /// invisible to the scrape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_a_missing_model() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10471,10 +9353,6 @@ mod pools_door_counts_and_routes {
         assert!(after > before, "{before} -> {after}");
     }
 
-    /// A NON-OBJECT BODY ON A PATH-MODEL DIALECT IS COUNTED (F25 row 405; legacy
-    /// `ingress_integration_tests::test_path_model_non_object_body_is_observable`): a converse
-    /// request whose body is `[1,2,3]` is a 400 and raises the `unresolved` / `client_error` count.
-    /// RED: the refusal invisible to the scrape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_a_non_object_body() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10493,10 +9371,6 @@ mod pools_door_counts_and_routes {
         assert!(after > before, "{before} -> {after}");
     }
 
-    /// AN ACTION THE DOOR DOES NOT SERVE IS COUNTED (F25 row 406; legacy
-    /// `ingress_integration_tests::test_gemini_unsupported_action_is_observable`): the generate
-    /// dialect's token-count action is a 404 and raises the `unresolved` / `client_error` count.
-    /// RED: the refusal invisible to the scrape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_an_unsupported_action() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10515,12 +9389,6 @@ mod pools_door_counts_and_routes {
         assert!(after > before, "{before} -> {after}");
     }
 
-    /// THE POOL LABEL IS BOUNDED (F25 row 407; legacy
-    /// `ingress_integration_tests::test_pool_label_bounds_cardinality`): a unit on configured pool
-    /// `p` is counted under `pool="p"`, one naming configured model `m0` directly under
-    /// `pool="m0"`, and one naming anything else, or nothing, under `pool="unresolved"`; neither
-    /// unconfigured spelling ever becomes a label. RED: a configured name relabelled, or a caller's
-    /// string on the scrape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bounds_its_pool_label_to_what_is_configured() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10554,12 +9422,6 @@ mod pools_door_counts_and_routes {
         assert!(!scrape.contains("pool=\"\""), "{scrape}");
     }
 
-    /// A FALLBACK POOL THE KEY MAY ALSO REACH SERVES (F25 row 460; legacy
-    /// `ingress_integration_tests::test_fallback_pool_acl_allows_key_permitted_on_both_pools`): a
-    /// key allowed pools `p` and `q`, pool `p` exhausted (its one member down) with `on_exhausted:
-    /// { fallback_pool: q }`: the request on `p` is answered 200 by `q`'s member; the fallback's
-    /// pool check does not refuse a key allowed on both. RED: a 403 on the fallback, or the
-    /// exhausted terminal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_serves_a_fallback_pool_the_key_may_reach() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10596,10 +9458,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// AN AD-HOC PROVIDER ROUTE ROUND-TRIPS (F25 row 461; legacy
-    /// `ingress_integration_tests::test_adhoc_success_round_trip_via_router`): a messages request on
-    /// `/<provider>/<model>/...` naming model `m0` under its own provider `oai0` resolves and is
-    /// served 2xx by that model's far end. RED: the ad-hoc route refused or unrouted.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_serves_an_ad_hoc_provider_route() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10636,11 +9494,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// A MODEL NAMED DIRECTLY ROUND-TRIPS (F25 row 470; legacy
-    /// `ingress_integration_tests::test_named_by_model_fallback_round_trip_via_router`): a messages
-    /// request on `/m0/...` naming `m0`, a configured model that is no pool, takes the model's
-    /// direct route: its far end receives the forwarded request and the caller has its 200. RED:
-    /// the direct route refused, or another member dialled.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_serves_a_model_named_directly() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10673,8 +9526,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// A rig over one member of the messages dialect at `port`, concurrency 1, its pool waiting
-    /// `max_ms` for a slot when the member is at capacity, under a long failover budget.
     async fn queued(instance: &'static str, port: u16, max_ms: u64) -> Arc<DoorRig> {
         let pool_yaml = format!("on_exhausted: {{ queue: {{ max_ms: {max_ms} }} }}");
         Arc::new(
@@ -10693,7 +9544,6 @@ mod pools_door_counts_and_routes {
         )
     }
 
-    /// One messages request on pool `p`, in the background.
     fn spawn_request(
         rig: &Arc<DoorRig>,
     ) -> tokio::task::JoinHandle<(u16, axum::http::HeaderMap, Vec<u8>)> {
@@ -10708,7 +9558,6 @@ mod pools_door_counts_and_routes {
         })
     }
 
-    /// A far-end answer whose body is held until `release`, `started` told when it is read.
     fn gated(
         status: StatusCode,
         started: &Arc<tokio::sync::Notify>,
@@ -10722,7 +9571,6 @@ mod pools_door_counts_and_routes {
         }
     }
 
-    /// Wait (bounded) until the member's cell leaves HalfOpen.
     async fn left_half_open(rig: &DoorRig, what: &str) {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         while matches!(
@@ -10737,12 +9585,6 @@ mod pools_door_counts_and_routes {
         }
     }
 
-    /// A DROPPED QUEUED DISPATCH RELEASES ITS PROBE (F25 row 540; legacy
-    /// `on_exhausted_tests::queue_dropped_dispatch_future_releases_probe`): a request queued for the
-    /// member's only slot, the member's cell open with its cooldown spent, wins the recovery probe
-    /// when the slot frees (cell HalfOpen, its far end reading); dropped there, the cell leaves
-    /// HalfOpen within two seconds and is Open: the probe released, the member not benched. RED:
-    /// the cell stuck HalfOpen.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_releases_the_probe_of_a_dropped_queued_dispatch() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10769,7 +9611,7 @@ mod pools_door_counts_and_routes {
         ])
         .await;
         let rig = queued(instance, server.address().port(), 30_000).await;
-        // The slot's holder: dispatched on the closed cell, its far end reading.
+
         let holder = spawn_request(&rig);
         tokio::time::timeout(std::time::Duration::from_secs(5), holding.notified())
             .await
@@ -10803,12 +9645,6 @@ mod pools_door_counts_and_routes {
         probing_release.notify_waiters();
     }
 
-    /// A QUEUE THAT NEVER GETS A SLOT TIMES OUT AT ITS BOUND (F25 row 543; legacy
-    /// `on_exhausted_tests::queue_times_out_to_503_when_capacity_never_frees`): a pool waiting at
-    /// most 300 ms for its member's only slot, the slot held for the whole request by another, sheds
-    /// the request 503 with a `Retry-After` after waiting at least 250 ms and under 2 s (the queue's
-    /// bound, not the 300 s failover budget), and the pool's queued depth is back to 0. RED: no
-    /// wait, an unbounded wait, no Retry-After, or a depth left raised.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_sheds_a_queued_request_at_the_queues_bound() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10864,12 +9700,6 @@ mod pools_door_counts_and_routes {
         holder.abort();
     }
 
-    /// A STALE RELEASE DOES NOT REVERT A NEWER PROBE (F25 row 571; legacy
-    /// `probe_release_owner_tests::a_stale_resume_does_not_revert_a_newer_probe`): while a request's
-    /// far end holds a 400 mid-read, the cell is closed, re-opened and a NEWER probe won (epoch
-    /// bumped, cell HalfOpen); the stale request then ends with its 400 relayed, and the cell is
-    /// STILL HalfOpen: the stale end's owner-checked release is a no-op against the newer epoch.
-    /// RED: the stale request reverting the newer probe's cell.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_never_reverts_a_newer_probe_on_a_stale_end() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10932,11 +9762,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// A DROPPED DISPATCH RELEASES ITS WON PROBE (F25 row 572; legacy
-    /// `probe_release_owner_tests::a_dropped_main_path_future_releases_its_won_probe`): a request
-    /// that won the recovery probe on the member's open cell (cell HalfOpen, its far end reading a
-    /// 500) is dropped: within two seconds the cell is Open again, and a later dispatch can win the
-    /// probe again. RED: the cell stuck HalfOpen, the probe leaked.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_releases_the_probe_of_a_dropped_dispatch() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -10990,8 +9815,6 @@ mod pools_door_counts_and_routes {
         release.notify_waiters();
     }
 
-    /// A rig whose pool's ranking policy is shown its two members, the generation declaring
-    /// `declared` of the candidate catalog signals.
     async fn ranked(
         instance: &'static str,
         declared: &[Signal],
@@ -11013,7 +9836,6 @@ mod pools_door_counts_and_routes {
         (rig, fars)
     }
 
-    /// Member `m<i>`'s signal bag as the ranking policy was last shown it.
     fn bag_of(rig: &DoorRig, member: &str) -> String {
         let bags = rig.gate_signals();
         bags.iter()
@@ -11022,10 +9844,6 @@ mod pools_door_counts_and_routes {
             .unwrap_or_else(|| panic!("the ranking policy was shown {member}: {bags:?}"))
     }
 
-    /// AN UNDECLARED SIGNAL IS ABSENT (F25 row 606; legacy
-    /// `signal_catalog_tests::undeclared_signal_is_absent`): with only the breaker state declared,
-    /// the ranking policy's bag for a member holds that signal and no error rate. RED: an
-    /// undeclared signal computed and shown.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_shows_no_signal_nobody_declared() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -11037,10 +9855,6 @@ mod pools_door_counts_and_routes {
         assert!(!bag.contains("CandidateErrorRate"), "never declared: {bag}");
     }
 
-    /// AN OPEN BREAKER IS SHOWN OPEN (F25 row 608; legacy
-    /// `signal_catalog_tests::breaker_state_projects_open_after_a_trip`): member 0's cell forced
-    /// open for an hour, the breaker state declared: the ranking policy's bag for member 0 says
-    /// `CandidateBreakerState = "open"`. RED: a tripped member shown closed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_shows_a_tripped_members_breaker_open() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -11055,10 +9869,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// THE ERROR RATE IS THE WINDOW'S FRACTION (F25 row 609; legacy
-    /// `signal_catalog_tests::error_rate_projects_the_outcome_window_fraction`): one transient
-    /// failure and three successes recorded on member 0's cell, the error rate declared: the
-    /// ranking policy is shown exactly 0.25 for member 0. RED: any other figure, or none.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_shows_the_error_rate_as_the_windows_fraction() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -11081,11 +9891,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// AN UNDECLARED P95 IS NEVER COLLECTED (F25 row 611; legacy
-    /// `signal_catalog_tests::undeclared_latency_p95_is_never_collected`): with only the error rate
-    /// declared, a served request records the lane's always-on latency figure, and the ranking
-    /// policy is never shown a p95 for any member, on that request or the next. RED: a p95
-    /// collected and shown though no hook declared it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_never_collects_an_undeclared_p95() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -11105,11 +9910,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// AN ERROR END SEALS ONE RECORD AS AN ERROR (F25 row 678; legacy
-    /// `audit::audit_matches_the_live_admitted_terminal`): a member of the messages dialect whose
-    /// far end cuts its whole answer becomes a client-facing 502 for a chat caller, in the caller's
-    /// own error envelope, and the unit seals exactly ONE audit record, under its operation class,
-    /// its finish `Error`. RED: no record, two, or the error end sealed as complete.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_seals_an_error_end_as_one_error_record() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -11153,11 +9953,6 @@ mod pools_door_counts_and_routes {
         );
     }
 
-    /// A PROBE BUMPS THE LANE'S OK ONCE, NOT ONCE PER POOL (F25 row 227; legacy
-    /// `health_tests::test_probe_success_bumps_lane_ok_once_not_per_cell`): an actively probed
-    /// member of three pools (`p`, `q`, `r`) answering every probe 200 counts exactly one `ok` per
-    /// probe on its lane snapshot (two probes, ok 2), never one per pool cell. RED: the lane's ok
-    /// running ahead of the probes its far end answered.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_one_ok_per_probe_not_per_pool() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -11175,8 +9970,6 @@ mod pools_door_counts_and_routes {
         .await;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
-            // The lane's ok first: a probe is answered before it is counted, so a read in this
-            // order never sees ok ahead of the answered probes unless one probe counted twice.
             let ok = rig.app.store.snapshot(0, now()).ok;
             let probes = far.served() as u64;
             assert!(
@@ -11195,24 +9988,16 @@ mod pools_door_counts_and_routes {
     }
 }
 
-// ── the core capabilities on the decisions plane (qa/capability-equality.json) ─────────────────
-//
-// The decisions plane is served only through its door on the kernel's plane driver, so each cell
-// below is the plane's proof and the `root-decisions` leg's at once: every unit is a keyed
-// caller's request on the data router, crossing the composition production seals.
-
 #[cfg(feature = "plane-decisions")]
-/// How many failing calls a breaker cell is given to open before the run calls it stuck.
+
 const MAX_FAILURES: usize = 8;
 
 #[cfg(feature = "plane-decisions")]
-/// A caller fault, as the far end words it.
+
 const CALLER_FAULT: &str = r#"{"error":"the state names no amount"}"#;
 
 #[cfg(feature = "plane-decisions")]
-/// Call the door until the model's member's breaker cell opens, its far end failing every call:
-/// the number of failures the cell recorded first. Every one reached the far end and was not
-/// served.
+
 async fn trip(
     serving: &Serving,
     heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -11229,12 +10014,6 @@ async fn trip(
 }
 
 #[cfg(feature = "plane-decisions")]
-/// BREAKER-TRIP: a decisions provider that keeps failing records each failure into its member's
-/// ONE breaker cell (the egress walk's, keyed by the model's pool and member) until the cell OPENS:
-/// it then takes no request and carries a cooldown, and the trip is counted once on the scrape
-/// under the model's lane. The door states no bench below the trip threshold, so the failures below
-/// it open nothing and the run reaches the threshold itself. RED: a breaker port that records no
-/// failure leaves the cell closed through every failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failing_decisions_provider_records_into_its_breaker_cell_until_the_cell_opens() {
     let _one = PUBLISHING.lock().await;
@@ -11266,11 +10045,6 @@ async fn a_failing_decisions_provider_records_into_its_breaker_cell_until_the_ce
 }
 
 #[cfg(feature = "plane-decisions")]
-/// BREAKER-FASTFAIL: once the member's breaker cell has opened, the next unit is refused BEFORE its
-/// dial and at once: the far end, which now holds every connection open unanswered, is never
-/// dialled, and the refusal comes back in well under a second rather than after the walk's
-/// budget. RED: a breaker port that admits an open cell dials the far end, which holds the unit
-/// past the bound.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tripped_decisions_provider_is_refused_before_the_dial_at_once() {
     let _one = PUBLISHING.lock().await;
@@ -11288,7 +10062,6 @@ async fn a_tripped_decisions_provider_is_refused_before_the_dial_at_once() {
     let serving = serve_over(&declaring(STATES_NO_BENCH), instance, port).await;
     trip(&serving, &mut heard).await;
 
-    // From here a dialled far end never answers: only the breaker can answer the next unit.
     holding.store(true, std::sync::atomic::Ordering::SeqCst);
     let started = std::time::Instant::now();
     let response = tokio::time::timeout(
@@ -11310,13 +10083,6 @@ async fn a_tripped_decisions_provider_is_refused_before_the_dial_at_once() {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// DISPOSITION: the decisions provider's answers are normalized and classified before the plane
-/// sees them. A caller fault (400) is relayed to the caller as the far end said it, records nothing
-/// against the member and counts no upstream failure, so the next call reaches it again; a
-/// transient failure (503) is the member's: it is counted under the model's lane, benches the
-/// member, and is failed over rather than relayed, so the caller is answered by the walk's
-/// terminal, never with the far end's own bytes. RED: a classifier that reads every status as
-/// transient fails the caller fault over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_decisions_providers_answers_are_classified_before_the_plane_relays_them() {
     let _one = PUBLISHING.lock().await;
@@ -11327,7 +10093,7 @@ async fn a_decisions_providers_answers_are_classified_before_the_plane_relays_th
         _ => Answer::Says("200 OK", ANSWER),
     }))
     .await;
-    // The shipped table: the door states no breaker fact, so the default bench holds.
+
     let serving = serve_over(&crate::LINKED, instance, port).await;
     let failures = || async {
         counted(
@@ -11392,11 +10158,6 @@ async fn a_decisions_providers_answers_are_classified_before_the_plane_relays_th
 }
 
 #[cfg(feature = "plane-decisions")]
-/// AUDIT-CHAIN: every decisions unit, served or refused, seals ONE record on the node's audit
-/// chain under the plane's operation class, the second linked to the first, and the chain walks clean;
-/// a record altered after its seal (the served unit re-told as refused) breaks the walk. The
-/// refusal is the kernel's own, inside the loop: the caller's group allows one request an hour.
-/// RED: a loop whose audit door's pass is never handed back to the node seals nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain() {
     let _one = PUBLISHING.lock().await;
@@ -11413,8 +10174,7 @@ async fn every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_e
         on_exhaustion: None,
     };
     let serving = serve_limited(&crate::LINKED, instance, port, vec![one_an_hour]).await;
-    // Each answer read to its end, as a caller that stays reads it: a caller gone before its last
-    // byte is a unit that ended for that reason, and its record says so.
+
     let call = || async {
         let response = send(&serving.router, CLAIMED, Some(&serving.token)).await;
         let status = response.status();
@@ -11480,9 +10240,6 @@ async fn every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_e
 }
 
 #[cfg(feature = "plane-decisions")]
-/// METRICS: a served decisions unit's upstream leg appears on the real `/metrics` scrape under the
-/// plane's own lane (`<plane key><sep><model>`), as its pool and its lane, once per attempt. RED: an
-/// egress whose telemetry counts no attempt leaves the scrape where it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_served_decisions_unit_counts_its_upstream_attempt_under_the_planes_lane() {
     let _one = PUBLISHING.lock().await;
@@ -11522,10 +10279,6 @@ async fn a_served_decisions_unit_counts_its_upstream_attempt_under_the_planes_la
 }
 
 #[cfg(feature = "plane-decisions")]
-/// EGRESS-AUTH: the decisions provider is handed the credential the egress mechanism planned for
-/// its style (the dialect's default, `bearer`), presented once, and nothing the caller sent as a
-/// credential: not its bearer, not a key it put in a header of its own. RED: an egress walk that
-/// drops the auth binding's fields sends the provider no credential.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_decisions_provider_is_handed_the_planned_credential_and_never_the_callers() {
     use tower::ServiceExt as _;
@@ -11575,7 +10328,7 @@ async fn a_decisions_provider_is_handed_the_planned_credential_and_never_the_cal
 }
 
 #[cfg(feature = "plane-decisions")]
-/// A budget limit of `amount` minor units per `per`, on the caller's group.
+
 fn budget_of(
     amount: u64,
     per: busbar_kernel::config::groups::LimitWindow,
@@ -11593,8 +10346,7 @@ fn budget_of(
 }
 
 #[cfg(feature = "plane-decisions")]
-/// One call to the door, its answer read to its end: the status, the `Retry-After` it named, and
-/// whether the far end heard it.
+
 async fn call_through(
     serving: &Serving,
     heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -11612,12 +10364,6 @@ async fn call_through(
 }
 
 #[cfg(feature = "plane-decisions")]
-/// GOVERNANCE-BUDGET: a decisions unit's spend (the plane's own per-request fee, its section's
-/// `fees.per_request`) is charged to the presenting key, and the key's group BUDGET refuses the unit
-/// past it before its dial, 429, naming in `Retry-After` the seconds until the budget's window rolls,
-/// as 1.5.5's governance refusal names them. A window that never rolls (`per:
-/// total`) names no wait. RED: a driver that drops the governance refusal's wait, or a decisions
-/// renderer that does not render it, answers the refusal with no `Retry-After`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     use busbar_kernel::config::groups::LimitWindow;
@@ -11666,7 +10412,6 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     );
     drop(serving);
 
-    // A budget whose window never rolls names no wait, as 1.5.5 named none.
     let instance = "serve-door-budget-total";
     let (port, mut heard) = far_end().await;
     let serving = serve_governed(
@@ -11686,11 +10431,6 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// VERIFY: a unit presented by a key that names only another pool is refused before Admit draws a
-/// bucket and before its dial, the refusal sealed on the audit chain as the unit's end; the same
-/// door serves the key granted every pool (the control). The served door judges the key's pool
-/// grant at its approve seat (`ScopeDenied`), as every served door does. RED: with the key granted
-/// every pool the unit is served and the far end hears it, so the refusal assertions fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_dial() {
     let _one = PUBLISHING.lock().await;
@@ -11720,7 +10460,6 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_d
     );
     drop(serving);
 
-    // THE CONTROL: the same door, the key granted every pool, is served and dials.
     let instance = "serve-door-verify-control";
     let (port, mut heard) = far_end().await;
     let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, None).await;
@@ -11730,10 +10469,6 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_d
 }
 
 #[cfg(feature = "plane-decisions")]
-/// THE DECISIONS DOOR LISTS ITS MODELS (THE DESIGN §2, DECISIONS D8): through the one loader, the
-/// door's facing carries every model its section configures, in name order, for the kernel to
-/// scope-filter and `/v1/models` to append; a section that configures none lists nothing. RED: a
-/// generation whose snapshot lists nothing faces the world with no names.
 #[test]
 fn the_decisions_doors_facing_lists_its_configured_models() {
     let reg = crate::root::loader::dispatch::kinds::plane::registration(
@@ -11744,7 +10479,7 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
     )
     .expect("the linked door binds");
     let facing = (reg.facing)(
-        // No provider facts reach a bare facing probe, so each model states its own `protocol` (#51).
+
         br#"{"decisions":{"models":{"b":{"provider":"typesafe","protocol":"jev"},"a":{"provider":"typesafe","protocol":"jev"}}}}"#,
         b"",
         None,
@@ -11760,15 +10495,6 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
     );
 }
 
-/// AN UNKNOWN MODEL THROUGH THE SERVED DOOR (F25 rows 194, 423 and 725; legacy
-/// `forward_pool_integration_tests::test_openai_ingress_unknown_model`,
-/// `ingress_integration_tests::test_unknown_model_404_uses_canonical_openai_type` and
-/// `unit/tests/route.rs::route_step_refuses_an_unresolved_destination_without_a_terminal`): a chat
-/// naming a model no `models:` entry or pool defines is 1.5.5's 404 in the caller's dialect, its
-/// error type `not_found_error` and its message 1.5.5's sentence naming the model
-/// (`v1.5.5 crates/busbar/src/ingress/mod.rs:1011`). No far end is dialled. RED: the plane's
-/// no-destination refusal reaching the caller as the kernel's 503, or the sentence not naming the
-/// model.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_answers_an_unknown_model_with_1_5_5s_404_naming_it() {
@@ -11802,13 +10528,6 @@ async fn the_pools_door_answers_an_unknown_model_with_1_5_5s_404_naming_it() {
     assert_eq!(far.served(), 0, "no far end is dialled");
 }
 
-/// AN UNTRANSLATABLE 2XX BILLS NO TOKENS (F25 row 333, `$`; legacy
-/// `ingress_indistinguishability_tests::test_untranslatable_2xx_does_not_charge_tokens`): a far end
-/// in another dialect answers 2xx with usage stated (7 in, 3 out), but its reader refuses the answer
-/// (a role no answer has), so it cannot be written in the caller's dialect. The caller gets its own
-/// dialect's 500 with no completion in it, and the key's ledger holds 0 tokens: 1.5.5 billed tokens
-/// only for an answer it delivered. RED: the stated usage (10 tokens) billed, or a floor estimate
-/// standing in for it.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
@@ -11843,20 +10562,10 @@ async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
     );
 }
 
-// THE DOOR PATH'S MONEY CELLS that succeed the node's legacy answer path's own (`plane_node.rs`,
-// retired by #1161): each a gap that path alone witnessed, or one of its money cells whose door
-// successor asserted only part of it.
 #[cfg(linked_driver_proofs)]
 #[path = "serve_door_money_gaps.rs"]
 mod door_money_gaps;
 
-/// AN UNTRANSLATABLE 2XX GIVES THE LANE'S BUDGET UNIT BACK (`$`; legacy
-/// `crossproto_delivery_billing_tests::untranslatable_500_does_not_charge` and
-/// `ingress_indistinguishability_tests::test_untranslatable_2xx_refunds_budget_and_trips_breaker`):
-/// a far end in another dialect answers 2xx that its reader refuses, so the caller gets its own
-/// 500 and nothing is delivered. The member's lifetime request budget is refunded whole (5 stays
-/// 5), as 1.5.5's spend guard refunded every non-delivery, and no tokens bill.
-/// RED: the unit spent at the dial kept for an answer the caller never received (5 -> 4).
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_refunds_the_budget_unit_of_an_answer_it_cannot_translate() {
@@ -11884,12 +10593,6 @@ async fn the_pools_door_refunds_the_budget_unit_of_an_answer_it_cannot_translate
     assert_eq!(rig.tokens_after().await, 0, "and bills no tokens");
 }
 
-/// A DELIVERED CROSS-DIALECT ANSWER BILLS ONCE AND KEEPS ITS BUDGET UNIT (`$`; legacy
-/// `crossproto_delivery_billing_tests::delivered_cross_protocol_response_bills_once`): a far end
-/// in another dialect answers a whole message (1 in, 1 out) that is translated and delivered to
-/// the caller. Its two tokens bill exactly once, and the member's lifetime budget unit spent at
-/// the dial is kept (5 -> 4).
-/// RED: a delivered answer refunded as a non-delivery (5 stays 5), or its tokens billed twice.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_a_delivered_cross_dialect_answer_once_and_keeps_its_budget_unit() {
@@ -11925,14 +10628,6 @@ async fn the_pools_door_bills_a_delivered_cross_dialect_answer_once_and_keeps_it
     );
 }
 
-// ── THE 1.5.5 LIFECYCLE ON THE DOOR: NO ALARM, NO DISPUTE ──────────────────────────────────────────
-//
-// MOVED HERE from `crates/busbar/tests/alarm_silence_cross_plane.rs`, assertions unchanged
-// (DEV-GREEN row 83, ARCHITECT option (a) on #1161): the kernel's router alone serves no model unit
-// any more (the retired engine crate's arrivals are gone); the door serving the `pools` map does,
-// so the lifecycle is driven through the data router built with the door's claims.
-
-/// The words no 1.5.5-shaped deployment's tracing event or metric name may carry.
 #[cfg(linked_driver_proofs)]
 const SILENCE_MARKERS: &[&str] = &["alarm", "dispute"];
 
@@ -11942,8 +10637,6 @@ fn mentions_a_silence_marker(text: &str) -> bool {
     SILENCE_MARKERS.iter().any(|m| lower.contains(m))
 }
 
-/// The metric name an exposition line carries: the family a `# HELP`/`# TYPE` line names, or the
-/// series name before its labels or value.
 #[cfg(linked_driver_proofs)]
 fn exposition_metric_name(line: &str) -> Option<&str> {
     if let Some(rest) = line.strip_prefix("# ") {
@@ -11956,13 +10649,6 @@ fn exposition_metric_name(line: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
-/// LEGACY `crates/busbar/tests/alarm_silence_cross_plane.rs::a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric`.
-/// A 1.5.5-SHAPED LIFECYCLE EMITS NO ALARM OR DISPUTE EVENT OR METRIC: two pools over the
-/// messages wire, no governance beyond the keyed caller, one pool's member answering and the other's
-/// at a closed port, then `/healthz` and `/stats`. The successful request comes back 200, the dead
-/// member's does not, the probe answers; no tracing event at DEBUG or above (on the test's thread
-/// or any of its runtime's workers) and no metric name mentions an alarm or a dispute.
-/// RED: any event or family that names either word on this deployment.
 #[cfg(linked_driver_proofs)]
 #[test]
 fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
@@ -11977,7 +10663,6 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .on_thread_start(move || {
-                // Every worker's events reach the capture, for the thread's whole life.
                 std::mem::forget(tracing::dispatcher::set_default(&on_workers));
             })
             .enable_all()
@@ -11987,8 +10672,7 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
             let _one = ONE_PUBLISHER.lock().await;
             let instance = "serve-door-alarm-silence";
             let far = seat_far_end(200, door_word("messages_answer")).await;
-            // Member 1 sits at a closed port, so pool `pb`'s request fails upstream: the path a
-            // stall or lane alarm would ride.
+
             let rig = rig(
                 instance,
                 RigOpts {
@@ -12018,8 +10702,6 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
         });
     });
 
-    // The lifecycle really happened: the successful request reached the far end and came back 200,
-    // the dead-member request did NOT succeed, and the probe answered.
     let status_of = |what: &str| {
         statuses
             .iter()
@@ -12035,7 +10717,6 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     );
     assert_eq!(status_of("healthz"), 200, "statuses: {statuses:?}");
 
-    // No event at DEBUG or above mentions an alarm or a dispute, in its message or in any field.
     let events = cap.messages();
     let hits: Vec<&String> = events
         .iter()
@@ -12051,7 +10732,6 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
             .join("\n")
     );
 
-    // No metric name carries either word.
     let exposition = busbar_kernel_testkit::test_support::export_axis::render();
     let leaked: Vec<&str> = exposition
         .lines()
@@ -12065,19 +10745,6 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     );
 }
 
-// ── A KEY ROW'S `expires_at` ON THE DOOR: UNENFORCED, AS 1.5.5 ──────────────────────────────────────
-//
-// MOVED HERE from `crates/busbar/tests/key_expires_at_cross_plane.rs`, assertions unchanged
-// (DEV-GREEN row 83, ARCHITECT option (a) on #1161): the request is served by the door serving the
-// `pools` map, through the data router built with its claims.
-
-/// LEGACY `crates/busbar/tests/key_expires_at_cross_plane.rs::a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane`.
-/// End to end on the data plane through the `keys` chain: the request is admitted (200 from the far
-/// end) with the key row's `expires_at` stamped 30 days in the past (the token's own `exp` still in
-/// the future), while a wrong token is still refused (401) on the same app — so the admission is a
-/// real gate, not an open chain. Measured on the published 1.5.5 AND on HEAD's release binary
-/// (shadow-oracle script cell key-expired-out-of-band.sh): both answer 200.
-/// RED: a stored `expires_at` enforced on the data plane (the request refused).
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
@@ -12094,8 +10761,7 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
         },
     )
     .await;
-    // Stamp the minted key's row with an `expires_at` in the past, as an operator (or a migrated
-    // 1.5.5 database) would, and reload the caches. Mint never stamps it.
+
     let store = rig.gov.store();
     let mut row = store
         .get_key(&rig.key_id)
@@ -12136,11 +10802,6 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     );
 }
 
-/// A VIRTUAL KEY EXPIRES (governance guide: "a virtual key is a signed, expiring bearer token"):
-/// end to end on the data plane through the `keys` chain, a key minted on the same governance book
-/// whose token `exp` has passed is refused 401 and never reaches the far end, while the rig's live
-/// key is admitted on the same app.
-/// RED: an expired virtual key is admitted.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_expired_virtual_key_is_refused() {
@@ -12157,7 +10818,7 @@ async fn an_expired_virtual_key_is_refused() {
         },
     )
     .await;
-    // Minted an hour ago with a ten-minute lifetime: signed by the book's own key, and expired.
+
     let now = busbar_kernel::store::now();
     let (_, expired) = rig
         .gov
@@ -12205,14 +10866,6 @@ async fn an_expired_virtual_key_is_refused() {
     );
 }
 
-// ── THE MODEL PLANE'S `/metrics` ON THE DOOR: COUNTED ONCE, v1.5.4-SHAPED ──────────────────────────
-//
-// MOVED HERE from `crates/busbar/tests/plane_integration.rs`, assertions unchanged (DEV-GREEN row
-// 83, ARCHITECT option (a) on #1161): a model request is served by the door that serves the `pools`
-// map, so it is driven through the data router built with the door's claims; the kernel's router
-// alone serves no model unit any more.
-
-/// The label keys of one exposition line, sorted.
 #[cfg(linked_driver_proofs)]
 fn exposition_label_keys(line: &str) -> Vec<String> {
     line.split_once('{')
@@ -12228,7 +10881,6 @@ fn exposition_label_keys(line: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Every non-comment exposition line of `family`.
 #[cfg(linked_driver_proofs)]
 fn exposition_family<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
     exposition
@@ -12237,12 +10889,6 @@ fn exposition_family<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// LEGACY `crates/busbar/tests/plane_integration.rs::a_model_plane_request_is_counted_exactly_once`.
-/// A MODEL-plane request is counted EXACTLY ONCE: one request produces ONE count on
-/// `busbar_requests_total` for its pool, not one from the request's own finish plus one from the
-/// plane ingress boundary. The far end is a closed port, so the request fails to forward, which is
-/// deliberate: what is under test is how many times it is counted, not what it returned.
-/// RED: a boundary that counts everything (2), or a model request counted nowhere (0).
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_model_plane_request_is_counted_exactly_once() {
@@ -12257,8 +10903,7 @@ async fn a_model_plane_request_is_counted_exactly_once() {
         },
     )
     .await;
-    // The model plane's `busbar_requests_total` carries NO `plane` label (v1.5.4-identical); the
-    // test runs in a process of its own, so the pool's label pins the delta.
+
     let labels = [("pool", "p")];
     let before = busbar_kernel_testkit::test_support::metric_sum(
         busbar_kernel::snapshot::REQUESTS_TOTAL,
@@ -12277,15 +10922,6 @@ async fn a_model_plane_request_is_counted_exactly_once() {
     );
 }
 
-/// LEGACY the model-plane half of
-/// `crates/busbar/tests/plane_integration.rs::metrics_scrape::mounted_plane_traffic_appears_on_a_real_metrics_scrape`
-/// (its door- and agent-plane half stays there, on the kernel's router).
-/// THE MODEL PLANE STAYS v1.5.4-IDENTICAL on a scrape: after model traffic, `busbar_requests_total`
-/// carries a series with exactly the 1.5.4 label set {ingress_protocol, pool, outcome} and NO `plane`
-/// label, `busbar_request_duration_seconds` carries a series, and neither family carries a `plane`
-/// label anywhere in the exposition. A unique configured pool names this request's series;
-/// positive counter and histogram-count deltas tie the shape to the served request.
-/// RED: a `plane` label on either model family (the BI-2 regression), or no model series at all.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {

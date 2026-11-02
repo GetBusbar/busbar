@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The public audit emitter reaches the real export projection/admission path only after its
-//! durable write lands. This binary owns its process-wide axis and audit registration.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -173,8 +170,7 @@ impl ExportCalls for Sink {
             let (done, release) = self.failure.lock().unwrap().take().unwrap();
             *self.worker.lock().unwrap() = Some(std::thread::spawn(move || {
                 release.recv_timeout(CONTROL_TIMEOUT).unwrap();
-                // This is the host observer's public refusal entry, reached later from an export
-                // worker's error envelope. It must remain durable without another delivery.
+
                 record_plugin_refusal(
                     PluginRefusal::Op,
                     Kind::Export.root(),
@@ -340,7 +336,6 @@ fn accepted_events_project_once_and_async_export_failures_do_not_feed_back() {
     );
     assert!(axis.full.matching(&failure_resource).is_empty());
 
-    // Identical ordinary text has no trusted export-failure origin and must still be delivered.
     emit_admin_hostless_now(
         PluginRefusal::Op.action(),
         &failure_resource,

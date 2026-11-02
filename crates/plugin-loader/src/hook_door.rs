@@ -1,33 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK KIND ON THE ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN §11.4 and §11.7; the
-//! SWITCH-OVER card, hook root axis): [`HookRows`] holds every `kind: hook` plugin the composition
-//! root admitted — a compiled-in door and a dropped-in library whose signed manifest states its
-//! Statement — as the boot stages' [`Candidate`]s, and binds each through the one loader path
-//! ([`load_linked`] / [`load_dropped_bytes`]). [`HookInstance`], one opened instance, is called
-//! through the hook kind's table (`abi::hook`) and nothing else, whichever door it came in by. The
-//! two implement the contract's [`HookAxis`] and [`HookCalls`], so the kernel probes, opens and
-//! calls hooks naming neither this crate nor the root.
-//!
-//! * Every call is SUBMITTED on a ticket and awaited: it runs on the dispatcher's workers, never on
-//!   the caller's, and is bounded by the call's `budget` (the hook's `timeout_ms`), which is its
-//!   deadline on the dispatcher: cancelled at `timeout_ms`, as 1.5.5's per-hook timeout (Q-SO6).
-//!   A `decide`/`transform` answer that is SHORT is re-submitted once on the same ticket over the
-//!   frame's regrown buffers (the short-buffer rule).
-//! * THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (THE DESIGN §11.7; HOOKCAP-Q1): each op is
-//!   submitted with the call's `budget` as its watch budget, so the one watchdog faults a hook
-//!   crossing only past the longer of that and the Call class budget. A hook slower than the class
-//!   budget but inside its `timeout_ms` is not quarantined, as in 1.5.5.
-//! * THE `max_inflight` CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`): a call
-//!   the full cap REFUSES waits for a unit within its own budget, then answers `TimedOut`.
-//! * QUARANTINE (THE DESIGN §11.11, R2): an instance the dispatcher's watchdog faulted (a crossing
-//!   past its watch budget) is never called again. The next call — and one that was waiting for a
-//!   unit when the fault came — waits for the trial window — 1 s after the fault, doubling to 30 s
-//!   on each failed trial — within its own budget and never beyond it, then binds and opens a FRESH
-//!   instance through the same door and makes one trial call on it.
-//! * A plugin's leased answer (`status`, `describe`) is copied, then its lease released.
-
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -59,40 +32,28 @@ use crate::dispatch::{
 };
 use crate::PluginRegistry;
 
-/// The refusal of a dropped-in `kind: hook` plugin that states no Statement.
 pub const JSON_HOOK_REFUSED: &str = "it speaks the 1.5.5 JSON hook contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
 
-/// The host's clamp on a hook Statement's `max_inflight`.
 const MAX_INFLIGHT_CAP: u32 = 64;
-/// The first trial window after a fault.
+
 pub const QUARANTINE_FIRST: Duration = Duration::from_secs(1);
-/// The longest trial window: each failed trial doubles the window up to this.
+
 pub const QUARANTINE_MAX: Duration = Duration::from_secs(30);
 
-/// How often a call that finds a trial in flight looks again, within its own budget.
 const TRIAL_POLL: Duration = Duration::from_millis(5);
-/// The first wait for a `max_inflight` unit after a REFUSED submit.
+
 const SLOT_WAIT_FIRST: Duration = Duration::from_millis(1);
-/// The longest wait between two tries for a `max_inflight` unit: each try doubles it up to this.
+
 const SLOT_WAIT_MAX: Duration = Duration::from_millis(16);
 
-/// JSON bytes the host lends for a call.
 fn json(b: &[u8]) -> Blob {
     blob(b, BLOB_JSON, 0)
 }
 
-/// `validate` `settings` (ticket-less; it never pends): `Ok` when READY, else the plugin's words.
-///
-/// # Errors
-/// The plugin's refusal, verbatim.
 pub fn validate(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
     validate_json(plugin, settings)
 }
 
-/// `open` `plugin` over `settings` (ticket-less; it never pends).
-///
-/// # Errors
-/// The plugin's refusal, in 1.5.5's words (`plugin '<name>' open failed: <reason>`).
 fn open(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
     let mut f = open_frame(json(settings));
     let c = plugin.call(life::OPEN, &mut f);
@@ -104,40 +65,31 @@ fn open(plugin: &Plugin<Hook>, settings: &[u8]) -> Result<(), String> {
     }
 }
 
-/// Binds a FRESH instance of the same plugin through its door (the quarantine's trial).
 type Rebind = Box<dyn Fn() -> Result<Plugin<Hook>, String> + Send + Sync>;
 
-/// Where an instance stands.
 enum State {
-    /// Opened and callable: the instance every call in flight shares (a [`Plugin`] is `!Clone`).
     Live(Arc<Plugin<Hook>>),
-    /// Faulted: no call reaches a plugin before `trial_at`; the trial then opens a fresh instance.
-    /// `window` is the wait that set `trial_at`; a failed trial doubles it.
+
     Quarantined { trial_at: Instant, window: Duration },
-    /// One caller is binding and opening the trial's fresh instance, with the state lock let go
-    /// (THE DESIGN §11.13 M1: no plugin code, `dlopen` and `open` included, runs under a host
-    /// lock). Every other caller waits for it within its own budget; a wedged trial blocks none.
+
     Trialing,
 }
 
-/// One caller-owned push, kept alive through its dispatcher operation.
 type Pushed = Arc<(String, zeroize::Zeroizing<Vec<u8>>, u64)>;
 
 struct Configured {
     name: String,
-    /// None means an acknowledged push supplied no usable recovery checkpoint. Recovery must
-    /// fail closed; neither the original settings nor the last partial push can replace it.
+
     checkpoint: Option<ConfigureCheckpoint>,
 }
 
 struct Configuration {
     owner: Weak<Plugin<Hook>>,
-    /// One complete configuration, never an event history. None means no push was acknowledged.
+
     kept: Option<Arc<Configured>>,
-    /// Submitted configure operations whose result has not yet been recorded by their owner.
+
     pending: usize,
-    /// A submitted operation lost its result. Its plugin may have committed; no saved snapshot
-    /// can prove the current state, even if an older READY reply arrives later.
+
     uncertain: bool,
 }
 
@@ -187,13 +139,10 @@ impl ConfigureAttempt {
 
 impl Drop for ConfigureAttempt {
     fn drop(&mut self) {
-        // In particular, READY can be queued after commit but never polled by the caller.
-        // Dropping Reply releases that lease; this guard refuses to pretend its state was saved.
         self.finish(false);
     }
 }
 
-/// Copy the opaque checkpoint while its answer's secret lease is still held.
 fn checkpoint(out: &ConfigureOut) -> Result<Option<ConfigureCheckpoint>, String> {
     use busbar_contract::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
     let ext = out.head.extensions;
@@ -212,8 +161,6 @@ fn checkpoint(out: &ConfigureOut) -> Result<Option<ConfigureCheckpoint>, String>
     Ok(checkpoint)
 }
 
-/// `configure` `plugin` with `pushed` (ticket-less; the SDK's `configure` never pends): `Ok` when
-/// it acknowledged the version.
 fn reconfigure(plugin: &Plugin<Hook>, pushed: &Configured) -> Result<ConfigureCheckpoint, String> {
     let saved = pushed
         .checkpoint
@@ -251,16 +198,13 @@ struct Inner {
     routes: Vec<Route>,
     dispatcher: Arc<Dispatcher>,
     rebind: Rebind,
-    // settings-leak-lint: allow — NON-PROJECTION engine type: the instance's own settings bytes,
-    // re-sent to the plugin's `open` on a quarantine trial. `Inner` implements neither `Debug` nor
-    // `Serialize`, and `HookInstance`'s hand-written `Debug` prints the name only.
+
     settings: zeroize::Zeroizing<Vec<u8>>,
-    /// The plugin's last complete effective configuration, atomically captured with its ACK.
+
     configured: Mutex<Configuration>,
     state: Mutex<State>,
     next_worker: AtomicU32,
-    /// Whether the hook may answer an order (`declares.hook.orders`); `false`: an order it answers
-    /// is refused where the host reads it ([`HookInstance::verdict`]).
+
     orders: bool,
 }
 
@@ -269,8 +213,6 @@ impl Inner {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// The instance to call before `deadline`: the live one, or — once the trial window opens
-    /// within `deadline` — a fresh one. `Err` says why there is none.
     async fn live(self: &Arc<Self>, deadline: Instant) -> Result<Arc<Plugin<Hook>>, String> {
         loop {
             let (wait, retired, trial) = {
@@ -315,15 +257,12 @@ impl Inner {
                     }
                 }
             };
-            // The faulted instance is closed, and the trial's fresh one bound and opened, with
-            // the state lock let go.
+
             if let Some(p) = retired {
                 close(&p);
                 continue;
             }
             if let Some(window) = trial {
-                // One blocking trial per instance, owned by Trialing even when its caller times
-                // out or drops. Its eventual result publishes/retires the fresh instance itself.
                 let inner = Arc::clone(self);
                 let trial = tokio::task::spawn_blocking(move || {
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -366,9 +305,6 @@ impl Inner {
         }
     }
 
-    /// THE QUARANTINE'S TRIAL, run by the one caller that moved the state to `Trialing`: bind a
-    /// fresh instance and `open` it outside the lock, then swap the answer in. A failed trial
-    /// doubles the window.
     fn trial(&self, window: Duration) -> Result<Arc<Plugin<Hook>>, String> {
         let opened = (self.rebind)().and_then(|p| {
             if p.context::<HookContext>()
@@ -406,8 +342,7 @@ impl Inner {
                     return Err(error);
                 }
             };
-            // No plugin callback runs under either lock. An old instance's ACK arriving during
-            // replay changes this Arc; replay its newer complete checkpoint before publication.
+
             let mut state = self.lock();
             let mut configured = self.configured.lock().unwrap_or_else(|e| e.into_inner());
             if configured.pending != 0 || configured.uncertain {
@@ -450,8 +385,6 @@ impl Inner {
         opened
     }
 
-    /// Retain one checkpoint before reporting an ACK to the caller. Revisions are scoped to the
-    /// physical plugin, so a late old-instance reply cannot overwrite a newly restored instance.
     fn acknowledged(
         &self,
         plugin: &Arc<Plugin<Hook>>,
@@ -463,8 +396,7 @@ impl Inner {
         if !configured.owner.ptr_eq(&Arc::downgrade(plugin)) {
             return Err("hook configuration was acknowledged by a retired instance".into());
         }
-        // Once an ACK supplied no usable checkpoint, a delayed older valid reply cannot prove
-        // that physical instance's current state. Keep recovery unavailable until a fresh open.
+
         if configured
             .kept
             .as_ref()
@@ -523,8 +455,6 @@ impl Inner {
         error.map_or(Ok(()), Err)
     }
 
-    /// A trial (or any) call that ended in FAULT: an instance the watchdog faulted goes to
-    /// quarantine at once; one that faulted only this answer stays live.
     fn faulted(&self, plugin: &Plugin<Hook>) {
         if !plugin.is_faulted() {
             return;
@@ -535,8 +465,7 @@ impl Inner {
                 State::Live(current) if std::ptr::eq(current.as_ref(), plugin) => {
                     Some(QUARANTINE_FIRST)
                 }
-                // A delayed or duplicate old-instance fault neither quarantines its replacement
-                // nor advances backoff. Only a failed fresh trial doubles the window.
+
                 _ => None,
             };
             if let Some(window) = window {
@@ -546,13 +475,10 @@ impl Inner {
                 };
             }
         }
-        // Closed with the state lock let go (§11.13 M1).
+
         close(plugin);
     }
 
-    /// SUBMIT op `s` with the frame `make` builds (re-built over `regrow` once after a SHORT
-    /// answer), lending `lent` to the op, bounded by `budget`. `None` = no answer could be had
-    /// (named).
     async fn submit<I, O>(
         self: &Arc<Self>,
         s: u32,
@@ -596,9 +522,7 @@ impl Inner {
             let plugin = self.live(deadline).await.map_err(Answered::Broken)?;
             let workers = self.dispatcher.workers().max(1);
             let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
-            // THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (`BUSBAR-1.6.0.md` §11.7): the
-            // call's budget rides each op, so a hook slower than the Call class budget but inside
-            // its own `timeout_ms` is never quarantined, as in 1.5.5.
+
             let Some(call) = Ticketed::mint(&self.dispatcher, worker) else {
                 return Err(Answered::Broken(format!(
                     "hook '{}' could not be called: no ticket",
@@ -609,9 +533,6 @@ impl Inner {
             let mut slot_wait = SLOT_WAIT_FIRST;
             let mut retried_free = false;
             loop {
-                // An instance the watchdog faulted while this call waited for a unit never got
-                // this op: the call is one made while quarantined, so it waits for the trial window
-                // within its own budget (R2) instead of answering FAULT for a crossing it never made.
                 if plugin.is_faulted() {
                     continue 'route;
                 }
@@ -626,10 +547,7 @@ impl Inner {
                     deadline_ns,
                     Arc::clone(&lent),
                 );
-                // THE BUDGET CUTS THE WAIT, NOT THE PLUGIN: a hook that is still inside its slot
-                // when the deadline passes answers the caller `TimedOut` then, never after (1.5.5's
-                // timeout behaviour, frozen); the dropped call tells the dispatcher no one is
-                // waiting.
+
                 let Ok(done) = tokio::time::timeout(
                     deadline.saturating_duration_since(Instant::now()),
                     &mut call,
@@ -638,28 +556,18 @@ impl Inner {
                 else {
                     return Err(Answered::TimedOut);
                 };
-                // REFUSED commits nothing. In particular cap admission returns a settled refusal
-                // without crossing the plugin. End this attempt before backoff or rerouting, so
-                // its own pending count cannot block a fresh trial and a timeout cannot poison it.
+
                 if done.outcome == Outcome::Refused {
                     if let Some(attempt) = configure.as_deref_mut() {
                         attempt.finish(true);
                     }
                 }
-                // THE CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`, frozen):
-                // an instance whose `max_inflight` units are all held REFUSES the op and never calls
-                // the plugin. The call waits for a unit under its own budget — the units come back
-                // as the ops holding them return — and fails `TimedOut` on that budget, never at
-                // once and never past it. A refusal with a unit free (one came back since) is tried
-                // again once at once; any other refusal is the plugin's answer.
+
                 #[cfg(test)]
                 if done.outcome == Outcome::Refused {
                     hold_refused_until_faulted_for_tests(&self.settings, &plugin, deadline).await;
                 }
-                // REFUSED, AND THE INSTANCE FAULTED SINCE (the watchdog quarantined it between the
-                // refusal and this look): a refusal is never a crossing, so this call was never
-                // made; like one that met the fault before it was submitted (above), it waits for
-                // the trial window within its own budget (R2), never answering the refusal.
+
                 if done.outcome == Outcome::Refused && plugin.is_faulted() {
                     continue 'route;
                 }
@@ -718,10 +626,6 @@ impl Inner {
     }
 }
 
-/// A mark in the settings of the instances whose refused calls wait, before they are judged, until the
-/// instance is faulted (bounded by the call's deadline): the order a loaded host gives by chance
-/// (a call refused at the cap, the watchdog faulting the wedged instance before the refusal is
-/// looked at), held so a test meets it every time.
 #[cfg(test)]
 pub(crate) static HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
@@ -741,14 +645,13 @@ async fn hold_refused_until_faulted_for_tests(
     }
 }
 
-/// What one submitted op answered (READY or FAILED, with its `out`).
 struct Submitted<O> {
     plugin: Arc<Plugin<Hook>>,
     outcome: Outcome,
     out: O,
     error: Option<String>,
     lease: u64,
-    /// The memory the answering call was lent (the frame whose host buffers it wrote).
+
     lent: Lent,
 }
 
@@ -769,7 +672,6 @@ impl std::fmt::Debug for HookInstance {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        // The last owner: nothing else can reach the state, so no lock is taken to close it.
         if let State::Live(p) = self.state.get_mut().unwrap_or_else(|p| p.into_inner()) {
             close(p);
         }
@@ -777,11 +679,6 @@ impl Drop for Inner {
 }
 
 impl HookInstance {
-    /// `open` `plugin` over `settings` (JSON bytes) on `dispatcher`; `rebind` binds a fresh
-    /// instance of the same plugin through its door when a quarantine's trial window opens.
-    ///
-    /// # Errors
-    /// The plugin's refusal, in 1.5.5's words.
     pub fn open(
         plugin: Plugin<Hook>,
         dispatcher: Arc<Dispatcher>,
@@ -791,12 +688,6 @@ impl HookInstance {
         Self::open_declaring(plugin, dispatcher, settings, true, rebind)
     }
 
-    /// [`Self::open`] for a hook whose `declares.hook.orders` is `orders`: when `false`, the hook
-    /// declared that its `decide` never answers an order, and every order it does answer is refused
-    /// (ARCHITECT ruling, status row 194).
-    ///
-    /// # Errors
-    /// The plugin's refusal, in 1.5.5's words.
     pub fn open_declaring(
         plugin: Plugin<Hook>,
         dispatcher: Arc<Dispatcher>,
@@ -828,7 +719,6 @@ impl HookInstance {
         })
     }
 
-    /// Whether the instance is quarantined now (no call reaches a plugin until its trial).
     #[must_use]
     pub fn quarantined(&self) -> bool {
         match &*self.inner.lock() {
@@ -837,7 +727,6 @@ impl HookInstance {
         }
     }
 
-    /// `decide` or `transform` over `frame`.
     fn verdict<O>(&self, s: u32, frame: Arc<DecideFrame>, budget: Duration) -> Pending<Answered<O>>
     where
         O: OutFrame + Copy + 'static,
@@ -898,7 +787,6 @@ impl HookInstance {
         })
     }
 
-    /// A ticketed op whose answer is a leased blob (`status`, `describe`), copied out.
     fn leased<O>(&self, s: u32, budget: Duration, blob: fn(&O) -> Blob) -> Pending<Option<Vec<u8>>>
     where
         O: OutFrame + Copy + 'static,
@@ -926,9 +814,6 @@ impl HookInstance {
     }
 }
 
-/// THE ORDER A HOOK THAT DECLARED `orders: false` ANSWERED, refused: the text, when `out` is a
-/// `decide` answer naming an order (PREFER, or order slots written or needed), else `None`. The one
-/// place the host reads a hook's order from its answer, so an order is never read past it.
 fn refused_order<O: 'static>(s: u32, out: &O, name: &str) -> Option<String> {
     if s != slot::DECIDE {
         return None;
@@ -943,7 +828,6 @@ fn refused_order<O: 'static>(s: u32, out: &O, name: &str) -> Option<String> {
     })
 }
 
-/// The regrown frame for the one short re-call of `s` (`decide` or `transform`).
 fn regrown<O: 'static>(frame: &DecideFrame, s: u32, out: &O) -> Option<Arc<DecideFrame>> {
     let out: &dyn std::any::Any = out;
     match s {
@@ -957,8 +841,6 @@ fn regrown<O: 'static>(frame: &DecideFrame, s: u32, out: &O) -> Option<Arc<Decid
     }
 }
 
-/// An `out` of `O`, every field zero but its head (the host's FAULT pre-fill; the dispatcher
-/// writes the head again before every crossing).
 fn blank_out<O: OutFrame>() -> O {
     // SAFETY: every hook `out` is plain integers, raw pointers and blobs, for which the all-zero
     // pattern is valid (NULL pointers, absent blobs).
@@ -1123,7 +1005,7 @@ impl HookCalls for HookInstance {
                     if done.outcome == Outcome::Failed {
                         attempt.finish(true);
                     }
-                    // The hook's refusal is its bare words: the host names the hook (H13).
+
                     Err(done.error.map_or_else(
                         || format!("hook '{hook}' did not acknowledge settings version {version}"),
                         |why| format!("hook '{hook}': {why}"),
@@ -1147,7 +1029,6 @@ impl HookCalls for HookInstance {
     }
 }
 
-/// Immutable request storage lent to the dispatcher, including its header pointer list.
 struct ServeLent {
     request: EndpointRequest,
     headers: Vec<busbar_contract::abi::mechanism::call::AbiStr>,
@@ -1210,20 +1091,16 @@ fn copy_serve_text(value: busbar_contract::abi::mechanism::call::AbiStr) -> Resu
         .map_err(|_| "hook serve returned a non-UTF8 response header".into())
 }
 
-/// A host-built `in` that points at memory the calling future owns (or holds lent), carried
-/// across its await.
 struct Held<T>(T);
 // SAFETY: the pointers inside point at data the same future owns or lends to the op for its whole
 // life; one thread touches the future at a time.
 unsafe impl<T> Send for Held<T> {}
 impl<T: Copy> Held<T> {
-    /// The value, copied (a method, so a closure captures the whole `Held`, never its field).
     fn get(&self) -> T {
         self.0
     }
 }
 
-/// Whether `c`'s Statement claims the hook word `word` (one of its `MARK_WORD_HOOK` marks).
 fn claims(c: &Candidate, word: &str) -> bool {
     busbar_contract::abi::mechanism::rendering::read(&c.stated).is_ok_and(|r| {
         r.mark_words
@@ -1232,17 +1109,10 @@ fn claims(c: &Candidate, word: &str) -> bool {
     })
 }
 
-/// Whether config naming `module` names the hook candidate `c`: its Statement name, an alias (a
-/// Statement alias, the manifest alias, a former name) or one of the hook words its Statement claims.
-/// The ONE rule [`HookRows`] finds a row by.
 fn answers(c: &Candidate, module: &str) -> bool {
     c.answers(module) || claims(c, module)
 }
 
-/// Whether a DROPPED-IN `kind: hook` row of `registry` answers `module` by the rule the hook axis
-/// opens it by ([`HookRows`]): read off each row's SIGNED manifest and Statement rendering only,
-/// nothing loaded. The pre-flight's half of the claim table boot uses (ARCHITECT Q-P4-13); the
-/// linked half is the root's hook axis.
 #[must_use]
 pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
     registry
@@ -1250,22 +1120,14 @@ pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
         .any(|p| matches!(p.candidate(), Ok(Some(c)) if answers(&c, module)))
 }
 
-// ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
-
-/// THE PROCESS'S HOOK PLUGINS, by Statement name and alias: the compiled-in doors and the
-/// dropped-in libraries whose signed manifests state a Statement, each bound on open through the
-/// one loader path and called through the one dispatcher. Two different plugins answering one word
-/// are refused at [`Self::new`] ([`crate::boot::one_owner`], ARCHITECT Q-P4-12); neither door
-/// outranks the other.
 pub struct HookRows {
     candidates: Vec<Candidate>,
-    /// The dropped-in rows signed by the release key (a linked row is first-party by construction).
+
     first_party: Vec<String>,
     dispatcher: Arc<Dispatcher>,
-    /// `plugins.logs`: each OPENED instance's own log sink; `None` = its records are discarded.
+
     logs: Option<PluginLogConfig>,
-    /// The host's one connection table, read when an instance is OPENED (never sooner: the root
-    /// builds the axis before its connection table exists): its needs are declared on it.
+
     conns: Option<fn() -> Arc<dyn DeclaredConns>>,
 }
 
@@ -1281,13 +1143,6 @@ impl std::fmt::Debug for HookRows {
 }
 
 impl HookRows {
-    /// The compiled-in hook doors `linked`, then every loadable dropped-in `kind: hook` plugin of
-    /// `registry` (its signed manifest states its Statement), bound on `dispatcher`.
-    ///
-    /// # Errors
-    /// The first row that will not state itself, named. A dropped-in hook whose manifest states no
-    /// Statement speaks the 1.5.5 JSON contract: it is REFUSED, naming the rebuild (one version per
-    /// kind; C21's hook half).
     pub fn new(
         linked: &[DoorFn],
         registry: Option<&PluginRegistry>,
@@ -1323,13 +1178,6 @@ impl HookRows {
         Ok(rows)
     }
 
-    /// Each LINKED row answering also to the former names `former_of` gives for any of its words
-    /// (its name or an alias): the names its earlier releases' manifests carried, which a dropped-in
-    /// copy states in its signed manifest (compiled in = dropped in). A row that would then claim a
-    /// word another plugin answers to is refused, as [`Self::new`] refuses it.
-    ///
-    /// # Errors
-    /// The contested word and the two plugins that claim it.
     pub fn with_former_names(
         mut self,
         former_of: impl Fn(&str) -> Vec<String>,
@@ -1343,9 +1191,6 @@ impl HookRows {
         Ok(self)
     }
 
-    /// The rows `candidates` state (each a `kind: hook` candidate), bound on `dispatcher`. Only a
-    /// linked row is first-party here; [`Self::new`] adds the dropped-in rows the release key signed
-    /// and refuses two different plugins answering one word.
     #[must_use]
     pub fn of(candidates: Vec<Candidate>, dispatcher: Arc<Dispatcher>) -> Self {
         Self {
@@ -1357,29 +1202,22 @@ impl HookRows {
         }
     }
 
-    /// Each opened instance logs to its own sink under `logs`.
     #[must_use]
     pub fn with_logs(mut self, logs: PluginLogConfig) -> Self {
         self.logs = Some(logs);
         self
     }
 
-    /// Each opened instance declares its needs on the table `conns` answers when it opens.
     #[must_use]
     pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
         self.conns = Some(conns);
         self
     }
 
-    /// The row config names `module` by: its Statement name, an alias, or one of the hook words
-    /// its Statement claims (`MARK_WORD_HOOK`: a pool strategy word names the ranking row), a
-    /// linked row first.
     fn find(&self, module: &str) -> Option<&Candidate> {
         self.candidates.iter().find(|c| answers(c, module))
     }
 
-    /// Bind `c` under `label`: an instance only probed binds with no log sink and as a probe
-    /// ([`ConnTable::Probe`]); one opened to serve binds with both.
     fn bind(
         c: &Candidate,
         dispatcher: &Dispatcher,
@@ -1433,7 +1271,7 @@ impl HookAxis for HookRows {
 
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed> {
         let c = self.find(module)?;
-        // A PROBE: validated and read for its facts, never opened; bound with no table.
+
         let Ok(p) = Self::bind(
             c,
             &self.dispatcher,
@@ -1441,7 +1279,6 @@ impl HookAxis for HookRows {
             Arc::new(NoSink),
             ConnTable::Probe,
         ) else {
-            // It will not load here: its open refuses the boot naming the instance.
             return Some((None, Vec::new()));
         };
         let facts = p

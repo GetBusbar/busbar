@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A version-one marker (`Bool(true)`) followed by class/price/weight triples, all under
-//! [`Signal::CandidateRouteCost`]. Class is `Str`, price is `F64` configured micro-units per unit
-//! (or the original `U64` nano-unit encoding) or `Bool(false)` when unknown, and weight is `F64`
-//! expected units. Floating routing prices preserve configured ordering independently of exact
-//! integer billing. No entries means a legacy
-//! producer; a marker with no terms means an authoritative empty recipe. Duplicate classes
-//! remain separate terms, in the plane's order. No JSON or new C layout crosses the boundary.
 
 use super::{Signal, SignalBag, SignalValue};
 
@@ -42,7 +36,7 @@ pub fn append<'a>(bag: &mut SignalBag, terms: impl IntoIterator<Item = Term<'a>>
 }
 
 /// Decode the recipe without conflating a legacy producer with an empty or malformed recipe.
-/// Unknown prices are retained as `None`; pricing and operator overrides belong to the hook.
+
 pub fn decode(bag: &SignalBag) -> Result<Option<Vec<Term<'_>>>, &'static str> {
     let mut terms = Vec::new();
     let present = visit(bag, |term| terms.push(term))?;
@@ -50,7 +44,7 @@ pub fn decode(bag: &SignalBag) -> Result<Option<Vec<Term<'_>>>, &'static str> {
 }
 
 /// Visit a recipe without allocation. `false` means a legacy producer; `true` includes an empty
-/// recipe. A late error may follow earlier visits, so callers must discard their result on error.
+
 pub fn visit<'a>(
     bag: &'a SignalBag,
     mut visitor: impl FnMut(Term<'a>),

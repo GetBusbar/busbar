@@ -1,10 +1,6 @@
-// Dev-only fixture implementation, also mounted privately by kernel unit tests.
-// Kernel features expose only narrow real-behavior hooks, never this module.
 #![cfg_attr(not(test), allow(dead_code))]
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-
-//! In-crate mock-upstream test harness.
 
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -26,7 +22,6 @@ use tokio::task::JoinHandle;
 mod overlay;
 pub use overlay::{new_test_overlay, TestOverlayPause, TestOverlayStore};
 
-/// Run boot's existing route preparation for a dependent crate's real hook-axis fixture.
 pub fn hook_route_declarations(
     env: &mut crate::hooks::HookEnv,
     definitions: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -154,33 +149,26 @@ impl MockServerState {
         self.queued_replies.lock().unwrap().pop()
     }
 
-    /// Record the received request path (for translation / on-the-wire assertions).
     pub fn record_request_path(&self, path: &str) {
         *self.last_request_path.lock().unwrap() = Some(path.to_string());
     }
 
-    /// Get the last received request path.
     pub fn get_last_request_path(&self) -> Option<String> {
         self.last_request_path.lock().unwrap().clone()
     }
 
-    /// Record the last received request body (for translation / on-the-wire assertions).
     pub fn record_request_body(&self, body: &[u8]) {
         *self.last_request_body.lock().unwrap() = Some(body.to_vec());
     }
 
-    /// Get the last received request body bytes (for assertions in tests).
     pub fn get_last_request_body(&self) -> Option<Vec<u8>> {
         self.last_request_body.lock().unwrap().clone()
     }
 
-    /// Record the full set of request headers the upstream received (for indistinguishability
-    /// assertions — e.g. that a health probe sends the same User-Agent/Accept as organic traffic).
     pub fn record_request_headers(&self, headers: &axum::http::HeaderMap) {
         *self.last_request_headers.lock().unwrap() = Some(headers.clone());
     }
 
-    /// Get a single request header value the upstream received, by name (case-insensitive).
     pub fn get_last_request_header(&self, name: &str) -> Option<String> {
         self.last_request_headers
             .lock()
@@ -203,17 +191,11 @@ impl MockServer {
         let app = Router::new()
             .route("/v1/messages", any(mock_handler))
             .route("/v1/chat/completions", any(mock_handler))
-            // Serve EVERY other upstream path through the same handler so backends whose writer
-            // builds a model-scoped path (Bedrock `/model/{model}/converse[-stream]`, Gemini
-            // `/v1beta/models/...`, Cohere `/v2/chat`) reach the queued mock response instead of a
-            // 404. The queued `MockResponse` already encodes the protocol-specific body shape, so a
-            // catch-all route is sufficient and keeps the named routes above for clarity.
             .fallback(any(mock_handler))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        // Cooperative shutdown rather than `JoinHandle::abort`: `with_graceful_shutdown` is a signal
-        // `axum::serve` races inside its own accept loop, never a forced mid-flight interruption.
+
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
             axum::serve(listener, app)
@@ -246,9 +228,6 @@ impl MockServer {
     }
 }
 
-/// One CRC-valid AWS event-stream frame, spelled here so the mock names no dialect codec. Layout:
-/// `[total_len u32][headers_len u32][CRC32 of those 8 bytes][headers][payload][CRC32 of all before]`,
-/// big-endian; the headers are the three type-7 strings a ConverseStream event carries.
 fn eventstream_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
     let mut headers = Vec::new();
     let pairs = [
@@ -272,9 +251,6 @@ fn eventstream_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
     frame
 }
 
-/// A body that yields `frames`, PAUSES so the proxy reads and forwards the first byte (crossing the
-/// after-first-byte failover boundary), then yields an `io::Error`: a mid-body connection drop that
-/// reqwest surfaces as a transport error, never a clean EOF.
 fn frames_then_drop(frames: Vec<Bytes>) -> Body {
     let drop = stream::once(async {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -289,13 +265,10 @@ async fn mock_handler(
 ) -> Response<Body> {
     let (parts, body) = request.into_parts();
 
-    // Record the request path for upstream-path assertions.
     state.record_request_path(parts.uri.path());
 
-    // Record the full header set the upstream received (indistinguishability assertions).
     state.record_request_headers(&parts.headers);
 
-    // Record the received request body for translation / on-the-wire assertions.
     let body_bytes = axum::body::to_bytes(body, usize::MAX)
         .await
         .unwrap_or_default();
@@ -370,13 +343,12 @@ async fn mock_handler(
             abort_at_index,
         } => {
             let stream_events: Vec<String> = if let Some(idx) = abort_at_index {
-                // Mid-stream abort: send idx events then add SSE error event before ending (no [DONE])
                 let mut result: Vec<String> = events
                     .iter()
                     .take(idx)
                     .map(|d| format!("data: {d}\n\n"))
                     .collect();
-                // Add SSE error event to notify client of upstream failure
+
                 let err_json = serde_json::json!({
                     "type": "error",
                     "error": {
@@ -387,8 +359,6 @@ async fn mock_handler(
                 result.push(format!("event: error\ndata: {}\n\n", err_json));
                 result
             } else {
-                // Normal completion with the `[DONE]` sentinel frame, spelled here: the mock names no
-                // dialect constant.
                 let mut result: Vec<String> = events
                     .into_iter()
                     .map(|d| format!("data: {d}\n\n"))
@@ -408,12 +378,6 @@ async fn mock_handler(
                 .unwrap()
         }
         MockResponse::SseTransportError { ok_events } => {
-            // Emit the real frames, PAUSE so the proxy reliably reads + forwards the first byte to the
-            // client (crossing the after-first-byte failover boundary), THEN yield a stream Err so the
-            // connection aborts mid-body. The `io::Error` item type makes `Body::from_stream`
-            // propagate a transport failure (not a clean EOF), which reqwest surfaces as a transport
-            // error to the proxy's `FirstByteBody`. Without the pause, on fast localhost the error can
-            // race ahead of the first byte and trip pre-first-byte failover (a 503) instead.
             let frames: Vec<Bytes> = ok_events
                 .into_iter()
                 .map(|d| Bytes::from(format!("data: {d}\n\n")))
@@ -428,10 +392,6 @@ async fn mock_handler(
             frames,
             amzn_request_id,
         } => {
-            // Encode each (event_type, payload) into a CRC-valid binary AWS event-stream frame and
-            // concatenate — the exact byte layout a native Bedrock ConverseStream backend returns. The
-            // `x-amzn-RequestId` header carries the upstream's REAL request id; a same-protocol bedrock
-            // passthrough must relay this verbatim (never re-synthesize a fresh UUID).
             let mut bytes: Vec<u8> = Vec::new();
             for (event_type, payload) in &frames {
                 bytes.extend(eventstream_frame(event_type, payload));
@@ -447,11 +407,6 @@ async fn mock_handler(
             ok_frames,
             amzn_request_id,
         } => {
-            // Encode each (event_type, payload) into a CRC-valid binary AWS event-stream frame, then
-            // PAUSE and yield a stream `Err` so the connection aborts mid-binary-body — the binary
-            // counterpart of `SseTransportError`. The pause lets the proxy forward the first byte
-            // (crossing the after-first-byte boundary) before the error races in; on fast localhost
-            // an immediate error can otherwise trip pre-first-byte failover (a 503) instead.
             let frames: Vec<Bytes> = ok_frames
                 .into_iter()
                 .map(|(event_type, payload)| Bytes::from(eventstream_frame(event_type, &payload)))
@@ -485,26 +440,12 @@ async fn mock_handler(
     }
 }
 
-// ───────────────────────── test fixtures ─────────────────────────
-// One `LaneSpec` describes a lane and emits BOTH its `Lane` (routing/health view) and its
-// `LaneData` (breaker/permit view), so the two can't drift. `TestApp` collects lanes + optional
-// pools/auth/governance and builds an `Arc<App>` with the in-memory store wired up — replacing the
-// ~20-field `Lane`/`LaneData`/`App` literals every test used to hand-roll. Defaults match the
-// common case; chainable setters override only what a test cares about. Adding a field to
-// `Lane`/`LaneData`/`App` is now a one-line change in `to_lane`/`to_lane_data`/`build`.
-//
-// `allow(dead_code)`: this is a test DSL — not every setter is exercised by every revision of the
-// suite; keeping the full, symmetric builder surface is intentional.
 #[allow(dead_code)]
 pub struct LaneSpec {
     model: String,
     provider: String,
     base_url: String,
-    // NEUTRAL FIXTURE: a lane needs only its protocol's registry
-    // NAME — the codec itself is resolved by-name from the installed registry at dispatch, never held
-    // here. Storing the interned `&'static str` (a neutral `PROTO_*` const) instead of an
-    // `Arc<crate::proto::Protocol>` lets the routing/dispatch suites build lanes without naming the
-    // witnessed the retired engine crate codec, so the witness can be deleted at the final flip.
+
     protocol: &'static str,
     max: usize,
     api_key: busbar_contract::redacted::Secret<String>,
@@ -516,7 +457,7 @@ pub struct LaneSpec {
     health: Option<crate::config::HealthCfg>,
     default_max_tokens: Option<u32>,
     upstream_model: Option<String>,
-    // LaneData-only runtime state (defaults = a fresh, healthy, unlimited lane):
+
     limited: bool,
     budget: i64,
     cooldown_until: u64,
@@ -526,8 +467,7 @@ pub struct LaneSpec {
     ok: u64,
     err: u64,
     client_fault: u64,
-    /// Optional shared semaphore override. When set, `to_lane_data` reuses this handle instead of
-    /// constructing a fresh one, so a test can hold a clone and observe permit acquisition/release.
+
     sem: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
@@ -605,7 +545,7 @@ impl LaneSpec {
         self.upstream_model = Some(n.into());
         self
     }
-    /// Mark the lane as budget-limited with `n` remaining requests (sets `limited = true`).
+
     pub fn budget(mut self, n: i64) -> Self {
         self.limited = true;
         self.budget = n;
@@ -632,14 +572,12 @@ impl LaneSpec {
         self.err = n;
         self
     }
-    /// Override the lane's permit semaphore with a shared handle the test retains, so it can
-    /// observe permit acquisition/release across the request lifetime.
+
     pub fn sem(mut self, sem: std::sync::Arc<tokio::sync::Semaphore>) -> Self {
         self.sem = Some(sem);
         self
     }
 
-    /// Emit this lane's NEUTRAL [`LaneInput`] row, the one the route tables are built over.
     fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
         busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),
@@ -672,11 +610,6 @@ impl LaneSpec {
     }
 }
 
-/// The plugin route table a test `App` carries: the scrape routes `GET /metrics` and
-/// `GET /metrics/hooks` when the recorder is installed (`metrics::init()`), else empty. Mirrors
-/// production, where the routes are the scrape sink's — here the recorder handle is the stand-in
-/// switch (the harness has no `export:` config surface) and the neutral
-/// [`export_axis::LinesSink`] answers them.
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     if crate::snapshot::recorder_installed() {
         crate::plugin_routes::build_route_table(export_axis::lines_scrape_routes())
@@ -686,26 +619,11 @@ fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     }
 }
 
-/// Per-plane container-gate hook SPECS, keyed by plane decl key: each value is the plane's
-/// `(container_name, own_hook_names)` pairs plus its section-level hook list.
 type PlaneContainerHooks =
     std::collections::BTreeMap<&'static str, (Vec<(String, Vec<String>)>, Vec<String>)>;
 
-/// THE BUILT APP this fixture hands back — the type [`TestApp::build`] returns, named here so a
-/// plane's test HELPERS can spell it in a signature (`fn probe(app: &Arc<BuiltApp>)`) without
-/// naming `busbar_kernel::state::App`. It is part of the fixture's own surface, reached through the
-/// same `test_support` doorway a plane already binds the fixture at, so a helper that only passes
-/// the built handle around stays inside that one binding instead of opening a second reach into the
-/// engine. A helper that needs a VERB rather than the handle should take the neutral port
-/// (`&dyn EngineHost`) or [`crate::test_support::BuiltAppSeam`) instead.
 pub type BuiltApp = crate::state::App;
 
-/// The default runtime of the plane that owns the tool-server section, for the current build
-/// surface: this crate's own `cfg(test)` binary seeds the registry's placeholder
-/// (`plane::registry::default_section_plane_test_runtime`, an empty value). An external
-/// `test-support` build seeds none; a test that registers that plane installs its own runtime. (A registration slot an
-/// external consumer could fill once stood here; nothing ever filled it, and a static fn-pointer
-/// seam is a `door-only` finding.)
 #[cfg(test)]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     Some(std::sync::Arc::new(()))
@@ -718,49 +636,33 @@ fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + S
 #[allow(dead_code)]
 pub struct TestApp {
     lanes: Vec<LaneSpec>,
-    /// Pool member lists as NEUTRAL `(lane_idx, weight)` pairs (money-path Phase 3-4 C — the fixture is
-    /// plane-agnostic: it hands `PlaneBuildInput` to the registered `build_runtime`, naming no
-    /// `WeightedLane`). The per-pool `failover:`/`affinity:`/`breaker:`/`upstream_credentials:` overrides
-    /// and member metadata ride the sibling maps below.
+
     pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
     auth: Option<std::sync::Arc<crate::auth::AuthMiddleware>>,
-    /// `admin_auth:` chain module names for the built App. `None` = the production default (the
-    /// operator credential); `Some(vec![])` selects the explicit OPEN admin posture (dev).
+
     admin_chain: Option<Vec<String>>,
-    /// Resolved external admin auth modules for the built App (1.5.2 admin-plane OIDC). `None` = the
-    /// empty chain (the operator credential alone, runs inline). A test that needs the OFFLOAD path populates
-    /// this with a boxed test module.
+
     admin_modules: Option<crate::auth::AdminAuthChain>,
-    /// Resolved hosted-login methods (1.5.2). `None` = empty (no hosted login). A test that
-    /// drives `GET /auth/token` populates this with a test login module.
+
     login_methods: Vec<(
         String,
         std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
         busbar_contract::auth::LoginKind,
         bool,
     )>,
-    /// busbar's public base origin (`public_url:`) for the built App.
+
     public_url: Option<String>,
-    /// The built authorization server (`oauth_as:`), type-erased. `None` (the default) = this
-    /// deployment is not one, which is what every pre-existing test expects and what the
-    /// authorization-server cleanliness crate's own gating proof asserts costs nothing. Set through
-    /// [`Self::oauth_as_plane`] — the kernel never builds the concrete authorization-server plane
-    /// (that type lives one-way-dependent in its cleanliness crate); that crate's own test
-    /// extension builds one and hands it in here type-erased.
+
     oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    /// LAW 7: the configured plane sections. `None` (default) = every linked plane counts configured.
+
     plane_sections: Option<std::collections::BTreeSet<&'static str>>,
     plane_durable_store: Option<std::sync::Arc<dyn busbar_contract::records::RecordStore>>,
     role_bindings: Option<crate::config::RoleBindings>,
-    /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
-    /// policy (no caps). Set by tests that exercise `MintPolicy` enforcement at the mint site.
+
     mint_policy: Option<crate::governance::mint_policy::MintPolicy>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
-    /// The pool-hook facade maps (money-path Phase 3-4 C) the built `App` carries — the resolved
-    /// per-pool routing policy / decision gates / rewrite chains the engine reads via `App::pool_*`.
-    /// Set by the routing-policy fixtures (`.pool_policy_resolved`/`.pool_gates_resolved`/
-    /// `.pool_rewrites_resolved`); empty for every test with no pool-level hook.
+
     pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
     pool_decision_gates:
         std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
@@ -772,76 +674,47 @@ pub struct TestApp {
             std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
         )>,
     >,
-    /// The ALL-POOLS `upstream_credentials:` default installed onto the built `App`.
+
     upstream_credentials: crate::auth::UpstreamCreds,
     fallback_pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
     on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: Vec<String>,
-    /// Resolve `global_hooks` into the App's global decision gates at build, as production does.
+
     resolve_global_gates: bool,
     base_hook_names: std::collections::HashSet<String>,
     groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
     base_group_names: std::collections::HashSet<String>,
     identity_providers: crate::config::IdentityProviders,
     export_defs: crate::config::ExportDefs,
-    /// Each plane's failover pools, by config section (as an operator writes them, under the verb).
+
     plane_pools_by_section: std::collections::BTreeMap<
         &'static str,
         std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
     >,
     overlay_path: Option<std::sync::Arc<crate::config::overlay::OverlayStore>>,
-    /// 1.5.3: when `true`, build a LOCKED app (no overlay backend) — the only way to get
-    /// `overlay_path: None` now that the default is durable. Without it, `build()` provides a writable
-    /// Store overlay so mutation tests use the same persistence contract as production.
+
     explicit_no_overlay: bool,
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
     plugin_admission: Option<&'static dyn crate::admission::PluginAdmission>,
     hook_env: Option<crate::hooks::HookEnv>,
     disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
-    /// When `true`, build an App that booted with NO plugin routes at all — an EMPTY live table AND an
-    /// empty `boot_route_paths`. The explicit form of "this process never mounted `/metrics`", which
-    /// the default cannot express: [`test_plugin_route_table`] keys on the PROCESS-GLOBAL recorder, so
-    /// a test that merely omits `export:` still gets `/metrics` once any earlier test in the binary
-    /// called `metrics::init()`.
+
     no_plugin_routes: bool,
-    /// THE PLANE INSTALL SEAM: the pre-built, type-erased plane runtimes `build()` moves into the
-    /// App's [`crate::state::App::plane_slots`], keyed by each plane's decl key (and the MCP
-    /// per-generation runtime under [`crate::state::runtime_slot_key`]). Filled from OUTSIDE core by
-    /// each plane's test-kit through [`TestApp::install_plane_runtime`], so `build()` names no plane
-    /// runtime type — the whole point of the B2/B3 relocation: core's fixture is plane-AGNOSTIC and
-    /// each plane's own tests own their runtime's construction.
+
     installed_plane_runtimes:
         std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
-    /// admissions through [`TestApp::mount_plane`] / [`TestApp::admit_plane`] (neutral `&str` paths,
-    /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
+
     plane_dispatch: crate::plane_driver::dispatch::PlaneDispatch,
-    /// NEUTRAL per-container hook SPECS, KEYED by the owning plane's decl key (the `tools:` plane's
-    /// server hooks, the `agents:` plane's agent hooks) — each value is `(container_name, own_hook_names)`
-    /// pairs plus the section-level hook list, handed here by that plane's test-kit as plain strings off
-    /// its typed config, so `build()` resolves the gates against its OWN `hook_registry`/`hook_env`
-    /// through the public `hooks::resolve_container_gates` (exactly as production does) without ever
-    /// naming a plane-typed config section. Resolving at build time (not in the test-kit) keeps the
-    /// resolution reading the same registry/env the fixture was given, regardless of builder order.
+
     container_hooks: PlaneContainerHooks,
-    /// TYPE-ERASED per-plane accumulator scratch. A plane's test-kit stashes its own builder state here
-    /// (keyed by plane key) across the fluent chain — `.mcp(cfg)`, `.mcp_server(def)`, … each mutate
-    /// ONE `McpScratch` — so core never names the plane's config types. Downcast back by the test-kit
-    /// through [`TestApp::plane_scratch`] / [`TestApp::take_plane_scratch`].
+
     plane_scratch: std::collections::HashMap<&'static str, Box<dyn std::any::Any>>,
-    /// PER-PLANE FINALIZERS run at the TOP of `build()`. Each is registered ONCE by a plane's test-kit
-    /// (via [`TestApp::register_plane_finalizer`]); it reads its accumulated [`plane_scratch`] and
-    /// drives the neutral install seams (`install_plane_runtime`, `mount_plane`/`admit_plane`,
-    /// `set_container_hooks`, `set_plane_defs_any`). This is the doorway that keeps the
-    /// fluent `.mcp(...).mcp_server(...).build()` call shape working while the runtime/resource
-    /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
+
     #[allow(clippy::type_complexity)]
     plane_finalizers: Vec<Box<dyn FnOnce(&mut dyn crate::test_support::TestAppSeam)>>,
-    /// THE ADMIN TABLE this generation is lent ([`TestApp::serve_tables`]), as the composition root
-    /// lends the boot generation the table it publishes its door planes into. An empty one when a
-    /// test lends none.
+
     serve_tables: crate::plane_driver::serve::ServeTables,
 }
 
@@ -852,22 +725,18 @@ impl Default for TestApp {
 }
 
 impl TestApp {
-    /// LEND this generation `tables`, the admin table its stated admin routes and the admin
-    /// router's fallback answer off — the one a test's composed door planes were published into.
     #[must_use]
     pub fn serve_tables(mut self, tables: crate::plane_driver::serve::ServeTables) -> Self {
         self.serve_tables = tables;
         self
     }
 
-    /// LAW 7: build the App with exactly these plane sections configured (`[]` = a 1.5.5 config).
     pub fn plane_sections(mut self, sections: &[&'static str]) -> Self {
         self.plane_sections = Some(sections.iter().copied().collect());
         self
     }
 
     pub fn new() -> Self {
-        // A test binary has no root: the record it stands in is published before any read.
         root::ensure();
         Self {
             plane_durable_store: None,
@@ -916,11 +785,6 @@ impl TestApp {
         }
     }
 
-    /// THE PLANE INSTALL SEAM. Install a pre-built, type-erased plane runtime under its plane decl
-    /// `key` (or the MCP per-generation runtime under [`crate::state::runtime_slot_key`]). `build()`
-    /// moves the accumulated map into [`crate::state::App::plane_slots`], so this is the one doorway a
-    /// plane runtime enters the built App's type-erased slot — the seam each plane's test-kit drives so
-    /// core's fixture names no plane runtime type.
     pub fn install_plane_runtime(
         &mut self,
         key: &'static str,
@@ -930,19 +794,12 @@ impl TestApp {
         self
     }
 
-    /// NEUTRAL DISPATCH SEAM — record that plane `key` is mounted at `path` speaking `wire`. A plane's
-    /// test-kit calls this with the plane's own mount path (`&str`) and a substrate wire const, so
-    /// `build()` mounts the plane surface without naming a plane type. Mirrors production's
-    /// `PlaneDispatch::mount`.
     pub fn mount_plane(&mut self, key: &'static str, path: &str, wire: &'static str) -> &mut Self {
         let d = std::mem::take(&mut self.plane_dispatch);
         self.plane_dispatch = d.mount(key, path, wire);
         self
     }
 
-    /// NEUTRAL DISPATCH SEAM — record plane `key`'s RFC 8707 admission. The admission is the substrate
-    /// `PlaneAdmission` the plane's own accessor already returns, so `build()` names no plane type to
-    /// wire the audience check. Mirrors production's `PlaneDispatch::admit`.
     pub fn admit_plane(
         &mut self,
         key: &'static str,
@@ -953,11 +810,6 @@ impl TestApp {
         self
     }
 
-    /// NEUTRAL GATE SEAM — hand `build()` plane `plane_key`'s per-container hook SPECS as plain strings
-    /// (`(container_name, own_hook_names)` pairs + the section hook list, e.g. `tools.hooks:`/`agents.hooks:`).
-    /// `build()` resolves them against its own `hook_registry`/`hook_env` through the public
-    /// `crate::hooks::resolve_container_gates`, exactly as production does, and files the gate map under
-    /// `plane_key` — so no plane-typed config section enters core and one method serves every plane.
     pub fn set_container_hooks(
         &mut self,
         plane_key: &'static str,
@@ -969,10 +821,6 @@ impl TestApp {
         self
     }
 
-    /// NEUTRAL SECTION-DEFS SEAM — set plane `plane_key`'s type-erased named-definition config the built
-    /// App carries. The App keeps no type-erased defs handle any more (a plane reads its config off
-    /// its own runtime object), so the handle is accepted and dropped: the call stays for the
-    /// test-kits that still make it.
     pub fn set_plane_defs_any(
         &mut self,
         _plane_key: &'static str,
@@ -981,49 +829,36 @@ impl TestApp {
         self
     }
 
-    /// Build an App that BOOTED WITH NO PLUGIN ROUTES: empty live table, empty `boot_route_paths`.
-    /// The fixture for the restart-to-apply signal — a config apply that ADDS a
-    /// path the router never registered at boot.
     pub fn no_plugin_routes(mut self) -> Self {
         self.no_plugin_routes = true;
         self
     }
 
-    /// Install a hook plugin-resolution env (for hook-transport resolution tests). Defaults to an
-    /// empty registry (a hook's `plugin:` ref resolves to `None`, i.e. gate-absent).
     pub fn hook_env(mut self, env: crate::hooks::HookEnv) -> Self {
         self.hook_env = Some(env);
         self
     }
 
-    /// Point the plugin surface at a specific directory (for the Admin API plugin catalog / install /
-    /// remove / reload tests). Defaults to `plugins` when unset.
     pub fn plugins_dir(mut self, path: std::path::PathBuf) -> Self {
         self.plugins_dir = Some(path);
         self
     }
-    /// Set the whole `plugins.*` posture (for install re-verification tests). Defaults to the
-    /// strict disabled default.
+
     pub fn plugins_cfg(mut self, cfg: crate::config::PluginsCfg) -> Self {
         self.plugins_cfg = Some(cfg);
         self
     }
-    /// Judge plugins through `a` — a composition root's own admission — instead of the test
-    /// build's [`AdmissionStandIn`].
+
     pub fn plugin_admission(mut self, a: &'static dyn crate::admission::PluginAdmission) -> Self {
         self.plugin_admission = Some(a);
         self
     }
 
-    /// Give the snapshot DISK TRUTH — the `config.yaml` / `providers.yaml` paths a rebuild reads.
-    /// Without these the app is EPHEMERAL and every rebuild-from-disk path takes its no-disk branch,
-    /// so the failure modes of the rebuild itself are unreachable from a test.
     pub fn disk_paths(mut self, config: std::path::PathBuf, providers: std::path::PathBuf) -> Self {
         self.disk_paths = Some((config, providers));
         self
     }
 
-    /// Attach an actual Store-backed overlay for runtime-change durability tests.
     pub fn overlay_backend(
         mut self,
         backend: std::sync::Arc<crate::config::overlay::OverlayStore>,
@@ -1033,35 +868,29 @@ impl TestApp {
         self
     }
 
-    /// 1.5.3: build a LOCKED app (`config.locked: true` at runtime) — no overlay backend, so every
-    /// config mutation is refused. Overrides the durable-by-default overlay `build()` otherwise
-    /// provides. The only supported way for a test to reach `overlay_path: None`.
     pub fn no_overlay(mut self) -> Self {
         self.overlay_path = None;
         self.explicit_no_overlay = true;
         self
     }
-    /// Register a hook definition in the `hooks:` registry (for the Admin API v1 hooks read surface).
+
     pub fn hook(mut self, name: &str, cfg: crate::config::HookCfg) -> Self {
         self.hook_registry.insert(name.into(), cfg);
         self
     }
-    /// Register a BASE-config-defined hook (registry AND `base_hook_names`) so the API's base-hook
-    /// read-only guards (register/put/patch/delete return 409) can be exercised.
+
     pub fn base_hook(mut self, name: &str, cfg: crate::config::HookCfg) -> Self {
         self.hook_registry.insert(name.into(), cfg);
         self.base_hook_names.insert(name.into());
         self
     }
-    /// Register a `groups:` entry into the App's group registry (the Admin-API groups read/mutation
-    /// surface). Marks it a BASE (config-file) group, so the base-shadow 409 guard sees it.
+
     pub fn group(mut self, name: &str, cfg: crate::config::GroupCfg) -> Self {
         self.groups_registry.insert(name.into(), cfg);
         self.base_group_names.insert(name.into());
         self
     }
-    /// Seed an `identity-providers:` DEFINITION into the App's effective named map (the read side of
-    /// the generic named-map admin CRUD). Mirror whatever the fixture's on-disk config.yaml declares.
+
     pub fn identity_provider(
         mut self,
         name: &str,
@@ -1070,14 +899,12 @@ impl TestApp {
         self.identity_providers.insert(name.into(), cfg);
         self
     }
-    /// Seed an `export:` DEFINITION into the App's effective named map — the exporter twin of
-    /// [`TestApp::identity_provider`].
+
     pub fn export_def(mut self, name: &str, cfg: crate::config::ExportDefCfg) -> Self {
         self.export_defs.insert(name.into(), cfg);
         self
     }
-    /// Declare a `tool_pools:` failover pool over already-seeded `mcp_server` registrations —
-    /// exactly the operator's grammar: ordered members, optional `repeatable:` operations.
+
     pub fn tool_pool(mut self, name: &str, members: &[&str], repeatable: &[&str]) -> Self {
         let section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
         self.plane_pools_by_section
@@ -1093,7 +920,7 @@ impl TestApp {
             );
         self
     }
-    /// The `agent_pools:` twin of [`TestApp::tool_pool`], over `agent_def` registrations.
+
     pub fn agent_pool(mut self, name: &str, members: &[&str]) -> Self {
         let section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
         self.plane_pools_by_section
@@ -1109,12 +936,7 @@ impl TestApp {
             );
         self
     }
-    /// Seed the WHOLE groups tree at once as RUNTIME (non-base) groups: populates the App's group
-    /// registry AND builds the cost model from the same tree, so `cost.group_named` (enforcement +
-    /// mint existence) and `groups_registry` (the Admin-API write surface / auto-provision) AGREE —
-    /// the exact production invariant (both rebuilt together on every apply). NOT marked base, so
-    /// the mint auto-provision path can create a `user:<sub>` leaf under one of these without the
-    /// base-shadow 409 misfiring. Overwrites any `.cost(...)` set earlier.
+
     pub fn groups_tree(
         mut self,
         groups: std::collections::BTreeMap<String, crate::config::GroupCfg>,
@@ -1125,15 +947,12 @@ impl TestApp {
         self.groups_registry = groups;
         self
     }
-    /// Add a name to the `global_hooks:` list (globally-wired hooks).
+
     pub fn global_hook(mut self, name: &str) -> Self {
         self.global_hooks.push(name.into());
         self
     }
-    /// Resolve the `global_hooks:` list into the App's global DECISION gates at build, through the
-    /// one resolver production's build uses (`hooks::resolve_gate_hooks`) over this fixture's own
-    /// `hooks:` registry and hook env. Off by default: the read-surface fixtures name global hooks
-    /// they never fire.
+
     pub fn resolve_global_gates(mut self) -> Self {
         self.resolve_global_gates = true;
         self
@@ -1142,29 +961,22 @@ impl TestApp {
         self.lanes.push(spec);
         self
     }
-    /// Define a pool over lane indices: `members` is `(lane_index, weight)` pairs.
+
     pub fn pool(mut self, name: &str, members: &[(usize, u32)]) -> Self {
         self.pools.insert(name.into(), members.to_vec());
         self
     }
-    /// Set the ALL-POOLS upstream-credential mode (1.5.3: the reserved `pools.upstream_credentials:`
-    /// key — it used to be `auth.upstream_credentials`) — driving the egress credential-selection
-    /// path. `Own` = the old `mode: none`; `Passthrough` = the old `mode: passthrough`. Per-pool
-    /// overrides go on the pool's own `PoolRuntime` (see `.pool_runtime(...)`).
+
     pub fn upstream_creds(mut self, uc: crate::auth::UpstreamCreds) -> Self {
         self.upstream_credentials = uc;
         self
     }
-    /// Override the ADMIN auth chain. `vec![]` is the explicit OPEN admin posture — the only way
-    /// to reach the admin surface on a fixture that has no governance to hold an operator token.
+
     pub fn admin_chain(mut self, modules: Vec<String>) -> Self {
         self.admin_chain = Some(modules);
         self
     }
 
-    /// Inject a resolved external admin auth module under `name` (the config module name that both
-    /// `admin_chain` and `role_bindings.<name>` key off): an in-process stand-in, answered on the
-    /// spot.
     pub fn admin_module(mut self, name: &str, module: Box<dyn crate::auth::AuthModule>) -> Self {
         let chain = self
             .admin_modules
@@ -1176,8 +988,6 @@ impl TestApp {
         self
     }
 
-    /// Inject an external admin auth module under `name` ON THE AUTH KIND'S DOOR: `calls` (a test
-    /// stand-in for an opened door instance) answers its `verify`, submitted and awaited.
     pub fn admin_door(
         mut self,
         name: &str,
@@ -1192,19 +1002,11 @@ impl TestApp {
         self
     }
 
-    /// Set the built App's `public_url:` (the hosted-login base origin).
     pub fn public_url(mut self, url: &str) -> Self {
         self.public_url = Some(url.to_string());
         self
     }
 
-    /// Install a pre-built authorization-server plane object, type-erased.
-    ///
-    /// The convenience `.oauth_as(cfg)` builder that used to live here (running the real identity
-    /// and plane builds, so a test took a config rather than a hand-assembled resource) moved to
-    /// the authorization-server cleanliness crate's own test extension, because the plane type
-    /// lives there and the kernel cannot name it. This is the seam that extension builds against:
-    /// it constructs the real plane, then calls this to hand it in.
     pub fn oauth_as_plane(
         mut self,
         plane: std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -1213,16 +1015,6 @@ impl TestApp {
         self
     }
 
-    /// Give the built App the DURABLE HOME a plane's trust state writes through to, exactly as boot
-    /// attaches the configured governance store: the demotion record's sink, the shared
-    /// spent-approval ledger, and the boot replay of any demotion the store already holds.
-    ///
-    /// It takes a `dyn Store` rather than a whole governance runtime because these two properties
-    /// need one thing from the store seam and nothing from governance, and because the only honest
-    /// way to test them is against a store that really persists — the durable store double, whose
-    /// plane records outlive the handle that wrote them (see [`super::durable_store`]). A deployment
-    /// that configures no store simply never calls this, and gets the process-local behaviour both
-    /// properties had before.
     pub fn durable_store(
         mut self,
         store: std::sync::Arc<dyn busbar_contract::records::RecordStore>,
@@ -1231,9 +1023,6 @@ impl TestApp {
         self
     }
 
-    /// Register a hosted-login method `name` whose plugin is ON THE AUTH KIND'S DOOR: `calls` (a
-    /// test stand-in for an opened door instance) answers its `begin_login`/`complete_login`, the
-    /// core holds no client secret for it and runs no hop. `login_kind` is the tail's login kind.
     pub fn login_method_door(
         mut self,
         name: &str,
@@ -1254,10 +1043,7 @@ impl TestApp {
         self.auth = Some(a);
         self
     }
-    /// Install an `AuthMiddleware` whose data-plane chain is `[keys]` (the built-in signed-key
-    /// verifier). This is what makes a data-plane request REQUIRE and resolve a virtual key: since
-    /// 1.5.2 vkey enforcement is driven by the chain shape, not the admin token. Pair with
-    /// `.governance(gov)` for the enforcing-vkey e2e posture.
+
     pub fn keys_chain(mut self) -> Self {
         let cfg = crate::config::AuthCfg {
             chain: vec![crate::config::AuthChainEntry::bare(
@@ -1270,14 +1056,7 @@ impl TestApp {
         ));
         self
     }
-    /// Install the TEST-ONLY OIDC stand-in as the whole data-plane chain: it identifies any
-    /// non-empty credential and is audience-blind, which is what a real `kind: auth` plugin is
-    /// forced to be by the module ABI. Use it wherever the thing under test is whether CORE refuses
-    /// something a chain module would have admitted.
-    ///
-    /// The stand-in's role is BOUND (all pools, no group) under `role_bindings`, as a deployed IdP's
-    /// is: the principal is admitted under a governance key, so every "core refused it" assertion
-    /// judges a governed admission, never a keyless one.
+
     pub fn idp_chain(mut self) -> Self {
         let cfg = crate::config::AuthCfg {
             chain: vec![crate::config::AuthChainEntry::bare("test-idp-module")],
@@ -1295,10 +1074,6 @@ impl TestApp {
         self
     }
 
-    /// Set the `role_bindings:` table used by the built `App` (default: empty). Needed by tests that
-    /// exercise the group re-key (an IdP/test principal whose role binds a group grant).
-    /// Set the resolved token-mint policy (`auth.policy:`) on the built `App` (default: empty, no
-    /// caps). Used by tests exercising `MintPolicy::check_mint` enforcement at `POST /keys`.
     pub fn mint_policy(mut self, policy: crate::governance::mint_policy::MintPolicy) -> Self {
         self.mint_policy = Some(policy);
         self
@@ -1308,9 +1083,7 @@ impl TestApp {
         self.role_bindings = Some(rb);
         self
     }
-    /// Install a resolved cost model (rate card / budget groups / flat fee) for tests exercising
-    /// the derived-spend enforcement. Default: `CostModel::flat(1)` - no rate card, no groups,
-    /// the production default 1-cent flat fee.
+
     pub fn cost(mut self, c: crate::cost::CostModel) -> Self {
         self.cost = Some(std::sync::Arc::new(c));
         self
@@ -1321,10 +1094,6 @@ impl TestApp {
         self
     }
 
-    /// [`Self::cost`] taking the NEUTRAL pricing handle a plane's tests mint through
-    /// [`engine_kit::EngineTestKit::cost_flat`] / `cost_parts`, so a plane can drive this fixture's
-    /// full builder without naming `CostModel`. The handle carries the very model the kit built —
-    /// this unwraps it back to the concrete table and installs it exactly as [`Self::cost`] does.
     pub fn cost_kit(
         mut self,
         c: std::sync::Arc<dyn crate::test_support::engine_kit::CostKit>,
@@ -1333,19 +1102,13 @@ impl TestApp {
         self
     }
 
-    /// [`Self::governance`] taking the NEUTRAL registry handle a plane's tests mint through
-    /// [`engine_kit::EngineTestKit::governance`]. Same registry, same object — unwrapped back to
-    /// the concrete `GovState` the fixture holds.
     pub fn governance_kit(
         self,
         g: std::sync::Arc<dyn crate::test_support::engine_kit::GovKit>,
     ) -> Self {
         self.governance(engine_kit::gov_state(g))
     }
-    /// Install a pre-resolved pool ROUTING POLICY (the `route:`/base-hook order) read by the engine
-    /// through the `App::pool_policy` facade — the successor to the former `.pool_runtime(PoolRuntime{
-    /// policy: … })`. The plane's tests build the `ResolvedPolicy` (a core-owned type they name at
-    /// `busbar_kernel::hooks::ResolvedPolicy`) and hand it here.
+
     pub fn pool_policy_resolved(
         mut self,
         name: &str,
@@ -1354,7 +1117,7 @@ impl TestApp {
         self.pool_orderings.insert(name.into(), policy);
         self
     }
-    /// Install a pool's pre-resolved DECISION GATES `(priority, policy)`, read via `App::pool_gates`.
+
     pub fn pool_gates_resolved(
         mut self,
         name: &str,
@@ -1363,7 +1126,7 @@ impl TestApp {
         self.pool_decision_gates.insert(name.into(), gates);
         self
     }
-    /// Install a pool's pre-resolved REWRITE chain `(timeout, policy)`, read via `App::pool_rewrites`.
+
     #[allow(clippy::type_complexity)]
     pub fn pool_rewrites_resolved(
         mut self,
@@ -1388,37 +1151,22 @@ impl TestApp {
         self.build_with_store().0
     }
 
-    // (helper defined at module scope below — see `test_plugin_route_table`)
-
-    /// As [`build`], but also hands back the concrete `Arc<HealthState>` — `App::store` is a
-    /// `dyn LaneRuntime` trait object with no downcast support, so a test that needs to reach
-    /// test-only breaker-cell manipulation (`HealthState::cell`/`cell_open`, real Open/HalfOpen
-    /// state, not achievable through the trait's own methods) needs the typed handle to the SAME
-    /// store instance the built `App` uses, not a second independent one.
     pub fn build_with_store(
         mut self,
     ) -> (
         std::sync::Arc<crate::state::App>,
         std::sync::Arc<crate::store::HealthState>,
     ) {
-        // PLANE FINALIZERS FIRST: each plane's test-kit registered one; it consumes its accumulated
-        // scratch and drives the neutral install seams (runtimes, dispatch mounts/admissions, gate
-        // specs, agents handle, post-build hooks). Run here — before anything below reads those fields
-        // — so the fluent `.mcp(...)/.agent_def(...)` chain lowers to a real, externally-linked plane.
         let finalizers = std::mem::take(&mut self.plane_finalizers);
         for f in finalizers {
             f(&mut self);
         }
-        // The admin table this generation is lent, as `appbuild` carries the prior generation's.
+
         let serve_tables = self.serve_tables.clone();
-        // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
-        // not a convenience either: the boot replay reads the operator's live registrations off the
-        // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
+
         let plane_durable_store = self.plane_durable_store.clone();
         let mut by_model = std::collections::HashMap::new();
-        // NEUTRAL lane carriers (money-path Phase 3-4 C): the fixture builds `LaneInput`, not `Lane`,
-        // and hands `PlaneBuildInput` to the registered `build_runtime` fn-pointer (production parity).
-        // `lane_data` (the breaker/permit view) stays core — it seeds the `HealthState` store.
+
         let mut lane_inputs = Vec::with_capacity(self.lanes.len());
         let mut lane_data = Vec::with_capacity(self.lanes.len());
         for (i, spec) in self.lanes.iter().enumerate() {
@@ -1426,22 +1174,10 @@ impl TestApp {
             lane_inputs.push(spec.to_lane_input());
             lane_data.push(spec.to_lane_data());
         }
-        // THE PLANE SLOTS, filled from OUTSIDE core: each plane's test-kit already built its runtime
-        // objects (the `"mcp"`/`"a2a"` dispatch resources AND the MCP per-generation runtime under
-        // `runtime_slot_key(<mcp decl key>)`) and installed them through [`TestApp::install_plane_runtime`], so
-        // `build()` MOVES the accumulated type-erased map into the App slot without naming a plane
-        // runtime type or a slot key of its own.
+
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
-        // THE TOOL-SERVER SECTION'S PLANE: its per-generation runtime slot. Like production
-        // `appbuild`, a generation whose process list holds the plane that owns that section carries
-        // a runtime under `runtime_slot_key(<its decl key>)`, or the plane's
-        // `reresolve_gates`/`on_swap` seams (run on every admin mutation) fault. A fixture that
-        // installed the plane's runtime keeps it; otherwise, in THIS crate's own `cfg(test)` binary,
-        // the slot gets the registry's placeholder (`seeded_section_plane_runtime`: an empty value,
-        // `plane::registry::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
-        // build seeds none. With no plane registered for the section, nothing is seeded. The decl
-        // key comes from the registry, never spelled as a literal.
+
         if let Some(decl) = crate::plane_driver::registry::plane_decl_for_config_section(
             busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         ) {
@@ -1451,19 +1187,14 @@ impl TestApp {
                     .or_insert(rt);
             }
         }
-        // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through the `mount_plane` /
-        // `admit_plane` seams (neutral `&str` paths + substrate `PlaneAdmission`), so a router-walking
-        // test sees the surface a deployment would have without `build()` naming a plane type.
+
         let plane_dispatch = std::mem::take(&mut self.plane_dispatch);
         let auth = self.auth.unwrap_or_else(|| {
             std::sync::Arc::new(crate::test_support::auth_helpers::new_builtin(
                 &crate::config::AuthCfg::default_none(),
             ))
         });
-        // NEUTRAL label projections (money-path Phase 3-4 B) — pool→member-idx list, the direct-model
-        // index, and a lane-idx→model resolver — so `AppSlots::build` banks the label space without
-        // naming `Lane`/`WeightedLane`. Borrows `self.pools`/`by_model`/`lanes` before they move into
-        // the runtime bundle below (NLL releases the borrows at the build call).
+
         let ts_pools_owned: Vec<(String, Vec<usize>)> = self
             .pools
             .iter()
@@ -1476,38 +1207,16 @@ impl TestApp {
         let ts_lane_models: Vec<String> =
             lane_inputs.iter().map(|lane| lane.model.clone()).collect();
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
-        // THE LLM DATA-PLANE RUNTIME slot (R3/R4 sub-phase B) — the successor to the flat `llm_runtime`
-        // field every fixture used to set. Built here (AFTER `tslots`' `&lanes`/`&self.pools`/
-        // `&by_model` borrows above, and preserving the field order whose earlier fields BORROW
-        // `lanes`/`self.pool_runtime` before the later fields MOVE them) and inserted into `plane_slots`
-        // UNCONDITIONALLY under the interned `runtime_slot_key(<llm plane key>)`: a fixture always
-        // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
-        // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
-        // process actually has an LLM (fallback) plane. The key AND the `build_runtime` come from ONE
-        // resolved decl ([`crate::plane_driver::dispatch::fallback_decl`]), never from `fallback_key()`: that degrades to
-        // the FIRST registered plane's key when no plane flags itself fallback (the plane suites'
-        // dependency-copy of core, which registers only MCP/A2A), and this test binary's registry GROWS
-        // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
-        // registers and a decl read after it named two different planes — the LLM runtime then landed
-        // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
+
         let fallback = crate::plane_driver::registry::plane_decls()
             .iter()
             .copied()
             .find(|decl| decl.fallback);
         let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
-        // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
-        // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
-        // default (a surface with no LLM plane never routes through `engine_tables` anyway).
-        // THE KERNEL'S OWN TABLES over the same lanes and pools, as production `appbuild` builds them:
-        // the read seam answers from them when the fallback plane contributes no runtime of its own
-        // (a door plane), and reads the empty default when no fallback plane is registered.
+
         let mut config_tables =
             std::sync::Arc::<busbar_kernel::plane_driver::route_tables::ConfigTables>::default();
         if fallback.is_some() {
-            // Assemble the neutral lane and pool rows exactly as production `appbuild` does, and build
-            // the kernel's own route tables over them.
-            // Primary pools ∪ fallback-only pools: production's `fallback_pools` IS `pools.clone()`, so a
-            // fallback target is itself a pool. Dedup by name (a primary definition wins), stable order.
             let mut pool_map: std::collections::BTreeMap<String, Vec<(usize, u32)>> =
                 std::collections::BTreeMap::new();
             for (name, members) in self.fallback_pools.iter().chain(self.pools.iter()) {
@@ -1555,11 +1264,9 @@ impl TestApp {
         } else {
             test_plugin_route_table()
         });
-        // A test App is a BOOT App (production seeds this only when `prior` is `None`), so the rule is
-        // production's verbatim: whatever this table declares is what the router mounted.
+
         let boot_route_paths = std::sync::Arc::new(plugin_routes.paths());
-        // THE HOOK ENVIRONMENT, bound BEFORE the snapshot because two things read it: the App's own
-        // control-plane surface, and the per-container gate resolution below.
+
         let hook_env = self.hook_env.clone().unwrap_or_else(|| {
             crate::hooks::HookEnv::new(
                 rows::empty(),
@@ -1567,15 +1274,7 @@ impl TestApp {
             )
             .expect("an empty registry's hook axis")
         });
-        // THE PER-PLANE CONTAINER GATES, RESOLVED THE WAY PRODUCTION RESOLVES THEM, from the registry
-        // and env this fixture was given. The per-container hook SPECS arrive KEYED by plane decl key
-        // from each plane's test-kit (`set_container_hooks`); `build()` runs the SAME
-        // `resolve_container_gates` production uses over them, so a test that hand-assembled a gate
-        // chain could not attach a hook the real resolver would have skipped. Keyed here by each owning
-        // plane's DECL KEY (resolved from the registry, never a literal) — the `tools:` section's plane
-        // and the `agents:` section's plane — so an absent/compiled-out plane simply gets no entry,
-        // which the gate read treats identically to the former empty-value entry. Computed BEFORE the
-        // `App` literal so it holds no borrow of `self` across the moves the literal performs.
+
         let plane_gates_map: crate::state::PlaneGateMap = {
             let mut m = std::collections::BTreeMap::new();
             for section in [
@@ -1600,8 +1299,7 @@ impl TestApp {
                     m.insert(decl.key, gates);
                 }
             }
-            // Every other plane a test-kit attached hooks for (a door plane's section-level
-            // `hooks:`, keyed by its registry key), resolved the same way.
+
             for (&key, (containers, section_hooks)) in &self.container_hooks {
                 if m.contains_key(key) {
                     continue;
@@ -1617,9 +1315,7 @@ impl TestApp {
             }
             m
         };
-        // THE TAP twin of `plane_gates_map`, resolved the same way from the same per-plane container
-        // hook specs — so a fixture that attaches a `prompt: rw` hook gets a real rewrite chain the
-        // transform seam fires, exactly as production `appbuild` builds `plane_rewrites`.
+
         let plane_rewrites_map: crate::state::PlaneRewriteMap = {
             let mut m = std::collections::BTreeMap::new();
             for section in [
@@ -1667,27 +1363,20 @@ impl TestApp {
 
         let parts = crate::state::AppParts {
             serve_tables,
-            // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
-            // the production default and is what keeps every existing test's route table unchanged
-            // by this plane's arrival.
+
             oauth_as: self.oauth_as.clone(),
-            // THE LLM DATA-PLANE RUNTIME'S SLOT KEY (R3/R4 sub-phase B) — the bundle itself was composed
-            // above into `plane_slots` under this interned key; the snapshot names only the key, and
-            // `App::llm_runtime` downcasts the slot on the money path.
+
             fallback_runtime_key,
-            // The kernel's own tables over the fixture's lanes and pools (built above when a fallback
-            // plane is registered), read when that plane contributes no runtime of its own.
+
             config_tables,
             root_rules: std::sync::Arc::new(crate::appbuild::AcceptAll),
             config_projection: None,
             store: store.clone(),
-            // A hand-built generation publishes no limits: a test's own posture stays in force.
+
             limits: None,
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
             incremental_scan: false,
-            // Each plane's pools under its decl key — resolved from the registry, never spelled as a
-            // literal — exactly as production `appbuild` keys them. A section no registered plane
-            // declares contributes nothing.
+
             plane_pools: self
                 .plane_pools_by_section
                 .into_iter()
@@ -1703,9 +1392,7 @@ impl TestApp {
             tap_hooks_routing: Vec::new(),
             tap_hooks_response: Vec::new(),
             global_gates,
-            // The pool-hook facade maps (money-path Phase 3-4 C): the resolved per-pool routing policy /
-            // decision gates / rewrite chains the relocated engine reads via `App::pool_*`. Populated by
-            // the policy-exercising fixtures through `.pool_policy_resolved(...)` etc.; empty otherwise.
+
             pool_orderings: self.pool_orderings,
             pool_decision_gates: self.pool_decision_gates,
             pool_rewrite_chains: self.pool_rewrite_chains,
@@ -1727,13 +1414,10 @@ impl TestApp {
                 .clone()
                 .unwrap_or_else(crate::config::default_admin_auth_names),
             admin_modules: {
-                // The operator credential answers over the fixture's governance token, through
-                // whatever auth row the test binary links (none, in this crate's own tests).
                 let mut chain = self
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
-                // The admin group module answers under its own name in every fixture, so a chain
-                // that names it (set here, after the build, or by `PUT /admin-auth`) reaches it.
+
                 if let Some(module) = auth_modules::open(auth_modules::TEST_SCOPE_MODULE) {
                     chain
                         .modules
@@ -1747,18 +1431,13 @@ impl TestApp {
                 std::sync::Arc::new(chain)
             },
             public_url: self.public_url,
-            // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through `mount_plane` /
-            // `admit_plane` — so a router-walking test sees the surface a deployment would have while
-            // `build()` names no plane type to assemble it.
+
             planes: std::sync::Arc::new(plane_dispatch),
-            // THE TYPE-ERASED SLOT MAP, filled from outside core through [`TestApp::install_plane_runtime`]
-            // by each plane's test-kit and MOVED in here — so a fixture-built App has the same "one
-            // object, downcast by the plane's own accessor" property `build_app_from_config` gives
-            // production, and `build()` names no slot key or plane runtime type.
+
             plane_slots,
             plane_sections: self.plane_sections,
             demotion_record: Default::default(),
-            // The node journal the fixture's governance owns, else one of the fixture's own.
+
             amendments: self
                 .governance
                 .as_ref()
@@ -1767,10 +1446,7 @@ impl TestApp {
             role_bindings: self.role_bindings.unwrap_or_default(),
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
             providers_path: self.disk_paths.as_ref().map(|(_, p)| p.clone()),
-            // 1.5.3 durable-by-default: unless a test explicitly asked for a LOCKED app
-            // (`.no_overlay()`), give it an isolated Store overlay so config mutations persist — the same
-            // guarantee production boot enforces via the `locked` XOR overlay invariant. An explicit
-            // `.overlay_backend(...)` still wins.
+
             overlay_path: self.overlay_path.or_else(|| {
                 if self.explicit_no_overlay {
                     None
@@ -1798,11 +1474,7 @@ impl TestApp {
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
                 crate::state::seed_request_id_counter(),
             )),
-            // Mirror production: `/metrics` is served via the built-in `prometheus` exporter's plugin
-            // route. The test harness has no `export:` config, so synthesize the
-            // prometheus route whenever the recorder is installed (`metrics::init()`/`init_with` — the
-            // test's "metrics on" signal), preserving the auth-gated `/metrics` behavior these tests
-            // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
+
             plugin_routes,
             boot_route_paths,
             planes_awaiting_restart: Vec::new(),
@@ -1826,42 +1498,19 @@ impl TestApp {
             crate::auth::login::install_method(&mut app, &name, calls, kind, button);
         }
         let app = std::sync::Arc::new(app);
-        // Mirror main's boot-version floor so rollback tests have a v0 to restore.
+
         crate::admin::seam::record_boot(&app);
-        // Mirror main's durable-MCP-trust boot block: attach the plane sinks BEFORE the app is handed
-        // to a caller.
+
         if let Some(durable) = plane_durable_store {
-            // Narrowed to the plane surface exactly as boot does — these are plane sinks.
             let plane_store = crate::store::plane_view::PlaneStoreView::narrow(durable);
             app.demotion_record.set_sink(plane_store);
         }
-        // Register the process-wide admin `audit` seam stream ONCE (no-sink), the way the call/task
-        // streams' front-door harnesses do. Production boots this through `register_and_migrate`; the
-        // test HTTP harness never does, so the seam read model `AUDIT_LOG` (which `GET /audit` reads
-        // once cut over) would stay empty. This funnel guarantees every live-server audit test's
-        // `record_by` feeds the seam. Idempotent + re-entrancy-guarded (this is itself on the shared
-        // global app's build path).
+
         audit::ensure_global_audit_stream_registered();
         (app, store)
     }
 }
 
-// NOTE: the helper that seeded every registered tool server's verification clock as just checked
-// named one plane's runtime types and so moved to that plane's own tests — core's `test_support`
-// stays plane-neutral.
-
-/// THE STAND-IN HOOK AXIS: `preflight::RootInstall`'s `hook_axis` in a test build (a test build has
-/// no root, and no loader: BUSBAR-1.6.0.md THE DESIGN l.322). The hook rows a test build links,
-/// answered IN PROCESS: the ranking double's words ([`ranking_double::RankingAxis`], in every test
-/// build: THE DESIGN l.1443, the kernel has no hook feature). A `kind: hook` row `registry`
-/// admits from a plugins directory has no in-process implementation (a test's rows double carries
-/// no image): it does not answer here, and its open is refused naming the module. A test that drives dropped-in hooks hands its `HookEnv` the hook double's axis
-/// ([`test_hook_env`], [`hook_double::HookAxisDouble`]). How the root's axis binds and crosses a
-/// real hook door — compiled in or dropped in — is the loader's and the root's to prove
-/// (`crates/plugin-loader`, `crates/busbar/tests`).
-///
-/// # Errors
-/// Never: the stand-in states every row it answers.
 pub fn hook_axis_stand_in(
     registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String> {
@@ -1878,27 +1527,16 @@ pub mod inbound;
 pub mod metrics;
 pub mod migration;
 pub use governance::GovStateFixtures;
-/// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
-/// process. See [`hook_double`].
+
 pub mod auth_stand_in;
 pub mod hook_double;
 
-/// The operator-credential double: the `kind: auth` door a test binary links as the operator
-/// credential's row in place of the composition root's plugin (kind-neutral, under the stand-in
-/// operator words). See [`operator_double`].
 pub mod operator_double;
 
-/// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
-/// test build. Linked only.
 pub mod ranking_double;
 
-/// The store double (R-FIX3): the door that stands in for the root's linked store row in a test
-/// build, and the `MemoryStore` the kernel's tests build a `GovState` over. Linked only.
 pub mod store_double;
 
-/// Install a test build's linked auth rows and the operator credential's words, as boot does
-/// ([`crate::preflight::install_linked_auth`]); a cell calls this so it names neither the call's
-/// result nor the types behind it.
 pub fn install_linked_auth(
     rows: &'static [busbar_kernel_identity::operator::LinkedAuth],
     words: busbar_kernel_identity::operator::OperatorWords,
@@ -1917,18 +1555,10 @@ pub struct HookNeeds {
     pub user: busbar_contract::plugin_rows::NeedLevel,
 }
 
-/// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
-/// given manifest `needs`, as a dropped-in plugin's signed manifest does) and whose hook axis is the
-/// [`hook_double::HookAxisDouble`] answering those aliases, beside the build's linked rows. The
-/// rows are the kernel's own reading of a plugin (the grant meet, the schema fallback), stated on
-/// the rows double ([`rows`]); the axis is the port every open goes through. No plugin is loaded:
-/// the rows carry no image.
 pub fn test_hook_env(aliases: &[&str], needs: HookNeeds) -> crate::hooks::HookEnv {
     test_hook_env_with_schema(aliases, needs, None)
 }
 
-/// As [`test_hook_env`], but every row's manifest also states a `settings_schema` — the baseline
-/// `GET /plugins/{name}/schema` falls back to when the live `describe` answers no schema.
 pub fn test_hook_env_with_schema(
     aliases: &[&str],
     needs: HookNeeds,
@@ -1952,9 +1582,6 @@ pub fn test_hook_env_with_schema(
     hook_double_env(registry, aliases)
 }
 
-/// As [`test_hook_env`] for `hook_alias`, beside a second row under `wrong_kind_alias` whose
-/// manifest states `kind: "secret"` — the "resolves, but to a non-hook kind" arm of
-/// `probe_transport`, which only ever reads the row's kind.
 pub fn test_hook_env_with_wrong_kind_plugin(
     hook_alias: &str,
     wrong_kind_alias: &str,
@@ -1973,7 +1600,6 @@ pub fn test_hook_env_with_wrong_kind_plugin(
     hook_double_env(registry, &[hook_alias])
 }
 
-/// The `registry` rows behind the hook axis double that answers `doubled`.
 fn hook_double_env(registry: rows::Rows, doubled: &[&str]) -> crate::hooks::HookEnv {
     crate::hooks::HookEnv::with_axis(
         registry.into_rows(),
@@ -1982,15 +1608,6 @@ fn hook_double_env(registry: rows::Rows, doubled: &[&str]) -> crate::hooks::Hook
     )
 }
 
-/// THE METRICS RECORDER HARNESS: sum every exposition sample of `name` whose label set contains
-/// ALL the given `key="value"` pairs, read from a fresh scrape of the process-global recorder
-/// (`metrics::init` + `render` internally — callers never touch the recorder directly).
-///
-/// The global recorder is shared by every test in the process, so absolute values are meaningless;
-/// assert STRICT DELTAS across the action under test (`before`/`after`), and give the test its own
-/// pool/lane label values so parallel tests can't contribute to the matched sample. Matching is by
-/// exact metric name (the char after the name must open the label set / value, so a name never
-/// matches a longer neighbor it happens to prefix).
 pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
     crate::test_support::metrics::init();
     let frags: Vec<String> = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect();
@@ -2006,10 +1623,6 @@ pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
         .sum()
 }
 
-/// A hook was handed a unit's content: record the access on `amendments`, through the kernel's own
-/// seat on a node journal (the audit step's token is the kernel's to mint). For a test double that
-/// stands where a node's host would record (a `CallerFacts` of its own), so its tests read the
-/// accesses off the journal they handed it.
 pub fn record_hook_read(
     amendments: &crate::audit::amend::NodeAmendments,
     name: &str,
@@ -2020,16 +1633,6 @@ pub fn record_hook_read(
     crate::audit::amend::record_test_hook_read(amendments, name, principal, op, identity);
 }
 
-/// Create (and return) a PRIVATE scratch directory for one test, under the process temp dir.
-///
-/// It lives in THIS file rather than beside the fixture that wants it because directory creation is
-/// one of the hazards `structure-lint`'s choke-point registry keeps to a single owner: a
-/// persist-then-swap is atomic only if every writer does the identical fsync/rename/cleanup dance,
-/// so the greppable primitives get one home each — `crate::durable` for production, this file for
-/// test scaffolding, which already creates the hook-plugin fixture trees the same way. A caller gets
-/// a path back and never reaches for `create_dir_all` itself.
-///
-/// `name` must already be unique per test AND per thread; this does not make it so.
 pub fn scratch_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(name);
     std::fs::create_dir_all(&dir).expect("create the test scratch directory");
@@ -2038,28 +1641,20 @@ pub fn scratch_dir(name: &str) -> std::path::PathBuf {
 
 pub mod warn_capture;
 
-/// The kernel's own test-only mint (ARCHITECT ruling B): the seal is acquired here and minted tokens
-/// are handed to a dependent crate's tests, which never name the seal or a constructor.
 pub mod tokens;
 
-/// The test auth modules a test chain names, answered in process by the test build's auth axis.
 pub mod auth_modules;
-/// The export axis a test binary's configurations resolve against (K9b).
+
 pub mod export_axis;
-/// The kind-neutral outbound auth double a test build binds lane credentials on.
+
 pub mod outbound_auth;
-/// The rate holder and dater a test binary hands in, in place of the root's install record's.
+
 pub mod rate_holders;
-/// A test binary's install record, published in place of the composition root's.
+
 pub mod root;
 
-/// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
-/// second credential under, standing for the linked signed-request verifier's Statement marks (a
-/// test binary links no auth plugin). Test data, never shipped.
 pub mod issued {
-    /// The persisted kind of the row-looked-up credential, as 1.5.5 stored it: frozen stored data,
-    /// read off the kernel's frozen-text fixture (the kind every test reads the row back under)
-    /// rather than spelled here.
+
     fn frozen_kind() -> String {
         const FROZEN: &str = include_str!("../../tests/fixtures/frozen_customer_text.yaml");
         FROZEN
@@ -2069,7 +1664,6 @@ pub mod issued {
             .expect("the frozen fixture names the signed credential kind")
     }
 
-    /// `(kind, shape)` as the linked signed-request verifier states them.
     #[must_use]
     pub fn double() -> (String, busbar_contract::auth_calls::IssuedShape) {
         (
@@ -2085,46 +1679,27 @@ pub mod issued {
         )
     }
 }
-/// The stand-in secret axis a test build installs in place of the root's.
+
 pub mod secrets;
 pub use secrets::SecretsStandIn;
 
-/// The durable store double (R-FIX3): plane records that outlive the handle that wrote them, for the
-/// restart and fleet properties of a plane's trust state. Linked only.
 pub mod durable_store;
 
-/// THE TEST-APP / BUILT-APP SEAM — the object-safe doorway onto this module's own `TestApp` and the
-/// `App` that comes out of its `build()`. Relocated here from the deleted `busbar_kernel::testkit`
-/// (1.6.0 Locked Decision #33: the kernel ships no testkit — a plugin tests itself). Its items are
-/// re-exported at the `test_support` root below, so `crate::test_support::TestAppSeam`
-/// resolves exactly where the fixture it is a view onto does.
 pub mod seam;
 
-/// A test binary's plane registrations, published as the process plane list.
 pub mod planes;
 pub use seam::{
     build_router, engine_host, engine_host_value, BuiltAppSeam, TestAppSeam, TestAppSeamExt,
 };
 
-/// The engine test-kit seam AND the engine's implementation of it, as one module: what a caller's
-/// test binary binds in one line so its tests build and drive the whole fixture naming no other item
-/// of this crate.
 pub mod engine_kit;
 
-/// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
-/// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every
-/// later test in the same binary the instant an `assert!`/`assert_eq!` in between fails: the panic
-/// unwinds straight past the manual restore. `Drop` runs during unwind too, so holding the prior
-/// value in a guard and restoring it there is safe regardless of whether the body between
-/// construction and drop panics.
 pub struct EnvVarGuard {
     key: &'static str,
     prior: Option<std::ffi::OsString>,
 }
 
 impl EnvVarGuard {
-    /// Snapshot `key`'s current value (restored on drop). Does not itself set anything — callers
-    /// `std::env::set_var` afterward.
     pub fn capture(key: &'static str) -> Self {
         Self {
             key,
@@ -2142,13 +1717,6 @@ impl Drop for EnvVarGuard {
     }
 }
 
-/// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
-/// as the composition root links it into the shipped one: `door` is the memory-ABI door of whichever
-/// auth plugin the test binary links for the purpose, registered
-/// under the operator words this build answers to: with no root, the kind-neutral `stand-in` double
-/// that `test-support` turns on (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The
-/// first install stands (the axis is process-wide). A test crate names that plugin only in its
-/// manifest; its build script turns the manifest row into the `door` it hands here.
 pub fn install_operator_auth_row(door: AuthDoor) {
     let words = OperatorWords {
         provider: crate::config::operator_provider(),
@@ -2157,57 +1725,36 @@ pub fn install_operator_auth_row(door: AuthDoor) {
     install_operator_auth_row_as(words, door)
 }
 
-/// `install_operator_auth_row_as(words, door)`: [`install_operator_auth_row`] under a test binary's
-/// OWN operator words — a binary that links the operator plugin the composition root links, and pins
-/// the root's bytes, hands in the root's words as the root does. The first install stands.
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
 
-/// Install `rows` as this test binary's root ([`crate::preflight::root_rows`]): every read after it
-/// answers them, ahead of the stand-in. A test of the composition root's package that drives the
-/// kernel in process over the loader installs its loader-backed rows here. The first install stands.
 pub fn install_test_root(rows: crate::preflight::RootInstall) {
     root::install_root(rows);
 }
 
-/// Install `open` as this test binary's auth axis opener, read ahead of the stand-in: the same
-/// hand-in as [`install_root_auth_axis`], which the install record reports. The first install stands.
 pub fn install_test_auth_axis(open: crate::preflight::AuthAxisOpener) {
     install_root_auth_axis(open);
 }
 
-/// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
-/// generated list (`$OUT_DIR/linked_hook_names.rs`, the manifest's `linked-name` rows for the hook
-/// rows that build links), and the install record ([`crate::preflight::root_rows`]) reports them as
-/// the root's install record does, so the admin surface that binary serves, its `openapi.json`
-/// included, lists the hooks the shipped binary lists. A test build with no root hands in nothing
-/// and lists none. The first hand-in stands.
 pub fn install_root_hook_names(names: &'static [&'static str]) {
     root::install_hook_names(names);
 }
 
-/// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
-/// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
-/// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
 pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
     let _ = ROOT_AUTH_AXIS.set(open);
     root::publish();
 }
 
-/// The opener the install record reports once a root test binary handed its own in
-/// ([`install_root_auth_axis`]): that opener's axis with the test auth modules answered ahead.
 pub(crate) fn root_auth_axis() -> Option<crate::preflight::AuthAxisOpener> {
     ROOT_AUTH_AXIS
         .get()
         .map(|_| root_auth_axis_with_test_modules as crate::preflight::AuthAxisOpener)
 }
 
-/// The root test binary's own auth-axis opener ([`install_root_auth_axis`]).
 static ROOT_AUTH_AXIS: std::sync::OnceLock<crate::preflight::AuthAxisOpener> =
     std::sync::OnceLock::new();
 
-/// The root test binary's auth axis with the test auth modules answered ahead of its rows.
 fn root_auth_axis_with_test_modules(
     registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 ) -> std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis> {
@@ -2217,11 +1764,6 @@ fn root_auth_axis_with_test_modules(
     auth_modules::around(open(registry))
 }
 
-/// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,
-/// by the names its pinned table spells them with — one read and two mutations — so a kernel test of
-/// the per-verb allow-list (#77(9) l.2279) has a vocabulary without linking the admin service, which
-/// registers the real table. The first install stands (the seam is process-wide), so every kernel
-/// test that needs a table calls this one.
 pub fn install_admin_verb_table_double() {
     use busbar_contract::authz::Scope;
     fn rung_of(name: &str) -> Option<Scope> {
@@ -2246,22 +1788,16 @@ pub fn install_admin_verb_table_double() {
     });
 }
 
-/// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
-/// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.
 pub fn builtins_only_secret_resolver() -> crate::config::secret::SecretResolver {
     crate::config::secret::SecretResolver::builtins_only()
 }
 
-// The shared config-build fixtures and the two neutral app seams live in `fixtures.rs` and are
-// re-exported here, so every caller still names them at `crate::test_support::…`.
 mod fixtures;
 pub use fixtures::*;
 
-/// The kernel testkit's production-path App build, mounted for the kernel's own fixtures.
 #[path = "../app.rs"]
 mod app;
 
-// One limits guard and lock for every shared fixture mount in this binary.
 #[path = "../limits.rs"]
 pub(crate) mod fixture_limits;
 pub use app::{build_once, build_once_under, from_cfg};
@@ -2270,9 +1806,6 @@ pub use app::{build_once, build_once_under, from_cfg};
 #[path = "tests/eventstream_frame_tests.rs"]
 mod eventstream_frame_tests;
 
-/// A test build's `plugins.fetch` (it has no composition root, so no connector): every target is a
-/// miss, refused before any dial (status row 130 E6: the kernel dials nothing; the root's fetch
-/// downloads through the connector, and its tests prove it).
 pub fn fetch_stand_in(
     _dir: &std::path::Path,
     targets: &[crate::config::FetchTarget],
@@ -2293,15 +1826,11 @@ pub fn fetch_stand_in(
         .collect())
 }
 
-/// THE PLUGIN-ROWS DOUBLE a test build reads its registry through, and its registry build
-/// ([`rows::registry_stand_in`], `preflight::RootInstall`'s `registry_build` in a test build).
 pub mod rows;
 
-/// A test binary's protocol registrations, published as the process protocol registry.
 pub mod protocols;
 pub use rows::registry_stand_in;
 
-/// THE STAND-IN STORE AXIS: the store double's door opened in process.
 pub mod store_axis;
 pub use store_axis::store_axis_stand_in;
 
@@ -2316,7 +1845,6 @@ pub use store_axis::store_axis_stand_in;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AdmissionStandIn;
 
-/// Why the stand-in refuses a question about a tarball's bytes.
 const NO_ADMISSION: &str =
     "a test build has no plugin admission: the composition root's tests prove it";
 
@@ -2325,14 +1853,10 @@ impl crate::admission::PluginAdmission for AdmissionStandIn {
         file.ends_with(".tar.gz") || file.ends_with(".tgz")
     }
 
-    /// The loader's `MAX_TARBALL_FILE_BYTES` (`crates/plugin-loader/src/tarball.rs`):
-    /// `MAX_LIB_BYTES` (256 MiB) + `MAX_MANIFEST_BYTES` (1 MiB).
     fn max_tarball_bytes(&self) -> u64 {
         256 * 1024 * 1024 + 1024 * 1024
     }
 
-    /// The binding lifecycle default: a settings change of a `hook` or `auth` plugin applies live;
-    /// any other kind's needs a restart.
     fn restart_default(&self, kind: &str) -> bool {
         kind != busbar_contract::abi::mechanism::kind::HOOK
             && kind != busbar_contract::abi::mechanism::kind::AUTH
@@ -2416,9 +1940,6 @@ impl crate::durable::DurableFs for DurableStandIn {
     }
 }
 
-/// THE KIT'S READING of a linked auth door's Statement (`preflight::RootInstall`'s
-/// `auth_chain_module` in a test build): whether `door` declares an INBOUND auth-chain module, read
-/// in process by which of the kit's auth doubles it is ([`outbound_auth::declares_chain_module`]).
 #[must_use]
 pub fn auth_chain_module_stand_in(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
     outbound_auth::declares_chain_module(door)

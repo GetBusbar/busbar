@@ -1,32 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH HANDLE'S REFS, HOST SIDE (BUSBAR-1.6.0.md Part 2 #74, the untrusted-ABI half, and #65;
-//! THE DESIGN, Auth points and guest lists): minting and verifying the two kernel-MAC'd refs a
-//! transport hands back on the auth handle's services, [`AuthRef`] and [`UnitRef`].
-//!
-//! THE PRIMITIVE IS THE INSTANCE HANDLE'S. Both refs are tagged with the same keyed SipHash-2-4,
-//! under the same 128-bit key drawn from the OS random source at the loader's boot
-//! ([`super::handle::arm`]), that tags every instance handle and permutes every ticket generation;
-//! each under its own domain word, so a tag minted for one is never a tag for another. No new
-//! crypto and no second key: the key never leaves host memory, and its one residual is the one #75
-//! accepts (a native plugin that reads process memory).
-//!
-//! * An [`AuthRef`]'s `mac` covers (owner, configuration generation, `id`). It is OWNER-SCOPED:
-//!   the owner is the calling instance's identity on the instance table, so a ref minted for one
-//!   transport and presented by another does not verify; and a ref of an older generation does not
-//!   verify against the current one.
-//! * A [`UnitRef`]'s `mac` covers (the request's own kernel secret, generation, owner, line, unit):
-//!   a unit replayed from another request (another secret), for another line or by another owner
-//!   does not verify.
-//!
-//! Every comparison folds the whole difference before it is judged (constant time), and a refusal
-//! names no reason a guesser could steer by beyond "not minted".
-//!
-//! THE GENERATION. The kernel publishes the configuration generation its guest lists and bindings
-//! belong to ([`publish_generation`]); a ref is verified against the published one. Until the
-//! kernel publishes one it is `0`.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -34,12 +8,10 @@ use busbar_contract::abi::host::service::{AuthRef, UnitRef};
 
 use super::handle::{key, siphash24};
 
-/// Domain separation: an auth ref's tag is never an instance handle's, a ticket's or a unit's.
 const DOMAIN_AUTH_REF: u64 = u64::from_le_bytes(*b"bb.aref1");
-/// Domain separation: a unit ref's tag is never an auth ref's.
+
 const DOMAIN_UNIT_REF: u64 = u64::from_le_bytes(*b"bb.unit1");
 
-/// The configuration generation the kernel last published.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Why a ref was refused. Each has one interned text ([`RefRefused::text`]).
@@ -54,16 +26,14 @@ pub enum RefRefused {
     NoKey,
 }
 
-/// The text of [`RefRefused::Absent`].
 pub const REF_ABSENT: &str = "the call names no handle";
-/// The text of [`RefRefused::NotMinted`].
+
 pub const REF_NOT_MINTED: &str =
     "the handle is not one the host minted for this caller at this generation";
-/// The text of [`RefRefused::NoKey`].
+
 pub const REF_NO_KEY: &str = "the host holds no key to verify the handle";
 
 impl RefRefused {
-    /// The interned refusal text, valid for the process's life.
     #[must_use]
     pub const fn text(self) -> &'static str {
         match self {
@@ -74,13 +44,10 @@ impl RefRefused {
     }
 }
 
-/// Publish the configuration generation refs are verified against. The kernel's, at boot and at
-/// each reload, once the generation's guest lists and bindings are built.
 pub fn publish_generation(generation: u64) {
     GENERATION.store(generation, Ordering::Release);
 }
 
-/// The configuration generation refs are verified against now.
 #[must_use]
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
@@ -97,12 +64,8 @@ pub enum RefSpace {
     Binding,
 }
 
-/// The top bit: set on every binding id, clear on every line id.
 const BINDING_BIT: u64 = 1 << 63;
 
-/// The next id of `space`, never `0` and never one of the other space. Each space counts on its
-/// own; a holder that keeps an id stable across generations allocates it once (the ref's mac
-/// carries the generation).
 #[must_use]
 pub fn next_ref_id(space: RefSpace) -> u64 {
     static LINES: AtomicU64 = AtomicU64::new(0);
@@ -115,7 +78,6 @@ pub fn next_ref_id(space: RefSpace) -> u64 {
     tag | n
 }
 
-/// The space id `id` was drawn from; `None` for `0` (no handle).
 #[must_use]
 pub const fn space_of(id: u64) -> Option<RefSpace> {
     match id {
@@ -125,12 +87,10 @@ pub const fn space_of(id: u64) -> Option<RefSpace> {
     }
 }
 
-/// The tag of an auth ref.
 fn auth_tag(key: (u64, u64), owner: u64, generation: u64, id: u64) -> u64 {
     siphash24(key, &[DOMAIN_AUTH_REF, owner, generation, id])
 }
 
-/// The tag of a unit ref.
 fn unit_tag(
     key: (u64, u64),
     secret: [u64; 2],
@@ -153,13 +113,10 @@ fn unit_tag(
     )
 }
 
-/// `want` against `got`, the whole difference folded before it is judged.
 fn same(want: u64, got: u64) -> bool {
     std::hint::black_box(want ^ got) == 0
 }
 
-/// Mint the ref of line or binding `id` for `owner` (the instance identity of the transport that
-/// will present it) at `generation`. `None` for `id == 0` or when the host's key cannot be drawn.
 #[must_use]
 pub fn mint_auth_ref(owner: u64, generation: u64, id: u64) -> Option<AuthRef> {
     if id == 0 {
@@ -172,13 +129,6 @@ pub fn mint_auth_ref(owner: u64, generation: u64, id: u64) -> Option<AuthRef> {
     })
 }
 
-/// Verify a presented auth ref for `owner` (the calling instance) at `generation`; the line or
-/// binding id it names.
-///
-/// # Errors
-///
-/// [`RefRefused::Absent`] for no ref; [`RefRefused::NotMinted`] for a ref of another owner, of
-/// another generation, or with a forged `mac`; [`RefRefused::NoKey`] when the key cannot be drawn.
 pub fn verify_auth_ref(owner: u64, generation: u64, r: &AuthRef) -> Result<u64, RefRefused> {
     if r.is_none() {
         return Err(RefRefused::Absent);
@@ -190,9 +140,6 @@ pub fn verify_auth_ref(owner: u64, generation: u64, r: &AuthRef) -> Result<u64, 
     Ok(r.id)
 }
 
-/// Mint unit `unit`'s ref for one request: its kernel secret, the generation, the owner (the
-/// transport's instance identity) and the line it matched. `None` for `unit == 0` or when the key
-/// cannot be drawn.
 #[must_use]
 pub fn mint_unit_ref(
     secret: [u64; 2],
@@ -211,14 +158,6 @@ pub fn mint_unit_ref(
     })
 }
 
-/// Verify a presented unit ref against the request's own secret, the generation, the owner and the
-/// line; the unit it names.
-///
-/// # Errors
-///
-/// [`RefRefused::Absent`] for no unit; [`RefRefused::NotMinted`] for a unit of another request,
-/// generation, owner or line, or a forged `mac`; [`RefRefused::NoKey`] when the key cannot be
-/// drawn.
 pub fn verify_unit_ref(
     secret: [u64; 2],
     generation: u64,
@@ -235,8 +174,6 @@ pub fn verify_unit_ref(
     }
     Ok(r.id)
 }
-
-// ── the kernel's side of the handle, as the loader calls it ─────────────────────────────────
 
 /// One request's head as a transport lent it ([`HeadView`](busbar_contract::abi::host::service::HeadView)),
 /// copied out of the caller's memory before anything else runs: neutral fields only.
@@ -255,7 +192,6 @@ pub struct HeadCopy {
 }
 
 impl std::fmt::Debug for HeadCopy {
-    // Never a field value: a field line may carry the credential.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HeadCopy")
             .field("method", &self.method)
@@ -308,8 +244,6 @@ pub struct AuthCallAnswer {
     pub strips: Vec<(String, u32)>,
 }
 
-/// Where a pended `auth.call`'s answer goes: called once, from any thread. `Err` is REFUSED with
-/// that text.
 pub type AuthDone = Box<dyn FnOnce(Result<AuthCallAnswer, &'static str>) + Send>;
 
 /// How the kernel ran an `auth.call`.
@@ -402,30 +336,13 @@ pub struct StreamPolicy {
     pub current: Arc<[u8]>,
 }
 
-/// THE KERNEL'S SIDE OF THE HOST AUTH HANDLE (THE DESIGN §6, "Auth points and guest lists", step 4;
-/// Part 2 #65, #74), as the loader calls it. The composition root installs one on the dispatcher
-/// ([`Dispatcher::install_auth_handle`](super::Dispatcher::install_auth_handle)) over the kernel's
-/// inbound module; the loader names no kernel crate. Every call reaches it only after the loader
-/// verified the call's refs, its unit (against [`AuthHandleHost::unit_secret`]) and its `in`.
 pub trait AuthHandleHost: Send + Sync {
-    /// The secret, generation and line `owner`'s live unit `unit` was minted under; `None` for a
-    /// unit the kernel holds no record of for that owner (the loader then refuses it).
     fn unit_secret(&self, owner: u64, unit: u64) -> Option<UnitSecret>;
 
-    /// `auth.call`: answer at once, or keep `done` and answer [`AuthRan::Pending`] (the call pends).
     fn auth_call(&self, ask: AuthCallAsk, done: AuthDone) -> AuthRan;
 
-    /// `unit.hand_in`: `(flow, unit)`, or REFUSED with the text. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// The kernel serves no list for the caller, or holds no record of its unit.
     fn hand_in(&self, ask: HandInAsk) -> Result<(u32, UnitRef), &'static str>;
 
-    /// Hand in with the remaining deadline of the actual host operation, outside the C frame.
-    ///
-    /// # Errors
-    /// The same failures as [`Self::hand_in`].
     fn hand_in_with_deadline(
         &self,
         ask: HandInAsk,
@@ -434,18 +351,8 @@ pub trait AuthHandleHost: Send + Sync {
         self.hand_in(ask)
     }
 
-    /// `unit.refuse`: the refusal's bytes, or REFUSED with the text. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// The kernel serves no list for the caller, or the cause names no line it holds.
     fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str>;
 
-    /// Register a host-owned listener/framing binding before Begin or Adopt crosses the door.
-    /// This is host metadata and is never a transport-supplied service argument.
-    ///
-    /// # Errors
-    /// The serving host refuses the listener or an attempted framing rebind.
     fn framing_started(
         &self,
         _owner: u64,
@@ -455,15 +362,10 @@ pub trait AuthHandleHost: Send + Sync {
         Ok(None)
     }
 
-    /// The concrete serving host requires a trusted framing and per-stream policy grant.
     fn requires_scope(&self) -> bool {
         false
     }
 
-    /// Select and pin the listener policy for one new stream before matching or auth.
-    ///
-    /// # Errors
-    /// The framing/listener is unknown or the stream already belongs to another policy.
     fn stream_open(
         &self,
         _owner: u64,
@@ -474,25 +376,14 @@ pub trait AuthHandleHost: Send + Sync {
         Err("the host serves no stream policy")
     }
 
-    /// Release a stream's grant and request state after its host lifetime ends.
     fn stream_ended(&self, _owner: u64, _framing: u64, _stream: u64) {}
 
-    /// Begin completed; its initial policy pin can retire independently of stream grants.
     fn framing_ready(&self, _owner: u64, _framing: u64) {}
 
-    /// Seal a detached source against new admissions without retiring its units.
-    ///
-    /// # Errors
-    /// The source is not a live registered framing.
     fn framing_detached(&self, _owner: u64, _framing: u64) -> Result<(), &'static str> {
         Err("the host cannot detach an admitted session")
     }
 
-    /// Move a unique host-claimed admission into staged destination custody.
-    /// No unit reference supplied by a plugin authorizes this operation.
-    ///
-    /// # Errors
-    /// Missing, ambiguous or ended source admission, or an already used destination.
     fn framing_adopting(
         &self,
         _source: busbar_contract::framing_scope::AdoptionSource,
@@ -502,38 +393,22 @@ pub trait AuthHandleHost: Send + Sync {
         Err("the host cannot transfer an admitted session")
     }
 
-    /// Commit staged custody to the adopting framer's READY token.
-    ///
-    /// # Errors
-    /// The staged source or destination ended before confirmation.
     fn framing_adopted(&self, _owner: u64, _framing: u64, _conn: u64) -> Result<(), &'static str> {
         Err("the host has no staged session")
     }
 
-    /// THE FRAMING ENDED: the loader retired the ticket `framing` names (the connection side it
-    /// drove was dropped). Everything the kernel holds for that framing goes.
     fn framing_ended(&self, framing: u64);
 }
 
-/// The host's identity of the framing a ticket drives: its slot and its generation, which no
-/// later minting of the slot repeats.
 #[must_use]
 pub const fn framing_of(t: busbar_contract::abi::mechanism::ticket::Ticket) -> u64 {
     ((t.slot as u64) << 32) | t.generation as u64
 }
 
-/// THE LINES WHOSE AUTH IS `none`, lent by the host to an accepting transport: `(owner, id)` of
-/// each ref [`lend_none_line`] minted. `unit.hand_in` on such a line needs no verdict (the
-/// contract, [`busbar_contract::abi::host::service::UnitHandInIn`] item (b)), so the host mints the
-/// request's unit there and answers continue.
 static NONE_LINES: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
 
-/// Units minted for requests on a `none` line, numbered from 1.
 static NONE_UNITS: AtomicU64 = AtomicU64::new(0);
 
-/// LEND A `none` LINE to `owner` (the instance identity of the accepting transport): its ref `id`
-/// minted at the published generation, and the line recorded as one whose auth is `none`. `None`
-/// for `id == 0` or when the host's key cannot be drawn.
 #[must_use]
 pub fn lend_none_line(owner: u64, id: u64) -> Option<AuthRef> {
     let r = mint_auth_ref(owner, generation(), id)?;
@@ -546,7 +421,6 @@ pub fn lend_none_line(owner: u64, id: u64) -> Option<AuthRef> {
     Some(r)
 }
 
-/// Whether line ref `id` was lent to `owner` as a `none` line ([`lend_none_line`]).
 #[must_use]
 pub fn is_none_line(owner: u64, id: u64) -> bool {
     NONE_LINES
@@ -555,9 +429,6 @@ pub fn is_none_line(owner: u64, id: u64) -> bool {
         .contains(&(owner, id))
 }
 
-/// THE UNIT OF A REQUEST HANDED IN ON A `none` LINE: a fresh unit id, tagged for `owner` and
-/// `line` at the published generation under a secret of its own. `None` when the key cannot be
-/// drawn.
 #[must_use]
 pub fn mint_none_unit(owner: u64, line: u32) -> Option<UnitRef> {
     let unit = NONE_UNITS.fetch_add(1, Ordering::Relaxed) + 1;

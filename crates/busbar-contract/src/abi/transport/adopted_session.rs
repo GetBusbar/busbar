@@ -33,9 +33,7 @@ impl AdoptedSession {
     }
 
     /// Decode a complete value, copying everything before the input loan ends.
-    ///
-    /// # Errors
-    /// Unknown versions, an absent unit, truncation or trailing bytes.
+
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let bytes: &[u8; 28] = bytes
             .try_into()

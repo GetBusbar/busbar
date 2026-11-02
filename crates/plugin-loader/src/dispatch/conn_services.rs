@@ -1,55 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CONNECTOR SLOTS, HOST SIDE (`BUSBAR-1.6.0.md` §11.12, the connections section): the
-//! [`ConnectorSlots`] table ([`CONN_SLOTS`]) an instance whose Statement declares a need is handed
-//! at bind, each slot a thin frame over the host's ONE connection table
-//! ([`busbar_contract::conn::Conns`]), called under the instance's own identity.
-//!
-//! * `ESTABLISH` opens the need (its Statement index) at the target the plugin names, landing only
-//!   on an address of its `within` set when it states one (the addresses its `dest.judge` judged):
-//!   the connector holds the pinned address to the set at the connect, before any byte is
-//!   written, a framed need's included (its connect is at `WRITE_REQUEST`'s end). A raw stream
-//!   is answered once its dial has LANDED (PENDING on the caller's ticket while it connects): a
-//!   refused connect is the establish's own answer, so a plugin's endpoint list moves on.
-//! * `READ` answers the next piece's bytes; nothing ready is PENDING on the caller's ticket (the
-//!   table wakes it), and never PENDING without one. A closed stream reads as its end (`len` 0).
-//! * `WRITE` offers bytes; `CLOSE` closes.
-//! * `UPGRADE_SECURE` secures a raw stream from its next byte on (StartTLS after the plugin's own
-//!   negotiation; TLS from the first byte, ldaps, when made before any byte), trusting the need's
-//!   anchors (the public roots, and the operator CA its `trust_from` names on top); PENDING on the
-//!   caller's ticket while the handshake runs. A framed stream refuses it.
-//! * `FACTS` writes the stream's facts: whether it is secure, the protocol agreed and the hash of
-//!   the far end's certificate (the channel-binding input), the strings held until it closes.
-//! * `IDENTITY` names the process, written afresh on every call (a replayed handle included: it
-//!   writes the caller's memory, so its answer is never kept). `RANDOM` is RETIRED and served by
-//!   no host: `random.fill`, a host service, is the one random service.
-//! * `FACTS` answers what the stream's connection security established, as the connector observed
-//!   it: the agreed protocol, the far end's key pin and whether busbar presented its client identity
-//!   (the transport pin, ARCHITECT 2026-10-03) — a stream whose connection the connector refused for its
-//!   trust anchors included, so a plugin reads the key the far end served. Its strings are held with
-//!   the stream until it closes.
-//! * `WRITE_REQUEST` sends a request on a FRAMED stream piece by piece (head, body, end): a framed
-//!   need's `ESTABLISH` answers a stream the host holds unopened, the head and body are held here,
-//!   and the end opens it with the whole request as its opening message, the head words included
-//!   (`OpenDesc::method`, `OpenDesc::head_target`), so the framer writes its own wire head. A raw
-//!   stream refuses it.
-//! * `READ_REPLY` reads the reply piece by piece with its descriptor (`ReplyPiece`, spec Part 4
-//!   Axis 3, "Every transport acks back to the sender"): the far end's head is `REPLY_HEAD` (its
-//!   code, its reason as sent, its field block, `abi::transport::fields`), its body `REPLY_BODY`,
-//!   and the end exactly ONE terminal piece, `REPLY_END` after a head or `REPLY_ACK` without one. A
-//!   refused or failed stream (the egress class's refusal among them) is a failed ack: the read
-//!   answers its refusal, with its text, and the reply has ended.
-//! * A slot this host does not offer is NULL: a plugin that needs it refuses to open.
-//!
-//! THE REPLAY RULE (`abi::sdk::conn`): the host never runs a service twice. A ticketed service's
-//! answer is kept under its completion handle, and a re-issued handle answers it again without a
-//! second run (a `READ_REPLY`'s with its piece and its bytes, a raw `READ`'s with its bytes, a
-//! `FACTS`'s with the facts it was answered, written again into what the replay lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
-//! ticket's when its next tick starts with nothing held on it (a held exchange keeps its
-//! answers), and any other ticket's when a new op (not a short answer's
-//! re-call) starts on it ([`forget`]).
-
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::net::IpAddr;
@@ -80,7 +31,6 @@ use std::future::Future as _;
 use super::services::{service, write_out, Answered};
 use super::ticket::InstanceWake;
 
-/// The table an instance with a declared need is handed.
 pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     size: size_of::<ConnectorSlots>() as u32,
     slots: SERVICES,
@@ -94,21 +44,18 @@ pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     checkout: None,
     checkin: None,
     close: Some(close),
-    // RETIRED: `random.fill` (the host services' table) is the one random service.
+
     random: None,
     identity: Some(identity),
     read_reply: Some(read_reply),
     write_request: Some(write_request),
 };
 
-/// A mechanism ticket as the connection table's wake number ([`busbar_contract::conn::Ticket`]):
-/// [`Ticket::NONE`] is `0`, which registers nothing.
 #[must_use]
 pub const fn conn_ticket(t: Ticket) -> u64 {
     ((t.slot as u64) << 32) | t.generation as u64
 }
 
-/// The mechanism ticket a connection table's wake number names ([`conn_ticket`]'s inverse).
 #[must_use]
 pub const fn ticket_of(n: u64) -> Ticket {
     Ticket {
@@ -117,10 +64,6 @@ pub const fn ticket_of(n: u64) -> Ticket {
     }
 }
 
-/// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
-/// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can tell
-/// it from the target's, the egress rules' or the far end's; an auth's refusal and an auth call's
-/// failure name theirs ([`CAUSE_AUTH_REFUSED`], [`CAUSE_AUTH_FAILED`]).
 const fn refusal(e: ConnError) -> Answered {
     let outcome = match e {
         ConnError::Pending => Outcome::Pending,
@@ -133,7 +76,7 @@ const fn refusal(e: ConnError) -> Answered {
         | ConnError::Unarmed
         | ConnError::CredentialUnavailable
         | ConnError::AuthRefused => Outcome::Refused,
-        // A cause this host does not name is the host failing the call.
+
         _ => Outcome::Fault,
     };
     let value = match e {
@@ -148,8 +91,6 @@ const fn refusal(e: ConnError) -> Answered {
     }
 }
 
-/// A connection table's refusal of `conn`, naming why the connection failed where the table names
-/// a cause: its `CAUSE_*` stage in `value`, the underlying error's own text in `error`.
 fn refusal_of(
     e: ConnError,
     id: InstanceId,
@@ -173,12 +114,8 @@ fn refusal_of(
     }
 }
 
-/// The most distinct cause texts the slots keep (each lives for the process, as `ServiceOut::error`
-/// must); past it a failure names its table's refusal text instead.
 const CAUSE_TEXTS_MAX: usize = 1024;
 
-/// `text`, kept for the process's life (one copy per distinct text, at most [`CAUSE_TEXTS_MAX`]);
-/// `""` once that many are kept.
 fn interned(text: &str) -> &'static str {
     static KEPT: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
     if text.is_empty() {
@@ -199,21 +136,14 @@ fn interned(text: &str) -> &'static str {
     t
 }
 
-/// The instance a context names, and its connection table.
 pub(crate) fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn DeclaredConns>)> {
     super::handle::resolve(ctx)?.conn.get()
 }
 
-/// The seal the host lent the dispatcher a context's instance is adopted by (Part 2 #54): what the
-/// member's auth fields are revealed under to join the request's head. `None` when none was lent.
 fn lent_seal(ctx: HostCtx) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
     super::handle::resolve(ctx)?.route.get()?.upgrade()?.seal()
 }
 
-/// `run` under handle `h`, as the driver ticket's held exchanges see it (`super::held`): a tick
-/// that reuses a handle another exchange issued in a kept cycle is answered FAULT and nothing runs
-/// (a replay would hand it that exchange's kept answer); else `run`'s answer, PENDING or not,
-/// noted against `h`.
 fn held(wake: &InstanceWake, h: CompletionHandle, run: impl FnOnce() -> Answered) -> Answered {
     let store = wake
         .route
@@ -236,9 +166,6 @@ fn held(wake: &InstanceWake, h: CompletionHandle, run: impl FnOnce() -> Answered
     a
 }
 
-/// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
-/// `in`, then `body` with the caller's identity, table and connector state. A panic answers FAULT;
-/// the `out` is written as far as the caller stated it, and one stated below the first is REFUSED.
 fn slot<R: Into<Kept>>(
     ctx: HostCtx,
     input: *const c_void,
@@ -247,9 +174,6 @@ fn slot<R: Into<Kept>>(
     in_size: usize,
     body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, &ConnState, ServiceHead) -> R,
 ) -> RawOutcome {
-    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
-    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
-    // smaller one is never overrun).
     let lent = if out.is_null() {
         0
     } else {
@@ -280,13 +204,11 @@ fn slot<R: Into<Kept>>(
         };
         let st = &wake.conn_state;
         let run = || -> Kept { body(*id, table, st, head).into() };
-        // A never-pend service that writes the caller's memory is run afresh on a replay: a kept
-        // answer would say the bytes were written into memory this call never touched.
+
         if service == service::IDENTITY {
             return run().answer;
         }
-        // A replayed `READ_REPLY`, raw `READ` or `FACTS` writes what it wrote again into the
-        // memory the replay lends.
+
         let replay = matches!(
             service,
             service::READ_REPLY | service::READ | service::FACTS
@@ -310,8 +232,6 @@ unsafe fn bytes<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
     unsafe { super::validate::lent_mut(ptr, len) }
 }
 
-/// How much of an [`EstablishIn`] a caller must state: everything before the appended
-/// [`EstablishIn::member`], which a shorter one states as none.
 const ESTABLISH_IN_MEMBERLESS: usize = std::mem::offset_of!(EstablishIn, member);
 
 /// The caller's `EstablishIn`, as much of it as its head's `size` states: one that ends before the
@@ -376,8 +296,6 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 u64::from(i.timeout_ms)
             };
             if table.framed(id, NeedId(i.need)) {
-                // A FRAMED need opens when its request is whole (`WRITE_REQUEST`'s end): its
-                // request is the connection's opening message.
                 let stream = held_id();
                 st.streams().insert(
                     stream,
@@ -398,12 +316,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 );
                 return Answered::ready(stream, 0);
             }
-            // A RAW STREAM IS ANSWERED ONCE ITS DIAL HAS LANDED ("dial the need's endpoints ...
-            // and answer the stream"): a far end that refuses the connect is the establish's own
-            // answer, so a plugin trying an endpoint list in order (a libpq multi-host url: open;
-            // on reject close and try the next) moves on to the next, as 1.5.5's driver did. While
-            // it connects the call is PENDING on the caller's ticket, and its re-call (a new
-            // handle, the same ticket) answers the same dial: nothing is dialled twice.
+
             let ticket = head.handle.ticket;
             let wanted = (
                 NeedId(i.need),
@@ -427,7 +340,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                     }
                 }
             };
-            // A call on no ticket may not pend: its stream is answered with the dial in flight.
+
             if ticket.is_none() {
                 st.record_raw(conn, need_timeout_ms);
                 return Answered::ready(conn.0, 0);
@@ -442,7 +355,6 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                     refusal(ConnError::Pending)
                 }
                 Err(e) => {
-                    // The connect failed: its cause is read before the stream goes.
                     let a = refusal_of(e, id, table, conn);
                     let _ = table.close(id, conn);
                     a
@@ -452,13 +364,9 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     )
 }
 
-/// What a pending `ESTABLISH` asked for: the need, the target, the `within` set and the
-/// registration, with its effective dial bound.
 type Wanted = (NeedId, String, Vec<IpAddr>, String, u64);
 
 impl ConnState {
-    /// The dial a pending `ESTABLISH` on `ticket` left in flight, taken, when the re-call asks for
-    /// the same; one it no longer asks for is closed on `table`.
     fn dialling(
         &self,
         id: InstanceId,
@@ -477,14 +385,10 @@ impl ConnState {
         None
     }
 
-    /// Close on `table` every dial a pending `ESTABLISH` left in flight on a ticket `gone` names:
-    /// the op that asked for it ended without its re-call. The map is let go before anything is
-    /// closed.
     fn drop_dialling(&self, table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) {
         drop(self.take_dialling(table, gone));
     }
 
-    /// [`ConnState::drop_dialling`]'s dials, taken out of the map and closed when the answer drops.
     fn take_dialling(&self, table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) -> Closes {
         let left: Vec<ConnId> = {
             let mut all = lock(&self.dialling);
@@ -498,8 +402,6 @@ impl ConnState {
     }
 }
 
-/// DIALS TO CLOSE ON A TABLE and pending reply timers to retire when this drops. A close may cross into a transport door
-/// (THE DESIGN §11.13 M1), so a caller under a lock keeps this until it has let the lock go.
 #[must_use = "dropped, it closes its dials at once"]
 pub(crate) struct Closes(Option<ArmedConns>, Vec<ConnId>, Vec<ReplyWait>);
 
@@ -515,8 +417,6 @@ impl Drop for Closes {
     }
 }
 
-/// `EstablishIn::within`'s address set: IP literals joined by [`WITHIN_SEPARATOR`], empty = none;
-/// `None` when an entry is not text or not an IP literal.
 fn addresses(within: &[u8]) -> Option<Vec<IpAddr>> {
     let text = std::str::from_utf8(within).ok()?;
     if text.is_empty() {
@@ -676,8 +576,6 @@ extern "C" fn upgrade_secure(
     )
 }
 
-/// The first unverified handshake an instance's connection ran (the operator's opt-in, ARCHITECT
-/// ruling 2026-10-03 on Q-L16-4) is logged at WARN, naming the instance: once per instance.
 fn warn_unverified(ctx: HostCtx) {
     static WARNED: OnceLock<Mutex<std::collections::HashSet<u64>>> = OnceLock::new();
     let Some(wake) = super::handle::resolve(ctx) else {
@@ -701,12 +599,8 @@ fn warn_unverified(ctx: HostCtx) {
     );
 }
 
-/// The facts strings each of an instance's streams was answered, held until it closes
-/// (`FactsIn::facts`: "the strings stay valid until the stream closes"): a later answer that
-/// differs is added, never put in an earlier one's place.
 type HeldFacts = HashMap<u64, Vec<Box<str>>>;
 
-/// `text`, held for `stream` until it closes, as the caller reads it.
 fn held_text(all: &mut HeldFacts, key: u64, text: Option<&str>) -> AbiStr {
     let Some(text) = text else {
         return AbiStr {
@@ -776,10 +670,6 @@ service!(
     }
 );
 
-// ── THE REPLAY RULE ─────────────────────────────────────────────────────────────────────────────
-
-/// What an instance's [`InstanceWake::conn`] holds: its identity on the connection table, and the
-/// table.
 type ArmedConns = (InstanceId, Arc<dyn DeclaredConns>);
 
 /// WHAT THE CONNECTOR HOLDS FOR ONE INSTANCE, on the instance's own [`InstanceWake`] (where every
@@ -847,37 +737,24 @@ impl ReplyWait {
     }
 }
 
-/// `m`, locked; a poisoned lock is still the state it guards.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// One ticketed service's answer, stored once under its handle. A read (`READ_REPLY`, raw `READ`,
-/// `FACTS`) keeps beside it what it wrote into the caller's memory ([`Wrote`]), so its replay
-/// writes the same again ([`replay_read`], [`replay_raw`], [`ConnState::replay_facts`]), as a
-/// replayed `IDENTITY` does. A short answer's
-/// re-call runs the op again on the same ticket, and the buffers it lends hold whatever its last
-/// run left there: its kept reads, written again, are the far end's reply as the first run read
-/// it. They are forgotten with the ticket's other answers ([`forget`]).
 pub(crate) struct Kept {
     answer: Answered,
     read: Option<Wrote>,
     delivered: bool,
 }
 
-/// What a ticketed read wrote into the caller's memory, kept for its replay.
 enum Wrote {
-    /// A `READ_REPLY`'s piece and the bytes it wrote.
     Reply(ReplyPiece, Box<[u8]>),
-    /// The bytes a raw `READ` wrote.
+
     Raw(Box<[u8]>),
-    /// The facts a `FACTS` wrote.
+
     Facts(KeptFacts),
 }
 
-/// The `StreamFacts` a `FACTS` call wrote, its strings owned: the replay writes the facts the
-/// first run was answered, never the stream's now (it may have been upgraded, or closed, later in
-/// that run), so the replay never asks the table again.
 struct KeptFacts {
     stream: u64,
     secure: u32,
@@ -971,15 +848,10 @@ impl ConnState {
         keys.iter().filter_map(|h| all.remove(h)).collect()
     }
 
-    /// The instance's held streams, locked.
     fn streams(&self) -> MutexGuard<'_, HashMap<u64, Stream>> {
         lock(&self.streams)
     }
 
-    /// `run` once per completion handle: a handle that already answered (anything but PENDING)
-    /// answers the same again, and `run` is not made a second time; a kept read is written again
-    /// into what `replay` (a `READ_REPLY`'s, raw `READ`'s or `FACTS`'s `in`) lends. A call on no
-    /// ticket is never kept: it may not pend, and every call is its own.
     fn kept(
         &self,
         h: CompletionHandle,
@@ -1021,10 +893,6 @@ impl ConnState {
         a
     }
 
-    /// A replayed `FACTS`: the facts it wrote, written again into the `facts` the replay's `in`
-    /// lends, and its kept `answer`. Their strings are the stream's held ones while it is open
-    /// (valid until it closes, as `FactsIn::facts` states); once it has closed, the kept answer's
-    /// own, valid until the ticket's answers are forgotten.
     fn replay_facts(&self, input: *const c_void, answer: Answered, kept: &KeptFacts) -> Answered {
         // SAFETY: `slot` checked the head covers a `FactsIn`.
         let i = unsafe { input.cast::<FactsIn>().read_unaligned() };
@@ -1056,8 +924,6 @@ impl ConnState {
         answer
     }
 
-    /// Forget every answer kept on `ticket`: how many there were, and every dial it left in flight,
-    /// to be closed on `table` once the caller holds no lock ([`Closes`]).
     fn forget(&self, table: Option<&ArmedConns>, ticket: Ticket) -> (usize, Closes) {
         let closes = self.take_dialling(table, |t| *t == ticket);
         let kept = lock(&self.kept)
@@ -1066,8 +932,6 @@ impl ConnState {
         (kept, closes)
     }
 
-    /// Hold connector ownership through the caller's remaining validation and detachment.
-    /// The returned payloads are dropped only after the caller releases every owner lock.
     pub(crate) fn retire(
         &self,
         ticket: Ticket,
@@ -1104,9 +968,6 @@ impl ConnState {
     }
 }
 
-/// A replayed read: what it wrote, written again into the piece slot and the buffer the replay's
-/// `in` lends. Like a raw read, an undersized replay leaves both outputs untouched and keeps
-/// the complete answer available for a sufficiently large retry.
 fn replay_read(input: *const c_void, answer: Answered, piece: ReplyPiece, kept: &[u8]) -> Answered {
     // SAFETY: `slot` checked the head covers a `ReplyIn`.
     let i = unsafe { input.cast::<ReplyIn>().read_unaligned() };
@@ -1126,10 +987,6 @@ fn replay_read(input: *const c_void, answer: Answered, piece: ReplyPiece, kept: 
     answer
 }
 
-/// A replayed raw `READ`: the bytes it wrote, written again into the buffer the replay's `in`
-/// lends, and its kept `answer`. A buffer below them is the short-buffer rule's answer
-/// (`abi::host::service`): FAILED with `needed_bytes` the kept count and nothing written; the kept
-/// answer stays for a re-call that lends enough.
 fn replay_raw(input: *const c_void, answer: Answered, kept: &[u8]) -> Answered {
     // SAFETY: `slot` checked the head covers an `IoIn`.
     let i = unsafe { input.cast::<IoIn>().read_unaligned() };
@@ -1147,11 +1004,6 @@ fn replay_raw(input: *const c_void, answer: Answered, kept: &[u8]) -> Answered {
     answer
 }
 
-/// Forget every answer instance `id` kept under `ticket` (its worker recycled it, a driver
-/// ticket's tick started, or a new op started on it); how many there were. Held per instance as
-/// well as by ticket: tickets are minted per dispatcher, so another dispatcher's instance may hold
-/// an identical ticket, and its kept answers are never its neighbour's to drop (dropping them would
-/// make it run a stored establish or write a second time).
 pub(crate) struct Forgotten {
     _closes: Closes,
     _binding: Option<super::export_bindings::Forgotten>,
@@ -1186,8 +1038,6 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Forgotten) {
     )
 }
 
-/// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.
-/// Another dispatcher's worker of the same index is not touched.
 pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
     let gone = |t: &Ticket| super::ticket::decode(t.slot).0 == worker;
     for w in ids.iter().filter_map(|id| super::handle::supplier_of(*id)) {
@@ -1199,19 +1049,11 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
     }
 }
 
-/// FORGET EVERYTHING instance `id` holds on the connector — its held streams and their facts, its
-/// kept answers, its dials in flight — and close on `table` every connection a held stream had
-/// open. Made when the instance can never cross again: the watchdog faulted it, or it is dropped (a
-/// close, a reload). The maps are let go before anything is closed or dropped: a held stream's
-/// pending auth call is the auth plugin's, and a close may cross into a transport door (THE DESIGN
-/// §11.13 M1). Last, the table forgets the instance ([`DeclaredConns::forget`]): its needs, every
-/// connection still open on them, and its member programs, which a replaced instance would
-/// otherwise leave running.
 pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     if let Some(w) = super::handle::supplier_of(id) {
         let st = &w.conn_state;
         st.drop_dialling(w.conn.get(), |_| true);
-        // Replaced whole, so the instance's entry (leaked for the process) keeps no capacity.
+
         *lock(&st.facts) = HashMap::new();
         *lock(&st.kept) = HashMap::new();
         let gone = std::mem::take(&mut *st.streams());
@@ -1224,8 +1066,6 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     forget_authority(id, table);
 }
 
-/// Retire one connection authority. The first export generation shares the original owner
-/// with instance teardown; refreshed generations have distinct owners and retire independently.
 pub(crate) fn forget_authority(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     if let Some(wake) = super::handle::supplier_of(id) {
         if wake.conn.get().is_some_and(|(original, _)| *original == id)
@@ -1239,12 +1079,8 @@ pub(crate) fn forget_authority(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     table.forget(id);
 }
 
-// ── FRAMED REQUESTS AND REPLIES ──────────────────────────────────────────────────────────────────
-
-/// The bit a stream the host holds unopened carries (a connection table's ids never set it).
 const HELD: u64 = 1 << 63;
 
-/// The most a held request's body may reach before its write is refused.
 pub const REQUEST_HELD_MAX: usize = 16 * 1024 * 1024;
 
 /// A request's head, held until its end.
@@ -1287,7 +1123,6 @@ enum Conn {
     Opening,
 }
 
-/// A whole request waiting on its member binding's auth fields.
 struct Authing {
     fielding: Box<dyn busbar_contract::auth_calls::Fielding>,
     need: NeedId,
@@ -1318,11 +1153,6 @@ struct Stream {
     ended: bool,
 }
 
-/// Install `conn` on the stream a call took out to open ([`Conn::Opening`]), the instance's
-/// streams lock ([`ConnState::streams`]: held only to read or swap a stream's state, never across
-/// a call that can run plugin code, THE DESIGN §11.13 M1) re-taken for the swap alone. A stream
-/// closed meanwhile is gone: what was opened for it is closed on the table, and anything else it
-/// held (a pending auth call) is dropped, both after the lock is let go.
 fn install(
     st: &ConnState,
     id: InstanceId,
@@ -1345,15 +1175,11 @@ fn install(
     }
 }
 
-/// A new held stream's id.
 fn held_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     HELD | NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// The connection `stream` names: a table id as it is, a held stream's once open. A held stream
-/// whose request was never written is opened as it was named, raw (a WRITE or READ on a framed
-/// stream).
 fn resolve(
     st: &ConnState,
     id: InstanceId,
@@ -1392,7 +1218,7 @@ fn resolve(
             }
         }
     };
-    // The open, outside the lock: it may cross into a transport door.
+
     let desc = OpenDesc {
         target: &target,
         within: &within,
@@ -1410,7 +1236,6 @@ fn resolve(
     opened
 }
 
-/// A field block's fields, owned; a name that is not text, or a pseudo-field, refuses the block.
 fn field_lines(block: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Answered> {
     fields::lines(block)
         .map(|(name, value)| {
@@ -1426,7 +1251,6 @@ fn field_lines(block: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Answered> {
         .collect()
 }
 
-/// The bytes `span` names in `bytes`, or `None` past their end.
 fn spanned(bytes: &[u8], span: FrameSpan) -> Option<&[u8]> {
     let at = usize::try_from(span.offset).ok()?;
     let len = usize::try_from(span.len).ok()?;
@@ -1516,8 +1340,7 @@ extern "C" fn write_request(
                     let Some(mut h) = head.take() else {
                         return Answered::fault();
                     };
-                    // The request is whole: taken out of the map, so the member's auth call and
-                    // the open run with the connector's lock let go (THE DESIGN §11.13 M1).
+
                     let need = *need;
                     let (target, within, member, body) = (
                         std::mem::take(target),
@@ -1527,13 +1350,9 @@ extern "C" fn write_request(
                     );
                     s.conn = Conn::Opening;
                     drop(all);
-                    // THE PLUGIN'S STATED SCOPE is the host's own field
-                    // (`abi::auth::SCOPE_REQUEST_FIELD`): out of the request before anything is
-                    // encoded, lent to the member's auth call. No wire carries it.
+
                     let mut scope = None;
-                    // THE PLUGIN'S WAIVER of the member's binding for this request
-                    // (`abi::auth::NO_MEMBER_AUTH_FIELD`): the host's own field too, taken out here,
-                    // and the request is opened with no member auth.
+
                     let mut waived = false;
                     h.fields.retain(|(name, value)| {
                         if busbar_contract::abi::auth::is_scope_field(name.as_bytes()) {
@@ -1549,22 +1368,13 @@ extern "C" fn write_request(
                         }
                     });
                     let at = (target.as_str(), within.as_slice(), member.as_str());
-                    // THE MEMBER'S BINDING: a request to a member the connector holds a binding
-                    // for carries that binding's auth fields, as the member's relayed calls do. The
-                    // connector keys a binding by (instance, need, member, target origin); a
-                    // request naming no member gets no binding. It is the binding of the member the
-                    // stream NAMES (`EstablishIn::member`), never of another registration at the
-                    // same origin. The request is handed over whole; what became of it is the
-                    // reply's to say.
+
                     let bound = if waived {
                         None
                     } else {
                         table.auth_of(id, need, &member, &target)
                     };
-                    // A refreshed binding answers this request's handle with a load (never a
-                    // resolution inside this crossing); one whose credential its last refresh
-                    // found unavailable refuses the request under its own cause, nothing
-                    // presented.
+
                     let handle = bound.as_ref().and_then(|b| match &b.per_request {
                         Some(per) => per.handle_now(),
                         None => Some(b.handle),
@@ -1630,10 +1440,6 @@ extern "C" fn write_request(
     )
 }
 
-/// Open a whole request on the table: the member's `auth` fields first, then the plugin's (a
-/// plugin field named like an auth field never doubles it: the binding's stands), 1.5.5's egress
-/// order, as the relayed calls are opened. The auth fields are revealed under `seal`, the one the
-/// host lent the dispatcher; with auth fields and no seal the open is refused (fail closed).
 #[allow(clippy::too_many_arguments)]
 fn open_with(
     table: &Arc<dyn DeclaredConns>,
@@ -1683,7 +1489,7 @@ fn open_with(
     let desc = OpenDesc {
         target,
         fields: &fields,
-        // The request the plugin wrote, frozen once: the connector keeps it without a copy.
+
         body: body.into(),
         timeout_ms: h.timeout_ms,
         method: &h.method,
@@ -1703,10 +1509,6 @@ fn open_with(
         .map_or_else(Conn::Failed, Conn::Open)
 }
 
-/// THE LINES THE CONNECTOR COMPLETES the plugin's whole request with at its open (THE DESIGN
-/// section 6, step 5; [`busbar_contract::conn::HeadDefaults::completing`]): the framer's own lines
-/// its head does not carry, then the body's length where the framer leaves it to the host. They are
-/// part of the head the member's auth call signs, so nothing is added after the auth runs.
 fn completing(
     table: &Arc<dyn DeclaredConns>,
     id: InstanceId,
@@ -1730,12 +1532,6 @@ fn completing(
         .collect()
 }
 
-/// The member binding's ONE auth call for a whole request to `target` (THE DESIGN, outbound auth: the facts at
-/// the style's point; the request's head when the style reads it, completed with `added`, the lines
-/// the connector adds at the open; its stated `scope` in the extensions blob). A passthrough binding is lent the caller credential of the unit the crossing
-/// serves (none presented: an empty one, so nothing is presented, never the operator's); a request
-/// made inside no unit has no caller, and opens nothing (`None`): an operator's own fetch never
-/// spends a caller's credential.
 fn auth_request(
     binding: &busbar_contract::conn::ConnAuth,
     h: &Head,
@@ -1757,8 +1553,7 @@ fn auth_request(
     } else {
         None
     };
-    // The authority the socket dials, read by the one split; the fragment is never sent, and a
-    // web path's `\` is the `/` the dialling stack sends.
+
     let parts = busbar_contract::net::url_authority(target);
     let authority = parts.host_port;
     let path_query = parts.tail.split('#').next().unwrap_or("");
@@ -1811,10 +1606,7 @@ fn auth_request(
     })
 }
 
-/// A waker that wakes `ticket` on the instance `ctx` names: a request waiting on its auth call is
-/// read again when the call answers.
 fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
-    /// The route, and the instance `ctx` named as the ticket's supplier (#74).
     struct TicketWaker {
         waking: super::ticket::Waking,
         ticket: Ticket,
@@ -1863,7 +1655,7 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             if let Some(p) = piece {
                 // SAFETY: the caller's descriptor slot, checked non-NULL.
                 unsafe { i.piece.write_unaligned(p) };
-                // A ticketed read keeps what it wrote, stored with its answer.
+
                 if answer.outcome != Outcome::Pending && !head.handle.ticket.is_none() {
                     let n = usize::try_from(answer.len).map_or(buf.len(), |n| n.min(buf.len()));
                     read = Some(Wrote::Reply(p, buf[..n].into()));
@@ -1878,8 +1670,6 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
     )
 }
 
-/// The next piece of the reply on `stream`, read into `buf`: its descriptor (none for an answer
-/// without one) and the answer.
 fn reply(
     ctx: HostCtx,
     st: &ConnState,
@@ -1889,10 +1679,6 @@ fn reply(
     stream: u64,
     buf: &mut [u8],
 ) -> (Option<ReplyPiece>, Answered) {
-    // A REQUEST WAITING ON ITS AUTH CALL opens when the call answers (its fields lead the head),
-    // fails its ack when the call refuses or fails, and reads as nothing ready (on the caller's
-    // ticket, woken when the call answers) until then. The call is taken out of the map to be
-    // polled and opened with the connector's lock let go (THE DESIGN §11.13 M1).
     let waker = ticket_waker(ctx, head.handle.ticket);
     let authing = {
         let mut all = st.streams();
@@ -1959,7 +1745,6 @@ fn reply(
                 );
             }
             Conn::Failed(e) => {
-                // THE FAILED ACK: the stream's refusal, with its text, and the reply has ended.
                 let e = *e;
                 s.ended = true;
                 return (None, refusal(e));
@@ -2002,7 +1787,6 @@ fn reply(
         return match got {
             Ok(p) => match p.kind {
                 PieceKind::Fields if s.headed && p.len > 0 => {
-                    // The far end's trailers: not handed up (1.5.5 dropped them); read on.
                     drop(all);
                     continue;
                 }
@@ -2044,7 +1828,6 @@ fn reply(
             ),
             Err(ConnError::Pending) => (None, refusal(ConnError::Pending)),
             Err(e) => {
-                // A refusal or failure mid-reply is its failed ack, naming why where it can.
                 s.ended = true;
                 drop(all);
                 (None, refusal_of(e, id, table, conn))
@@ -2053,7 +1836,6 @@ fn reply(
     }
 }
 
-/// The process's OS user and program name, read once and held for the process's life.
 fn process() -> &'static (String, String) {
     static ONE: OnceLock<(String, String)> = OnceLock::new();
     ONE.get_or_init(|| {

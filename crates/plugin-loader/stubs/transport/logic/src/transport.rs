@@ -2,24 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `tcp` CARRIER, as the kind's own file (`BUSBAR-1.6.0.md` THE DESIGN, §2 and §5;
-//! TRANSPORT-STACK (2)): the carrier ops over the HOST'S I/O (`busbar_contract::abi::host::io`,
-//! `io.*`), and the framer ops refused. The host owns every socket; this carrier holds only the
-//! host's opaque handles and owns the policy over them:
-//!
-//! * `listen` binds the address it is asked to, and `accept` takes each connection off it;
-//! * `dial` reads the authority it is lent (`ip:port`, `[v6]:port` or `unix:` and an absolute path,
-//!   byte for byte) as its ONE address — never a name, which it does not resolve: the host's one
-//!   destination judge already pinned the address it may dial (THE DESIGN §5, "dials exactly the
-//!   pinned judged address") — and opens it, one attempt; the connect is bounded by the open the host runs it
-//!   under;
-//! * `read` answers what the socket has, straight into the host's buffer: a byte stream, so every
-//!   read completes a frame (`READ_END_OF_FRAME`); `write` hands the host what it is offered, and
-//!   a frame's end means nothing to a stream;
-//! * `flush` settles the dial (connected, or the far end's refusal);
-//! * `shut` closes the connection whatever the reason, and forgets it; `arrival` answers the far
-//!   end's address and the local port, as the host reads them off the socket.
-//!
-//! No op holds a byte of its own: a PENDING op moved nothing, so a cancel finds nothing moved.
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -37,8 +19,6 @@ use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, ArrivalIn, ArrivalOut, ConnIn, ConnOut, DialIn, IoOut, ListenIn,
     ListenOut, ReadIn, ShutIn, WriteIn, CANCEL_NOTHING_MOVED, DEST_AUTHORITY, READ_END_OF_FRAME,
 };
-
-// ── the instance ─────────────────────────────────────────────────────────────────────────────────
 
 /// What one instance carries: its listeners and its connections, each by the token it minted.
 pub struct Carried {
@@ -111,7 +91,7 @@ fn carried<'a>(i: &Instance<'a, State>) -> Result<(&'a Carried, Io<'a>), Refusal
 }
 
 /// The host's answer, as this op's refusal: the host's policy is REFUSED, the system's FAILED, each
-/// with the host's own words.
+
 fn refusal(e: &IoFailure) -> Refusal {
     match e {
         IoFailure::Refused(t) => Refusal::refused(t.clone()),
@@ -129,10 +109,8 @@ macro_rules! over {
     };
 }
 
-// ── the framer ops: refused ──────────────────────────────────────────────────────────────────────
-
 /// A framer op: REFUSED. A carrier frames nothing (`abi::transport`: a transport fills the slots of
-/// the role it does not play with a stub that answers REFUSED).
+
 pub struct NotAFramer<I, O>(PhantomData<(I, O)>);
 
 impl<I: AbiIn, O: AbiOut> SafeSlot for NotAFramer<I, O> {
@@ -143,8 +121,6 @@ impl<I: AbiIn, O: AbiOut> SafeSlot for NotAFramer<I, O> {
         Outcome::Refused
     }
 }
-
-// ── the carrier ──────────────────────────────────────────────────────────────────────────────────
 
 /// `listen`: bind the address, and answer the address bound into the host's buffer.
 pub struct Listen;
@@ -214,9 +190,7 @@ impl SafeSlot for Accept {
 }
 
 /// THE ADDRESS A DIAL OPENS, byte for byte: an IP literal (`v4:port` or `[v6]:port`) or a `unix:`
-/// absolute path, and nothing else. A name (`localhost` included) and a scheme prefix are not read
-/// here: the host's one destination judge resolves and pins the address a dial may reach and hands
-/// this carrier that pinned address, which the carrier dials exactly (THE DESIGN §5; CONNECTOR-19).
+
 #[must_use]
 pub fn resolve(authority: &str) -> Option<String> {
     let literal = authority.starts_with("unix:/") || authority.parse::<SocketAddr>().is_ok();
@@ -224,7 +198,7 @@ pub fn resolve(authority: &str) -> Option<String> {
 }
 
 /// `dial`: the authority's one address, opened once; the connection's token at once, its connect
-/// settling under `flush`. A program is not this carrier's destination: REFUSED.
+
 pub struct Dial;
 impl SafeSlot for Dial {
     type In = DialIn;
@@ -268,7 +242,7 @@ impl SafeSlot for Dial {
 }
 
 /// `flush`: a dial settles — connected; or refused, and the dial answers the far end's refusal.
-/// Nothing is held to write.
+
 pub struct Flush;
 impl SafeSlot for Flush {
     type In = ConnIn;
@@ -357,7 +331,7 @@ impl SafeSlot for Write {
 }
 
 /// `shut`: the connection is closed, whatever the reason, and forgotten. An unknown connection is
-/// already closed.
+
 pub struct Shut;
 impl SafeSlot for Shut {
     type In = ShutIn;

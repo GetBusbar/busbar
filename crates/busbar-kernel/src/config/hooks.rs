@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `hooks:` config SHAPES: the named DEFINITION entry (`HookDefCfg`), the runtime registry
-//! entry (`HookCfg`), the structured `on_error:` value, the mode/access/stage enums, the reserved
-//! terminal and strategy vocabulary, and the two pure scope predicates (`fires_at_stage`,
-//! `caller_in_hook_groups`). Plain serde data; the definition-to-registry LOWERING and the
-//! validation of hook references stay in busbar-core, which re-exports every item here at its
-//! historical `config::` path.
-
 use serde::{Deserialize, Serialize};
 
 use super::groups::GroupCfg;
@@ -33,10 +26,6 @@ pub struct HookDefCfg {
     /// The module's own opaque settings (busbar never interprets them; pushed to the plugin via
     /// `configure`).
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    // `settings:` the operator WROTE. Every admin read of it serves
-    // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
     pub settings: serde_json::Map<String, serde_json::Value>,
     /// SCOPE: the caller groups this hook fires for. Omit or `[]` = ALL callers. A USER is a leaf
     /// group (e.g. `user:bob`); membership walks the `groups:` tree (self OR any ancestor).
@@ -74,10 +63,6 @@ pub struct HookDefCfg {
     pub priority: Option<u16>,
 }
 
-/// The top-level `hooks:` NAMED-DEFINITION map (1.5.3): instance name → [`HookDefCfg`]. Insertion
-/// order is preserved so the resolved registry / firing order is deterministic. This REPLACES the
-/// removed `global_hooks:` list — a hook is DEFINED here once and REFERENCED by bare name (at the
-/// all-pools `pools.hooks:` list or a per-pool `hooks:` list).
 pub type HookDefs = indexmap::IndexMap<String, HookDefCfg>;
 
 /// A structured `on_error:` value: a reserved keyword stays BARE
@@ -91,7 +76,6 @@ pub enum OnErrorCfg {
 }
 
 impl OnErrorCfg {
-    /// The flat NAME the existing on_error chain machinery resolves (terminal word or hook name).
     pub fn as_name(&self) -> &str {
         match self {
             OnErrorCfg::Terminal(s) | OnErrorCfg::Hook(s) => s,
@@ -167,11 +151,10 @@ pub enum PromptAccess {
 }
 
 impl PromptAccess {
-    /// Whether the prompt projection is built + sent (both `ro` and `rw`).
     pub fn sends_prompt(self) -> bool {
         !matches!(self, PromptAccess::No)
     }
-    /// Whether the hook may return a `rewrite` arm (only `rw`).
+
     pub fn can_rewrite(self) -> bool {
         matches!(self, PromptAccess::Rw)
     }
@@ -189,7 +172,6 @@ pub enum UserAccess {
 }
 
 impl UserAccess {
-    /// Whether the caller-identity projection is built + sent (`ro`).
     pub fn sends_user(self) -> bool {
         matches!(self, UserAccess::Ro)
     }
@@ -207,11 +189,6 @@ pub enum HookStage {
 }
 
 impl HookStage {
-    /// The ONE wire spelling of a stage, shared by every surface that names one: the serde
-    /// representation above, the admin read projection's `at`/`phase`/`fires_at`, and any
-    /// diagnostic. Kept as a method rather than re-matched per call site because the admin
-    /// projection used to carry its own copy of this mapping, which is exactly how a wire
-    /// vocabulary drifts from the one the parser accepts.
     pub const fn as_str(self) -> &'static str {
         match self {
             HookStage::Request => "request",
@@ -222,18 +199,6 @@ impl HookStage {
     }
 }
 
-/// EVERY stage this build knows, in pipeline order: the domain [`HookCfg::fires_at_stage`] is asked
-/// about when resolving a hook's actual stage set.
-///
-/// Deliberately a SEPARATE constant from [`CORE_HOOK_PHASES`], not an alias for it, even though the
-/// two are byte-identical today. They answer different questions and are frozen to DIVERGE: this one
-/// is "which stages exist", which grows with every release that adds one; `CORE_HOOK_PHASES` is
-/// "which stages an omitted `phase:` means", which is FROZEN at the four and must never grow (see its
-/// FREEZE BLOCKER). Collapsing them would re-introduce the precise defect that freeze note exists to
-/// prevent: an added stage would silently join the default set and widen every already-deployed
-/// unscoped hook.
-///
-/// Pinned by `all_hook_stages_lists_every_stage_variant` in the admin hook-stage projection tests.
 pub const ALL_HOOK_STAGES: &[HookStage] = &[
     HookStage::Request,
     HookStage::Candidate,
@@ -241,28 +206,6 @@ pub const ALL_HOOK_STAGES: &[HookStage] = &[
     HookStage::Response,
 ];
 
-/// # FREEZE BLOCKER: THE FROZEN MEANING OF AN OMITTED `phase:`
-///
-/// **`phase:` omitted means THESE FOUR CORE STAGES — it does NOT mean "every stage that will ever
-/// exist".** The distinction is the whole finding: if omission meant "all stages", then adding a
-/// tool-invocation stage or an agent-delegation stage in a later release would retroactively make
-/// every already-deployed unscoped hook start firing at brand-new points in a brand-new plane —
-/// silently widening what an operator signed off on, with no config change and no diagnostic. Pinning
-/// the default to this frozen list means a later stage is strictly ADDITIVE: to fire there, a hook
-/// must NAME it.
-///
-/// Two further properties, frozen with it:
-///
-/// - **`phase:` is PLANE-NEUTRAL.** These four names describe the shape of a request's lifecycle
-///   (arrive → choose candidates → dispatch → finish), which every plane shares. A later plane REUSES
-///   them; it does NOT re-type `phase:` into a per-plane enum, because a re-typed `phase:` would break
-///   every existing hook definition.
-/// - **An INAPPLICABLE phase silently does not fire** — it is NOT a config error. A hook named on both
-///   `pools:` and (later) `tools:` may legitimately want a phase that only one plane reaches; making
-///   that an error would mean an operator could not write one hook definition for two planes, which
-///   is precisely the reuse the named-definition pattern exists to enable.
-///
-/// Pinned by `omitted_phase_is_exactly_the_four_core_stages` in the config tests.
 pub const CORE_HOOK_PHASES: &[HookStage] = &[
     HookStage::Request,
     HookStage::Candidate,
@@ -270,27 +213,16 @@ pub const CORE_HOOK_PHASES: &[HookStage] = &[
     HookStage::Response,
 ];
 
-/// The serde default for a hook's `on_error` — `nothing`: a failing gate
-/// DOES NOT PARTICIPATE by default — it cannot steer, and it cannot displace another gate's
-/// verdict. Security gates opt into `reject`; ordering gates name `weighted` explicitly.
 pub fn default_on_error() -> String {
     ON_ERROR_NOTHING.to_string()
 }
 
-/// The RESERVED on_error terminal names — every fallback chain must bottom out on one.
 pub const ON_ERROR_WEIGHTED: &str = "weighted";
 pub const ON_ERROR_REJECT: &str = "reject";
 pub const ON_ERROR_FIRST: &str = "first";
-/// The explicit DO-NOT-PARTICIPATE terminal: the failing gate simply drops out of the decision —
-/// it cannot steer, and it cannot displace any OTHER gate's verdict (in the concurrent reconcile a
-/// non-participating outcome is skipped by every pass). The right posture for a gate whose job is
-/// orthogonal to routing (e.g. a compressor): its failure should never reshape traffic. Internally
-/// identical to the `weighted` terminal — "didn't participate" and "busbar's normal ordering" are
-/// the same behavior — but the NAME teaches the correct mental model.
+
 pub const ON_ERROR_NOTHING: &str = "nothing";
 
-/// Map an `on_error` NAME to its reserved terminal, if it is one. `None` = the name is a fallback
-/// hook reference (a ranking strategy or a registry gate), resolved by routing / validated at boot.
 pub fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
     match name {
         ON_ERROR_WEIGHTED | ON_ERROR_NOTHING => Some(PolicyOnError::Weighted),
@@ -300,74 +232,22 @@ pub fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
     }
 }
 
-/// Names a hook may NOT take, enforced on EVERY hook-write path (boot validation, config apply, and
-/// the runtime register/PUT API). Two reasons, one rule:
-/// - REGISTRY UNIQUENESS: the native ranking strategies + built-in auth modules already answer to
-///   their names — two things can't answer to one name.
-/// - UNION DISAMBIGUATION: `on_error` is a string union of "reserved terminal"
-///   vs "fallback hook name". Reserving EVERY terminal word (`weighted`/`reject`/`first`/`nothing`)
-///   as an illegal hook name makes the union closed and unambiguous for machine consumers: a value
-///   in this set is a terminal; anything else is a hook reference — no hook can ever collide.
-/// # FREEZE BLOCKER: THE HOOK-NAME NAMESPACE IS CLOSED AS OF 1.5.3
-///
-/// `RESERVED_HOOK_NAMES` and the pool `hooks:` strategy keywords share ONE word space: a bare word in
-/// a pool's `hooks:` list is EITHER a built-in ordering strategy OR a reference to a hook the operator
-/// defined, and a bare word in `on_error:` is EITHER a reserved terminal OR a fallback hook name.
-///
-/// **Therefore this list must NEVER GROW.** Adding a bare terminal in a later release (a new
-/// `on_error` word, a new ranking strategy, a bounded-default floor) would retroactively
-/// INVALIDATE a config that is legal today: an operator's hook named `least_bad` boots fine in 1.5.3
-/// and would become a boot failure — or, worse, silently rebind to the new built-in — the moment the
-/// word were reserved. That is exactly the break 1.5.3 exists to make impossible.
-///
-/// **Every future terminal must therefore arrive STRUCTURED, never as a new bare word.** The
-/// mechanism already ships: `on_error:` takes `{ hook: <name> }` for a hook reference
-/// ([`OnErrorCfg`]), so a new BEHAVIOR gets a new structured key (e.g. `on_error: { strategy: x }`,
-/// `hooks: [{ strategy: x }]`) which no bare name can ever collide with. A structured form is
-/// unambiguously not a name, so it costs zero words from the frozen space.
-///
-/// Pinned by `reserved_hook_names_are_frozen` in the config tests, which asserts the EXACT contents
-/// (not a subset) so that adding a word here fails a test that points back at this comment.
-///
-/// ONE FROZEN WORD IS NOT HERE: the operator credential's provider, the built-in auth module the
-/// 1.5.3 word space reserves. It is the root migration table's word, handed in with the linked auth
-/// rows (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2), so the kernel reserves it through
-/// [`is_reserved_hook_name`] without spelling it. Every write path asks that function.
 pub const RESERVED_HOOK_NAMES: &[&str] = &[
-    // on_error terminals (see ON_ERROR_*) — includes `weighted`, which is ALSO the native floor.
     ON_ERROR_WEIGHTED,
     ON_ERROR_REJECT,
     ON_ERROR_FIRST,
     ON_ERROR_NOTHING,
-    // The historical bare strategy words only. New plugin-declared strategies use the structured
-    // pool form and never reserve an operator's existing hook name.
     STRATEGY_CHEAPEST,
     STRATEGY_FASTEST,
     STRATEGY_LEAST_BUSY,
     STRATEGY_USAGE,
-    // built-in auth modules (AuthModule::name); the operator credential's provider is reserved by
-    // `is_reserved_hook_name`
     "tokens",
 ];
 
-/// Whether `name` is a reserved hook name on every hook-write path: a word of
-/// [`RESERVED_HOOK_NAMES`], or the operator credential's provider the root handed in.
 pub fn is_reserved_hook_name(name: &str) -> bool {
     RESERVED_HOOK_NAMES.contains(&name) || (!name.is_empty() && name == super::operator_provider())
 }
 
-/// The FROZEN 1.5.3 hook-name word space (freeze blocker) — the UNION of [`RESERVED_HOOK_NAMES`]
-/// and the pool-`hooks:` strategy keywords accepted bare by `is_strategy_name`. This is the exact
-/// set of words an operator may NOT use as a hook name, and it is closed forever (see
-/// [`RESERVED_HOOK_NAMES`] for why, and for the structured escape hatch every future terminal uses).
-///
-/// Kept as its own constant, rather than derived, so the freeze is a VALUE a test can pin literally:
-/// `hook_name_word_space_is_frozen` asserts both that this equals the runtime union AND that its
-/// contents are exactly these words. The operator credential's provider completes the space; it is
-/// the root migration table's word, and the root's tests pin the whole space with it.
-// Consumed by the freeze test (`reserved_hook_names_are_frozen`) rather than by runtime code — that
-// is the POINT: it is the declared, reviewable VALUE of the freeze, and the test proves it equals
-// the runtime union.
 pub const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] = &[
     "cheapest",
     "fastest",
@@ -391,7 +271,7 @@ pub const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] = &[
 pub struct HookCfg {
     /// The hook's MODE: `tap` (fire-and-forget) or `gate` (fire-and-wait, returns a reply arm).
     pub kind: HookKind,
-    // ── plugin reference (exactly one, required) ─────────────────────────────────────────────────
+
     /// The `kind: hook` PLUGIN backing this hook, by signed-manifest name or alias — resolved against
     /// the same validated plugin registry that store/auth plugins load through (fail-closed: an
     /// unresolvable or wrong-kind reference refuses to boot). This REPLACES the retired
@@ -407,7 +287,7 @@ pub struct HookCfg {
     /// loads. Serialization always emits `module`.
     #[serde(rename = "module", alias = "plugin")]
     pub plugin: String,
-    // ── shared runtime knobs ─────────────────────────────────────────────────────────────────────
+
     /// Hard wall-clock deadline for a gate decision, in milliseconds (default 1). An in-process gate
     /// is microseconds; RAISE it for a hook plugin that does real work (a DB/network/model call).
     /// On timeout the decision is coerced to `on_error` and the request proceeds.
@@ -456,10 +336,6 @@ pub struct HookCfg {
     /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
     /// never interprets the contents.
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    // `settings:` the operator WROTE. Every admin read of it serves
-    // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
     pub settings: serde_json::Map<String, serde_json::Value>,
     /// The "decision observability" DECLARED-SIGNAL surface: the typed
     /// [`busbar_contract::signal::Signal`] catalog entries this hook wants computed + projected onto its own
@@ -527,18 +403,6 @@ impl HookCfg {
         }
     }
 
-    /// The RESOLVED stage set: every stage this hook ACTUALLY fires at, in pipeline order.
-    ///
-    /// This is the honest answer to the only question an operator asks about stage scoping, and
-    /// neither `phase:` nor `at:` answers it alone. Reading `phase:` back tells you which of the two
-    /// spellings happened to be used, not what it resolves to: an EMPTY `phase:` is ambiguous between
-    /// "falls back to `at:`" and "falls back to the four core stages", and `at:` is `None` for every
-    /// hook written in the current (1.5.3 named-definition) grammar, because `hook_cfg_from_def`
-    /// never sets it. So the admin read projects this alongside both spellings.
-    ///
-    /// Computed by asking [`Self::fires_at_stage`], the SAME predicate the firing path consults,
-    /// once per stage, so the read cannot drift from the behavior it describes. A future stage is
-    /// picked up here for free the moment it joins [`ALL_HOOK_STAGES`].
     pub fn resolved_stages(&self) -> Vec<HookStage> {
         ALL_HOOK_STAGES
             .iter()
@@ -548,15 +412,6 @@ impl HookCfg {
     }
 }
 
-/// Whether a caller bound to `caller_group` is "in" one of `hook_groups` (the named-hook scope
-/// check, 1.5.3). An EMPTY `hook_groups` means the hook is UNSCOPED and fires for every caller
-/// (returns `true` regardless of `caller_group`). Otherwise the caller matches iff its group — OR any
-/// ancestor of it, walked through the `groups:` tree's `parent` chain — appears in `hook_groups`; a
-/// caller with NO group binding never matches a scoped hook. This reuses the same acyclic `groups:`
-/// tree the governance limit chain walks, so a hook scoped to `engineering` fires for a caller in a
-/// `user:bob` leaf whose chain climbs through `engineering`. The walk is bounded by the tree size (a
-/// validated-acyclic tree cannot revisit a node without a cycle), so an untrusted/malformed tree can
-/// never spin here.
 pub fn caller_in_hook_groups(
     caller_group: Option<&str>,
     hook_groups: &[String],
@@ -579,9 +434,6 @@ pub fn caller_in_hook_groups(
     false
 }
 
-/// The default hard wall-clock deadline for a gate decision, in milliseconds. Used by serde's
-/// `default = "default_policy_timeout_ms"`. Also the single source of truth consumed at the
-/// resolution sites in busbar-core's `limits` and `hooks` modules.
 pub const DEFAULT_POLICY_TIMEOUT_MS: u64 = 1;
 
 pub fn default_policy_timeout_ms() -> u64 {

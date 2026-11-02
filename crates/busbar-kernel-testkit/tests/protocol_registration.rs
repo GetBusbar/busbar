@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Registry ownership stays in the external kit while the kernel reads the installed responses.
-
 use busbar_contract::protocol::{ClaimStrength, IngressAuth, ProtocolDecl};
 use busbar_kernel::ingress::protocols as kernel;
 use busbar_kernel_testkit::test_support::protocols::register_test_protocols;

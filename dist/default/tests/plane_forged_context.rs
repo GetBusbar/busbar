@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! #74 ON THE CALLER'S THREAD: a forged context handed to the host from inside a NON-lifecycle op
-//! (a plane's `arrive`, crossed on the calling thread, not on the FFI worker) quarantines the
-//! instance, and the forging op itself answers FAULT.
-//!
-//! The plane is the plane-driver test plane, LINKED: its `/forge-context` arrival hands the host's
-//! `wake` its own context one tag bit off, then answers as the plane does.
-
 #[path = "fixtures/plane_driver_test_plane.rs"]
 #[allow(dead_code)]
 mod plane;

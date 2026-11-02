@@ -99,7 +99,7 @@ async fn a_pending_signed_reader_is_stopped_at_the_operations_deadline() {
         std::task::Poll::Pending => None,
     };
     let expired = at_deadline.is_some();
-    // Release before assertions, including on the unfixed implementation.
+
     let _ = send.send(());
     let answer = match at_deadline {
         Some(answer) => answer,

@@ -1,13 +1,6 @@
-//! Tests for the hook-metrics exposition (v1.5.5's `hooks/tests/scrape_tests.rs`, verbatim). The
-//! fold is the snapshot service's ([`families_of`]); the text is the test view of the folded
-//! families (`test_support::export_axis::lines`, the scrape double's rendering, R-FIX3), so
-//! `render_text` runs the fold and every assertion is on the families it hands a scrape sink —
-//! without a live hook or socket. The real scrape sink's hook rendering is proven in its own repo.
-
 use super::*;
 use std::collections::BTreeMap;
 
-/// The `/metrics/hooks` families of `hooks` (the fold), in the test view.
 fn render_text(hooks: &[(String, Vec<HookMetric>)]) -> String {
     crate::test_support::export_axis::lines(&families_of(hooks))
 }
@@ -40,7 +33,6 @@ fn labels(pairs: &[(&str, &str)]) -> Option<BTreeMap<String, String>> {
     )
 }
 
-/// A counter renders with the verbatim name, an auto `hook` label, TYPE line, and the value.
 #[test]
 fn counter_renders_with_hook_label_and_verbatim_name() {
     let m = HookMetric {
@@ -54,14 +46,13 @@ fn counter_renders_with_hook_label_and_verbatim_name() {
         text.contains("# HELP tokens_saved_total tokens the hook saved"),
         "{text}"
     );
-    // verbatim name + hook label FIRST + the hook's own label, exact value.
+
     assert!(
         text.contains("tokens_saved_total{hook=\"compress\",pool=\"chat\"} 42\n"),
         "{text}"
     );
 }
 
-/// A histogram (quantiles) renders as a Prometheus SUMMARY: one line per quantile + `_count`.
 #[test]
 fn histogram_renders_as_summary() {
     let mut qs = BTreeMap::new();
@@ -88,17 +79,13 @@ fn histogram_renders_as_summary() {
         ),
         "{text}"
     );
-    // observation count from `value`
+
     assert!(
         text.contains("compress_latency_us_count{hook=\"compress\",pool=\"chat\"} 1000\n"),
         "{text}"
     );
 }
 
-/// A histogram carrying native `buckets` renders as a Prometheus HISTOGRAM: cumulative
-/// `name_bucket{le="…"}` rows in ascending `le` order, a synthesized `+Inf` bucket equal to the
-/// total count when the hook omits it, and `name_count`. This is the shape `histogram_quantile()`
-/// needs — the reason the wire carries buckets, not just quantiles.
 #[test]
 fn histogram_with_buckets_renders_as_native_histogram() {
     let mut bs = BTreeMap::new();
@@ -114,7 +101,7 @@ fn histogram_with_buckets_renders_as_native_histogram() {
         text.contains("# TYPE rewriter_compression_ratio histogram"),
         "buckets => histogram, not summary: {text}"
     );
-    // finite bounds ascending, cumulative counts, hook label first.
+
     let lo = text
         .find("rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"0.5\"} 3\n")
         .expect("0.5 bucket");
@@ -122,7 +109,7 @@ fn histogram_with_buckets_renders_as_native_histogram() {
         .find("rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"1\"} 7\n")
         .expect("1 bucket");
     assert!(lo < hi, "buckets must be ascending by le: {text}");
-    // +Inf synthesized to the total count (hook omitted it), then the count line.
+
     assert!(
         text.contains(
             "rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"+Inf\"} 7\n"
@@ -135,7 +122,6 @@ fn histogram_with_buckets_renders_as_native_histogram() {
     );
 }
 
-/// A hook cannot impersonate a first-party series: `busbar_`-prefixed names are dropped.
 #[test]
 fn busbar_prefix_is_reserved() {
     let text = render_text(&[(
@@ -152,9 +138,6 @@ fn busbar_prefix_is_reserved() {
     assert!(text.contains("legit_total{hook=\"evil\"} 1\n"), "{text}");
 }
 
-/// Two hooks emitting the SAME metric name share one HELP/TYPE header and are separated only by the
-/// `hook` label — the dimensional model that lets a dashboard query the bare name across hooks or
-/// filter to one.
 #[test]
 fn two_hooks_same_name_share_header_split_by_label() {
     let a = (
@@ -166,7 +149,7 @@ fn two_hooks_same_name_share_header_split_by_label() {
         vec![metric("proxy_compression_ratio_by_strategy", "gauge", 0.6)],
     );
     let text = render_text(&[a, b]);
-    // exactly one TYPE line for the shared name
+
     assert_eq!(
         text.matches("# TYPE proxy_compression_ratio_by_strategy")
             .count(),
@@ -183,8 +166,6 @@ fn two_hooks_same_name_share_header_split_by_label() {
     );
 }
 
-/// A same-name entry of a DIFFERENT type is dropped (Prometheus forbids mixing types per name), so
-/// the exposition stays valid rather than breaking the whole scrape.
 #[test]
 fn type_conflict_for_shared_name_is_dropped() {
     let a = ("a".to_string(), vec![metric("shared", "counter", 1.0)]);
@@ -196,7 +177,7 @@ fn type_conflict_for_shared_name_is_dropped() {
         "one type only: {text}"
     );
     assert!(text.contains("# TYPE shared counter"), "first wins: {text}");
-    // the gauge entry (b) is dropped; only the counter (a) renders
+
     assert!(text.contains("shared{hook=\"a\"} 1\n"), "{text}");
     assert!(
         !text.contains("hook=\"b\""),
@@ -204,7 +185,6 @@ fn type_conflict_for_shared_name_is_dropped() {
     );
 }
 
-/// Label values are Prometheus-escaped (quote / backslash / newline) so a value can't break the line.
 #[test]
 fn label_values_are_escaped() {
     let m = HookMetric {
@@ -215,11 +195,6 @@ fn label_values_are_escaped() {
     assert!(text.contains(r#"k="a\"b\\c""#), "{text}");
 }
 
-/// A per-call unique hook name. `IN_FLIGHT` (`hooks/scrape.rs`) is process-global and keyed by hook
-/// name, so a literal shared with any concurrently-running test in this binary makes an "the slot is
-/// taken"/"the slot is free" assertion depend on test interleaving. A monotonic ticket -- not a clock
-/// read, which is not monotonic under coarse timer resolution -- makes each claim this test makes
-/// unambiguously its own.
 fn unique_hook(base: &str) -> String {
     static TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     format!(
@@ -228,9 +203,6 @@ fn unique_hook(base: &str) -> String {
     )
 }
 
-/// `unique_hook` must actually be unique per call, and always prefixed by its base -- the
-/// deterministic proof that the ticket mechanism does what `only_one_refresh_per_hook_can_be_in_flight`
-/// (below) relies on to never collide with a sibling test running concurrently in this binary.
 #[test]
 fn unique_hook_never_repeats() {
     let a = unique_hook("x");
@@ -239,25 +211,10 @@ fn unique_hook_never_repeats() {
     assert!(a.starts_with("x-") && b.starts_with("x-"), "{a} / {b}");
 }
 
-/// THE MANUFACTURED-COLLISION PROOF. `IN_FLIGHT` (`hooks/scrape.rs`) is one process-global set
-/// keyed by hook name -- so two INDEPENDENT callers (in production: two scrapes; in this test
-/// binary: two `#[test]` functions that happen to be scheduled concurrently) sharing the SAME
-/// literal name genuinely interfere with each other's claim, even though each believes it owns an
-/// exclusive slot. Force that interference deterministically with two threads and a barrier
-/// (rather than hoping cargo's test scheduler happens to overlap two functions), then show
-/// `unique_hook` makes the same two "callers" independent by construction.
 #[test]
 fn manufactured_collision_proves_the_shared_literal_hazard_and_the_fix() {
     use std::sync::{Arc, Barrier};
 
-    // Part 1 -- THE HAZARD: two callers sharing one literal key DO interfere. This is exactly what
-    // would happen if two separate #[test] functions each hardcoded "busy-hook" and the test
-    // harness happened to run them at the same time -- one call's "I claimed the slot" assertion
-    // would spuriously fail because a totally unrelated caller got there first.
-    // A short HOLD after claiming (before releasing) forces genuine overlap regardless of
-    // scheduling jitter around the barrier -- without it, a fast claim+release on one thread could
-    // fully complete before the other even starts, hiding the very interference this test exists
-    // to demonstrate.
     let hold = std::time::Duration::from_millis(100);
 
     let shared_key = "manufactured-collision-shared-literal";
@@ -284,8 +241,6 @@ fn manufactured_collision_proves_the_shared_literal_hazard_and_the_fix() {
         "two callers racing on the SAME literal key must interfere -- exactly one claim wins: {results:?}"
     );
 
-    // Part 2 -- THE FIX: the same two "callers", each through `unique_hook`, never share a key, so
-    // neither can observe the other's claim -- both win independently, by construction.
     let barrier = Arc::new(Barrier::new(2));
     let results: Vec<bool> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..2)
@@ -310,18 +265,6 @@ fn manufactured_collision_proves_the_shared_literal_hazard_and_the_fix() {
     );
 }
 
-/// THE SPAWN-STORM GUARD. A scrape fires a refresh for every STALE hook, and staleness does not
-/// clear until the refresh COMPLETES -- so with staleness as the only gate, every scrape that lands
-/// while a refresh is running spawns another one. Each refresh stages a copy of the plugin to disk,
-/// `dlopen`s it, and runs its constructor, so a scrape interval shorter than a slow hook's status
-/// round-trip compounds without bound: N monitoring replicas x every scrape x every hook.
-///
-/// The admission ticket is the in-flight claim. Asserted on the claim itself rather than through a
-/// live scrape, because "how many tasks did a handler spawn" is not otherwise observable.
-///
-/// Keys are `unique_hook(..)`, not literals: `IN_FLIGHT` is one process-global set shared by every
-/// test in this binary, so a literal claimed here could collide with the same literal claimed by a
-/// concurrently-running sibling test and make these assertions depend on interleaving.
 #[test]
 fn only_one_refresh_per_hook_can_be_in_flight() {
     let busy = unique_hook("busy-hook");
@@ -333,16 +276,14 @@ fn only_one_refresh_per_hook_can_be_in_flight() {
         InFlight::claim(&busy).is_none(),
         "a second scrape landing mid-refresh must NOT spawn another plugin load"
     );
-    // A different hook is unaffected -- the gate is per-hook, not a global one.
+
     let other_claim = InFlight::claim(&other).expect("a different hook claims independently");
 
-    // Releasing lets the next scrape through, so a hook is never wedged out of refreshing.
     drop(first);
     let again = InFlight::claim(&busy).expect("the slot is free once the refresh finishes");
     drop(again);
     drop(other_claim);
 
-    // And a PANICKING refresh must release too: `InFlight` is RAII, so unwinding drops the claim.
     let claimed = InFlight::claim(&panicky);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _held = claimed;
@@ -354,11 +295,6 @@ fn only_one_refresh_per_hook_can_be_in_flight() {
     );
 }
 
-/// A hook label may not shadow a label the renderer emits. Charset validity is not uniqueness:
-/// `hook`, `le` and `quantile` all pass the wire's name check, and a duplicate label name is a
-/// PARSE error, so one careless plugin would cost the whole `/metrics/hooks` exposition rather
-/// than just its own sample. Both the histogram (`le`) and summary (`quantile`) arms are covered,
-/// since they pass different `extra` sets.
 #[test]
 fn hook_labels_cannot_shadow_renderer_labels() {
     let shadowing = labels(&[("hook", "inner"), ("le", "oops"), ("quantile", "0.5")]);
@@ -377,7 +313,6 @@ fn hook_labels_cannot_shadow_renderer_labels() {
     let text = render_text(&[("compress".to_string(), vec![hist, summ])]);
     for line in text.lines().filter(|l| !l.starts_with('#')) {
         for name in ["hook", "le", "quantile"] {
-            // Count label-NAME occurrences, not substrings: `quantile=` contains `le=`.
             let n = line.matches(&format!("{{{name}=\"")).count()
                 + line.matches(&format!(",{name}=\"")).count();
             assert!(
@@ -386,7 +321,7 @@ fn hook_labels_cannot_shadow_renderer_labels() {
             );
         }
     }
-    // The renderer's own labels survive; the hook's shadowing copies are the ones dropped.
+
     assert!(text.contains(r#"hook="compress""#), "auto hook label kept");
     assert!(
         !text.contains(r#"hook="inner""#),

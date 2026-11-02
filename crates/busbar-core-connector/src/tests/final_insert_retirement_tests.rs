@@ -113,7 +113,7 @@ fn a_dial_that_finishes_after_forget_retires_its_refused_insert() {
             io.ends(crate::support::OWNER, made),
             Err(busbar_contract::io_host::IoRefusal::Refused(_))
         );
-        // Reclaim the pre-fix pool/handle leak before asserting.
+
         c.pools.forget(OWNER);
         let _ = io.close(crate::support::OWNER, made);
         drop(far);

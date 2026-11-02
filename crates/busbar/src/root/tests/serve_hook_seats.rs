@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SEAT ORDER OF THE REQUEST-STAGE HOOKS, ON THE DOOR (ported from the predev-only engine test
-//! `hook_seat_order_tests`, BUSBAR-1.6.0.md Part 5 F25: before any engine deletion every test names
-//! its new home). The plane serving the `pools` map, served through its door end to end: a keyed
-//! caller behind the data listener's auth gate, admitted and charged by the door's money steps, its
-//! unit's hooks bound by the kernel's hook stage (the global rewrite, the request-stage tap, a gate
-//! and the candidate tap), its far end a real loopback upstream through the process connector. The
-//! admission door charges the request first, then the global rewrite runs, then the request-stage
-//! tap observes the REWRITTEN request, then the gate decides, and only after the gate does the
-//! candidate tap fire. A gate reject refunds the billable request (the fee base) but keeps the
-//! admission count.
-//!
-//! The root names no plane and no dialect: the dialects these cells speak are the plane's own door
-//! words (`DRIVER_WORDS`, its `tests/on_driver/words.txt`), read as data through [`word`].
-//!
-//! Every seat is proven structurally rather than by wall-clock order where the seat is a detached
-//! task (taps are fire-and-forget): the rewrite hook reads the ledger AT the moment it runs, the
-//! request tap's payload carries the rewritten prompt, and a rejecting gate stops everything seated
-//! after it — so a request tap that still arrives was seated before the gate and a candidate tap
-//! that never arrives was seated after it.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -46,12 +26,8 @@ use crate::root::loader::dispatch::{
 };
 use crate::root::plane_node::{Node, NodeEndPost};
 
-// The words of the plane under proof that these cells read as data (`DRIVER_WORDS`: the plane's own
-// `tests/on_driver/words.txt`, from the manifest's driver-proofs row).
 include!(concat!(env!("OUT_DIR"), "/driver_words.rs"));
 
-/// One of the plane's door words (`key = value` per line, `#` a comment): what the root's cells
-/// would otherwise have to spell, a dialect of the plane under proof.
 pub(super) fn word(key: &str) -> &'static str {
     DRIVER_WORDS
         .lines()
@@ -64,9 +40,6 @@ pub(super) fn word(key: &str) -> &'static str {
         .unwrap_or_else(|| panic!("the plane's door words have no `{key}` row"))
 }
 
-/// THE LINKED DOOR THAT SERVES THE `pools` MAP, found by what its Statement declares (the composition
-/// root names no plane): every linked plane door bound on a probe dispatcher of its own, the one
-/// whose declaring section is `pools` kept.
 pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
     crate::LINKED
         .plane_doors
@@ -93,10 +66,6 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
-/// THE REGISTRY ROWS THE DEPLOYMENT WRITES INTO, as the composition root installs them: the linked
-/// protocol declarations (the door row's `protocols` axis) and the row the door serving the `pools`
-/// map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
-/// registration (DEV-GREEN row 83), so its Statement is the row. Idempotent.
 pub(super) fn install_door_seams() {
     static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::registry::PlaneDecl> =
         std::sync::OnceLock::new();
@@ -112,7 +81,6 @@ pub(super) fn install_door_seams() {
     busbar_kernel_testkit::test_support::planes::register_test_plane(row);
 }
 
-/// The card history the served unit is pinned to at its door: one entry, no price.
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
         let holder = crate::root::kernel::RootHistory::default();
@@ -127,32 +95,26 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
         holder
     });
 
-/// [`CARD`]'s pin: the history a rig that names no card of its own pins its units to.
 fn card_pin() -> Option<crate::root::kernel::PinnedHistory> {
     CARD.pin()
 }
 
-/// The marker the rewrite hook plants in the prompt; a tap payload carrying it saw the rewrite.
 pub(super) const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
 
-/// The far end's answer: a chat completion in the door words' `dialect`.
 pub(super) const ANSWER: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
 
-/// One probe policy playing one seat: it appends its seat name to the shared log when it runs and
-/// (for the rewrite seat) samples the key's admission count at that instant.
 struct SeatProbe {
     seat: &'static str,
     log: Arc<Mutex<Vec<String>>>,
-    /// Rewrite seat only: reads the key's `requests` count when the rewrite runs.
+
     requests_now: Option<Box<dyn Fn() -> u64 + Send + Sync>>,
-    /// Gate seat only: the reject the gate answers with.
+
     reject: Option<(u16, &'static str)>,
-    /// Tap seats: the last delivered projection.
+
     last_payload: Mutex<Option<Vec<u8>>>,
-    /// Gate seat: each candidate the last decide was shown, as one line.
+
     candidates: Mutex<Vec<String>>,
-    /// Gate seat: each candidate's signal bag the last decide was shown, its values as they are
-    /// (`<model> <Signal>=<SignalValue>` ...), one line each.
+
     values: Mutex<Vec<String>>,
 }
 
@@ -271,7 +233,6 @@ fn gate(policy: Arc<dyn RoutingPolicy>) -> ResolvedPolicy {
     }
 }
 
-/// Poll a tap probe until its detached delivery lands (bounded), or return `None`.
 async fn delivered(tap: &SeatProbe, budget_ms: u64) -> Option<Vec<u8>> {
     for _ in 0..(budget_ms / 10) {
         if let Some(p) = tap.last_payload.lock().unwrap().clone() {
@@ -282,19 +243,15 @@ async fn delivered(tap: &SeatProbe, budget_ms: u64) -> Option<Vec<u8>> {
     None
 }
 
-/// A FAR END ON LOOPBACK: every request it reads is answered with its status and body; it counts
-/// the requests it served and keeps each one's `authorization` field.
 pub(super) struct FarEnd {
-    /// Its port.
     pub port: u16,
-    /// The requests it served.
+
     pub hits: Arc<std::sync::atomic::AtomicUsize>,
-    /// Each served request's `authorization` field, as received.
+
     pub authorizations: Arc<Mutex<Vec<String>>>,
 }
 
 impl FarEnd {
-    /// The requests it served so far.
     pub fn served(&self) -> usize {
         self.hits.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -313,7 +270,6 @@ pub(super) struct Script {
     pub finish: Option<Vec<u8>>,
 }
 
-/// One chunk of a chunked body.
 pub(super) fn chunk(bytes: &[u8]) -> Vec<u8> {
     let mut out = format!("{:x}\r\n", bytes.len()).into_bytes();
     out.extend_from_slice(bytes);
@@ -321,7 +277,6 @@ pub(super) fn chunk(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A far end on loopback answering every request by `script`.
 pub(super) async fn far_end_scripted(script: Script) -> FarEnd {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -363,8 +318,6 @@ pub(super) async fn far_end_scripted(script: Script) -> FarEnd {
     }
 }
 
-/// Read one request off `socket` through its body; its `authorization` field (empty when none),
-/// or `None` when the connection closed first.
 async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
     let mut buf = vec![0u8; 16 * 1024];
     let mut got = Vec::new();
@@ -392,7 +345,6 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
     }
 }
 
-/// A far end on loopback answering every request with `status` and `body` (JSON).
 pub(super) async fn far_end_answering(status: u16, body: &'static str) -> FarEnd {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -451,16 +403,12 @@ pub(super) async fn far_end_answering(status: u16, body: &'static str) -> FarEnd
     }
 }
 
-/// A far end on loopback answering every request with [`ANSWER`].
 async fn far_end() -> u16 {
     far_end_answering(200, ANSWER).await.port
 }
 
-/// The key's ledger as the test reads it: (admission count, derived spend in cents, the durable
-/// row's admission count, the durable row's billable count).
 pub(super) type Ledger = (u64, i64, u64, u64);
 
-/// What a run left: the caller's status, the seat log, the two tap probes and the ledger reader.
 struct Ran {
     status: u16,
     log: Arc<Mutex<Vec<String>>>,
@@ -552,9 +500,6 @@ pub(crate) struct RigOpts<'a> {
     pub clock: Option<&'a Arc<dyn busbar_kernel_egress::ports::Clock>>,
 }
 
-/// A NODE'S BOOK WHOSE JOURNAL CANNOT REACH ITS STORE: the journal is kept by a configured store
-/// that refuses every write, the lane to it holds one batch, and three appends have filled it, so
-/// the node's `journal_refusal` names the full journal and the store (`test-store`).
 pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durability::Durability>> {
     let slots = crate::root::store_double::RecordSlots::new();
     slots.refuse(true);
@@ -584,7 +529,6 @@ pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durabilit
     book
 }
 
-/// `text`, each line indented by `by` spaces (empty lines dropped).
 fn indented(text: &str, by: usize) -> String {
     text.lines()
         .filter(|l| !l.trim().is_empty())
@@ -592,31 +536,27 @@ fn indented(text: &str, by: usize) -> String {
         .collect()
 }
 
-/// THE POOLS DOOR, SERVED END TO END, as production composes it: the data router built with the
-/// door's claims, a keyed caller's token, the generation's App and the node's book.
 pub(crate) struct DoorRig {
-    /// The data router.
     pub router: axum::Router,
-    /// Every route the door mounts on that router: `(path, method, auth)`, as built.
+
     pub door_table: Vec<(
         String,
         String,
         busbar_contract::abi::mechanism::route::RouteAuth,
     )>,
-    /// The caller's bearer token.
+
     pub token: String,
-    /// The generation.
+
     pub app: Arc<busbar_kernel::state::App>,
-    /// The node's book: every unit's line and audit record.
+
     pub book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
-    /// The key's id.
+
     pub key_id: String,
-    /// The governance book the key was minted on.
+
     pub gov: Arc<GovState>,
-    /// The served door's generations, as a config apply refreshes them.
+
     appliers: super::DoorAppliers,
-    /// A config apply of the same deployment onto the door ([`DoorAppliers::refresh_models`], as
-    /// the root's apply hook runs it), its secrets resolved anew.
+
     reapply: Arc<dyn Fn() + Send + Sync>,
     log: Arc<Mutex<Vec<String>>>,
     request_tap: Arc<SeatProbe>,
@@ -627,13 +567,10 @@ pub(crate) struct DoorRig {
 }
 
 impl DoorRig {
-    /// Apply the deployment again, as an operator's config apply does: the door refreshes onto it,
-    /// or keeps the generation it serves.
     pub fn apply(&self) {
         (self.reapply)();
     }
 
-    /// The generation the door serves.
     pub fn generation(&self) -> u64 {
         self.appliers
             .0
@@ -643,18 +580,14 @@ impl DoorRig {
             .generation
     }
 
-    /// Each candidate the pool's ranking policy was last shown, one line each.
     pub fn gate_saw(&self) -> Vec<String> {
         self.gate_seat.candidates.lock().unwrap().clone()
     }
 
-    /// Each candidate's signal bag the pool's ranking policy was last shown, its values as they
-    /// are: `<model> <Signal>=<SignalValue> ...`, one line each.
     pub fn gate_signals(&self) -> Vec<String> {
         self.gate_seat.values.lock().unwrap().clone()
     }
 
-    /// One request through the door as the keyed caller: its status, head and body.
     pub async fn send(
         &self,
         method: &str,
@@ -671,8 +604,6 @@ impl DoorRig {
         (status, head, bytes)
     }
 
-    /// One request through the door carrying only `fields` (no credential of the rig's): its
-    /// status, head and body.
     pub async fn send_bare(
         &self,
         method: &str,
@@ -709,7 +640,6 @@ impl DoorRig {
         (status, head, bytes)
     }
 
-    /// The audit records the node's book sealed so far, oldest first.
     pub fn records(&self) -> Vec<busbar_kernel_audit::AuditRecord> {
         self.book
             .lock()
@@ -718,8 +648,6 @@ impl DoorRig {
             .clone()
     }
 
-    /// A bucket's all-time ledger as the money reads it: (admission count, derived spend in
-    /// cents), and the durable row's (admission count, billable count).
     pub fn bucket(&self, bucket: &str) -> (u64, i64, u64, u64) {
         let derived = self
             .gov
@@ -741,8 +669,6 @@ impl DoorRig {
         )
     }
 
-    /// One request through the door as the keyed caller, with `fields` beside its own: the
-    /// response, its body unread.
     pub async fn open(
         &self,
         method: &str,
@@ -774,8 +700,6 @@ impl DoorRig {
             .expect("the router answers")
     }
 
-    /// The tokens on the key's ledger once they are nonzero or the wait is spent (the accrual is
-    /// write-behind).
     pub async fn tokens_after(&self) -> u64 {
         let mut tokens = (self.tokens)();
         for _ in 0..100 {
@@ -788,7 +712,6 @@ impl DoorRig {
         tokens
     }
 
-    /// One chat completion on pool `p`.
     pub async fn chat(&self) -> (u16, axum::http::HeaderMap, Vec<u8>) {
         self.send(
             "POST",
@@ -799,7 +722,6 @@ impl DoorRig {
         .await
     }
 
-    /// The key's ledger, once its last unit's money settled (bounded).
     pub async fn ledger_after(&self, billable: u64) -> Ledger {
         let mut ledger = (self.read)();
         for _ in 0..200 {
@@ -812,7 +734,6 @@ impl DoorRig {
         ledger
     }
 
-    /// The audit records the node's book sealed so far.
     pub fn audit_records(&self) -> usize {
         self.book
             .lock()
@@ -822,19 +743,13 @@ impl DoorRig {
     }
 }
 
-/// BUILD THE RIG: the door serving the `pools` map, linked and bound through the loader's one load
-/// on the process connector, over `opts`' far ends, its egress the model-serving walk over the
-/// kernel's lane cells, its hooks the kernel's stage with the four probed seats installed.
 pub(crate) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     try_rig(instance, opts)
         .await
         .unwrap_or_else(|e| panic!("the door serving the pools map composes: {e}"))
 }
 
-/// [`rig`], the composition's refusal answered rather than panicked on: what the root's boot dies
-/// on.
 pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
-    // The registry rows that own the `pools:`/`models:` sections the deployment writes.
     install_door_seams();
     busbar_kernel_testkit::test_support::metrics::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -857,10 +772,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     )
     .expect("the connector builds");
 
-    // THE POOLS DOOR, linked, bound through the loader's one load, its needs declared on the
-    // connector. Its dispatcher is the boot's (`root::dispatch::build`): it serves the composition's
-    // host services (the door's codecs draw their entropy and read their clock there, #1028) and is
-    // lent the kernel's seal (a caller's or a member's credential is revealed only under it, #1021).
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
@@ -884,8 +795,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .expect("the linked door binds"),
     );
 
-    // THE DEPLOYMENT: one provider per member (in the members' dialect), one model per provider,
-    // pool `p` over them.
     let key_file = std::env::temp_dir().join(format!(
         "busbar-hook-seats-{}-{instance}",
         std::process::id()
@@ -967,8 +876,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let sections = kernel_sections(&cfg);
     let model_pools = crate::root::model_egress::ModelPools::of(&cfg);
 
-    // THE MONEY: a signing governance book with one minted key (in a budgeted group when asked),
-    // the node's book bound.
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
@@ -1068,7 +975,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         ))
     };
 
-    // THE GENERATION: the lanes, the pool, the fee, and the four seats.
     let mut builder = busbar_kernel_testkit::test_support::TestApp::new();
     if !opts.open_door {
         builder = builder.keys_chain();
@@ -1106,7 +1012,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 .expect("usage read")
                 .expect("the key exists");
             gov.flush_budgets();
-            // Window 0 is the key's all-time bucket.
+
             let row = gov.store().get_usage(&key_id, 0).expect("ledger row");
             (
                 u.requests,
@@ -1130,7 +1036,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let request_tap = Arc::new(SeatProbe::new("request-tap", &log));
     let candidate_tap = Arc::new(SeatProbe::new("candidate-tap", &log));
     let mut gate_probe = SeatProbe::new("gate", &log);
-    // The pool's ranking policy, which is shown the candidates (an abstaining ranker).
+
     let ranker = Arc::new(SeatProbe::new("ranker", &log));
     if opts.reject_at_gate {
         gate_probe.reject = Some((451, "the gate says no"));
@@ -1142,7 +1048,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         } else {
             vec![(std::time::Duration::from_millis(500), Arc::new(rewrite))]
         };
-        // The request tap holds the prompt grant so its payload carries the (rewritten) messages.
+
         let rt: Arc<dyn RoutingPolicy> = request_tap.clone();
         a.tap_hooks = vec![(std::time::Duration::from_millis(500), true, rt, Vec::new())];
         let ct: Arc<dyn RoutingPolicy> = candidate_tap.clone();
@@ -1164,8 +1070,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         }
     }
 
-    // THE COMPOSITION, as production seals it: the door opened with the deployment's sections,
-    // its egress the model-serving walk over the kernel's lane cells, its hooks the kernel's stage.
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
         Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = Arc::new(OutboundAuths::new(
@@ -1205,7 +1109,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         journal: None,
     };
     let sections: BTreeMap<&'static str, serde_yaml::Value> = sections;
-    // As [`compose_planes`] composes, on the rig's walk clock.
+
     let served = compose_planes_over(
         &crate::LINKED,
         &[(instance.to_string(), plane)],
@@ -1230,8 +1134,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let mut served = served?;
     served.post = Some(Arc::clone(&post));
     let appliers = served.appliers();
-    // THE APPLY, as the root's apply hook runs it: the same deployment's sections, the pools and
-    // lanes, the door's egress resealed over the providers with their secrets resolved anew.
+
     let reapply: Arc<dyn Fn() + Send + Sync> = {
         let (appliers, app, post) = (appliers.clone(), Arc::clone(&app), Arc::clone(&post));
         let (connector, auths) = (Arc::clone(&connector), Arc::clone(&auths));
@@ -1292,8 +1195,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     })
 }
 
-/// ONE KEYED REQUEST through the pools door with the four probed seats installed, a rejecting gate
-/// when `reject_at_gate`.
 async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     let port = far_end().await;
     let rig = rig(
@@ -1316,20 +1217,15 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
 }
 
 impl DoorRig {
-    /// The request-stage tap's last delivered projection (bounded wait).
     pub async fn request_tap_payload(&self, budget_ms: u64) -> Option<Vec<u8>> {
         delivered(&self.request_tap, budget_ms).await
     }
 
-    /// The seat log.
     pub fn seats(&self) -> Vec<String> {
         self.log.lock().unwrap().clone()
     }
 }
 
-/// A rejecting gate: the admission charge, the rewrite and the request tap all happened
-/// before it; the candidate tap never fires; the billable request is refunded and the admission
-/// count is kept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migrated_request_hook_seats_after_admit_before_candidate() {
     let _one = PUBLISHING.lock().await;
@@ -1340,14 +1236,12 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
         "the gate's reject is what the caller receives"
     );
 
-    // Admission door before rewrite: the rewrite seat saw the request already counted.
     let log = ran.log.lock().unwrap().clone();
     assert!(
         log.iter().any(|e| e == "rewrite:requests=Some(1)"),
         "the rewrite seat must run AFTER the admission door charged the request; log: {log:?}"
     );
-    // Rewrite before the request tap: the tap's payload carries the rewritten prompt, and the tap
-    // was delivered at all even though the gate rejected (so it was seated before the gate).
+
     let payload = delivered(&ran.request_tap, 2_000)
         .await
         .expect("the request-stage tap fires before the gate and is delivered despite the reject");
@@ -1360,8 +1254,7 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
         !text.contains("the original prompt"),
         "the request tap must not see the pre-rewrite prompt: {text}"
     );
-    // The gate ran (it produced the 451) and the candidate tap, seated after the gates, never
-    // fires on a rejected request.
+
     assert!(
         log.iter().any(|e| e == "gate"),
         "the gate seat ran; log: {log:?}"
@@ -1370,8 +1263,7 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
         delivered(&ran.candidate_tap, 300).await.is_none(),
         "the candidate tap is seated after the gates, so a gate reject must never reach it"
     );
-    // The reject consumed the requests slot but refunded the fee base (a flat 1-cent fee per
-    // billable request, so derived spend reads the billable count directly).
+
     let (requests, spend, row_requests, row_billable) = (ran.read)();
     assert_eq!(requests, 1, "the admission count is never refunded");
     assert_eq!(
@@ -1385,8 +1277,6 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
     );
 }
 
-/// The positive twin: an abstaining gate lets the request through, the candidate tap fires AFTER
-/// the gate decided, and a served request keeps its billable request (one fee).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once() {
     let _one = PUBLISHING.lock().await;
@@ -1411,8 +1301,7 @@ async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills
         rewrite_at < gate_at && gate_at < cand_at,
         "seat order must be rewrite, gate, candidate tap; log: {log:?}"
     );
-    // The unit's money settles at its end, which the caller's last byte may precede: read the
-    // ledger once it has (bounded).
+
     let mut ledger = (ran.read)();
     for _ in 0..200 {
         if ledger.3 == 1 {
@@ -1430,17 +1319,11 @@ async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills
     );
 }
 
-// ── ONE ACCRUAL PER SERVED UNIT (coverage map rows 694 and 722, F25 REHOME) ────────────────────
-
-/// The token figures the far end reports on a delivered answer: eleven input, seven output.
 const SPLIT_INPUT: u64 = 11;
 const SPLIT_OUTPUT: u64 = 7;
 
-/// The far end's whole answer, in the door words' `dialect`, reporting [`SPLIT_INPUT`] and
-/// [`SPLIT_OUTPUT`].
 const SPLIT_ANSWER: &str = r#"{"id":"chatcmpl-split","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#;
 
-/// The same answer streamed: a delta, the stop, the usage, the end.
 const SPLIT_FRAMES: [&str; 4] = [
     r#"{"id":"chatcmpl-split","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}"#,
     r#"{"id":"chatcmpl-split","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
@@ -1448,7 +1331,6 @@ const SPLIT_FRAMES: [&str; 4] = [
     "[DONE]",
 ];
 
-/// A far end on loopback answering [`SPLIT_FRAMES`] as one chunked stream, to its end.
 async fn far_end_with_the_split_streamed() -> FarEnd {
     far_end_scripted(Script {
         head: "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
@@ -1463,10 +1345,6 @@ async fn far_end_with_the_split_streamed() -> FarEnd {
     .await
 }
 
-/// What a served unit left on the key's books, once its money settled: the admissions on the
-/// key's bucket, the tokens it accrued, the durable ledger row's per-class counts for `m0`, and
-/// every metering row the key holds (`model in= out= cr= cw= req= billable=`; the provider column
-/// is the rig's own provider name and is not pinned here).
 struct Accrued {
     requests: u64,
     tokens: u64,
@@ -1474,7 +1352,6 @@ struct Accrued {
     metering: Vec<String>,
 }
 
-/// Read [`Accrued`] off `rig` once its last unit's money settled (bounded).
 async fn accrued(rig: &DoorRig) -> Accrued {
     let (requests, _, _, _) = rig.ledger_after(1).await;
     let tokens = rig.tokens_after().await;
@@ -1528,17 +1405,6 @@ async fn accrued(rig: &DoorRig) -> Accrued {
     }
 }
 
-/// THE WALK'S TAP AND THE METER STEP MAKE ONE POSTING BETWEEN THEM, BUFFERED AND STREAMED.
-///
-/// Legacy: the retiring engine crate's `src/unit/tests/chain.rs::the_walks_tap_and_the_meter_step_make_one_posting_between_them`
-/// (coverage map row 694, REHOME). 1.5.5 behaviour pinned, for BOTH the buffered and the streamed
-/// answer through the door serving the `pools` map: the unit's consumption is posted exactly once —
-/// one metering row `m0 in=11 out=7 cr=0 cw=0 req=1 billable=1`, one admission on the key's bucket,
-/// and the key's tokens accrued once (11 + 7 = 18), however the answer was delivered. The old home
-/// pinned one buffered request's requests, billable count and spend.
-///
-/// RED: a second posting of the unit (two metering rows, req=2, or 36 tokens), a streamed answer
-/// whose usage frame is never accrued (0 tokens, no row), or a split posted under the wrong tiers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
     let _one = PUBLISHING.lock().await;
@@ -1591,19 +1457,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
     }
 }
 
-/// THE SERVED UNIT'S USAGE IS ACCRUED EXACTLY ONCE (the posting the meter step's posted-or-sealed
-/// flag protected).
-///
-/// Legacy: the retiring engine crate's `src/unit/tests/meter.rs::the_step_says_whether_it_posted_or_only_sealed`
-/// (coverage map row 722, REHOME). The posted-versus-sealed flag was the deleted meter step's own;
-/// the 1.5.5 behaviour it protected, pinned here on the served unit: a delivered answer whose usage
-/// the far end reported accrues its tokens exactly once — 11 + 7 = 18 tokens on the key, the durable
-/// ledger row holding `{input: 11, output: 7}` for the lane, and exactly one metering row for the key
-/// — and nothing posts a second time once the unit has ended (the books read the same after a
-/// further settle).
-///
-/// RED: a second accrual of the same unit (36 tokens, `{input: 22, output: 14}`, a second metering
-/// row), or none at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_served_units_usage_is_accrued_exactly_once() {
     let _one = PUBLISHING.lock().await;
@@ -1639,7 +1492,7 @@ async fn a_served_units_usage_is_accrued_exactly_once() {
         "exactly one metering row for the key: {:?}",
         books.metering
     );
-    // Nothing posts behind the unit's end: the books read the same after a further settle.
+
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let again = accrued(&rig).await;
     assert_eq!(
@@ -1650,8 +1503,6 @@ async fn a_served_units_usage_is_accrued_exactly_once() {
     assert_eq!(far.served(), 1, "one far-end request served");
 }
 
-/// A far end on loopback answering every request with 200 and `body` (JSON), keeping each request's
-/// body as it arrived.
 async fn far_end_keeping_bodies(body: &'static str) -> (u16, Arc<Mutex<Vec<Vec<u8>>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1704,15 +1555,6 @@ async fn far_end_keeping_bodies(body: &'static str) -> (u16, Arc<Mutex<Vec<Vec<u
     (port, bodies)
 }
 
-/// A RERANK UNDER THE GLOBAL REWRITE IS SERVED, ITS BODY UNMODIFIED (ruling (A) on #1709): the
-/// plane projects a rerank's query and documents into one turn so the gates screen them, but a
-/// rerank has no conversation a hook's messages could be framed into, and the plane says so
-/// (`PROJECT_REWRITE_NOT_APPLICABLE`). The rewrite seat runs, the caller is answered 200, and the
-/// far end receives exactly the bytes it receives from the same rerank with no rewrite seat
-/// installed: nothing of the rewrite reaches it.
-///
-/// RED before: the kernel read the plane's READY answer with no rewritten body as a failed splice
-/// and refused the rerank, 500 "request rewrite could not be applied", nothing sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rerank_under_the_global_rewrite_is_served_with_its_body_unmodified() {
     let _one = PUBLISHING.lock().await;
@@ -1723,8 +1565,6 @@ async fn a_rerank_under_the_global_rewrite_is_served_with_its_body_unmodified() 
         ("serve-hook-seats-rerank-rewrite", false),
         ("serve-hook-seats-rerank-bare", true),
     ] {
-        // An answer billing no search units: the rig's card prices none, and this cell is about the
-        // request, not its price.
         let (port, bodies) = far_end_keeping_bodies(word("rerank_answer_unbilled")).await;
         let rig = rig(
             instance,

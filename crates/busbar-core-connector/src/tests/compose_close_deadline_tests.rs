@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Carrier EOF is not TLS close_notify; CONNECT has a stage bound inside the overall open.
-//! These controls use the existing Connection/Planned APIs and real loopback peers.
 
 use super::*;
 use busbar_contract::abi::host::conn::connector::{
@@ -44,8 +43,7 @@ fn secure_door() -> Arc<TestDoor> {
 }
 
 /// The body is consumed before the peer closes, so an abrupt end cannot be mistaken for a
-/// failed handshake or a test that never received the application bytes. `fresh` has its own
-/// failure transition and must retain the same established-exchange cause as `poll_piece`.
+
 #[test]
 fn tls_eof_requires_close_notify_and_fresh_retains_the_failure() {
     crate::tls::install_crypto_provider();
@@ -66,10 +64,8 @@ fn tls_eof_requires_close_notify_and_fresh_retains_the_failure() {
                 secure.flush().await.unwrap();
                 closing.await.unwrap();
                 if clean {
-                    // AsyncWrite shutdown sends rustls close_notify before socket shutdown.
                     secure.shutdown().await.unwrap();
                 }
-                // Dropping without shutdown is a transport EOF without a TLS closure alert.
             });
             let mut d = dial(&far);
             d.tls = Some(client);
@@ -129,7 +125,6 @@ fn tls_eof_requires_close_notify_and_fresh_retains_the_failure() {
 const CONNECT: &[u8] = b"CONNECT localhost:443 HTTP/1.1\r\nHost: localhost:443\r\n\r\n";
 
 async fn read_connect(socket: &mut tokio::net::TcpStream) {
-    // Read only the CONNECT head; no TLS byte can be swallowed by this fixture.
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
         head.push(socket.read_u8().await.unwrap());
@@ -154,7 +149,7 @@ fn through(
 }
 
 /// Neither waiting for CONNECT nor the subsequent TLS handshake may extend a short overall
-/// open. The peer confirms the actual request and holds its socket until the timeout is seen.
+
 #[test]
 fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
     crate::tls::install_crypto_provider();
@@ -171,7 +166,7 @@ fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
                 read_connect(&mut socket).await;
                 if answer_connect {
                     socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
-                    // Receipt of ClientHello proves the connector crossed the CONNECT stage.
+
                     let mut tls = [0; 5];
                     socket.read_exact(&mut tls).await.unwrap();
                     assert_eq!(tls[0], 22, "the TLS handshake follows CONNECT");
@@ -206,7 +201,7 @@ fn the_overall_open_deadline_survives_connect_and_the_tls_transition() {
 }
 
 /// A completed CONNECT no longer owns a timer. A real TLS handshake begun after its ten-second
-/// cap still has the caller's sixty-second budget; no private deadline field is changed here.
+
 #[test]
 fn tls_after_connect_keeps_the_remaining_long_overall_budget() {
     crate::tls::install_crypto_provider();
@@ -332,7 +327,7 @@ fn an_untrusted_midstream_upgrade_records_the_security_cause() {
 }
 
 /// The proxy has already buffered a valid 200, but the caller resumes after CONNECT's bound.
-/// Completion must not delete that expired stage timer before the connector checks it.
+
 #[test]
 fn a_buffered_connect_reply_cannot_erase_an_expired_stage_bound() {
     crate::tls::install_crypto_provider();
@@ -366,7 +361,7 @@ fn a_buffered_connect_reply_cannot_erase_an_expired_stage_bound() {
         .unwrap();
         release.send(()).unwrap();
         buffered.await.unwrap();
-        // Deliberately do not poll the connection while its ready reply and timer wait.
+
         tokio::time::sleep(crate::proxy::CONNECT_HANDSHAKE + Duration::from_secs(1)).await;
         assert_eq!(poll_fn(|cx| c.poll_landed(cx)).await, Err(Failure::Timeout));
         assert_eq!(door.count("begin"), 0);
@@ -377,8 +372,7 @@ fn a_buffered_connect_reply_cannot_erase_an_expired_stage_bound() {
 }
 
 /// A TLS 1.3 server's first flight contains its Finished. Drive until that real flight is
-/// prepared, then stop polling the client while it is delivered. The timely control proves
-/// that these same bytes finish the client handshake; the late case must retain its deadline.
+
 #[test]
 fn a_buffered_tls_finished_cannot_erase_an_expired_overall_bound() {
     crate::tls::install_crypto_provider();
@@ -469,9 +463,7 @@ fn a_buffered_tls_finished_cannot_erase_an_expired_overall_bound() {
 }
 
 /// A synchronous feed-loop spin cannot be interrupted by a Tokio timeout. Run this real TLS
-/// control in its own test process; the parent kills and reaps a stuck child on old source.
-/// The witness is written only after the actual trailing carrier read, so zero test matches
-/// cannot falsely pass. Environment changes belong to Command only, never the test process.
+
 #[test]
 fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
     const CHILD: &str = "BUSBAR_CONNECTOR_CLOSE_TAIL_CHILD";
@@ -566,8 +558,7 @@ fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
         );
         assert!(!c.read_end, "the underlying carrier is still open");
         tail.send(()).unwrap();
-        // fresh can re-drive an ended connection. Use its existing read/feed path directly so
-        // this fixture proves a carrier chunk was actually consumed, even though TLS is closed.
+
         poll_fn(|cx| match c.read(cx) {
             Ok(true) => Poll::Ready(()),
             Ok(false) => Poll::Pending,

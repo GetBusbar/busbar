@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! An `application/x-www-form-urlencoded` body whose credential values are the chip's: the
-//! plugin names the pairs, the SDK encodes them, the sealed values only where they go out.
 
 use zeroize::Zeroizing;
 
@@ -41,8 +40,6 @@ impl core::fmt::Debug for FormBody {
     }
 }
 
-// The public values travel with the credential (an authorization code, a PKCE verifier): wiped
-// on drop with it.
 impl Drop for FormBody {
     fn drop(&mut self) {
         use zeroize::Zeroize;
@@ -127,9 +124,7 @@ impl FormBody {
     }
 
     /// The encoded body, ready to write.
-    ///
-    /// # Errors
-    /// A signature could not be made, or the encoded body cannot fit in memory.
+
     pub fn encoded(&self) -> Result<SealedWrite, crate::abi::sdk::chip::Refused> {
         use crate::abi::sdk::chip::Refused;
 
@@ -200,6 +195,6 @@ impl FormBody {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)] // REVIEWED: scoped registration of initialized owned test payloads
+#[allow(unsafe_code)]
 #[path = "../tests/form_body_wipe_tests.rs"]
 mod wipe_tests;

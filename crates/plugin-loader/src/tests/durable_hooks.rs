@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The test side of `durable.rs`'s `#[cfg(test)]` hook points.
-//!
-//! `durable.rs` keeps only the calls: `fault_point!` at each fallible step of a publish, the decoy
-//! plant before the temp is created, and the parent-fsync hook at the one directory fsync. What
-//! those calls consult — the armed fault, the recorded fsyncs, the decoy switch — lives here, per
-//! thread, so a test arms exactly the case it means and no other test sees it.
-
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -36,18 +29,15 @@ thread_local! {
     static PLANT_DECOY: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Arm a one-shot fault: the next matching step returns `io::Error::from_raw_os_error(errno)`.
 pub(crate) fn fault_arm(step: FaultStep, errno: i32) {
     FAULT_INJECT.with(|c| *c.borrow_mut() = Some((step, errno)));
 }
 
-/// Clear any armed fault and every recorded parent fsync (call at the start of each case).
 pub(crate) fn fault_reset() {
     FAULT_INJECT.with(|c| *c.borrow_mut() = None);
     PARENT_FSYNCS.with(|c| c.borrow_mut().clear());
 }
 
-/// If a fault is armed for `step`, consume it and return the injected error.
 pub(crate) fn fault_take_if(step: FaultStep) -> Option<io::Error> {
     FAULT_INJECT.with(|c| {
         let mut slot = c.borrow_mut();
@@ -61,8 +51,6 @@ pub(crate) fn fault_take_if(step: FaultStep) -> Option<io::Error> {
     })
 }
 
-/// The parent-fsync hook: record `parent` as fsynced on this thread, then fail if a
-/// [`FaultStep::DirSync`] fault is armed.
 pub(crate) fn parent_fsync(parent: &Path) -> io::Result<()> {
     PARENT_FSYNCS.with(|c| c.borrow_mut().push(parent.to_path_buf()));
     match fault_take_if(FaultStep::DirSync) {
@@ -71,25 +59,18 @@ pub(crate) fn parent_fsync(parent: &Path) -> io::Result<()> {
     }
 }
 
-/// The LAST parent fsync'd, for the single-publish assertions.
 pub(crate) fn parent_fsynced() -> Option<PathBuf> {
     PARENT_FSYNCS.with(|c| c.borrow().last().cloned())
 }
 
-/// Every parent fsync'd, in order, for the ancestor-walk and segment-creation assertions.
 pub(crate) fn parents_fsynced() -> Vec<PathBuf> {
     PARENT_FSYNCS.with(|c| c.borrow().clone())
 }
 
-/// Arm a one-shot decoy: the next write on this thread finds a file ALREADY SITTING at the exact
-/// temp path it is about to create. That is the crashed-previous-run state the `exclusive` posture's
-/// pre-removal exists for, and the only way to reach it deterministically -- the temp name embeds a
-/// pid and an atomic counter, so a test cannot name it from outside.
 pub(crate) fn plant_decoy_arm() {
     PLANT_DECOY.with(|c| c.set(true));
 }
 
-/// The decoy hook: plant the decoy at `tmp` if one is armed.
 pub(crate) fn plant_decoy_if_armed(tmp: &Path) {
     if PLANT_DECOY.with(|c| c.replace(false)) {
         let _ = std::fs::write(tmp, b"leftover from a crashed run");

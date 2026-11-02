@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Root-owned Store transactions. A candidate is immutable until a definitive decision.
-
 use busbar_contract::abi::sdk::store::conditional::{
     Decision, Mutation, Predicate, Request, VERSION,
 };
@@ -19,9 +17,6 @@ pub(super) fn candidate(predicates: Vec<Predicate>, mutations: Vec<Mutation>) ->
     }
 }
 
-/// No timeout, fresh operation id, or row read can resolve an unknown commit. Keep this exact
-/// request on this off-runtime owner until the Store returns its transaction decision. In
-/// particular, overload/refusal on a later attempt does not fence an earlier timed-out crossing.
 pub(super) fn decide(calls: &dyn StoreCalls, request: &Request) -> Result<Decision, String> {
     if !calls.supports_record_transaction() {
         return Err(

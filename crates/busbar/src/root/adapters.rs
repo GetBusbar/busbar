@@ -62,33 +62,23 @@ pub struct BreakerPolicy {
 }
 
 impl BreakerPolicy {
-    /// A policy with no pool configured and no fallback.
     #[must_use]
     pub fn new() -> Self {
         BreakerPolicy::default()
     }
 
-    /// Declare one pool's ladder.
     #[must_use]
     pub fn with_pool(mut self, pool: impl Into<String>, cfg: BreakerCfg) -> Self {
         self.per_pool.insert(pool.into(), cfg);
         self
     }
 
-    /// Declare the ladder for the default cell — direct and ad-hoc routes, which run under the
-    /// empty pool name and are not a configured pool at all.
     #[must_use]
     pub fn with_default_cell(mut self, cfg: BreakerCfg) -> Self {
         self.fallback = Some(cfg);
         self
     }
 
-    /// The ladder in force for one pool, if the configuration declared one.
-    ///
-    /// The default cell's declaration answers for the default cell and nothing else. A NAMED pool
-    /// with no entry is a pool nobody configured — which is the case this whole type is written
-    /// around — so it gets no ladder rather than the one declared for the routes that run without a
-    /// pool at all.
     #[must_use]
     pub fn for_pool(&self, pool: &str) -> Option<&BreakerCfg> {
         if pool.is_empty() {
@@ -99,25 +89,18 @@ impl BreakerPolicy {
     }
 }
 
-/// The egress unit's breaker port, bound to the breaker unit.
-///
-/// A thin wrapper with no policy of its own beyond the two folds the module doc names. What it must
-/// never do is decide anything: a disposition is the breaker unit's data and a route is the egress
-/// unit's walk, and an adapter that split the difference would be a third opinion nobody asked for.
 pub struct BreakerAdapter {
     unit: BreakerUnit,
     policy: BreakerPolicy,
 }
 
 impl BreakerAdapter {
-    /// Bind the egress port to a breaker unit, under a declared per-pool policy.
     #[must_use]
     pub fn new(unit: BreakerUnit, policy: BreakerPolicy) -> Self {
         BreakerAdapter { unit, policy }
     }
 }
 
-/// The breaker unit's admission, in the egress port's words.
 pub(crate) fn try_admit(
     unit: &BreakerUnit,
     pool: &str,
@@ -129,15 +112,11 @@ pub(crate) fn try_admit(
             LaneState::Suppressed { until } => Unavailable::BreakerOpen { until },
             LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
             LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
-            // The unit refuses only from a state that would not have admitted, so this arm
-            // does not arise. It still answers with a refusal rather than by aborting: a
-            // routing step holding a dispatch open is the wrong place to discover that an
-            // invariant of another crate has drifted, and the caller has a shed for it.
+
             LaneState::Ready => Unavailable::ProbeInFlight,
         })
 }
 
-/// The cell's exact refusal reason, read without attempting admission.
 pub(crate) fn unavailable(
     unit: &BreakerUnit,
     pool: &str,
@@ -155,7 +134,6 @@ pub(crate) fn unavailable(
     }
 }
 
-/// Whether the cell would admit now: the unit's own read-only state.
 pub(crate) fn ready(
     unit: &BreakerUnit,
     pool: &str,
@@ -166,15 +144,10 @@ pub(crate) fn ready(
     matches!(unit.state(pool, destination, now, token), LaneState::Ready)
 }
 
-/// The destination-scoped fact the breaker unit holds is the lifetime budget. Whether a
-/// destination is administratively down is declared configuration, which is the egress and
-/// configuration layer's to know and not this unit's. Answered from `budget_remaining` alone,
-/// never from the sealed `state`/`observe`, so no token crosses here.
 pub(crate) fn admissible(unit: &BreakerUnit, destination: DestinationId) -> bool {
     unit.budget_remaining(destination) != Some(0)
 }
 
-/// The whole seconds of genuine cooldown the cell has left, or zero.
 pub(crate) fn cooldown_remaining(
     unit: &BreakerUnit,
     pool: &str,
@@ -188,10 +161,6 @@ pub(crate) fn cooldown_remaining(
     }
 }
 
-/// The status alone, against no operator map: the breaker keeps none. Reading an error body
-/// against the operator's `error_map` is the plane's classifier's work, and the unit is told that
-/// verdict; this port answers only for the transport's reading of the frame.
-///
 pub(crate) fn classify(status: UpstreamStatus) -> Classified {
     busbar_kernel_breaker::port::classify_upstream(busbar_kernel_breaker::port::UpstreamStatus {
         reading: reading(status),
@@ -199,12 +168,6 @@ pub(crate) fn classify(status: UpstreamStatus) -> Classified {
     })
 }
 
-/// The breaker unit's reading of an answer: the transport's fault reading of it, or — when the
-/// status carries neither a class nor a fault reading — the fact that no answer came.
-///
-/// No number crosses: what a code means is the transport's own declared fault table, read on its
-/// side of the frame. An answer whose transport states no reading (a framer with no fault table) is
-/// the caller's, so it records nothing.
 fn reading(status: UpstreamStatus) -> Reading {
     if status.class.is_none() && status.fault.is_none() {
         return Reading::NoAnswer;
@@ -262,10 +225,6 @@ impl Breaker for BreakerAdapter {
         now: u64,
         token: &Pass<Route>,
     ) -> bool {
-        // THE point of this adapter. The port carries no configuration, the unit requires it, and
-        // the ladder is what decides how long a tripped lane stays down. A pool nobody configured
-        // gets nothing recorded rather than a default ladder applied in its name: a wrong cooldown
-        // is invisible, and a lane that never trips at least shows up as a lane that never trips.
         let Some(cfg) = self.policy.for_pool(pool) else {
             return false;
         };
@@ -278,8 +237,6 @@ impl Breaker for BreakerAdapter {
     }
 
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>) {
-        // Each cell under its own pool's ladder, and a pool nobody configured records nothing: the
-        // same rule `observe` applies to an organic answer.
         self.unit.probed(
             destination,
             outcome,

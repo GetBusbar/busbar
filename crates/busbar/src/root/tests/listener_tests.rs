@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/root/listener.rs`.
-
-//! The TLS listener's serving loop (`serve`) over its opaque connection-security wrap. The wrap
-//! itself is the connector's — TLS stays in the connector and the composition root names no TLS
-//! library — so the loop is driven here over a connection-security TEST DOUBLE (a one-line hello,
-//! no cryptography): every accepted connection goes through the wrap, a connection the wrap refuses
-//! is dropped alone and the listener keeps serving. The same loop over the connector's REAL wrap —
-//! the trusted client's 200, the mutual handshake accepting a client certificate chaining to
-//! `client_ca` and refusing none or a foreign one — is the rows at the end of this file.
-
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -19,9 +9,6 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-/// A connection-security TEST DOUBLE: a connection whose first line is `LET-ME-IN` is admitted
-/// (handed back as it is, the line consumed); any other is refused, as a handshake the wrap refuses
-/// is. The real wrap is the connector's.
 struct HelloWrap;
 
 impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
@@ -48,34 +35,13 @@ impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
     }
 }
 
-/// `crate::limits::install` is a PROCESS-GLOBAL swap, and cargo runs this file's `#[tokio::test]`
-/// fns concurrently by default. Any test that installs a non-default `LimitsResolved` (the
-/// body-read-timeout / throughput-floor / total-deadline tests below) can otherwise stomp a
-/// concurrently-running sibling's installed value mid-test — observed directly: the throughput
-/// floor and total-deadline tests both pass in isolation but fail when run alongside each other.
-/// Every test that calls `crate::limits::install` holds this for its ENTIRE body (not just the
-/// install call), so no two such tests are ever mid-flight at once. An async-aware
-/// `tokio::sync::Mutex`, not `std::sync::Mutex`: every holder awaits (socket I/O) while holding
-/// it, and holding a `std` mutex guard across an await point risks blocking the executor thread
-/// underneath a parked task (clippy's `await_holding_lock`, correctly `-D warnings` here).
-/// MOVED to `crate::limits` (same lock, same rules) so that the `InstallGuard` tests living
-/// beside the static they mutate are serialized against these too — a lock only this file held
-/// protected these tests from each other but not from those, or those from these.
 use busbar_kernel_testkit::limits::LIMITS_TEST_LOCK;
 
-/// THE ACCEPT-ERROR POLICY, asserted directly. Both listener loops route every `accept()` error
-/// through `AcceptBackoff`, so this covers the class rather than one loop.
-///
-/// The hazard is resource exhaustion, not a peer reset: on `EMFILE`/`ENFILE` `accept()` fails
-/// INSTANTLY and keeps failing until something releases an fd, so a bare `continue` -- which is
-/// what both loops did -- spins a full core rejecting connections, starving the very tasks whose
-/// completion would free the fds.
 #[test]
 fn accept_backoff_spins_only_on_per_connection_transients() {
     use std::io::{Error, ErrorKind};
     let mut b = super::AcceptBackoff::new();
 
-    // A peer that resets between SYN and accept: the next accept will very likely succeed.
     assert_eq!(
         b.next_delay(&Error::from(ErrorKind::ConnectionAborted)),
         None,
@@ -83,8 +49,7 @@ fn accept_backoff_spins_only_on_per_connection_transients() {
     );
     assert_eq!(b.next_delay(&Error::from(ErrorKind::Interrupted)), None);
 
-    // fd exhaustion: back off, growing, and CAPPED so shutdown is never parked for long.
-    let emfile = Error::from_raw_os_error(24); // EMFILE
+    let emfile = Error::from_raw_os_error(24);
     let first = b.next_delay(&emfile).expect("exhaustion must back off");
     assert_eq!(first, super::AcceptBackoff::FIRST);
     let second = b.next_delay(&emfile).expect("still failing");
@@ -98,12 +63,9 @@ fn accept_backoff_spins_only_on_per_connection_transients() {
     }
     assert_eq!(b.next_delay(&emfile), Some(super::AcceptBackoff::CAP));
 
-    // A successful accept clears the schedule, so an isolated blip does not leave the listener
-    // permanently slow.
     b.reset();
     assert_eq!(b.next_delay(&emfile), Some(super::AcceptBackoff::FIRST));
 
-    // And a transient arriving mid-backoff resets it too -- it is not the exhaustion class.
     let _ = b.next_delay(&emfile);
     assert_eq!(
         b.next_delay(&Error::from(ErrorKind::ConnectionAborted)),
@@ -112,15 +74,10 @@ fn accept_backoff_spins_only_on_per_connection_transients() {
     assert_eq!(b.next_delay(&emfile), Some(super::AcceptBackoff::FIRST));
 }
 
-/// A trivial router standing in for busbar's real one — the TLS transport is protocol-agnostic,
-/// so a `/healthz` that returns 200 is enough to prove a request completed over the secure hop.
 fn test_router() -> Router {
     Router::new().route("/healthz", get(|| async { "ok" }))
 }
 
-/// Boot the busbar TLS listener's serving loop on an ephemeral port over the connection-security
-/// wrap `security` (what `main` hands it from `busbar_core_connector::tls::prepare`). Returns the
-/// bound address and a shutdown sender (drop or send to stop + drain).
 async fn spawn_secured_server(
     security: std::sync::Arc<dyn busbar_contract::transport::wire::ConnectionSecurity>,
 ) -> (SocketAddr, oneshot::Sender<()>) {
@@ -135,15 +92,10 @@ async fn spawn_secured_server(
             .await
             .unwrap();
     });
-    // No startup sleep: `TcpListener::bind` above ALREADY listens, so the kernel queues an inbound
-    // SYN in the accept backlog whether or not the spawned task has reached its first `accept()`
-    // yet. A wall-clock "give it a tick" pause is therefore not a synchronisation primitive at all
-    // — it is a fixed tax on every run and, on a loaded machine, a bound that can be too short.
+
     (addr, tx)
 }
 
-/// One `GET /healthz` over a fresh connection that opens with `hello`: the response's bytes, empty
-/// when the server dropped the connection without answering.
 async fn healthz_after(addr: SocketAddr, hello: &[u8]) -> Vec<u8> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut s = tokio::net::TcpStream::connect(addr).await.expect("connect");
@@ -156,9 +108,6 @@ async fn healthz_after(addr: SocketAddr, hello: &[u8]) -> Vec<u8> {
     got
 }
 
-/// TESTS 1-3 — the serving loop over its wrap: a connection the wrap admits is served (200), a
-/// connection the wrap refuses is dropped unanswered, and the listener survives the refusals and
-/// keeps serving admitted connections.
 #[tokio::test]
 async fn every_connection_is_served_through_the_wrap_and_a_refused_one_is_dropped_alone() {
     let (addr, _stop) = spawn_secured_server(std::sync::Arc::new(HelloWrap)).await;
@@ -186,8 +135,6 @@ async fn every_connection_is_served_through_the_wrap_and_a_refused_one_is_droppe
     );
 }
 
-/// TEST 4a — config regression: with NO `tls` block the plain-HTTP path still works. Drives the
-/// historical `axum::serve` over a plain TcpListener (the exact `None` branch in `main`).
 #[tokio::test]
 async fn plain_http_still_works_without_tls() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -210,36 +157,12 @@ async fn plain_http_still_works_without_tls() {
     let _ = tx.send(());
 }
 
-// TEST 4b — fail-fast: a bad cert path produces a clear, file-named error from
-// `busbar_core_connector::tls::build_server_config` (which `main` turns into `die`). MOVED to
-// `busbar-core-connector`'s own test suite (DECISIONS #40): that crate now owns the function and
-// its exact error-message format, so its error-path coverage belongs there, not a second copy
-// here pointed at this file's test-only fixture (whose error strings intentionally do not try to
-// match production's byte-for-byte). See `busbar_core_connector::tls::tests::prepare_fails_closed_on_missing_cert`.
-
-/// TEST 5 - REGRESSION (slow-loris BODY): the inbound body-read timeout trips on a stalled
-/// request body. Before the fix, only the header-read phase was bounded; a client that finished
-/// its headers then dribbled (here: never sent) the promised body would pin the connection task,
-/// its FD, and one of the finite inbound-concurrency permits INDEFINITELY. This drives the plain
-/// serve loop (same `BodyTimeoutService` seam the TLS loop uses) over a raw socket: send a POST
-/// with a `Content-Length` but NO body, and assert the server closes the connection promptly
-/// (well inside a generous deadline) rather than hanging forever. A short body-read timeout is
-/// installed process-wide for the test, through `InstallGuard` so it is restored to whatever was
-/// there before when the test ends — `install` REPLACES the whole struct behind the shared
-/// `RwLock`, not just the one field named here, so an unguarded install would leave this
-/// non-default value behind for every other test in the binary that reads limits afterward.
 #[tokio::test]
 async fn body_read_timeout_trips_on_stalled_body() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    // Install a SHORT body-read timeout (1s) so the test is fast, through the RAII guard rather
-    // than the bare test-only setter: `install` REPLACES the whole struct behind the
-    // process-global RwLock with no restore, so a bare install here would leave this
-    // non-default value behind for every OTHER test in the binary reading limits after this one
-    // — LIMITS_TEST_LOCK only serializes the four installers in THIS file against each other,
-    // not against every reader elsewhere. The guard restores whatever was installed before it
-    // (never committed, so it always rolls back) when it drops at the end of this test.
+
     let limits = busbar_kernel::config::LimitsResolved {
         request_body_read_timeout_secs: 1,
         ..busbar_kernel::config::LimitsResolved::default()
@@ -253,7 +176,7 @@ async fn body_read_timeout_trips_on_stalled_body() {
         let shutdown = async {
             let _ = rx.await;
         };
-        // A route that WOULD read the body (POST /echo), so the server actually awaits body frames.
+
         let router = Router::new().route(
             "/echo",
             axum::routing::post(|body: String| async move { body }),
@@ -264,22 +187,18 @@ async fn body_read_timeout_trips_on_stalled_body() {
     });
 
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-    // Headers announce a 100-byte body; we send NONE of it, then stall.
+
     sock.write_all(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n")
         .await
         .unwrap();
     sock.flush().await.unwrap();
 
-    // The server must close the connection (read yields EOF/reset) once the body-read bound (1s)
-    // elapses with no body forthcoming. Bound the whole wait generously (5s): pre-fix this would
-    // hang until the test's own deadline. `read` returning Ok(0) is a clean EOF; an Err is a
-    // reset - either proves the server tore the stalled connection down.
     let mut buf = [0u8; 256];
     let outcome = tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf)).await;
     match outcome {
-        Ok(Ok(0)) => {}  // clean EOF: server closed the stalled connection
-        Ok(Ok(_n)) => {} // server may first write a 4xx/408-ish response, then close
-        Ok(Err(_)) => {} // connection reset: also acceptable
+        Ok(Ok(0)) => {}
+        Ok(Ok(_n)) => {}
+        Ok(Err(_)) => {}
         Err(_) => panic!(
             "body-read timeout did NOT trip: the server kept the stalled-body connection open \
                  past the deadline (slow-loris body regression)"
@@ -289,34 +208,16 @@ async fn body_read_timeout_trips_on_stalled_body() {
     let _ = tx.send(());
 }
 
-/// TEST — AN UNCOMMITTED `InstallGuard`'s ROLLBACK GOVERNS A REAL INBOUND CONNECTION.
-///
-/// The end-to-end half of the `InstallGuard` coverage in `limits/tests/limits_tests.rs`: those
-/// tests assert the rolled-back value through the accessors (including from another thread),
-/// this one asserts the SERVER BEHAVIOUR an actual client gets. It is the same slow-loris
-/// scenario as `body_read_timeout_trips_on_stalled_body` with the sign flipped: a rejected
-/// candidate config carrying a 1s body-read timeout is installed through a guard and then
-/// dropped WITHOUT commit (the failed-apply path), and only AFTER that rollback is the
-/// connection made. The stalled body must now survive well past 1s, because the bound in force
-/// is the restored 30s default that `serve_one_plain` reads per connection.
-///
-/// This is the test that cannot be satisfied by anything except a working rollback: delete the
-/// `Drop` impl and the rejected 1s timeout stays installed process-wide, the server tears this
-/// connection down at ~1s, and the assertion below fires. That is exactly the production symptom
-/// the guard exists to prevent — a 400-ed `POST /config/apply` changing how the still-running
-/// gateway treats live traffic.
 #[tokio::test]
 async fn a_rejected_configs_limits_do_not_govern_later_connections() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    // The "accepted config that is already serving": the historical defaults (30s inter-frame).
-    // Itself guarded so this test leaks nothing to the rest of the binary.
+
     let _baseline = busbar_kernel_testkit::limits::InstallGuard::install(
         &busbar_kernel::config::LimitsResolved::default(),
     );
     {
-        // A candidate config whose build then FAILS. Its limits are live while the build runs…
         let _rejected = busbar_kernel_testkit::limits::InstallGuard::install(
             &busbar_kernel::config::LimitsResolved {
                 request_body_read_timeout_secs: 1,
@@ -330,7 +231,6 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
                  proves nothing"
         );
     }
-    // …and here it is rejected. Everything after this line must behave as if it never existed.
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -354,10 +254,6 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
         .unwrap();
     sock.flush().await.unwrap();
 
-    // 3s: comfortably past the rejected 1s bound, comfortably inside the restored 30s one, and
-    // inside both hardcoded backstops (the throughput floor's 10s grace, and a total deadline of
-    // 32 MiB / 1 KiB/s). So a close here can ONLY be the rejected config's timeout still in
-    // force.
     let mut buf = [0u8; 256];
     let outcome = tokio::time::timeout(Duration::from_secs(3), sock.read(&mut buf)).await;
     assert!(
@@ -369,32 +265,12 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
     let _ = tx.send(());
 }
 
-/// TEST — the MINIMUM-THROUGHPUT floor cuts a body that dribbles fast enough that the
-/// inter-frame timer alone (which resets on ANY progress, `poll_frame`'s `this.sleep = None`)
-/// provably CANNOT be what tears the connection down. Copies the shape of
-/// `body_read_timeout_trips_on_stalled_body`: raw socket, `serve_plain`, a route that reads the
-/// body. The inter-frame timeout is set generously (30s, the historical default) and the client
-/// sends one byte every 200ms — far under the 30s inter-frame bound, so that timer never once
-/// arms long enough to fire. Only the hardcoded throughput floor (1 KiB/s after a 10s grace,
-/// `MIN_BODY_THROUGHPUT_BYTES_PER_SEC`/`BODY_THROUGHPUT_GRACE`) can catch this client, since
-/// `bytes/elapsed` at 5 B/s stays far below 1024 B/s for the whole test.
-///
-/// SLOW BY CONSTRUCTION: the floor/grace are hardcoded consts, not operator knobs (per design),
-/// so this test cannot be sped up by installing a smaller limit — it must actually wait out the
-/// 10s grace period before the floor is even evaluated.
 #[tokio::test]
 async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    // Deliberately generous / left at the historical default: the point of this test is that
-    // this timer NEVER fires (the dribble is far faster than 30s per byte). Through the RAII guard,
-    // not the bare setter, for the reason the sibling tests in this file already write down: a bare
-    // `install` REPLACES the whole struct behind the process-global RwLock with no restore, so it
-    // leaves the limits INSTALLED for every later reader in the binary — and `limits_tests.rs`'s
-    // `uninstalled_accessors_return_historical_defaults` asserts against the UNINSTALLED state.
-    // That it currently passes is an accident of the values happening to equal the defaults; the
-    // guard makes it a property instead of a coincidence.
+
     let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(
         &busbar_kernel::config::LimitsResolved::default(),
     );
@@ -433,24 +309,21 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
         }
     });
 
-    // Generous outer bound: must trip once the 10s grace elapses, well before the 30s
-    // inter-frame timeout would ever have a chance to (it never stops being reset).
     let mut buf = [0u8; 256];
     let outcome = tokio::time::timeout(Duration::from_secs(20), rd.read(&mut buf)).await;
     let elapsed = start.elapsed();
     writer.abort();
 
     match outcome {
-        Ok(Ok(0)) => {}  // clean EOF: server tore the connection down
-        Ok(Ok(_n)) => {} // server may write a response first, then close
-        Ok(Err(_)) => {} // reset: also acceptable
+        Ok(Ok(0)) => {}
+        Ok(Ok(_n)) => {}
+        Ok(Err(_)) => {}
         Err(_) => panic!(
             "throughput floor did NOT trip: the server kept a 5 B/s dribble open past the \
                  generous outer bound"
         ),
     }
-    // SANITY GATE: elapsed must be well under the 30s inter-frame timeout, or the inter-frame
-    // timer (not the floor) is what fired and this test is measuring the wrong thing.
+
     assert!(
         elapsed < Duration::from_secs(25),
         "elapsed {elapsed:?} is too close to the 30s inter-frame timeout to attribute the \
@@ -465,17 +338,12 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
     let _ = tx.send(());
 }
 
-/// TEST — a legitimate fast large upload is NOT killed by the throughput floor or the total
-/// deadline. REGRESSION PROOF (passes before AND after the floor/deadline existed — a body that
-/// arrives promptly and in one shot was never at risk from the inter-frame timer either). Exists
-/// to catch a floor/grace/total value that false-positives on honest traffic.
 #[tokio::test]
 async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    // Through the RAII guard, not the bare setter — see the note in
-    // `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`.
+
     let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(
         &busbar_kernel::config::LimitsResolved::default(),
     );
@@ -510,17 +378,13 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     sock.write_all(&body).await.unwrap();
     sock.flush().await.unwrap();
 
-    // `read_to_end` would block on EOF that never arrives: the connection is a normal HTTP/1.1
-    // keep-alive connection, so the server holds it open after responding rather than closing it.
-    // Read until the expected echoed length shows up in the response instead — that is the
-    // observable "a promptly-delivered body was not killed" signal, not connection closure.
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let outcome = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let n = sock.read(&mut chunk).await?;
             if n == 0 {
-                break; // EOF: connection closed (also acceptable if it happens after the body)
+                break;
             }
             buf.extend_from_slice(&chunk[..n]);
             if String::from_utf8_lossy(&buf).contains("200000") {
@@ -543,29 +407,16 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     let _ = tx.send(());
 }
 
-/// TEST — the TOTAL deadline trips on a body that stays ABOVE the throughput floor forever (so
-/// the floor itself never fires) — the backstop for a client that paces itself just fast enough
-/// to never trip the floor but never finishes either. `total_body_deadline` is DERIVED from
-/// `request_body_max_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC`, so shrinking the configured cap
-/// to 2048 bytes gives a fast (~2s) deadline without touching either hardcoded const — this is
-/// also, incidentally, the regression proof that the total is derived rather than a bare
-/// constant (a fixed 600s total would make this test take ten minutes).
 #[tokio::test]
 async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
     let limits = busbar_kernel::config::LimitsResolved {
-        request_body_max_bytes: 2048, // total_body_deadline() = 2048 / 1024 B/s = 2s
+        request_body_max_bytes: 2048,
         ..busbar_kernel::config::LimitsResolved::default()
     };
-    // Through the RAII guard, not the bare setter: a bare `install` of this 2 KiB cap LEAKS it
-    // to every test in the binary that reads limits afterward (`install` replaces the whole
-    // struct with no restore), and `limits/tests/limits_tests.rs`'s
-    // `uninstalled_accessors_return_historical_defaults` asserts
-    // `busbar_kernel::proxy::max_translate_body_bytes() == DEFAULT_REQUEST_BODY_MAX_BYTES` — so whether the suite
-    // passed depended on that test happening to run BEFORE this one. Never committed, so it
-    // always rolls back at the end of this test.
+
     let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -586,17 +437,14 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
 
     let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
     let (mut rd, mut wr) = sock.into_split();
-    // A Content-Length the body never reaches, so the ONLY way this connection ends is a bound
-    // tripping.
+
     wr.write_all(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10000000\r\n\r\n")
         .await
         .unwrap();
     wr.flush().await.unwrap();
 
     let start = Instant::now();
-    // 200 bytes every 100ms = 2000 B/s, comfortably ABOVE the 1024 B/s floor for the whole test
-    // (and well before the 10s grace period even starts mattering, since the 2s total fires
-    // first) - this dribble is never what tears the connection down.
+
     let writer = tokio::spawn(async move {
         let chunk = vec![b'x'; 200];
         loop {
@@ -631,9 +479,6 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
     let _ = tx.send(());
 }
 
-// ── ConnBalancer placement tests (thread-per-core accept-time rebalancing) ─────────────────────
-
-/// A connected (client, server-accepted) socket pair on loopback, for feeding the placement seam.
 async fn socket_pair(
     listener: &tokio::net::TcpListener,
 ) -> (
@@ -647,7 +492,6 @@ async fn socket_pair(
     (client, server, peer)
 }
 
-/// A server-accepted stream as the accept source admits it.
 fn admitted(
     s: tokio::net::TcpStream,
     peer: std::net::SocketAddr,
@@ -667,19 +511,15 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     let b0 = handles.pop().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 
-    // Below the margin (0 vs 0): serve locally — no handoff.
     let (_c1, s1, p1) = socket_pair(&listener).await;
     let kept = b0.try_hand_off(admitted(s1, p1));
     assert!(kept.is_some(), "at equal load the connection stays local");
     let g1 = b0.place_local();
 
-    // One more local: still below margin (1 vs 0 < 0+2).
     let (_c2, s2, p2) = socket_pair(&listener).await;
     assert!(b0.try_hand_off(admitted(s2, p2)).is_some());
     let g2 = b0.place_local();
 
-    // Now 2 vs 0 == min+2: the margin is met — the next accept hands off to a least-loaded
-    // worker, its count incremented by the SENDER.
     let (_c3, s3, p3) = socket_pair(&listener).await;
     assert!(
         b0.try_hand_off(admitted(s3, p3)).is_none(),
@@ -691,7 +531,6 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
         .sum();
     assert_eq!(others, 1, "exactly one target counted the handoff");
 
-    // The target adopts without double-counting, and guards decrement on drop.
     let target = if b1.counts[b1.me]
         .0
         .load(std::sync::atomic::Ordering::Relaxed)
@@ -715,15 +554,13 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
         "all guards dropped — every count must return to zero"
     );
 
-    // A full handoff channel rolls the increment back and serves locally: fill worker 1's
-    // channel to capacity, then force a handoff attempt at margin.
     let mut local_guards = Vec::new();
     for _ in 0..2 {
         let (_c, s, p) = socket_pair(&listener).await;
         assert!(b0.try_hand_off(admitted(s, p)).is_some());
         local_guards.push(b0.place_local());
     }
-    // b1/b2 both at 0; drain nothing — fill b1's queue directly.
+
     let mut fillers = Vec::new();
     loop {
         let (_c, s, p) = socket_pair(&listener).await;
@@ -736,7 +573,7 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
             }
         }
     }
-    // Park worker 2 at a high count so worker 1 (full channel) is the unique argmin.
+
     b2.counts[b2.me]
         .0
         .store(100, std::sync::atomic::Ordering::Relaxed);
@@ -774,15 +611,6 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     drop(b1);
 }
 
-/// The receiver-side skew invariant behind the `from_std`-failure fix in the accept/drain loops:
-/// the sender increments the TARGET's count BEFORE handing off (so the count is never transiently
-/// low), and the receiver owns the matching decrement via a guard it adopts. If the receiver's
-/// `from_std` re-adopt fails and it `continue`s, the ONLY thing that releases the sender's
-/// increment is a guard adopted BEFORE that fallible conversion — which is exactly the ordering the
-/// fix installs. This test pins that invariant: a hand-off increment paired with an adopted guard
-/// that is dropped WITHOUT ever serving (the `continue` path) nets the count back to baseline.
-/// Against the pre-fix ordering the guard was built only AFTER `from_std` succeeded, so the
-/// `continue` skipped it and the increment was stranded high forever (permanent balancer skew).
 #[test]
 fn recv_side_from_std_failure_releases_the_sender_increment() {
     let mut handles = super::ConnBalancer::build(2);
@@ -792,15 +620,11 @@ fn recv_side_from_std_failure_releases_the_sender_increment() {
 
     let baseline = recv.counts[recv.me].0.load(Ordering::Relaxed);
 
-    // Sender's increment-before-send lands on the receiver's slot.
     recv.counts[recv.me].0.fetch_add(1, Ordering::Relaxed);
     assert_eq!(recv.counts[recv.me].0.load(Ordering::Relaxed), baseline + 1);
 
-    // Receiver adopts the decrement BEFORE the (here, simulated-failed) `from_std`, then `continue`s
-    // — modeled as dropping the guard without serving.
     {
         let _guard = recv.adopt();
-        // `from_std` fails here in the real loop; the guard drops on `continue`.
     }
 
     assert_eq!(
@@ -810,19 +634,10 @@ fn recv_side_from_std_failure_releases_the_sender_increment() {
     );
 }
 
-/// Binding: the ingress server posture is a hyper HTTP/1 header-read timeout of 30s, a
-/// `tls_handshake_timeout_secs` default of 10, and a `request_body_read_timeout_secs` default of
-/// 30, asserted against the real default-limits accessors (uninstalled state), not a re-typed copy
-/// of the literals. Its ALPN half — `h2, http/1.1` (owner ruling Q137, 2026-10-04; 1.5.5 offered
-/// `http/1.1` alone) — is the connector's `build_server_config`, asserted on its real output by
-/// `busbar_core_connector::tls::tests::build_server_config_and_prepare_build_from_operator_config`
-/// (TLS stays in the connector).
 #[tokio::test]
 async fn server_posture_matches_the_1_5_5_defaults() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    // Uninstalled `crate::limits` state: the historical hardcoded defaults these two accessors
-    // fall back to, exactly like `uninstalled_accessors_return_historical_defaults` pins for the
-    // sibling probe-interval/timeout accessors.
+
     assert_eq!(
         busbar_kernel::limits::tls_handshake_timeout_secs(),
         10,
@@ -834,8 +649,6 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         "request_body_read_timeout_secs default"
     );
 
-    // Arming the timer requires serving a connection. A partial real HTTP/1 head remains pending
-    // before the deadline and fails at it, on the existing paused Tokio clock (no wallclock wait).
     use std::future::Future as _;
     use tokio::io::AsyncWriteExt as _;
     tokio::time::pause();
@@ -858,9 +671,7 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         "a valid reader still has its 30-second header window"
     );
     tokio::time::advance(Duration::from_secs(1)).await;
-    // `advance` moves the clock before every timer is necessarily dispatched. Await with the
-    // task's real waker so the driver can deliver the elapsed header timer, bounded by one more
-    // virtual second if that timer was never armed.
+
     let error = tokio::time::timeout(Duration::from_secs(1), conn)
         .await
         .expect("the armed header timer must end the incomplete request")
@@ -877,8 +688,6 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         "the connection ended for the header timeout: {error}"
     );
 }
-
-// ── THE TLS LISTENER over the connector's production wrap ───────────────────────────────────────
 
 fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
@@ -905,7 +714,6 @@ fn file(path: &std::path::Path) -> busbar_kernel::config::SecretRef {
     busbar_kernel::config::SecretRef::file(path.to_string_lossy().into_owned())
 }
 
-/// A self-signed server cert for `localhost`/`127.0.0.1`: (cert_pem, key_pem).
 fn gen_self_signed() -> (String, String) {
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
@@ -913,9 +721,6 @@ fn gen_self_signed() -> (String, String) {
     (cert.pem(), signing_key.serialize_pem())
 }
 
-/// Boot the busbar TLS listener (`super::serve`) from a `TlsCfg` on an ephemeral port,
-/// secured by the connector's PRODUCTION wrap (`busbar_core_connector::tls::prepare`), exactly as
-/// `main`'s TLS branch does. Returns the bound address and a shutdown sender.
 async fn spawn_tls_server(
     tls: &busbar_kernel::config::sections::TlsCfg,
 ) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
@@ -943,8 +748,6 @@ async fn spawn_tls_server(
     (addr, tx)
 }
 
-/// TLS happy path: a client trusting the server's self-signed cert completes an https request and
-/// gets 200.
 #[tokio::test]
 async fn tls_happy_path_trusted_client_gets_200() {
     let (cert_pem, key_pem) = gen_self_signed();
@@ -967,7 +770,6 @@ async fn tls_happy_path_trusted_client_gets_200() {
     assert_eq!(resp.text().await.expect("body"), "ok");
 }
 
-/// A CA and a leaf it signed for `sans`: (ca_pem, leaf_pem, leaf_key_pem).
 fn gen_ca_and_leaf(sans: &[&str]) -> (String, String, String) {
     let ca_kp = rcgen::KeyPair::generate().expect("ca key");
     let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("ca params");
@@ -983,7 +785,6 @@ fn gen_ca_and_leaf(sans: &[&str]) -> (String, String, String) {
     (ca_pem, leaf.pem(), leaf_kp.serialize_pem())
 }
 
-/// The mutual listener: client certificates must chain to the CA it names.
 fn mutual(
     srv_cert_pem: &str,
     srv_key_pem: &str,
@@ -1010,8 +811,6 @@ fn client_with(srv_cert_pem: &str, identity: Option<(&str, &str)>) -> reqwest::C
     builder.build().expect("client")
 }
 
-/// mTLS required + valid client cert: a client presenting a leaf signed by the configured CA gets
-/// 200.
 #[tokio::test]
 async fn mtls_valid_client_cert_gets_200() {
     let (srv_cert_pem, srv_key_pem) = gen_self_signed();
@@ -1025,8 +824,6 @@ async fn mtls_valid_client_cert_gets_200() {
     assert_eq!(resp.status(), 200);
 }
 
-/// mTLS required + no/wrong client cert: the handshake is rejected, the server stays up, and a
-/// subsequent valid client still succeeds.
 #[tokio::test]
 async fn mtls_rejects_bad_client_then_serves_valid() {
     let (srv_cert_pem, srv_key_pem) = gen_self_signed();
@@ -1034,7 +831,6 @@ async fn mtls_rejects_bad_client_then_serves_valid() {
     let (addr, _stop) = spawn_tls_server(&mutual(&srv_cert_pem, &srv_key_pem, &ca_pem)).await;
     let url = format!("https://localhost:{}/healthz", addr.port());
 
-    // (a) Client presenting NO client cert ⇒ rejected (server requires one).
     assert!(
         client_with(&srv_cert_pem, None)
             .get(&url)
@@ -1043,7 +839,7 @@ async fn mtls_rejects_bad_client_then_serves_valid() {
             .is_err(),
         "mTLS server must reject a client with no certificate"
     );
-    // (b) Client presenting a cert from a DIFFERENT CA ⇒ also rejected.
+
     let (_other_ca, wrong_leaf, wrong_key) = gen_ca_and_leaf(&["impostor"]);
     assert!(
         client_with(&srv_cert_pem, Some((&wrong_leaf, &wrong_key)))
@@ -1053,7 +849,7 @@ async fn mtls_rejects_bad_client_then_serves_valid() {
             .is_err(),
         "mTLS server must reject a client cert from an untrusted CA"
     );
-    // (c) Server survived both rejections and still serves a valid client.
+
     let resp = client_with(&srv_cert_pem, Some((&leaf_pem, &leaf_key_pem)))
         .get(&url)
         .send()
@@ -1062,8 +858,6 @@ async fn mtls_rejects_bad_client_then_serves_valid() {
     assert_eq!(resp.status(), 200);
 }
 
-/// A listener states its scheme on every request it serves: SECURE through the connection-security
-/// wrap, PLAIN on the plain loop. A request no listener served states none.
 #[tokio::test]
 async fn a_listener_states_its_scheme_on_every_request() {
     use busbar_contract::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE};
@@ -1112,14 +906,6 @@ async fn a_listener_states_its_scheme_on_every_request() {
     let _ = (stop_secured.send(()), stop_plain.send(()));
 }
 
-/// AN OVERSIZE BODY STILL GETS ITS 413, however slowly it is uploaded (the oracle's
-/// `http.crosscut|413|*` cells, 1.5.5's golden): busbar answers the body limit's 413 before the
-/// client has finished sending, and closes. A close with the client's unread bytes still arriving
-/// makes the kernel answer them with a reset, which can destroy the 413 before the client reads
-/// it. The listener half-closes and drains what the client is still sending, so the client always
-/// reads the whole 413.
-/// RED before the fix: the client's next write after the server closed drew a reset, and its read
-/// ended in `ECONNRESET` (on Linux the reset also discards the 413 the client had not read yet).
 #[tokio::test]
 async fn an_oversize_body_sent_slowly_still_reads_its_413() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1153,7 +939,7 @@ async fn an_oversize_body_sent_slowly_still_reads_its_413() {
     );
     sock.write_all(head.as_bytes()).await.unwrap();
     let (mut rd, mut wr) = sock.into_split();
-    // The upload goes on, slowly, well after the server has answered; a write error ends it.
+
     let upload = tokio::spawn(async move {
         let chunk = vec![b'x'; CHUNK];
         for _ in 0..CHUNKS {
@@ -1164,7 +950,7 @@ async fn an_oversize_body_sent_slowly_still_reads_its_413() {
         }
         let _ = wr.shutdown().await;
     });
-    // Read only once the server has long answered and closed, as a slow client would.
+
     tokio::time::sleep(Duration::from_millis(300)).await;
     let mut got = Vec::new();
     let read = tokio::time::timeout(Duration::from_secs(10), rd.read_to_end(&mut got)).await;
@@ -1177,14 +963,6 @@ async fn an_oversize_body_sent_slowly_still_reads_its_413() {
     let _ = tx.send(());
 }
 
-// ── THE HANDSHAKE BOUND AND ITS LOG LINE (security.md: `limits.tls_handshake_timeout_secs` caps the
-// handshake; "a refused handshake is logged at debug; the server stays up") ───────────────────
-
-/// A client that connects to a TLS listener and never speaks is dropped when
-/// `limits.tls_handshake_timeout_secs` elapses: not before it, and well before the 10 s default
-/// (which is what would hold if the configured value were ignored). The limit is installed
-/// process-wide through the guard, as `body_read_timeout_trips_on_stalled_body` does, and the
-/// listener meets the configured value per accepted connection.
 #[tokio::test]
 async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
     use tokio::io::AsyncReadExt;
@@ -1203,7 +981,6 @@ async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
     };
     let (addr, stop) = spawn_tls_server(&tls).await;
 
-    // Connect and send nothing; the server's `wrap` waits for a ClientHello.
     let mut stalled = tokio::net::TcpStream::connect(addr).await.unwrap();
     let at = Instant::now();
     let mut buf = [0_u8; 16];
@@ -1225,7 +1002,6 @@ async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
         "dropped long after the 2 s limit, after {took:?}"
     );
 
-    // The listener stays up: a trusted client still completes a handshake and is served.
     let resp = client_with(&cert_pem, None)
         .get(format!("https://localhost:{}/healthz", addr.port()))
         .send()
@@ -1235,11 +1011,6 @@ async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
     let _ = stop.send(());
 }
 
-/// A refused TLS handshake (a client that speaks plaintext to a TLS port, a client with no
-/// certificate to an mTLS one) is logged at DEBUG and at no louder level, carries no key or
-/// certificate bytes, and leaves the server serving. Two captures sit on the one subscriber: the
-/// default one admits WARN and ERROR only, the other admits DEBUG and above, so the line is found
-/// in the second and absent from the first.
 #[test]
 fn a_refused_handshake_logs_at_debug_only() {
     use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
@@ -1255,8 +1026,6 @@ fn a_refused_handshake_logs_at_debug_only() {
     let (ca_pem, _leaf_pem, _leaf_key_pem) = gen_ca_and_leaf(&["busbar-client"]);
     let tls = mutual(&srv_cert_pem, &srv_key_pem, &ca_pem);
 
-    // The listener's tasks and the clients all run on this thread, inside the thread-local
-    // subscriber, which is what `WarnCapture` requires.
     tracing::subscriber::with_default(subscriber, || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1264,7 +1033,7 @@ fn a_refused_handshake_logs_at_debug_only() {
             .unwrap();
         rt.block_on(async {
             let (addr, stop) = spawn_tls_server(&tls).await;
-            // (a) plaintext HTTP to the TLS port: not a ClientHello.
+
             let mut plain = tokio::net::TcpStream::connect(addr).await.unwrap();
             plain
                 .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -1273,13 +1042,13 @@ fn a_refused_handshake_logs_at_debug_only() {
             let mut sink = Vec::new();
             let _ =
                 tokio::time::timeout(Duration::from_secs(5), plain.read_to_end(&mut sink)).await;
-            // (b) a TLS client that offers no certificate to the mutual listener.
+
             let certless = client_with(&srv_cert_pem, None)
                 .get(format!("https://localhost:{}/healthz", addr.port()))
                 .send()
                 .await;
             assert!(certless.is_err(), "a certless client is refused");
-            // Let the server side log both refusals before reading the captures.
+
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = stop.send(());
         });
@@ -1295,7 +1064,7 @@ fn a_refused_handshake_logs_at_debug_only() {
         "a refused handshake is never logged at warn or error: {:?}",
         loud.messages()
     );
-    // And it names no key or certificate material.
+
     let key_body: String = srv_key_pem
         .lines()
         .filter(|l| !l.starts_with("-----"))

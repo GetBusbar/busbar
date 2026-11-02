@@ -2,45 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SECRET KIND'S ABI: its version and its table (one mechanism, every shape in `abi/`). The
-//! one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::secret`); the layout
-//! golden pins its layout.
-//!
-//! - `resolve(settings blob)` writes the material into the HOST'S zeroed buffer
-//!   ([`ResolveIn::secret_buf`]: host-owned secret bytes, no lease, no copy left on the plugin's
-//!   side), or answers [`Outcome::Failed`](super::mechanism::call::Outcome::Failed) plus
-//!   [`ResolveOut::error_kind`], with no material in [`super::mechanism::call::OutHead::error`]'s
-//!   text (the error text is operator-facing only; the reason code lives in `error_kind`). A value
-//!   over the buffer is the short-buffer answer ([`ResolveOut::needed`]), at most
-//!   [`MAX_SECRET_BYTES`].
-//! - `check(settings)` judges one reference's settings at config time, with no instance and no
-//!   I/O: the host calls it for every reference to the plugin before anything resolves.
-//! - The kind adds nothing to the shared lifecycle: `tick` is the lifecycle's own
-//!   ([`TickIn`](super::mechanism::lifecycle::TickIn)/[`TickOut`](super::mechanism::lifecycle::TickOut)),
-//!   and the host calls nothing on it for this kind. A plugin that holds time-limited material
-//!   renews it on its own schedule within `resolve`.
-//! - A reference's shorthand spellings are Statement rewrites: the host rewrites them into a plain
-//!   settings [`Blob`] before calling `resolve`, so they name no new
-//!   wire shape here.
-//!
-//! THE HOST'S RULES FOR A SECRET INSTANCE (`busbar-plugin-loader`, `secret_calls`), so a
-//! plugin's Statement says what the host will do:
-//! - IN FLIGHT: the host binds every secret instance with a `max_inflight` cap of 16: the
-//!   Statement's `max_inflight` is clamped to `1..=16`, so a source stating more is served at 16
-//!   (secrets resolve at boot and at a refresh; sixteen pending resolves is the most one instance
-//!   is ever given). State at most 16.
-//! - LINKED SOURCES: a secret source LINKED into the build (a compiled-in row, e.g. `env`, `file`)
-//!   is opened ONCE, with NO settings (no module-level `secrets.<module>` configuration reaches
-//!   it), and takes no manifest alias: its config word is the one its Statement states as a
-//!   `REWRITE_ALIAS` rewrite. A source that needs instance settings (an address, a credential)
-//!   is dropped in, not linked; every source states its config word as `REWRITE_ALIAS`, so the
-//!   linked and the dropped-in door answer to the same word.
-//!
-//! The kind declares no `kind_tail` fields: a plugin's `Statement.kind_tail` stays NULL for it
-//! (append-only-safe: a NULL tail can gain a [`super::mechanism::door::KindTailHead`]-led struct
-//! later without moving anything laid out here).
-//!
-//! `resolve` may wait on the network, so it is OFF-PATH, `may_pend`,
-//! [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call) (a per-call budget).
 
 use super::mechanism::call::{Blob, InHead, Op, OutHead};
 use super::mechanism::decl::{abi_answers, abi_struct};
@@ -52,15 +13,11 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 2;
 
 /// The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
-/// the secret table. A door states it as built
-/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
-/// `tests/layout_fingerprint.rs` holds it to its fold.
+
 pub const LAYOUT_FINGERPRINT: u64 = 0x7195caed69bcfcbd;
 
 /// The secret kind's shapes, in fold order: every `#[repr(C)]` struct crossing its table, each
-/// with every field (`abi_struct!`'s `LAYOUT`). A struct `abi/secret/` gains is listed here (gate
-/// `abi-location`).
+
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     Ops::LAYOUT,
     ResolveIn::LAYOUT,
@@ -139,8 +96,6 @@ abi_struct! {
     }
 }
 
-// The five reasons a resolve fails, in the order of `crate::secret::SecretErrorKind`, plus
-// `UNSET` for a `Ready` answer.
 /// [`ResolveOut::error_kind`]: unset (a `Ready` answer).
 pub const ERROR_KIND_UNSET: u32 = 0;
 /// [`ResolveOut::error_kind`]: the named secret does not exist.
@@ -150,7 +105,7 @@ pub const ERROR_KIND_UNAVAILABLE: u32 = 2;
 /// [`ResolveOut::error_kind`]: the caller is not entitled to it.
 pub const ERROR_KIND_DENIED: u32 = 3;
 /// [`ResolveOut::error_kind`]: the settings blob itself is malformed, or the value is not a
-/// secret (empty, or over [`MAX_SECRET_BYTES`]).
+
 pub const ERROR_KIND_INVALID: u32 = 4;
 /// [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above.
 pub const ERROR_KIND_INTERNAL: u32 = 5;
@@ -181,7 +136,7 @@ abi_struct! {
 }
 
 /// The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM
-/// chain) is the short-buffer answer and the host re-calls once with its size.
+
 pub const FIRST_SECRET_CAP: usize = 4096;
 
 /// The largest secret a resolve may answer, using the shared host-buffer bound.
@@ -208,9 +163,7 @@ abi_struct! {
 }
 
 /// The secret kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
-///
-/// `resolve` is the only cancellable (`may_pend`) op this kind has, so the one disposition it needs
-/// is that a pending resolve was aborted before any material was written (nothing to release).
+
 pub mod cancel {
     /// The pending `resolve` was aborted; no lease was granted.
     pub const ABORTED: u32 = 0;
@@ -263,9 +216,6 @@ super::sdk::door::slot_structs!(
     }
 );
 
-// THE SECRET KIND'S ANSWERS (`check_answer`): `resolve` is judged against the host buffer it was
-// lent (the credential chip, row 6: host-owned secret bytes); `check` answers an `OutHead` alone
-// and states no rule beyond the mechanism's.
 abi_answers! {
     cx: ();
     slot::RESOLVE => resolve(in ResolveIn, out ResolveOut) |_, i, o, _| {

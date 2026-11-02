@@ -1,27 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLUGIN OBSERVABILITY ENVELOPE, COMPOSED (DECISIONS #85): the loader hands every plugin
-//! response's metrics and diagnostics to an observer, and the kernel's observer decides what a
-//! plugin is allowed to have said. The composition root joins the two, so neither names the other:
-//! the loader's observer calls the kernel's fold, and the kernel's fold asks the loader's grants
-//! (first-party, granted series), handed in on every call: the kernel holds no installed seam.
-//!
-//! The kernel's fold resolves a reported code against the catalogue the root folded, lent to the
-//! observer when it is installed.
-//!
-//! Installed once, before the first plugin loads: a plugin's own constructor is exactly where it
-//! has something worth reporting. Unconditional: the `metrics` facade is a no-op without a
-//! recorder, and the diagnostics half has to work whether or not an exporter is configured.
-
 use busbar_kernel::snapshot::observe::{Grants, KernelPluginObserver};
 
 use busbar_kernel::audit::auditlog::{record_plugin_refusal, PluginRefusal};
 
 use crate::root::loader::observe::{first_party, first_party_series, BindRefusal, PluginObserver};
 
-/// The loader's observer: every plugin response's back-channel, into the kernel's fold (lent the
-/// root's catalogue).
 struct Observer(KernelPluginObserver);
 
 impl PluginObserver for Observer {
@@ -40,7 +25,6 @@ impl PluginObserver for Observer {
         self.0.dropped(observations);
     }
 
-    /// A refusal made while a plugin bound, onto the kernel's audit chain (BIND-AUDIT).
     fn refused(&self, kind: &str, instance: &str, refusal: BindRefusal<'_>) {
         match refusal {
             BindRefusal::Need { need, reason } => record_plugin_refusal(
@@ -59,7 +43,6 @@ impl PluginObserver for Observer {
     }
 }
 
-/// The loader's grants, as the kernel's observer asks them.
 struct LoaderGrants;
 
 impl Grants for LoaderGrants {
@@ -71,9 +54,6 @@ impl Grants for LoaderGrants {
     }
 }
 
-/// Join the loader's observer to the kernel's fold lent `catalogue`, on the process's one dispatcher
-/// (every door binds on it, so every door's envelope folds through it). The first install wins; a
-/// second boot inside one test binary installs nothing, which is not an error.
 pub fn install(catalogue: busbar_kernel::diagnostics::Catalogue) {
     let observer: &'static Observer =
         Box::leak(Box::new(Observer(KernelPluginObserver::lent(catalogue))));

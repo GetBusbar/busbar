@@ -1,31 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN, §11, the plugin ABI): the host side of the shared
-//! mechanism in `busbar_contract::abi::mechanism`, generic over the kind.
-//!
-//! * [`load`] — ONE loader path for both origins: [`load::load_dropped`] (a cdylib on disk) and
-//!   [`load::load_linked`] (a compiled-in row's `DoorFn`) run the SAME door validation and
-//!   answer the same [`plugin::Plugin`]. Every refusal is a typed [`load::LoadError`].
-//! * [`plugin`] — [`plugin::Plugin`]`<K>`: the instance handle, the one crossing and its outcome
-//!   authority (the return value decides; a mirror that disagrees, or an unknown byte, is FAULT),
-//!   the #85 envelope ingest, and `max_inflight`.
-//! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, and the
-//!   host's `wake`. A service's result under its completion handle `(ticket, seq)` is held by
-//!   [`services::ServiceStore`].
-//! * [`answer`] — one answer as a kind's validator reads it ([`Kind::check`]).
-//! * [`validate`] — the mechanism's own checks of every `out` head before it is read (its size,
-//!   the error text, the #85 arrays); a violation is FAULT. A kind's reply fields are checked by
-//!   its own `abi/<kind>/check_<op>` through [`Kind::check`], never re-implemented here.
-//! * [`worker`] — the workers: per-worker ticket slabs, latched spurious-tolerant wakes, RESUME,
-//!   `wake_at_ns` timers, driver tickets, deadline classes and client drop.
-//! * `watchdog` — an op that does not RETURN within its class budget faults its instance and
-//!   replaces its worker.
-//!
-//! Nothing here names a kernel type, and nothing existing is rewired to it: the kernel adopts it
-//! per kind. A kind is a [`Kind`] marker naming its code, its table (`abi/<kind>/Ops`) and its
-//! timeout outcome.
-
 /// THE HOST'S SERVICE ENTRY POINTS, ONE SPELLING OF THE ABI: every `fn` inside is a host service
 /// (`abi::host::service::ServiceFn`, the slot type of `abi::host::io::IoSlots`). The expansion
 /// spells that signature whole, so it reads as an implementation of the ABI's type, never a new
@@ -109,70 +84,42 @@ pub use worker::{
     DEADLINE_WITHOUT_WAKE_TOTAL, DEFAULT_QUARANTINE_AFTER, QUARANTINED_TOTAL,
 };
 
-/// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once
-/// per kind ([`kinds`]); `Ops` is that kind's `abi/<kind>/Ops`.
 pub trait Kind: Send + Sync + 'static {
-    /// The kind's code; a door stating another is refused.
     const CODE: KindCode;
-    /// The kind's ops table: [`OpsHead`] followed by the kind's slots, contiguous.
+
     type Ops: Copy;
-    /// What a Call/Stream/Connection deadline answers, after `cancel`.
+
     const TIMEOUT: Outcome;
 
-    /// The op's name, for the log line a broken rule writes.
     fn op_name(slot: u32) -> &'static str {
         lifecycle_name(slot)
     }
 
-    /// THE DEADLINE CLASS a crossing of `slot` on a REAL ticket is stamped with
-    /// (`InHead::deadline_class`): the class the kind's op contract states for it, so a pending
-    /// service call inside the op runs under that class's deadline. The default is
-    /// [`DeadlineClass::Connection`](busbar_contract::abi::mechanism::call::DeadlineClass), for a
-    /// kind whose ticketed ops are its carrier I/O. A ticket-less crossing is always
-    /// `DeadlineClass::Call`.
     fn ticketed_class(slot: u32) -> busbar_contract::abi::mechanism::call::DeadlineClass {
         let _ = slot;
         busbar_contract::abi::mechanism::call::DeadlineClass::Connection
     }
 
-    /// Whether `slot` is a kind op this kind states OPTIONAL: a door may leave it NULL (absent),
-    /// and the host reads an absent one as a pass (the plane's `catalog`, ARCHITECT ruling
-    /// 2026-10-16, 3b C, a door that states no catalog claim is never asked it; the secret `check`;
-    /// the auth `target`). Every other slot NULL refuses the load.
     fn optional_slot(slot: u32) -> bool {
         let _ = slot;
         false
     }
 
-    /// Whether `slot` is a kind op the door's `statement` makes OPTIONAL: what it states makes the
-    /// op one the host never calls (the export kind's `scrape` with no `metrics` stream, its
-    /// `serve` with no route, its `deliver` with no stream but `metrics`). Left NULL, it is the
-    /// host's absent op, as [`Kind::optional_slot`]'s are.
     fn optional_by_statement(slot: u32, statement: &Statement) -> bool {
         let _ = (slot, statement);
         false
     }
 
-    /// The instance's CONTEXT for its checks, built once from the Statement at bind (the plane's
-    /// tail bounds); `None` = the kind's checks need none. An `Err` refuses the load.
-    ///
-    /// # Errors
-    /// Why the Statement cannot bind this kind.
     fn context(statement: &Statement) -> Result<Option<Box<Context>>, String> {
         let _ = statement;
         Ok(None)
     }
 
-    /// The credential kinds an instance of this kind declares its op reads through the host's
-    /// `records.secret`, read off its [`Kind::context`]; none for a kind that declares none.
     fn credential_kinds(context: Option<&Context>) -> Vec<String> {
         let _ = context;
         Vec::new()
     }
 
-    /// THE KIND'S ADMISSION OF AN `in`, before the crossing: `Some(outcome)` refuses the call
-    /// with that outcome and never crosses. `owner` is the called instance's identity on the
-    /// instance table, the owner its kernel-MAC'd refs are verified for. The default admits all.
     fn admit(
         slot: u32,
         input: *const busbar_contract::abi::mechanism::call::InHead,
@@ -183,22 +130,11 @@ pub trait Kind: Send + Sync + 'static {
         None
     }
 
-    /// THE KIND'S ANSWER VALIDATION: the kind's pure `check_<op>` in `abi/<kind>/`, run after every
-    /// answer of every op, on EVERY outcome but FAULT (each check decides which fields an outcome
-    /// carries). `Err` is FAULT, logged once at warn with the plugin, the
-    /// kind, the op and the rule (never a payload byte). The dispatcher never re-implements a rule.
-    /// An op whose kind states no rule beyond the mechanism's answers `Ok`.
-    ///
-    /// # Errors
-    /// The rule the answer broke.
     fn check(answer: &Answer) -> Result<(), Fault> {
         let _ = answer;
         Ok(())
     }
 
-    /// The unit a crossing of `slot` serves, read from its `in` (`in_size` bytes, leading with
-    /// its head): the kernel-minted unit key, so a host service called inside the crossing answers
-    /// for that unit. `None` = the op serves no unit.
     fn unit_of(
         slot: u32,
         input: *const busbar_contract::abi::mechanism::call::InHead,
@@ -208,17 +144,11 @@ pub trait Kind: Send + Sync + 'static {
         None
     }
 
-    /// Whether a FAILED answer (that passed [`Kind::check`]) is SHORT: a host buffer too small,
-    /// its `needed_*` above the capacity given. The caller re-calls once with bigger buffers; a
-    /// second short answer on the re-call is FAULT (the short-buffer rule on `OutHead`).
     fn short(answer: &Answer) -> bool {
         let _ = answer;
         false
     }
 
-    /// The `drive` frame of a driver ticket of this kind ([`Dispatcher::driver`]): the kind's own
-    /// `drive` `in`/`out`, built once and boxed, so its address holds across PENDING and RESUME.
-    /// A kind whose `drive` is the lifecycle's answers the lifecycle's `DriveIn`/`OutHead`.
     fn drive_frame() -> Box<dyn DriveFrame> {
         Box::new(Frame::new(
             DriveIn {
@@ -229,31 +159,20 @@ pub trait Kind: Send + Sync + 'static {
         ))
     }
 
-    /// A `cancel` frame of this kind: the kind's own `cancel` `in`/`out` (a plane's carries record
-    /// buffers, SEAM-L(r)); a kind whose `cancel` is the lifecycle's answers `CancelIn`/`CancelOut`.
     fn cancel_frame() -> Box<dyn CancelFrame> {
         Box::new(cancel_frame(Ticket::NONE))
     }
 }
 
-/// A `cancel` frame, kind-erased: the kind's own `in`/`out` ([`Kind::cancel_frame`]), the
-/// lifecycle's embedded first, so every kind's head is filled the same way.
 pub trait CancelFrame: Send {
-    /// Stamp the frame for one `cancel` of `ticket` at deadline class `class` and answer its
-    /// heads, `in` first, then `out` and the `out`'s size.
     fn prepare(&mut self, ticket: Ticket, class: u8) -> (*mut InHead, *mut OutHead, u32);
 
-    /// The disposition its answer carried.
     fn disposition(&self) -> u32;
 
-    /// The unit the cancelled op serves (`0`: none), for a kind whose `cancel` names it (a plane's
-    /// `PlaneCancelIn::unit`); a kind whose `cancel` names none ignores it.
     fn name_unit(&mut self, unit: u64) {
         let _ = unit;
     }
 
-    /// The record writes its READY answer carried (a plane's, SEAM-L(r)); none for a kind whose
-    /// `cancel` writes none.
     fn writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
         Vec::new()
     }
@@ -280,15 +199,9 @@ impl CancelFrame for Frame<CancelIn, CancelOut> {
     }
 }
 
-/// A driver ticket's `drive` frame, kind-erased: the kind's own `in`/`out` ([`Kind::drive_frame`]).
 pub trait DriveFrame: Send {
-    /// Stamp the frame for one `drive` crossing on `driver` (its head: size, `flags`, the
-    /// Connection class, the ticket; its `driver` field) and answer its heads, `in` first, then
-    /// `out` and the `out`'s size.
     fn prepare(&mut self, driver: Ticket, flags: u32) -> (*mut InHead, *mut OutHead, u32);
 
-    /// The names its last READY answer wrote (a plane's ready sessions); none for a kind whose
-    /// `drive` names nothing.
     fn named(&self) -> &[u64] {
         &[]
     }
@@ -301,7 +214,6 @@ impl DriveFrame for Frame<DriveIn, OutHead> {
     }
 }
 
-/// Stamp a `drive` `in` whose `DriveIn` is `drive`, the whole `in` being `size` bytes.
 pub fn stamp_drive(drive: &mut DriveIn, driver: Ticket, flags: u32, size: usize) {
     drive.head.size = size as u32;
     drive.head.flags = flags;
@@ -311,7 +223,6 @@ pub fn stamp_drive(drive: &mut DriveIn, driver: Ticket, flags: u32, size: usize)
     drive.driver = driver;
 }
 
-/// A lifecycle slot's name; `"op"` for a kind slot a kind did not name.
 pub fn lifecycle_name(slot: u32) -> &'static str {
     use busbar_contract::abi::mechanism::lifecycle::slot as s;
     match slot {
@@ -329,15 +240,12 @@ pub fn lifecycle_name(slot: u32) -> &'static str {
     }
 }
 
-/// The byte offset of the first slot in every table.
 const FIRST_SLOT: usize = offset_of!(OpsHead, validate);
 
-/// How many slots the host's table of `K` holds (`OpsHead.slots` must equal it).
 pub(crate) fn host_slots<K: Kind>() -> u32 {
     ((size_of::<K::Ops>() - FIRST_SLOT) / size_of::<Option<Op>>()) as u32
 }
 
-/// `size_of` the host's table of `K` (`OpsHead.size` must equal it).
 pub(crate) fn host_table_size<K: Kind>() -> u32 {
     size_of::<K::Ops>() as u32
 }
@@ -386,7 +294,6 @@ pub struct Frame<I, O> {
 unsafe impl<I: InFrame, O: OutFrame> Send for Frame<I, O> {}
 
 impl<I: InFrame, O: OutFrame> Frame<I, O> {
-    /// A frame of `input` and `out`. The dispatcher writes both heads before every crossing.
     pub fn new(input: I, out: O) -> Self {
         Self { input, out }
     }
@@ -400,7 +307,6 @@ impl<I: InFrame, O: OutFrame> Frame<I, O> {
     }
 }
 
-/// An absent blob.
 pub const NO_BLOB: Blob = Blob {
     ptr: std::ptr::null(),
     len: 0,
@@ -408,7 +314,6 @@ pub const NO_BLOB: Blob = Blob {
     flags: 0,
 };
 
-/// A blank [`InHead`]; the dispatcher fills it before each crossing.
 pub fn in_head() -> InHead {
     InHead {
         size: size_of::<InHead>() as u32,
@@ -425,7 +330,6 @@ pub fn in_head() -> InHead {
     }
 }
 
-/// A blank [`OutHead`], pre-filled as FAULT (an `out` nobody wrote reads as a fault).
 pub fn out_head() -> OutHead {
     busbar_contract::abi::mechanism::call::OutHead {
         size: size_of::<OutHead>() as u32,
@@ -447,8 +351,6 @@ pub fn out_head() -> OutHead {
     }
 }
 
-/// A `cancel` frame for `ticket`. `cancel` may not pend: its head carries NONE; the cancelled
-/// ticket is its field.
 pub(crate) fn cancel_frame(ticket: Ticket) -> Frame<CancelIn, CancelOut> {
     Frame::new(
         CancelIn {
@@ -463,8 +365,6 @@ pub(crate) fn cancel_frame(ticket: Ticket) -> Frame<CancelIn, CancelOut> {
     )
 }
 
-/// The host's coarse monotonic clock, in nanoseconds since first use: the clock `deadline_ns`,
-/// `wake_at_ns` and `TickIn::now_ns` are on.
 pub fn now_ns() -> u64 {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64

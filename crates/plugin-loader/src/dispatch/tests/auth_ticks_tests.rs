@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE AUTH TICK SCHEDULE ([`ticks`]) for an INBOUND instance: `AuthInstance::open` starts it
-//! on the runtime it opens on, as the outbound open path does (THE DESIGN: "one clock, which also
-//! drives every plugin's `tick`"), and dropping the instance stops it. RED: predev's inbound open
-//! started no schedule, so the doubles below were ticked 0 times, and nothing stopped one that ran.
-//!
-//! The doubles are inbound auth doors over a lifecycle of their own: the SDK's `Verifier` (the
-//! inbound doors of `tests/auth_door_tests.rs`) answers every `tick` with `0`, so it cannot ask for
-//! a second one.
-
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -28,21 +19,16 @@ use super::*;
 use crate::auth_door::{AuthInstance, AuthSink};
 use crate::dispatch::{load_linked, Budgets, ConnTable, DispatchConfig, LinkedRow};
 
-/// The gap each `next_tick_ns` asks for.
 const GAP_NS: u64 = 10_000_000;
 
-/// The `now_ns` of each tick [`Twice`] was called at.
 static TWICE: Mutex<Vec<u64>> = Mutex::new(Vec::new());
-/// The ticks [`Forever`] was called.
+
 static FOREVER: AtomicU64 = AtomicU64::new(0);
 
-/// Asks for a tick `GAP_NS` on, twice, then for none (`0`).
 struct Twice;
 
-/// Asks for a tick `GAP_NS` on, every time.
 struct Forever;
 
-/// Asks for a tick `GAP_NS` on, every time (a schedule of its own, so its count is its own).
 struct Reloaded;
 
 macro_rules! life {
@@ -79,7 +65,6 @@ life!(Forever, |now| {
 });
 life!(Reloaded, |now| now + GAP_NS);
 
-/// Every auth op of a double: REFUSED (the schedule is under test, not `verify`).
 struct Refuses<L, I, O>(PhantomData<(L, I, O)>);
 impl<L: Life, I: AbiIn, O: AbiOut> SafeSlot for Refuses<L, I, O> {
     type In = I;
@@ -141,7 +126,6 @@ fn dispatcher() -> Arc<Dispatcher> {
     }))
 }
 
-/// `door` linked, bound to `d` and OPENED as the inbound open path opens it (`AuthRows::open`).
 fn opened(
     d: &Arc<Dispatcher>,
     door: busbar_contract::abi::mechanism::door::DoorFn,
@@ -160,7 +144,6 @@ fn opened(
     AuthInstance::open(p, sink, Arc::clone(d), label, b"{}", Vec::new()).expect("the double opens")
 }
 
-/// Waits (at most 5 s) until `done`.
 async fn until(done: impl Fn() -> bool) {
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
         while !done() {
@@ -170,15 +153,13 @@ async fn until(done: impl Fn() -> bool) {
     .await;
 }
 
-/// AN INBOUND INSTANCE IS TICKED ON THE ONE CLOCK: at its open, then at each `next_tick_ns` it
-/// answers, never before it; an answer of `0` ends the schedule. RED: ticked 0 times.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_inbound_instance_is_ticked_at_each_next_tick_ns_until_it_answers_zero() {
     let d = dispatcher();
     let a = opened(&d, twice::door, "ticked-twice");
     let ticked = || TWICE.lock().unwrap_or_else(|e| e.into_inner()).clone();
     until(|| ticked().len() >= 3).await;
-    // Past the third tick's answer of `0`, no other comes.
+
     tokio::time::sleep(Duration::from_millis(5 * GAP_NS / 1_000_000)).await;
     let at = ticked();
     assert_eq!(
@@ -196,8 +177,6 @@ async fn an_inbound_instance_is_ticked_at_each_next_tick_ns_until_it_answers_zer
     assert!(a.ticks_ended(), "the schedule ends on an answer of 0");
 }
 
-/// A DROPPED INBOUND INSTANCE (retired, or replaced on apply) STOPS ITS SCHEDULE, though its
-/// plugin would be ticked on. RED: the ticks go on after the drop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_inbound_instance_is_ticked_no_more() {
     let d = dispatcher();
@@ -208,7 +187,7 @@ async fn a_dropped_inbound_instance_is_ticked_no_more() {
         "the instance is ticked on its schedule"
     );
     drop(a);
-    // A tick already crossing when the schedule was aborted completes; none follows it.
+
     tokio::time::sleep(Duration::from_millis(3 * GAP_NS / 1_000_000)).await;
     let stopped = FOREVER.load(Ordering::SeqCst);
     tokio::time::sleep(Duration::from_millis(10 * GAP_NS / 1_000_000)).await;
@@ -219,19 +198,13 @@ async fn a_dropped_inbound_instance_is_ticked_no_more() {
     );
 }
 
-/// A DROPPED AUTH INSTANCE IS LET GO (audit loader-src PL1#5; THE DESIGN `docs/design/BUSBAR-1.6.0.md`
-/// §11.11: a driver ticket is "persistent until recycled"): its schedule's driver ticket is
-/// recycled when the schedule ends or is aborted, so the slab no longer holds the instance and the
-/// instance (its library, its connector streams) is dropped. Each config apply that rebinds an auth
-/// row drops the instance it replaces. RED: the driver ticket was never recycled, so the slab kept
-/// the instance alive for the life of the process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_auth_instance_is_let_go_by_its_schedules_driver_ticket() {
     let d = dispatcher();
     let a = opened(&d, reloaded::door, "ticked-reloaded");
     let held = a.instance();
     assert!(held.upgrade().is_some(), "the opened instance is alive");
-    // The schedule has minted its driver ticket and is ticking.
+
     tokio::time::sleep(Duration::from_millis(3 * GAP_NS / 1_000_000)).await;
     drop(a);
     until(|| held.upgrade().is_none()).await;

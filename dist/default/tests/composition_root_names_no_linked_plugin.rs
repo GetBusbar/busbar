@@ -1,24 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE COMPOSITION ROOT NAMES NO LINKED PLUGIN (K1, #2 rule (1)).
-//!
-//! Which plugins a build links is DATA: the `[package.metadata.busbar.linked]`,
-//! `[package.metadata.busbar.linked-entry]` and `[package.metadata.busbar.root-units]` tables of this
-//! crate's manifest. `build.rs` turns them into the tables `main.rs` includes, and the registration
-//! path in `src/root/linked.rs` folds every entry the same way whether it was linked in or dropped
-//! in. So `main.rs` has no reason to spell a plugin crate or a root unit module, and a spelling there
-//! is a registration that bypassed the one path — a plugin wired by name, which the next plugin
-//! would have to copy.
-//!
-//! The names are read from the manifest, never listed here: a crate added to the table tomorrow is
-//! judged the day it lands. Comments are not code and are skipped; string literals are kept, so a
-//! name smuggled through a literal still counts.
-
 use std::path::Path;
 
-/// The manifest reader `build.rs` generates the tables with, so the names judged here are the names
-/// the tables were generated from.
 #[allow(dead_code)]
 mod generator {
     include!("../../../crates/busbar/src/linked_gen.rs");
@@ -30,10 +14,6 @@ fn read(rel: &str) -> String {
         .unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
-/// The generator itself, over a synthetic manifest: only ENABLED rows are emitted, in manifest order,
-/// each on exactly the axes its row lists, an entry override replaces `<crate>::linked`, a seam axis
-/// becomes a cfg, and a row whose feature the manifest does not declare — or a crate with no axes
-/// row, or an unknown axis — is refused rather than silently dropped from every build.
 #[test]
 fn the_generator_emits_the_enabled_rows_in_manifest_order() {
     let manifest = r#"
@@ -112,7 +92,6 @@ unit-b = "beta"
             "plane-door diagnostics egress",
             "plane-door diagnostics teleport",
         ),
-        // RED: the deleted HOT plane lane's axis is an unknown axis, refused.
         manifest.replace("four = \"plane-door\"", "four = \"hot-plane\""),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &enabled));
@@ -120,7 +99,6 @@ unit-b = "beta"
     }
 }
 
-/// An arrival must cross the plane's admitted memory-ABI door, never an installed Rust callback.
 #[test]
 fn the_generator_refuses_the_retired_body_arrival_axis() {
     let manifest = r#"
@@ -138,14 +116,6 @@ plane = "plane-door body-ingress"
     );
 }
 
-/// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
-/// dependency is linked in every build and its key only names the row; two rows may share a crate,
-/// each naming its own entry; a `transport` row fills `transports` with the row its bare `door`
-/// makes (`linked_transport!`: key, layers, build, claims and upgrade claims, all read off the door's
-/// Statement), and never names a constant of its entry's (BUSBAR-1.6.0.md l.3560-3561); a `claims` row fills
-/// `claims` with its `PLANE` and `CLAIMS`. A row on an OPTIONAL crate still needs its feature,
-/// `claims` off the plane axis is refused, and so is a `transport` row off the door axis: a
-/// transport is linked only as its memory-ABI door (step 36).
 #[test]
 fn the_generator_folds_the_transport_and_claims_axes() {
     let manifest = r#"
@@ -178,8 +148,7 @@ host = "unit"
         1,
         "two rows on one crate link it once: {out}"
     );
-    // A door row is its bare door: the one row macro reads its key, layers, claims, upgrades, lines
-    // and offered points off the door's Statement (`crate::root::linked::linked_transport!`).
+
     assert!(
         out.contains(
             "    transports: &[crate::root::linked::linked_transport!(busbar_wire::linked::door), \
@@ -187,11 +156,11 @@ host = "unit"
         ),
         "{out}"
     );
-    // RED: no row reads a constant its entry exports beside `door`.
+
     for constant in ["::KEY", "::COMPOSES_OVER", "::SESSION"] {
         assert!(!out.contains(constant), "a row names `{constant}`: {out}");
     }
-    // The connector's view is the same doors, keyed by what each Statement states.
+
     assert!(
         out.contains("&[busbar_wire::linked::door, busbar_wire::linked::high::door, ];"),
         "{out}"
@@ -200,7 +169,7 @@ host = "unit"
         out.contains(".map(|door| (crate::root::doors::row_facts(*door).key, *door))"),
         "{out}"
     );
-    // An entry at the crate root links the same way: the row reads `<entry>::door`.
+
     let at_root = manifest.replace(
         "wire-high = \"busbar_wire::linked::high\"",
         "wire-high = \"busbar_wire\"",
@@ -238,9 +207,6 @@ host = "unit"
     }
 }
 
-/// THE PLANE DOOR AXIS (#2, THE DESIGN §11.4): a `plane-door` row fills `plane_doors` with its
-/// entry's `door`, the table the root hands the loader beside every dropped-in plane door; with its
-/// feature off the table is empty.
 #[test]
 fn the_generator_folds_the_plane_door_axis() {
     let manifest = r#"
@@ -271,9 +237,6 @@ door = "unit"
     assert!(off.contains("plane_doors: &[],"), "{off}");
 }
 
-/// A PLANE IS SERVED THROUGH ITS DOOR (#2, #30; BUSBAR-1.6.0.md Part 3 §12 "The switch"): this
-/// manifest has a build that links a plane's memory-ABI door on the `plane-door` axis, so the
-/// compiled-in plane is bound through the loader's one load, the same table its dropped-in build is.
 #[test]
 fn the_manifest_links_a_plane_through_its_door() {
     let manifest = read("Cargo.toml");
@@ -288,11 +251,6 @@ fn the_manifest_links_a_plane_through_its_door() {
     );
 }
 
-/// EVERY FOLD IS DONE (BUSBAR-1.6.0.md Part 3 §12 "The switch": a fold's development-only switch is
-/// deleted when the fold completes; status row 155): the manifest states no `<plane>-on-driver`
-/// feature, and the default build links every plane door any feature links, so the shipped binary
-/// serves each plane through its door. The doors are read off the manifest, so this names no plane.
-/// RED: a `-on-driver` switch back in `[features]`, or a plane's switch taken out of `default`.
 #[test]
 fn no_fold_switch_remains_and_the_default_build_links_every_plane_door() {
     let manifest = read("Cargo.toml");
@@ -327,8 +285,7 @@ fn no_fold_switch_remains_and_the_default_build_links_every_plane_door() {
             .map(str::to_string)
             .collect()
     };
-    // The default set as cargo resolves it: each feature with every feature its `[features]` row
-    // turns on (`dep:` and `crate/feature` entries name no feature of this crate).
+
     let rows: Vec<(String, Vec<String>)> = manifest
         .split("\n[features]\n")
         .nth(1)

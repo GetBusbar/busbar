@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A plugin-owned complete configuration, carried by the existing configure reply extension.
-//! The host stores opaque bytes, never merges settings, and retains one checkpoint per instance.
 
 use zeroize::Zeroizing;
 
@@ -15,21 +14,19 @@ pub const MAX_BYTES: usize = HARD_MAX_BYTES as usize;
 const HEADER: usize = 16;
 
 /// A normalized complete settings object accepted by this hook's `configure` method on a fresh
-/// instance. Construct it before committing a configuration; return it while still holding the
-/// same plugin configuration lock. Never expose these secret bytes through status or diagnostics.
+
 pub struct ConfigureCheckpoint {
     /// Strictly increasing successful configuration sequence within one physical instance.
-    /// A stale version returns the current sequence and settings without changing either.
     pub revision: u64,
     /// The version of the effective settings, which can exceed a stale push's acknowledged version.
     pub settings_version: u64,
-    // settings-leak-lint: allow — private wiping checkpoint owner, never an admin response or diagnostic
+
     settings: Zeroizing<Vec<u8>>,
 }
 
 impl ConfigureCheckpoint {
     /// Own a complete, normalized JSON settings object. Its semantics belong to the plugin; the
-    /// SDK and host do not interpret keys. The plugin must construct this before mutating state.
+
     pub fn new(revision: u64, settings_version: u64, settings: Vec<u8>) -> Result<Self, String> {
         let settings = Zeroizing::new(settings);
         if revision == 0
@@ -67,7 +64,7 @@ impl ConfigureCheckpoint {
     }
 
     /// Copy one checkpoint out of a still-leased extensions blob. Unknown entries are ignored;
-    /// malformed or duplicate checkpoint entries are refused, never mistaken for old-plugin absence.
+
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, &'static str> {
         const INVALID: &str = "invalid hook configuration checkpoint reply";
         if bytes.len() > MAX_BYTES {

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DATAGRAM FRAMER'S SCRIPT (`conformance/datagram.rs`): an honest answer reads as the line the
-//! contract requires, and a datagram framer that misbehaves fails the script — an answer the
-//! lane's rules refuse, an opening that does not hold what its inputs declare, a `begin` that reads
-//! no lane, a `finish` that does not end.
-
 use super::*;
 use crate::conformance::{judge as contract, output, Step};
 
@@ -18,8 +13,6 @@ fn called(outcome: Outcome) -> Called {
     }
 }
 
-/// An answer yielding `piece` (its bytes and flags, on stream 0) as `h`'s frame, `routes` routes,
-/// the yield `flags` and the terms' `role`.
 fn answer(
     h: &mut Host,
     piece: Option<(&[u8], u16)>,
@@ -68,8 +61,6 @@ fn contains() -> Vec<Vec<u8>> {
     vec![b"opening".to_vec(), b"198.51.100.1 40000".to_vec()]
 }
 
-/// GREEN: a dialled begin that yields one end-of-frame piece holding every declared string, and
-/// routes nothing, reads as the line the contract requires.
 #[test]
 fn an_honest_dialled_begin_reads_as_the_required_line() {
     let mut h = Host::new();
@@ -82,7 +73,6 @@ fn an_honest_dialled_begin_reads_as_the_required_line() {
     );
 }
 
-/// RED: an opening that does not hold what the inputs declare is not the required line.
 #[test]
 fn an_opening_missing_a_declared_string_is_refused() {
     let mut h = Host::new();
@@ -101,7 +91,6 @@ fn an_opening_missing_a_declared_string_is_refused() {
     );
 }
 
-/// RED: a FAILED answer that still routes a datagram breaks the lane's rules, and the line says so.
 #[test]
 fn a_failed_answer_that_routes_breaks_the_lane() {
     let mut h = Host::new();
@@ -110,7 +99,6 @@ fn a_failed_answer_that_routes_breaks_the_lane() {
     assert!(!line.starts_with("lane=ok"), "{line}");
 }
 
-/// RED: rendezvous terms that name a role and carry no credentials break the lane's rules.
 #[test]
 fn half_stated_terms_break_the_lane() {
     let mut h = Host::new();
@@ -130,7 +118,6 @@ fn step(label: &str, answer: String) -> Vec<Step> {
     }]
 }
 
-/// RED: a datagram framer that begins without a lane fails the script.
 #[test]
 #[should_panic(expected = "begin without a lane")]
 fn a_begin_that_reads_no_lane_fails_the_script() {
@@ -144,7 +131,6 @@ fn a_begin_that_reads_no_lane_fails_the_script() {
     );
 }
 
-/// RED: a `finish` that does not end the framing fails the script; the one that ends passes.
 #[test]
 fn a_finish_that_does_not_end_fails_the_script() {
     let want = vec![(

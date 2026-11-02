@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The root's credential source: the read follows the App swap at once, and the kernel's
-//! `records.secret` serves it.
-
 use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use std::sync::Arc;
 
@@ -16,8 +13,6 @@ use busbar_kernel_testkit::test_support::TestApp;
 
 use super::AppCredentials;
 
-/// The persisted credential kind of a row-looked-up signed-ingress credential: frozen stored data,
-/// read off the kernel's frozen-text fixture rather than spelled here.
 fn signed_kind() -> String {
     const FROZEN: &str =
         include_str!("../../../../busbar-kernel-testkit/tests/fixtures/frozen_customer_text.yaml");
@@ -28,7 +23,6 @@ fn signed_kind() -> String {
         .expect("the frozen fixture names the signed credential kind")
 }
 
-/// A governance holding one signed-ingress credential: the governance, its id and its secret.
 fn gov_with_key(name: &str) -> (Arc<GovState>, String, String) {
     let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).unwrap());
     let spec = NewKeySpec {
@@ -41,10 +35,6 @@ fn gov_with_key(name: &str) -> (Arc<GovState>, String, String) {
     (gov, id, secret)
 }
 
-/// THE READ FOLLOWS THE SWAP (ARCHITECT 2026-10-01): a read through the App's own swap handle sees
-/// the CURRENT snapshot. After a swap to an App whose governance holds another credential, the new
-/// id reads its secret, live, and the removed id reads the dummy, not live. RED: a source that
-/// captured the boot GovState keeps answering the removed id live.
 #[test]
 fn the_credential_read_follows_the_app_swap() {
     let (first, old_id, old_secret) = gov_with_key("first");
@@ -73,7 +63,6 @@ fn the_credential_read_follows_the_app_swap() {
     );
 }
 
-/// A source answering `kind:id`, live for an id starting `live`.
 struct Source;
 impl CredentialRead for Source {
     fn read(&self, kind: &str, id: &str) -> (busbar_contract::redacted::Secret<String>, bool) {
@@ -82,7 +71,6 @@ impl CredentialRead for Source {
     }
 }
 
-/// A `records.secret` answered at once.
 fn now(ran: Ran) -> Stored {
     match ran {
         Ran::Now(stored) => stored,
@@ -90,8 +78,6 @@ fn now(ran: Ran) -> Stored {
     }
 }
 
-/// THE READ: `records.secret` is the source's secret in span `0` and its liveness as the value.
-/// RED: services given no source refuse the read.
 #[test]
 fn the_kernel_serves_the_read_from_its_source() {
     let s = KernelServices::new().with_credentials(Arc::new(Source));
@@ -110,10 +96,6 @@ fn the_kernel_serves_the_read_from_its_source() {
     );
 }
 
-/// THE LATE HANDLE: the serve path composes the services before the App exists, so a late source
-/// answers `records.secret` REFUSED until its handle is set, and the credential's secret, live,
-/// after. RED: a source read before the App exists would answer the dummy as an ordinary not-live
-/// credential, indistinguishable from a revoked one.
 #[test]
 fn a_late_source_refuses_until_its_handle_is_set() {
     let (gov, id, secret) = gov_with_key("late");

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! busbar-kernel-wal batteries that mint their tokens.
-
 mod answered_is_synced_tests;
 mod bounds_tests;
 mod corruption_verdict_tests;

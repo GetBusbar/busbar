@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE DRIVER'S CASES (`BUSBAR-1.6.0.md` Part 3, §12), written once and run twice: by the
-//! kernel against a contract-level plane double, and by the composition root against a real test
-//! plane, linked and dlopened. The file that includes this module supplies the plane: `Way`,
-//! `ways()`, `rig(way, caps, book) -> Rig` (with `Rig::stats`), `now_ns()` on the plane's clock, and
-//! `common::TestUnits`, the kernel steps.
-//!
-//! What is proven, per plane: one unit end to end; zero plane→host calls per chunk (the plane
-//! counts its own crossings and host calls); backpressure; a PENDING answer resumed by its wake;
-//! FAULT as a failed end; failover before the first
-//! byte and none after it; the short-buffer re-call for `arrive` and `on_piece`, and a second
-//! short answer as FAULT; cancel on the deadline, the cut, the reload and the caller-drop paths,
-//! and a FAULT disposition billed as `CANCEL_FAILED`; and the session opener.
-
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,62 +24,49 @@ use busbar_kernel::teller::{
 use super::common::{cell, ctx, TestUnits};
 use super::{now_ns, rig, ways};
 
-/// The counters a test plane reports, in this order.
 pub mod stat {
-    /// `on_piece` crossings.
+
     pub const ON_PIECES: usize = 0;
-    /// Calls the plane made into the host (the wake).
+
     pub const HOST_CALLS: usize = 1;
-    /// `cancel` crossings.
+
     pub const CANCELS: usize = 2;
-    /// `cancel` crossings the dispatcher made for a pending op, on the op's worker.
+
     pub const CANCELS_ON_WORKER: usize = 3;
-    /// The last disposition `cancel` answered (`0` for FAULT).
+
     pub const LAST_DISPOSITION: usize = 4;
-    /// `drive` crossings (read by the composition root's suite only).
+
     #[allow(dead_code)]
     pub const DRIVES: usize = 5;
-    /// The unit key the last `on_piece` carried.
+
     pub const UNIT: usize = 6;
-    /// How many.
+
     pub const COUNT: usize = 7;
 }
 
-// ── the doubles ──────────────────────────────────────────────────────────────────────────────────
-
-/// A far end that answers every attempt with the same script, and records what it was sent.
-///
-/// [`Far::held`] is a HELD far end instead (one socket a duplex session dials once): its answer
-/// opens with a greeting, then answers every frame it takes (the dial's body, then each written
-/// frame) with `re:<frame>`, and never ends on its own unless it takes the frame `bye`, which it
-/// answers and then hangs up. A frame written to a socket that is not open is refused.
 pub(crate) struct Far {
     members: Vec<&'static str>,
     script: Vec<FarPiece>,
     sent: Mutex<Vec<OutboundRequest>>,
     current: Mutex<VecDeque<FarPiece>>,
-    /// Every dial opens a held socket.
+
     held: bool,
-    /// The frames written into a held far end, with whether its socket was open when each came.
+
     written: Mutex<Vec<(Vec<u8>, bool)>>,
-    /// A held far end's socket is open.
+
     open: std::sync::atomic::AtomicBool,
-    /// Woken when a held far end has a piece to read.
+
     arrived: tokio::sync::Notify,
-    /// The ceiling its plane states on a streamed answer, stated to the driver as the unit's
-    /// deadline once the route is known; `None` = none.
+
     ceiling: Option<Duration>,
-    /// How many times the walk asked it for a member.
+
     picks: std::sync::atomic::AtomicU32,
-    /// It tells the hooks the pool it walks and that pool's members ([`FarEnd::candidates`]), as
-    /// the kernel's own walk does; off, it names none.
+
     names_its_pool: bool,
 }
 
-/// The greeting a held far end opens its answer with, before any frame is answered.
 pub(crate) const GREETING: &[u8] = b"hello";
 
-/// The frame a held far end answers and then hangs up on.
 pub(crate) const BYE: &[u8] = b"bye";
 
 impl Far {
@@ -127,15 +101,12 @@ impl Far {
         }
     }
 
-    /// This far end, telling the hooks the pool it walks (`pool-a`) and its members, as the
-    /// kernel's egress walk does: a pool's own hooks bind to the unit, and a policy ranks them.
-    #[allow(dead_code)] // built by the kernel's driver suite only
+    #[allow(dead_code)]
     pub(crate) fn naming_its_pool(mut self) -> Self {
         self.names_its_pool = true;
         self
     }
 
-    /// The same far end, stating `ceiling` as the unit's deadline once the route is known.
     pub(crate) fn stating(self, ceiling: Duration) -> Self {
         Far {
             ceiling: Some(ceiling),
@@ -143,8 +114,7 @@ impl Far {
         }
     }
 
-    /// A held far end over `members`: every dial opens one socket that stays open.
-    #[allow(dead_code)] // built by the composition root's session suite only
+    #[allow(dead_code)]
     pub(crate) fn held(members: &[&'static str]) -> Self {
         Far {
             held: true,
@@ -156,19 +126,16 @@ impl Far {
         self.sent.lock().unwrap().clone()
     }
 
-    /// How many times the walk asked it for a member.
-    #[allow(dead_code)] // read by the kernel's driver suite only
+    #[allow(dead_code)]
     pub(crate) fn picks(&self) -> u32 {
         self.picks.load(Ordering::SeqCst)
     }
 
-    /// The frames written into a held far end, with whether its socket was open when each came.
-    #[allow(dead_code)] // read by the composition root's session suite only
+    #[allow(dead_code)]
     pub(crate) fn written(&self) -> Vec<(Vec<u8>, bool)> {
         self.written.lock().unwrap().clone()
     }
 
-    /// A held far end takes `frame`: it answers `re:<frame>`, and hangs up after `bye`.
     fn answer(&self, frame: &[u8]) {
         let mut current = self.current.lock().unwrap();
         current.push_back(FarPiece {
@@ -187,13 +154,10 @@ impl Far {
     }
 }
 
-/// The pool the test walk picks every member from.
 const POOL: &str = "pool-a";
 
-/// The provider every test member is served by.
 const PROVIDER: &str = "acme";
 
-/// The member whose far end answers 529, which the walk's status table fails over.
 const OVERLOADED: &str = "overloaded";
 
 impl FarEnd for Far {
@@ -262,7 +226,6 @@ impl FarEnd for Far {
                 cut: false,
             }]
         } else if request.member.starts_with("trailers") {
-            // The body, then the far end's trailers after it.
             let mut script = self.script.clone();
             if let Some(last) = script.last_mut() {
                 last.last = false;
@@ -275,14 +238,12 @@ impl FarEnd for Far {
             });
             script
         } else if request.member.starts_with("cut") {
-            // The body, its last piece marked cut: the far end's answer ended without completing.
             let mut script = self.script.clone();
             if let Some(last) = script.last_mut() {
                 last.cut = true;
             }
             script
         } else if held_body.is_some() {
-            // The socket opens and greets; the dial's body is its first frame.
             vec![FarPiece {
                 bytes: GREETING.to_vec(),
                 status: Some((101, 1)),
@@ -302,7 +263,6 @@ impl FarEnd for Far {
 
     async fn next(&self, _: &Pass<Route>) -> Option<FarPiece> {
         loop {
-            // Interest first, then the queue: a piece put between the two still wakes this.
             let arrived = self.arrived.notified();
             let piece = self.current.lock().unwrap().pop_front();
             match piece {
@@ -310,7 +270,7 @@ impl FarEnd for Far {
                     tokio::task::yield_now().await;
                     return Some(piece);
                 }
-                // A held far end's socket stays open with nothing to read: wait for a frame.
+
                 None if self.open.load(Ordering::SeqCst) => arrived.await,
                 None => {
                     tokio::task::yield_now().await;
@@ -337,10 +297,8 @@ impl FarEnd for Far {
     }
 }
 
-/// A reply head as the caller saw it.
 type Head = (u32, Vec<(Vec<u8>, Vec<u8>)>);
 
-/// A reply's final status: its number, its message and its details bytes.
 pub(crate) type Finale = (u32, Vec<u8>, Vec<u8>);
 
 /// A caller whose every write waits one turn of the runtime (its side becoming writable).
@@ -402,8 +360,6 @@ impl CallerEnd for Caller {
     }
 }
 
-/// A request's caller: its side carries no piece of its own (a unit's route leg may be a session,
-/// whose caller leg is the unit's caller side).
 impl SessionCaller for Caller {
     async fn read(&self) -> Option<Vec<u8>> {
         None
@@ -438,8 +394,7 @@ pub(crate) struct Book {
 }
 
 impl Book {
-    /// A book that also hands every call to `money` (the production money steps).
-    #[allow(dead_code)] // built by the kernel's driver suite only
+    #[allow(dead_code)]
     pub(crate) fn forwarding(money: Arc<dyn MoneySeam>) -> Self {
         Book {
             forward: Some(money),
@@ -499,8 +454,7 @@ impl Book {
         self.served.lock().unwrap().clone()
     }
 
-    /// Every ledger lane the driver named, in order.
-    #[allow(dead_code)] // read by the kernel's driver suite only
+    #[allow(dead_code)]
     pub(crate) fn laned(&self) -> Vec<String> {
         self.laned.lock().unwrap().clone()
     }
@@ -520,12 +474,10 @@ fn arrival_by(method: &str, target: &str, body: &[u8]) -> Arrival {
     }
 }
 
-/// The deadline `ms` from now on the dispatcher's clock.
 fn after(ms: u64) -> u64 {
     now_ns() + ms * 1_000_000
 }
 
-/// Run one unit through the one loop; its outcome.
 pub(crate) async fn drive(units: &PlaneUnits<'_, TestUnits, Far, Caller>) -> Outcome {
     let kernel = Kernel::new();
     let (gauge, canary, leases, meter) = (
@@ -551,8 +503,6 @@ pub(crate) async fn drive(units: &PlaneUnits<'_, TestUnits, Far, Caller>) -> Out
 }
 
 pub(crate) const CHUNKS: &[&[u8]] = &[b"hello ", b"far ", b"end"];
-
-// ── one unit ─────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn one_unit_end_to_end() {
@@ -670,9 +620,6 @@ async fn backpressure_flushes_and_calls_again() {
     }
 }
 
-/// The re-call after `more = 1` is a piece of the same `from` with no bytes and no flags: the
-/// plane faults any other (plane ABI, the backpressure re-call rule). Toward the caller the source
-/// is the far end; the re-calls never re-push the far end's bytes.
 #[tokio::test]
 async fn the_more_recall_keeps_its_source_and_carries_no_bytes() {
     for way in ways() {
@@ -702,8 +649,6 @@ async fn the_more_recall_keeps_its_source_and_carries_no_bytes() {
     }
 }
 
-/// ONE UNIT, ONE KEY: `arrive` and every `on_piece` carry the unit's kernel-minted key, the
-/// caller's head crosses once at `arrive`, and the plane finds it again by that key.
 #[tokio::test]
 async fn every_op_of_a_unit_carries_its_kernel_minted_key() {
     for way in ways() {
@@ -726,9 +671,6 @@ async fn every_op_of_a_unit_carries_its_kernel_minted_key() {
     }
 }
 
-/// A PENDING `on_piece` resumes after the plane's one wake, with every answer byte preserved.
-/// The kernel's controlled-pending case separately proves scheduling during the pending poll;
-/// this shared linked/dropped case has no observation of the host's pending-admission edge.
 #[test]
 fn pending_wake_resumes_and_preserves_the_answer() {
     for way in ways() {
@@ -784,11 +726,6 @@ async fn a_fault_becomes_a_failed_end_with_the_planes_refusal() {
     }
 }
 
-/// THE LENT MEMORY (ARCHITECT ruling 2026-09-29, every kind): a crossing the host answered FAULT
-/// (the watchdog, past the Stream budget) may still be running; it keeps the unit's host buffers
-/// until it returns, then re-reads its piece and writes its reply buffer into memory that is still
-/// the unit's. The witness is the caller's body, which the buffers hold: it outlives the unit until
-/// the wedged crossing returns, and not a moment longer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wedged_on_piece_keeps_the_units_buffers_until_it_returns() {
     for way in ways() {
@@ -798,7 +735,7 @@ async fn a_wedged_on_piece_keeps_the_units_buffers_until_it_returns() {
             Far::new(&["wedge"], CHUNKS),
             Caller::default(),
         );
-        // The body's one owner, counted: every clone of the unit's `Bytes` shares it.
+
         struct Counted(Arc<[u8]>);
         impl AsRef<[u8]> for Counted {
             fn as_ref(&self) -> &[u8] {
@@ -837,10 +774,6 @@ async fn a_wedged_on_piece_keeps_the_units_buffers_until_it_returns() {
     }
 }
 
-/// A LOCAL ANSWER (the owner's rule: a plane's local answer from on_piece ends the unit): a plane
-/// that answers the caller's body with its reply done and nothing for the far end finishes the unit
-/// itself. Its bytes reach the caller, and the far end is never sent to, whether or not the walk
-/// had a member to offer.
 #[tokio::test]
 async fn a_local_answer_ends_the_unit_without_the_far_end() {
     for way in ways() {
@@ -873,8 +806,6 @@ async fn a_local_answer_ends_the_unit_without_the_far_end() {
     }
 }
 
-/// With no member and no local answer the unit has nowhere to go: the walk's exhaustion terminal
-/// ends it (its status and Retry-After, rendered by the plane), and the far end is never sent to.
 #[tokio::test]
 async fn with_no_member_a_far_bound_unit_ends_at_the_walks_terminal() {
     for way in ways() {
@@ -927,16 +858,6 @@ async fn a_retry_verdict_before_the_first_byte_fails_over() {
     }
 }
 
-// THE SERVING MEMBER (the per-response metering; v1.5.5 `crates/busbar/src/proxy/usage.rs`
-// `ledger_and_meter`: "`lane` is the SERVING lane"): when the answer commits, the driver names the
-// member that answered to the money steps, once.
-
-/// THE USAGE-TAP FAULT A DOOR RETURNS REACHES THE KERNEL'S COUNTER (row 155): a plane whose
-/// answer carries a usage-tap fault beside its units has it counted, ONCE per unit, by the steps
-/// the driver hands it to, on `busbar_billing_tap_decode_fail_total{protocol,reason}` (the
-/// counter, labels and increments of 1.5.5's latch). The byte is a closed enum: a value outside
-/// the vocabulary is counted under `reason="unknown"`, never ignored and never read as none. RED:
-/// drop the driver's read of `tap_fault` and neither the steps nor the counter see a fault.
 #[tokio::test]
 async fn a_usage_tap_fault_the_door_returns_reaches_the_kernel_counter() {
     use metrics::{
@@ -1020,7 +941,6 @@ async fn a_usage_tap_fault_the_door_returns_reaches_the_kernel_counter() {
     assert_eq!(counts.get(&series("unknown")), Some(&ran), "{counts:?}");
 }
 
-/// RED: without the driver's call the money steps never learn the serving member.
 #[tokio::test]
 async fn the_answering_member_is_named_to_the_money_steps_once() {
     for way in ways() {
@@ -1042,7 +962,6 @@ async fn the_answering_member_is_named_to_the_money_steps_once() {
     }
 }
 
-/// A failover before the first byte serves from the member that answered, never the one tried.
 #[tokio::test]
 async fn a_failed_over_unit_names_the_member_that_answered() {
     for way in ways() {
@@ -1064,11 +983,6 @@ async fn a_failed_over_unit_names_the_member_that_answered() {
     }
 }
 
-/// THE ROW: a served unit, over the production money steps and a real governance book, writes
-/// EXACTLY ONE metering row, keyed as `GovState`'s class mirror keys an unqualified lane
-/// `(model, provider)`, with its one request (v1.5.5 `proxy/usage.rs` :99-106: "even a zero-token
-/// delivered response counts its request"). RED: drop the driver's `served` call and no row is
-/// written; drop the money steps' metering and no row is written.
 #[tokio::test]
 async fn a_served_unit_writes_exactly_one_metering_row() {
     use busbar_kernel::governance::{metering_bucket, GovState};
@@ -1136,7 +1050,6 @@ async fn a_served_unit_writes_exactly_one_metering_row() {
     );
 }
 
-/// An attempt names the pool the walk picked its member from: the far end is sent both.
 #[tokio::test]
 async fn an_attempt_carries_the_pool_the_walk_picked() {
     for way in ways() {
@@ -1159,8 +1072,6 @@ async fn an_attempt_carries_the_pool_the_walk_picked() {
     }
 }
 
-/// THE WALK'S OWN STATUS TABLE (step 24): a far-end status the breaker's `Disposition` fails over
-/// (529) moves to the next member before the first byte, and the plane never sees that piece.
 #[tokio::test]
 async fn the_walks_status_table_fails_over_before_the_plane_sees_the_piece() {
     for way in ways() {
@@ -1194,9 +1105,6 @@ async fn the_walks_status_table_fails_over_before_the_plane_sees_the_piece() {
     }
 }
 
-/// The far end's trailers reach the plane, flagged as fields: a plane that reads them (mode
-/// `trailers`: it renders them in brackets) gets their bytes; a plane that does not (any other)
-/// ignores them. The kernel drops nothing.
 #[tokio::test]
 async fn trailers_reach_the_plane_which_decides() {
     for way in ways() {
@@ -1222,9 +1130,6 @@ async fn trailers_reach_the_plane_which_decides() {
     }
 }
 
-/// A CUT ANSWER, TO A PLANE THAT READS NO CUT (back-compat for `PIECE_CUT`): the far end's last
-/// piece marked cut reaches a plane that ignores the bit, which ends the unit exactly as it ends a
-/// complete answer. RED: a driver that withholds or reorders the marked piece, or faults it.
 #[tokio::test]
 async fn a_cut_answer_ends_cleanly_on_a_plane_that_reads_no_cut() {
     for way in ways() {
@@ -1247,8 +1152,6 @@ async fn a_cut_answer_ends_cleanly_on_a_plane_that_reads_no_cut() {
     }
 }
 
-/// A plane's text message reaches the caller's side as text: the driver hands PIECE_OUT_TEXT on to
-/// the caller's writer; a plane that does not say so writes plain bytes.
 #[tokio::test]
 async fn a_text_message_reaches_the_caller_as_text() {
     for way in ways() {
@@ -1280,7 +1183,6 @@ async fn a_text_message_reaches_the_caller_as_text() {
     }
 }
 
-/// The walk's exhaustion terminal: no member left answers its status and its Retry-After floor.
 #[tokio::test]
 async fn exhaustion_answers_the_walks_status_and_retry_after() {
     for way in ways() {
@@ -1313,7 +1215,6 @@ async fn exhaustion_answers_the_walks_status_and_retry_after() {
     }
 }
 
-/// A retry verdict after the first byte reached the caller is hard: no failover.
 #[tokio::test]
 async fn a_retry_verdict_after_the_first_byte_is_hard() {
     for way in ways() {
@@ -1335,8 +1236,6 @@ async fn a_retry_verdict_after_the_first_byte_is_hard() {
         assert_eq!(caller.text(), "hello far end");
     }
 }
-
-// ── the short-buffer rule ────────────────────────────────────────────────────────────────────────
 
 fn small_units() -> BufferCaps {
     BufferCaps {
@@ -1366,8 +1265,6 @@ async fn a_short_arrive_is_recalled_once_with_what_it_needs() {
     }
 }
 
-/// The statuses the test plane's tail states: `revoked` is 403 in its one dialect (index 0) and
-/// 451 in any other; `scope_denied` is 404 in every dialect. The kernel's defaults are 401 and 403.
 pub fn statuses() -> Vec<RefusalStatus> {
     let row = |dialect, reason, status| RefusalStatus {
         dialect,
@@ -1382,8 +1279,6 @@ pub fn statuses() -> Vec<RefusalStatus> {
     ]
 }
 
-/// RED: a refusal wears the plane's status for its dialect, else the plane's status for every
-/// dialect, else the kernel's default; and the plane is told the reason beside the status.
 #[tokio::test]
 async fn a_refusal_wears_the_status_the_plane_states_for_its_dialect() {
     for way in ways() {
@@ -1428,10 +1323,6 @@ async fn a_refusal_wears_the_status_the_plane_states_for_its_dialect() {
     }
 }
 
-/// ARCHITECT Q5: an admission refusal's Retry-After is the window reset the door computed, as
-/// 1.5.5 rendered it (`governance/state.rs`: `window_end(window, now) - now`, at least 1), on EVERY
-/// plane: the kernel hands the refusal's own wait to the plane's `refusal`, never `0`. A refusal
-/// that carries no wait (a `total` window, which never rolls) is rendered with none.
 #[tokio::test]
 async fn an_admission_refusal_carries_its_window_reset_to_the_plane() {
     for way in ways() {
@@ -1474,8 +1365,6 @@ async fn an_admission_refusal_carries_its_window_reset_to_the_plane() {
     }
 }
 
-/// RED: a refusal the plane's own `arrive` decided wears the 4xx the plane stated, and the plane
-/// is told its own code and the unit when it renders it.
 #[tokio::test]
 async fn a_refused_arrival_wears_the_planes_status_and_code() {
     for way in ways() {
@@ -1507,8 +1396,6 @@ async fn a_refused_arrival_wears_the_planes_status_and_code() {
     }
 }
 
-/// RED: the method crosses at arrive, and a plane that takes only POST on a path declines another
-/// method with its own 405.
 #[tokio::test]
 async fn the_method_crosses_at_arrive() {
     for way in ways() {
@@ -1551,8 +1438,6 @@ async fn the_method_crosses_at_arrive() {
     }
 }
 
-/// RED: the request target crosses beside a refusal, so a plane can choose its envelope for a
-/// refusal the kernel raised before or without its `arrive` having decided one.
 #[tokio::test]
 async fn a_refusal_carries_the_request_target() {
     for way in ways() {
@@ -1575,8 +1460,6 @@ async fn a_refusal_carries_the_request_target() {
     }
 }
 
-/// RED: a second short answer to `arrive` is FAULT; the unit is refused at decode and never
-/// reaches the far end.
 #[tokio::test]
 async fn a_second_short_arrive_is_fault_and_refuses_at_decode() {
     for way in ways() {
@@ -1618,7 +1501,6 @@ async fn a_short_on_piece_is_recalled_once_and_a_second_short_is_fault() {
         assert!(matches!(drive(&units).await, Outcome::Completed), "{way:?}");
         assert_eq!(caller.text(), "hello far end");
 
-        // RED: `short-twice` answers short again on the re-call; the dispatcher makes it FAULT.
         let r = rig(way, small_units(), Book::default());
         let (steps, far, caller) = (
             TestUnits::passing(),
@@ -1639,10 +1521,6 @@ async fn a_short_on_piece_is_recalled_once_and_a_second_short_is_fault() {
     }
 }
 
-// ── cancel ───────────────────────────────────────────────────────────────────────────────────────
-
-/// The deadline passes with `on_piece` in flight: the driver sends the op to the dispatcher's
-/// cancel path, the cancel crosses on the ticket's worker, and its disposition is billed.
 #[tokio::test]
 async fn cancel_on_the_deadline() {
     for way in ways() {
@@ -1677,12 +1555,6 @@ async fn cancel_on_the_deadline() {
     }
 }
 
-/// A STALLED CALLER (ARCHITECT ruling 2026-10-07, STREAM-CEILING): the caller takes the head and
-/// the first piece, then its side is never writable again and it never goes away. On a far end
-/// that states a stream ceiling the unit is released at that ceiling, cut as a deadline with what
-/// was delivered kept; on one that states none it is held until the caller goes, as the previous
-/// release held it. RED: the far end's stated deadline was read nowhere, so the stalled write held
-/// the unit past any ceiling.
 #[tokio::test]
 async fn a_stalled_caller_is_released_at_the_stated_ceiling_and_held_without_one() {
     for way in ways() {
@@ -1739,8 +1611,6 @@ async fn a_stalled_caller_is_released_at_the_stated_ceiling_and_held_without_one
     }
 }
 
-/// A checkpoint dries the budget: the driver makes the ticketless `cancel` itself (no op is in
-/// flight), the plane renders the in-stream error frame, and the streamed units bill.
 #[tokio::test]
 async fn cancel_on_the_cut() {
     for way in ways() {
@@ -1820,10 +1690,6 @@ async fn cancel_on_reload() {
     }
 }
 
-/// The caller goes away with `on_piece` in flight: the loop's future is dropped, nothing crosses
-/// inside the drop, the op goes to the dispatcher's client-drop path (the cancel crosses on the
-/// worker), the loop's end is handed to the money seam, and the sweep bills the disposition once
-/// the op settles, releasing the buffers it held.
 #[tokio::test]
 async fn cancel_when_the_caller_goes_away() {
     for way in ways() {
@@ -1867,7 +1733,6 @@ async fn cancel_when_the_caller_goes_away() {
     }
 }
 
-/// A `cancel` that answers FAULT bills as `CANCEL_FAILED`: nothing.
 #[tokio::test]
 async fn a_fault_disposition_bills_as_cancel_failed() {
     for way in ways() {
@@ -1888,8 +1753,6 @@ async fn a_fault_disposition_bills_as_cancel_failed() {
         assert_eq!(r.stats()[stat::LAST_DISPOSITION], 0, "it FAULTed");
     }
 }
-
-// ── the session opener drives it too ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn open_unit_drives_the_same_steps() {
@@ -1928,7 +1791,6 @@ async fn open_unit_drives_the_same_steps() {
                 "{way:?} {target}"
             );
             if !admitted {
-                // The plane's own decode refusal: its status, its code and the unit.
                 assert_eq!(
                     units.take_rendered().unwrap().body,
                     b"refused:404:decode_failed:7@9"

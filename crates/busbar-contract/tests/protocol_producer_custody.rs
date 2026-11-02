@@ -154,8 +154,6 @@ fn sse_clones_pending_cancellation_and_unwind_wipe_their_final_owners() {
 }
 
 fn measured_output(write: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
-    // Initialize all TLS outside the measured operation. Count allocations without inspecting
-    // their contents or guessing which owner they belong to from their layout/capacity.
     ALLOCATIONS.with(|count| count.set(0));
     REALLOCATIONS.with(|count| count.set(0));
     COUNTING.with(|active| active.set(true));
@@ -204,7 +202,7 @@ fn every_jsonrpc_producer_allocates_only_its_final_output_even_with_heavy_escapi
         ),
     ] {
         assert_eq!(out, serde_json::to_vec(&expected).unwrap());
-        // The public Vec result transfers to its caller, which supplies its final wiping owner.
+
         let owner = Zeroizing::new(out);
         watch(&owner);
         drop(owner);

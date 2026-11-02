@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A dial that does not end READY leaves nothing of the host's behind. The carrier's `dial` opens
-//! a real host socket through the admitted `io.open` and then answers refused, failed, faulted or
-//! PENDING: the connection never exists, so the handle the dial made is retired at once (not held
-//! until the carrier's instance ends), and a dial that pended is cancelled once. A READY dial keeps
-//! its handle until the connection's own close. Each test owns its `HostIo`, so `held()` counts only
-//! its own handles; the carrier is the real test entry (`TestDoor`: its sides, its tickets) with a
-//! scripted `dial` that makes the handle through that `HostIo`, as a loaded carrier does.
-//!
-//! The spawned-program arm (`Dest::Program`, `HostIo::spawn`) shares the one `retire_handle` seam
-//! with the socket arm; it is not run here, so no program is executed by this suite.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,7 +28,7 @@ enum Answer {
 }
 
 /// The test carrier entry, its `dial` scripted. It makes the host handle through the `HostIo`
-/// under test (`io.open` on the dial's own ticket, so the host's admission applies), then answers.
+
 struct Dialer {
     inner: TestDoor,
     io: Arc<HostIo>,
@@ -158,7 +149,7 @@ async fn far() -> (tokio::net::TcpListener, String) {
 }
 
 /// The host really closed the socket its dial made: the far end that accepted it reads the end of
-/// the stream (it would hang here for as long as the host still held the socket open).
+
 async fn far_sees_the_close(far: &tokio::net::TcpListener) {
     let (mut peer, _) = tokio::time::timeout(Duration::from_secs(5), far.accept())
         .await
@@ -225,7 +216,7 @@ fn a_faulted_dial_retires_the_socket_it_made() {
         let io = Arc::new(HostIo::new());
         let (far, at) = far().await;
         let door = Arc::new(Dialer::new(&io, &at, Answer::Fault));
-        // An unknown outcome carries no text: a failed dial, as before.
+
         assert_eq!(
             dial(&door, &io, &at).unwrap_err(),
             DialFailure::Failed(String::new())
@@ -261,8 +252,7 @@ fn a_carrier_that_closed_its_own_handle_before_failing_leaves_nothing_to_retire_
 fn the_hosts_own_open_failure_still_outranks_the_carriers_answer() {
     support::worker().block_on(async {
         let io = Arc::new(HostIo::new());
-        // The host rejects a non-literal address before opening a socket, independently of the
-        // runner's filesystem and network state. Its recorded refusal must take precedence.
+
         let at = "not-an-ip-literal";
         let door = Arc::new(Dialer::new(&io, at, Answer::Failed));
         match dial(&door, &io, at).unwrap_err() {
@@ -303,7 +293,7 @@ fn a_handle_the_cancel_itself_makes_is_still_collected_and_retired() {
         let io = Arc::new(HostIo::new());
         let (far, at) = far().await;
         let mut dialer = Dialer::new(&io, &at, Answer::Pending);
-        // The dial made nothing before it pended; its cancel opens the socket.
+
         dialer.open = false;
         dialer.open_on_cancel = true;
         let door = Arc::new(dialer);
@@ -312,8 +302,7 @@ fn a_handle_the_cancel_itself_makes_is_still_collected_and_retired() {
             DialFailure::Failed("a dial may not pend".into())
         );
         assert_eq!(door.cancels.load(Ordering::SeqCst), 1);
-        // The cancel ran while the dial's admission still stood (it is settled after the
-        // cancel), so its open was admitted and its handle was recorded for the settle.
+
         assert!(door.cancel_open_ok.load(Ordering::SeqCst));
         assert_eq!(door.made().len(), 1);
         assert_eq!(

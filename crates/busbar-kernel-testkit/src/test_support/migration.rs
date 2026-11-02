@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Frozen migration data owned by the testkit. Roots that installed their real table first win.
-
 use busbar_kernel::config::migration_table::Rows;
 use serde_yaml::Value;
 
-/// Parsed frozen rows. Owned strings and their borrowed table each live in one process static.
 pub fn rows() -> Rows {
     static OWNED: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     static ROWS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
@@ -33,7 +30,6 @@ pub fn rows() -> Rows {
     })
 }
 
-/// Install before reading configuration defaults. The kernel's real first-install rule applies.
 pub fn install() {
     busbar_kernel::config::migration_table::install(rows());
 }

@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR MACRO'S TEST PLUGIN, DROPPED-IN LEG: a plugin with one kind op, built with
-//! `plugin_door!` (the logic half) and `export_door!` (the `cdylib` half) in one image.
-//! `tests/sdk_door_cdylib.rs` loads it, reads its symbol table and calls it through its door.
-//! `validate` panics when its settings blob is 13 bytes long; `open` and the kind op `echo`
-//! panic at generation 13.
 
 use std::ffi::c_void;
 

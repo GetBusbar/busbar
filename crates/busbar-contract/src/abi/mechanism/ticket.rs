@@ -2,17 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! TICKETS, WAKES AND COMPLETION HANDLES — how a call that cannot finish now says so without
-//! blocking (the design's locked plugin ABI).
-//!
-//! * A [`Ticket`] is `(slot, generation)`. A request or stream mints one and reuses it for all its
-//!   ops; a full-duplex transport connection holds TWO, one per side (read, write), each with at
-//!   most one op in flight. The generation is bumped every time the slot is recycled, so a late wake for a recycled
-//!   slot names a generation that no longer exists and is dropped.
-//! * **Wakes are LATCHED:** a wake that arrives before the op answered [`super::call::Outcome::Pending`]
-//!   is kept and resumes it at once. **Wakes are SPURIOUS-TOLERANT:** a resumed op that is still not
-//!   done answers `Pending` again; a wake never obliges a plugin to be ready.
-//! * A host service that can pend answers with a [`CompletionHandle`] `(ticket, seq)`. On resume the
-//!   plugin re-issues the same handle and receives the stored result: the host never runs it twice.
 
 use crate::abi::host::conn::connector::ConnectorSlots;
 use crate::abi::host::io::IoSlots;
@@ -32,8 +21,7 @@ pub struct Ticket {
 
 impl Ticket {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Ticket { …, ..Ticket::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         slot: 0,
         generation: 0,
@@ -68,8 +56,7 @@ pub struct CompletionHandle {
 
 impl CompletionHandle {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `CompletionHandle { …, ..CompletionHandle::ZERO }` so a field appended
-    /// later reads as not declared.
+
     pub const ZERO: Self = Self {
         ticket: Ticket::ZERO,
         seq: 0,
@@ -102,7 +89,7 @@ impl HostCtx {
 }
 
 /// `host.wake(ctx, ticket)`: callable from any thread, never blocks, never fails. A wake for a
-/// stale generation is dropped. `extern "C"`: a panic escaping it aborts.
+
 pub type WakeFn = extern "C" fn(ctx: HostCtx, ticket: Ticket);
 
 /// The host tables handed to `open`: the mechanism's own services and the shared host tables

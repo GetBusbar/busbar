@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RED arms for the transport answer validators: one per rule and arm, each failing if its check is
-//! removed.
 
 use std::mem::zeroed;
 use std::ptr::{null, NonNull};
@@ -184,7 +183,7 @@ fn locate_is_one_multi_dimension_short_answer() {
 }
 
 /// The framer's protocol offer is the handshake's ProtocolNameList: it partitions exactly into
-/// non-empty ids, it is a third short-buffer dimension, and the agreed protocol is one it offered.
+
 #[test]
 fn locate_answers_an_alpn_offer_the_connector_can_trust() {
     let offer = b"\x02h2\x08http/1.1";
@@ -211,8 +210,7 @@ fn locate_answers_an_alpn_offer_the_connector_can_trust() {
         Ok(()),
         "short: re-call with 20"
     );
-    // THE FRAMER'S OWN HEAD LINES (`LocateIn::defaults_buf`): within the host's buffer, a short
-    // answer stated for a re-call.
+
     let mut o: LocateOut = z();
     o.defaults_written = 33;
     assert_eq!(
@@ -226,7 +224,7 @@ fn locate_answers_an_alpn_offer_the_connector_can_trust() {
         Ok(()),
         "short: re-call with 64"
     );
-    // Whether the framer's head states its body's length: a flag, 0 or 1.
+
     let mut o: LocateOut = z();
     o.states_length = 1;
     assert_eq!(check_locate(Ready, &o, 8, 8, 16, &[], 32), Ok(()));
@@ -275,7 +273,6 @@ fn a_framer_sink_overrun_is_fault() {
 
 #[test]
 fn a_framer_unknown_flag_or_unstated_deadline_is_fault() {
-    // An unknown flag: the generated table (`every_declared_transport_field_rule_is_red`).
     let mut o: FramerOut = z();
     o.yielded.flags = YIELD_HAS_DEADLINE;
     assert_eq!(
@@ -297,8 +294,7 @@ fn a_failed_framer_answer_that_wrote_is_fault() {
 }
 
 /// A stream ends with a PIECE_END piece, and a failed stream with a STREAM_FAILED piece; each is
-/// the stream's last piece, so each carries END_OF_FRAME, and so does an empty frame (an empty
-/// message). Any of them without it is FAULT.
+
 #[test]
 fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
     let mut o: FramerOut = z();
@@ -326,9 +322,7 @@ fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
 }
 
 /// A STREAM'S OWN BACKPRESSURE is two known signals: an `emit` answering the stream full, and the
-/// empty piece saying it is writable again. The writable piece is a signal about the stream, never
-/// part of a frame: it carries no bytes and no other flag, and, unlike every other empty piece, it
-/// ends nothing. RED with the checker as it was: both are unknown bits, FAULT.
+
 #[test]
 fn a_full_stream_and_its_writable_piece_are_known_and_the_piece_is_empty_and_alone() {
     let mut o: FramerOut = z();
@@ -360,7 +354,7 @@ fn a_full_stream_and_its_writable_piece_are_known_and_the_piece_is_empty_and_alo
 }
 
 /// A head is a FIELDS frame, framed even when empty (an empty fields piece is an empty head, not
-/// the stream's end); a field block is never a failure's reason.
+
 #[test]
 fn a_fields_piece_is_a_head_never_a_failure() {
     let mut o: FramerOut = z();
@@ -380,7 +374,7 @@ fn a_fields_piece_is_a_head_never_a_failure() {
 }
 
 /// The field block reads back line by line, in order, a repeated name on its own lines; a
-/// malformed tail ends the reading.
+
 #[test]
 fn a_field_block_reads_back_in_order() {
     let block = b"x-b: 1\r\nx-b: 2\r\nx-a: v: w\r\nbroken";
@@ -410,8 +404,7 @@ fn hop_by_hop_is_the_list_and_what_connection_names() {
 }
 
 /// RED: a pseudo-field never enters a field block, wherever its line starts: at a piece that starts
-/// a line, after a CR LF, or after a CR LF split across pieces. A piece that continues a line may
-/// start with `:` (a value's own byte).
+
 #[test]
 fn a_pseudo_field_in_a_field_block_is_fault() {
     let frame = b":path: /\r\nx: 1\r\n:authority: a\r\n\n:m";
@@ -427,13 +420,13 @@ fn a_pseudo_field_in_a_field_block_is_fault() {
         check_framer_fields(&[at(31, 3, PIECE_CONTINUED)], frame),
         pseudo
     );
-    // `x: 1\r\n` alone, and a continued piece that opens with a value's `:`.
+
     assert_eq!(check_framer_fields(&[at(10, 6, 0)], frame), Ok(()));
     assert_eq!(
         check_framer_fields(&[at(5, 5, PIECE_CONTINUED)], frame),
         Ok(())
     );
-    // Payload is never read as fields.
+
     assert_eq!(check_framer_fields(&[piece(0, 10)], frame), Ok(()));
 }
 
@@ -454,8 +447,7 @@ fn a_continued_piece_outside_a_field_block_is_fault() {
 }
 
 /// PIECE_TEXT is a fact about a message (C19-TAIL U5): on a payload piece it passes, and on an
-/// EMPTY one too (an empty text message, Autobahn 1.1.1/6.1.1); on a stream's end, a field block
-/// or a failed stream's reason it is FAULT.
+
 #[test]
 fn text_rides_a_message_piece_only() {
     let mut o: FramerOut = z();
@@ -487,7 +479,7 @@ fn text_rides_a_message_piece_only() {
 }
 
 /// A declared body length is a head's statement: on a field block it passes; on a payload piece it
-/// is FAULT.
+
 #[test]
 fn a_declared_length_rides_a_field_block_only() {
     let mut o: FramerOut = z();
@@ -505,8 +497,7 @@ fn a_declared_length_rides_a_field_block_only() {
 }
 
 /// A field a flag says is present is set only with that flag: a nonzero `code` without
-/// PIECE_HAS_CODE, `retry_after_secs` without PIECE_HAS_RETRY_AFTER or `declared_len` without
-/// PIECE_HAS_DECLARED_LEN is FAULT (the host would read it as absent); with its flag it passes.
+
 #[test]
 fn a_field_set_without_its_flag_is_fault() {
     let mut o: FramerOut = z();
@@ -554,7 +545,7 @@ fn a_field_set_without_its_flag_is_fault() {
 }
 
 /// An interim head is a field block with its code, never the end or a declared length; a code in
-/// the handshake's numbering is a code.
+
 #[test]
 fn an_interim_head_and_a_handshake_code_are_heads_with_codes() {
     let mut o: FramerOut = z();
@@ -653,8 +644,7 @@ fn an_empty_piece_is_a_message_and_the_end_is_its_own_flag() {
 }
 
 /// A stream's head slots: within the capacity, one per stream, every slot inside the frame bytes
-/// written; a method and a target together (an accepted head) or both absent (a dialled answer's
-/// reason alone).
+
 #[test]
 fn head_slots_lie_in_the_frame_and_pair_method_with_target() {
     let mut o: FramerOut = z();
@@ -726,8 +716,7 @@ fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
         f(Rule::SpanOutOfBounds, "framer.piece.bytes")
     );
     let mut bad = piece(0, 1);
-    // The first bit no piece flag holds (`1 << 8` is PIECE_WRITABLE, `1 << 9`
-    // PIECE_HAS_DECLARED_LEN, `1 << 10` PIECE_INTERIM, `1 << 11` PIECE_CODE_HANDOFF).
+
     bad.flags = 1 << 12;
     assert_eq!(
         check_framer(Ready, &o, &[bad], 8, 8, 8),
@@ -752,7 +741,7 @@ fn an_unwritten_or_unknown_cancel_disposition_is_fault() {
         f(Rule::UnknownCode, "cancel.disposition")
     );
     assert_eq!(check_cancel(Ready, CANCEL_PARTIAL), Ok(()));
-    // Another outcome answers no disposition: unwritten passes, a written one is FAULT.
+
     assert_eq!(check_cancel(Failed, 0), Ok(()));
     assert_eq!(check_cancel(Pending, 0), Ok(()));
     assert_eq!(
@@ -772,7 +761,7 @@ fn facts_of_a_foreign_size_are_fault() {
 fn tail() -> TransportTail {
     let mut t: TransportTail = z();
     t.role = ROLE_CARRIER;
-    // Never dereferenced: `check_tail` judges counts against pointers, not the pointees.
+
     t.claim_rows = NonNull::dangling().as_ptr();
     t.claim_rows_len = 1;
     t
@@ -786,7 +775,7 @@ fn the_role_is_exactly_one_and_a_carrier_composes_over_nothing() {
     assert_eq!(check_tail(&t), f(Rule::NotExactlyOne, "tail.role"));
     t.role = ROLE_CARRIER | ROLE_FRAMER;
     assert_eq!(check_tail(&t), f(Rule::NotExactlyOne, "tail.role"));
-    // A carrier that names a layer beneath it contradicts itself: it is the bottom of its stack.
+
     let mut t = tail();
     let under = [AbiStr {
         ptr: b"tcp".as_ptr(),
@@ -795,7 +784,7 @@ fn the_role_is_exactly_one_and_a_carrier_composes_over_nothing() {
     t.composes_over = under.as_ptr();
     t.composes_over_len = 1;
     assert_eq!(check_tail(&t), f(Rule::Contradiction, "tail.composes_over"));
-    // The same list on a framer is its composition.
+
     t.role = ROLE_FRAMER;
     assert_eq!(check_tail(&t), Ok(()));
 }
@@ -826,7 +815,6 @@ fn every_tail_list_counted_with_a_null_pointer_is_fault() {
     let mut t = tail();
     t.settings_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.settings"));
-    // The tail's strings: the generated table.
 }
 
 #[test]
@@ -840,7 +828,7 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     let mut t = tail();
     t.facts = 64;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
-    // RED: the retired signs-nothing-after-auth bit (1) is no fact a tail may state.
+
     t.facts = 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
     let mut t = tail();
@@ -849,7 +837,7 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
 }
 
 /// The ops a transport declares (accept, dial, detach, adopt) are facts its tail states; each is
-/// accepted alone and together, and a tail stating none declares no op (a zero declares nothing).
+
 #[test]
 fn a_tail_states_the_ops_it_declares() {
     for op in [FACT_ACCEPTS, FACT_DIALS, FACT_DETACHES, FACT_ADOPTS] {
@@ -872,8 +860,7 @@ fn claim() -> Claim {
 }
 
 /// THE ONE SOURCE OF CLAIM NAMES: a transport's tail carries exactly one row per scheme its
-/// Statement names (row `i` describes `claims[i]`), and a row carries no name of its own. RED: a
-/// tail with a row the Statement does not name, or a name with no row, is refused.
+
 #[test]
 fn a_tail_has_exactly_one_row_per_claim_the_statement_names() {
     let t = tail();
@@ -894,7 +881,6 @@ fn every_claim_element_is_checked() {
     let mut c = claim();
     c.facts_len = 1;
     assert_eq!(check_claims(&[c]), f(Rule::NullWithCount, "claim.facts"));
-    // The strings and codes: the generated table.
 }
 
 fn row(claim: u32, lo: u32, hi: u32, class: u32) -> StatusRow {
@@ -909,7 +895,7 @@ fn row(claim: u32, lo: u32, hi: u32, class: u32) -> StatusRow {
 #[test]
 fn every_status_row_is_checked() {
     assert_eq!(check_status_rows(&[row(0, 200, 299, 1)], 1), Ok(()));
-    // A claim past the list and a class above the range: the generated table.
+
     assert_eq!(
         check_status_rows(&[row(0, 300, 299, 1)], 1),
         f(Rule::Contradiction, "status_row.lo_hi")
@@ -931,7 +917,6 @@ fn every_setting_is_checked() {
     assert_eq!(check_settings(&[s]), f(Rule::UnknownCode, "setting.kind"));
     s.kind = SETTING_FLAG;
     assert_eq!(check_settings(&[s]), Ok(()));
-    // The strings: the generated table.
 }
 
 #[test]
@@ -975,7 +960,7 @@ fn route(methods: u32, path_form: u32, path: &'static str) -> route::RouteMatch 
 }
 
 /// RED: a route's shape — a method set inside the vocabulary and not empty, a known path form, a
-/// bounded predicate list — is judged before any string is read.
+
 #[test]
 fn a_route_shape_is_checked() {
     use route::*;
@@ -987,14 +972,14 @@ fn a_route_shape_is_checked() {
         check_route(&route(0, PATH_EXACT, "/x")),
         f(Rule::Missing, "route.methods")
     );
-    // An unknown method bit or path form, and a predicate's unknown op: the generated table.
+
     let mut r = route(METHOD_GET, PATH_EXACT, "/x");
     r.fields_len = 1;
     assert_eq!(check_route(&r), f(Rule::NullWithCount, "route.fields"));
 }
 
 /// RED: a route's content — a rooted path for the exact, pattern and prefix forms, a pattern that
-/// keeps the syntax, lower-case field-name tokens, and a value exactly where the op wants one.
+
 #[test]
 fn a_route_content_is_checked() {
     use route::*;
@@ -1052,8 +1037,7 @@ fn a_route_content_is_checked() {
 }
 
 /// RED (audit contract-src #11): a read route no request can match by its method set or its path
-/// form is refused by the content check the kernel runs on every line it seals: no method, a bit
-/// outside the vocabulary, or a path form outside the five.
+
 #[test]
 fn a_route_view_with_no_method_or_no_known_form_is_refused() {
     use route::*;
@@ -1110,13 +1094,12 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
     i.final_status = 0;
     assert_eq!(check_final_status(&i, &rows, 1), Ok(()));
 
-    // RED: past the claim's numbering.
     i.final_status = 17;
     assert_eq!(
         check_final_status(&i, &rows, 1),
         f(Rule::UnknownCode, "finish.final_status")
     );
-    // RED: a claim stating no numbering takes no status but zero.
+
     i.final_status = 5;
     assert_eq!(
         check_final_status(&i, &rows, 0),
@@ -1125,7 +1108,6 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
     i.final_status = 0;
     assert_eq!(check_final_status(&i, &rows, 0), Ok(()));
 
-    // RED: a range past the bytes lent.
     i.final_status = 5;
     i.final_details = Span { offset: 9, len: 8 };
     assert_eq!(
@@ -1141,14 +1123,13 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
         check_final_status(&i, &rows, 1),
         f(Rule::SpanOutOfBounds, "finish.final_message")
     );
-    // An empty range is no range, wherever it says it starts.
+
     i.final_message = Span {
         offset: u32::MAX,
         len: 0,
     };
     assert_eq!(check_final_status(&i, &rows, 1), Ok(()));
 
-    // RED: a count with no bytes behind it.
     i.final_bytes = null();
     assert_eq!(
         check_final_status(&i, &rows, 1),
@@ -1157,7 +1138,7 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
 }
 
 /// THE OPENING BODY'S LENGTH ON AN EMIT: a length rides only with `body_len_known` `1`; a
-/// streamed body (and every other emit) states none; `body_len_known` is `0` or `1`.
+
 #[test]
 fn an_emit_states_a_body_length_only_when_it_is_known() {
     let mut i: EmitIn = z();
@@ -1166,19 +1147,19 @@ fn an_emit_states_a_body_length_only_when_it_is_known() {
     assert_eq!(check_emit_body_len(&i), Ok(()), "an empty body, known");
     i.body_len = 4096;
     assert_eq!(check_emit_body_len(&i), Ok(()), "a whole body's length");
-    // RED: a length on an emit that states none (a streamed body).
+
     i.body_len_known = 0;
     assert_eq!(
         check_emit_body_len(&i),
         f(Rule::Contradiction, "emit.body_len")
     );
-    // RED: `body_len_known` is a flag, `0` or `1` and nothing else.
+
     i.body_len_known = 2;
     assert_eq!(
         check_emit_body_len(&i),
         f(Rule::UnknownCode, "emit.body_len_known")
     );
-    // RED: the padding is not a channel.
+
     i.body_len_known = 1;
     i._body_len_reserved = 1;
     assert_eq!(
@@ -1188,8 +1169,7 @@ fn an_emit_states_a_body_length_only_when_it_is_known() {
 }
 
 /// THE ANSWER'S STATUS ON AN EMIT (INBOUND-LISTEN, l.4913): stated on the emit that carries an
-/// accepted stream's answer head, and on no other emit. transport-http's door judges every emit by
-/// it (its dev head, cc05f7d539, the accepted side as this door's), so the check is the contract's.
+
 #[test]
 fn an_emit_states_a_status_only_on_an_accepted_streams_answer_head() {
     let mut i: EmitIn = z();
@@ -1198,15 +1178,15 @@ fn an_emit_states_a_status_only_on_an_accepted_streams_answer_head() {
     assert_eq!(check_emit_status(&i, true), Ok(()));
     i.status = 101;
     assert_eq!(check_emit_status(&i, true), Ok(()));
-    // RED: a status on an emit that carries no answer head.
+
     assert_eq!(
         check_emit_status(&i, false),
         f(Rule::Contradiction, "emit.status")
     );
-    // RED: an accepted stream's answer head with no status.
+
     i.status = 0;
     assert_eq!(check_emit_status(&i, true), f(Rule::Missing, "emit.status"));
-    // RED: the padding is not a channel.
+
     i._status_reserved = 1;
     assert_eq!(
         check_emit_status(&i, false),
@@ -1227,12 +1207,12 @@ fn fault_row(claim: u32, lo: u32, hi: u32, fault: u32) -> FaultRow {
 fn every_fault_row_is_checked() {
     let hard = u32::from(FAULT_HARD);
     assert_eq!(check_fault_rows(&[fault_row(0, 1, 9, hard)], 1), Ok(()));
-    // A claim past the list and a reading above the range: the generated table.
+
     assert_eq!(
         check_fault_rows(&[fault_row(0, 9, 1, hard)], 1),
         f(Rule::Contradiction, "fault_row.lo_hi")
     );
-    // A row that reads nothing is no row: a code off the table already reads none.
+
     assert_eq!(
         check_fault_rows(&[fault_row(0, 1, 9, u32::from(FAULT_NONE))], 1),
         f(Rule::UnknownCode, "fault_row.fault")
@@ -1242,8 +1222,7 @@ fn every_fault_row_is_checked() {
 }
 
 /// THE RED ARM AT LOAD: a claim that states status rows states fault rows too. A framer with status
-/// rows and no fault table would have every failure read as the caller's, and its destinations would
-/// never trip.
+
 #[test]
 fn a_claim_with_status_rows_and_no_fault_rows_is_refused() {
     let status = [row(0, 200, 299, 1), row(1, 200, 299, 1)];
@@ -1267,7 +1246,7 @@ fn a_claim_with_status_rows_and_no_fault_rows_is_refused() {
         ),
         Ok(())
     );
-    // A tail that classes nothing owes nothing.
+
     assert_eq!(check_fault_cover(&[], &[]), Ok(()));
 }
 
@@ -1285,8 +1264,7 @@ fn a_pieces_fault_reading_is_known_and_reads_its_code() {
     assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
     p.fault = FAULT_HEALTHY;
     assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
-    // A reading above the range: the generated table.
-    // A reading with no code to read is a contradiction.
+
     p.fault = FAULT_CALLER;
     p.flags = PIECE_END_OF_FRAME;
     assert_eq!(
@@ -1296,7 +1274,7 @@ fn a_pieces_fault_reading_is_known_and_reads_its_code() {
 }
 
 /// The offered-points record: unstated is `{Head, HeadBody}`; a stated set reads back; a record of
-/// another length or naming another bit refuses the load.
+
 #[test]
 fn the_offered_points_record_reads_or_refuses() {
     use crate::abi::mechanism::extensions::encode;
@@ -1321,8 +1299,7 @@ fn the_offered_points_record_reads_or_refuses() {
 }
 
 /// THE GENERATED RED TABLES: one RED per (field, rule) each transport declaration states
-/// unconditionally, each answering exactly its rule and field; the cross-field rules (`deny`,
-/// `when`, the plain functions) are the hand cases above.
+
 #[test]
 fn every_declared_transport_field_rule_is_red() {
     use crate::abi::mechanism::decl::RedCase;
@@ -1373,8 +1350,7 @@ fn every_declared_transport_field_rule_is_red() {
         check_route,
     );
     assert!(KEYING_RULES.is_empty());
-    // framer 1, datagram 1, piece 3, route 1, tail 6, claim 7, status row 2, fault row 2,
-    // setting 3, route 3.
+
     assert_eq!(cases, 29);
 }
 
@@ -1403,9 +1379,7 @@ fn answer<I, O>(
 }
 
 /// THE KIND'S ANSWER CHECK: `listen` reads its `out` first, `locate` and every framer op their
-/// `in` first (a frame smaller than its struct is FOREIGN, the first read naming it); caps come
-/// from the `in`; a framer's pieces are read only up to the host's capacity; a slot with no
-/// answer rule passes.
+
 #[test]
 fn check_answer_reads_the_frames_in_the_loaders_order_then_judges_the_op() {
     use std::mem::size_of;
@@ -1450,7 +1424,7 @@ fn check_answer_reads_the_frames_in_the_loaders_order_then_judges_the_op() {
         answer(slot::BEGIN, Ready, &begin_in, bi - 1, &framer_out, fo - 1),
         f(Rule::Foreign, "in")
     );
-    // Pieces the host gave no room for are refused before any slice exists.
+
     framer_out.yielded.pieces_len = 1;
     assert_eq!(
         answer(slot::BEGIN, Ready, &begin_in, bi, &framer_out, fo),
@@ -1494,8 +1468,7 @@ fn begin_with(side: u32, lines: &[LineEntry]) -> BeginIn {
 }
 
 /// RED: a `begin`'s guest list, one break at a time: lines on the dial side, a count behind NULL,
-/// a repeated or `LINE_NONE` id, no handle, a bad point set, a `body_limit` that disagrees with
-/// the body point, a bad route. A `none` line (no points) and a body line with its limit pass.
+
 #[test]
 fn a_begin_line_table_is_checked() {
     use crate::abi::host::service::{AuthRef, LINE_NONE};
@@ -1567,7 +1540,7 @@ fn a_begin_line_table_is_checked() {
 }
 
 /// RED: a `begin`'s binding: on the dial side a valid point set with a handle exactly when it is
-/// not empty; on an accepting side neither.
+
 #[test]
 fn a_begin_binding_is_checked() {
     use crate::abi::host::service::AuthRef;
@@ -1600,7 +1573,7 @@ fn a_begin_binding_is_checked() {
 }
 
 /// RED: a `begin`'s scheme, on every side: an undeclared scheme (a zeroed `in`) is refused, never
-/// read as plain; a code above `SCHEME_SECURE` is unknown; plain and secure pass.
+
 #[test]
 fn a_begin_scheme_is_declared() {
     use crate::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED};
@@ -1643,7 +1616,7 @@ fn an_agreed_protocol_past_the_offer_is_refused() {
 }
 
 /// An actual framer answer with each reason immediately before its own field piece, as the SDK
-/// sink writes it. The metadata, rather than the numeric status alone, says which head is interim.
+
 fn response_heads(rows: &[(u64, u16, bool)]) -> (Vec<u8>, Vec<FramePiece>, Vec<HeadSlots>) {
     let mut frame = Vec::new();
     let mut pieces = Vec::new();

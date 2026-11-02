@@ -1,28 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! INLINE TICKETS: the ticket space of ops the host drives ON THE CALLING THREAD (`abi::transport`:
-//! "PER-CONNECTION TOKEN SPACE", "TWO TICKETS PER CONNECTION"). A carrier's connection is driven by
-//! the task that polls it, inline, with no thread handoff (#30): its two sides each hold one of
-//! these. A PENDING op on one registers the task's waker; the host's wake for the ticket (from
-//! `io.*`, or a plugin's own `wake`) wakes that task, which re-invokes the op with `FLAG_RESUME`.
-//!
-//! An inline ticket's slot names a worker no dispatcher runs ([`INLINE_WORKER`]), so the pool
-//! routes its wakes here and never to a worker. Its generation is a worker slot's (#74): the keyed
-//! permutation of the slot's mint counter ([`super::handle::ticket_generation`] under
-//! [`INLINE_WORKER`]), advanced when the ticket is dropped. A wake whose generation matches no held
-//! ticket is judged by the permutation's inverse ([`Judged`]): one the slot minted is a late wake,
-//! dropped; one it never minted is a FORGERY, blamed on the wake's supplier. A slot whose counter is
-//! spent is RETIRED, never handed out again.
-//!
-//! THE RESULTS KEPT UNDER AN INLINE TICKET are an op's own, as a worker ticket's are (THE DESIGN
-//! §11.12, "the host never runs a service twice"; §11.11 H2): the dispatcher's stored service
-//! results and the connector's kept answers under the ticket are forgotten when a NEW op (not a
-//! resume, and not the one re-call a short answer earns) starts on it ([`InlineTickets::starting`]),
-//! and when the ticket is dropped. Kept, the next op, whose handles count from 0 again, would
-//! redeem the last op's answer (the same random bytes, a stale verdict) and the entries would never
-//! be freed.
-
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::task::{Wake, Waker};
@@ -35,7 +13,6 @@ use super::services::ServiceStore;
 use super::handle::{ticket_count, ticket_generation, TicketKey};
 use super::ticket::{decode, encode, MAX_INDEX, MAX_WORKERS};
 
-/// The worker an inline ticket's slot names: past every worker a dispatcher runs.
 pub(crate) const INLINE_WORKER: u32 = MAX_WORKERS - 1;
 
 /// One inline ticket's slot: its mint counter, and its generation with the waker of the task
@@ -68,15 +45,10 @@ impl Slot {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The generation the slot holds now.
     fn generation(&self) -> u32 {
         self.section().generation
     }
 
-    /// Wake the task of `generation`, if the slot still holds it: the generation is checked and the
-    /// waker taken in the section; it is woken once the section is let go (a `Waker::wake` only
-    /// schedules, and the waker taken is that generation's task's, whatever happens after). `false`:
-    /// the slot holds another generation, and nothing is woken.
     fn wake_generation(&self, generation: u32) -> bool {
         let taken = {
             let mut held = self.section();
@@ -92,10 +64,6 @@ impl Slot {
     }
 }
 
-/// THE WAKER OF ONE GENERATION of an inline slot (what [`InlineTickets::waker_of`] hands the host's
-/// I/O): it wakes the slot's task only while the slot still holds that generation. Fired after the
-/// slot was recycled and re-minted, it is a late wake: nothing is woken and no one is blamed (the
-/// host held it, not a forger).
 struct GenerationWaker {
     slot: Arc<Slot>,
     generation: u32,
@@ -130,12 +98,10 @@ pub(crate) enum Judged {
     Forged,
 }
 
-/// The inline tickets of one dispatcher.
 pub struct InlineTickets {
-    /// The dispatcher's ticket key: inline generations are permuted as a worker slot's.
     key: TicketKey,
     slots: Mutex<(Vec<Arc<Slot>>, Vec<u32>)>,
-    /// The dispatcher's service results, which keep what an op on an inline ticket was answered.
+
     services: Weak<ServiceStore>,
 }
 
@@ -146,8 +112,6 @@ impl std::fmt::Debug for InlineTickets {
 }
 
 impl InlineTickets {
-    /// The inline tickets of a dispatcher whose ticket key is `key` and whose service results
-    /// `services` keeps.
     pub(crate) fn new(key: TicketKey, services: &Arc<ServiceStore>) -> Self {
         Self {
             key,
@@ -156,10 +120,6 @@ impl InlineTickets {
         }
     }
 
-    /// An op of `instance`'s op `s` is about to cross on the inline ticket `t`. A NEW op (not a
-    /// `resume`, and not the one re-call of an op whose last call answered short) starts with
-    /// nothing kept: the last op's stored service results and kept connector answers under `t` go,
-    /// ending their epoch, so a service of the last op still running completes into nothing.
     pub(crate) fn starting(&self, t: Ticket, instance: InstanceId, s: u32, resume: bool) -> bool {
         let Some(slot) = self.lookup(t) else {
             return false;
@@ -190,14 +150,12 @@ impl InlineTickets {
             if let Some(store) = self.services.upgrade() {
                 store.forget(t);
             }
-            // No lock is held here: the dials it left in flight close at once.
+
             drop(super::conn_services::forget(instance, t));
         }
         true
     }
 
-    /// The op `s` on the inline ticket `t` returned; `short`: it answered short, and its one
-    /// re-call reads what it kept.
     pub(crate) fn ended(&self, t: Ticket, s: u32, short: bool) {
         let Some(slot) = self.lookup(t) else {
             return;
@@ -208,7 +166,6 @@ impl InlineTickets {
         }
     }
 
-    /// Mint a ticket; `None` when every slot is held.
     pub(crate) fn mint(self: &Arc<Self>) -> Option<InlineTicket> {
         let mut held = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         let index = match held.1.pop() {
@@ -242,7 +199,6 @@ impl InlineTickets {
         })
     }
 
-    /// The slot `t` names; `None` for no slot.
     fn lookup(&self, t: Ticket) -> Option<Arc<Slot>> {
         let (w, i) = decode(t.slot);
         if w != INLINE_WORKER {
@@ -252,8 +208,6 @@ impl InlineTickets {
         held.0.get(i as usize).cloned()
     }
 
-    /// The waker of `t`'s task, bound to `t`'s generation ([`GenerationWaker`]); `None` for a
-    /// ticket the slot does not hold now, or a foreign one.
     pub(crate) fn waker_of(&self, t: Ticket) -> Option<Waker> {
         let slot = self.lookup(t)?;
         let generation = slot.generation();
@@ -261,10 +215,6 @@ impl InlineTickets {
             .then(|| Waker::from(Arc::new(GenerationWaker { slot, generation })))
     }
 
-    /// Wake `t`'s task, judging a `t` that is not held (#74): a generation the slot minted is a late
-    /// wake, dropped; anything else (no such slot, or a generation whose inverse names no count the
-    /// slot reached; `NONE`, generation 0, is a late wake by rule) is [`Judged::Forged`]. No lock is
-    /// held when this returns, so the caller blames the supplier lock-free.
     pub(crate) fn wake(&self, t: Ticket) -> Judged {
         if t.generation == 0 {
             return Judged::Stale;
@@ -276,8 +226,7 @@ impl InlineTickets {
         if let Some(between) = BETWEEN_LOOKUP_AND_WAKE.with(|h| h.borrow_mut().take()) {
             between();
         }
-        // The generation checked and the waker taken in the slot's section: a recycle and re-mint
-        // racing this wake cannot hand it the next generation's task.
+
         if slot.wake_generation(t.generation) {
             return Judged::Woken;
         }
@@ -290,19 +239,14 @@ impl InlineTickets {
         }
     }
 
-    /// The ticket on `index` is dropped: its counter advances and the slot goes back, or, its counter
-    /// spent, the slot is RETIRED (generation `0`, never back on the free list), so no generation of
-    /// it is ever minted twice.
     fn recycle(&self, index: u32, slot: &Slot) {
         let next = super::worker::next_count(slot.count.load(Ordering::Acquire));
-        // The count first: a late wake for the generation being retired always inverts to a count
-        // the slot has reached.
+
         if let Some(c) = next {
             slot.count.store(c, Ordering::Release);
         }
         let g = next.map_or(0, |c| ticket_generation(self.key, INLINE_WORKER, index, c));
-        // The generation and the waker go together, in the section: no wake for the old
-        // generation takes a waker from here on, and the next task registers on a clean slot.
+
         let (gone, instance, old) = {
             let mut held = slot.section();
             let old = held.generation;
@@ -312,7 +256,7 @@ impl InlineTickets {
             (held.waker.take(), held.instance.take(), old)
         };
         drop(gone);
-        // What the dropped ticket's last op kept goes with it, before its slot can be handed out.
+
         let dropped = Ticket {
             slot: encode(INLINE_WORKER, index),
             generation: old,
@@ -322,7 +266,6 @@ impl InlineTickets {
                 store.forget(dropped);
             }
             if let Some(instance) = instance {
-                // No lock is held here: the dials it left in flight close at once.
                 drop(super::conn_services::forget(instance, dropped));
             }
         }
@@ -335,7 +278,6 @@ impl InlineTickets {
         }
     }
 
-    /// TEST ONLY: the ticket `t`'s slot as if handed out `count` times; its ticket at that count.
     #[cfg(test)]
     pub(crate) fn seed_count(&self, t: Ticket, count: u32) -> Ticket {
         let (_, i) = decode(t.slot);
@@ -350,7 +292,6 @@ impl InlineTickets {
     }
 }
 
-/// Whether `t` is an inline ticket.
 #[must_use]
 pub(crate) fn is_inline(t: Ticket) -> bool {
     decode(t.slot).0 == INLINE_WORKER
@@ -366,14 +307,11 @@ pub struct InlineTicket {
 }
 
 impl InlineTicket {
-    /// The ticket.
     #[must_use]
     pub fn ticket(&self) -> Ticket {
         self.ticket
     }
 
-    /// Register `waker` as the task an op pending on this ticket wakes (in the slot's section: the
-    /// ticket is held, so the slot holds its generation).
     pub fn register(&self, waker: &Waker) {
         let mut held = self.slot.section();
         if !held.waker.as_ref().is_some_and(|w| w.will_wake(waker)) {

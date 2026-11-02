@@ -1,44 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ROOT MIGRATION TABLE, as the kernel reads it (`BUSBAR-1.6.0.md` §2): retired names, and
-//! migrations for plugins that are not in the build, live in the root's
-//! `[package.metadata.busbar.migration]`, generated from `plugins.yaml`.
-//!
-//! The rows name plugins no crate in the kernel declares, so the kernel spells none of them: the
-//! composition root hands its table in once, before the first configuration is read, exactly as it
-//! hands in the operator credential's words (`busbar_kernel_identity::operator::install_linked`).
-//! A row is `key = "value"`:
-//!
-//! - `retired.<kind root>.<word>` → the alias a retired `module:` spelling now answers to;
-//! - `manifest.<alias>` / `asset.<alias>` → that plugin's manifest name and release-asset stem;
-//! - `former.<alias>` → the manifest names the plugin's earlier releases carried (plugins.yaml
-//!   `former_names:`, space-separated), which a LINKED row answers to as its dropped-in copy's
-//!   signed manifest does ([`former_names`]);
-//! - `name_1_5_5.<repo>` → the frozen manifest name a plugin repo's 1.5.5-era release carried (the
-//!   table `former.<alias>` is gated against; read by no runtime code);
-//! - every other key is frozen 1.5.5 operator text, verbatim.
-//!
-//! [`rewrite_retired`] is the ONE rewrite over the table: boot's 1.x detector and
-//! `--migrate-config` both call it, so the refusal and the rewrite cannot disagree about which
-//! spellings are retired.
-
 use serde_yaml::{Mapping, Value};
 
-/// The rows a root hands in: `(key, value)`, in table order.
 pub type Rows = &'static [(&'static str, &'static str)];
 
-/// The root's table, installed once before the first configuration is read; the first install
-/// stands.
 static ROWS: std::sync::OnceLock<Rows> = std::sync::OnceLock::new();
 
-/// Install the root migration table.
 pub fn install(rows: Rows) {
     let _ = ROWS.set(rows);
 }
 
-/// The table explicitly installed by the composition root. A normal kernel library owns no
-/// fixture rows or fallback parser; kernel unit tests read the shared external fixture source.
 pub fn rows() -> Rows {
     if let Some(rows) = ROWS.get() {
         return rows;
@@ -53,7 +25,6 @@ pub fn rows() -> Rows {
     }
 }
 
-/// The value of `key`; empty when the table has no such row.
 pub fn text(key: &str) -> &'static str {
     rows()
         .iter()
@@ -61,8 +32,6 @@ pub fn text(key: &str) -> &'static str {
         .map_or("", |(_, v)| v)
 }
 
-/// The `left:right` pairs of a `left:right | left:right` row, in row order; none when the table
-/// has no such row.
 pub fn pairs(key: &str) -> Vec<(&'static str, &'static str)> {
     text(key)
         .split(" | ")
@@ -70,8 +39,6 @@ pub fn pairs(key: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-/// The FORMER NAMES the plugin config names `alias` by is declared to answer to (its
-/// `former.<alias>` row, space-separated); none when the table has no such row.
 pub fn former_names(alias: &str) -> Vec<String> {
     text(&["former.", alias].concat())
         .split_whitespace()
@@ -79,10 +46,6 @@ pub fn former_names(alias: &str) -> Vec<String> {
         .collect()
 }
 
-/// THE ONE REWRITE over the migration table: when the `module:` of the `kind_root` section `section` is
-/// a retired spelling (a `retired.<kind_root>.<word>` row), the spelling and the alias it answers to
-/// now. With `apply` the value is rewritten to the alias in place; without, the section is left as
-/// written (boot and `--validate` refuse with the marker instead).
 pub fn rewrite_retired(
     kind_root: &str,
     section: &mut Mapping,

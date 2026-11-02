@@ -33,14 +33,14 @@
 // is the one crate that generates a linked table: no cleanliness crate has a build script that names
 // a plugin, and their tests link the kernel's kind-neutral doubles instead.
 
-/// THE NODE'S OWN ROOT-UNIT ROW (ARCHITECT Q1): keyed to the node itself rather than to a plane
-/// feature, because the node compiles in every build and every door plane — compiled in or dropped
-/// in — is driven and posted on it. Its configuration and book steps (the card repricer, the book
-/// binding) therefore run in every build.
+
+
+
+
 pub(crate) const NODE_UNIT: &str = "node";
 
-/// A registration axis: its manifest name, the `LINKED` field it fills, and the entry item a crate
-/// that registers on it exports. Plane doors register through [`PLANE_DOOR_AXIS`].
+
+
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
     ("protocol-seams", "protocol_seams", "install_protocol_seams"),
@@ -49,65 +49,65 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("compose", "compose", "compose"),
     ("cli-help", "cli_help", "CLI_HELP"),
     ("stores", "stores", "STORE"),
-    // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
-    // dropped-in build exports.
+
+
     ("hooks", "hook_doors", "door"),
-    // The node axis: a plane whose units a composition root's node drives is handed that node.
+
     ("node", "node", "install_node"),
 ];
 
-/// The transport axis (#3, #30): each row's entry exports its memory-ABI `door` (every transport row
-/// is also a [`DOOR_AXIS`] row), and nothing else is read off it: the row's key, the layers it
-/// composes over and whether it carries a session are its door's Statement's
-/// (`crate::root::linked::linked_transport!`); the root builds each through
-/// `crate::root::doors::build` and folds them bottom-up.
+
+
+
+
+
 const TRANSPORT_AXIS: &str = "transport";
 
-/// Beside `transport`: the row's entry exports its memory-ABI `door` instead of a `build`, and the
-/// root builds it (`crate::root::doors::build`) — admitted through the one dispatcher and served over
-/// the host's sockets by the connector.
+
+
+
 pub(crate) const DOOR_AXIS: &str = "transport-door";
 
-/// Beside `transport-door`: the row's memory-ABI `door` is ALSO opened by the root's one Connector
-/// as a framer entry, so a plugin's need over this scheme is served on the connector (an export
-/// sink's outbound `http`, `BUSBAR-1.6.0.md` Part 2 #50) while the wire the registry folds is
-/// unchanged.
+
+
+
+
 pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
 
-/// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
-/// `door`, and the root hands it to the loader beside every dropped-in plane door
-/// (`crate::root::boot::discover_planes`), so a compiled-in plane is bound through the same table
-/// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
+
+
+
+
 pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
-/// The export axis on the export kind's MEMORY ABI: each row's crate states its plugin `NAME`,
-/// `ALIAS` and manifest `DECLARES`, and its entry module exports its `door` (`plugin_door!`), the
-/// same door its `cdylib` exports — admitted through the one registration as a door row.
+
+
+
 pub(crate) const EXPORT_DOOR_AXIS: &str = "export-doors";
 
-/// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
-/// the claims it declares (`CLAIMS`); rides on `plane`.
+
+
 const CLAIMS_AXIS: &str = "claims";
 
-/// The secret axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the default
-/// build): each row's entry exports its memory-ABI `door`.
+
+
 const SECRET_AXIS: &str = "secret-doors";
 
-/// The auth axis (#2 rule (1), #40): each row's entry (its crate root, unless a `linked-entry` row
-/// names another module) exports, at `door::door`, the
-/// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as
-/// `busbar_plugin_door`: THE DESIGN, compiled-in = dropped-in), registered under the key its
-/// `linked-name` row states and the canonical name its `linked-canonical` row states (the key, when
-/// it has none).
+
+
+
+
+
+
 const AUTH_AXIS: &str = "auths";
 
-/// THE LINKED HOOK NAMES (`$OUT_DIR/linked_hook_names.rs`, included by `main.rs`): each enabled `hooks`-axis row's `linked-name`, in manifest order — what the
-/// root carries on its install record (`busbar_kernel::preflight::RootInstall::hook_names`) as the
-/// admin surface's compiled-in hook plugins, so that crate spells none.
+
+
+
 pub(crate) fn linked_hook_names_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
-    // The hook axis's manifest name, read off its one spelling: the `AXES` row that fills
-    // `hook_doors`.
+
+
     let hook_axis = AXES
         .iter()
         .find(|(_, field, _)| *field == "hook_doors")
@@ -139,8 +139,8 @@ pub(crate) fn linked_hook_names_source(manifest: &str, enabled: &dyn Fn(&str) ->
     out
 }
 
-/// The `value` of `key` under the `[table]` header, when the table and the row exist. The optional
-/// twin of [`metadata_map`], for the one table only some rows need.
+
+
 fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
     let header = format!("[{table}]");
     let mut in_table = false;
@@ -159,13 +159,13 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
     None
 }
 
-/// The root-bound seams: an axis a crate DRIVES rather than fills, emitted as a cfg the root binds
-/// the seam under (the kernel compiles some of them only when a plane that drives them is linked).
+
+
 pub(crate) const SEAMS: &[(&str, &str)] = &[("egress", "linked_egress")];
 
-/// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately
-/// not a TOML parser: one row per line, both sides optionally double-quoted. An absent table is no
-/// rows (core alone links nothing); a table stated with no row is a build failure.
+
+
+
 pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)> {
     let header = format!("[{table}]");
     let (mut in_table, mut present) = (false, false);
@@ -187,7 +187,7 @@ pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)>
             ));
         }
     }
-    // Core alone states no table: it links nothing. A table stated with no row is a mistake.
+
     assert!(
         !present || !rows.is_empty(),
         "Cargo.toml: `{header}` is empty"
@@ -195,7 +195,7 @@ pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)>
     rows
 }
 
-/// The feature names the manifest's `[features]` table declares.
+
 pub(crate) fn declared_features(manifest: &str) -> Vec<String> {
     let mut in_table = false;
     let mut out = Vec::new();
@@ -214,8 +214,8 @@ pub(crate) fn declared_features(manifest: &str) -> Vec<String> {
     out
 }
 
-/// The crates the manifest's `[dependencies]` table declares WITHOUT `optional = true` — the edges no
-/// feature can drop, so a linked row naming one is linked in every build.
+
+
 pub(crate) fn required_deps(manifest: &str) -> Vec<String> {
     let mut in_table = false;
     let mut out = Vec::new();
@@ -234,20 +234,20 @@ pub(crate) fn required_deps(manifest: &str) -> Vec<String> {
     out
 }
 
-/// `busbar-foo` → `busbar_foo`.
+
 pub(crate) fn ident(krate: &str) -> String {
     krate.replace('-', "_")
 }
 
-/// Every cfg name this generator can emit, for the build script's `rustc-check-cfg` line.
+
 pub(crate) fn seam_cfgs() -> Vec<&'static str> {
     SEAMS.iter().map(|(_, cfg)| *cfg).collect()
 }
 
-/// THE GENERATED SOURCE, and the seam cfgs to set, for the rows whose feature `enabled` answers
-/// true. Every table keeps manifest order. A feature the manifest does not declare, a linked feature
-/// with no axes row, an axis nobody knows and an axes/entry row for nothing linked are all refused:
-/// each would drop a registration out of every build silently.
+
+
+
+
 pub(crate) fn linked_source(
     manifest: &str,
     enabled: &dyn Fn(&str) -> bool,
@@ -258,8 +258,8 @@ pub(crate) fn linked_source(
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
     let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
     let units = metadata_map(manifest, "package.metadata.busbar.root-units");
-    // A row is linked when its feature is on — or always, when its crate is an edge no feature can
-    // drop. Anything else would be a row no build ever links, dropped silently.
+
+
     let always = |key: &str, krate: &str| {
         !features.iter().any(|f| f == key) && required.iter().any(|d| d == krate)
     };
@@ -330,7 +330,7 @@ pub(crate) fn linked_source(
             externs.push(line);
         }
     }
-    // (entry module, axes) per enabled crate, in manifest order.
+
     let linked: Vec<(String, Vec<String>)> = on
         .iter()
         .map(|(feature, krate)| {
@@ -343,7 +343,7 @@ pub(crate) fn linked_source(
             (entry, axes_of(feature, krate))
         })
         .collect();
-    // The door each enabled crate reads, parallel to `linked`.
+
     let doors: Vec<String> = linked
         .iter()
         .map(|(entry, _)| format!("{entry}::door"))
@@ -355,7 +355,7 @@ pub(crate) fn linked_source(
             .map(|(e, _)| e)
             .collect()
     };
-    // The door each row on `axis` reads.
+
     let doors_on = |axis: &str| -> Vec<&String> {
         linked
             .iter()
@@ -364,7 +364,7 @@ pub(crate) fn linked_source(
             .map(|(_, d)| d)
             .collect()
     };
-    // THE STORE AND EXPORT AXES, built when the boot first reads them.
+
     out.push_str(
         "/// The store axis: each linked store's `(key, ephemeral, door, canonical)`.\n\
          static LINKED_STORES: ::std::sync::LazyLock<::std::vec::Vec<busbar_kernel::preflight::LinkedStore>> =\n    \
@@ -374,8 +374,8 @@ pub(crate) fn linked_source(
         if !axes.iter().any(|a| a == "stores") {
             continue;
         }
-        // A store crate's `STORE` in either shape (`busbar_kernel::preflight::StoreRow`): its
-        // door function, or its `MACRO_DOOR` (status rows 159 and 194).
+
+
         out.push_str(&format!(
             "busbar_kernel::preflight::StoreRow({entry}::STORE).linked(), "
         ));
@@ -407,17 +407,17 @@ pub(crate) fn linked_source(
         out.push_str(&format!("{door}, "));
     }
     out.push_str("],\n");
-    // THE SECRET AXIS: each linked secret plugin's memory-ABI door, loaded through the one loader
-    // (`crate::root::linked::secret_rows`).
+
+
     out.push_str("    secrets: &[");
     for door in doors_on(SECRET_AXIS) {
         out.push_str(&format!("{door}, "));
     }
     out.push_str("],\n");
-    // EACH LINKED SECRET DOOR'S DECLARED METADATA: `(door, declares)`, the JSON its
-    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as a
-    // dropped-in copy's signed `declares` is (its disk need, THE DESIGN §11.11 R4). A secret door
-    // with no such row declares none.
+
+
+
+
     out.push_str("    secret_declares: &[");
     for (((_, list), door), (feature, _)) in linked.iter().zip(&doors).zip(&on) {
         if !list.iter().any(|a| a == SECRET_AXIS) {
@@ -430,11 +430,11 @@ pub(crate) fn linked_source(
         }
     }
     out.push_str("],\n");
-    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, door, declares)`, the JSON its
-    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
-    // every default-linked plugin's `declares` section is, beside the door it belongs to (so the
-    // root finds a bound door plane's declaration by its Statement). A door row with no such row
-    // declares none.
+
+
+
+
+
     out.push_str("    plane_door_declares: &[");
     for ((feature, krate), door) in on.iter().zip(&doors) {
         let is_door = axes
@@ -456,17 +456,17 @@ pub(crate) fn linked_source(
         .zip(&doors)
         .filter(|((_, a), _)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
-        // A TRANSPORT LOADS ONLY THROUGH ITS DOOR (step 36): there is no transport trait for a row
-        // to build itself as, so a transport row without the door axis is a manifest this root
-        // cannot link.
+
+
+
         assert!(
             axes.iter().any(|x| x == DOOR_AXIS),
             "Cargo.toml: `{e}` is on the `{TRANSPORT_AXIS}` axis but not the `{DOOR_AXIS}` axis; a \
              transport is linked only as its memory-ABI door"
         );
-        // THE ROW IS ITS BARE `door` (BUSBAR-1.6.0.md l.3560-3561; coordinator ruling (b), row
-        // 159): its key, layers and session are read off the door's Statement, never off a constant
-        // of the entry's.
+
+
+
         out.push_str(&format!("crate::root::linked::linked_transport!({door}), "));
     }
     out.push_str("],\n");
@@ -486,14 +486,14 @@ pub(crate) fn linked_source(
                 feature,
             )
             .unwrap_or_else(|| name.clone());
-            // An auth row's door is its entry's `door` module's (`<entry>::door::door`).
+
             let door = format!("{entry}::door::door");
             out.push_str(&format!("({name:?}, {canonical:?}, {door}), "));
         }
     }
     out.push_str("],\n");
-    // The operator credential's provider word: the `linked-name` of the row the manifest's
-    // `operator-auth` table names, whether or not this build links it (its 1.5.5 refusals spell it).
+
+
     let operator = metadata_value(manifest, "package.metadata.busbar.operator-auth", "row")
         .and_then(|row| metadata_value(manifest, "package.metadata.busbar.linked-name", &row))
         .unwrap_or_default();
@@ -509,11 +509,11 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
     for (axis, field, item) in AXES {
-        // The store axis is `LINKED_STORES`, above.
+
         if *field == "stores" {
             continue;
         }
-        // A codec declaration is a legacy test fixture, never a shipping registration axis.
+
         if *field == "protocols" {
             out.push_str("    #[cfg(test)]\n");
         }
@@ -523,7 +523,7 @@ pub(crate) fn linked_source(
                 continue;
             }
             if *item == "door" {
-                // The hook axis: the row's door.
+
                 out.push_str(&format!("{door}, "));
             } else {
                 out.push_str(&format!("{e}::{item}, "));
@@ -532,12 +532,12 @@ pub(crate) fn linked_source(
         out.push_str("],\n");
     }
     out.push_str("};\n");
-    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door's key and its
-    // `door`, which the root's one Connector opens as a framer entry (`crate::root::connector`). The
-    // key is the door's Statement's, read on first use by the reader every row's is
-    // (`crate::root::doors::row_facts`), never a constant of the entry's (BUSBAR-1.6.0.md
-    // l.3560-3561); the table keeps its name and slice shape, which code outside this crate's
-    // source (a pinned plane's root tests) hands the connector.
+
+
+
+
+
+
     out.push_str(
         "/// Every linked memory-ABI transport door, by the key its Statement states, read on first use.\n\
          static LINKED_TRANSPORT_DOORS_READ: ::std::sync::LazyLock<::std::vec::Vec<(&'static str, busbar_contract::abi::mechanism::door::DoorFn)>> =\n    \

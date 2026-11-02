@@ -1,35 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **A DROPPED-IN TRANSPORT REGISTERS THROUGH THE SAME REGISTRATION AS A LINKED ONE, AND SERVES** —
-//! end to end, over the REAL binary (same contract, same loading path; a transport
-//! is swappable, compiled in OR dropped in), through its door.
-//!
-//! The in-tree transport `cdylib` is found by its KIND (the one library beside the binary the loader
-//! admits as `kind: transport`) and packed into `plugins.dir` as a tarball. The root names no wire:
-//! the key the dropped-in wire declares is read off its own decl, and whether this build links that
-//! key is read off the build's linked transport table (`$OUT_DIR/linked_transports.rs`).
-//!
-//! * In a build that does NOT link the wire's key (that wire's linked-row switch off), the boot seal
-//!   folds the dropped-in wire beside the linked ones and the node serves, answering the bytes the
-//!   LINKED build answers — both builds are held to one pinned exchange
-//!   (`fixtures/transport_dropped_in_exchange.txt`, the `date` value masked). RED ARM, in the same
-//!   test: the same build with the tarball removed refuses to boot — the layers above the wire
-//!   compose over nothing — so the node serves only because the dropped-in wire registered. And the
-//!   door has the THREAD-PER-CORE shape (ruling K8c) from the one listener source: every
-//!   data worker listens through the connector, one listener each on the one address.
-//! * In a build that DOES link it (the default), the same tarball is refused at boot exactly as a
-//!   second linked row with that key would be: two transport plugins declaring one key. And the
-//!   linked build, with nothing dropped in, serves the pinned exchange.
-
 #![cfg(unix)]
-// THE PINNED EXCHANGE IS A PROVIDER-LANE ROUTE (`GET /v1/models`, answered from the configured
-// provider/model pair), so this proof needs the door that declares `pools:` — the plane that
-// owns provider lanes — linked; read off the linked set, as thread_per_core_serves.rs gates. A
-// single-plane build without that door has no wire codec and refuses the provider at boot
-// (BUSBAR-9007), which is correct product behaviour, not what this test measures. The dropped-in
-// wire itself is proven in every build that links that door, including the feature row that links
-// no stream wire.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -42,22 +14,13 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The data workers each build runs: more than one, so the per-core fan-out is observable.
 const WORKERS: usize = 2;
 
-/// The line the data door writes, per worker, once the connector's listener has bound that
-/// worker's socket.
 const THROUGH_THE_CONNECTOR: &str = "data door listening through the connector";
 
-/// The one request both builds answer, and the exchange they answer it with.
 const REQUEST: &str = "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
 const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt");
 
-/// The in-tree transport `cdylib` and the key it declares, found by KIND beside the binary
-/// (`common::plugins::transport_cdylib_under`). No linked layer composes over another, so no key is needed under them and any transport
-/// door beside the binary is the proof's subject: a linked key's tarball is refused as a second
-/// plugin with that key, an unlinked key's registers through the one fold. A missing artifact is a
-/// hard failure in every run, never a silent skip.
 fn transport_cdylib() -> (Vec<u8>, &'static str) {
     let under: Vec<&str> = LINKED_TRANSPORTS
         .iter()
@@ -92,13 +55,10 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// The transport `cdylib` packed as an UNSIGNED `kind: transport` tarball (the config opts into
-/// unsigned plugins, as the CLI fixtures do).
 fn drop_in(dir: &Path, lib: &[u8]) {
     drop_in_as(dir, lib, "dropped-wire");
 }
 
-/// The wire dropped in under the plugin name `name`.
 fn drop_in_as(dir: &Path, lib: &[u8], name: &str) {
     let bytes = common::plugins::pack_stated("transport", name, lib, "acme");
     std::fs::write(dir.join("plugins").join(format!("{name}.tar.gz")), bytes).unwrap();
@@ -145,13 +105,10 @@ fn busbar(dir: &Path) -> Command {
     cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")
-        // A bare level word (the node's stderr filter reads no directives): DEBUG, for the door's
-        // per-worker line (`THROUGH_THE_CONNECTOR`).
         .env("RUST_LOG", "debug");
     cmd
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -160,10 +117,6 @@ impl Drop for Reap {
     }
 }
 
-/// Boot, and answer the one request once the data door is up: the raw exchange, `date` masked,
-/// whether the listener on the door is the KERNEL'S OWN (see [`kernel_socket`]), asked while the node
-/// still serves, and how many data workers listen THROUGH THE CONNECTOR (read off the
-/// node's log once `expect_through` of them have — or its deadline passes).
 fn serve_once(dir: &Path, data_port: u16, expect_through: usize) -> (String, bool, usize) {
     let log = std::fs::File::create(dir.join("out.log")).unwrap();
     let mut child = Reap(
@@ -202,25 +155,18 @@ fn serve_once(dir: &Path, data_port: u16, expect_through: usize) -> (String, boo
     }
 }
 
-/// THE KERNEL'S OWN DOOR. The kernel's data listeners bind with SO_REUSEPORT (one per data worker on
-/// one address), so a second SO_REUSEPORT socket on the port binds beside them. (A dropped-in wire's
-/// listeners are SO_REUSEPORT too since airlock minor 28 — the same per-core fan-out — so for that
-/// door the witness is the wire's own per-worker line, [`THROUGH_THE_CONNECTOR`].)
 fn kernel_socket(port: u16) -> bool {
     use socket2::{Domain, Socket, Type};
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
     let Ok(probe) = Socket::new(Domain::IPV4, Type::STREAM, None) else {
         return false;
     };
-    // Never listened on, so it takes no connection from the node before it is dropped.
+
     probe.set_reuse_address(true).is_ok()
         && probe.set_reuse_port(true).is_ok()
         && probe.bind(&addr.into()).is_ok()
 }
 
-/// Boot, expecting a refusal: the process's exit and what it wrote. A node that SERVES instead of
-/// refusing never exits, so the wait is bounded: past the deadline the node is killed and the test
-/// fails naming what it wrote, rather than hanging the run.
 fn refused(dir: &Path) -> Output {
     let (out_path, err_path) = (dir.join("refused.out"), dir.join("refused.err"));
     let mut child = Reap(
@@ -260,7 +206,6 @@ fn exchange(port: u16) -> Option<Vec<u8>> {
     (!raw.is_empty()).then_some(raw)
 }
 
-/// The exchange with the `date` header's value masked — the only byte that differs by clock.
 fn masked(raw: &[u8]) -> String {
     String::from_utf8_lossy(raw)
         .split("\r\n")
@@ -272,8 +217,6 @@ fn masked(raw: &[u8]) -> String {
         .join("\r\n")
 }
 
-/// The carrier each data worker's listener accepts through, read off the node's last log
-/// (`carrier=<claim>` on [`THROUGH_THE_CONNECTOR`]; `host` when the connector serves none).
 fn carriers(dir: &Path) -> Vec<String> {
     std::fs::read_to_string(dir.join("out.log"))
         .unwrap_or_default()
@@ -288,7 +231,6 @@ fn carriers(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// `line` with its terminal colour sequences (`ESC [ ... m`) taken out.
 fn plain(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars();
@@ -306,7 +248,6 @@ fn plain(line: &str) -> String {
     out
 }
 
-/// The pinned exchange, in the wire's own line endings.
 fn pinned() -> String {
     EXCHANGE.trim_end_matches('\n').replace('\n', "\r\n")
 }
@@ -320,7 +261,6 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
     write_configs(&dir, data_port, admin_port);
 
     if linked {
-        // THE LINKED BUILD SERVES THE PINNED EXCHANGE over its own wire.
         let (served, kernel, through) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(served, pinned(), "the linked build's exchange");
         assert!(
@@ -336,8 +276,7 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             vec![key.to_owned(); WORKERS],
             "every data worker accepts through the linked carrier"
         );
-        // RED: the same wire dropped in on a key this build links is refused at boot, as a second
-        // linked row with that key is — two transport plugins declaring one key.
+
         drop_in(&dir, &lib);
         let out = refused(&dir);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -347,13 +286,9 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             "stderr:\n{stderr}"
         );
     } else {
-        // NO TRANSPORT NAMES ANOTHER: nothing composes over the unlinked
-        // key, so the build boots and serves without it — the carrier under the data door is the
-        // connector's choice, not a registered row.
         let (served, _, _) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(served, pinned(), "no layer waits on the unlinked key");
-        // THE DROPPED-IN WIRE REGISTERS THROUGH THE ONE FOLD: the build over it serves the
-        // exchange the linked build answers, byte for byte but the clock.
+
         drop_in(&dir, &lib);
         let (served, _, through) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(
@@ -361,16 +296,12 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             pinned(),
             "the dropped-in build's exchange is the linked build's"
         );
-        // Every data worker's listener is the connector's, whichever wire sits under the door —
-        // the thread-per-core door, per core, from the one listener source.
+
         assert_eq!(
             through, WORKERS,
             "each of the {WORKERS} data workers listens through the connector"
         );
-        // THE ADDRESS CARRIER IS THE DECLARATION'S, NEVER A FRAMER: the data door accepts through
-        // the dropped-in carrier, by its claim — and still does with the neutral frame door dropped
-        // in beside it and declared FIRST (the plugins directory's sorted order): a framer is never
-        // an address carrier, whatever its claim reads.
+
         assert_eq!(
             carriers(&dir),
             vec![key.to_owned(); WORKERS],
@@ -393,8 +324,7 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             "the neutral framer, declared first, is never the address carrier"
         );
         std::fs::remove_file(dir.join("plugins").join("a-neutral-framer.tar.gz")).unwrap();
-        // RED: and it DID register — a second copy of the same wire is a second transport plugin
-        // declaring one key, refused at boot exactly as the linked build refuses the first.
+
         drop_in_as(&dir, &lib, "dropped-wire-again");
         let out = refused(&dir);
         let stderr = String::from_utf8_lossy(&out.stderr);

@@ -1,26 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the `GET /auth/token` hosted browser-login flow (1.5.2), moved with it from
-//! `busbar-kernel` with every assertion unchanged: 1.5.5's page, redirect, cookie
-//! and refusal bytes are pinned here. `hosted_login_tests` is a submodule of `hosted_login`, so it
-//! can drive the private sub-state handlers (`chooser`/`begin`/
-//! `callback`), the render fns, and the cookie/PKCE helpers directly. Every login plugin here is on
-//! the auth kind's door ([`DoorLogin`]): the plugin makes its own token exchange and binds the IdP's
-//! answer to the nonce itself; the host mints PKCE/state/nonce, checks `state`, bounds the
-//! anonymous flood, and renders.
-
 use super::*;
 use busbar_contract::auth::{
     BeginLogin, FieldKind, LoginField, LoginForm, LoginKind, LoginOutcome, Principal,
 };
 use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled};
 
-/// A door stand-in: an opened `kind: auth` instance answering `begin_login`/`complete_login` (the
-/// plugin on the auth kind's door), recording every `complete_login` it was handed. `park` holds
-/// each answer back that long on a thread of its own — the dispatcher worker the plugin runs on —
-/// never on the caller's. `faults`: every step FAULTS (the plugin broke its contract, a caught
-/// panic), answered as the loader answers one: a Reject that says it faulted.
 struct DoorLogin {
     kind: LoginKind,
     begin: LoginOutcome,
@@ -31,8 +17,6 @@ struct DoorLogin {
 }
 
 impl DoorLogin {
-    /// A redirect plugin whose authorize URL is the IdP's and whose `complete_login` answers
-    /// `complete(request)`.
     fn answering(
         complete: impl Fn(&LoginCallback) -> LoginOutcome + Send + Sync + 'static,
     ) -> Self {
@@ -46,12 +30,10 @@ impl DoorLogin {
         }
     }
 
-    /// A redirect plugin whose `complete_login` always answers `complete`.
     fn new(complete: LoginOutcome) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self::answering(move |_| complete.clone()))
     }
 
-    /// The step's answer: on the spot, or after `park` from the plugin's own thread.
     fn answer(&self, outcome: LoginOutcome) -> Box<dyn LoginCall> {
         if self.faults {
             return Box::new(Faulted);
@@ -68,7 +50,6 @@ impl DoorLogin {
     }
 }
 
-/// A login step the plugin FAULTED: answered as a Reject, saying it faulted.
 struct Faulted;
 
 impl std::future::Future for Faulted {
@@ -90,7 +71,6 @@ impl LoginCall for Faulted {
     }
 }
 
-/// A login step the plugin answers later, from its own thread.
 struct Parked(tokio::sync::oneshot::Receiver<LoginOutcome>);
 
 impl std::future::Future for Parked {
@@ -145,14 +125,12 @@ impl busbar_contract::auth_calls::AuthCalls for DoorLogin {
     }
 }
 
-/// The IdP's identity for a redirect login: alice, a `members`.
 fn alice() -> LoginOutcome {
     let mut p = Principal::from_id("alice");
     p.roles = vec!["members".into()];
     LoginOutcome::Identify(p)
 }
 
-/// An app whose hosted-login methods are redirect plugins on the door, one per `(name, has_button)`.
 fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<busbar_kernel::state::App> {
     let mut b = busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com");
@@ -169,19 +147,16 @@ fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<busbar_ke
 
 #[test]
 fn chooser_renders_0_1_n_buttons() {
-    // 0 buttons (no browser_login method).
     let app0 = test_app_with_methods(vec![]);
     let body0 = body_of(chooser(&app0));
     assert_eq!(body0.matches("class=\"provider\"").count(), 0);
     assert!(body0.contains("No browser login"));
 
-    // 1 button.
     let app1 = test_app_with_methods(vec![("microsoft", true)]);
     let body1 = body_of(chooser(&app1));
     assert_eq!(body1.matches("class=\"provider\"").count(), 1);
     assert!(body1.contains("/auth/token?method=microsoft"));
 
-    // N buttons — plus a GUI-OFF method (has_button=false) that is ABSENT from the chooser.
     let appn = test_app_with_methods(vec![
         ("microsoft", true),
         ("second-sso", true),
@@ -197,16 +172,11 @@ fn chooser_renders_0_1_n_buttons() {
         !bodyn.contains("method=headless-only"),
         "gui-off method not shown"
     );
-    // base_url is injected verbatim (no /v1).
+
     assert!(bodyn.contains("https://busbar.example.com"));
     assert!(!bodyn.contains("https://busbar.example.com/v1"));
 }
 
-/// THE BUTTON BRANDS ARE THE ROOT MIGRATION TABLE'S `login_brands` ROW (frozen 1.5.5 login-page data;
-/// the kernel test stand-in carries the root's table row for row). With the row, a method named by
-/// each brand's first match token renders that brand's label and icon on its button, in the row's
-/// order, and the issuer host matches as the name does; with no row, every method renders the
-/// generic arm — its title-cased name under the key icon — exactly as an unmatched method does.
 #[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
     let row = busbar_kernel::config::migration_table::text("login_brands");
@@ -240,12 +210,12 @@ fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic(
             "{token}: {body}"
         );
     }
-    // No brand matches: the generic arm.
+
     assert_eq!(
         button_brand("corp-sso", None),
         ("Corp Sso".to_string(), GENERIC_ICON)
     );
-    // With no row, the brands' own tokens are generic too.
+
     for (token, _, _) in &brands {
         assert_eq!(
             brand_from("", token, None),
@@ -255,16 +225,12 @@ fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic(
     }
 }
 
-/// A gui-off (no browser_login) method still works HEADLESS via POST /auth/token — the chooser
-/// exclusion does not disable the method. (The POST path is unaffected; asserting the
-/// route still serves POST is the observable proof here.)
 #[tokio::test]
 async fn gui_off_method_still_works_via_post() {
     let app = test_app_with_methods(vec![("headless-only", false)]);
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
-    // POST /auth/token with no auth ⇒ the exchange runs the chain (401 unauth), NOT a 404/405: the
-    // route exists and serves POST regardless of the chooser exclusion.
+
     let r = client
         .post(format!("{base}/auth/token"))
         .send()
@@ -289,7 +255,7 @@ async fn begin_sets_httponly_secure_cookie_and_redirects() {
         sc.contains("SameSite=Lax"),
         "cookie must be SameSite=Lax: {sc}"
     );
-    // The cookie carries no secret — only method/verifier/state/nonce.
+
     let raw = sc
         .split(';')
         .next()
@@ -303,8 +269,6 @@ async fn begin_sets_httponly_secure_cookie_and_redirects() {
     );
 }
 
-/// The `refresh` flag the login cookie carries after `GET /auth/token?method=microsoft&refresh=1`
-/// arrives with this `Sec-Fetch-Site` (absent when `None`).
 async fn refresh_flag_for(
     handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
     sec_fetch_site: Option<&str>,
@@ -327,11 +291,6 @@ async fn refresh_flag_for(
         .refresh
 }
 
-/// A REFRESH LINK ROTATES ONLY FROM BUSBAR'S OWN PAGE.
-/// `GET /auth/token?method=<m>&refresh=1` rotates the key only on a `Sec-Fetch-Site: same-origin`
-/// navigation; a cross-site link, a typed or mailed URL, a sibling subdomain and a header-less client
-/// get a plain issue. RED against 1.5.5, which rotated from any origin (v1.5.5
-/// crates/busbar/src/auth/token.rs:324).
 #[tokio::test]
 async fn a_refresh_link_rotates_only_from_busbars_own_page() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
@@ -348,10 +307,6 @@ async fn a_refresh_link_rotates_only_from_busbars_own_page() {
     );
 }
 
-/// THE RULE AGAINST 1.5.5'S: under `needs_same_origin` only a navigation from
-/// busbar's own page (`same-origin`) rotates; a cross-site link, a typed or mailed URL (`none`), a
-/// sibling subdomain (`same-site`) or no header at all is a plain issue. 1.5.5 rotated on every
-/// `refresh=1`; no navigation without `refresh=1` ever rotates.
 #[test]
 fn the_same_origin_refresh_rule_against_1_5_5s() {
     for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
@@ -364,20 +319,13 @@ fn the_same_origin_refresh_rule_against_1_5_5s() {
     }
 }
 
-/// An authorize URL a `HeaderValue` cannot represent must FAIL CLOSED, not panic. `Location` carries
-/// `LoginOutcome::Authorize(url)` verbatim from the login plugin — the one plugin-authored header on
-/// this path — and `GET /auth/token` is anonymously reachable with no catch-panic layer anywhere in
-/// the tree, so building the 302 with `.expect("static 302")` turns a login-module bug (a raw newline
-/// interpolated into a hint, say) into a dead request task and an aborted connection. Each byte class
-/// below is one `HeaderValue` refuses; obs-text (>= 0x80) is NOT among them, so a non-ASCII authorize
-/// URL is representable and still redirects (not asserted here — this test only pins the refused set).
 #[tokio::test]
 async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
     for bad in [
-        "https://idp.example.com/authorize\r\nX-Evil: 1", // CRLF
-        "https://idp.example.com/authorize\nX-Evil: 1",   // bare LF
-        "https://idp.example.com/authorize?x=\u{0}",      // NUL
-        "https://idp.example.com/authorize?x=\u{7f}",     // DEL
+        "https://idp.example.com/authorize\r\nX-Evil: 1",
+        "https://idp.example.com/authorize\nX-Evil: 1",
+        "https://idp.example.com/authorize?x=\u{0}",
+        "https://idp.example.com/authorize?x=\u{7f}",
     ] {
         let app = busbar_kernel_testkit::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
@@ -422,7 +370,7 @@ async fn callback_state_mismatch_400() {
         nonce: "n".into(),
         refresh: false,
     };
-    // Wrong state ⇒ 400 BEFORE the plugin is asked anything (no token exchange is started).
+
     let resp = callback(
         &app,
         &cred_handle(&app),
@@ -436,7 +384,7 @@ async fn callback_state_mismatch_400() {
         400,
         "state mismatch must be a clean 400"
     );
-    // Absent cookie ⇒ 400 too.
+
     let resp2 = callback(
         &app,
         &cred_handle(&app),
@@ -452,12 +400,8 @@ async fn callback_state_mismatch_400() {
     );
 }
 
-/// NONCE BINDING: the host hands the plugin the nonce it minted at `begin` (carried in the cookie),
-/// and the plugin binds the IdP's identity token to it. An IdP whose id_token carries ANOTHER nonce
-/// is a failed security check: rejected, no key issued.
 #[tokio::test]
 async fn callback_nonce_mismatch_rejected() {
-    // The IdP's id_token carries `WRONG-NONCE`; the plugin compares it with the nonce it was handed.
     let door = std::sync::Arc::new(DoorLogin::answering(|request| {
         if request.nonce.as_deref() == Some("WRONG-NONCE") {
             alice()
@@ -497,8 +441,6 @@ async fn callback_nonce_mismatch_rejected() {
     );
 }
 
-/// Markers of the shared branded error card (see `token::error_page`): the Busbar brand lockup, the
-/// alert glyph roundel, the error heading/message, and the "Back to sign in" link to GET /auth/token.
 fn assert_branded_error_page(body: &str, heading: &str) {
     assert!(
         body.starts_with("<!doctype html>"),
@@ -512,8 +454,7 @@ fn assert_branded_error_page(body: &str, heading: &str) {
         body.contains("class=\"erricon\""),
         "the error card shows the alert glyph: {body}"
     );
-    // The heading is server-escaped in the page (e.g. `'` → `&#39;`), so compare against the escaped
-    // form the renderer emits.
+
     let heading_esc = heading.replace('\'', "&#39;");
     assert!(
         body.contains(&heading_esc),
@@ -529,9 +470,6 @@ fn assert_branded_error_page(body: &str, heading: &str) {
     );
 }
 
-/// A browser-flow failure (here a callback `state` mismatch) renders the BRANDED, styled
-/// HTML error page — not bare plain text — with the correct status. Before this change: the
-/// callback returned `(400, "state mismatch")` plain text (no `<!doctype`, no error card).
 #[tokio::test]
 async fn browser_callback_failure_renders_branded_html() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
@@ -551,7 +489,7 @@ async fn browser_callback_failure_renders_branded_html() {
     )
     .await;
     assert_eq!(resp.status().as_u16(), 400);
-    // A failed browser login must still clear the single-use cookie.
+
     assert!(resp
         .headers()
         .get_all(header::SET_COOKIE)
@@ -565,12 +503,8 @@ async fn browser_callback_failure_renders_branded_html() {
     );
 }
 
-/// The flagship copy case: a verified identity with NO self-serve grant gets the friendly "No access
-/// yet" card (403), not the bare "no self-serve grant for this identity" text. Driven through the FULL
-/// redirect callback (the plugin `Identify`s) with no role binding ⇒ `Unbound`.
 #[tokio::test]
 async fn no_self_serve_grant_renders_branded_html() {
-    // No governance / role_bindings ⇒ the Identified principal resolves to `Unbound`.
     let app = test_app_with_methods(vec![("microsoft", true)]);
     let cookie = LoginCookie {
         method: "microsoft".into(),
@@ -596,8 +530,6 @@ async fn no_self_serve_grant_renders_branded_html() {
     );
 }
 
-/// A rejected credential (wrong password) renders the branded 401 card via the POST/credential path,
-/// which is ALSO a browser flow (it carries the login cookie).
 #[tokio::test]
 async fn credential_reject_renders_branded_html() {
     let app = cred_app();
@@ -612,9 +544,6 @@ async fn credential_reject_renders_branded_html() {
     assert_branded_error_page(&body_of(resp), "Sign-in was declined");
 }
 
-/// GATE ON THE BRANCH: the HEADLESS/API path (POST /auth/token, no login cookie — a curl/CI client)
-/// keeps returning the JSON `{"error":…}` shape. HTML is the BROWSER branch only; the API must never
-/// receive a styled page. Here an unauthenticated POST ⇒ 401 JSON, not the branded HTML card.
 #[tokio::test]
 async fn api_json_path_stays_json_not_html() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
@@ -653,8 +582,6 @@ async fn api_json_path_stays_json_not_html() {
     handle.abort();
 }
 
-/// A CREDENTIAL-kind login plugin on the door (the LDAP shape): begin returns a `Prompt` form;
-/// complete verifies the submitted username/password ITSELF and `Identify`s (no client_secret).
 fn cred_login() -> std::sync::Arc<DoorLogin> {
     std::sync::Arc::new(DoorLogin {
         kind: LoginKind::Credential,
@@ -731,9 +658,6 @@ fn cred_bindings() -> busbar_kernel::config::RoleBindings {
 }
 
 fn cred_app() -> std::sync::Arc<busbar_kernel::state::App> {
-    // The `team` group the role binds to MUST be a real configured group (parent of the
-    // auto-provisioned `user:<sub>` leaf), carrying a `child_default` the leaf inherits — the
-    // production shape (role_bindings.<module>.<role>.group names a configured team).
     let team: busbar_kernel::config::GroupCfg =
         serde_yaml::from_str("child_default:\n  limits:\n    - { budget: 500, per: month }\n")
             .expect("team group parses");
@@ -753,8 +677,6 @@ fn cred_app() -> std::sync::Arc<busbar_kernel::state::App> {
         .build()
 }
 
-/// Wrap a `cred_app` snapshot in a live `AppHandle` so `credential_submit` can auto-provision the
-/// `user:<sub>` leaf (persist-then-swap) exactly as the running server does.
 fn cred_handle(
     app: &std::sync::Arc<busbar_kernel::state::App>,
 ) -> std::sync::Arc<busbar_kernel::state::AppHandle> {
@@ -772,7 +694,6 @@ fn cred_cookie(state: &str, refresh: bool) -> String {
     .encode()
 }
 
-/// Extract the first `bbk_…` token from a rendered page.
 fn extract_key(body: &str) -> String {
     let start = body.find("bbk_").expect("a bbk_ key in the issued page");
     body[start..]
@@ -781,8 +702,6 @@ fn extract_key(body: &str) -> String {
         .collect()
 }
 
-/// A Credential method's `begin` renders the declared FORM (not a 302): a text `username` and a
-/// MASKED `password`, POSTing to /auth/token with a hidden CSRF `__state`.
 #[tokio::test]
 async fn credential_begin_renders_the_form() {
     let app = cred_app();
@@ -805,7 +724,6 @@ async fn credential_begin_renders_the_form() {
     );
 }
 
-/// A Redirect method's `begin` still 302s (credential UI must not change the OAuth path).
 #[tokio::test]
 async fn redirect_begin_still_redirects() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
@@ -813,8 +731,6 @@ async fn redirect_begin_still_redirects() {
     assert_eq!(resp.status().as_u16(), 302);
 }
 
-/// POSTing valid credentials runs `complete_login` (which reads the SUBMITTED map) and issues a key
-/// through the SAME seam — grouped under `user:test-login-double:alice` (the module-namespaced sub).
 #[tokio::test]
 async fn credential_submit_issues_via_shared_seam() {
     let app = cred_app();
@@ -831,7 +747,7 @@ async fn credential_submit_issues_via_shared_seam() {
         body.contains("test-login-double:alice"),
         "the issued page shows the identity: {body}"
     );
-    // The issued token verifies through the ordinary path.
+
     let key = extract_key(&body);
     assert!(app
         .governance
@@ -841,7 +757,6 @@ async fn credential_submit_issues_via_shared_seam() {
         .is_some());
 }
 
-/// Wrong credentials → the plugin `Reject`s → 401, no key.
 #[tokio::test]
 async fn credential_submit_wrong_password_401() {
     let app = cred_app();
@@ -855,12 +770,6 @@ async fn credential_submit_wrong_password_401() {
     assert_eq!(resp.status().as_u16(), 401);
 }
 
-/// 1.5.5 PARITY: a CREDENTIAL method's cookie arriving
-/// on the redirect callback (`?code=&state=`) is handled exactly as 1.5.5's callback handled it
-/// (crates/busbar/src/auth/token.rs:466-470 at v1.5.5 admits any method with a button): the plugin
-/// is handed the code, answers Reject (no credentials were submitted), and the caller gets 1.5.5's
-/// 401 "Sign-in was declined" page with the cookie cleared. RED against a method-kind check on the
-/// callback, which answers 400 "Sign-in unavailable" before the plugin is asked.
 #[tokio::test]
 async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answered_it() {
     let door = cred_login();
@@ -907,7 +816,6 @@ async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answe
     );
 }
 
-/// CSRF: a form `__state` that does not match the cookie is a clean 400 (no complete_login).
 #[tokio::test]
 async fn credential_submit_state_mismatch_400() {
     let app = cred_app();
@@ -921,9 +829,6 @@ async fn credential_submit_state_mismatch_400() {
     assert_eq!(resp.status().as_u16(), 400);
 }
 
-/// The WIRED Refresh action ROTATES: a refresh-marked submit yields a DIFFERENT key, and the prior
-/// token STOPS verifying. Before the wiring: Refresh re-hit `issue_self` (idempotent) → same key,
-/// old token still valid.
 #[tokio::test]
 async fn refresh_rotates_key_and_revokes_the_old_one() {
     let app = cred_app();
@@ -933,13 +838,13 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
             ("password".to_string(), "pw".to_string()),
         ]
     };
-    // First login (issue).
+
     let mut f1 = vec![("__state".to_string(), "s1".to_string())];
     f1.extend(creds());
     let body1 =
         body_of(credential_submit(&app, &cred_handle(&app), cred_cookie("s1", false), f1).await);
     let key1 = extract_key(&body1);
-    // Refresh (rotate).
+
     let mut f2 = vec![("__state".to_string(), "s2".to_string())];
     f2.extend(creds());
     let body2 =
@@ -977,15 +882,12 @@ fn key_page_injects_base_url_verbatim() {
         "base_url must NOT carry a /v1 suffix (BYOK clients append their own)"
     );
     assert!(page.contains("bb_live_7Qm2"), "the key is shown");
-    // Re-showable, not shown-once: a Refresh action re-hits the exchange.
+
     assert!(page.contains("Refresh key"));
     assert!(page.contains("/auth/token?method=microsoft"));
     assert!(!page.contains("won't see this key again"));
 }
 
-/// The success page carries ONE-CLICK COPY: a `.copy` button beside the key and a `.copymini` button
-/// for the BYOK block, each wired to the inline `bbCopy` handler with the exact value to copy in
-/// `data-copy`. Before this change: the key/BYOK block rendered with no copy button at all.
 #[test]
 fn key_page_has_copy_buttons_wired_to_clipboard() {
     let page = render_key_issued(
@@ -995,7 +897,7 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
         "https://busbar.example.com",
         "microsoft",
     );
-    // The inline clipboard handler ships with the page (Clipboard API + execCommand fallback).
+
     assert!(
         page.contains("function bbCopy(") && page.contains("navigator.clipboard"),
         "the self-contained copy JS is inlined"
@@ -1004,7 +906,7 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
         page.contains("document.execCommand('copy')"),
         "a non-secure-context fallback is present"
     );
-    // Key copy button: correct class, accessible label, click wiring, and the key as the copy value.
+
     assert!(
         page.contains("class=\"copy\"")
             && page.contains("aria-label=\"Copy your API key\"")
@@ -1015,7 +917,7 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
         page.contains("data-copy=\"bb_live_7Qm2\""),
         "the key Copy button carries the key value to copy: {page}"
     );
-    // BYOK block copy button: copies the whole base_url + api_key pair (newline-separated).
+
     assert!(
         page.contains("class=\"copymini\"")
             && page.contains("aria-label=\"Copy the base URL and API key\""),
@@ -1027,7 +929,7 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
         ),
         "the BYOK Copy button copies the base_url + api_key block: {page}"
     );
-    // A quiet, accessible "Sign out" exit that ends the browser view (so the key isn't left shown).
+
     assert!(
         page.contains("class=\"signout\"")
             && page.contains("href=\"/auth/token?logout=1\"")
@@ -1036,10 +938,6 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
     );
 }
 
-/// The `?logout=1` "Sign out" action renders the branded "Signed out" page, EXPIRES the login cookie
-/// (defensive — the flow is stateless post-issuance), and offers a clean "Sign in again" re-entry. It
-/// does not revoke the key or the IdP session (honest copy). Before this change: `?logout=1` was
-/// an unknown param that fell through to the chooser (no signed-out page, no cookie clear).
 #[tokio::test]
 async fn logout_renders_signed_out_and_clears_cookie() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
@@ -1050,7 +948,7 @@ async fn logout_renders_signed_out_and_clears_cookie() {
         .unwrap();
     let resp = browser(handle, req).await;
     assert_eq!(resp.status().as_u16(), 200);
-    // The single-use login cookie is expired on the way out.
+
     assert!(
         resp.headers()
             .get_all(header::SET_COOKIE)
@@ -1065,7 +963,7 @@ async fn logout_renders_signed_out_and_clears_cookie() {
         body.contains("href=\"/auth/token\"") && body.contains("Sign in again"),
         "offers a clean re-entry: {body}"
     );
-    // Honest: we don't claim to revoke the key or end the IdP session.
+
     assert!(
         body.contains("doesn't revoke your key"),
         "copy is honest about scope: {body}"
@@ -1081,16 +979,14 @@ fn pkce_code_challenge_is_s256_of_verifier() {
         verifier.as_bytes(),
     ));
     assert_eq!(challenge, expected);
-    // base64url no-pad ⇒ no '+', '/', or '=' in the challenge.
+
     assert!(!challenge.contains('+') && !challenge.contains('/') && !challenge.contains('='));
 }
 
-/// GET AND POST `/auth/token` are exempt from the auth chain (they run it themselves); `/healthz`
-/// stays exempt; `/metrics` still 401s; and the bypass is EXACT-MATCH (no `/auth` prefix over-match).
 #[tokio::test]
 async fn auth_token_bypasses_middleware_exact_match() {
     busbar_kernel_testkit::test_support::metrics::init();
-    // A chain that 401s every un-exempt request: the built-in `keys` verifier with no key presented.
+
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
     let auth =
@@ -1102,7 +998,6 @@ async fn auth_token_bypasses_middleware_exact_match() {
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
 
-    // GET /auth/token (chooser) is NOT 401 — it bypasses the chain.
     let g = client
         .get(format!("{base}/auth/token"))
         .send()
@@ -1114,8 +1009,7 @@ async fn auth_token_bypasses_middleware_exact_match() {
         "GET /auth/token must bypass the chain"
     );
     assert!(g.status().is_success(), "chooser renders 200");
-    // POST /auth/token also bypasses (runs the chain itself → unauth here, but not the middleware 401
-    // envelope — it reaches the handler). Either way it is not a middleware short-circuit 404/405.
+
     let p = client
         .post(format!("{base}/auth/token"))
         .send()
@@ -1124,16 +1018,12 @@ async fn auth_token_bypasses_middleware_exact_match() {
     assert_ne!(p.status().as_u16(), 404);
     assert_ne!(p.status().as_u16(), 405);
 
-    // /healthz stays exempt.
     let h = client.get(format!("{base}/healthz")).send().await.unwrap();
     assert!(h.status().is_success() || h.status().as_u16() == 503);
 
-    // /metrics still goes through the chain ⇒ 401 (fingerprinting surface stays gated).
     let m = client.get(format!("{base}/metrics")).send().await.unwrap();
     assert_eq!(m.status().as_u16(), 401, "/metrics must still be gated");
 
-    // EXACT-MATCH: a sibling path is NOT bypassed — it hits the chain (401) or 404, never the login
-    // page. `/auth/tokenx` is not a real route ⇒ the fallback runs under the chain ⇒ 401.
     let x = client
         .get(format!("{base}/auth/tokenx"))
         .send()
@@ -1151,14 +1041,13 @@ async fn auth_token_bypasses_middleware_exact_match() {
 async fn auth_token_absent_from_admin_router() {
     busbar_kernel_testkit::test_support::metrics::init();
     let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .admin_chain(vec![]) // open admin posture so a hit would reach a handler, not 401
+        .admin_chain(vec![])
         .public_url("https://busbar.example.com")
         .build();
     busbar_kernel::auth::login::seam::install(SEAM);
     let (data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
-    // Serve the ADMIN router: /auth/token must be ABSENT (404), while the DATA router serves it.
     let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let admin_addr = admin_listener.local_addr().unwrap();
     let ah = tokio::spawn(async move { axum::serve(admin_listener, admin).await.unwrap() });
@@ -1190,18 +1079,11 @@ async fn auth_token_absent_from_admin_router() {
     dh.abort();
 }
 
-/// THE BYPASS IS PER-ROUTER, NOT PER-PROCESS (1.6.0).
-/// `/auth/token` is mounted on the DATA router only (`auth_token_absent_from_admin_router` pins
-/// that). Its auth bypass must be equally absent from the admin plane: a bypass declared by the
-/// PROCESS rather than by the ROUTER that mounted the route means the admin listener waves through
-/// a path it does not serve, answering an unauthenticated caller 404 (the path is unknown here)
-/// instead of 401 (you are not admitted here). That is the exact drift a core route-auth table
-/// generated at mount time exists to make impossible.
 #[tokio::test]
 async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
     busbar_kernel_testkit::test_support::metrics::init();
     let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .keys_chain() // a CLOSED data-plane posture: no credential ⇒ 401
+        .keys_chain()
         .public_url("https://busbar.example.com")
         .build();
     busbar_kernel::auth::login::seam::install(SEAM);
@@ -1225,8 +1107,6 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
          path is unmounted and unauthenticated, so the auth chain must answer it"
     );
 
-    // /healthz IS mounted on the admin router and IS declared open there — the control that proves
-    // the assertion above is about the declaration, not about admin being closed to everything.
     let health = client
         .get(format!("http://{admin_addr}/healthz"))
         .send()
@@ -1241,16 +1121,6 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
     ah.abort();
 }
 
-/// NEAR-MISS MATRIX for the core route-auth table (1.6.0).
-/// A bypass is worth exactly as much as its exactness: a
-/// declaration that matched a prefix, a trailing slash, a case fold, or any method would hand every
-/// neighbouring path the same free pass, which is how an authorization server's public metadata
-/// route ends up opening the routes beside it.
-///
-/// The METHOD axis is new with the table and is the one that could not be stated in terms of the
-/// old middleware: the bypass was a bare path equality, so `PUT /auth/token` rode it and was
-/// answered by axum's 405 without the chain ever running. A declaration is per method, so an
-/// undeclared method on a declared-open path takes the normal bar.
 #[tokio::test]
 async fn core_route_bypass_is_exact_in_path_and_method() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1265,9 +1135,6 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
 
-    // Controls: the two declarations themselves, on their declared methods. HEAD is included
-    // because axum serves it from the GET arm, so the table must resolve it there too — the
-    // half-closed hazard `plugin_routes::route_method_of` already documents.
     for (method, path) in [
         (reqwest::Method::GET, "/healthz"),
         (reqwest::Method::HEAD, "/healthz"),
@@ -1284,9 +1151,7 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
             "{method} {path} is declared open and must bypass the chain"
         );
     }
-    // POST /auth/token bypasses the MIDDLEWARE and then runs the chain in its own handler, so an
-    // unauthenticated POST legitimately ends in 401 — from the handler, not from the middleware.
-    // What proves the bypass is that the request REACHED a handler at all.
+
     let p = client
         .post(format!("{base}/auth/token"))
         .send()
@@ -1297,7 +1162,6 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
         "POST /auth/token is declared open and must reach its handler, which runs the chain itself"
     );
 
-    // Near misses: every one takes the normal bar (401), never the bypass.
     for (method, path) in [
         (reqwest::Method::PUT, "/auth/token"),
         (reqwest::Method::DELETE, "/auth/token"),
@@ -1310,8 +1174,6 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
         (reqwest::Method::GET, "/healthzx"),
         (reqwest::Method::GET, "/HEALTHZ"),
         (reqwest::Method::GET, "/AUTH/TOKEN"),
-        // Forward guards for the authorization-server surface (par. 5.3): none of these is mounted
-        // yet, and until one is DECLARED open it must answer with the chain, not with a bypass.
         (reqwest::Method::GET, "/.well-known"),
         (
             reqwest::Method::GET,
@@ -1355,10 +1217,6 @@ fn body_of(resp: Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-/// A login plugin on the door whose `begin_login` / `complete_login` answer only after `park`, the
-/// way a real one does: an LDAP/AD bind or an OIDC token exchange is a network round-trip. The
-/// plugin runs on its own (dispatcher) thread; the HOST, not the plugin, is responsible for awaiting
-/// the step rather than parking a reactor worker on it.
 fn parking_login(kind: LoginKind) -> std::sync::Arc<DoorLogin> {
     std::sync::Arc::new(DoorLogin {
         kind,
@@ -1368,9 +1226,6 @@ fn parking_login(kind: LoginKind) -> std::sync::Arc<DoorLogin> {
     })
 }
 
-/// The runtime this class is about: a SMALL, fixed worker pool, exactly like a busy node whose
-/// workers are all already serving. Two workers makes "every worker is parked" reachable with a
-/// handful of requests instead of a hundred; the defect is identical at 8 workers and 9 requests.
 fn two_worker_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1379,16 +1234,6 @@ fn two_worker_runtime() -> tokio::runtime::Runtime {
         .expect("test runtime")
 }
 
-/// Assert the runtime is STILL POLLING: spawn a trivial task (it needs a worker and nothing else —
-/// this is `/healthz`, the admin plane, and every other in-flight request, in miniature) and wait for
-/// it from OUTSIDE the runtime on wall-clock time.
-///
-/// The wait deliberately uses `std::thread::sleep` and `Instant`, never a Tokio timer: when every
-/// worker is parked inside plugin FFI the TIME DRIVER is parked with them, so a `tokio::time::timeout`
-/// does not fire either — it simply returns late, and the assertion it guards passes against a runtime
-/// that was dead for the whole window. (Observed: a `sleep(300ms).await` inside `block_on` on such a
-/// runtime returned at 12s, after the blocking tasks had drained.) Wall clock is the only honest
-/// instrument here.
 fn assert_runtime_still_polls(
     rt: &tokio::runtime::Runtime,
     budget: std::time::Duration,
@@ -1405,10 +1250,6 @@ fn assert_runtime_still_polls(
     panic!("{msg}");
 }
 
-/// UNAUTHENTICATED DATA PLANE. `GET /auth/token?method=…` is mounted on the DATA router
-/// (`main.rs`'s data-router mount) and the auth middleware bypasses that exact path, so ANONYMOUS
-/// callers reach `begin` — and `begin` asks the plugin's `begin_login`. Four concurrent
-/// anonymous requests on a two-worker runtime must not stop the runtime from polling anything else.
 #[test]
 fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     let rt = two_worker_runtime();
@@ -1423,14 +1264,14 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
             )
             .build()
     });
-    // Four anonymous begins — two more than the runtime has workers.
+
     let tasks: Vec<_> = (0..4)
         .map(|_| {
             let a = app.clone();
             rt.spawn(async move { begin(&a, "test-login-double", false).await.status() })
         })
         .collect();
-    // Wall-clock (not a Tokio timer): let the begins actually reach the plugin.
+
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert_runtime_still_polls(
         &rt,
@@ -1444,10 +1285,6 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     }
 }
 
-/// The credential POST (`POST /auth/token` carrying a login cookie) asks the plugin's
-/// `complete_login` — the LDAP/AD bind itself. The `__state` CSRF check does not gate an attacker:
-/// they call `begin` themselves and echo back the state from the cookie they were handed, which is
-/// exactly what this test does. Same anonymous reachability, same runtime-starvation shape.
 #[test]
 fn concurrent_credential_submit_does_not_starve_the_runtime() {
     let rt = two_worker_runtime();
@@ -1464,8 +1301,7 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
         let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
         (app, handle)
     });
-    // The cookie an attacker mints for themselves by calling `begin` first — its `state` is theirs to
-    // echo in `__state`, so CSRF is satisfied without any prior authentication.
+
     let cookie = LoginCookie {
         method: "test-login-double".to_string(),
         code_verifier: String::new(),
@@ -1504,9 +1340,6 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
     }
 }
 
-/// RED: a login plugin answering SecurityCheckFailed (the LOGIN_SECURITY_CHECK_FAILED verdict) on
-/// the redirect callback renders 1.5.5's verification page (400 "Sign-in couldn't be verified",
-/// no-store), byte for byte the page a `state` mismatch renders, and clears the login cookie.
 #[tokio::test]
 async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
     let app = busbar_kernel_testkit::test_support::TestApp::new()
@@ -1565,12 +1398,6 @@ async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
     );
 }
 
-// A login plugin on the door (an IdP module the auth axis opened) makes its own token exchange over
-// its own need with the client secret it was lent at `open`, and binds the IdP's answer to the
-// login's nonce itself (THE DESIGN 6.7). The core still mints PKCE/state/nonce, checks `state`
-// against the cookie before anything is asked, hands the plugin ONE `complete_login` carrying the
-// cookie's state and nonce, and renders the plugin's answer as 1.5.5 rendered the same outcome.
-
 fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<busbar_kernel::state::App> {
     busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
@@ -1588,7 +1415,6 @@ fn door_cookie() -> LoginCookie {
     }
 }
 
-/// `begin` on the door 302s to the plugin's authorize URL and sets the login cookie.
 #[tokio::test]
 async fn a_door_login_begins_with_the_plugins_authorize_url() {
     let app = door_app(DoorLogin::new(LoginOutcome::Reject));
@@ -1605,8 +1431,6 @@ async fn a_door_login_begins_with_the_plugins_authorize_url() {
         .any(|v| v.to_str().unwrap_or("").starts_with("busbar_login=")));
 }
 
-/// The callback hands the door ONE `complete_login` carrying the code, the redirect URI, the PKCE
-/// verifier and the cookie's state and nonce (the plugin binds the IdP's answer to the nonce).
 #[tokio::test]
 async fn a_door_callback_hands_the_plugin_the_cookies_state_and_nonce() {
     let door = DoorLogin::new(LoginOutcome::Reject);
@@ -1636,7 +1460,6 @@ async fn a_door_callback_hands_the_plugin_the_cookies_state_and_nonce() {
     );
 }
 
-/// RED: a callback whose `state` is not the cookie's never reaches the door.
 #[tokio::test]
 async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
     let door = DoorLogin::new(LoginOutcome::Identify(Principal::from_id("alice")));
@@ -1653,8 +1476,6 @@ async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
     assert!(door.seen.lock().unwrap().is_empty());
 }
 
-/// Every door answer renders 1.5.5's page for the same outcome: a failed security check, an
-/// unreachable IdP, a declined login, and an identity with no self-serve grant.
 #[tokio::test]
 async fn a_door_callback_renders_each_answer_on_its_page() {
     for (outcome, status, heading) in [
@@ -1694,8 +1515,7 @@ async fn a_door_callback_renders_each_answer_on_its_page() {
     )
     .await;
     let page = provider_unreachable(None);
-    // RED (owner ruling 2026-10-27): an identity provider that could not answer is 503, retryable,
-    // never 1.5.5's 502.
+
     assert_eq!(unreachable.status().as_u16(), 503);
     assert_eq!(
         unreachable
@@ -1709,10 +1529,6 @@ async fn a_door_callback_renders_each_answer_on_its_page() {
     assert_eq!(body_of(unreachable), body_of(page));
 }
 
-/// An identity provider that could not answer and said when to come back (owner-signed 2026-10-30,
-/// OWNER-QUEUE.md item "IdP errors"): the plugin's LOGIN_OUTAGE carries the IdP's `Retry-After`
-/// and the 503 sends it, on the redirect callback and on the credential POST alike, clamped to
-/// [1, 3600] seconds; a plugin that stated none gets the host's own 5. The page is the same page.
 #[tokio::test]
 async fn an_outage_sends_the_idps_retry_after_clamped() {
     for (stated, sent) in [
@@ -1772,12 +1588,6 @@ async fn an_outage_sends_the_idps_retry_after_clamped() {
     }
 }
 
-/// A login plugin that FAULTS (its SDK shim caught a panic and answered FAULT) on begin, on the
-/// redirect callback and on the credential POST: each fails closed as the decline renders it, and
-/// says so as 1.5.5 said a panicked login plugin call (4003 `login-plugin-panicked`, "login plugin
-/// call panicked; rejecting (fail-closed)", naming the method and the op). RED arm: the SAME
-/// outcome answered by a plugin that merely DECLINED says nothing — 4003 is the fault's, not the
-/// Reject's.
 #[test]
 fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_says_nothing() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -1859,7 +1669,6 @@ fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_
         "4003 names the method: {said:?}"
     );
 
-    // RED: the same answers from a plugin that DECLINED say nothing about a panic.
     let (declined, said) = run(false);
     assert_eq!(declined.1, faulted.1, "a decline renders as the fault does");
     assert_eq!(declined.2, faulted.2, "a decline renders as the fault does");
@@ -1871,10 +1680,6 @@ fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_
     );
 }
 
-/// THE CLIENT SECRET RIDES NOTHING THIS FLOW MAKES (THE DESIGN 6.7). The kernel lends
-/// `browser_login.client_secret` to the plugin at `open` (its own test, `busbar-kernel`'s
-/// `login_tests`); this flow never holds it: not the login cookie, not the authorize redirect, not
-/// the `complete_login` the callback hands the plugin, not the pages it renders.
 #[tokio::test]
 async fn the_client_secret_rides_nothing_the_flow_makes() {
     const SECRET: &str = "REAL-SECRET-XYZ";
@@ -1929,7 +1734,6 @@ async fn the_client_secret_rides_nothing_the_flow_makes() {
     );
 }
 
-/// The 1.5.5 golden cell `name` (`testing/shadow-oracle/golden/1.5.5/cells`).
 fn golden_cell(name: &str) -> serde_json::Value {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../testing/shadow-oracle/golden/1.5.5/cells")
@@ -1938,11 +1742,6 @@ fn golden_cell(name: &str) -> serde_json::Value {
     serde_json::from_str(&text).expect("golden json")
 }
 
-/// `GET /auth/token` with no credential and no login method, served by this flow through the
-/// kernel's data router, is 1.5.5's answer byte for byte (oracle cell
-/// `http.crosscut|auth-token|GET-none`): the status, the `cache-control`, `content-type` and
-/// `content-length` headers, and the whole page. RED arm kept: the signed-out page, served on the
-/// same path, is a different page, so the comparison is not vacuous.
 #[tokio::test]
 async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1972,7 +1771,7 @@ async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
         golden["body"]["text"].as_str().unwrap(),
         "the page is 1.5.5's"
     );
-    // RED arm: another page of this flow on the same path differs from the golden.
+
     let signed_out = client
         .get(format!("{base}/auth/token?logout=1"))
         .send()

@@ -2,21 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! dimpl's crypto provider on RING — the tree's one crypto backend, the same one rustls runs on
-//! (Cargo.toml: "no second crypto backend enters").
-//!
-//! * DTLS 1.2: `ECDHE_ECDSA_AES128_GCM_SHA256` and `ECDHE_ECDSA_AES256_GCM_SHA384` (ring AEAD).
-//! * Key exchange: X25519, P-256, P-384 (ring agreement).
-//! * The host's own key: an ECDSA P-256 ring key pair [`super::SessionCert`] generates and keeps.
-//!   dimpl never receives the key's bytes: the "private key" it is handed is a HANDLE
-//!   ([`register_key`]) this provider resolves to the key pair, so no copy of the key passes
-//!   through dimpl's buffers. Only SHA-256 signatures — ring fixes the hash when the key is loaded.
-//! * The peer's signature: verified against the leaf certificate through rustls-webpki's ring
-//!   algorithms, the same verifier rustls uses.
-//! * DTLS 1.3: dimpl refuses a provider without a 1.3 suite. ring's QUIC header protection is
-//!   exactly the record-number mask for ChaCha20 (dimpl checks its first 5 bytes), so
-//!   `TLS_CHACHA20_POLY1305_SHA256` is offered to satisfy it. The AES-GCM 1.3 suites need a full
-//!   16-byte AES-ECB block, which ring does not expose. Associations are built DTLS 1.2
-//!   (`Dtls::new_12`), the version every browser's media stack speaks.
 
 use dimpl::crypto::{
     Aad, ActiveKeyExchange, Buf, Cipher, CryptoProvider, Dtls12CipherSuite, Dtls13CipherSuite,
@@ -160,7 +145,6 @@ impl SupportedDtls12CipherSuite for Suite12 {
         self.hash
     }
     fn key_lengths(&self) -> (usize, usize, usize) {
-        // (mac key, encryption key, fixed IV): AEAD, so no MAC key; a 4-byte implicit IV.
         (0, self.key_len, 4)
     }
     fn explicit_nonce_len(&self) -> usize {
@@ -202,9 +186,6 @@ impl SupportedDtls13CipherSuite for ChaCha13 {
         Ok(Box::new(Aead::new(&aead::CHACHA20_POLY1305, key)?))
     }
     fn encrypt_sn(&self, sn_key: &[u8], sample: &[u8; 16]) -> [u8; 16] {
-        // The record-number mask is the QUIC header-protection mask (RFC 9147 §4.2.3,
-        // RFC 9001 §5.4.4); a DTLS 1.3 record number is at most 2 bytes, well inside the 5 ring
-        // returns.
         let mut out = [0_u8; 16];
         if let Ok(hp) = aead::quic::HeaderProtectionKey::new(&aead::quic::CHACHA20, sn_key) {
             if let Ok(mask) = hp.new_mask(sample) {
@@ -245,7 +226,7 @@ impl ActiveKeyExchange for Exchange {
     }
     fn complete(self: Box<Self>, peer: &[u8], out: &mut Buf) -> Result<(), CryptoError> {
         let group = self.group;
-        // ring's agree_ephemeral rejects a non-contributory (all-zero) X25519 secret itself.
+
         agreement::agree_ephemeral(
             self.key,
             &UnparsedPublicKey::new(self.alg, peer),
@@ -327,7 +308,6 @@ struct Keys;
 impl KeyProvider for Keys {
     fn load_private_key(&self, handle: &[u8]) -> Result<Box<dyn SigningKey>, CryptoError> {
         if !handle.starts_with(HANDLE_TAG) {
-            // Key bytes are never accepted here: the host's keys reach dimpl only as handles.
             return Err(CryptoError::InvalidPrivateKey);
         }
         key_registry()
@@ -368,8 +348,7 @@ impl SignatureVerifier for Verifier {
             ],
             _ => return Err(CryptoError::UnsupportedSignatureAlgorithm(alg)),
         };
-        // webpki refuses an algorithm whose curve is not the certificate key's own, so exactly
-        // the matching candidate can verify.
+
         if candidates
             .iter()
             .any(|a| leaf.verify_signature(*a, data, sig).is_ok())

@@ -43,8 +43,6 @@ impl ServiceStore {
         })
     }
 
-    /// Result owners and driver bookkeeping are locked in that order through validation and
-    /// detachment. Destruction happens after every guard is gone. No pending write is canceled.
     pub(crate) fn retire_results(
         &self,
         wake: &'static InstanceWake,

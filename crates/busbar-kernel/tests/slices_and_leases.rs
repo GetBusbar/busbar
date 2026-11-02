@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The leases that come back on every end.
-
 use busbar_contract::caps::{OriginKind, ReasonCode};
 use busbar_kernel::slice::{bucket_all, takes_lease, ConcurrencyGauge, LeaseSet};
 
@@ -25,13 +23,11 @@ fn the_gauge_counts_units_and_gives_the_lease_back() {
 
 #[test]
 fn the_administrative_surface_answers_at_a_saturated_concurrency_cap() {
-    // A kernel-verb unit takes no lease, which is what makes the audit and usage surfaces answer at
-    // exactly the moment an operator most needs them to.
     assert!(!takes_lease(OriginKind::Client, true));
-    // Ticks and handshakes take none either: no money moves in them.
+
     assert!(!takes_lease(OriginKind::Tick, false));
     assert!(!takes_lease(OriginKind::Handshake, false));
-    // Everything else does, including the nested, delivery and provider units.
+
     assert!(takes_lease(OriginKind::Client, false));
     assert!(takes_lease(OriginKind::Provider, false));
     assert!(takes_lease(

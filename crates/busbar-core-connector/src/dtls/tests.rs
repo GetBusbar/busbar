@@ -18,7 +18,7 @@ fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
 }
 
 /// A Binding request as a peer sends it to the owner of `to`: USERNAME "to.ufrag:from_ufrag",
-/// MESSAGE-INTEGRITY under `key` (the receiver's pwd when honest), then FINGERPRINT-less.
+
 fn check(to: &IceCredentials, from_ufrag: &str, key: &str) -> Vec<u8> {
     let username = format!("{}:{from_ufrag}", to.ufrag).into_bytes();
     let padded = username.len().div_ceil(4) * 4;
@@ -39,7 +39,7 @@ fn check(to: &IceCredentials, from_ufrag: &str, key: &str) -> Vec<u8> {
 }
 
 /// The success response a full ICE agent sends to a probe: same transaction id, MESSAGE-INTEGRITY
-/// under `pwd` (the prober's REMOTE password — the answering agent's own).
+
 fn answer(probe: &[u8], pwd: &str) -> Vec<u8> {
     let mut m = vec![0x01, 0x01, 0, 0, 0x21, 0x12, 0xa4, 0x42];
     m.extend_from_slice(&probe[8..20]);
@@ -136,7 +136,6 @@ fn ownership_probes_use_peer_reflexive_priority_and_keep_their_authentication() 
             wire.len() - 20
         );
 
-        // Read the emitted packet independently of the STUN encoder and its private constants.
         let mut attributes = Vec::new();
         let mut at = 20;
         while at < wire.len() {
@@ -153,8 +152,7 @@ fn ownership_probes_use_peer_reflexive_priority_and_keep_their_authentication() 
             found[0]
         };
         let priority = u32::from_be_bytes(attribute(0x0024).2.try_into().unwrap());
-        // The existing WebRTC ICE engine uses UDP host126/prflx110. A request advertises the
-        // peer-reflexive type, retaining this core's local preference and component bits.
+
         assert_eq!(priority >> 24, 110);
         assert_eq!(priority & 0x00ff_ffff, 0x00ff_ffff);
         assert_eq!(
@@ -366,7 +364,7 @@ fn red_a_forged_message_integrity_is_not_heard() {
         t.s.poll_wire().is_none(),
         "no probe for an unverified check"
     );
-    // A check addressed to another session's ufrag, even with this pwd, is not heard either.
+
     t.s.ingest(
         t.c_path,
         &check(&creds("other", S_ICE.1), C_ICE.0, S_ICE.1),
@@ -377,9 +375,6 @@ fn red_a_forged_message_integrity_is_not_heard() {
 
 #[test]
 fn red_a_spoofed_or_replayed_check_cannot_bind_a_victim_address() {
-    // The peer knows the local pwd (it is in the answer); a spoofed source or a replayed check
-    // carries a valid MESSAGE-INTEGRITY. The victim never answers core's probe, so the path stays
-    // unproven: no bind, no DTLS, no media toward it.
     let mut t = pair(false);
     let victim = p("192.0.2.10:9");
     let honest = check(&creds(S_ICE.0, S_ICE.1), C_ICE.0, S_ICE.1);
@@ -510,7 +505,7 @@ fn consent_that_keeps_being_answered_keeps_the_association() {
 fn dtls_that_beats_the_proof_from_a_heard_path_is_kept_and_replayed() {
     let mut t = pair(false);
     t.checked_and_bound();
-    // The client's ClientHello is out before the server has proven the client's path.
+
     t.c.handle_timeout(t.now);
     let mut server_probe = None;
     while let Some((to, d)) = t.s.poll_wire() {
@@ -614,7 +609,6 @@ fn red_a_flood_of_sources_holds_both_maps_at_their_caps_and_the_real_path_still_
     assert_eq!(t.s.bind_path(t.c_path, t.now), Ok(Bind::WhenProven));
     let (_, real_probe) = t.s.poll_wire().unwrap();
 
-    // MAX_PROBES + 1 distinct spoofed sources, each with a verified (replayed) check.
     for i in 0..=MAX_PROBES {
         let spoofed = SocketAddr::from(([192, 0, 2, u8::try_from(i).unwrap()], 9));
         t.now += Duration::from_millis(1);
@@ -628,11 +622,9 @@ fn red_a_flood_of_sources_holds_both_maps_at_their_caps_and_the_real_path_still_
         "the awaited path is still heard: the flood evicted spoofed paths, not it"
     );
 
-    // The real path's check, in flight since before the flood, still completes.
     t.s.ingest(t.c_path, &answer(&real_probe, C_ICE.1), t.now);
     assert_eq!(t.s.bound_path(), Some(t.c_path));
 
-    // And a real NEW path after the flood can still be heard, proven and moved to.
     let new = p("203.0.113.77:61000");
     t.s.ingest(new, &honest, t.now);
     assert_eq!(t.s.rebind_path(t.c_path, new, t.now), Ok(Bind::WhenProven));
@@ -664,7 +656,7 @@ fn an_admitted_candidate_takes_checks_only_and_binds_only_once_proven() {
     let mut t = pair(false);
     let cand = t.c_path;
     let request = check(&creds(C_ICE.0, C_ICE.1), S_ICE.0, C_ICE.1);
-    // RED arm: an address the host never admitted gets nothing and cannot be bound.
+
     assert!(!t.s.may_send_clear(cand, &request));
     assert_eq!(t.s.bind_path(cand, t.now), Err(BindRefused::Unchecked));
     assert!(t.s.admit_candidate(cand, t.now));
@@ -682,7 +674,7 @@ fn an_admitted_candidate_takes_checks_only_and_binds_only_once_proven() {
             .expect("core probed the candidate at admission");
     assert_eq!(to, cand);
     assert_eq!(t.s.bound_path(), None, "admitted is not proven");
-    // An answer from another source proves nothing; one from the candidate binds it.
+
     t.s.ingest(p("192.0.2.9:9"), &answer(&probe, C_ICE.1), t.now);
     assert_eq!(t.s.bound_path(), None);
     t.s.ingest(cand, &answer(&probe, C_ICE.1), t.now);

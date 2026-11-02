@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/admin/mod.rs`.
-
 use super::internal_error;
 use busbar_kernel::governance::RecordStoreError;
 
-/// `internal_error` must project `AdminError::Internal` onto the real error envelope — a 500
-/// with the frozen `{"error":{"code":"internal",...}}` body — never `Response::default()`
-/// (which axum resolves to a bare `200 OK` with an EMPTY body, disguising a store failure as a
-/// success to the client).
 #[tokio::test]
 async fn projects_a_500_internal_error_envelope() {
     let resp = internal_error("test_op", &RecordStoreError("boom".to_string()));

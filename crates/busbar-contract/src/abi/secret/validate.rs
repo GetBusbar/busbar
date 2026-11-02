@@ -2,16 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SECRET KIND'S ANSWER VALIDATOR, beside the shapes it judges: one pure `check_<op>`, `u64`
-//! math, no statics, answering the shared [`Fault`] (one [`Rule`] and one distinct field per arm).
-//! The dispatcher turns an `Err` into FAULT; no host re-implements a check.
-//!
-//! Per outcome: the secret blob's pointer/length pairing, its size and the `error_kind` range are
-//! judged on every outcome (a PENDING or REFUSED `out` the host zeroed passes them). No answer
-//! carries a lease: the material is in the HOST'S buffer (the credential chip, row 6: host-owned secret bytes). READY states no
-//! `error_kind` and names at least one byte, flagged [`BLOB_SECRET`], at the start of that buffer,
-//! within its capacity; FAILED carries no
-//! material and either names its `error_kind` or is the short-buffer answer (M-SB: `needed` above
-//! the capacity, `error_kind` unset).
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
@@ -36,7 +26,7 @@ abi_op! {
 }
 
 /// `resolve`'s cross-field rules, after its per-field ones: the outcome against `error_kind`, the
-/// material and the short-buffer answer.
+
 fn resolved(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault> {
     let outcome = out.head.outcome.outcome();
     let ready = matches!(outcome, Outcome::Ready);
@@ -44,8 +34,7 @@ fn resolved(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault> {
     if ready && out.error_kind != ERROR_KIND_UNSET {
         return Err(fault(Rule::Contradiction, "resolve.error_kind_on_ready"));
     }
-    // A secret-bearing answer is secret on the host side whatever its flags say: a FAILED answer
-    // carries no material at all.
+
     if failed && !out.secret.ptr.is_null() {
         return Err(fault(Rule::Contradiction, "resolve.secret_on_failed"));
     }
@@ -55,7 +44,6 @@ fn resolved(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault> {
         written,
         out.needed,
         cap,
-        // The kind's own cap, below the mechanism's hard max (which `blob` holds `len` to).
         MAX_SECRET_BYTES as u64,
         "resolve.needed",
     )? {
@@ -68,13 +56,11 @@ fn resolved(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault> {
             if failed && out.error_kind == ERROR_KIND_UNSET {
                 return Err(fault(Rule::Missing, "resolve.error_kind_on_failed"));
             }
-            // READY material starts at the host's buffer: any other address is memory the host
-            // never lent, and would have to be copied and released.
+
             if written > 0 && out.secret.ptr as usize != buf {
                 return Err(fault(Rule::Foreign, "resolve.secret_outside_buffer"));
             }
-            // A READY resolve IS its material: none is no secret (fail-closed, never resolved
-            // empty), and what it names is secret on the host side, so it says so.
+
             if ready && written == 0 {
                 return Err(fault(Rule::Missing, "resolve.secret_on_ready"));
             }

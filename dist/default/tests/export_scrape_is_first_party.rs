@@ -19,12 +19,7 @@
 //!    arm 1's `404` from being a boot that failed for some other reason.
 
 #![cfg(unix)]
-// The config below serves `providers:`/`models:`, so the build must link the plane door that
-// declares `pools:` (`linked_section_pools`) — the linked table's answer, never a feature name.
 #![cfg(linked_section_pools)]
-// The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
-// that links no export door (the single-plane rows link only the exports axis) refuses that module at
-// boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.
 #![cfg(linked_axis_export_doors)]
 
 mod common;
@@ -35,12 +30,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// The name the third-party tarball's manifest states.
 const THIRD_PARTY: &str = "tp-metrics";
 
-/// The in-tree `cdylib` that loads as an export sink carrying exactly the `metrics` stream, in the
-/// target directory this test binary lives in (uplifted or under `deps`, newest first). A missing
-/// artifact is a failure in every run, never a skip of #65's control.
 fn metrics_sink_cdylib() -> Vec<u8> {
     common::plugins::metrics_sink_cdylib().unwrap_or_else(|| {
         common::plugins::missing("metrics-stream export sink", common::plugins::BUILD_PINNED)
@@ -71,7 +62,6 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// `lib` packed UNSIGNED as a third-party `kind: export` tarball.
 fn write_third_party(dir: &Path, lib: &[u8]) {
     let bytes = common::plugins::pack_stated("export", THIRD_PARTY, lib, "acme");
     std::fs::write(dir.join("plugins").join("tp.tar.gz"), bytes).unwrap();
@@ -126,7 +116,6 @@ models:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -135,8 +124,6 @@ impl Drop for Reap {
     }
 }
 
-/// `GET /metrics` over a fresh connection: `(status, head, body)`, or `None` before the listener
-/// is up.
 fn scrape(port: u16) -> Option<(u16, String, String)> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -158,7 +145,6 @@ fn scrape(port: u16) -> Option<(u16, String, String)> {
     Some((status, head.to_ascii_lowercase(), body.to_string()))
 }
 
-/// Spawn the binary over `dir`, reaped when the returned guard drops.
 fn boot(dir: &Path) -> Reap {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
@@ -179,8 +165,6 @@ fn read_log(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("out.log")).unwrap_or_default()
 }
 
-/// Boot the binary over `dir` and return the first settled `/metrics` answer (anything but the
-/// recorder's boot-window `503`), with the log.
 fn settled_scrape(dir: &Path, data_port: u16) -> ((u16, String, String), String) {
     let mut child = boot(dir);
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -204,9 +188,6 @@ fn settled_scrape(dir: &Path, data_port: u16) -> ((u16, String, String), String)
     }
 }
 
-/// Fire one request through the whole request path over a raw connection (no client crate
-/// needed): the provider is unreachable, so it ends as an upstream failure, which is enough to
-/// populate both a counter family and a distribution family in the exposition.
 fn post_messages(port: u16) {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
         return;
@@ -228,8 +209,6 @@ fn post_messages(port: u16) {
 fn a_third_party_metrics_sink_never_serves_metrics() {
     let lib = metrics_sink_cdylib();
 
-    // 1. The third party ALONE, subscribed to `metrics`: no `/metrics`, as 1.5.5 without a
-    //    `module: prometheus` instance.
     let dir = fixture_dir("alone");
     write_third_party(&dir, &lib);
     let port = free_port();
@@ -241,7 +220,6 @@ fn a_third_party_metrics_sink_never_serves_metrics() {
         "a third-party sink subscribed to `metrics` must not serve /metrics; body:\n{body}\nlog:\n{log}"
     );
 
-    // 2. Beside the first-party instance: `/metrics` is served, by the host's scrape.
     let dir = fixture_dir("beside");
     write_third_party(&dir, &lib);
     let port = free_port();
@@ -259,8 +237,6 @@ fn a_third_party_metrics_sink_never_serves_metrics() {
     assert!(body.contains("# TYPE "), "an exposition: {body}");
 }
 
-/// v1.5.5's own FAMILY-KIND rank: counters before gauges before distributions (histogram or
-/// summary) — the fixed pass order `metrics-exporter-prometheus::render_to_write` has always used.
 fn kind_rank(kind: &str) -> u8 {
     match kind {
         "counter" => 0,
@@ -270,26 +246,6 @@ fn kind_rank(kind: &str) -> u8 {
     }
 }
 
-/// KP-C0: the raw `/metrics` exposition emits every family in v1.5.5's own FAMILY-KIND order —
-/// every counter, then every gauge, then every histogram/summary — never a counter after a
-/// distribution.
-///
-/// DERIVATION, not a captured guess (a single 1.5.5 capture cannot pin this: within a kind the
-/// order is hash-map order and "varies between runs"). Both v1.5.5
-/// (`v1.5.5:crates/busbar/src/metrics.rs`, `render()` at line 691 calling `h.render()`) and this
-/// binary (`busbar_kernel_testkit::test_support::export_axis::render()`) hand the SAME `metrics-exporter-prometheus` v0.18.3
-/// recorder's `render_to_write` the whole exposition: that function drains its counters map
-/// whole, then its gauges map whole, then its distributions (histogram + summary) map whole —
-/// three sequential, unconditional passes, in that fixed order, in every release either binary
-/// could have linked. WHICH KIND'S BLOCK COMES FIRST is therefore code-determined and identical
-/// in both; WHICH FAMILY comes first WITHIN a kind is not (hash order), so this test does not pin
-/// that.
-///
-/// Before the fix this binary's linked scrape sink sorted families by name
-/// alone, so a counter whose name sorts after a distribution's — `busbar_requests_total` and
-/// `busbar_upstream_attempts_total` both sort after `busbar_request_duration_seconds` — rendered
-/// AFTER that summary, which v1.5.5 never does. RED on the parent: the parent's exposition is
-/// fully name-sorted across kinds, so this assertion fails on it.
 #[test]
 fn every_counter_precedes_every_gauge_precedes_every_distribution() {
     let dir = fixture_dir("kind-order");
@@ -297,8 +253,7 @@ fn every_counter_precedes_every_gauge_precedes_every_distribution() {
     write_configs(&dir, port, true, false);
 
     let mut child = boot(&dir);
-    // Wait for boot: the first non-503 scrape (before any request, so possibly a bare
-    // exposition with no families yet).
+
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(status) = child.0.try_wait().expect("try_wait") {
@@ -321,10 +276,6 @@ fn every_counter_precedes_every_gauge_precedes_every_distribution() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // One request through the whole request path: the provider is unreachable, so it ends as an
-    // upstream failure, populating `busbar_requests_total` / `busbar_upstream_attempts_total`
-    // (counters) alongside `busbar_request_duration_seconds` (the summary) — a counter AND a
-    // distribution both present is what makes the ordering assertion non-vacuous.
     post_messages(port);
 
     let deadline = Instant::now() + Duration::from_secs(15);

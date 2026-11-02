@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PROVIDER'S BASE URL, PRINTED (CREDENTIAL-LOCKDOWN A.3): an operator may spell `base_url` (or
-//! `token_url`) with a `user:pass@`, which 1.5.5 accepted and presented upstream as Basic (row 74,
-//! F25). The parsed provider structs print through `Debug` with that userinfo redacted, and the
-//! value the outbound request is built from keeps it, so what is sent upstream is unchanged.
-
 use std::collections::HashMap;
 
 use super::{resolve, ProviderCfg, ProviderDef, ProviderDeploy, ResolvedProvider};
@@ -22,7 +17,6 @@ fn token_url() -> String {
     format!("https://cid:{TOKEN_PASS}@login.example.test/token")
 }
 
-/// No secret of the URLs above appears in `printed`, and the hosts do.
 fn assert_redacted(what: &str, printed: &str) {
     for secret in [PASS, USER, TOKEN_PASS] {
         assert!(
@@ -64,7 +58,6 @@ fn provider_deploy() -> ProviderDeploy {
     .expect("a deployment")
 }
 
-/// RED (base: every provider struct derived `Debug` over the URL as written).
 #[test]
 fn a_provider_base_url_prints_without_its_userinfo() {
     assert_redacted("ProviderCfg", &format!("{:?}", provider_cfg()));
@@ -81,7 +74,7 @@ fn a_provider_base_url_prints_without_its_userinfo() {
         "ResolvedProvider (whole entry)",
         &format!("{:?}", ResolvedProvider::from(provider_cfg())),
     );
-    // The resolved config (a `Debug` print of the whole thing reaches the providers too).
+
     let mut deploy = super::tests::base_deploy();
     deploy.providers.insert("p".to_string(), provider_deploy());
     let cfg =
@@ -89,8 +82,6 @@ fn a_provider_base_url_prints_without_its_userinfo() {
     assert_redacted("the resolved config", &format!("{cfg:?}"));
 }
 
-/// GUARD (passes before and after): the value the outbound request is built from is the URL as
-/// written, so the userinfo still becomes the Basic credential 1.5.5 sent (row 74, F25).
 #[test]
 fn the_base_url_the_request_is_built_from_keeps_its_userinfo() {
     assert_eq!(provider_cfg().base_url, base_url());
@@ -103,7 +94,6 @@ fn the_base_url_the_request_is_built_from_keeps_its_userinfo() {
     assert_eq!(resolved.token_url.as_deref(), Some(token_url().as_str()));
 }
 
-/// A base URL with no userinfo prints exactly as written.
 #[test]
 fn a_plain_base_url_prints_as_written() {
     let def: ProviderDef =

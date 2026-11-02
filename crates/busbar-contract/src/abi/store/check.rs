@@ -2,17 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE STORE ANSWER VALIDATORS: answer validators live with the shape, for every kind. Each is a
-//! PURE function over an op's `out`, the capacities the host handed in, and the host's own view of
-//! what it handed. It uses `u64`
-//! math, holds no state and dereferences no pointer: a pointer is compared as an address only.
-//! [`check_answer`] is the one call per op answer: it reads the op's frames, builds each
-//! plugin-reported slice through [`reported`] against its capacity, and calls the op's validator.
-//! The dispatcher calls it on every answer, whatever its outcome, and any `Err` makes the answer
-//! FAULT. No host re-implements them.
-//!
-//! Each validator decides per outcome which fields matter. The host zeroes the `out` before every
-//! call, so a PENDING or REFUSED answer that states nothing beyond its head passes; the only rules
-//! that binds those outcomes is about them: a `needed_*` on anything but FAILED.
 
 use super::ledger::{HostRecords, RecordEntry};
 use super::plane::{KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY, RETENTION_USAGE_WINDOWS};
@@ -30,14 +19,11 @@ use crate::bounded::MAX_RECORD_BYTES;
 pub use crate::abi::mechanism::check::Fault;
 
 /// The hard maximum of any store list's item count (`needed_items`, a leased list's length):
-/// 2^20 items, above any list a store answers (the fan-out cap is 10,000 recipients; a scan's
-/// `limit` is a `u32` the kernel sizes).
+
 pub const LIST_ITEMS_HARD_MAX: u64 = 1 << 20;
 /// The hard maximum of any `needed_bytes` (`needed_bytes <= u32::MAX`).
 pub const NEEDED_BYTES_HARD_MAX: u64 = u32::MAX as u64;
 
-// WHY AN ANSWER IS FAULT: the shared `Fault`, one `Rule` and one distinct `store.<op>.<arm>` field per arm
-// (the design: every answer validator gives a distinct message per arm). `ALL` lists every one so a test can hold them distinct.
 /// A non-zero `needed_*` with an outcome other than FAILED (M-SB, on [`OutHead`](crate::abi::mechanism::call::OutHead)). Every op shares this one arm: it is one check.
 pub const NEEDED_NOT_FAILED: Fault = fault(Rule::NeededNotFailed, "store.needed_not_failed");
 /// A single-value read whose `found` is neither FOUND nor ABSENT.
@@ -149,9 +135,7 @@ fn needed_only_on_failed(outcome: Outcome, any_needed: bool) -> Result<(), Fault
 }
 
 /// A short FAILED's `needed_*`: within the hard maxima, and `0` or above the capacity given. `faults` is
-/// the caller's own `(too large, within capacity)` pair.
-/// NOT `mechanism::check::result`: a store FAILED writes nothing even when not short, which the
-/// shared rule allows.
+
 fn short(needed: u64, cap: u64, hard: u64, faults: (Fault, Fault)) -> Result<(), Fault> {
     let (too_large, within_cap) = faults;
     if needed > hard {
@@ -164,7 +148,7 @@ fn short(needed: u64, cap: u64, hard: u64, faults: (Fault, Fault)) -> Result<(),
 }
 
 /// A single-value read into a host buffer of `cap` bytes, whose value is at most `hard` bytes.
-/// `found` and `written` are read on READY only; `needed` binds every outcome (M-SB).
+
 fn check_bytes(outcome: Outcome, out: &HostBytesOut, cap: u64, hard: u64) -> Result<(), Fault> {
     needed_only_on_failed(outcome, out.needed != 0)?;
     match outcome {
@@ -266,9 +250,7 @@ fn check_list(
             if out.items_written != 0 || out.bytes_written != 0 {
                 return Err(LIST_FAILED_WRITTEN);
             }
-            // M-SB REFINEMENT (multi-dimension): every `needed_*` is that dimension's FULL size,
-            // so a dimension that fits reports a size `<=` its cap; the answer is short only if
-            // AT LEAST ONE dimension is over its cap.
+
             if out.needed_items > LIST_ITEMS_HARD_MAX || out.needed_bytes > NEEDED_BYTES_HARD_MAX {
                 return Err(LIST_NEEDED_TOO_LARGE);
             }
@@ -292,7 +274,7 @@ fn blob_fmt(b: &Blob) -> Result<(), Fault> {
 }
 
 /// `list_plane_records`' answer. `host` is the [`HostBlobs`] the host handed in, `items` the first
-/// `min(items_written, items_cap)` blobs of its array.
+
 pub fn check_list_plane_records(
     outcome: Outcome,
     out: &HostListOut,
@@ -313,8 +295,7 @@ pub fn check_list_plane_records(
 }
 
 /// `record_scan`'s answer. `host` is the [`HostRecords`] the host handed in, `entries` the first
-/// `min(items_written, items_cap)` entries of its array, `limit` the scan's own limit (READY with
-/// more than `limit` entries is FAULT; `limit` 0 means nothing).
+
 pub fn check_record_scan(
     outcome: Outcome,
     out: &HostListOut,
@@ -390,7 +371,7 @@ pub fn check_leased_blob(outcome: Outcome, out: &LeasedBlobOut) -> Result<(), Fa
 }
 
 /// An off-path list of records under a lease. `items` is `out.items[..out.items_len]` as the host
-/// read it after the count checks.
+
 pub fn check_leased_list(
     outcome: Outcome,
     out: &LeasedListOut,
@@ -428,8 +409,7 @@ pub fn check_verdict(outcome: Outcome, out: &VerdictOut) -> Result<(), Fault> {
 }
 
 /// A purge's answer (`purge_plane_records_before`): the rows removed. The host reads `count` on READY only, where
-/// any value is the store's to state (the host sizes no buffer for it, so there is no cap); a
-/// FAILED purge removed nothing, so a count on FAILED is FAULT. PENDING and REFUSED state nothing.
+
 pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
     if outcome == Outcome::Failed && out.count != 0 {
         return Err(COUNT_FAILED_WRITTEN);
@@ -438,8 +418,7 @@ pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
 }
 
 /// `purge_plane_records_before`' `in`: its `retention` is [`RETENTION_AGE`],
-/// [`RETENTION_TERMINAL_ONLY`] or [`RETENTION_USAGE_WINDOWS`]. The host writes only those; a store
-/// refuses any other code rather than guess which rows it may drop.
+
 pub fn check_kind_before(input: &KindBeforeIn) -> Result<(), Fault> {
     if ![
         RETENTION_AGE,
@@ -471,7 +450,6 @@ unsafe fn leased_list(
     out: &LeasedListOut,
     field: &'static str,
 ) -> Result<(), Fault> {
-    // This gate guards the slice, not the check: any other outcome is checked with no items.
     if outcome != Outcome::Ready {
         return check_leased_list(outcome, out, &[]);
     }
@@ -498,10 +476,6 @@ unsafe fn leased_strs(
     check_leased_strs(outcome, out, items)
 }
 
-// THE STORE KIND'S ANSWERS (`check_answer`), in the order the loader reads each op's frames. Every
-// slice a plugin-reported count names is built through `reported` against the host's own
-// capacity (a leased list's against `LIST_ITEMS_HARD_MAX`), so a count above it is FAULT before
-// any slice exists. An op whose `out` is a bare `OutHead` is the mechanism's, and passes here.
 abi_answers! {
     cx: ();
     // Request path, host buffers, each with a short-buffer path.

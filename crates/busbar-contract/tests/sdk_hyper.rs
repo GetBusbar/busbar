@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `hyper_io!` SDK macro, expanded here as a framer expands it: the pipe carries bytes both
-//! ways and pends past its high water, the timer runs on host time only, and `fill` splits what does
-//! not fit and states the yield flags. `fill` runs from a slot body on the SDK's safe surface, the
-//! only place a `Lent` exists.
 
 #![allow(unsafe_code)]
 
@@ -46,11 +43,11 @@ fn the_pipe_reads_what_was_ingested_and_hands_up_what_was_written() {
     let got = noop_cx(|cx| Pin::new(&mut s).poll_read(cx, rb.unfilled()));
     assert!(matches!(got, Poll::Ready(Ok(()))));
     assert_eq!(rb.filled(), b"hello");
-    // Nothing more and no end: the read waits.
+
     let mut rb = ReadBuf::uninit(&mut store);
     let got = noop_cx(|cx| Pin::new(&mut s).poll_read(cx, rb.unfilled()));
     assert!(got.is_pending());
-    // The far side's end reads as zero bytes.
+
     io.ingest(b"", true);
     let got = noop_cx(|cx| Pin::new(&mut s).poll_read(cx, rb.unfilled()));
     assert!(matches!(got, Poll::Ready(Ok(()))));
@@ -132,7 +129,7 @@ impl Owed for Owes {
     fn take_wire(&mut self, cap: usize) -> Vec<u8> {
         self.io.take_wire(cap)
     }
-    // As a framer over a `HostIo` answers it: the wire bytes go straight into the host's buffer.
+
     fn wire_into(&mut self, into: &mut HostBuf<'_, u8>) {
         self.io.wire_into(into);
     }
@@ -158,7 +155,7 @@ thread_local! {
 }
 
 /// `fill` as a framer calls it: from a slot body on the SDK's safe surface, over the sink the host
-/// lent (a `Lent` exists only there).
+
 struct FillSlot;
 
 impl SafeSlot for FillSlot {
@@ -272,15 +269,13 @@ fn fill_splits_what_does_not_fit_and_says_more() {
         PIECE_END_OF_FRAME | PIECE_STREAM_FAILED | PIECE_HAS_CODE
     );
     assert_eq!((pieces[1].code, pieces[1].status_class), (5, 3));
-    // The fault reading rides beside the class, from the framer's own fault table.
+
     assert_eq!((pieces[0].fault, pieces[1].fault), (0, 2));
     assert_eq!(out.yielded.flags, YIELD_ENDED);
 }
 
 /// A PIECE MAY STATE ITS OWN FAULT READING. A framer that maps an answer into its claim's numbering
-/// from something the numbering does not hold (a bare status line on a call that numbers its statuses otherwise) reads the fault
-/// from that, and `fill` writes the piece's own reading over `fault_of(status)`; a piece that
-/// states none is read by the table as before. RED on a `fill` that ignores the piece's reading.
+
 #[test]
 fn fill_writes_a_pieces_own_fault_reading_over_the_tables() {
     let mut o = Owes {
@@ -309,7 +304,7 @@ fn fill_writes_a_pieces_own_fault_reading_over_the_tables() {
 }
 
 /// RED (the stream-end ruling): the SDK SAYS a stream's end (`Piece::end` -> `PIECE_END` on an
-/// empty END_OF_FRAME piece); an empty data piece is an empty frame and carries no end.
+
 #[test]
 fn fill_says_the_stream_end_and_an_empty_frame_is_not_it() {
     let mut o = Owes {
@@ -328,8 +323,7 @@ fn fill_says_the_stream_end_and_an_empty_frame_is_not_it() {
 }
 
 /// A STREAM'S OWN BACKPRESSURE through the SDK: an `emit` that left its stream full says so beside
-/// whatever else the answer says, and a writable piece goes out empty, flagged writable and nothing
-/// else (it ends no frame), between the stream's other pieces in order.
+
 #[test]
 fn an_emit_says_its_stream_is_full_and_a_writable_piece_ends_nothing() {
     let mut o = Owes {
@@ -371,7 +365,7 @@ fn fill_states_the_next_deadline() {
 }
 
 /// A stream's head words ride its head slots, in the answer that carries the head's first piece,
-/// their bytes ahead of the piece's; a field block is cut only where a continuation extends a value.
+
 #[test]
 fn fill_hands_the_head_words_in_the_slots_and_cuts_a_field_block_inside_a_value() {
     let mut o = Owes {
@@ -396,7 +390,7 @@ fn fill_hands_the_head_words_in_the_slots_and_cuts_a_field_block_inside_a_value(
     assert_eq!(at(h.method), b"POST");
     assert_eq!(at(h.target), b"/s/m");
     assert_eq!((h.authority.len, h.reason.len), (0, 0));
-    // 12 bytes of room are left: the cut falls inside the value.
+
     assert_eq!(pieces.len(), 1);
     assert_eq!(pieces[0].flags, PIECE_FIELDS);
     assert_eq!(&frame[8..], b"x-a: 1234567");
@@ -410,7 +404,7 @@ fn fill_hands_the_head_words_in_the_slots_and_cuts_a_field_block_inside_a_value(
         PIECE_FIELDS | PIECE_CONTINUED | PIECE_END_OF_FRAME
     );
     assert_eq!(frame, b"\r\n");
-    // Never inside a name: back to the line's start.
+
     assert_eq!(field_cut(b"x-a: 1\r\nx-bb: 2\r\n", 12, false), 8);
     assert_eq!(field_cut(b"x-a: 1\r\nx-bb: 2\r\n", 14, false), 14);
 }
@@ -433,7 +427,7 @@ fn fill_drops_the_head_words_for_a_host_that_takes_no_slots() {
 }
 
 /// A head's declared body length rides its field block's piece as `PIECE_HAS_DECLARED_LEN` and
-/// `declared_len`; a head that declares none sets neither.
+
 #[test]
 fn fill_states_a_heads_declared_length_where_it_declared_one() {
     let mut o = Owes {
@@ -463,7 +457,7 @@ fn fill_states_a_heads_declared_length_where_it_declared_one() {
 }
 
 /// A child spawned while the executor polls its parent must write during the same host drive.
-/// Neither the parent nor the caller supplies a spare wake or another host operation.
+
 #[test]
 fn a_spawned_child_runs_before_the_host_drive_returns() {
     use hyper::rt::Executor;

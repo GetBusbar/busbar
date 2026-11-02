@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! WHAT THE AUTH GATE TOOK FROM THE CALLER, AND WHAT A PLANE MAY HOLD OF IT (#65 zero trust, #40(b):
-//! no raw secret to any plugin; the 2026-09-20 ruling "a plane passes a credential REF, never
-//! plaintext"). A plane — linked or dropped in, identically — never sees the caller's credential:
-//!
-//! - [`ConsumedCredentials`] is every header the configured gate reads as a credential carrier —
-//!   taken from the gate's own carrier declarations, never a list of its own — whichever one carried
-//!   THIS request's credential: a second carrier the gate did not need is still a credential. The
-//!   host strips all of them from every request it hands a plane: the plane-route context (and so
-//!   the HOT request head built from it) and the protocol arrival.
-//! - [`CallerCredential`] is the caller's verified credential as a REF: it has no byte accessor
-//!   outside this module. A `passthrough` pool's upstream still receives the caller's credential
-//!   byte for byte, because the HOST presents it at egress ([`present_caller`]) — the plane passes
-//!   the ref and never holds the plaintext.
-
 use super::{HeaderMap, HeaderName, HeaderValue};
 use crate::bound_credential::CredentialProvider;
 use busbar_contract::protocol::SigningContext;
@@ -34,28 +20,22 @@ pub struct ConsumedCredentials {
 }
 
 impl ConsumedCredentials {
-    /// The set over `carriers`, with no credential extracted yet.
     pub(crate) fn carrying(carriers: &[HeaderName]) -> Self {
         let mut set = Self::default();
         set.carry(carriers);
         set
     }
 
-    /// Add `carriers` to the set (a repeat is harmless: stripping is idempotent).
     pub(crate) fn carry(&mut self, carriers: &[HeaderName]) {
         self.names.extend_from_slice(carriers);
     }
 
-    /// Remove every consumed credential header from `headers` — every value under each name.
     pub fn strip(&self, headers: &mut HeaderMap) {
         for name in &self.names {
             headers.remove(name);
         }
     }
 
-    /// The consumed fields `headers` carries, each by its lower-case name with its value's scheme
-    /// word for `Authorization` only (empty for raw credential carriers and strip-only fields):
-    /// what an entry fact may read of a field the gate consumed, never the credential itself.
     pub(crate) fn fields_of(consumed: Option<&Self>, headers: &HeaderMap) -> Vec<(String, String)> {
         let Some(consumed) = consumed else {
             return Vec::new();
@@ -65,8 +45,7 @@ impl ConsumedCredentials {
             .iter()
             .filter_map(|name| {
                 let value = headers.get(name)?;
-                // The host reads Authorization as a scheme and every other carrier raw
-                // (`carried_credential`). A space in a raw secret does not make its prefix public.
+
                 let scheme = (*name == axum::http::header::AUTHORIZATION)
                     .then(|| value.to_str().ok())
                     .flatten()
@@ -78,7 +57,6 @@ impl ConsumedCredentials {
             .collect()
     }
 
-    /// Strip the credentials the gate consumed (an absent extension consumed nothing).
     pub(crate) fn strip_from(consumed: Option<&Self>, headers: &mut HeaderMap) {
         if let Some(consumed) = consumed {
             consumed.strip(headers);
@@ -98,22 +76,16 @@ impl ConsumedCredentials {
 pub struct CallerCredential(std::sync::Arc<zeroize::Zeroizing<Vec<u8>>>);
 
 impl CallerCredential {
-    /// A ref over the credential the gate verified: its bytes are copied once into the zeroising
-    /// buffer every clone shares.
     pub(super) fn verified(token: &str) -> Self {
         Self(std::sync::Arc::new(zeroize::Zeroizing::new(
             token.as_bytes().to_vec(),
         )))
     }
 
-    /// The credential as text, borrowed from the shared buffer (it was text when the gate took it).
     fn text(&self) -> &str {
         std::str::from_utf8(&self.0).unwrap_or_default()
     }
 
-    /// THE CREDENTIAL LENT TO THE HOST'S EGRESS (L2 credential lending): the bytes, zeroised on
-    /// drop and printed as presence only, for the one outbound auth call of a passthrough member
-    /// (`FieldsRequest::caller_credential`). Never handed to a plane.
     #[must_use]
     pub fn lend(&self) -> busbar_contract::redacted::Secret<Vec<u8>> {
         busbar_contract::redacted::Secret::new(self.0.to_vec())
@@ -126,9 +98,6 @@ impl std::fmt::Debug for CallerCredential {
     }
 }
 
-/// PRESENT THE CALLER'S CREDENTIAL UPSTREAM (a `passthrough` pool), host-side: `credential`'s
-/// scheme over the caller's own bytes. No caller credential presents nothing — never the operator's
-/// key — unless the scheme ignores the key (a self-minting credential presents its own token).
 pub fn present_caller(
     credential: &dyn CredentialProvider,
     caller: Option<&CallerCredential>,

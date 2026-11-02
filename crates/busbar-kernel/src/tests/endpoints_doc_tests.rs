@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TOPOLOGY SURFACES' DOCS READ THE SCOPE LIST THE WAY THE FROZEN PRIMITIVE DOES (item 569).
-//!
-//! `/stats` and `/v1/models` said an EMPTY allowed list means "all pools". The frozen governance
-//! primitive (`busbar_contract::records::VirtualKey::scope_allowed`) says an explicit empty list is NO
-//! scopes at all and names the opposite reading as fail-open; the code here agrees with the primitive.
-//! A maintainer reconciling header and body in the header's favour would have turned a key minted
-//! with an empty list into a wildcard over the whole topology. Behaviour is pinned end to end in
-//! `crates/busbar/tests/endpoints_cross_plane.rs` (real lanes only exist through a real plane, which
-//! the composition root links). Here the governance adapter is checked for both an explicit empty
-//! list and the omitted-list wildcard.
-
 use busbar_contract::records::VirtualKey;
 
 #[test]

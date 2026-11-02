@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The wiped HMAC-SHA256 (`crate::wiped`): the published vectors, agreement with `ring` over every
-//! key and message length the derivation can meet, and the derivation keyed through it.
 
 use crate::wiped::hmac_sha256;
 
@@ -24,7 +23,7 @@ fn the_wiped_hmac_reproduces_the_rfc_4231_vectors() {
 }
 
 /// The wiped HMAC agrees with `ring`'s on every key length up to a block and on messages that
-/// cross every padding boundary, so the derivation it keys produces the secrets it always did.
+
 #[test]
 fn the_wiped_hmac_agrees_with_ring_across_key_and_message_lengths() {
     let bytes: Vec<u8> = (0..300u32).map(|i| (i * 7 + 3) as u8).collect();

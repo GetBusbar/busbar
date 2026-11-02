@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HEALTH PROBE, schedule target to wire (K7), over the far end's doubles and a plane double
-//! that declares probes: the probe unit arrives on the probe claim, pushes its ATTEMPT piece alone,
-//! sends the request the plane emitted to the ONE member it is pinned to (past that member's
-//! breaker), and the far end's answer is recorded on every cell of it. Proven: a probe recovers a
-//! tripped member; a client-fault answer records nothing; the plane's stated fault reading of the
-//! probe's answer is recorded as an organic answer's is; a probe that brings no answer is a
-//! transient and tries no other member; the unit is zero-billed; a passthrough member, a plane
-//! that does not declare probes and a plane that refuses the probe are never sent one.
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicU32;
@@ -37,9 +28,6 @@ use crate::plane_driver::{
 use crate::probe::ProbeTarget;
 use crate::teller::{Ended, Kernel, UnitCtx};
 
-// ── the plane ───────────────────────────────────────────────────────────────────────────────────
-
-/// The probe request the plane emits: its verb and its target.
 const PROBE: (&[u8], &[u8]) = (b"GET", b"/health");
 
 /// A plane that answers probes: its `arrive` takes the probe claim, its ATTEMPT piece emits the
@@ -65,7 +53,6 @@ const READY: Answered = Answered {
     disposition: None,
 };
 
-/// An answer already in.
 struct Now(OnPieceOut);
 // SAFETY: plain data the double wrote; its pointers are never dereferenced.
 unsafe impl Send for Now {}
@@ -86,7 +73,6 @@ impl PieceInFlight for Now {
     }
 }
 
-/// The prober serves no route: every `serve` answers FAULT at once.
 struct NoServe;
 
 impl Future for NoServe {
@@ -281,11 +267,8 @@ impl Journal for Ledger {
     }
 }
 
-// ── the rig ─────────────────────────────────────────────────────────────────────────────────────
-
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The first member, tripped: its cooldown never ends on its own.
 const TRIPPED: DestinationId = DestinationId::new(1);
 
 struct Probing {
@@ -297,8 +280,6 @@ struct Probing {
     probes: PlaneProbes,
 }
 
-/// The target over `hosts` (see [`rig`]) for a plane `plane` whose tail flags are `tail`, probing
-/// the first member, which is tripped.
 fn probing(hosts: &[(&'static str, Script)], plane: Prober, tail: u32) -> Option<Probing> {
     let mut r = rig(hosts, OnExhausted::Status503, None);
     let journal = Arc::new(Ledger::default());
@@ -342,11 +323,6 @@ fn probed(p: &Probing) -> Vec<(DestinationId, Outcome)> {
     p.book.probed.lock().unwrap().clone()
 }
 
-// ── the probe's answer in the served breaker (F25 row 155 rehomes) ─────────────────────────────
-
-/// THE SERVED BREAKER for the probe cases that pin a cell's state: busbar-kernel-breaker's unit
-/// bound to the egress port as the composition root's `BreakerAdapter` binds it
-/// (`crates/busbar/src/root/adapters.rs`), every pool under the default ladder.
 struct Cells(busbar_kernel_breaker::BreakerUnit);
 
 impl busbar_kernel_egress::ports::Breaker for Cells {
@@ -406,8 +382,6 @@ impl busbar_kernel_egress::ports::Breaker for Cells {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        // The root adapter's own reading (`root::adapters`): no number crosses, the transport's
-        // fault reading of the frame does; no class and no reading at all is no answer.
         let reading = if status.class.is_none() && status.fault.is_none() {
             busbar_kernel_breaker::classify::Reading::NoAnswer
         } else {
@@ -467,9 +441,6 @@ impl busbar_kernel_egress::ports::Breaker for Cells {
     }
 }
 
-/// The probe target over the SERVED breaker for a plane that declares probes: the rig's first
-/// member (`a.test`, answering `script`, destination [`TRIPPED`]), its cell in pool [`POOL`] made
-/// as organic traffic makes it. Answers the target, the breaker and the connection table.
 fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
     let mut r = rig(&[("a.test", script)], OnExhausted::Status503, None);
     let cells = Arc::new(Cells(busbar_kernel_breaker::BreakerUnit::new()));
@@ -501,9 +472,6 @@ fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
     (probes, cells, r.table)
 }
 
-/// F25 row 189: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_health_probe_failure_records_transient.
-/// A probe whose far end ANSWERS 500 `{"error":"down"}` records exactly one transient against the
-/// member in the served breaker: its default cell's and its pool cell's error counts each rise by 1.
 #[tokio::test]
 async fn test_health_probe_failure_records_transient() {
     let (probes, cells, table) =
@@ -524,9 +492,6 @@ async fn test_health_probe_failure_records_transient() {
     assert_eq!(cells.0.cell(POOL, TRIPPED).err_count(), before.1 + 1);
 }
 
-/// F25 row 221: rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_auth_failure_is_hard_down_not_transient.
-/// A 401 probe answer parks the member hard-down: the default cell is Open and the pool cell carries
-/// the long sticky hard-down cooldown (more than 60 s), and no transient is recorded.
 #[tokio::test]
 async fn test_probe_auth_failure_is_hard_down_not_transient() {
     let (probes, cells, _table) = probing_served(Script::Answer(401, None, vec![b"unauthorized"]));
@@ -559,9 +524,6 @@ async fn test_probe_auth_failure_is_hard_down_not_transient() {
     );
 }
 
-/// F25 row 222: rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_server_error_is_transient_not_hard_down.
-/// A single 503 probe answer is a transient: one failure is recorded, and the default cell stays
-/// Closed (one sub-threshold transient under the default error-rate breaker), never the hard-down.
 #[tokio::test]
 async fn test_probe_server_error_is_transient_not_hard_down() {
     let (probes, cells, _table) = probing_served(Script::Answer(
@@ -580,9 +542,6 @@ async fn test_probe_server_error_is_transient_not_hard_down() {
     assert_eq!(cells.0.cell("", TRIPPED).err_count(), 1);
 }
 
-/// F25 row 234: rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_with_an_unrepresentable_timeout_still_classifies.
-/// A probe under a timeout the clock cannot represent (2^63 s) runs to its classification and does
-/// not panic: the far end's 401 still parks the member, its default cell Open.
 #[tokio::test]
 async fn test_probe_with_an_unrepresentable_timeout_still_classifies() {
     let (probes, cells, _table) = probing_served(Script::Answer(401, None, vec![b"unauthorized"]));
@@ -599,12 +558,6 @@ async fn test_probe_with_an_unrepresentable_timeout_still_classifies() {
     );
 }
 
-// ── the cases ───────────────────────────────────────────────────────────────────────────────────
-
-/// THE ACCEPTANCE: a tripped member is probed past its breaker; the plane's probe request goes to
-/// it alone and its 200 recovers it. The unit arrived on the probe claim and pushed its ATTEMPT
-/// piece alone (no caller body), recorded nothing organic, spent no budget and billed nothing,
-/// though the plane reported units.
 #[tokio::test]
 async fn a_probe_recovers_a_tripped_member() {
     let hosts = [("a.test", Script::Answer(200, None, vec![b"ok"]))];
@@ -634,8 +587,6 @@ async fn a_probe_recovers_a_tripped_member() {
     assert_eq!(p.till.0.load(Ordering::SeqCst), 0, "zero-billed");
 }
 
-/// A probe writes no dispatch record: no `dispatched` line to recover from and no `abandoned`
-/// line to match it, on the answered path and on the no-answer path alike.
 #[tokio::test]
 async fn a_probe_writes_no_dispatch_record() {
     for script in [Script::Answer(200, None, vec![b"ok"]), Script::Refused] {
@@ -652,8 +603,6 @@ async fn a_probe_writes_no_dispatch_record() {
     }
 }
 
-/// A client-fault answer is the probe request's fault, not the member's: it records nothing, and
-/// the tripped member stays tripped.
 #[tokio::test]
 async fn a_client_fault_answer_records_nothing() {
     let hosts = [("a.test", Script::Answer(400, None, vec![b"bad probe"]))];
@@ -663,11 +612,6 @@ async fn a_client_fault_answer_records_nothing() {
     assert!(p.probes.suppressing(0), "still tripped");
 }
 
-/// THE PLANE'S READING OF A PROBE ANSWER is recorded as an organic answer's is (Part 3 §12: the
-/// breaker service classifies the probe's answer as it classifies organic traffic): a 502 the plane
-/// reads HEALTHY is a success on every cell and recovers the member. RED before the plane's reading
-/// was read on a probe: the transport's 502 was recorded at once, a transient, and the member stayed
-/// tripped.
 #[tokio::test]
 async fn a_probe_answer_the_plane_reads_healthy_records_success() {
     let hosts = [(
@@ -688,10 +632,6 @@ async fn a_probe_answer_the_plane_reads_healthy_records_success() {
     );
 }
 
-/// A probe answer the plane reads as a FAULT records that fault, over the transport's reading: a
-/// 400 (the caller's, by the table: nothing) the plane reads TRANSIENT is a transient, and a 502
-/// (transient, by the table) the plane reads HARD is a hard-down. RED before the plane's reading
-/// was read on a probe: the table's reading was recorded (nothing; a transient).
 #[tokio::test]
 async fn a_probe_answer_the_plane_reads_as_a_fault_records_that_fault() {
     for (code, fault, outcome) in [
@@ -714,8 +654,6 @@ async fn a_probe_answer_the_plane_reads_as_a_fault_records_that_fault() {
     }
 }
 
-/// A probe answer the plane states NO reading of is recorded with the transport's: the table's
-/// transient for a 502.
 #[tokio::test]
 async fn a_probe_answer_the_plane_states_no_reading_of_records_the_tables() {
     let hosts = [("a.test", Script::Answer(502, None, vec![b"down"]))];
@@ -727,7 +665,6 @@ async fn a_probe_answer_the_plane_states_no_reading_of_records_the_tables() {
     );
 }
 
-/// A probe that brings no answer is a transient on the member, and the probe tries no other.
 #[tokio::test]
 async fn a_probe_that_brings_no_answer_is_a_transient_and_tries_no_other_member() {
     let hosts = [
@@ -746,7 +683,6 @@ async fn a_probe_that_brings_no_answer_is_a_transient_and_tries_no_other_member(
     assert_eq!(p.book.refunded.load(Ordering::SeqCst), 0);
 }
 
-/// A plane that refuses the probe arrival sends nothing, and nothing is recorded.
 #[tokio::test]
 async fn a_plane_that_refuses_the_probe_sends_nothing() {
     let hosts = [("a.test", Script::Answer(200, None, vec![b"ok"]))];
@@ -760,9 +696,6 @@ async fn a_plane_that_refuses_the_probe_sends_nothing() {
     assert!(probed(&p).is_empty());
 }
 
-/// A plane that refuses the probe ABOUT AN ENTRY still refused it: nothing is sent, nothing is
-/// recorded (Q128 arch u35 #42). RED before the fix: the refusal decoded as the entry it named, the
-/// probe took that as go, and its ATTEMPT piece sent the probe request.
 #[tokio::test]
 async fn a_plane_that_refuses_the_probe_about_an_entry_sends_nothing() {
     let hosts = [("a.test", Script::Answer(200, None, vec![b"ok"]))];
@@ -777,8 +710,6 @@ async fn a_plane_that_refuses_the_probe_about_an_entry_sends_nothing() {
     assert!(probed(&p).is_empty());
 }
 
-/// A plane that does not state `TAIL_PROBES` gets no target, and a member configured for
-/// passthrough (no credential of its own) gets no probe far end.
 #[test]
 fn an_undeclared_plane_and_a_passthrough_member_are_never_probed() {
     let hosts = [("a.test", Script::Answer(200, None, vec![b"ok"]))];

@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STAND-IN FOR THE HOST'S CONNECTION TABLE, FRAMED (tests, and the published conformance
-//! suite): [`HttpsConns`] serves a plugin's declared outbound needs over the framed transport its
-//! facts name ([`FramedFacts`], data the conformance case supplies), to targets of its secured
-//! scheme, as the connector's framed `exchange()` does, so a plugin that fetches over the host (an IdP's JWKS) can be opened on a
-//! [`Dispatcher`](crate::dispatch::Dispatcher) in a build that cannot link the process's connector
-//! (a kernel test, a plugin repo's conformance run). It never ships (`test-support`,
-//! `conformance`), and it names no TLS library (TLS stays in the connector).
-//!
-//! Its far ends are IN PROCESS: each is a URL the test (or the published conformance suite, from a
-//! plugin's `far_ends`) registers ([`HttpsConns::serve`]) with the certificate it presents and its
-//! answer. As the connector does, the table refuses a need whose
-//! `target_from` or `trust_from` resolved to nothing, dials only the target a need's config names
-//! when it names one, and reaches a far end only over a need that trusts the certificate that far
-//! end presents (the operator CA its `trust_from` named; a test has no public roots): a need trusting
-//! another certificate, or a URL nothing serves, is refused as the connector refuses an unverified
-//! or unreachable peer. Every read answers at once (no PENDING).
-
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
@@ -31,12 +14,9 @@ use busbar_contract::transport::ConnFacts;
 
 use crate::stand_in::FramedFacts;
 
-/// One declared need, as the table carries it.
 struct Declared {
-    /// The target its config names (`target_from`), if any.
     target: Option<String>,
-    /// The operator CA its `trust_from` named; `None` = none (the public roots, which no test far
-    /// end chains to).
+
     trust: Option<String>,
 }
 
@@ -49,7 +29,6 @@ struct FarEnd {
     body: Vec<u8>,
 }
 
-/// One answered request, read back piece by piece.
 struct Reply {
     step: u8,
     status: u32,
@@ -57,20 +36,17 @@ struct Reply {
     at: usize,
 }
 
-/// THE TEST CONNECTION TABLE.
 pub struct HttpsConns {
-    /// The transport it stands in for: the claim it serves, its secured scheme, its default port.
     facts: FramedFacts,
     slab: ConnSlab<Mutex<Reply>>,
     needs: Mutex<HashMap<(InstanceId, NeedId), Result<Declared, ConnError>>>,
     far: Mutex<HashMap<String, FarEnd>>,
     sent: Mutex<Vec<(u32, String)>>,
-    /// Schemes a deployment's other transports serve that this table frames no far end for
-    /// ([`HttpsConns::unreached`]).
+
     unreached: Vec<String>,
-    /// The needs declared over an unreached scheme, and the scheme each names.
+
     unreached_needs: Mutex<HashMap<(InstanceId, NeedId), String>>,
-    /// Per unreached scheme, the opens attempted on a need over it ([`HttpsConns::unreached_opens`]).
+
     unreached_tried: Mutex<HashMap<String, u64>>,
 }
 
@@ -87,13 +63,11 @@ impl Default for HttpsConns {
 }
 
 impl HttpsConns {
-    /// A table with no far end, standing in for the framed transport `stand_in.json` names.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A table with no far end, standing in for the framed transport `facts` names.
     #[must_use]
     pub fn framing(facts: FramedFacts) -> Self {
         Self {
@@ -108,9 +82,6 @@ impl HttpsConns {
         }
     }
 
-    /// Per unreached scheme, how many opens were attempted on a need over it, sorted by scheme;
-    /// a scheme no open tried is absent. The suite asserts this is empty after a fold: an
-    /// unreached scheme is a claim that the fold never touches it.
     #[must_use]
     pub fn unreached_opens(&self) -> Vec<(String, u64)> {
         let mut tried: Vec<(String, u64)> = self
@@ -124,11 +95,6 @@ impl HttpsConns {
         tried
     }
 
-    /// The same table, also answering the boot's scheme match for `schemes`: transports the
-    /// deployment it stands in for loads beside the framed one, which this table frames no far end
-    /// for. A need over one passes the load and is declared (as it is where that transport is
-    /// loaded), and every open on it is refused as an unreachable peer is: the scheme is served,
-    /// its far end is not here.
     #[must_use]
     pub fn unreached<I: IntoIterator<Item = String>>(mut self, schemes: I) -> Self {
         self.unreached
@@ -136,8 +102,6 @@ impl HttpsConns {
         self
     }
 
-    /// Serve `url` (exact, query included) under the certificate `cert_pem` (`None`: one chaining
-    /// to the public roots, which every need trusts), answering `status` and `body`.
     pub fn serve(&self, url: &str, cert_pem: Option<&str>, status: u32, body: &str) {
         self.far
             .lock()
@@ -152,7 +116,6 @@ impl HttpsConns {
             );
     }
 
-    /// Serve a test issuer's JWKS at its URL, under its certificate.
     pub fn serve_issuer(&self, issuer: &crate::test_issuer::Issuer) {
         self.serve(
             issuer.jwks_url(),
@@ -162,7 +125,6 @@ impl HttpsConns {
         );
     }
 
-    /// Every request made, `(need, target)`, in order (refused ones included).
     #[must_use]
     pub fn sent(&self) -> Vec<(u32, String)> {
         self.sent
@@ -172,18 +134,8 @@ impl HttpsConns {
     }
 }
 
-/// The fewest characters an unreached scheme's `why` may have: a reason, not a word.
 pub const UNREACHED_WHY_MIN: usize = 40;
 
-/// JUDGE `inputs.unreached_schemes` (row 114: no silent skip): each entry is
-/// `{ "scheme", "why", "covered_by": ["<path>::<test fn>", ...] }`, and is refused, naming what is
-/// wrong, unless its `why` is a reason of at least [`UNREACHED_WHY_MIN`] characters; it cites at
-/// least one cell, each a `#[test] fn` in a file at `<path>` under `root` (the plugin's own repo)
-/// that exercises the scheme; the scheme is not `framed` (the table's own, which it reaches); and a
-/// need the door declares (`need_transports`) names it. The schemes, in order.
-///
-/// # Errors
-/// The first entry refused, and why.
 pub fn judge_unreached(
     value: &serde_json::Value,
     framed: &str,
@@ -244,7 +196,6 @@ pub fn judge_unreached(
     Ok(schemes)
 }
 
-/// `<path>::<fn>` resolves to a `#[test]` function in the file at `path` under `root`.
 fn covered(root: &std::path::Path, cell: &str) -> Result<(), String> {
     let (path, name) = cell
         .rsplit_once("::")
@@ -257,7 +208,7 @@ fn covered(root: &std::path::Path, cell: &str) -> Result<(), String> {
         .iter()
         .position(|l| l.starts_with(&decl) || l.contains(&format!(" {decl}")))
         .ok_or_else(|| format!("no fn {name} in {path}"))?;
-    // The attributes and doc lines straight above the fn carry `#[test]`.
+
     let tested = lines[..at]
         .iter()
         .rev()
@@ -270,8 +221,6 @@ fn covered(root: &std::path::Path, cell: &str) -> Result<(), String> {
     }
 }
 
-/// `<secure scheme>://host[:port]/...` as `(host, port)`, the port `facts.default_port` where the
-/// URL names none; `None` for a URL of any other scheme (the double reaches secured targets only).
 fn authority(url: &str, facts: &FramedFacts) -> Option<(String, u16)> {
     let (scheme, rest) = url.split_once("://")?;
     if facts.secure_scheme.is_empty() || !scheme.eq_ignore_ascii_case(&facts.secure_scheme) {
@@ -293,8 +242,6 @@ fn authority(url: &str, facts: &FramedFacts) -> Option<(String, u16)> {
     Some((host.to_ascii_lowercase(), port))
 }
 
-/// The URL a request reaches: the target's scheme and authority, then the request's own path and
-/// query (the head target).
 fn reached(target: &str, desc: &OpenDesc<'_>) -> String {
     let origin_end = target
         .split_once("://")
@@ -311,7 +258,6 @@ fn reached(target: &str, desc: &OpenDesc<'_>) -> String {
     }
 }
 
-/// A PEM's content: every character but whitespace.
 fn pem_content(pem: &str) -> String {
     pem.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -373,7 +319,7 @@ impl Conns for HttpsConns {
             .unwrap_or_else(PoisonError::into_inner)
             .push((need.0, url.clone()));
         let at = authority(&target, &self.facts).ok_or(ConnError::Refused)?;
-        // A need whose config names its target dials that target and no other.
+
         if let Some(d) = declared_target {
             if authority(&d, &self.facts).as_ref() != Some(&at) {
                 return Err(ConnError::Refused);
@@ -386,8 +332,7 @@ impl Conns for HttpsConns {
             .get(&url)
             .cloned()
             .ok_or(ConnError::Refused)?;
-        // The peer is reached only over a need trusting the certificate it presents (the PEM's
-        // content, as a TLS stack reads it: line breaks and surrounding space are not content).
+
         if let Some(cert) = &far.cert_pem {
             if trust.as_deref().map(pem_content) != Some(pem_content(cert)) {
                 return Err(ConnError::Refused);
@@ -413,7 +358,6 @@ impl Conns for HttpsConns {
         _: bool,
         _: bool,
     ) -> Result<usize, ConnError> {
-        // The request was made whole at `open`.
         Err(ConnError::Closed)
     }
 
@@ -447,10 +391,6 @@ impl Conns for HttpsConns {
         Ok(0)
     }
 
-    /// Every connection the double opens reached a target of its SECURED scheme (it serves no
-    /// other), so it reports one secured: a certificate stands in for the far end's, as the host's
-    /// `FACTS` reads security off a presented certificate. A credential that must go out secured
-    /// (`Cred::secure_required`) is then sent as it is to a real `https` far end.
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         self.slab.get(caller, conn)?;
         Ok(ConnFacts {
@@ -477,9 +417,6 @@ impl DeclaredConns for HttpsConns {
         require_secure: bool,
         _dial_timeout_ms: u64,
     ) -> Result<ConnId, ConnError> {
-        // Far ends and their replies are in memory: open completes the lookup immediately,
-        // with no asynchronous dial to time. Preserve the request's own bound and all existing
-        // admission, trust, secure-delivery and send-record behavior through the same open path.
         self.open_with_security(caller, need, desc, require_secure)
     }
 
@@ -498,11 +435,7 @@ impl DeclaredConns for HttpsConns {
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert((owner, need), spec.transport.clone());
         }
-        // As the connector declares (busbar-core-connector `declare`): a member-target need
-        // (`settings.*.<key>`) is pinned by no one target, each member's route being sealed at its
-        // own, and dials what the plane names per open; a member-scoped or OWNED trust path is
-        // optional, absent leaving the public roots alone. Any other path that resolved to nothing
-        // refuses the need.
+
         let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
         let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some();
         let unresolved =
@@ -511,10 +444,7 @@ impl DeclaredConns for HttpsConns {
                     && !per_member(&spec.trust_from)
                     && !optional_trust
                     && trust.is_none());
-        // A need over an unreached scheme is declared as the connector declares a need over a
-        // transport the deployment loads (its scheme is served); every open on it is refused
-        // ([`Conns::open`] here), as an unreachable peer is. A refused config-free need would
-        // refuse the load (the loader's bind, kind-secret K17), which no deployment does.
+
         let served = spec.transport == self.facts.transport || unreached;
         let answer = if spec.transport.is_empty() || !served || unresolved {
             Err(ConnError::Refused)

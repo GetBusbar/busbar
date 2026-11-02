@@ -6,7 +6,7 @@
 use crate::usage::{Direction, LocatorPtr, QuantitySource};
 
 /// Which sources the kernel derived itself, and which came from somebody else. The split is what
-/// decides whether a line wants a companion at all.
+
 #[test]
 fn the_closed_sources_split_into_kernel_derived_and_reported() {
     let kernel = [

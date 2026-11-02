@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Where a dial lands.
-//!
-//! The one piece of the destination vocabulary that is the TRANSPORT's rather than the plane's: a
-//! plane says which upstream a unit wants, and this is how the family that dials it spells the
-//! place. It is here rather than in the contract because reading it is a transport author's job —
-//! the certificate name a socket family offers, the argument vector a process family spawns under,
-//! the method a call-per-path family declares — and none of those are questions a plane answers.
 
 use core::fmt;
 
@@ -84,10 +78,7 @@ pub enum UpstreamAddress {
 }
 
 /// Serialize an environment as the names it sets and nothing else.
-///
-/// A journal entry that recorded the values would be a credential at rest in a file nothing
-/// rotates. The names are what a reader needs to see that the child was spawned with the variables
-/// it was configured with.
+
 fn env_names_only<S: serde::Serializer>(
     env: &&'static [(&'static str, &'static str)],
     serializer: S,
@@ -159,9 +150,7 @@ impl UpstreamAddress {
     }
 
     /// The name a presented certificate is checked against, where the deployment named one.
-    ///
-    /// `tls` reads this and nothing else: with no name declared it has no honest basis for one, and
-    /// offering the pinned address in its place is the mismatch this field exists to stop.
+
     #[must_use]
     pub const fn sni(&self) -> Option<&'static str> {
         match self {
@@ -171,12 +160,7 @@ impl UpstreamAddress {
     }
 
     /// The program to spawn, for the shape whose upstream is a process.
-    ///
-    /// Every arm is named, here and in the accessors around it, rather than answered for by a
-    /// catch-all. A catch-all answered for arms that did not exist yet, so adding a SHAPE to this
-    /// enum compiled without a word — and the transport whose dial reads one of these would have
-    /// taken the silence for an answer. A new shape has to come back here and say what it carries.
-    /// What a new FAMILY carries is not a new shape and never reaches this file: it is a key.
+
     #[must_use]
     pub const fn program(&self) -> Option<&'static str> {
         match self {
@@ -212,9 +196,7 @@ impl UpstreamAddress {
     }
 
     /// One declared fact, by key. `None` for a key this destination does not declare.
-    ///
-    /// The reading half of the negotiation: a transport asks for the keys it understands and never
-    /// sees the rest, so a destination declaring a fact for some other family costs it nothing.
+
     #[must_use]
     pub fn extra(&self, key: &str) -> Option<&'static str> {
         self.extras()
@@ -224,11 +206,7 @@ impl UpstreamAddress {
     }
 
     /// The first key a transport requires that this destination does not declare.
-    ///
-    /// The refusing half, and the same shape as `registry::facts::undeclared` one module over,
-    /// because it is the same rule read from the other side. A transport that cannot dial without a
-    /// key names it here and refuses; the alternative is a default of its own, which dials
-    /// somewhere nobody named and reports success.
+
     #[must_use]
     pub fn missing<'k>(&self, required: &[&'k str]) -> Option<&'k str> {
         required
@@ -238,7 +216,7 @@ impl UpstreamAddress {
     }
 
     /// A socket target with no certificate name and nothing declared beyond the shape. The common
-    /// case, and the one a configuration that names only `host:port` produces.
+
     #[must_use]
     pub const fn socket(authority: &'static str) -> Self {
         Self::Socket {

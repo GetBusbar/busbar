@@ -1,34 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STAND-IN STORE AXIS: `preflight::RootInstall`'s `store_axis` in a test build. A test build
-//! has no composition root and no loader (BUSBAR-1.6.0.md THE DESIGN l.322: the kernel never names
-//! the loader), so the store boot opens is opened IN PROCESS: the store double's door
-//! ([`super::store_double::door`], what [`super::store_double::STORE`] links) opens a fresh
-//! [`super::store_double::MemoryStore`], and every call the kernel makes runs that store's
-//! [`StoreSlots`] directly ([`SlotStore`]). Any other door is refused, naming why.
-//!
-//! WHAT IT MIRRORS is the loader's bridge over a store's table (`LoadedStore`,
-//! `crates/plugin-loader/src/store_v3.rs`), op for op:
-//!
-//! * `open` is the store's own [`StoreSlots::open`] over the section's settings, then its connect
-//!   step, as the SDK's door runs them; a refusal is the loader's `plugin '<name>' open failed:
-//!   <the store's text>` (`status 3` for a fault);
-//! * the typed calls ([`StoreCalls`]) and the 1.5.5 op set ([`RecordStore`], the synchronous
-//!   bridge) both run the SAME slots, so a call that answers PENDING on no ticket is FAULT on either
-//!   surface;
-//! * each answer is classed as the loader classes the door's: an `op_id` conflict
-//!   [`StoreFailure::Conflict`], a store's text [`StoreFailure::Failed`]; the bridge carries a
-//!   FAILED op's text unchanged and every other failure in its typed words (the loader's `bridge`);
-//! * the bridge's additive 1.5.5 writes (`add_usage`, `add_metering`, `append_plane_record`) run the store's `op_id`-carrying slots under an `op_id` the kernel's
-//!   one allocator mints ([`crate::door::op_id`]).
-//!
-//! Every call crosses on no ticket ([`Op::detached`]): a store that answers PENDING there is a
-//! FAULT, as the SDK's door rules for a call on no ticket. The store double never pends. How a
-//! store is loaded, dispatched, bounded by its `max_inflight` and resumed on its wake is the
-//! loader's to prove (`crates/plugin-loader/src/tests/store_v3_tests.rs`), and the double's parity
-//! with the shipped store the root's (`the_kernel_store_double_states_what_the_linked_store_door_states`).
-
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -46,14 +18,11 @@ use busbar_contract::store_calls::{
 
 use super::store_double::{self, MemoryStore as Double};
 
-/// A test build's store axis (it has no composition root): the store double's door, opened in
-/// process.
 #[must_use]
 pub fn store_axis_stand_in() -> Arc<dyn StoreAxis> {
     Arc::new(StandIn)
 }
 
-/// THE STAND-IN AXIS (see the module doc).
 struct StandIn;
 
 impl StoreAxis for StandIn {
@@ -82,13 +51,10 @@ impl StoreAxis for StandIn {
     }
 }
 
-/// Whether `door` is the store double's door (compared by fn address).
 fn is_store_double(door: DoorFn) -> bool {
     std::ptr::fn_addr_eq(door, store_double::door as DoorFn)
 }
 
-/// ONE STORE INSTANCE, called in process through its [`StoreSlots`]: the store, the Statement name
-/// its refusals carry, and the kernel's `op_id` allocator for the bridge's additive writes.
 pub(crate) struct SlotStore<S: StoreSlots> {
     store: S,
     name: &'static str,
@@ -96,11 +62,6 @@ pub(crate) struct SlotStore<S: StoreSlots> {
 }
 
 impl<S: StoreSlots> SlotStore<S> {
-    /// Open `S` on `settings` and run its connect step, as the SDK's door's `open` does.
-    ///
-    /// # Errors
-    /// The store refused its settings or its connect step (`plugin '<name>' open failed: <text>`),
-    /// or faulted (`status 3`).
     pub(crate) fn open(
         name: &'static str,
         settings: &[u8],
@@ -111,17 +72,11 @@ impl<S: StoreSlots> SlotStore<S> {
         match S::connect(&store, &mut Op::detached()) {
             Step::Ready(Ok(())) => Ok(Self { store, name, mint }),
             Step::Ready(Err(e)) => Err(refused(&e)),
-            // Pending on no ticket: FAULT.
+
             Step::Pending { .. } => Err(refused("status 3")),
         }
     }
 
-    /// Run one slot on no ticket: its answer, or FAULT for a PENDING. A store body that panics is
-    /// FAULT too, never an unwind into the caller: the SDK's door runs every slot body under
-    /// `catch_unwind` and answers a panic as `Outcome::Fault`, which the loader's bridge classes
-    /// [`StoreFailure::Fault`] (`crates/plugin-loader/src/store_v3.rs`). The body runs on a scoped
-    /// thread of its own and its join answers the panic, so no unwind boundary is asserted here
-    /// (`qa/construction.toml` `hold-escapes`: the stand-in holds no hold, and names no escape).
     fn call<T: Send>(
         &self,
         slot: impl FnOnce(&S, &mut Op<'_>) -> Step<T> + Send,
@@ -148,8 +103,6 @@ impl<S: StoreSlots> SlotStore<S> {
         }
     }
 
-    /// An `op_id`-carrying write: a conflict is [`StoreFailure::Conflict`], a failure's text FAILED,
-    /// a refusal's text REFUSED (S5).
     fn op<T: Send>(
         &self,
         slot: impl FnOnce(&S, &mut Op<'_>) -> Step<OpResult<T>> + Send,
@@ -161,7 +114,6 @@ impl<S: StoreSlots> SlotStore<S> {
         })
     }
 
-    /// A slot answering the store's own text on failure: FAILED with it.
     fn text<T: Send>(
         &self,
         slot: impl FnOnce(&S, &mut Op<'_>) -> Step<Result<T, String>> + Send,
@@ -169,7 +121,6 @@ impl<S: StoreSlots> SlotStore<S> {
         self.call(slot)?.map_err(StoreFailure::Failed)
     }
 
-    /// A 1.5.5 op: FAILED with the store's error text.
     fn record<T: Send>(
         &self,
         slot: impl FnOnce(&S, &mut Op<'_>) -> Step<RecordStoreResult<T>> + Send,
@@ -177,13 +128,11 @@ impl<S: StoreSlots> SlotStore<S> {
         self.call(slot)?.map_err(|e| StoreFailure::Failed(e.0))
     }
 
-    /// A fresh `op_id` for one of the bridge's additive writes.
     fn mint(&self) -> OpId {
         (self.mint)()
     }
 }
 
-/// One call's answer, already in hand.
 fn ready<'a, T: Send + 'a>(answer: Result<T, StoreFailure>) -> StoreCall<'a, T> {
     Box::pin(std::future::ready(answer))
 }
@@ -363,8 +312,6 @@ impl<S: StoreSlots> StoreCalls for SlotStore<S> {
     }
 }
 
-/// The 1.5.5 op set's error for a store call: a FAILED op's own text unchanged, every other failure
-/// in its typed words (the loader's `bridge`).
 fn bridge<T>(r: Result<T, StoreFailure>) -> RecordStoreResult<T> {
     r.map_err(|f| match f {
         StoreFailure::Failed(text) => RecordStoreError(text),
@@ -372,7 +319,6 @@ fn bridge<T>(r: Result<T, StoreFailure>) -> RecordStoreResult<T> {
     })
 }
 
-/// THE SYNCHRONOUS BRIDGE: the 1.5.5 op set over the same slots.
 impl<S: StoreSlots> RecordStore for SlotStore<S> {
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         bridge(self.record(|s, cx| S::put_key(s, cx, key)))
@@ -451,7 +397,6 @@ impl<S: StoreSlots> RecordStore for SlotStore<S> {
         bridge(self.record(|s, cx| S::list_credentials_since(s, cx, since)))
     }
 
-    /// No store slot carries a 1.5.5 audit append: refused loudly, as the loader refuses it.
     fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
         Err(RecordStoreError(
             "append_audit is not a store op: 1.6.0 writes its audit as plane records".to_string(),

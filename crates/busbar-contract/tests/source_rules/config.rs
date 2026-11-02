@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A 1.5.x CONFIG STILL READS (the config grammar is additive-only). Two rules over core's source:
-//!
-//! - every config struct core still declares keeps every key the frozen 1.5.3 snapshot
-//!   (`crates/busbar-kernel/src/config/config-schema.snapshot.json`) records for it;
-//! - the admin `config/apply` and `config/validate` verbs parse a document with the boot parser,
-//!   so a config the file accepts is a config the admin API accepts.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,8 +13,7 @@ use crate::walk;
 const SNAPSHOT: &str = "crates/busbar-kernel/src/config/config-schema.snapshot.json";
 
 /// The 1.5.x top-level sections whose grammar a plane owns: each is accepted at boot by the linked
-/// plane's own declaration (`PlaneDeclaration`, `config/prepass.rs`), not by a `DeployCfg` field,
-/// so the plane's repo keeps its grammar and the oracle's config cells prove it reads.
+
 const PLANE_SECTIONS: &[(&str, &str)] = &[
     ("DeployCfg", "agent_push"),
     ("DeployCfg", "agents"),
@@ -124,7 +118,7 @@ fn accepted_keys(sources: &[walk::Source]) -> BTreeMap<String, BTreeSet<String>>
 }
 
 /// Match the plane's actual descriptor against the frozen field's type, recursively.
-/// A field with the same name but a different list, enum or record grammar is not evidence.
+
 fn descriptor_shape_matches(
     shape: &busbar_contract::provider_keys::Shape,
     rust: &str,
@@ -178,8 +172,7 @@ fn descriptor_shape_matches(
 }
 
 /// The fixture is the actual exported plane descriptor, bound to source provenance and
-/// checked against STATEMENT by that plane's equality regression. It is not an allowlist:
-/// only its exact keys with frozen-equivalent shapes may move out of a core struct.
+
 fn descriptor_provider_entries(
     sources: &[walk::Source],
     types: &serde_json::Map<String, serde_json::Value>,
@@ -208,7 +201,7 @@ fn descriptor_provider_entries(
         .iter()
         .find(|s| s.rel == "crates/busbar-kernel/src/config/providers.rs")
         .unwrap();
-    // Core-owned keys can never be delegated, even if a descriptor mistakenly states one.
+
     let core: BTreeSet<String> = parser
         .file
         .items
@@ -324,7 +317,7 @@ fn descriptor_delegation_does_not_hide_removal_of_unrelated_core_fields() {
             removed_config_keys(types, &declared, &delegated).contains(&format!("{name}.{field}"))
         );
     }
-    // A coincidental descriptor key with the wrong frozen grammar is not delegation.
+
     assert!(!descriptor_shape_matches(
         &busbar_contract::provider_keys::Shape::Str,
         "bool",

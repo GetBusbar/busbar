@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Scoped fixture observations of actual accepted admin-audit publication. Filtering,
-//! subscriber storage, receiver cancellation, and oneshot orchestration live in the testkit.
-
 use busbar_kernel::audit_ring::AuditEntry;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,8 +27,6 @@ pub struct AcceptedAdminAudit {
 }
 
 impl AcceptedAdminAudit {
-    /// Wait for the actual accepted row matching the registered action/resource/principal.
-    /// Its outcome is deliberately not filtered: the caller must judge the real outcome.
     pub async fn accepted(mut self) -> Result<AuditEntry, oneshot::error::RecvError> {
         (&mut self.receive).await
     }
@@ -46,15 +41,11 @@ impl Drop for AcceptedAdminAudit {
     }
 }
 
-/// Register BEFORE the mutation. Only a live row accepted by the journal seam and pushed to
-/// the process-wide AUDIT_LOG fulfills this observation; restore and other logs cannot do so.
 pub fn observe_accepted_admin_entry(
     action: &str,
     resource: &str,
     principal: &str,
 ) -> AcceptedAdminAudit {
-    // Install publication delivery before registering the observer and before returning to the
-    // mutation under test. All subscriber state remains owned by this module.
     busbar_kernel::audit::auditlog::install_accepted_entry_test_hook(published);
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let (send, receive) = oneshot::channel();
@@ -86,7 +77,7 @@ fn published(entry: &AuditEntry) {
             .filter_map(|id| observers.remove(&id).map(|observer| observer.send))
             .collect::<Vec<_>>()
     };
-    // Notify outside both observer and read-model locks. A receiver may resume immediately.
+
     for send in ready {
         let _ = send.send(entry.clone());
     }

@@ -62,14 +62,11 @@ use crate::dispatch::{
     Bind, Called, Diagnostic, Dispatcher, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB,
 };
 
-/// This kind's section of the plugin's `conformance.json`, and its instance label: the kind's
-/// config root key, read off the kind list (`busbar_contract::plugin::Kind::verb`).
 const ROOT: &str = match busbar_contract::plugin::Kind::Export.root_key() {
     Some(key) => key,
     None => panic!("the export kind has a config root key"),
 };
 
-/// The host's first `scrape` buffer when the inputs name none (the kernel's 64 KiB).
 const SCRAPE_CAP: usize = 64 * 1024;
 
 /// THE HOST'S SINK, recorded: every envelope entry the host ingested, as text, in order.
@@ -84,7 +81,6 @@ impl Tape {
             .push(line);
     }
 
-    /// What the host observed since the last read.
     fn seen(&self) -> String {
         let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let seen = held.join(" | ");
@@ -118,12 +114,10 @@ impl EnvelopeSink for Tape {
     }
 }
 
-/// The input's string at `key`, `""` when absent.
 fn field<'v>(v: &'v serde_json::Value, key: &str) -> &'v str {
     v.get(key).and_then(serde_json::Value::as_str).unwrap_or("")
 }
 
-/// The outcome an input expects (`"outcome"`), `Ready` when it names none.
 fn expected(v: &serde_json::Value) -> String {
     v.get("outcome")
         .and_then(serde_json::Value::as_str)
@@ -131,7 +125,6 @@ fn expected(v: &serde_json::Value) -> String {
         .to_string()
 }
 
-/// Borrowed bytes; NULL when empty (absent).
 fn lend(s: &str) -> AbiStr {
     AbiStr {
         ptr: if s.is_empty() {
@@ -168,7 +161,6 @@ unsafe fn copied(ptr: *const u8, len: usize) -> String {
     String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len) }).into_owned()
 }
 
-/// A list's pointer; NULL when empty.
 fn list<T>(v: &[T]) -> *const T {
     if v.is_empty() {
         std::ptr::null()
@@ -177,8 +169,6 @@ fn list<T>(v: &[T]) -> *const T {
     }
 }
 
-/// The scrape snapshot an input names, lowered onto the ABI's shapes. The strings stay the
-/// inputs'; the arrays are held here for the call.
 struct Snapshot {
     _labels: Vec<Vec<ScrapeLabel>>,
     _samples: Vec<Vec<ScrapeSample>>,
@@ -255,11 +245,7 @@ fn snapshot(families: &serde_json::Value) -> Snapshot {
     }
 }
 
-/// One `deliver` of `batch` on `stream`, AS THE KERNEL'S EXPORT FLUSHER OFFERS IT
-/// (`export_door`): on a ticket of `d`'s, write-behind, so a delivery that waits on the network
-/// answers PENDING and is RESUMED on its wake.
 fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) -> String {
-    // The batch rides with the op (THE DESIGN §2): the lending submit owns it.
     let batch: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(batch.to_vec());
     let mut f: Frame<DeliverIn, OutHead> = Frame::new(input(), output());
     f.input.op_id = [n; 16];
@@ -276,9 +262,6 @@ fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) 
     ))
 }
 
-/// One `scrape` over `families` into a host buffer of `cap` bytes, and the ONE re-call a short
-/// answer earns, into a buffer of the size it named: its line (whether it was re-called, what it
-/// wrote and whether that is `exposition`).
 fn scrape(p: &Plugin<Export>, families: &[ScrapeFamily], cap: usize, exposition: &[u8]) -> String {
     let mut buf = vec![0_u8; cap];
     let mut f: Frame<ScrapeIn, ScrapeOut> = Frame::new(input(), output());
@@ -306,10 +289,6 @@ fn scrape(p: &Plugin<Export>, families: &[ScrapeFamily], cap: usize, exposition:
     )
 }
 
-/// Whether the dispatcher JUDGED `c`'s answer, so what its `out` names may be read: every outcome
-/// but FAULT is judged by the kind's check (a FAULT is the answer the check refused, or a crossing
-/// the host cut, and its `out` is the plugin's unjudged words), and PENDING never reaches a
-/// ticket-less caller (THE DESIGN §11.13 M1: a slice is formed only from a length the host judged).
 fn judged(c: &Called) -> bool {
     matches!(
         c.outcome,
@@ -317,10 +296,8 @@ fn judged(c: &Called) -> bool {
     )
 }
 
-/// What a line says in place of plugin memory the host never read (an unjudged answer).
 const UNREAD: &str = "<unread>";
 
-/// `status`: its line and its lease, still held.
 fn status(p: &Plugin<Export>) -> (String, u64) {
     let mut f: Frame<InHead, StatusOut> = Frame::new(input(), output());
     let c = p.call(export::slot::STATUS, &mut f);
@@ -332,7 +309,6 @@ fn status(p: &Plugin<Export>) -> (String, u64) {
     (format!("{} status={body:?}", called(&c)), c.lease)
 }
 
-/// `check` at `phase` across `instances`: its line and its lease, still held.
 fn check(p: &Plugin<Export>, phase: u32, instances: &[CheckInstance]) -> (String, u64) {
     let mut f: Frame<CheckIn, CheckOut> = Frame::new(input(), output());
     f.input.phase = phase;
@@ -347,7 +323,6 @@ fn check(p: &Plugin<Export>, phase: u32, instances: &[CheckInstance]) -> (String
     (format!("{} findings={findings:?}", called(&c)), c.lease)
 }
 
-/// One `serve` of the request `r` names: its line (code, headers, body) and its lease, still held.
 fn serve(p: &Plugin<Export>, r: &serde_json::Value) -> (String, u64) {
     let body = field(r, "body");
     let mut f: Frame<ServeIn, ServeOut> = Frame::new(input(), output());
@@ -392,7 +367,6 @@ fn serve(p: &Plugin<Export>, r: &serde_json::Value) -> (String, u64) {
     )
 }
 
-/// The stream a `deliver` input names.
 fn stream(d: &serde_json::Value) -> u8 {
     let tok = field(d, "stream");
     ExportStream::from_token(tok).unwrap_or_else(|| {
@@ -422,8 +396,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let scrapes = arr("scrape");
     let serves = arr("serve");
     let snapshots: Vec<Snapshot> = scrapes.iter().map(|sc| snapshot(&sc["families"])).collect();
-    // The script's own `check.instances`, else the one `conformance` instance over the subject's
-    // settings (built as the pair it is read into, never as a JSON body carrying a settings bag).
+
     let instance_settings: Vec<(String, Vec<u8>)> =
         match k.get("check").and_then(|c| c.get("instances")) {
             Some(list) => list
@@ -450,11 +423,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     };
     let p = load::<Export>(s, leg, b).expect("the export door loads");
     let mut r = Script::new(crossings(&p));
-    // Every line ends with what the host's sink observed while the step ran.
+
     let host = |line: String| format!("{line} host=[{}]", tape.seen());
     r.line("facts", 0, || host(facts(&p)));
     refused_settings(&mut r, &p, &bad, &host);
-    // The host refuses an unopened instance's kind op before any crossing.
+
     r.line("deliver unopened", 0, || {
         let d0 = &delivers[0];
         host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0))
@@ -477,7 +450,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             .and_then(serde_json::Value::as_u64)
             .map_or(SCRAPE_CAP, |c| c as usize);
         let exposition = field(sc, "exposition").as_bytes();
-        // A rendering longer than the host's buffer answers SHORT: the ONE re-call is +1.
+
         let pinned = if exposition.len() > cap { 2 } else { 1 };
         r.line(&format!("scrape #{i}"), pinned, || {
             host(scrape(&p, &snap.families, cap, exposition))
@@ -521,7 +494,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0xfe))
     });
     closed(&mut r, &p, &host);
-    // A closed instance answers FAULT without a crossing.
+
     r.line("deliver after close", 0, || {
         let d0 = &delivers[0];
         host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0xff))
@@ -531,12 +504,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     fold
 }
 
-/// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: the good
-/// settings validate, open, refresh and close READY; each refused settings FAILS naming why; a
-/// delivery is READY and the host observes what the inputs say it observes, again after a
-/// refresh; a scrape renders exactly the inputs' exposition; `status`, `check` and `serve` answer
-/// as the inputs say; every lease is its own and is released once; an unopened or closed instance
-/// serves nothing.
 fn contract(fold: &Fold, k: &serde_json::Value) {
     let at = |label: &str| answer(fold, label);
     let empty = Vec::new();

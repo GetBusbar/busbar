@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The four terminals, and the words each of them says.
-//!
-//! Carried over from the previous release's on-exhausted tests. Every literal asserted here — the
-//! status, the kind, the detail, the wait — is the one that shipped, and each is compared against
-//! the constant rather than a retyped copy of it, so a reworded constant fails the test that reads
-//! it rather than passing a test that repeats the same mistake. Each is the walk's own answer
-//! ([`super::Walker`]); the cases that dispatch also run through the far end where what they
-//! claim is about the member that served.
-
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node, Routed};
 use crate::test_support::tokens::pass;
@@ -19,7 +10,6 @@ use busbar_kernel_egress::pool::OnExhausted;
 use busbar_kernel_egress::ports::Clock;
 use busbar_kernel_egress::wire::{DETAIL_OVERLOADED, KIND_OVERLOADED, STATUS_SERVICE_UNAVAILABLE};
 
-/// A pool of `n` members whose every member is suppressed, so the walk finds nowhere to send.
 fn exhausted_pool(n: usize, cooldowns: &[u64]) -> Node {
     let lanes: Vec<&'static str> = ["a", "b", "c", "d"][..n].to_vec();
     let mut node = Node::with_lanes(&lanes);
@@ -64,8 +54,7 @@ fn the_shed_advertises_the_soonest_genuine_cooldown() {
 #[test]
 fn a_member_that_is_merely_busy_does_not_mask_a_sibling_in_a_long_cooldown() {
     let mut node = exhausted_pool(2, &[600, 0]);
-    // The second member reports no cooldown because it is at capacity, not benched. Its zero must
-    // not become the minimum.
+
     node.capacity.set_ceiling(DestinationId::new(1), 1);
     let held = node.capacity.saturate(DestinationId::new(1));
     node.tune("primary", |pool| pool.on_exhausted = OnExhausted::Status503);
@@ -130,8 +119,6 @@ fn a_pool_with_no_members_at_all_refuses() {
     assert_eq!(shed.retry_after_secs, None);
 }
 
-// ── the spill ───────────────────────────────────────────────────────────────────────────────────
-
 fn spill_node() -> Node {
     let mut node = Node::with_lanes(&["a", "b"]);
     node.pool("primary", vec![member(DestinationId::new(0), "a")]);
@@ -179,8 +166,7 @@ fn a_spill_reaches_the_other_pools_healthy_member() {
 #[test]
 fn a_spill_that_comes_back_round_terminates() {
     let mut node = spill_node();
-    // Point the overflow pool back at the primary and make its member unusable too, so the chain
-    // is primary to overflow to primary.
+
     node.tune("overflow", |p| {
         p.on_exhausted = OnExhausted::FallbackPool("primary".to_string());
     });
@@ -223,8 +209,7 @@ fn a_spill_applies_the_target_pools_own_blocklist() {
     node.tune("primary", |p| {
         p.on_exhausted = OnExhausted::FallbackPool("overflow".to_string());
     });
-    // The operator blocklisted `b` in the OVERFLOW pool. The primary pool's own list says nothing
-    // about it, so without the target's list being re-applied the spill could reach it.
+
     node.tune("overflow", |p| {
         p.failover.exclusions = vec!["b".to_string()];
     });
@@ -256,8 +241,6 @@ fn a_spill_carries_the_deadline_across_the_hop() {
         "a spill is not a fresh request"
     );
 }
-
-// ── the last resort ─────────────────────────────────────────────────────────────────────────────
 
 fn least_bad_node() -> Node {
     let mut node = Node::with_lanes(&["a", "b", "c"]);
@@ -312,8 +295,7 @@ fn the_last_resort_takes_the_soonest_cooldown() {
 #[test]
 fn the_last_resort_ranks_only_usable_members() {
     let node = least_bad_node();
-    // A dead member reports no cooldown at all; without the usability filter its zero would sort
-    // it to the front of the last-resort order.
+
     node.breaker.set(
         DestinationId::new(0),
         Health {
@@ -418,8 +400,7 @@ fn the_last_resort_never_reaches_a_blocklisted_member() {
 #[test]
 fn the_last_resort_owns_no_probe() {
     let node = least_bad_node();
-    // A peer already owns every member's probe, so ordinary admission refuses every member.
-    // The last resort bypasses the breaker and must neither win nor release a peer's probe.
+
     for d in 0..3 {
         node.breaker.set(
             DestinationId::new(d as u64),
@@ -431,7 +412,7 @@ fn the_last_resort_owns_no_probe() {
             },
         );
     }
-    // This assertion checks the exact HTTP status as well as the neutral success class.
+
     for lane in ["a", "b", "c"] {
         node.conns
             .script(lane, Script::Frames(super::walk_tests::answer(200)));
@@ -473,8 +454,6 @@ fn the_last_resort_sheds_when_every_member_is_saturated() {
     drop(held);
 }
 
-// ── the terminals over the served breaker, and the burst (F25 row 155 rehomes) ─────────────────
-
 use busbar_kernel_breaker::cfg::BreakerCfg;
 use busbar_kernel_egress::ports::{Breaker, Capacity, Outcome, Permit};
 use busbar_kernel_egress::walk::Step;
@@ -482,16 +461,11 @@ use busbar_kernel_egress::walk::Step;
 use super::walk_tests::{answer, ok_200, real_egress, route_over, RealBreaker};
 use super::STREAM_CEILING_SECS;
 
-/// Hold `lane`'s one slot: it is at capacity for as long as the returned permit lives.
 fn saturated(node: &Node, lane: DestinationId) -> Permit {
     node.capacity.set_ceiling(lane, 1);
     node.capacity.saturate(lane)
 }
 
-/// F25 row 522: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::least_bad_still_serves_the_only_member_after_it_was_tried.
-/// A single-member pool under least_bad whose member's breaker is Open: the ordered walk passes it
-/// over (so the request's exclusion record holds every member), and the last resort still
-/// overrides the breaker for that member, which serves 200.
 #[test]
 fn least_bad_still_serves_the_only_member_after_it_was_tried() {
     let solo = DestinationId::new(0);
@@ -510,10 +484,6 @@ fn least_bad_still_serves_the_only_member_after_it_was_tried() {
     );
 }
 
-/// F25 row 181: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_forward_once_records_success_and_spends_budget.
-/// A lane with two units of lifetime budget, five failures and a 600 s cooldown behind it, served
-/// through least_bad: the 2xx is recorded as one success against the lane (its window gains one
-/// success, its error count stays 5) and spends exactly one unit (2 to 1).
 #[test]
 fn test_forward_once_records_success_and_spends_budget() {
     let lane = DestinationId::new(0);
@@ -561,11 +531,6 @@ fn test_forward_once_records_success_and_spends_budget() {
     );
 }
 
-/// F25 row 34: rehomed from the retired engine crate's src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling.
-/// The black hole on the DEGRADED walk: the only member's breaker is Open and least_bad licensed,
-/// so the dispatch is the last resort's. Its streamed send, whose head never comes, resolves at the
-/// stream ceiling (300 s, never the walk's 120 s budget, as 1.5.5 ran a streamed request), never
-/// hangs, is refused 503, and records exactly one transient against the member.
 #[test]
 fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling() {
     let lane = DestinationId::new(0);
@@ -601,8 +566,6 @@ fn a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling() {
     );
 }
 
-/// A pool `primary` of `primary` lanes and a pool `overflow` of the rest, `primary` spilling into
-/// `overflow`, every lane answering 200, under a 300 s failover budget a park would run to.
 fn spill_world(lanes: &[&'static str], primary: usize) -> Node {
     let mut node = Node::with_lanes(lanes);
     node.timeout_secs = 300;
@@ -622,9 +585,6 @@ fn spill_world(lanes: &[&'static str], primary: usize) -> Node {
     node
 }
 
-/// F25 row 526: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_spills_to_fast_member.
-/// A breaker-healthy primary at capacity under fallback_pool SPILLS at once to the overflow pool's
-/// free member, which serves 200; the saturated primary is never dispatched to (it serves zero).
 #[test]
 fn at_capacity_fallback_spills_to_fast_member() {
     let (slow, fast) = (DestinationId::new(0), DestinationId::new(1));
@@ -656,10 +616,6 @@ fn at_capacity_fallback_spills_to_fast_member() {
     assert_eq!(node.conns.dialled(), vec!["b".to_string()]);
 }
 
-/// F25 row 528: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_bounded_burst_all_spill_not_serialized.
-/// A burst of 4 concurrent requests on a pool whose single slot is held: every one spills to the
-/// roomy overflow member and is served 200 there, side by side (each answer takes 200 ms and the
-/// whole burst takes 200 ms), and the saturated slot serves none of them.
 #[test]
 fn at_capacity_bounded_burst_all_spill_not_serialized() {
     const N: usize = 4;
@@ -705,9 +661,6 @@ fn at_capacity_bounded_burst_all_spill_not_serialized() {
     assert_eq!(node.conns.dialled(), vec!["b".to_string(); N]);
 }
 
-/// F25 row 529: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_all_members_busy_two_member_pool_spills.
-/// A two-member primary with BOTH members at capacity is exhausted and spills: the overflow member
-/// serves 200, neither primary member is dispatched to.
 #[test]
 fn at_capacity_all_members_busy_two_member_pool_spills() {
     let (a, b, fast) = (
@@ -736,9 +689,6 @@ fn at_capacity_all_members_busy_two_member_pool_spills() {
     assert_eq!(node.conns.dialled(), vec!["c".to_string()]);
 }
 
-/// F25 row 531: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_chain_spills_through_to_third_pool.
-/// A fallback chain A to B to C, A and B each at capacity: the at-capacity exhaustion cascades
-/// through the whole chain and C's member serves 200; A's and B's members serve nothing.
 #[test]
 fn at_capacity_fallback_chain_spills_through_to_third_pool() {
     let (a, b, c) = (
@@ -775,9 +725,6 @@ fn at_capacity_fallback_chain_spills_through_to_third_pool() {
     assert_eq!(node.conns.dialled(), vec!["c".to_string()]);
 }
 
-/// F25 row 532: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_self_referential_fallback_stays_503.
-/// A SATURATED pool whose on_exhausted names ITSELF as its fallback stops at the visited-pool loop
-/// guard: a 503 shed with the at-capacity floor, at once, without parking and without dispatching.
 #[test]
 fn at_capacity_self_referential_fallback_stays_503() {
     let busy = DestinationId::new(0);
@@ -808,9 +755,6 @@ fn at_capacity_self_referential_fallback_stays_503() {
     assert!(node.conns.dialled().is_empty(), "never dispatched");
 }
 
-/// F25 row 533: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_to_also_exhausted_pool_cascades_to_503.
-/// A saturated primary spilling into a pool that is itself at capacity (no further on_exhausted)
-/// cascades to the 503 shed with its Retry-After, at once, dispatching nothing.
 #[test]
 fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
     let (primary, overflow) = (DestinationId::new(0), DestinationId::new(1));
@@ -832,11 +776,6 @@ fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
     assert!(node.conns.dialled().is_empty());
 }
 
-/// F25 row 483: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::bug1_witness_fallback_spills_served_by_fallback_not_primary.
-/// The park-then-serve witness: a breaker-HEALTHY primary at capacity under fallback_pool MUST
-/// spill, served 200 by the fallback with the primary serving zero. The primary's slot here frees
-/// the moment anything waits for it, so a walk that parked instead of spilling would be served by
-/// the primary and fail.
 #[test]
 fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
     let (primary, spare) = (DestinationId::new(0), DestinationId::new(1));
@@ -864,10 +803,6 @@ fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
     assert_eq!(*node.telemetry.queue_parks.lock().unwrap(), 0);
 }
 
-/// F25 row 484: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::budget_contract_holds_under_full_saturation_for_every_policy.
-/// Under FULL saturation (the primary's and the fallback's single slots both held) every
-/// on_exhausted policy sheds 503 with the at-capacity floor inside the 2 s failover budget: at once
-/// for reject, least_bad and fallback_pool, at the queue's own 50 ms bound for queue.
 #[test]
 fn budget_contract_holds_under_full_saturation_for_every_policy() {
     for (policy, waited_ms) in [
@@ -904,12 +839,8 @@ fn budget_contract_holds_under_full_saturation_for_every_policy() {
     }
 }
 
-// ── the generated worlds of row 480 ────────────────────────────────────────────────────────────
-
-/// Every generated world's failover budget, seconds: a park to it would blow the bound.
 const FAILOVER_SECS: u64 = 2;
 
-/// The lanes a generated world can hold: up to five primary members and four fallback members.
 const LANES: [&str; 9] = ["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"];
 
 /// A member's breaker cell at the decision.
@@ -957,7 +888,6 @@ struct World {
     policy: PolicyAt,
 }
 
-/// A seeded generator (xorshift64*), so every run draws the same worlds.
 struct Draw(u64);
 
 impl Draw {
@@ -1009,9 +939,6 @@ impl Draw {
     }
 }
 
-/// Drive one request through the walk and the far end over `world`, every member answering 200,
-/// and assert the strengthened invariant against an oracle read off the same breaker and permit
-/// store at decision time. Answers the disposition branch taken.
 fn run_world(world: &World) -> &'static str {
     let p = world.primary.len();
     let total = p + world.fallback.len();
@@ -1071,7 +998,6 @@ fn run_world(world: &World) -> &'static str {
         }
     }
 
-    // The oracle, at decision time, off the same breaker and permit store the walk reads.
     let token = pass::<busbar_contract::caps::Route>();
     let free = |d: DestinationId| node.capacity.try_acquire(d).is_some();
     let ready =
@@ -1098,13 +1024,11 @@ fn run_world(world: &World) -> &'static str {
     let refused = outcome.shed().map(|r| (r.status, r.retry_after));
     let shed_503 = Some(u32::from(STATUS_SERVICE_UNAVAILABLE));
 
-    // The budget contract, always.
     assert!(
         elapsed <= u128::from(FAILOVER_SECS * 1000),
         "ingress to disposition {elapsed} ms exceeded the failover budget: {world:?}"
     );
     let branch = if !elig_primary.is_empty() {
-        // (a) An eligible primary member existed: it serves, never a shed, never a spill.
         assert!(
             matches!(&outcome, Routed::Delivered(d) if d.pool == "primary"
                 && elig_primary.contains(&d.destination) && d.status == ok_200()),
@@ -1115,7 +1039,6 @@ fn run_world(world: &World) -> &'static str {
         assert_eq!(fallback_ok, 0, "{world:?}");
         "primary"
     } else {
-        // (b) The primary is exhausted: the disposition is the policy's.
         match world.policy {
             PolicyAt::Reject => {
                 let wait = soonest.unwrap_or(AT_CAPACITY_RETRY_AFTER_SECS);
@@ -1180,16 +1103,6 @@ fn run_world(world: &World) -> &'static str {
     branch
 }
 
-/// F25 row 480: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::strengthened_lane_availability_invariant.
-/// The strengthened lane-availability invariant over 512 seeded worlds: a primary pool of 1 to 5
-/// and a fallback pool of 1 to 4 members, each dead or not, out of budget or not, its cell Closed,
-/// Open (active), Open (expired) or HalfOpen, unbounded, bounded with a free slot or saturated, under
-/// each of the four on_exhausted policies (queue at 5 to 50 ms). One request each, through the walk
-/// and the far end over the served breaker: an eligible primary member always serves, else the
-/// disposition is the policy's (reject: 503 with the soonest cooldown or the floor; least_bad: a
-/// free admissible member serves, else 503; fallback_pool: the fallback serves and the primary
-/// serves zero, else 503; queue: 503 after its own bound at most), always inside the failover
-/// budget. Every branch is reached.
 #[test]
 fn strengthened_lane_availability_invariant() {
     let mut draw = Draw(0x9E37_79B9_7F4A_7C15);
@@ -1212,8 +1125,6 @@ fn strengthened_lane_availability_invariant() {
     );
 }
 
-// ── the wait ────────────────────────────────────────────────────────────────────────────────────
-
 fn queue_node(max_ms: u64) -> Node {
     let mut node = Node::with_lanes(&["a", "b"]);
     node.pool(
@@ -1235,7 +1146,7 @@ fn queue_node(max_ms: u64) -> Node {
 #[test]
 fn the_wait_sheds_at_once_when_nothing_it_could_wait_for_is_busy() {
     let node = queue_node(250);
-    // Every member is suppressed, not busy. No slot will free, so waiting is pointless.
+
     node.breaker.set(
         DestinationId::new(0),
         Health {
@@ -1252,8 +1163,7 @@ fn the_wait_sheds_at_once_when_nothing_it_could_wait_for_is_busy() {
     );
 
     assert_eq!(node.walker("primary").shed().retry_after_secs, Some(60));
-    // v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:191-202`: the pre-check sheds before the
-    // depth gauge is touched.
+
     assert_eq!(
         *node.telemetry.queue_parks.lock().unwrap(),
         0,
@@ -1266,11 +1176,7 @@ fn the_wait_dispatches_on_the_member_that_freed_a_slot() {
     let node = queue_node(250);
     node.capacity.set_ceiling(DestinationId::new(0), 1);
     node.capacity.set_ceiling(DestinationId::new(1), 1);
-    // Both members are at capacity when the pick runs. `a` stays held for the whole route; `b`'s
-    // slot is given back at the moment the wait terminal reaches the permit store — after the pick
-    // recorded its at-capacity exclusions and after the depth gauge counted the waiter in. Freeing
-    // a slot before the route instead leaves it free at the PICK, so the walk dispatches on the
-    // ordered path and the wait terminal is never entered at all.
+
     let held_a = node.capacity.saturate(DestinationId::new(0));
     node.capacity.saturate_until_waited(DestinationId::new(1));
 
@@ -1320,10 +1226,6 @@ fn the_wait_sheds_when_no_slot_frees_and_the_gauge_balances() {
     drop(held);
 }
 
-/// F25 row 546: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::queue_won_permit_but_breaker_now_open_never_dispatches.
-/// A request parked in the queue wins the member's freed slot, but the member's breaker tripped
-/// Open while it waited: the breaker re-check on the won member refuses it, the request is never
-/// dispatched, and it ends in the 503 shed at once (the wait does not run on to its bound).
 #[test]
 fn queue_won_permit_but_breaker_now_open_never_dispatches() {
     let svc = DestinationId::new(0);
@@ -1334,7 +1236,7 @@ fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         p.on_exhausted = OnExhausted::Queue { max_ms: 2_000 }
     });
     node.conns.script("a", Script::Frames(ok_frames()));
-    // At capacity at the pick; the slot frees the moment the parked request asks for it.
+
     node.capacity.set_ceiling(svc, 1);
     node.capacity.saturate_until_waited(svc);
 
@@ -1353,7 +1255,7 @@ fn queue_won_permit_but_breaker_now_open_never_dispatches() {
     let parked = walk
         .park(&ports, &wait, token)
         .unwrap_or_else(|shed| panic!("expected a wait, got the shed {shed:?}"));
-    // The breaker trips Open WHILE the request is parked.
+
     node.breaker.set(
         svc,
         Health {
@@ -1388,8 +1290,6 @@ fn queue_won_permit_but_breaker_now_open_never_dispatches() {
     );
 }
 
-/// v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:212-214`: the depth gauge is RAII, decremented
-/// on every exit including a dropped future.
 #[test]
 fn the_wait_gives_the_depth_gauge_back_when_the_parked_request_is_dropped() {
     let node = queue_node(250);
@@ -1399,8 +1299,6 @@ fn the_wait_gives_the_depth_gauge_back_when_the_parked_request_is_dropped() {
         .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
         .collect();
 
-    // Park the request, then walk away from it without ever polling it again — a client that hung
-    // up mid-wait. The increment happened; nothing but a drop will run the decrement.
     node.walker("primary").abandon_wait();
 
     assert_eq!(
@@ -1425,8 +1323,6 @@ fn the_wait_is_bounded_by_what_is_left_of_the_walk_and_not_only_by_its_own_setti
         .map(|d| node.capacity.saturate(DestinationId::new(d as u64)))
         .collect();
 
-    // The wait would run forever on its own setting; the walk's remaining budget is the real
-    // bound, and the shed proves the wait ended.
     let started = node.clock.now_millis();
     let shed = node.walker("primary").shed();
     assert_eq!(shed.detail, DETAIL_OVERLOADED);
@@ -1438,9 +1334,6 @@ fn the_wait_is_bounded_by_what_is_left_of_the_walk_and_not_only_by_its_own_setti
     drop(held);
 }
 
-/// THE STATED MEMBER'S OWN WAIT (`OnPieceOut::wait_member`, read through `FarEnd::member_wait`): a
-/// member of the unit's pool reads its own cell's cooldown, not the soonest across the pool; a
-/// name that is no member of the pool reads none (the pump then refuses the plane's statement).
 #[test]
 fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
     use crate::plane_driver::FarEnd as _;
@@ -1474,10 +1367,6 @@ fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
     assert_eq!(far.member_wait(&token, "stranger"), None);
 }
 
-// ── the hooks' restriction holds through the terminals (arch-audit u42 BLOCK) ───────────────────
-
-/// A required restriction the unit's hooks put on every pick: only these destinations are kept,
-/// and a pick that keeps none is the restriction no member satisfies.
 struct Restrict(Vec<DestinationId>);
 
 impl busbar_kernel_egress::walk::Shape for Restrict {
@@ -1494,7 +1383,6 @@ impl busbar_kernel_egress::walk::Shape for Restrict {
     }
 }
 
-/// Every member of `node`'s pool benched with its cooldown, by destination.
 fn bench(node: &Node, cooldowns: &[u64]) {
     for (d, cooldown) in cooldowns.iter().enumerate() {
         node.breaker.set(
@@ -1507,11 +1395,6 @@ fn bench(node: &Node, cooldowns: &[u64]) {
     }
 }
 
-/// v1.5.5 shrank the walk's candidates to the restriction's survivors so the restriction
-/// "PERSISTS across every failover hop" (`crates/busbar/src/proxy/engine/mod.rs:1085`,
-/// `:1298-1300`), and its last resort ranked only those candidates
-/// (`crates/busbar/src/proxy/engine/walk.rs:1126-1130`).
-/// The soonest-cooldown member is one the restriction excludes: the last resort must pass it over.
 #[test]
 fn the_last_resort_never_reaches_a_member_the_restriction_excludes() {
     let node = least_bad_node();
@@ -1529,9 +1412,6 @@ fn the_last_resort_never_reaches_a_member_the_restriction_excludes() {
     assert!(taken.degraded);
 }
 
-/// The kept members are all busy, an excluded one is free: the last resort sheds (v1.5.5
-/// `crates/busbar/src/proxy/engine/walk.rs:1142-1146`, over the restricted `cands`) rather than
-/// dispatch to the excluded one, and the shed's wait is the kept member's own.
 #[test]
 fn the_last_resort_sheds_rather_than_reach_an_excluded_member() {
     let node = least_bad_node();
@@ -1553,9 +1433,6 @@ fn the_last_resort_sheds_rather_than_reach_an_excluded_member() {
     drop(held);
 }
 
-/// The shed's Retry-After reads only the kept members (v1.5.5
-/// `crates/busbar/src/proxy/engine/walk.rs:100` and `:49-61`, over the restricted `cands`): an
-/// excluded member's sooner cooldown is not the client's to wait for.
 #[test]
 fn the_shed_advertises_only_the_kept_members_cooldown() {
     let node = exhausted_pool(3, &[10, 300, 120]);
@@ -1567,8 +1444,6 @@ fn the_shed_advertises_only_the_kept_members_cooldown() {
     assert_eq!(shed.retry_after_secs, Some(120));
 }
 
-/// The queue terminal's shed reads the same kept members (v1.5.5
-/// `crates/busbar/src/proxy/engine/walk.rs:202`, over the restricted `cands`).
 #[test]
 fn the_wait_terminals_shed_advertises_only_the_kept_members_cooldown() {
     let node = queue_node(250);

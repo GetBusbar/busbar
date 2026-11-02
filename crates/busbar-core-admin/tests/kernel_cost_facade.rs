@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ADMIN CRATE'S MONEY SIGNATURES NAME THE KERNEL'S FACADE. The usage read's derivations and
-//! the dated history it reads take and return the money types by `busbar_kernel::cost`, the path the
-//! kernel re-exports the ledger's own items under. This file is the compile-level witness: every
-//! binding below spells its type through `busbar_kernel::cost`, so a signature that drifted to any
-//! other path, or to a second type of the same name, stops compiling here. The one figure test
-//! pins that the dated read and the current-card read agree on a card the history opened with.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -43,9 +36,9 @@ fn the_usage_read_signatures_name_the_kernel_cost_facade() {
         &UsageBreakdown,
     ) -> Spend = derive_spend_micros_row_at_card;
     let _: DatedClasses = derive_spend_micros_row_classes_at_card;
-    // The process's dated history, which the usage read prices through, is the facade's `History`.
+
     let _: fn() -> Option<Arc<cost::History>> = busbar_kernel::rate_apply::dated_history;
-    // `CostModel::card` hands back the facade's `RateCard`: the kernel's card IS the ledger's.
+
     let _: fn(&CostModel) -> &cost::RateCard = CostModel::card;
 }
 

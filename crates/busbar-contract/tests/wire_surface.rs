@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The wire-surface vocabulary, over a surface that names no protocol.
-//!
-//! Every fixture here is deliberately made up. The vocabulary's whole claim is that it describes how
-//! an operation is ADDRESSED without knowing what the operation is, and a test written against a
-//! real protocol's surface would be unable to tell "this vocabulary is general" from "this
-//! vocabulary happens to fit the one protocol it was written beside".
 
 use busbar_contract::transport::surface::{
     match_target, resolve_target, Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
@@ -116,10 +111,7 @@ fn the_query_and_the_fragment_are_cut_before_matching() {
 }
 
 /// An EMPTY segment does not fill a capture.
-///
-/// The failure this refuses is specific: `/thing//part/b` matching `/thing/{id}/part/{part}` reaches
-/// a handler with no identifier at all, which is how a request for one thing becomes a scan of
-/// everything.
+
 #[test]
 fn an_empty_segment_does_not_fill_a_capture() {
     assert!(match_target("/thing/{id}/part/{part}", "/thing//part/b").is_none());
@@ -161,5 +153,3 @@ fn the_bar_reads_off_every_arm() {
     let open = resolve_target(&SURFACE, "/open", "GET").expect("declared");
     assert_eq!(open.1.bar(), Bar::Open);
 }
-
-// ── the boot check's own refusals, each planted ────────────────────────────────────────────────

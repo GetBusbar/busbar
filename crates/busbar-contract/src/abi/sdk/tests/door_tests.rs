@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR MACRO, COMPILED-IN LEG: a tiny lifecycle-only plugin built with `plugin_door!` in this
-//! crate, called through its table exactly as a dispatcher would (the dropped-in leg is
-//! `tests/sdk_door_cdylib.rs`, over the same plugin as a `cdylib`).
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -162,7 +160,6 @@ mod plugin {
 }
 
 fn the_door() -> &'static Door {
-    // Exercise the macro through the public function-pointer type throughout the lifecycle tests.
     let door: DoorFn = plugin::door;
     door()
 }
@@ -294,7 +291,7 @@ fn the_door_states_magic_versions_kind_statement_and_table() {
 #[test]
 fn a_panicking_slot_answers_fault_and_writes_only_the_outcome() {
     let mut out = prefilled_head(size_of::<OutHead>());
-    out.outcome = RawOutcome::of(Outcome::Ready); // prove the trampoline writes FAULT itself
+    out.outcome = RawOutcome::of(Outcome::Ready);
     let got = call(
         table().head.validate,
         &validate_in(PANIC_LEN, slot::VALIDATE),
@@ -308,7 +305,6 @@ fn a_panicking_slot_answers_fault_and_writes_only_the_outcome() {
         "a panic wrote the body's out"
     );
 
-    // And the plugin still answers afterwards.
     let mut out = prefilled_head(size_of::<OutHead>());
     let got = call(
         table().head.validate,
@@ -381,7 +377,6 @@ struct Fenced<T> {
 
 #[test]
 fn the_plugin_writes_at_most_min_of_host_out_size_and_its_own() {
-    // The host says its `out` is only an `OutHead`: `next_tick_ns` (past it) must stay untouched.
     let mut host = Fenced {
         out: TickOut {
             head: prefilled_head(size_of::<OutHead>()),
@@ -398,7 +393,7 @@ fn the_plugin_writes_at_most_min_of_host_out_size_and_its_own() {
         Outcome::Ready
     );
     assert_eq!(host.out.head.outcome.outcome(), Outcome::Ready);
-    // The plugin writes back ITS OWN size (the host clamps); the bytes past the host's stay put.
+
     assert_eq!(host.out.head.size as usize, size_of::<TickOut>());
     assert_eq!(
         host.out.next_tick_ns, 0xDEAD,
@@ -406,7 +401,6 @@ fn the_plugin_writes_at_most_min_of_host_out_size_and_its_own() {
     );
     assert_eq!(host.fence, [0xEE; 32]);
 
-    // A full-size host `out` gets the whole answer and the plugin's own size back.
     let mut host = Fenced {
         out: TickOut {
             head: prefilled_head(size_of::<TickOut>()),
@@ -422,7 +416,6 @@ fn the_plugin_writes_at_most_min_of_host_out_size_and_its_own() {
     assert_eq!(host.out.head.size as usize, size_of::<TickOut>());
     assert_eq!(host.fence, [0xEE; 32]);
 
-    // A host `out` larger than the plugin's own: only the plugin's own size is written back.
     let mut host = Fenced {
         out: TickOut {
             head: prefilled_head(size_of::<TickOut>() + 32),
@@ -471,7 +464,7 @@ fn an_out_too_small_for_its_head_is_fault_with_nothing_written() {
 #[test]
 fn a_bad_in_head_is_fault() {
     let op = table().head.validate;
-    // NULL `in`.
+
     let mut out = prefilled_head(size_of::<OutHead>());
     out.outcome = RawOutcome::of(Outcome::Ready);
     // SAFETY: this SDK trampoline rejects NULL input before reading it; out is a live full head.
@@ -479,7 +472,6 @@ fn a_bad_in_head_is_fault() {
     assert_eq!(raw.outcome(), Outcome::Fault);
     assert_eq!(out.outcome.outcome(), Outcome::Fault);
 
-    // An `in.op` naming another slot.
     let mut out = prefilled_head(size_of::<OutHead>());
     assert_eq!(
         call(op, &validate_in(0, slot::OPEN), &mut out),
@@ -487,7 +479,6 @@ fn a_bad_in_head_is_fault() {
     );
     assert_eq!(out.outcome.outcome(), Outcome::Fault);
 
-    // An `in` shorter than its head.
     let mut input = validate_in(0, slot::VALIDATE);
     input.head.size = size_of::<InHead>() as u32 - 1;
     let mut out = prefilled_head(size_of::<OutHead>());
@@ -503,7 +494,6 @@ fn a_bad_in_head_is_fault() {
 
 #[test]
 fn an_absent_in_tail_reads_as_zero() {
-    // The host's `in` is only a head: `settings.len` (garbage past it) must read as 0.
     let mut input = validate_in(PANIC_LEN, slot::VALIDATE);
     input.head.size = size_of::<InHead>() as u32;
     let mut out = prefilled_head(size_of::<OutHead>());
@@ -541,7 +531,6 @@ fn pending_is_mirrored_on_a_ticket_and_fault_on_ticket_none() {
 
 #[test]
 fn every_slot_is_the_trampoline_at_its_own_index() {
-    // Each lifecycle slot answers only an `in.op` equal to its own index.
     let head = &table().head;
     let slots = [
         (head.drive, slot::DRIVE),
@@ -562,7 +551,7 @@ fn every_slot_is_the_trampoline_at_its_own_index() {
         let mut out = prefilled_head(size_of::<OutHead>());
         assert_eq!(call(op, &wrong, &mut out), Outcome::Fault, "slot {index}");
     }
-    // `close` forwards the instance pointer it was called on.
+
     let input = in_head::<InHead>(slot::CLOSE, Ticket::NONE);
     let mut out = prefilled_head(size_of::<OutHead>());
     assert_eq!(call(head.close, &input, &mut out), Outcome::Failed);
@@ -581,7 +570,6 @@ fn every_slot_is_the_trampoline_at_its_own_index() {
 
 #[test]
 fn kind_op_indices_follow_the_slot_layout() {
-    // The first slot after the lifecycle is LIFECYCLE_SLOTS, and so on, contiguous.
     let first = size_of::<OpsHead>();
     assert_eq!(super::slot_at(first), LIFECYCLE_SLOTS);
     assert_eq!(
@@ -674,7 +662,7 @@ fn kind_ops_sit_at_lifecycle_slots_plus_k_whatever_order_they_are_named_in() {
     assert_eq!(d.kind_abi, crate::abi::store::ABI_VERSION);
     assert_eq!(t.head.size as usize, size_of::<TwoKindOps>());
     assert_eq!(t.head.slots, LIFECYCLE_SLOTS + 2);
-    // Kind op 0 (`InHead` -> `OutHead`) answers only its own index.
+
     let input = in_head::<InHead>(LIFECYCLE_SLOTS, Ticket::NONE);
     let mut out = prefilled_head(size_of::<OutHead>());
     assert_eq!(call(t.first, &input, &mut out), Outcome::Ready);
@@ -683,7 +671,6 @@ fn kind_ops_sit_at_lifecycle_slots_plus_k_whatever_order_they_are_named_in() {
     let mut out = prefilled_head(size_of::<OutHead>());
     assert_eq!(call(t.first, &wrong, &mut out), Outcome::Fault);
 
-    // Kind op 1 (`GenIn` -> `TickOut`) answers its own index, with its own structs.
     let gen_in = |op, generation| GenIn {
         head: in_head::<GenIn>(op, Ticket::NONE),
         generation,
@@ -841,7 +828,7 @@ fn an_auth_plugin_wires_every_kind_op() {
 
 mod secret_plugin {
     //! A REAL kind table: the secret kind's one op wired to the structs `abi::secret` states for
-    //! it.
+
     use super::*;
     use crate::abi::secret::{ResolveIn, ResolveOut};
 
@@ -900,8 +887,7 @@ fn a_secret_plugin_wires_every_kind_op() {
 }
 
 /// A kind op a door names no slot for is NULL (absent): the secret door above names `resolve`
-/// alone, so its `check` is absent; the auth door names the six ops it was written with, so its
-/// `target` is. The loader admits exactly those two absent (absent = pass) and no other NULL.
+
 #[test]
 fn a_kind_op_a_door_does_not_name_is_absent() {
     // SAFETY: the macros' `'static` doors and their tables.
@@ -966,7 +952,7 @@ fn a_secret_plugin_that_serves_check_answers_it() {
     input.settings.len = 2;
     let mut out = prefilled_head(size_of::<OutHead>());
     assert_eq!(call(t.check, &input, &mut out), Outcome::Ready);
-    // `check` answers only its own index.
+
     input.head.op = secret_slot::RESOLVE;
     let mut out = prefilled_head(size_of::<OutHead>());
     assert_eq!(call(t.check, &input, &mut out), Outcome::Fault);
@@ -1142,7 +1128,7 @@ fn a_hook_plugin_wires_every_kind_op() {
 
 mod store_plugin {
     //! A REAL kind table: every store kind op wired to the structs `abi::store` states for
-    //! it.
+
     use super::*;
     use crate::abi::store::{AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut};
     use crate::abi::store::{GetPlaneRecordIn, HostBytesOut, HostListOut, IdIn, IdReasonIn};
@@ -1399,7 +1385,7 @@ mod plane_plugin {
     }
 
     /// `open`: the plane's own `out`, carrying the snapshot; it notes how many providers' facts
-    /// its `in` carried.
+
     pub struct Open;
     impl RawSlot for Open {
         type In = PlaneOpenIn;
@@ -1458,8 +1444,7 @@ mod plane_plugin {
 }
 
 /// THE APPEND RULE ON `PlaneOpenIn::providers`: a host whose `open` `in` ends before the list (its
-/// `size` says so) hands none, whatever bytes lie past its `size`; a host that states the whole `in`
-/// hands its count.
+
 #[test]
 fn a_plane_open_in_that_ends_before_the_providers_hands_none() {
     use crate::abi::plane::{Ops, PlaneOpenIn, PlaneOpenOut, ProviderFacts};
@@ -1539,7 +1524,7 @@ fn a_plane_plugin_wires_every_kind_op() {
     let mut out: PlaneOpenOut = unsafe { std::mem::zeroed() };
     out.open.head = prefilled_head(size_of::<PlaneOpenOut>());
     assert_eq!(call(t.head.open, &input, &mut out), Outcome::Ready);
-    // A `const` has no one address: the snapshot is compared by its contents.
+
     assert!(!out.snapshot.is_null());
     // SAFETY: the plugin's `'static` snapshot.
     let snap = unsafe { &*out.snapshot };
@@ -1552,7 +1537,6 @@ fn a_plane_plugin_wires_every_kind_op() {
     );
     assert_eq!(out.open.head.size as usize, size_of::<PlaneOpenOut>());
 
-    // `drive` names the ready session in the host's buffer; a zero cap is the short answer.
     let mut sessions = [0_u64; 2];
     // SAFETY: plain data; all-zero is valid.
     let mut input: PlaneDriveIn = unsafe { std::mem::zeroed() };
@@ -1581,7 +1565,7 @@ fn a_plane_plugin_wires_every_kind_op() {
 
 mod transport_plugin {
     //! A REAL kind table: every transport kind op wired to the structs `abi::transport`
-    //! states for it.
+
     use super::*;
     use crate::abi::transport::{AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn};
     use crate::abi::transport::{ConnIn, ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut};

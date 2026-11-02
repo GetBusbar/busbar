@@ -1,9 +1,4 @@
 //! Destinations, the route plan, and what an outbound request looks like.
-//!
-//! The destinations section of the design draws a hard line here. A plane returns *facts* about
-//! where a unit wants to go; the trust unit turns those facts into a verified destination under
-//! its own rule per kind, and only a verified destination can be dialled. A plane never holds a
-//! connection and never names a lane outside the set its claim's configuration declares.
 
 use crate::bounded::{BoundedVec, ScratchBytes, MAX_LEGS};
 use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UnitKey, UpstreamIdx};
@@ -12,10 +7,6 @@ use crate::wire::TransportEnvelope;
 use core::fmt;
 
 /// Where a dial lands, as the transport family that dials it spells it.
-///
-/// The transport contract's, named here: a plane builds one when it says where a unit wants to go,
-/// so it must be reachable from the contract, but what the arms MEAN is a transport author's
-/// reading and lives with the rest of what only a transport reads.
 pub use crate::transport::dest::UpstreamAddress;
 
 /// How a client leg delivers.
@@ -164,10 +155,7 @@ impl VerifiedDestination {
     }
 
     /// The priced lane the trust unit sealed.
-    ///
-    /// Read off the sealed facts rather than stored beside them. It was stored beside them, set at
-    /// seal from exactly this expression and copied unchanged through re-addressing, which is a
-    /// second copy of one fact and the only way the two could ever disagree.
+
     #[must_use]
     pub const fn lane(&self) -> Option<LaneId> {
         self.facts.lane()
@@ -180,15 +168,7 @@ impl VerifiedDestination {
     }
 
     /// The same sealed destination, re-addressed for the layer underneath this one.
-    ///
-    /// A composed transport does not open its own socket: it dials through the layer below it, and
-    /// that layer reads a socket address where this one reads a URL or a method. Re-addressing is
-    /// not re-sealing — every judgement the trust unit made travels unchanged, and only the
-    /// spelling of where the bytes go changes to what the lower layer can parse. There is no way to
-    /// reach this without already holding a sealed destination, so walking down a stack can never
-    /// widen where a unit may go.
-    ///
-    /// `None` for a destination that is not an upstream: nothing else has a layer beneath it.
+
     #[must_use]
     pub fn beneath(&self, transport: &'static str, address: UpstreamAddress) -> Option<Self> {
         let DestinationFacts::Upstream { lane, .. } = self.facts else {
@@ -206,10 +186,7 @@ impl VerifiedDestination {
     }
 
     /// The destination's remaining lifetime request budget, where it declares one.
-    ///
-    /// The transport section exposes this to hooks under its own fact key so pick order can take
-    /// it into account; an exhausted destination is excluded from the walk rather than ordered
-    /// last.
+
     #[must_use]
     pub fn budget_remaining(&self) -> Option<i64> {
         self.budget_remaining
@@ -319,7 +296,7 @@ impl fmt::Debug for SecretOnce {
 
 impl SecretOnce {
     /// Mint a placeholder for `unit`, to appear once at `target`. Verbs-unit-only; the seal is what
-    /// says so.
+
     #[must_use]
     pub fn mint(_seal: &dyn KernelSeal, nonce: u128, unit: UnitKey, target: &'static str) -> Self {
         Self {
@@ -367,11 +344,7 @@ pub struct TransportKeyHandle {
 
 impl TransportKeyHandle {
     /// Hand out a handle for resolved key material. Transport-key-unit-only.
-    ///
-    /// The token is what says so: the capability crate lends a `Grant<KeyHandle>` to the
-    /// transport-key unit and to nothing else, so this is the one place a handle comes from. There
-    /// is no second spelling of this type — the transports, the egress unit and the unit that
-    /// resolves the key all name this one.
+
     #[must_use]
     pub fn issue(_token: &dyn KernelSeal, slot: u64, fingerprint: &'static str) -> Self {
         Self { slot, fingerprint }
@@ -392,7 +365,7 @@ impl TransportKeyHandle {
 
 impl fmt::Debug for TransportKeyHandle {
     /// Says what the handle is and what it is not. A handle is a registry entry, never bytes, and
-    /// a log line that printed material would be the one leak the whole indirection exists to stop.
+
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

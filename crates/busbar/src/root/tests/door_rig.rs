@@ -1,29 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR CELLS' RIG: the ONE surface a door plane's own root cells (each plane crate's
-//! `tests/root/mod.rs`, compiled here through `$OUT_DIR/door_cells.rs`; ARCHITECT ruling on #464)
-//! reach the composition root through. A plane's cells are pinned in another repository, so a root
-//! refactor that changes a struct's fields, a builder's arguments or an installer's path would
-//! break them at the pin; every such shape is held here instead, behind a signature that does not
-//! move when the root's internals do:
-//!
-//! * no struct literal of a root type: the door's egress is an [`EgressRig`] (its reach and journal,
-//!   the rest defaulted), its composition a [`DoorCompose`], the store it records to
-//!   a [`DoorStore`], its process connector a [`ProcessRig`];
-//! * no installer by its path: [`install_root_auth`] hands the kernel the root's auth rows and its
-//!   auth-axis opener by whichever install path the kernel has;
-//! * no positional argument list of a root builder: each builder's defaults are the root's.
-//!
-//! A cell names the root through this module alone (`super::door_rig`), and the kernel's and the
-//! contract's own public surfaces directly. What a cell needs and this rig does not offer is added
-//! HERE, never reached for past it.
-//!
-//! The rig compiles in every test build that serves the `pools` section, so a root change that
-//! breaks it fails on that change, not at the next plane repin. Where an enabled door's cells name
-//! it (`build.rs` sets `door_rig`) it carries no allow: an item no compiled cell calls is dead code
-//! and refused, so the surface is exactly what the cells use. Only a build whose cells name no rig
-//! item lets the surface stand unused.
 #![cfg_attr(not(door_rig), allow(dead_code, unused_imports))]
 
 use std::collections::BTreeMap;
@@ -61,36 +38,21 @@ pub(crate) use crate::root::plane_node::{Node, NodeEndPost};
 pub(crate) use busbar_core_connector::tls::install_crypto_provider;
 pub(crate) use busbar_core_connector::Connector;
 
-/// The root's secret-source scan helpers, for the cells that drive a door's secret source.
 #[cfg(linked_axis_plane_door)]
 pub(super) use super::secret_source_tests::{
     assert_clean, missing, refused_naming_its_source, unset,
 };
 
-// ── THE LINKED TABLE ─────────────────────────────────────────────────────────────────────────────
-
-/// Every linked protocol declaration registered on the kernel's test protocol set, as the root's
-/// config-fixture cells install it.
 pub(crate) fn register_linked_protocols() {
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
 }
 
-/// The breaker fact a linked plane door's `declares` section states, read by its Statement name
-/// as the root reads it.
-///
-/// # Errors
-///
-/// Its declares section does not read.
 pub(crate) fn door_breaker(statement_name: &str) -> Result<Option<BreakerDecl>, String> {
     crate::root::linked::door_breaker(&crate::LINKED, None, statement_name)
 }
 
-// ── THE DOOR, BOUND ──────────────────────────────────────────────────────────────────────────────
-
-/// The section `door` declares, read by binding it once as a probe (nothing opened to the network)
-/// under `instance`; `None` when it will not bind.
 fn declared_section(door: DoorFn, instance: &str) -> Option<&'static str> {
     let dispatcher = Dispatcher::new(DispatchConfig::default());
     let row = LinkedRow::of(door).ok()?;
@@ -108,7 +70,6 @@ fn declared_section(door: DoorFn, instance: &str) -> Option<&'static str> {
     Some(plane.served().section)
 }
 
-/// Of the linked plane doors, the one that declares `section` ([`declared_section`]).
 pub(crate) fn door_declaring(section: &str) -> Option<DoorFn> {
     crate::LINKED
         .plane_doors
@@ -117,12 +78,6 @@ pub(crate) fn door_declaring(section: &str) -> Option<DoorFn> {
         .find(|&door| declared_section(door, "door-rig-probe") == Some(section))
 }
 
-/// `door`, bound through the loader's one load to SERVE under `instance` on `dispatcher`, its
-/// needs declared on `conns` (the process's connection table).
-///
-/// # Errors
-///
-/// The door does not state its Statement, or will not bind.
 pub(crate) fn bind_door(
     door: DoorFn,
     instance: &str,
@@ -144,12 +99,6 @@ pub(crate) fn bind_door(
     .map_err(|e| e.to_string())
 }
 
-/// `door`'s registry row, folded from its Statement as the composition root folds it
-/// (DECL-FOLD), its probe bound under `instance`.
-///
-/// # Errors
-///
-/// The door does not bind, or its registration does not fold.
 pub(crate) fn folded_door(
     door: DoorFn,
     instance: &str,
@@ -158,36 +107,21 @@ pub(crate) fn folded_door(
     busbar_kernel::plane_driver::door::fold(registration(linked_probe(door, instance))?)
 }
 
-/// [`folded_door`], registered on the kernel's test registry as the composition root installs it.
-///
-/// # Errors
-///
-/// As [`folded_door`].
 pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
     busbar_kernel_testkit::test_support::planes::register_test_plane(folded_door(door, instance)?);
     Ok(())
 }
 
-// ── THE PROCESS ──────────────────────────────────────────────────────────────────────────────────
-
-/// The deployment's one destination guard over `destinations`, as boot builds it.
-///
-/// # Errors
-///
-/// An `allow_destinations` entry the guard refuses.
 pub(crate) fn destination_guard(
     destinations: &busbar_kernel::config::Destinations,
 ) -> Result<Arc<dyn DestJudge>, String> {
     crate::root::connector::guard_for(destinations).map(|g| g as Arc<dyn DestJudge>)
 }
 
-/// The process's I/O reactor, installed as boot installs it.
 pub(crate) fn install_io_reactor() {
     crate::root::connector::install_io_reactor();
 }
 
-/// THE ROOT'S AUTH, HANDED TO THE KERNEL: the linked auth rows with the operator credential's
-/// words, and the root's auth-axis opener, each by the install path the kernel has.
 pub(crate) fn install_root_auth() {
     busbar_kernel::preflight::install_linked_auth(
         crate::LINKED.auths,
@@ -196,8 +130,6 @@ pub(crate) fn install_root_auth() {
     busbar_kernel_testkit::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
 }
 
-/// The kernel's host services judging every destination by `dest`, installed into a fresh
-/// [`LateServices`] as boot composes them.
 pub(crate) fn late_services(dest: Arc<dyn DestJudge>) -> Arc<LateServices> {
     let late = LateServices::new();
     let kernel = Arc::new(super::kernel_services(dest));
@@ -206,8 +138,6 @@ pub(crate) fn late_services(dest: Arc<dyn DestJudge>) -> Arc<LateServices> {
     late
 }
 
-/// THE LATE ATTACH, as the first app build runs it: the runtime's blocking pool, and `gov` as the
-/// record store and the signer. Runs on the runtime.
 pub(crate) fn attach_late(late: &LateServices, gov: &Arc<GovState>) {
     super::attach(
         late,
@@ -218,15 +148,10 @@ pub(crate) fn attach_late(late: &LateServices, gov: &Arc<GovState>) {
     );
 }
 
-/// The process's dispatcher over `late`, `workers` wide, as boot builds it.
 pub(crate) fn dispatcher(workers: usize, late: &Arc<LateServices>) -> Arc<Dispatcher> {
     Arc::new(crate::root::dispatch::build(workers, late))
 }
 
-/// THE PROCESS'S CONNECTOR, as boot builds it: every linked transport door a framer entry, every
-/// dial judged by the destination guard, a plugin's ticket woken through the dispatcher. With an
-/// anchor added ([`ProcessRig::trusting`]), its connections trust that root beside the public
-/// roots. Whatever else boot hands the connector it builds, the rig hands it too.
 pub(crate) struct ProcessRig {
     dest: Arc<dyn DestJudge>,
     wake: ConnWake,
@@ -235,8 +160,6 @@ pub(crate) struct ProcessRig {
 }
 
 impl ProcessRig {
-    /// The connector judging every dial by `dest` and waking through `wake`, the default
-    /// transport settings, the public roots alone.
     pub(crate) fn new(dest: Arc<dyn DestJudge>, wake: ConnWake) -> Self {
         Self {
             dest,
@@ -246,18 +169,12 @@ impl ProcessRig {
         }
     }
 
-    /// One more trust anchor (a root certificate's DER) its connections trust.
     #[must_use]
     pub(crate) fn trusting(mut self, der: Vec<u8>) -> Self {
         self.anchors.push(der);
         self
     }
 
-    /// The connector.
-    ///
-    /// # Errors
-    ///
-    /// Its connection security will not build, or its transport entries refuse.
     pub(crate) fn build(self) -> Result<Arc<Connector>, String> {
         let Self {
             dest,
@@ -294,9 +211,6 @@ impl ProcessRig {
     }
 }
 
-// ── THE BOOK AND THE STORE ───────────────────────────────────────────────────────────────────────
-
-/// A dated card history with no price: one entry, billing off, applied at `now_ms`.
 pub(crate) fn unpriced_card(now_ms: u64) -> RootHistory {
     let holder = RootHistory::default();
     holder.apply(
@@ -310,31 +224,22 @@ pub(crate) fn unpriced_card(now_ms: u64) -> RootHistory {
     holder
 }
 
-/// A store opened through a linked store door, as the governance book's store is opened: its
-/// records and its record slots are the kernel's record store (ARCHITECT Q-L3B-RECORDS).
 pub(crate) struct DoorStore {
     opened: busbar_contract::store_calls::OpenedStore,
-    /// The axis it was opened on, held while the store is.
+
     _axis: crate::root::loader::store_v3::DoorStoreAxis,
 }
 
 impl DoorStore {
-    /// Its typed records.
     pub(crate) fn records(&self) -> Arc<dyn busbar_contract::records::RecordStore> {
         Arc::clone(&self.opened.records)
     }
 
-    /// Its record slots (`None` for a store reached by no door).
     pub(crate) fn calls(&self) -> Option<Arc<dyn busbar_contract::store_calls::StoreCalls>> {
         self.opened.calls.clone()
     }
 }
 
-/// The build's ephemeral linked store, opened through its door under `instance` with no settings.
-///
-/// # Errors
-///
-/// The build links no ephemeral store, or it will not open.
 pub(crate) fn open_ephemeral_store(instance: &str) -> Result<DoorStore, String> {
     let axis = crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: Arc::new(Dispatcher::new(DispatchConfig::default())),
@@ -360,12 +265,6 @@ pub(crate) fn open_ephemeral_store(instance: &str) -> Result<DoorStore, String> 
     })
 }
 
-// ── THE DOOR'S EGRESS AND ITS COMPOSITION ────────────────────────────────────────────────────────
-
-/// WHAT A DOOR PLANE'S EGRESS IS SEALED OVER, as production seals it: no provider (a member is
-/// reached at its own address), the builtin secret sources, the linked outbound auths over the
-/// process's connection table, the walk's connections and the node's journal. Every part not
-/// handed to [`EgressRig::new`] is defaulted.
 pub(crate) struct EgressRig {
     providers: BTreeMap<String, ProviderRoute>,
     secrets: Arc<dyn SecretResolve>,
@@ -376,8 +275,6 @@ pub(crate) struct EgressRig {
 }
 
 impl EgressRig {
-    /// The egress whose outbound auths run on `dispatcher` over `table` (the process's connection
-    /// table), whose walk reaches its far ends through `conns` and journals to `journal`.
     pub(crate) fn new(
         dispatcher: &Arc<Dispatcher>,
         table: Arc<dyn DeclaredConns>,
@@ -400,7 +297,6 @@ impl EgressRig {
         }
     }
 
-    /// `f` over the root's [`DoorEgress`] sealed over this rig.
     fn sealed<R>(&self, f: impl FnOnce(&DoorEgress<'_>) -> R) -> R {
         let reach = DoorReach {
             providers: &self.providers,
@@ -419,10 +315,6 @@ impl EgressRig {
     }
 }
 
-/// THE DOOR PLANES' COMPOSITION, as boot composes them ([`super::compose_planes`]): `doors` on
-/// `dispatcher` over `late`, opened with `sections`, their money steps from `money`; with no
-/// egress (every walk exhausted at once), no hook stage, no public URL, the root's own posting site
-/// and the process connector's framers unless each is given.
 pub(crate) struct DoorCompose<'a> {
     doors: Vec<(String, DoorPlane)>,
     dispatcher: &'a Arc<Dispatcher>,
@@ -438,7 +330,6 @@ pub(crate) struct DoorCompose<'a> {
 }
 
 impl<'a> DoorCompose<'a> {
-    /// The composition of `doors` (each under its instance label).
     pub(crate) fn new(
         doors: Vec<(String, DoorPlane)>,
         dispatcher: &'a Arc<Dispatcher>,
@@ -461,9 +352,6 @@ impl<'a> DoorCompose<'a> {
         }
     }
 
-    /// THE ADMIN TABLE the doors are published into (busbar #1834: a value each generation
-    /// carries), so a cell lends the same table to the App it builds and the admin router answers
-    /// the doors' routes off it. Unset: a table of the composition's own, which no App reads.
     #[must_use]
     pub(crate) fn tables(
         mut self,
@@ -473,22 +361,18 @@ impl<'a> DoorCompose<'a> {
         self
     }
 
-    /// The deployment's public base URL.
     #[must_use]
     pub(crate) fn public_url(mut self, url: &'a str) -> Self {
         self.public_url = Some(url);
         self
     }
 
-    /// Each plane's egress, sealed over `egress`.
     #[must_use]
     pub(crate) fn egress(mut self, egress: &'a EgressRig) -> Self {
         self.egress = Some(egress);
         self
     }
 
-    /// THE KERNEL'S HOOK STAGE: each unit binds its hooks over the generation `host` answers, a
-    /// verified principal's key read from `gov`.
     #[must_use]
     pub(crate) fn hooks(mut self, host: GenerationHost, gov: Arc<GovState>) -> Self {
         self.hooks = Some(HookStage {
@@ -499,25 +383,18 @@ impl<'a> DoorCompose<'a> {
         self
     }
 
-    /// The posting site the planes' money steps post an abandoned end to.
     #[must_use]
     pub(crate) fn post(mut self, post: Arc<NodeEndPost>) -> Self {
         self.post = Some(post);
         self
     }
 
-    /// The framers that frame a claim's stream another framer answers: `connector`'s.
     #[must_use]
     pub(crate) fn framers(mut self, connector: Arc<Connector>) -> Self {
         self.framers = Some(connector);
         self
     }
 
-    /// The composed planes.
-    ///
-    /// # Errors
-    ///
-    /// A plane that will not open, publish, be admitted or seal its members' routes, named.
     pub(crate) fn compose(self) -> Result<Served, String> {
         let mut served = match self.egress {
             Some(rig) => rig.sealed(|egress| self.composed(Some(egress))),
@@ -550,12 +427,6 @@ impl<'a> DoorCompose<'a> {
     }
 }
 
-/// THE DOORS' DATA ROUTES, as the data router's construction mounts them: every claim of every
-/// served plane, pinned to the card `pin` answers, with no data chain and no kernel routes beside.
-///
-/// # Errors
-///
-/// A claim the data listener cannot mount, or two claims at an equal precedence.
 pub(crate) fn door_routes(
     served: Served,
     pin: fn() -> Option<PinnedHistory>,
@@ -563,9 +434,6 @@ pub(crate) fn door_routes(
     super::door_routes(served, pin, &[], &[])
 }
 
-/// THE DOORS' FACING, as boot's dispatch build reads it off each served plane: its claims' literal
-/// prefixes, and the audience and metadata document its snapshot states (a plane stating neither
-/// faces nothing).
 pub(crate) fn admissions(
     served: &Served,
 ) -> Vec<(
@@ -595,14 +463,10 @@ pub(crate) fn admissions(
         .collect()
 }
 
-/// THE NODE'S BOOK with no store behind it (memory-buffered over the null shipper): its journal and
-/// audit chain, which a cell binds its node to and reads a unit's audit record back from.
 pub(crate) fn node_book() -> NodeBook {
     crate::root::durability::node_book()
 }
 
-/// THE NODE'S ADMIN SURFACE over `admin`, as boot mounts it: the generic verbs over `book` and the
-/// kernel's services in `late`, the default breaker policy.
 pub(crate) fn mount_node_admin(
     admin: axum::Router,
     request_body_max_bytes: usize,
@@ -621,10 +485,6 @@ pub(crate) fn mount_node_admin(
     )
 }
 
-// ── HOOKS AND CREDENTIALS ────────────────────────────────────────────────────────────────────────
-
-/// The kernel's hook double behind `aliases`, its row stating the manifest needs `prompt` and
-/// `user`.
 pub(crate) fn hook_env(
     aliases: &[&str],
     prompt: NeedLevel,
@@ -636,7 +496,6 @@ pub(crate) fn hook_env(
     )
 }
 
-/// Every served credential refreshed now. Blocking: run it off the runtime's workers.
 pub(crate) fn refresh_credentials() {
     crate::root::door_steps::refresh_credentials();
 }

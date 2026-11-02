@@ -6,7 +6,7 @@
 use super::*;
 
 /// RFC 4231's HMAC-SHA-256 vectors: a short key (case 1), a key shorter than the output (case 2),
-/// and a key past the block size, hashed first (case 6).
+
 #[test]
 fn the_hmac_answers_rfc_4231() {
     assert_eq!(
@@ -95,7 +95,7 @@ fn public_wiped_sha256_answers_fips_vectors() {
 }
 
 /// The wiped SHA-256 is SHA-256: every message length across the one- and two-block padding
-/// boundaries, with and without a whole prefix block, digests as the contract's SHA-256 does.
+
 #[test]
 fn the_wiped_sha256_matches_sha256_at_every_padding_boundary() {
     let data: Vec<u8> = (0..=200_u8)

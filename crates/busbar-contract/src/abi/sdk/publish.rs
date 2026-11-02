@@ -58,8 +58,7 @@ use crate::ids::OpClassId;
 use crate::records::Retention;
 
 /// The storage one published generation points into. Only the SDK makes one and writes into it;
-/// its contents never move (every piece is its own heap allocation) and are freed only when the
-/// generation is retired.
+
 pub struct Backing {
     bytes: Vec<Box<[u8]>>,
     lists: Vec<Box<dyn Any + Send + Sync>>,
@@ -108,7 +107,6 @@ impl Backing {
     /// `s`, copied, as a present string (an empty string is present, zero-length).
     fn str(&mut self, s: &str) -> AbiStr {
         let ptr = if s.is_empty() {
-            // Present but empty: a non-NULL, never-read address.
             std::ptr::NonNull::<u8>::dangling().as_ptr().cast_const()
         } else {
             self.copy(s.as_bytes())
@@ -138,7 +136,7 @@ impl Backing {
     }
 
     /// Each of `names` copied, held as one list of strings; its pointer (NULL when empty) and
-    /// length.
+
     fn strs(&mut self, names: &[String]) -> (*const AbiStr, usize) {
         if names.is_empty() {
             return (std::ptr::null(), 0);
@@ -169,7 +167,7 @@ mod sealed {
 }
 
 /// An ABI value a plugin publishes, and the owned description it publishes it from. Only the SDK
-/// implements it: lowering is where pointers are made, and they are made into the SDK's backing only.
+
 pub trait Publish: sealed::Sealed + Copy + 'static {
     /// The owned description a plugin hands the SDK.
     type Spec;
@@ -304,7 +302,7 @@ impl Publish for PlaneSnapshot {
         let (claims, claims_len) = backing.list::<Claim>(&spec.claims);
         let (admin_routes, admin_routes_len) = backing.list::<AdminRoute>(&spec.admin_routes);
         let (listed, listed_len) = backing.strs(&spec.listed);
-        // One per claim where any claim names one; none at all otherwise.
+
         let spans: Vec<String> = if spec.claims.iter().any(|c| !c.arrival_span.is_empty()) {
             spec.claims.iter().map(|c| c.arrival_span.clone()).collect()
         } else {
@@ -332,7 +330,7 @@ impl Publish for PlaneSnapshot {
 }
 
 /// One published generation: the value (boxed: its address is what the host holds), the backing
-/// it points into, and the plugin's own payload for that generation.
+
 struct Generation<T, P> {
     generation: u64,
     _value: Box<T>,
@@ -348,17 +346,10 @@ unsafe impl<T, P: Send + Sync> Send for Generation<T, P> {}
 unsafe impl<T, P: Send + Sync> Sync for Generation<T, P> {}
 
 /// THE PUBLISHED GENERATIONS of one instance: instance state (`Send + Sync`), holding each
-/// published value and its storage, and the plugin's payload `P` for that generation (what it
-/// built from that generation's settings), until `retire` of its generation, or until it drops
-/// (`close`).
-///
-/// [`Generations::current`] is the NEWEST live generation's payload: what a request arriving now
-/// is answered from. A plugin keeps the `Arc` it took for as long as that request lives, so a
-/// request keeps reading the generation it arrived under while a refresh publishes the next one.
+
 pub struct Generations<T: Publish, P = ()> {
     live: Mutex<Vec<Generation<T, P>>>,
     /// Alive while these generations are: an answer that published from them is FAULT when they
-    /// are gone by the time the body returns (`abi::sdk::out::Holders`).
     pub(crate) alive: crate::abi::sdk::out::Alive,
 }
 
@@ -378,7 +369,7 @@ impl<T: Publish, P> Default for Generations<T, P> {
 
 impl<T: Publish> Generations<T, ()> {
     /// Publish `spec` as `generation`, with no payload: the SDK's copy, lowered; the address the
-    /// host reads, valid until [`Generations::retire`] of `generation` or until this drops.
+
     pub fn publish(&self, generation: u64, spec: &T::Spec) -> *const T {
         self.publish_with(generation, spec, ())
     }
@@ -401,8 +392,7 @@ impl<T: Publish, P> Generations<T, P> {
     }
 
     /// Publish `spec` as `generation` with the plugin's `payload` for it: the SDK's copy, lowered;
-    /// the address the host reads. Both are held until [`Generations::retire`] of `generation` or
-    /// until this drops.
+
     pub fn publish_with(&self, generation: u64, spec: &T::Spec, payload: P) -> *const T {
         let mut backing = Backing::new();
         let value = Box::new(T::lower(spec, generation, &mut backing));
@@ -436,7 +426,7 @@ impl<T: Publish, P> Generations<T, P> {
     }
 
     /// Drop every value published as `generation`, its storage, and the SDK's hold on its
-    /// payload (a request still holding the `Arc` keeps its own).
+
     pub fn retire(&self, generation: u64) {
         let gone: Vec<Generation<T, P>> = {
             let mut live = self.lock();
@@ -457,23 +447,7 @@ impl<T: Publish, P> Generations<T, P> {
 }
 
 /// PER-INSTANCE KEYED STATE: a map the SDK locks for the plugin, so a `forbid(unsafe_code)` plugin
-/// that holds no lock of its own can keep per-session and per-request state (what a session set,
-/// what a request was admitted under) across calls.
-///
-/// It lives INSIDE the instance state and nowhere else: a plugin holds no process-global state, so
-/// what it keeps is per-instance and dropped with the instance (`close`). It is not `const`
-/// constructible, so it cannot be a `static`. The plugin bounds it: [`Keyed::len`] is what it
-/// checks before an insert that grows it, and [`Keyed::with_or_insert_within`] keeps a bound
-/// exactly.
-///
-/// ONE MAP OR SHARDS. [`Keyed::new`] is one map under one lock. [`Keyed::sharded`] (a table of
-/// units, one entry per request in flight) spreads its entries over [`KEYED_SHARDS`] maps by their
-/// key's hash, each with its own lock, so the per-request and per-piece ops ([`Keyed::with`],
-/// [`Keyed::insert`], [`Keyed::remove`], [`Keyed::get`], [`Keyed::contains_key`],
-/// [`Keyed::with_or_insert_within`]) take one shard's lock and two units never wait on each other.
-/// [`Keyed::len`] is a count, read without a lock. [`Keyed::with_all`] holds every shard and hands
-/// `f` the whole map, gathered and spread back: on a sharded map it is for a scan or a sweep, never
-/// a per-piece path.
+
 pub struct Keyed<K, V> {
     shards: Box<[Mutex<BTreeMap<K, V>>]>,
     shard_of: fn(&K) -> usize,
@@ -510,7 +484,7 @@ fn keyed_shard<K: std::hash::Hash>(key: &K) -> usize {
     use std::hash::Hasher;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     key.hash(&mut h);
-    // The remainder is below `KEYED_SHARDS`, so it fits a `usize`.
+
     (h.finish() % KEYED_SHARDS as u64) as usize
 }
 
@@ -518,7 +492,6 @@ impl<K, V> Keyed<K, V> {
     /// How many entries are held.
     #[must_use]
     pub fn len(&self) -> usize {
-        // One map is read under its lock, as it always was; shards by their count.
         if let [one] = &*self.shards {
             return keyed_lock(one).len();
         }
@@ -548,7 +521,7 @@ impl<K, V> Keyed<K, V> {
 }
 
 /// The whole of a sharded map, as [`Keyed::with_all`] hands it out, every shard held; on drop (a
-/// panic in `f` included) each entry goes back to its shard.
+
 struct AllShards<'a, K: Ord, V> {
     keyed: &'a Keyed<K, V>,
     held: Vec<std::sync::MutexGuard<'a, BTreeMap<K, V>>>,
@@ -558,7 +531,7 @@ struct AllShards<'a, K: Ord, V> {
 impl<K: Ord, V> Drop for AllShards<'_, K, V> {
     fn drop(&mut self) {
         let all = std::mem::take(&mut self.all);
-        // Every shard is held, so no other op moves the count meanwhile.
+
         self.keyed
             .len
             .store(all.len(), std::sync::atomic::Ordering::Release);
@@ -606,8 +579,6 @@ impl<K: Ord, V> Keyed<K, V> {
 
     /// Drop what `key` holds, answering it.
     pub fn remove(&self, key: &K) -> Option<V> {
-        // Counted under the shard's lock, so a `with_all` that holds every shard sees the count
-        // and the maps agree.
         let mut map = self.shard(key);
         let gone = map.remove(key);
         if gone.is_some() {
@@ -623,15 +594,13 @@ impl<K: Ord, V> Keyed<K, V> {
     }
 
     /// Run `f` over the entry `key` names, or `None`, under its shard's lock. `f` must not reach
-    /// this same `Keyed` again.
+
     pub fn with<R>(&self, key: &K, f: impl FnOnce(Option<&mut V>) -> R) -> R {
         f(self.shard(key).get_mut(key))
     }
 
     /// Run `f` over the entry `key` names, made with `make` when it has none and fewer than
-    /// `bound` are held; `None` when it has none and `bound` are held already (none is dropped to
-    /// make room). The bound is kept exactly, arrivals at once included. `f` must not reach this
-    /// same `Keyed` again.
+
     pub fn with_or_insert_within<R>(
         &self,
         key: K,
@@ -644,8 +613,7 @@ impl<K: Ord, V> Keyed<K, V> {
         if let Some(v) = map.get_mut(&key) {
             return Some(f(v));
         }
-        // Room is taken in the count before the entry goes in, so two arrivals at once in two
-        // shards never both take the last place.
+
         self.len
             .fetch_update(AcqRel, Acquire, |n| (n < bound).then_some(n + 1))
             .ok()?;
@@ -663,8 +631,7 @@ impl<K: Ord, V> Keyed<K, V> {
     }
 
     /// Run `f` over the whole map, under every lock. `f` must not reach this same `Keyed` again.
-    /// A sharded map is gathered for `f` and spread back after it: a scan or a sweep, never a
-    /// per-piece path ([`Keyed::with`] is that).
+
     pub fn with_all<R>(&self, f: impl FnOnce(&mut BTreeMap<K, V>) -> R) -> R {
         if let [one] = &*self.shards {
             let mut map = keyed_lock(one);
@@ -712,8 +679,7 @@ pub struct ServedRoute {
 
 impl ServedRoute {
     /// The claim flags the route states: a target with a path variable is a pattern
-    /// ([`CLAIM_PATTERN`], one level per variable), any other target matches exactly
-    /// ([`CLAIM_EXACT`]); an open route adds [`CLAIM_OPEN`].
+
     #[must_use]
     pub fn claim_flags(&self) -> u32 {
         let mut flags = if self.target.contains('{') {
@@ -735,9 +701,7 @@ impl ServedRoute {
 }
 
 /// One admin route in the ABI's spelling, over `'static` strings: `route` is `(verb, target)`
-/// relative to the kernel's admin mount, `flags` its route flags (`0`, or `ROUTE_PUBLIC` and what
-/// rides beside it), `audit_verb` the word the kernel audits it under (empty = never audited). A
-/// `const fn`, so a plane states its admin routes as a `const` table.
+
 #[must_use]
 pub const fn admin_route(
     route: (&'static str, &'static str),
@@ -754,9 +718,7 @@ pub const fn admin_route(
 }
 
 /// One record kind's RETENTION RULE in the ABI's spelling (`PlaneTail::record_retentions`): `kind`
-/// its index in the tail's record kinds, `rule` the rule every purge of the kind runs under. A
-/// `const fn`, so a plane states its rules as a `const` table its tail points at; a kind the table
-/// lists no rule for is purged by age.
+
 #[must_use]
 pub const fn record_retention(kind: u32, rule: Retention) -> RecordRetention {
     RecordRetention {
@@ -766,8 +728,7 @@ pub const fn record_retention(kind: u32, rule: Retention) -> RecordRetention {
 }
 
 /// The index of `op` in a plane's operation-class list `classes`, in the order its Statement
-/// tail's class table states them, which is the number `arrive` names a class by; `None` when the
-/// list does not hold it.
+
 #[must_use]
 pub fn class_index(classes: &[OpClassId], op: OpClassId) -> Option<u32> {
     classes

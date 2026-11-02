@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Pool scopes use the route label; pricing, fees and metering keep their plane identity.
-
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::governance::{LimitBlocked, MemoryStore, RecordStore, WINDOW_TOTAL};
@@ -139,8 +137,7 @@ fn admitted_qualified_pool_accrues_and_refunds_the_same_scope_as_a_bare_pool() {
                 units(10_000, 3),
                 "{pool}: raw classes"
             );
-            // 10,000 input + 3 bytes at 2 micros, plus the 2-cent fee: 30,006 micros.
-            // The whole-cent read truncates; stream headroom retains the six extra micros.
+
             assert_eq!(usage(&r, bucket), (1, 3), "{pool}: served spend");
             let state = r
                 .gov
@@ -233,7 +230,7 @@ fn report(input: u64) -> [UnitCount; 3] {
 
 fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
     let r = rig();
-    // Already served work must reduce headroom; another pool has no headroom at all.
+
     let _prior = r.gov.try_admit(&r.cost, &r.key, pool, NOW).unwrap();
     r.gov.record_usage_served(
         &r.cost,
@@ -264,11 +261,11 @@ fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
     if session {
         assert_eq!(r.money.session_opened(&ctx()), Ok(()));
     }
-    // The serving lane after route failover keeps its plane-qualified card and metering row.
+
     let serving = if lane == "m" { "m" } else { "tp\u{1f}fallback" };
     r.money.served(&ctx(), serving, "provider");
     assert_eq!(r.money.serving(ctx().key).as_deref(), Some(serving));
-    // 100,000 micros cap - 40,000 fees - 10,006 prior usage = 49,994 micros left.
+
     assert_eq!(
         r.money.checkpoint(&ctx(), &report(49_987)),
         Checkpoint::Continue,

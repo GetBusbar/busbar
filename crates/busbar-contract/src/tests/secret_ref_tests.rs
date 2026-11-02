@@ -6,7 +6,7 @@
 use super::*;
 
 /// Deserialize: the `{env}` / `{file}` sugar desugars to the canonical module + settings; the
-/// canonical form parses; mixed / unknown / empty forms are rejected.
+
 #[test]
 fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
     let r: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();
@@ -41,7 +41,7 @@ fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
 }
 
 /// `describe()`'s three real forms — the env/file sugar takes priority over the canonical
-/// module+settings form, and the module fallback quotes the module name.
+
 #[test]
 fn describe_renders_env_file_and_module_forms() {
     assert_eq!(SecretRef::env("MY_VAR").describe(), "env:MY_VAR");
@@ -55,12 +55,7 @@ fn describe_renders_env_file_and_module_forms() {
 }
 
 /// `none` — the EXPLICIT keyless declaration — parses from the bare scalar and from the canonical
-/// `{ module: none }`, and `describe()` renders it as the word itself, so a diagnostic about a
-/// keyless credential reads naturally while still naming no source.
-///
-/// The near-misses matter as much as the hit: `none` is a reserved WORD, so anything that is not
-/// exactly it must still take the non-echoing inline-literal refusal, and the `{ none: … }` map
-/// form must not exist at all (it would invite settings on a reference that names no source).
+
 #[test]
 fn none_is_the_one_scalar_a_secret_field_accepts() {
     let r: SecretRef = serde_yaml::from_str("none").unwrap();
@@ -71,7 +66,7 @@ fn none_is_the_one_scalar_a_secret_field_accepts() {
         "`none` names no source and carries no settings"
     );
     assert_eq!(r.describe(), "none");
-    // The canonical spelling, and the JSON (config-overlay) wire form.
+
     assert!(serde_yaml::from_str::<SecretRef>("{ module: none }")
         .unwrap()
         .is_none());
@@ -86,7 +81,6 @@ fn none_is_the_one_scalar_a_secret_field_accepts() {
         );
     }
 
-    // A pasted literal is still refused, and still not echoed.
     let err = serde_yaml::from_str::<SecretRef>("sk-live-abc123")
         .unwrap_err()
         .to_string();
@@ -97,15 +91,9 @@ fn none_is_the_one_scalar_a_secret_field_accepts() {
 }
 
 /// The `Visitor::expecting` error message actually names the accepted shapes — asserted via a
-/// real deserialize failure on a shape with NO `visit_*` override, so serde falls back to its
-/// default invalid-type error, which is built from `expecting()`. This proves serde actually wires
-/// it into the real error path, not just that the method compiles.
+
 #[test]
 fn deserialize_error_message_names_the_accepted_shapes() {
-    // A SEQUENCE, not a scalar: every scalar spelling now takes the explicit non-echoing refusal
-    // (a bare number is a pasted secret far more often than it is a typo'd shape), so the input
-    // that still exercises serde's own `expecting()`-built message is one this visitor does not
-    // handle at all.
     let err = serde_yaml::from_str::<SecretRef>("[1, 2]").unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -115,12 +103,9 @@ fn deserialize_error_message_names_the_accepted_shapes() {
 }
 
 /// The derived `oneOf` is itself a valid JSON Schema 2020-12 fragment, and it accepts EXACTLY
-/// the shapes `SecretRef::deserialize` accepts (round-trip fidelity — this is the whole point of
-/// deriving instead of hand-writing).
+
 #[test]
 fn oneof_schema_accepts_exactly_what_secretref_accepts() {
-    // NO `"type": "object"` of our own: a secret reference is one of three object shapes OR the
-    // bare scalar `none`, so the derived `oneOf` is the whole constraint.
     let full = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
     });
@@ -136,13 +121,11 @@ fn oneof_schema_accepts_exactly_what_secretref_accepts() {
         serde_json::json!({"module": "env"}),
         serde_json::json!({"env": "MY_VAR"}),
         serde_json::json!({"file": "/run/secrets/x"}),
-        // The keyless declaration — the one scalar this type accepts.
         serde_json::json!("none"),
     ];
     for v in &accept {
         assert!(validator.is_valid(v), "should accept {v}");
-        // Every accepted shape also round-trips through SecretRef's real Deserialize impl —
-        // the derived schema is not merely permissive, it agrees with the actual type.
+
         assert!(
             serde_json::from_value::<SecretRef>(v.clone()).is_ok(),
             "derived oneOf accepted {v} but SecretRef::deserialize rejects it — drift"
@@ -150,10 +133,7 @@ fn oneof_schema_accepts_exactly_what_secretref_accepts() {
     }
 
     let reject = [
-        // A bare string secret value — never valid (the whole point of this type).
         serde_json::json!("s3cret"),
-        // `{ literal: ... }` is NOT a SecretRef shape (handled one layer above, in
-        // resolve_settings()) — the derived oneOf must not accept it either.
         serde_json::json!({"literal": "s3cret"}),
         serde_json::json!({"env": "A", "file": "B"}),
         serde_json::json!({}),
@@ -164,13 +144,7 @@ fn oneof_schema_accepts_exactly_what_secretref_accepts() {
 }
 
 /// The derived fragment is written out by hand next to the deserializer, not generated from it, so
-/// what actually keeps the two in step is this: ONE table of shapes, each put to BOTH the schema and
-/// `SecretRef::deserialize`, with the two verdicts asserted EQUAL. Either side changing alone shows
-/// up here.
-///
-/// The whitespace-only rows are the drift this found: the schema said `minLength: 1`, the visitor
-/// says `trim().is_empty()`, and a three-space value satisfies the first while failing the second —
-/// a reference busbar-ui would have rendered as valid and the engine would have refused at boot.
+
 #[test]
 fn the_schema_and_the_deserializer_agree_shape_for_shape() {
     let mut full = serde_json::json!({
@@ -186,7 +160,6 @@ fn the_schema_and_the_deserializer_agree_shape_for_shape() {
         .expect("the derived fragment is a valid 2020-12 schema");
 
     let cases = [
-        // (shape, is it a legal secret reference)
         (serde_json::json!({"module": "vault"}), true),
         (
             serde_json::json!({"module": "vault", "settings": {"key": "x"}}),
@@ -194,20 +167,16 @@ fn the_schema_and_the_deserializer_agree_shape_for_shape() {
         ),
         (serde_json::json!({"env": "MY_VAR"}), true),
         (serde_json::json!({"file": "/run/secrets/x"}), true),
-        // The keyless declaration, scalar and canonical. `none` is a reserved WORD, so the
-        // near-misses below must land on the same refusal every other bare scalar gets.
         (serde_json::json!("none"), true),
         (serde_json::json!({"module": "none"}), true),
         (serde_json::json!("None"), false),
         (serde_json::json!("NONE"), false),
         (serde_json::json!({"none": true}), false),
-        // Blank-but-present values: the reason this test exists.
         (serde_json::json!({"env": "   "}), false),
         (serde_json::json!({"file": "\t"}), false),
         (serde_json::json!({"module": " "}), false),
         (serde_json::json!({"env": ""}), false),
         (serde_json::json!({"module": ""}), false),
-        // Structural refusals.
         (serde_json::json!({}), false),
         (serde_json::json!({"env": "A", "file": "B"}), false),
         (serde_json::json!({"module": "vault", "env": "A"}), false),
@@ -235,18 +204,10 @@ fn the_schema_and_the_deserializer_agree_shape_for_shape() {
 }
 
 /// A secret is not always quoted. `api_key: 483920175534` and `api_key: true` are ordinary YAML, and
-/// each one used to miss the non-echoing refusal entirely and land on serde's default `invalid type`
-/// error — which prints the value it was handed. The value it was handed is the secret, and the boot
-/// log is exactly the place this type exists to keep it out of.
+
 #[test]
 fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
     for (yaml, value) in [
-        // THE QUOTED STRING FIRST, and it was the one form this table was missing. `visit_str` is
-        // the overwhelmingly common spelling of an inline secret, and it had no absence assertion
-        // anywhere: the two places that fed it (`"plain-string"` and `json!("s3cret"))` asserted
-        // only `is_err()`. Dropping the `visit_str` override -- or spelling `{_v}` into its message
-        // -- put the secret verbatim into the boot log, which is the single thing this type exists
-        // to prevent, and every test in the file stayed green.
         ("\"hunter2secret\"", "hunter2secret"),
         ("483920175534", "483920175534"),
         ("-42", "42"),
@@ -268,10 +229,7 @@ fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
 }
 
 /// A pasted credential dropped into the WRONG SLOT — `settings:` given as a scalar rather than the
-/// map it must be — is the same leak in a different disguise: `{ module: vault, settings:
-/// "sk-live-abc123" }`. A typed `next_value::<Map>()` would make serde echo the scalar verbatim into
-/// the boot log. The visitor reads the slot untyped, sees it is not an object, and refuses with the
-/// shared non-echoing message — never printing the value it was handed.
+
 #[test]
 fn a_scalar_in_the_settings_slot_is_refused_without_echoing_it() {
     let err = serde_yaml::from_str::<SecretRef>("{ module: vault, settings: \"sk-live-abc123\" }")
@@ -288,8 +246,7 @@ fn a_scalar_in_the_settings_slot_is_refused_without_echoing_it() {
 }
 
 /// The sugar keys carry secrets too, and an unquoted YAML number/bool in an `{ env: … }` /
-/// `{ file: … }` slot is exactly the spelling nobody quotes. A typed `next_value::<String>()` on the
-/// mismatch would echo it; the untyped-then-shape-check refuses without printing it.
+
 #[test]
 fn a_non_string_sugar_value_is_refused_without_echoing_it() {
     for (yaml, value) in [("{ env: 12345 }", "12345"), ("{ file: true }", "true")] {
@@ -308,7 +265,7 @@ fn a_non_string_sugar_value_is_refused_without_echoing_it() {
 }
 
 /// A non-string `module:` names no module — and a typed `next_value::<String>()` would echo whatever
-/// it was handed. The visitor reads it untyped, refuses the shape, and never prints the value.
+
 #[test]
 fn a_non_string_module_is_refused_without_echoing_it() {
     let err = serde_yaml::from_str::<SecretRef>("{ module: 12345 }")
@@ -325,9 +282,7 @@ fn a_non_string_module_is_refused_without_echoing_it() {
 }
 
 /// Duplicate `module:` / `settings:` keys are a malformed reference, and the visitor catches each
-/// with serde's `duplicate_field` rather than silently taking the last one. serde_yaml rejects
-/// duplicate mapping keys at parse time, so the visitor's own guard is exercised through
-/// serde_json, whose `MapAccess` hands both entries to the visitor.
+
 #[test]
 fn duplicate_keys_are_refused() {
     let err = serde_json::from_str::<SecretRef>(r#"{"module":"vault","module":"env"}"#)
@@ -350,10 +305,7 @@ fn duplicate_keys_are_refused() {
 }
 
 /// Serialize round-trip: every one of the four accepted input spellings lands on the SAME canonical
-/// `{ module, settings }` wire shape, and the `settings` key is structurally present by name on each.
-/// That key name is not cosmetic: the one admin read that serializes a config tree containing a
-/// `SecretRef` (`GET /config/settings`) redacts by rewriting every `settings` member — so if this
-/// type ever serialized its settings under a different name, the redaction would silently miss it.
+
 #[test]
 fn serialize_yields_the_canonical_module_settings_wire_shape() {
     let env: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();
@@ -399,8 +351,7 @@ fn serialize_yields_the_canonical_module_settings_wire_shape() {
 }
 
 /// A TEMPLATE reference (a credential `${VAR}` filled in part) resolves by filling each `${VAR}`
-/// with its `env` reference's value; any other reference is handed to the resolver whole; a `$`
-/// that opens no `${VAR}` stays as written; and the text it carries holds no secret byte.
+
 #[test]
 fn a_template_reference_resolves_each_variable_in_place() {
     let resolve = |r: &SecretRef| match r.env_var() {
@@ -421,7 +372,7 @@ fn a_template_reference_resolves_each_variable_in_place() {
     );
     let unresolved = SecretRef::template("x ${C}").resolve_template(&resolve);
     assert_eq!(unresolved, Err("env:C does not resolve".to_string()));
-    // The canonical shape round-trips through the one deserializer.
+
     let back: SecretRef = serde_json::from_value(serde_json::to_value(&t).unwrap()).unwrap();
     assert_eq!(back, t);
 }

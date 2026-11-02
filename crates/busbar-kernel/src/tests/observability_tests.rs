@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/observability.rs`.
-
 use super::*;
 
 #[test]
@@ -37,9 +35,6 @@ where
     }
 }
 
-/// OTLP must export the request-path spans, which are all `debug`, without the operator having
-/// to set `RUST_LOG=debug` and flood stderr. So the OTLP filter floors at DEBUG and is never
-/// less verbose than the stderr one.
 #[test]
 fn otlp_level_floors_at_debug_and_never_trails_stderr() {
     let (stderr, otlp) = log_levels();
@@ -53,10 +48,6 @@ fn otlp_level_floors_at_debug_and_never_trails_stderr() {
     );
 }
 
-/// The filters must be attached PER LAYER. A bare `LevelFilter` added to the registry itself is
-/// a global filter that gates callsite enablement for every layer, so a more-verbose OTLP filter
-/// underneath one records nothing. Both halves are asserted: the correct shape exports the debug
-/// span, and the shape this replaced does not.
 #[test]
 fn a_registry_level_filter_gates_the_otlp_layer() {
     use tracing_subscriber::filter::LevelFilter;

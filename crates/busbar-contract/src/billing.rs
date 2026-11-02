@@ -2,20 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE BILLABLE-ITEM SHAPES a plane fills and the kernel prices (DECISIONS #83: contract = shapes).
-//!
-//! The billable UNIT is (operation, model)-dependent: some operations meter tokens, some meter audio
-//! DURATION, some meter CHARACTERS, some meter per-item COUNT (e.g. generated images). A single fixed
-//! struct cannot represent that, so [`Billing`] is a closed enum every operation codec emits from a
-//! response (or computes from request params when the upstream returns no usage object). Closed enum
-//! → pricing is an exhaustive match, so adding a unit is a compile error at every price site.
-//!
-//! [`Usage`] is the ONE neutral carrier a plane hands the kernel, [`TokenUsage`] the token total a
-//! reader projects, and [`RawTierRates`] the neutral exact tier-rate view a plane fills from its own
-//! rate card grammar. Every side of the seam must agree on these fields, which is what makes them shapes.
-//!
-//! RELOCATED, module-path-only and byte-identical, from `busbar-substrate-values::billing`, which
-//! re-exports every item here under its historical path so every caller compiles unchanged. The
-//! rate-card representation (`UnitRate`, its parse refusals) is semantics and stays there.
 
 use crate::Count;
 
@@ -97,39 +83,11 @@ pub enum Billing {
 }
 
 /// RENDER AN EXACT DURATION BACK ONTO THE WIRE, AND THE ONLY PLACE A BILLABLE QUANTITY BECOMES A
-/// DOUBLE.
-///
-/// The usage object busbar echoes to the caller is JSON, and a JSON number in a
-/// [`serde_json::Value`] can only be built from an integer or an `f64` — there is no constructor
-/// that takes a decimal string unless `serde_json`'s `arbitrary_precision` feature is turned on for
-/// the whole workspace, which would change `Number`'s representation for every unrelated read in the
-/// tree. So the conversion happens HERE, once, at the boundary where the number stops being a
-/// quantity and becomes a rendering of one — exactly the shape of the #44 card-build exemption, and
-/// for the same reason: a boundary is where a decimal is allowed, a runtime path is not.
-///
-/// IT IS BYTE-IDENTICAL, AND THAT IS MEASURED RATHER THAN HOPED. `micros / 1e6` and parsing the
-/// original decimal text produce THE SAME DOUBLE, bit for bit, for every quantity the scale can
-/// hold: checked over 200,009 values spanning zero to a thousand hours, zero differed. So a response
-/// busbar echoes carries the same bytes it carried before the quantity became exact.
+
 #[must_use]
 pub fn duration_seconds_to_wire(seconds: Count) -> f64 {
-    // Both operands are exactly representable and the division is correctly rounded, so the result
-    // is the nearest double to the exact decimal — which is precisely what parsing the text gives.
     seconds.micros() as f64 / 1_000_000.0_f64
 }
-
-// ── The neutral usage_units billing spine (1.6.0 M1b) ───────────────────────────────────────────
-//
-// `Usage` is the ONE neutral carrier a plane hands core: a SINGLE opaque name-keyed unit map. The
-// reserved four (input/output/cache_read/cache_write) are now ORDINARY KEYS in that one map beside
-// every open (operator/plane) unit — `TierTokens` is dissolved (M1b). This crate stays PURE: it
-// names no reserved key literal at all; it is just a `BTreeMap<String, u64>` here. Core prices it by
-// looking each key up against the rate card (the reserved four via the tier rates, opens via the
-// per-model extras table), exactly as it treats `CostComponent.label` and `Magnitude.unit`.
-//
-// The neutral ATTRIBUTION facets (who paid, which pool, which plane, which operation) are a designed
-// later-milestone addition — they arrive when a plane is threaded onto the pricer, and their closed
-// facets need a purity-gate-compatible home. M1b lands only the priced-usage half of the carrier.
 
 /// The one neutral usage representation every plane hands core (the neutral-usage section of
 /// `BUSBAR-1.6.0.md` THE DESIGN).
@@ -187,24 +145,14 @@ impl Default for RawTierRates {
 }
 
 /// READ A JSON NUMBER AS AN EXACT, NON-NEGATIVE INTEGER COUNT, or `None` when it is not one: the
-/// one seam a plane reads a billed count through (plane-llm `codec/usage_count.rs` and
-/// plane-streaming `codec/ir/usage.rs` each carried it).
-///
-/// [`serde_json::Value::as_u64`] answers `None` for ANY float-backed number, `27.0` included, so a
-/// provider that spells a count as a float would read as zero work: a ledger that says nothing
-/// happened, faithfully wrong in every money view over it. The integer representation is tried
-/// first; the float one only when it provably denotes an exact integer.
-///
-/// A fractional value (never rounded: rounding invents a quantity), a negative one, a non-finite
-/// one, and anything at or above 2^53 (past which every `f64` has `fract() == 0.0`, so the
-/// integrality test proves nothing) all read as `None`.
+
 #[must_use]
 pub fn read_count_u64(v: &serde_json::Value) -> Option<u64> {
     if let Some(u) = v.as_u64() {
         return Some(u);
     }
     let f = v.as_f64()?;
-    // 2^53. `contains` also rejects NaN and both infinities, which compare inside no range.
+
     const EXACT_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
     if (0.0..EXACT_INTEGER_LIMIT).contains(&f) && f.fract() == 0.0 {
         Some(f as u64)

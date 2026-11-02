@@ -1,7 +1,3 @@
-//! Tests for `auth_bindings.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
-
 use super::*;
 use busbar_kernel_identity::module::AuthOutcome;
 use std::sync::Mutex;
@@ -45,14 +41,6 @@ fn a_directory() -> Arc<Directory> {
     })
 }
 
-/// NO SECOND CREDENTIAL CACHE (item 249): the bindings hand the chain none, so a verdict the
-/// operator's flush was meant to kill is never served from a cache the flush cannot reach.
-///
-/// The root used to build its own cache here, a port of the kernel's, while the admin flush
-/// endpoint reaches only the kernel's. Driven through the chain with a CACHEABLE module that
-/// identifies a credential and is then told the credential is revoked: with a cache held here the
-/// second run answered the first verdict out of it; with none, the module is asked again and its
-/// refusal stands.
 #[test]
 fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -102,8 +90,6 @@ fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
     }
 }
 
-/// The verifier the root binds resolves through the directory and hands back the unit's own
-/// shape, so the chain's signed-key arm has something to identify with.
 #[test]
 fn the_bound_verifier_resolves_through_the_directory() {
     let directory = a_directory();
@@ -125,8 +111,6 @@ fn the_bound_verifier_resolves_through_the_directory() {
     );
 }
 
-/// The revocation view answers from the same directory the verifier does, which is the point of
-/// binding one value rather than two.
 #[test]
 fn the_revocation_view_reads_the_same_directory() {
     let bindings = AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>);
@@ -137,9 +121,6 @@ fn the_revocation_view_reads_the_same_directory() {
     assert!(!revocations.is_revoked("vk_1"));
 }
 
-/// An unbound node binds no authority, which is a posture rather than a gap: the chain's own answer
-/// with no verifier is to deny, and the gate that never runs would have had nothing to refuse that
-/// the denial had not already refused.
 #[test]
 fn an_unbound_node_binds_no_authority() {
     let bindings = AuthBindings::without_directory();
@@ -147,21 +128,10 @@ fn an_unbound_node_binds_no_authority() {
     assert!(bindings.revocations().is_none());
 }
 
-// ------------------------------------------------------------------------------------------------
-// THE ROOT MIGRATION TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live. The kernel's own tests
-// run on a kind-neutral double; these run on the words this root hands in at boot.
-// ------------------------------------------------------------------------------------------------
-
-/// Hand the root's words in with its linked auth rows, as `register_planes` does at boot (the first
-/// install stands, and every install in this binary is this one).
 fn hand_in_the_root_words() {
     busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths, operator_words());
 }
 
-/// THE OPERATOR'S PROVIDER WORD IS THE MANIFEST'S: the registry key of the row the manifest's
-/// operator table names, and — where this build links that row — the row whose own Statement states
-/// it is the operator credential, identifying the operator as the principal the words carry. The
-/// root's source spells neither.
 #[test]
 fn the_operator_provider_is_the_row_the_manifest_names() {
     let words = operator_words();
@@ -203,9 +173,6 @@ fn the_operator_provider_is_the_row_the_manifest_names() {
     }
 }
 
-/// THE OPERATOR CREDENTIAL'S 1.5.5 WORDS AND LINES, as DATA in the oracle corpus
-/// (`testing/shadow-oracle/fixtures/law0/operator-1.5.5.json`, verbatim from the 1.5.5 binary):
-/// what the root's words must still read as, byte for byte.
 fn operator_1_5_5() -> serde_json::Value {
     serde_json::from_str(include_str!(
         "../../../../../testing/shadow-oracle/fixtures/law0/operator-1.5.5.json"
@@ -213,7 +180,6 @@ fn operator_1_5_5() -> serde_json::Value {
     .expect("the 1.5.5 operator fixture is JSON")
 }
 
-/// A string field of the 1.5.5 operator fixture.
 fn word_1_5_5(key: &str) -> String {
     operator_1_5_5()[key]
         .as_str()
@@ -240,7 +206,7 @@ fn the_kernel_answers_to_the_root_words_once_handed_in() {
         busbar_kernel::config::operator_principal_id(),
         words.principal_id
     );
-    // The `auth.admin_auth:` default: the operator credential, referenced bare.
+
     assert_eq!(
         busbar_kernel::config::default_admin_auth_names(),
         [words.provider]
@@ -251,9 +217,6 @@ fn the_kernel_answers_to_the_root_words_once_handed_in() {
     );
 }
 
-/// The 1.5.3 hook-name word space, WHOLE: the kernel's frozen words and the root's operator word —
-/// every one reserved, a word beside them not, and the whole set 1.5.5's
-/// (v1.5.5:crates/busbar/src/config/mod.rs:1891, held as DATA).
 #[test]
 fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
     hand_in_the_root_words();
@@ -275,7 +238,7 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
     assert!(!busbar_kernel::config::is_reserved_hook_name(&format!(
         "{op}-2"
     )));
-    // Exactly 1.5.5's set (v1.5.5:crates/busbar/src/config/mod.rs:1891), as DATA.
+
     let mut space: Vec<&str> = busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
     space.push(op);
     space.sort_unstable();
@@ -288,7 +251,6 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
     assert_eq!(space, want, "1.5.5's whole hook-name word space");
 }
 
-/// Walk `path` down a migrated document.
 fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
     let mut cur = doc;
     for k in path {
@@ -297,8 +259,6 @@ fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::
     Some(cur)
 }
 
-/// 1.4.x `governance.admin_token: ${VAR}` migrates onto the operator credential as 1.5.5 wrote it:
-/// `auth.admin_auth: [<operator word>]` and the secret ref on `identity-providers.<operator word>`.
 #[test]
 fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
     hand_in_the_root_words();
@@ -328,8 +288,6 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
     );
 }
 
-/// A 1.5.x inline admin chain entry for the operator credential lifts onto its definition, and the
-/// chain keeps the bare name, as 1.5.5 wrote it.
 #[test]
 fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
     hand_in_the_root_words();
@@ -353,16 +311,6 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
     );
 }
 
-/// The shipped example config.yaml must not force a mandatory boot failure on an unset
-/// `BUSBAR_ADMIN_TOKEN`: no brace-form interpolation of it may appear anywhere (comments included,
-/// since `interpolate_env` scans the whole file).
-///
-/// RE-HOMED from the kernel's `test_shipped_example_config_resolves`: the shipped config names the operator credential by the root legacy
-/// table's word, so it resolves only on the words this root hands in. Its parse-and-resolve half is
-/// `tests/docs_examples.rs::shipped_config_artifacts_validate`, which runs the real binary's
-/// `--validate` (parse, resolve, validate) on the same config.yaml against providers.yaml. The
-/// kernel test's neutral plane registration does not come along: it is process-wide, and this
-/// binary's plane-node tests run on the root's own planes.
 #[test]
 fn the_shipped_config_needs_no_admin_token_to_boot() {
     let config_raw =
@@ -377,9 +325,6 @@ fn the_shipped_config_needs_no_admin_token_to_boot() {
     );
 }
 
-/// The operator credential's refusals name the root's operator word where 1.5.5 named it (its
-/// feature, its module, the chain entry an operator moves the token to), and read as 1.5.5's lines
-/// byte for byte (v1.5.5:crates/busbar/src/config_validate/mod.rs:1175), held as DATA.
 #[test]
 fn the_operator_refusals_name_the_root_words() {
     let op = operator_words().provider;

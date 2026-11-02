@@ -1,24 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LLM DIALECTS' DECLARED SCHEMES, PRESENTED THROUGH THE LINKED AUTH PLUGINS (P2 D1, the auth
-//! split; #83a SD-2b, SD-3; O7, S2-a).
-//!
-//! The kernel holds no auth style: a lane's credential is bound on the auth plugin serving the
-//! style its dialect's declared scheme maps to, and every request asks that plugin for its fields.
-//! This suite holds the composition root's auth axis and the auth plugins this build links
-//! (`auths`), bound under each dialect's recorded binding (the shared fixture
-//! `testing/plane-copies/declared-credentials.json`, `bindings`), to the credential headers each
-//! dialect's own 1.5.5 builder wrote, per credential, mode and request (`rows`). The plane's own
-//! suite holds its mapping of each real declaration to the same `bindings`, so the halves together
-//! are the byte-identity proof of the switch, and neither names the other. Ported from the
-//! kernel's `egress_auth` differential, which it replaces.
-//!
-//! THE MAIN LOG'S LINES (ARCHITECT D1 2026-10-05, LOG LINES): a credential the plugin cannot present
-//! is its declared diagnostic on the #85 envelope, which the root writes to the main log in the line
-//! 1.5.5's builder wrote there ([`crate::root::door_steps::MainLogSink`]). The two tests that pinned
-//! those lines are ported below, word for word.
-
 use std::sync::{Arc, OnceLock};
 
 use busbar_contract::config::UpstreamCreds;
@@ -39,13 +21,10 @@ fn fixture() -> &'static serde_json::Value {
     })
 }
 
-/// The build's auth axis, as the kernel's build is handed it: the composition root's, whose
-/// outbound half is the process's auth instances over this build's linked `auths` rows.
 fn axis() -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
     crate::root::dispatch::auth_axis(Arc::new(crate::root::loader::PluginRegistry::empty()))
 }
 
-/// `binding`, bound with `credential` on the linked plugin serving its style.
 fn bound(binding: &StyleBinding, credential: &str) -> Arc<dyn CredentialProvider> {
     bind(&*axis(), binding, credential.as_bytes()).unwrap_or_else(|e| {
         panic!(
@@ -55,10 +34,6 @@ fn bound(binding: &StyleBinding, credential: &str) -> Arc<dyn CredentialProvider
     })
 }
 
-/// The binding the fixture records for `dialect` (`bindings`): the style its declared scheme is
-/// bound under and its parameters, a signing style's region added from `host` and its content type
-/// lent as the sent `content-type`, as the plane adds them (the plane's own suite holds its mapping
-/// to the same rows).
 fn binding_of(
     dialect: &str,
     host: &str,
@@ -83,9 +58,6 @@ fn binding_of(
     }
 }
 
-/// The headers `dialect`'s declared scheme presents for `key` under `ctx`, with `statics` after
-/// them: bound as a lane binds (the operator's key in `Own` mode; a passthrough lane binds its own,
-/// here none, and presents the caller's per request), in order, as strings.
 fn present_bound(binding: &StyleBinding, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
     let own = match ctx.upstream_creds {
         UpstreamCreds::Own => key,
@@ -94,7 +66,6 @@ fn present_bound(binding: &StyleBinding, key: &str, ctx: &SigningContext) -> Vec
     strings(&bound(binding, own).headers_for(key, ctx))
 }
 
-/// `decl`'s dialect (its twin name's tail), presented.
 fn present(decl: &'static ProtocolDecl, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
     let dialect = decl
         .name
@@ -119,7 +90,6 @@ fn strings(h: &[(axum::http::HeaderName, axum::http::HeaderValue)]) -> Vec<(Stri
         .collect()
 }
 
-/// The signing twin's region function: the fixture's recorded answer for the host.
 fn recorded_region(host: &str) -> Option<&'static str> {
     fixture()["regions"]
         .as_array()
@@ -241,8 +211,6 @@ fn hex(v: &serde_json::Value) -> Vec<u8> {
     hex::decode(v.as_str().expect("hex")).expect("hex")
 }
 
-/// Every twin carries exactly the scheme data the fixture records for its dialect — the data the
-/// plane's own suite holds each real declaration to.
 #[test]
 fn each_twin_carries_the_fixture_scheme_of_its_dialect() {
     let schemes = fixture()["schemes"].as_object().expect("schemes");
@@ -253,19 +221,13 @@ fn each_twin_carries_the_fixture_scheme_of_its_dialect() {
     }
 }
 
-/// THE DIFFERENTIAL: presented under each dialect's declared scheme, through the linked auth
-/// plugins, the request carries exactly the credential headers that dialect's own builder wrote,
-/// for every credential, mode and request in the fixture.
 #[test]
 fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
     let mut compared = 0usize;
     for row in fixture()["rows"].as_array().expect("rows") {
         let dialect = row["dialect"].as_str().expect("dialect");
         let key = String::from_utf8(hex(&row["key_hex"])).expect("utf-8 key");
-        // AN EMPTY KEY NEVER REACHES THE BUILDER ON THE WIRE: the lane's writer asks for no header
-        // at all for a key that presents (1.5.5's `lane_auth_headers` and the passthrough rule;
-        // `test_keyless_lane_sends_no_auth_header`), so the builder's raw answer for it was never
-        // sent and is no byte-identity obligation of the plugin's.
+
         if key.is_empty() {
             continue;
         }
@@ -303,7 +265,7 @@ fn signed(key: &str, host: &str, uri: &str, body: &[u8]) -> Vec<(String, String)
         host,
         canonical_uri: uri,
         body,
-        timestamp_epoch: 1_440_938_160, // 20150830T123600Z
+        timestamp_epoch: 1_440_938_160,
         upstream_creds: UpstreamCreds::Own,
     };
     present(twin("bedrock"), key, &ctx)
@@ -398,19 +360,6 @@ fn a_fips_host_signs_for_its_region_and_an_unnamed_one_for_the_default() {
     assert!(auth.contains("/us-east-1/bedrock/aws4_request"), "{auth}");
 }
 
-// ══ SIGV4 SIGNS THE WALKED REQUEST (auth audit fix b; BUSBAR-1.6.0 l.870-873) ═══════════════════
-//
-// The door-plane walk hands the style the request's real method and query (`far_end.rs`'s
-// `FieldsRequest`), so the signature must cover those, not a fixed `POST` with no query. The
-// expected signature is recomputed here from the request facts with plain AWS SigV4 steps; the
-// plugin's signer is never called for it.
-
-/// RED ARM (on the sigv4 plugin's pin c22578a, which signs `POST`, an empty query and an unsent
-/// `content-type`): a `GET` with a query, signed through the linked sigv4 style, verifies under the
-/// secret over that method, the double-encoded path, the sorted query and the headers it names,
-/// and names no `content-type`, since the request carries none. The binding is the fixture's one
-/// signing row (the one whose parameters name a service); the suite is built only where the
-/// sigv4 plugin is linked (`dispatch.rs`).
 #[test]
 fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
     use busbar_contract::abi::auth::AuthPoint;
@@ -444,14 +393,14 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
         .auth
         .open_outbound(style, format!("AKIDEXAMPLE:{SECRET}").as_bytes(), params)
         .expect("the binding opens");
-    // The shape the door-plane walk builds (`far_end.rs`): the real method, path and query.
+
     let request = FieldsRequest {
         point: AuthPoint::Head,
         method: b"GET".to_vec(),
         authority: AUTHORITY.into(),
         path: b"/model/a%3Ab/invoke".to_vec(),
         query: Some(b"b=2&a=1".to_vec()),
-        timestamp: 1_440_938_160, // 20150830T123600Z
+        timestamp: 1_440_938_160,
         headers: vec![],
         body: Default::default(),
         caller_credential: Default::default(),
@@ -481,8 +430,6 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
         .and_then(|r| r.split_once(", Signature="))
         .unwrap_or_else(|| panic!("SignedHeaders then Signature: {auth}"));
 
-    // Each header the signature names, valued as the request sends it: the authority, the empty
-    // payload's hash, and otherwise the field the style answered.
     let empty_hash = sigv4::sha256_hex(b"");
     let mut canonical_headers = String::new();
     for name in signed_headers.split(';') {
@@ -517,11 +464,9 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
     );
 }
 
-/// The SigV4 steps the cell above recomputes with, ported from `tests/sigv4_both_ways.rs`.
 mod sigv4 {
     use sha2::{Digest, Sha256};
 
-    /// The SigV4 signature (hex) of `canonical_request` under `secret`'s derived signing key.
     pub(super) fn signature(
         secret: &str,
         amzdate: &str,
@@ -542,7 +487,6 @@ mod sigv4 {
         hex::encode(hmac_sha256(&k_signing, string_to_sign.as_bytes()))
     }
 
-    /// HMAC-SHA256 (RFC 2104) over `sha2`.
     fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
         const BLOCK: usize = 64;
         let mut k = if key.len() > BLOCK {
@@ -568,7 +512,6 @@ mod sigv4 {
         hex::encode(Sha256::digest(bytes))
     }
 
-    /// SigV4 URI encoding of a path: unreserved bytes and `/` pass, every other byte is `%XX`.
     pub(super) fn uri_encode(path: &str) -> String {
         let mut out = String::with_capacity(path.len());
         for &b in path.as_bytes() {
@@ -615,12 +558,6 @@ fn a_static_credential_is_presented_verbatim_or_omitted_never_emptied() {
     }
 }
 
-// ══ DECLARED STATIC HEADERS (#83a S2-a; SD-3b) ═══════════════════════════════════════════════════
-//
-// A protocol's `static_headers` are written verbatim after its declared credential, on every request
-// the credential is presented for — the one version header its builder used to write beside the
-// credential, now declared data.
-
 const FAMILY_TABLE: EgressScheme = EgressScheme::Static {
     families: ANTHROPIC_FAMILIES,
     own: CredentialHeader::Raw {
@@ -662,7 +599,7 @@ fn presented(name: &str, key: &str, mode: UpstreamCreds) -> Vec<(String, String)
         timestamp_epoch: 1_752_000_000,
         upstream_creds: mode,
     };
-    // The family-table twins carry the anthropic scheme, the two-statics twin the bearer one.
+
     let dialect = if name == "static-twin-two-statics" {
         "openai"
     } else {
@@ -681,9 +618,6 @@ fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// THE VERSIONED REQUEST: the declared credential, then EXACTLY the declared static header — for
-/// each credential family and mode, and for a key no header value may carry (the credential is
-/// omitted, the version stays).
 #[test]
 fn a_declared_static_header_follows_the_credential_verbatim() {
     let v = ("anthropic-version", "2023-06-01");
@@ -727,8 +661,6 @@ fn a_declared_static_header_follows_the_credential_verbatim() {
     );
 }
 
-/// RED ARM: the same scheme with NO static header declared presents the credential alone — the
-/// version header is absent, so it is the declaration that puts it on the wire, nothing else.
 #[test]
 fn with_no_static_header_declared_the_version_header_is_absent() {
     for (key, mode) in [
@@ -752,9 +684,6 @@ fn with_no_static_header_declared_the_version_header_is_absent() {
     );
 }
 
-/// The operator's `auth: api-key` override, bound on the linked plugin serving `api-key`: for every
-/// key a config system can hand it, in either credential mode, the credential verbatim in `api-key`
-/// (the shared header rule), and a key that is not a legal header value sends no header at all.
 #[test]
 fn the_api_key_override_presents_the_shared_builders_bytes() {
     const KEYS: &[&str] = &[
@@ -781,8 +710,7 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
                 UpstreamCreds::Own => key,
                 UpstreamCreds::Passthrough => "",
             };
-            // The lane's writer asks for no header at all for an empty key (the keyless rule);
-            // every other key is the plugin's answer.
+
             let got = if key.is_empty() {
                 Vec::new()
             } else {
@@ -799,8 +727,6 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
     }
 }
 
-/// `dialect`'s recorded binding, its lines naming `protocol` (the name 1.5.5's twin carried): every
-/// static style's (each records a `protocol`), the signing style (which records none) naming none.
 fn named_binding(dialect: &str, protocol: &str) -> StyleBinding {
     let mut binding = binding_of(dialect, SIGNING_HOST, &[]);
     if binding.params.get("protocol").is_some() {
@@ -811,7 +737,6 @@ fn named_binding(dialect: &str, protocol: &str) -> StyleBinding {
 
 const SIGNING_HOST: &str = "bedrock-runtime.us-east-1.amazonaws.com";
 
-/// Every line the main log took, DEBUG and above, while `f` ran.
 fn main_log(f: impl FnOnce()) -> Vec<String> {
     use tracing_subscriber::layer::SubscriberExt as _;
     let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::capturing_debug();
@@ -823,8 +748,6 @@ fn main_log(f: impl FnOnce()) -> Vec<String> {
         .collect()
 }
 
-/// The main log's lines while `binding` was bound with `key` and asked for one `mode` request
-/// (`Passthrough`: `key` is the caller's, the lane binds none).
 fn lines_in(binding: &StyleBinding, key: &str, mode: UpstreamCreds) -> Vec<String> {
     let own = match mode {
         UpstreamCreds::Own => key,
@@ -842,14 +765,10 @@ fn lines_in(binding: &StyleBinding, key: &str, mode: UpstreamCreds) -> Vec<Strin
     })
 }
 
-/// [`lines_in`] for the lane's own credential.
 fn lines(binding: &StyleBinding, key: &str) -> Vec<String> {
     lines_in(binding, key, UpstreamCreds::Own)
 }
 
-/// A signing credential whose session token no header value may carry logs, word for word, the
-/// line the dialect's own signer logged in 1.5.5 — naming the declared service — and signs
-/// nothing. A malformed credential without that token logged nothing then and logs nothing now.
 #[test]
 fn an_unsendable_session_token_logs_the_signers_own_line() {
     let signing = named_binding("bedrock", "static-twin-signing");
@@ -870,9 +789,6 @@ fn an_unsendable_session_token_logs_the_signers_own_line() {
     }
 }
 
-/// A bearer credential with a byte no header value may carry logs the bearer builder's 1.5.5
-/// line, naming the protocol; a static custom header's and a credential-family table's keep
-/// theirs, each naming the header it omitted.
 #[test]
 fn an_unpresentable_static_credential_logs_its_builders_own_line() {
     let bearer = named_binding("openai", "static-twin-bearer");
@@ -911,22 +827,12 @@ fn an_unpresentable_static_credential_logs_its_builders_own_line() {
     assert!(lines(&bearer, "good-key").is_empty());
 }
 
-/// THE PROCESS'S ONE INSTANCE, BOUND FROM MANY THREADS AT ONCE: every build binds a style through
-/// the same opened auth instance, so binds run concurrently on it. A bind's unpresentable-credential
-/// line is that bind's own — its header named exactly — however many other binds of the same
-/// instance run while the host reads it back. RED with the plugin's per-call envelope storage held
-/// on the instance (a sibling's `open_outbound` refills it under the reader): the line names the
-/// sibling's header (`header=api-key`), or the sibling's shorter text read at this one's length
-/// (`header=api-keyapi-key`).
 #[test]
 fn concurrent_binds_of_one_instance_each_log_their_own_header() {
     use std::sync::atomic::{AtomicBool, Ordering};
     const SIBLINGS: usize = 8;
     const ROUNDS: usize = 300;
-    // The measured bind's header: any name of the api-key style other than (and longer than) the
-    // siblings' default `api-key`. The cell is about the instance's per-call envelope, not about a
-    // dialect, so its binding names none (Law 1): it is the fixture's `api-key-override` binding
-    // with its own header written in, the shape a dialect's declared header takes.
+
     const OWN_HEADER: &str = "x-twin-api-key";
     let own_header = {
         let mut binding = named_binding("api-key-override", "static-twin-header");
@@ -942,7 +848,7 @@ fn concurrent_binds_of_one_instance_each_log_their_own_header() {
          omitting auth header — upstream will reject with 401 diag=BUSBAR-4013 \
          header={OWN_HEADER}"
     )];
-    /// Stops the siblings however the measuring thread leaves the scope.
+
     struct Stop<'a>(&'a AtomicBool);
     impl Drop for Stop<'_> {
         fn drop(&mut self) {
@@ -953,8 +859,6 @@ fn concurrent_binds_of_one_instance_each_log_their_own_header() {
     let got: Vec<Vec<String>> = std::thread::scope(|s| {
         for _ in 0..SIBLINGS {
             s.spawn(|| {
-                // The `api-key` header's binding: its unpresentable key notes `header=api-key` on
-                // the same instance's envelope.
                 while !done.load(Ordering::Relaxed) {
                     drop(bound(&api_key, "bad\nkey"));
                 }
@@ -974,9 +878,6 @@ fn concurrent_binds_of_one_instance_each_log_their_own_header() {
     );
 }
 
-/// A CALLER's credential no header value may carry logs its builder's line on the request that
-/// presents it, as 1.5.5 built (and logged) a passthrough header per request; a signing
-/// credential's unsendable token, likewise per request in either mode.
 #[test]
 fn a_callers_unpresentable_credential_logs_on_its_request() {
     assert_eq!(
@@ -1003,9 +904,6 @@ fn a_callers_unpresentable_credential_logs_on_its_request() {
     );
 }
 
-/// A declared diagnostic outside the credential lines is written in 1.5.5's shape too: a mint that
-/// failed, its catalog code as `diag` and the error as its trailing named value; a plugin's free
-/// log record stays out of the main log.
 #[test]
 fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
@@ -1037,12 +935,6 @@ fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
     );
 }
 
-/// THE CATALOGUE ENTRY OF A RAISED CREDENTIAL LINE MATCHES THE SEVERITY IT IS RAISED AT. The auth
-/// rows name these codes in their Statements and raise each at warn: the bearer and static-header
-/// lines per request, the token lines per mint. The catalogue must not contradict that: an entry
-/// marked retired documents a code as dead while a plugin still raises it, and a benign-recurring
-/// entry makes the main log demote the plugin's warn to debug. RED with 4013 and 4014 catalogued
-/// retired and 7087 catalogued benign-recurring.
 #[test]
 fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_entry() {
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
@@ -1066,7 +958,7 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
             "BUSBAR-{code:04} is raised at warn, so its entry is actionable"
         );
         let name = format!("BUSBAR-{code:04}");
-        // A WARN-and-above capture: a line the sink demoted to debug or info is not in it.
+
         let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         tracing::subscriber::with_default(subscriber, || {
@@ -1088,22 +980,6 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
     }
 }
 
-/// LEGACY the retiring engine crate's keyless-lane test in `src/engine/tests/auth_style_tests.rs`
-/// (coverage map v2 row 73; its name spells an auth plugin's crate id, which the root may not). 1.5.5: a lane whose provider declared `api_key: none` (a keyless
-/// local upstream) holds an empty key, and an empty key presents NO auth header at all under any
-/// auth style (the dialect's default, the token override, the key-header override): never a bare
-/// scheme word with an empty token, never an empty key field. A non-empty credential is
-/// unaffected and presents its one header.
-///
-/// Here every non-signing binding the fixture records (each dialect's default and the key-header
-/// override) and the token override (`auth:` names its own style, which the door binds as written,
-/// root door_steps `style_word`; its style word is the fixture's `override_styles.token`) are bound
-/// on the linked auth plugins with the empty key, in both credential modes, and asked for their
-/// fields. A signing binding is the one that sends fields of its own beside the credential, and is
-/// left out: it signs, it presents no key header.
-///
-/// RED: a linked auth plugin presents a field for an empty credential (a bare scheme word, an
-/// empty key header), or a real credential stops presenting its one header.
 #[test]
 fn a_keyless_lane_presents_no_credential_field() {
     let ctx = |upstream_creds| SigningContext {
@@ -1157,8 +1033,6 @@ fn a_keyless_lane_presents_no_credential_field() {
     }
 }
 
-/// What the build's door serving the `pools` map STATES (its tail's dialects, their default styles
-/// and parameters, and its needs), bound on a probe dispatcher.
 #[cfg(linked_driver_proofs)]
 fn served_pools_door() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
     use crate::root::loader::dispatch::kinds::plane::Plane;
@@ -1188,24 +1062,6 @@ fn served_pools_door() -> crate::root::loader::dispatch::kinds::plane::ServedFac
         .expect("the build links the door serving the `pools` map")
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/auth_style_tests.rs::each_dialects_declared_scheme_maps_to_its_recorded_binding`
-/// (coverage map v2 row 78). 1.5.5 (the plane's half of the declared-credential proof): every
-/// dialect's declared scheme maps to exactly the binding the shared fixture records for it
-/// (`testing/plane-copies/declared-credentials.json`, `bindings`): the style and the parameters,
-/// a signing style's region read from each recorded host by the dialect's own rule (the recorded
-/// region, else `us-east-1`); the `auth: api-key` override binds its style with no parameters of
-/// the dialect's; and exactly the six recorded dialects are mapped.
-///
-/// Read off what the served pools door STATES (its tail's per-dialect default style and
-/// parameters) and sealed the way the root seals a member's binding (`sealed_settings`), so the
-/// recorded bindings are held to the plane the root actually serves, not to test twins.
-///
-/// RED: a dialect's stated style or parameters drift from the recorded binding, a signing style
-/// reads another region from a recorded host, or the door states another set of dialects.
-///
-/// The recorded styles are each protocol's NATIVE auth, v1.5.5's (`crates/busbar/src/config/mod.rs`
-/// `ProviderAuth`, ~l.1130: "the request is signed with the protocol's native auth unless `api-key`
-/// selects an `api-key: <key>` header"; ARCHITECT ruling (a)).
 #[cfg(linked_driver_proofs)]
 #[test]
 fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
@@ -1215,7 +1071,6 @@ fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
     let mut mapped = 0usize;
     for (dialect, want) in bindings {
         if dialect == "api-key-override" {
-            // The provider's own `auth:` binds its style alone: no dialect parameters, no statics.
             let sealed = sealed_settings(&[], "https://upstream.internal", &serde_json::json!({}))
                 .expect("the override seals");
             assert_eq!(want["style"], "api-key", "{dialect}");
@@ -1264,17 +1119,6 @@ fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
     );
 }
 
-/// THE `api-key` OVERRIDE, CONFIGURED (v1.5.5 `crates/busbar/src/config/mod.rs` `ProviderAuth`,
-/// ~l.1130: "the request is signed with the protocol's native auth unless `api-key` selects an
-/// `api-key: <key>` header"; v1.5.5 `egress_auth::resolve` answered `api-key` first, whatever the
-/// protocol): a provider entry written with `auth: api-key`, of every dialect the served pools door
-/// states, resolves through the door's own member resolution to a binding on the linked plugin that
-/// presents the credential verbatim in `api-key` and nothing else. The door states `api-key` as an
-/// outbound need beside the natives, so the override is an alternative every dialect accepts.
-///
-/// RED: the configured word maps to another style, the door states no need serving `api-key`, or
-/// the override is opened with its dialect's own parameters (a credential-family table's
-/// `x-api-key`, a key header's `x-goog-api-key`, a bearer's `authorization`).
 #[cfg(all(linked_driver_proofs, feature = "auth-header"))]
 #[test]
 fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() {
@@ -1368,12 +1212,6 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
     let _ = std::fs::remove_file(&key_file);
 }
 
-/// RED (arch-audit u29 F1): THE STYLES THE LINKED AUTH PLUGINS DECLARE, as a provider's `auth:` may
-/// name them, in the host's one listing order: 1.5.5's four first, in 1.5.5's order, because their
-/// plugins rank them so (a configuration 1.5.5 refused for an unknown `auth:` word is refused with
-/// 1.5.5's list as the prefix of this one), each with the endpoint bit its plugin states — the
-/// client-credentials style the provider's `token_url`, the jwt-bearer style its credential's own
-/// `token_uri`, the header styles none. The kernel names none of these words.
 #[test]
 fn the_linked_auth_plugins_declare_1_5_5_s_four_styles_first_with_their_endpoint_bits() {
     use busbar_contract::abi::auth::{STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL};

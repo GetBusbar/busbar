@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HTTP DOOR SPEAKS HTTP/2 UPSTREAM THROUGH THE ONE CONNECTOR, as 1.5.5's egress client did:
-//! the linked http framer door, opened with the deployment's settings, dialled by the connector
-//! over a real loopback socket to a far end that speaks HTTP/2 frames.
-//!
-//! * h2c PRIOR KNOWLEDGE (`advanced.upstream_h2_prior_knowledge`, or the deprecated
-//!   `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` pin): no handshake, the connection preface first;
-//! * ALPN OVER TLS: the connector secures the connection and offers what the framer's `locate`
-//!   answered, `h2, http/1.1` (1.5.5's offer), and the framer speaks what was agreed;
-//! * TWO REQUESTS, ONE CONNECTION: an exchange that ended whole hands its connection back to the
-//!   worker's pool, and the next open to the same place rides it as the next stream (1, then 3), as
-//!   1.5.5's pooled client sent it (`wire.h2|two-requests|same-conn`);
-//! * on HTTP/1.1 a keep-alive answer whole hands the connection back the same way.
-//!
-//! The far end is written here from the frames up (preface, SETTINGS and its ACK, HEADERS, DATA,
-//! PING ACK), so what the client put on the wire is read frame by frame rather than through a
-//! library that would hide it.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -36,7 +19,6 @@ const OWNER: InstanceId = InstanceId(7);
 const NEED: NeedId = NeedId(0);
 const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
-/// One frame the far end read: type, flags, stream.
 type Seen = (u8, u8, u32);
 
 /// What the far end saw: every connection it accepted, every frame on them, and (TLS) the
@@ -53,7 +35,6 @@ struct FarEnd {
 }
 
 impl FarEnd {
-    /// The streams the client opened a request on (a HEADERS frame each), in order.
     fn request_stream_ids(&self) -> Vec<u32> {
         self.frames
             .lock()
@@ -76,9 +57,6 @@ fn frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
     f
 }
 
-/// Serve HTTP/2 on `s`: the server preface, every SETTINGS acknowledged, every PING answered, and
-/// each request stream answered `:status 200` (HPACK static index 8) with the body `ok` once the
-/// client ended it (and, under `hold`, once that many had ended).
 async fn serve_h2<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, far: Arc<FarEnd>) {
     let mut pending: Vec<u32> = Vec::new();
     let mut pre = [0_u8; 24];
@@ -109,11 +87,10 @@ async fn serve_h2<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, far: Arc<FarEnd>)
             .expect("frames")
             .push((kind, flags, stream));
         let answer = match kind {
-            // SETTINGS: acknowledged.
             4 if flags & 1 == 0 => frame(4, 1, 0, &[]),
-            // PING: answered with its payload.
+
             6 if flags & 1 == 0 => frame(6, 1, 0, &payload),
-            // HEADERS or DATA ending the stream: the answer, once `hold` streams have ended.
+
             0 | 1 if flags & 1 != 0 => {
                 pending.push(stream);
                 if pending.len() < far.hold.load(Ordering::SeqCst) {
@@ -126,7 +103,7 @@ async fn serve_h2<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, far: Arc<FarEnd>)
                 }
                 a
             }
-            // GOAWAY: the client is done.
+
             7 => return,
             _ => continue,
         };
@@ -136,7 +113,6 @@ async fn serve_h2<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, far: Arc<FarEnd>)
     }
 }
 
-/// A cleartext HTTP/2 far end on loopback.
 async fn h2c_far_end() -> (u16, Arc<FarEnd>) {
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = l.local_addr().expect("its address").port();
@@ -151,9 +127,6 @@ async fn h2c_far_end() -> (u16, Arc<FarEnd>) {
     (port, far)
 }
 
-/// A TLS far end on loopback, its certificate for `127.0.0.1` issued by the returned CA: it reads
-/// the protocols each ClientHello offers, agrees `h2` (else `http/1.1`) and serves HTTP/2 when
-/// `h2` was agreed.
 async fn tls_far_end() -> (u16, Arc<FarEnd>, Vec<u8>) {
     let (config, ca) = tls_server();
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
@@ -169,8 +142,6 @@ async fn tls_far_end() -> (u16, Arc<FarEnd>, Vec<u8>) {
     (port, far, ca)
 }
 
-/// A TLS server config for `127.0.0.1` agreeing `h2` (else `http/1.1`), and the DER of the CA that
-/// issued its certificate.
 fn tls_server() -> (Arc<rustls::ServerConfig>, Vec<u8>) {
     let ca_key = rcgen::KeyPair::generate().expect("a CA key");
     let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("CA params");
@@ -194,8 +165,6 @@ fn tls_server() -> (Arc<rustls::ServerConfig>, Vec<u8>) {
     (Arc::new(config), ca.der().to_vec())
 }
 
-/// Accept TLS on `s`: the protocols its ClientHello offered and the one agreed are recorded, and
-/// the agreed TLS stream is answered (`None`: the handshake failed).
 async fn accept_tls(
     s: tokio::net::TcpStream,
     seen: &FarEnd,
@@ -215,7 +184,6 @@ async fn accept_tls(
     Some(tls)
 }
 
-/// Serve one TLS connection: HTTP/2 as [`serve_h2`] serves it when `h2` was agreed.
 async fn serve_tls(s: tokio::net::TcpStream, seen: Arc<FarEnd>, config: Arc<rustls::ServerConfig>) {
     if let Some(tls) = accept_tls(s, &seen, config).await {
         if tls.get_ref().1.alpn_protocol() == Some(b"h2") {
@@ -224,8 +192,6 @@ async fn serve_tls(s: tokio::net::TcpStream, seen: Arc<FarEnd>, config: Arc<rust
     }
 }
 
-/// A cleartext HTTP/1.1 far end that keeps its connections alive: each request answered `200`
-/// with a `content-length`, the connection left open for the next.
 async fn h1_far_end() -> (u16, Arc<FarEnd>) {
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = l.local_addr().expect("its address").port();
@@ -239,7 +205,6 @@ async fn h1_far_end() -> (u16, Arc<FarEnd>) {
                 let mut got = Vec::new();
                 let mut buf = [0_u8; 4096];
                 loop {
-                    // One request: its head, then the body its content-length states.
                     let Some(at) = got.windows(4).position(|w| w == b"\r\n\r\n") else {
                         match s.read(&mut buf).await {
                             Ok(0) | Err(_) => return,
@@ -273,8 +238,6 @@ async fn h1_far_end() -> (u16, Arc<FarEnd>) {
     (port, far)
 }
 
-/// The connector over this build's linked transport doors, each opened with `settings`, judging
-/// with a guard that admits loopback, securing with `trust`, pooling as 1.5.5's client did.
 fn connector(settings: &TransportSettings, trust: &EgressTrust) -> Connector {
     let dest = crate::root::connector::guard_for(&Destinations {
         block_private_addresses: false,
@@ -284,7 +247,6 @@ fn connector(settings: &TransportSettings, trust: &EgressTrust) -> Connector {
     connector_judged(settings, trust, dest)
 }
 
-/// [`connector`], its dials judged by `dest`.
 fn connector_judged(
     settings: &TransportSettings,
     trust: &EgressTrust,
@@ -303,7 +265,7 @@ fn connector_judged(
         Arc::new(|_, _| {}),
     )
     .pooling(crate::root::connector::pool_posture(settings));
-    // The need's scheme is the request/response wire, as the admin plane's one claim declares it.
+
     c.declare_need(
         OWNER,
         NEED,
@@ -314,14 +276,11 @@ fn connector_judged(
     c
 }
 
-/// One request through the connector, read to its completion: the status and the body. The
-/// connection is closed (handed back to the pool when the exchange ended whole).
 async fn ask(c: &Connector, url: &str) -> (Option<u32>, Vec<u8>) {
     let conn = start(c, url);
     finish(c, conn).await
 }
 
-/// Open one request (its opening message on its way, nothing read).
 fn start(c: &Connector, url: &str) -> ConnId {
     start_need(c, NEED, url)
 }
@@ -345,7 +304,6 @@ fn start_need(c: &Connector, need: NeedId, url: &str) -> ConnId {
     .expect("the open")
 }
 
-/// Read `conn` to its completion: the status and the body; then close it.
 async fn finish(c: &Connector, conn: ConnId) -> (Option<u32>, Vec<u8>) {
     let (mut status, mut body) = (None, Vec::new());
     let mut buf = vec![0_u8; 64 * 1024];
@@ -423,8 +381,7 @@ async fn recovered_transport_and_pool_settings_leave_the_bootstrap_anchor_servin
         vec![1, 1],
         "fresh effective doors speak h2c"
     );
-    // The same declared anchor is used again after finalization: its original HTTP/1 door still
-    // frames its Store connection even though the registry now chooses HTTP/2 for new needs.
+
     assert_eq!(ask(&c, &anchor_url).await, (Some(200), b"ok".to_vec()));
     assert_eq!(anchor_far.frames.lock().unwrap().len(), 2);
 }
@@ -438,8 +395,7 @@ async fn failed_effective_transport_preparation_keeps_the_anchor_and_base_view()
     let base_door = c.framer_for(scheme).unwrap();
     let url = format!("http://127.0.0.1:{port}/store-overlay");
     let pending_anchor = start(&c, &url);
-    // Every linked door is valid individually, but no effective view may claim each scheme
-    // twice. This is a real preparation failure after fresh doors have opened.
+
     let repeated: Vec<_> = crate::LINKED_TRANSPORT_DOORS
         .iter()
         .chain(crate::LINKED_TRANSPORT_DOORS.iter())
@@ -543,8 +499,7 @@ async fn recovered_body_cap_and_request_timeout_apply_while_the_anchor_keeps_its
         busbar_core_admin::admin_codec::claims::TRANSPORT,
     )
     .unwrap();
-    // The anchor's body is larger than the recovered cap. Its captured base instance remains
-    // usable; an identical request from the effective instance must fail.
+
     assert_eq!(ask(&c, &url).await, (Some(200), b"ok".to_vec()));
     match c.open(
         OWNER,
@@ -607,8 +562,6 @@ async fn recovered_body_cap_and_request_timeout_apply_while_the_anchor_keeps_its
     assert_eq!(ask(&c, &url).await, (Some(200), b"ok".to_vec()));
 }
 
-/// h2c PRIOR KNOWLEDGE: the door opened with the prior-knowledge key speaks HTTP/2 from its first
-/// byte, and the second request rides the first one's connection as stream 3.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn h2c_prior_knowledge_two_requests_ride_one_connection() {
     let (port, far) = h2c_far_end().await;
@@ -631,7 +584,6 @@ async fn h2c_prior_knowledge_two_requests_ride_one_connection() {
     );
 }
 
-/// The deprecated env pin opens the door the same way: `client_settings` reads it over the config.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn the_deprecated_env_pin_turns_prior_knowledge_on() {
     let (port, far) = h2c_far_end().await;
@@ -646,9 +598,6 @@ async fn the_deprecated_env_pin_turns_prior_knowledge_on() {
     assert_eq!(far.request_stream_ids(), vec![1]);
 }
 
-/// ALPN OVER TLS: the connector offers the framer's `h2, http/1.1` in the ClientHello (no offer of
-/// its own: the registration states none), the far end agrees `h2`, the framer speaks HTTP/2 over
-/// it, and the second request rides the same connection as stream 3.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn alpn_h2_over_tls_is_the_framers_offer_and_one_connection_carries_two() {
     let (port, far, ca) = tls_far_end().await;
@@ -676,7 +625,6 @@ async fn alpn_h2_over_tls_is_the_framers_offer_and_one_connection_carries_two() 
     assert_eq!(far.request_stream_ids(), vec![1, 3]);
 }
 
-/// Under the http1-only key the offer is `http/1.1` alone, as 1.5.5's was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn the_http1_only_key_offers_http1_alone() {
     let (port, far, ca) = tls_far_end().await;
@@ -708,7 +656,7 @@ async fn the_http1_only_key_offers_http1_alone() {
         )
         .expect("the open");
     let mut buf = [0_u8; 1024];
-    // The far end agrees and serves nothing on http/1.1: the handshake is what this reads.
+
     let _ = tokio::time::timeout(
         Duration::from_secs(2),
         std::future::poll_fn(|cx| c.poll_read(OWNER, conn, cx, &mut buf)),
@@ -721,8 +669,6 @@ async fn the_http1_only_key_offers_http1_alone() {
     );
 }
 
-/// HTTP/1.1 keep-alive: an answer whole ends the exchange (not the far end closing), and the next
-/// request rides the same connection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn an_http1_keep_alive_connection_carries_the_next_request() {
     let (port, far) = h1_far_end().await;
@@ -739,10 +685,6 @@ async fn an_http1_keep_alive_connection_carries_the_next_request() {
     assert_eq!(far.request_stream_ids().len(), 2, "two requests");
 }
 
-/// A cleartext HTTP/1.1 far end that answers each connection's one request `200` with an empty
-/// body (`content-length: 0`) and no `connection: close` (the OTLP collector's answer byte for
-/// byte), then CLOSES the connection on `close`: the client's line went back to its pool whole, and
-/// the far end's end arrives on it while it sits idle.
 async fn closing_h1_far_end() -> (u16, Arc<FarEnd>, Arc<tokio::sync::Notify>) {
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = l.local_addr().expect("its address").port();
@@ -777,7 +719,7 @@ async fn closing_h1_far_end() -> (u16, Arc<FarEnd>, Arc<tokio::sync::Notify>) {
                 let _ = s
                     .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
                     .await;
-                // The connection closes on `close`: the far end's end, with nothing unread.
+
                 closing.notified().await;
             });
         }
@@ -785,15 +727,6 @@ async fn closing_h1_far_end() -> (u16, Arc<FarEnd>, Arc<tokio::sync::Notify>) {
     (port, far, close)
 }
 
-/// THE FAR END'S END IS NEWS ONCE: a pooled HTTP/1.1 line whose far end closed while it sat idle
-/// (an OTLP collector closing after its answer, a vendor closing an idle connection) is read once
-/// for that end when the next open would take it, found spent and let go, and the open dials
-/// afresh and is answered. The far end closes only once the line is back in its pool, and nothing
-/// drives the line while the close travels, so the open's freshness check meets the end every
-/// time. Before, the socket's end of file was re-read and re-fed to the framer as movement on every
-/// pass, even after the framer had ended the connection on it, and that check spun inside the open
-/// (inside an export's `deliver` crossing, until the dispatcher's watchdog faulted it and its batch
-/// was dropped).
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn an_idle_http1_line_the_far_end_closed_is_let_go_not_spun_on() {
     let (port, far, close) = closing_h1_far_end().await;
@@ -802,9 +735,7 @@ async fn an_idle_http1_line_the_far_end_closed_is_let_go_not_spun_on() {
         &EgressTrust::default(),
     ));
     let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
-    // Every open is made on ONE thread of its own: a pool is per worker (the opening thread's
-    // shard), so the second open is lent the first one's line, as an export's flusher, on its one
-    // dispatcher worker, is lent the line its last batch rode. A spin there is a bounded wait here.
+
     let (ask_tx, asks) = std::sync::mpsc::channel::<()>();
     let (opened_tx, opened) = std::sync::mpsc::channel();
     let (on, at, rt) = (
@@ -835,8 +766,7 @@ async fn an_idle_http1_line_the_far_end_closed_is_let_go_not_spun_on() {
         .expect("the first open answers");
     let (status, body) = finish(&c, a).await;
     assert_eq!((status, body.as_slice()), (Some(200), &b""[..]));
-    // The line is back in its pool, idle; now the far end closes it, and its end reaches this side
-    // while nothing drives the line.
+
     close.notify_one();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let b = open()
@@ -852,7 +782,6 @@ async fn an_idle_http1_line_the_far_end_closed_is_let_go_not_spun_on() {
     );
 }
 
-/// No pool posture, no reuse: each open dials (the posture is the deployment's).
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn without_a_pool_each_request_dials() {
     let (port, far) = h2c_far_end().await;
@@ -878,7 +807,6 @@ async fn without_a_pool_each_request_dials() {
     assert_eq!(far.request_stream_ids(), vec![1, 1]);
 }
 
-/// Drive `conn` until `ready` holds (each read attempt bounded, its piece, if any, ignored).
 async fn drive_until(c: &Connector, conn: ConnId, ready: impl Fn() -> bool) {
     let mut buf = vec![0_u8; 4096];
     for _ in 0..200 {
@@ -894,9 +822,6 @@ async fn drive_until(c: &Connector, conn: ConnId, ready: impl Fn() -> bool) {
     assert!(ready(), "the condition held within the bound");
 }
 
-/// THE MUX: two CONCURRENT requests to one h2c origin share one
-/// connection as streams 1 and 3. The far end answers neither until both have arrived, so the
-/// answers prove both were in flight together on the one connection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn concurrent_h2c_requests_share_one_connection() {
     let (port, far) = h2c_far_end().await;
@@ -913,7 +838,7 @@ async fn concurrent_h2c_requests_share_one_connection() {
     assert_eq!((rb.0, rb.1.as_slice()), (Some(200), &b"ok"[..]));
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "one connection");
     assert_eq!(far.request_stream_ids(), vec![1, 3], "two requests on it");
-    // The shared line goes back to the pool whole: a third request rides it as stream 5.
+
     far.hold.store(0, Ordering::SeqCst);
     let (status, _) = ask(&c, &url).await;
     assert_eq!(status, Some(200));
@@ -921,8 +846,6 @@ async fn concurrent_h2c_requests_share_one_connection() {
     assert_eq!(far.request_stream_ids(), vec![1, 3, 5]);
 }
 
-/// Over TLS the protocol is known once the handshake agreed it: a request opened while the first
-/// one's answer is outstanding on an agreed `h2` connection rides it as stream 3.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_concurrent_request_rides_an_agreed_h2_tls_connection() {
     let (port, far, ca) = tls_far_end().await;
@@ -947,7 +870,6 @@ async fn a_concurrent_request_rides_an_agreed_h2_tls_connection() {
     assert_eq!(far.request_stream_ids(), vec![1, 3]);
 }
 
-/// HTTP/1.1 stays one request per connection: two concurrent requests take two connections.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn concurrent_http1_requests_each_take_a_connection() {
     let (port, far) = h1_far_end().await;
@@ -962,8 +884,6 @@ async fn concurrent_http1_requests_each_take_a_connection() {
     assert_eq!(far.accepted.load(Ordering::SeqCst), 2, "a connection each");
 }
 
-/// An h2c far end whose FIRST connection takes its first request, says nothing, and on `rst` is
-/// reset (SO_LINGER 0); every connection after it is served as [`serve_h2`] serves.
 async fn resetting_far_end() -> (u16, Arc<FarEnd>, tokio::sync::mpsc::Sender<()>) {
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = l.local_addr().expect("its address").port();
@@ -983,8 +903,7 @@ async fn resetting_far_end() -> (u16, Arc<FarEnd>, tokio::sync::mpsc::Sender<()>
             }
             let _ = s.write_all(&frame(4, 0, 0, &[])).await;
             let mut buf = [0_u8; 4096];
-            // Read until the request's HEADERS (type 1 on stream 1) has been seen, roughly: the
-            // test waits on the recorded frame.
+
             let mut got = Vec::new();
             while !got.windows(4).any(|w| w == [0x01, 0x04, 0x00, 0x00]) || got.len() < 24 {
                 match s.read(&mut buf).await {
@@ -994,8 +913,7 @@ async fn resetting_far_end() -> (u16, Arc<FarEnd>, tokio::sync::mpsc::Sender<()>
             }
             first.frames.lock().expect("frames").push((1, 0, 1));
             let _ = reset.recv().await;
-            // A reset, not a goodbye: SO_LINGER 0 (its blocking-on-drop warning is about a
-            // non-zero linger; zero drops at once).
+
             #[allow(deprecated)]
             let _ = s.set_linger(Some(Duration::ZERO));
             drop(s);
@@ -1008,10 +926,6 @@ async fn resetting_far_end() -> (u16, Arc<FarEnd>, tokio::sync::mpsc::Sender<()>
     (port, far, rst)
 }
 
-/// THE ONE REDIAL: a request lent a pooled h2 line the far end has
-/// reset, before any byte of the request left, is dialled once on a fresh connection and served
-/// there: the caller sees one answered exchange, no failover. The request the reset cut, whose
-/// bytes had left, is not re-sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_lent_line_reset_before_any_byte_left_is_redialled_once() {
     let (port, far, rst) = resetting_far_end().await;
@@ -1024,7 +938,7 @@ async fn a_lent_line_reset_before_any_byte_left_is_redialled_once() {
     let a = start(&c, &url);
     drive_until(&c, a, || far.request_stream_ids().len() == 1).await;
     rst.send(()).await.expect("the reset");
-    // The reset reaches this side; nothing drives the line meanwhile.
+
     tokio::time::sleep(Duration::from_millis(200)).await;
     let b = start(&c, &url);
     let (status, body) = finish(&c, b).await;
@@ -1054,8 +968,6 @@ async fn a_lent_line_reset_before_any_byte_left_is_redialled_once() {
     assert_eq!(far.accepted.load(Ordering::SeqCst), 2);
 }
 
-/// An h2c far end that answers stream 1 and then, on the next request, closes the connection
-/// without answering it.
 async fn closing_far_end() -> (u16, Arc<FarEnd>) {
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = l.local_addr().expect("its address").port();
@@ -1090,7 +1002,7 @@ async fn closing_far_end() -> (u16, Arc<FarEnd>) {
                     let answer = match kind {
                         4 if flags & 1 == 0 => frame(4, 1, 0, &[]),
                         6 if flags & 1 == 0 => frame(6, 1, 0, &payload),
-                        // The second request: the connection closes under it.
+
                         1 if stream > 1 => return,
                         0 | 1 if flags & 1 != 0 => {
                             let mut a = frame(1, 4, stream, &[0x88]);
@@ -1109,8 +1021,6 @@ async fn closing_far_end() -> (u16, Arc<FarEnd>) {
     (port, far)
 }
 
-/// NO DOUBLE SEND: a request whose bytes LEFT on a pooled line before the far end closed it is not
-/// redialled; it fails, and its far end saw it exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_request_whose_bytes_left_is_not_redialled() {
     let (port, far) = closing_far_end().await;
@@ -1148,11 +1058,6 @@ async fn a_request_whose_bytes_left_is_not_redialled() {
     );
 }
 
-/// A TLS far end agreeing `h2` whose FIRST connection takes its first request, says nothing, and
-/// on `break_in` writes a record no TLS peer can open (an application-data record that fails its
-/// AEAD check) on the socket UNDER the TLS layer, then reads on through TLS, recording every frame;
-/// it answers on `wrote` once the record is on the wire. Every connection after it is served as
-/// [`serve_tls`] serves.
 async fn breaking_far_end() -> (
     u16,
     Arc<FarEnd>,
@@ -1183,7 +1088,7 @@ async fn breaking_far_end() -> (
             }
             let _ = tls.write_all(&frame(4, 0, 0, &[])).await;
             let mut wrote_tx = Some(wrote_tx);
-            // `read` (not `read_exact`) under the select, so the break never drops a byte read.
+
             let (mut got, mut buf) = (Vec::new(), [0_u8; 4096]);
             loop {
                 tokio::select! {
@@ -1223,12 +1128,6 @@ async fn breaking_far_end() -> (
     (port, far, ca, break_in, wrote)
 }
 
-/// NO DOUBLE SEND, the open's own drive: a request lent a pooled h2 line whose failure is met in
-/// the same drive that flushed its opening (the bytes left, THEN the line failed) is not
-/// redialled. The far end's unopenable record is on the wire before the open and nothing drives
-/// the line meanwhile, so the open's write goes out and its read meets the record: the order a
-/// loaded host gives [`a_request_whose_bytes_left_is_not_redialled`] by chance is given here every
-/// time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() {
     let (port, far, ca, break_in, wrote) = breaking_far_end().await;
@@ -1242,7 +1141,7 @@ async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() 
     drive_until(&c, a, || far.request_stream_ids().len() == 1).await;
     break_in.send(()).await.expect("the break");
     wrote.await.expect("the record is on the wire");
-    // The record reaches this side; nothing drives the line meanwhile.
+
     tokio::time::sleep(Duration::from_millis(200)).await;
     let b = start(&c, &url);
     let mut buf = [0_u8; 1024];
@@ -1260,7 +1159,7 @@ async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() 
             Ok(p) => answered |= p.kind == PieceKind::Fields,
         }
     }
-    // The far end reads what left on its own time: wait for it, never driving this side.
+
     for _ in 0..250 {
         if far.request_stream_ids().len() >= 2 {
             break;
@@ -1278,16 +1177,6 @@ async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() 
     );
 }
 
-/// ROOT CELL (P0, an IDN destination 1.5.5 dialled): a deployment whose allowlist names an IDN
-/// host by its punycode name (`advanced.allow_destinations: [xn--bcher-kva.example]`, private
-/// addresses refused) reaches the destination `bücher.example` end to end, through the connector
-/// over this build's linked doors and the one destination judge, over a resolver that knows only
-/// the punycode name (as DNS does). The judge, asked about the name as written
-/// (`bücher.example:<port>`), resolves the name it judged, the UTS #46 punycode name, and pins the
-/// loopback answer; the connector's own dial of the destination, its URL spelt as a URL client
-/// serialises it (1.5.5's `url` wrote the punycode host), resolves that same name, pins, dials and
-/// is served by the far end there. The judge asked the resolver for the name as written, which no
-/// resolver knows (`NXDOMAIN`), and refused the dial as unresolvable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
     use busbar_core_connector::guard::{Guard, Resolve, Resolved};
@@ -1320,7 +1209,6 @@ async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
     let resolver = Arc::clone(&names) as Arc<dyn Resolve>;
     let dest = Arc::new(process::GuardJudge::new(guard, resolver));
 
-    // The destination as written: judged, resolved as its punycode name, pinned to the far end.
     let (tx, rx) = std::sync::mpsc::channel();
     let dial = process::judge(Arc::clone(&dest) as _, &[]);
     let at_once = dial.judge_dial(
@@ -1343,7 +1231,6 @@ async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
         "the punycode name, once"
     );
 
-    // The connector's own dial: resolve, pin, dial, served.
     let c = connector_judged(&TransportSettings::default(), &EgressTrust::default(), dest);
     let host = busbar_contract::net::url_host_to_ascii("b\u{fc}cher.example")
         .expect("an IDN name maps")

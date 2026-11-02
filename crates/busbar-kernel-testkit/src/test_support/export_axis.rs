@@ -1,26 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT AXIS a test binary resolves `export:` against. The kernel names no export plugin and
-//! no loader (BUSBAR-1.6.0.md THE DESIGN l.322), so the axis here answers IN PROCESS: a set of
-//! NEUTRAL dropped-in `kind: export` rows that state no door, and THE SCRAPE DOUBLE
-//! ([`ScrapeDouble`]), an in-process sink answering the frozen scrape module word (R-FIX3: the
-//! kernel's own tests use in-crate doubles; the real scrape sink's proofs live with the composition
-//! root, which links it).
-//!
-//! WHAT THE NEUTRAL ROWS ANSWER mirrors what the loader's export rows (`ExportRows`,
-//! `crates/plugin-loader/src/export_axis.rs`) answered for the unsigned rows this kit once packed
-//! over bytes that are not a library and scanned: such a row RESOLVES (by its canonical name or its
-//! alias), so `probe` states no streams and no problem and `check` finds nothing (the row "will not
-//! load here: its open refuses the boot naming the instance"); `open` refuses, naming the row and
-//! the rebuild ([`NO_DOOR`], the loader's words); and the row is neither linked nor first-party,
-//! states no `one_instance` mark and declares no route. How the loader admits, binds and opens a
-//! real export row is the loader's and the root's to prove (`crates/plugin-loader`,
-//! `crates/busbar/tests`).
-
 use busbar_contract::abi::export::ExportStream;
 
-/// Why a neutral row does not open: it states no export door (the loader's `NO_DOOR`, verbatim).
 pub const NO_DOOR: &str = "it states no export door (the 1.5.5 JSON export contract, which this host does not load) — rebuild the plugin against the 1.6.0 SDK";
 
 /// One neutral dropped-in `kind: export` row: its canonical name and its alias.
@@ -30,8 +12,6 @@ struct NeutralRow {
     alias: String,
 }
 
-/// The neutral rows the stand-in axis answers, kept for the test binary's life. Unset = no export
-/// module resolves (a test binary that installs none), the scrape double's word included.
 static ROWS: std::sync::OnceLock<Vec<NeutralRow>> = std::sync::OnceLock::new();
 
 /// THE STAND-IN EXPORT AXIS: `preflight::RootInstall`'s `export_axis` in a test build (a test build
@@ -39,15 +19,12 @@ static ROWS: std::sync::OnceLock<Vec<NeutralRow>> = std::sync::OnceLock::new();
 #[derive(Debug)]
 pub struct StandIn;
 
-/// The stand-in axis `preflight::RootInstall` holds in a test build.
 pub static STAND_IN: StandIn = StandIn;
 
-/// The installed rows, `None` before [`install_export_axis`].
 fn rows() -> Option<&'static [NeutralRow]> {
     ROWS.get().map(Vec::as_slice)
 }
 
-/// The neutral row `module` resolves to: canonical name first, then alias (the registry's order).
 fn row<'r>(rows: &'r [NeutralRow], module: &str) -> Option<&'r NeutralRow> {
     rows.iter()
         .find(|r| r.name == module)
@@ -64,7 +41,7 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
         let rows = rows()?;
         match by_double(rows, module) {
             Some(_) => Some(ScrapeDouble::probed()),
-            // It will not load here: its open refuses the boot naming the instance.
+
             None => row(rows, module).map(|_| (None, Vec::new())),
         }
     }
@@ -114,7 +91,6 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
     fn linked_modules(&self) -> Vec<String> {
         rows()
             .filter(|r| by_double(r, scrape_module()).is_some())
-            // Linked as the root links its scrape sink; the neutral rows are dropped in.
             .map(|_| vec![scrape_module().to_string()])
             .unwrap_or_default()
     }
@@ -138,11 +114,6 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
     }
 }
 
-/// THE FROZEN SCRAPE MODULE WORD: the `module:` backing the 1.5.x type key whose default instance is
-/// named for the `metrics` stream (the root migration table's `export_type_keys` row, read through
-/// its public data view: 1.5.5's spelling of the scrape sink, which `--migrate-config` writes).
-/// The double answers to it; the kernel spells no export
-/// module.
 #[must_use]
 pub fn scrape_module() -> &'static str {
     crate::config::migration_table::pairs("export_type_keys")
@@ -155,8 +126,6 @@ pub fn scrape_module() -> &'static str {
         .map_or("", |(_, module)| module)
 }
 
-/// The scrape double, when `module` is the word it answers to and no neutral row answers to it (the
-/// installed rows leave that word to the double).
 fn by_double(rows: &[NeutralRow], module: &str) -> Option<ScrapeDouble> {
     let word = scrape_module();
     (!word.is_empty() && module == word && row(rows, module).is_none()).then_some(ScrapeDouble)
@@ -175,24 +144,17 @@ fn by_double(rows: &[NeutralRow], module: &str) -> Option<ScrapeDouble> {
 #[derive(Debug, Clone, Copy)]
 pub struct ScrapeDouble;
 
-/// The content type the double answers `/metrics` with.
 pub const SCRAPE_DOUBLE_CONTENT_TYPE: &str = "text/plain; scrape-double=metrics";
 
-/// The content type the double answers `/metrics/hooks` with.
 pub const SCRAPE_DOUBLE_HOOKS_CONTENT_TYPE: &str = "text/plain; scrape-double=hooks";
 
-/// The stream set the double carries: `metrics`, alone.
 const SCRAPE_DOUBLE_STREAM_SET: &[u8] = &[ExportStream::Metrics as u8];
 
 impl ScrapeDouble {
-    /// What the axis's `probe` states for the double: the `metrics` stream, and no refusal.
     fn probed() -> busbar_contract::export_calls::Probed {
         (Some(SCRAPE_DOUBLE_STREAM_SET.to_vec()), Vec::new())
     }
 
-    /// The double's own LIMITS check across `instances` (configuration order): one line per
-    /// instance after the first, naming the first, in the double's words. Any other phase finds
-    /// nothing.
     #[must_use]
     pub fn check(phase: u32, instances: &[(String, &serde_json::Value)]) -> Vec<String> {
         if phase != busbar_contract::abi::export::CHECK_PHASE_LIMITS {
@@ -252,15 +214,6 @@ impl busbar_contract::export_calls::ExportCalls for ScrapeDouble {
     }
 }
 
-/// The axis every test in this binary resolves `export:` against — installed once, as the
-/// composition root does. Besides a neutral row (`k9-axis-sink`, alias `k9-tail`) it holds a row
-/// for each FIRST-PARTY sink's frozen 1.5.5 module word but the scrape one, read off the root
-/// migration table's `export_modules` row (K9b, K9c, K9e-2): a linked build resolves that module on
-/// its axis, so a test configuration naming it resolves here too. The host spells none of them.
-/// The rows state no door, so each sink validates nothing and opens nothing (see the module doc) —
-/// enough for the configuration layer, which is all a kernel test drives. The scrape module word
-/// ([`scrape_module`]) is answered by the [`ScrapeDouble`], linked ahead of the rows. The first
-/// install holds.
 pub fn install_export_axis() {
     let _ = ROWS.get_or_init(|| {
         let modules = crate::config::migration_table::text("export_modules")
@@ -278,10 +231,6 @@ pub fn install_export_axis() {
     });
 }
 
-/// THE TEST VIEW of a scrape snapshot: each family's `# HELP` (when it has one) and `# TYPE` lines,
-/// its samples as `name{labels} value`, and a blank line — the layout every test that asserts on an
-/// observation by line reads. A test's own view, never served: what an operator scrapes is the
-/// export plugin's rendering.
 #[must_use]
 pub fn lines(families: &[busbar_contract::export_calls::Family]) -> String {
     let mut out = String::new();
@@ -315,7 +264,6 @@ pub fn lines(families: &[busbar_contract::export_calls::Family]) -> String {
 #[derive(Debug)]
 pub struct LinesSink;
 
-/// The routes [`LinesSink`] declares: the scrape sink's two well-known paths, behind the key.
 fn lines_routes() -> &'static [busbar_contract::abi::mechanism::route::Route] {
     use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
     static ROUTES: std::sync::OnceLock<Vec<Route>> = std::sync::OnceLock::new();
@@ -378,9 +326,6 @@ impl busbar_contract::export_calls::ExportCalls for LinesSink {
     }
 }
 
-/// `/metrics` or `/metrics/hooks` answered from the host snapshot service, rendered as [`lines`]
-/// under `content_type`: `503` with `retry-after` while the recorder is not installed; a read the
-/// host refuses (no grant, an unknown scope) is the sink's failure.
 fn serve_snapshot(
     path: &str,
     content_type: &str,
@@ -413,8 +358,6 @@ fn serve_snapshot(
     }
 }
 
-/// The scrape routes of a test app, declared and answered by [`LinesSink`] through the snapshot
-/// grant, as a scrape sink's are.
 pub(crate) fn lines_scrape_routes() -> Vec<crate::plugin_routes::RouteDecl> {
     let sink: std::sync::Arc<dyn busbar_contract::export_calls::ExportCalls> =
         std::sync::Arc::new(LinesSink);
@@ -434,7 +377,6 @@ pub(crate) fn lines_scrape_routes() -> Vec<crate::plugin_routes::RouteDecl> {
         .collect()
 }
 
-/// The recorder's snapshot as fixture exposition lines, without an export plugin.
 pub fn render() -> String {
     lines(&busbar_kernel::snapshot::snapshot().unwrap_or_default())
 }

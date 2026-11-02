@@ -11,9 +11,9 @@ fn offset_cursor_round_trips_and_is_opaque() {
         assert_ne!(c, n.to_string(), "cursor is opaque, not the bare integer");
         assert_eq!(decode_offset_cursor(&c), Some(n));
     }
-    // Foreign / malformed cursors decode to None (transport -> invalid_request, not silent skip).
+
     assert_eq!(decode_offset_cursor(""), None);
     assert_eq!(decode_offset_cursor("zz"), None);
-    assert_eq!(decode_offset_cursor("abc"), None); // odd length
-    assert_eq!(decode_offset_cursor("6f"), None); // "o" alone — no ":<n>" tail
+    assert_eq!(decode_offset_cursor("abc"), None);
+    assert_eq!(decode_offset_cursor("6f"), None);
 }

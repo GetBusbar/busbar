@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The hook answer validators: one RED test per arm, each asserting its exact rule and field and
-//! failing if its check is removed, and the GREEN answers per outcome.
 
 use super::*;
 use crate::abi::mechanism::call::{AbiStr, Blob, Envelope, RawOutcome};
@@ -48,7 +47,7 @@ fn blob_absent() -> Blob {
 }
 
 /// A single valid verb (ABSTAIN), nothing else set: the baseline every non-verb-focused test
-/// builds on.
+
 fn decide_out() -> DecideOut {
     DecideOut {
         head: head(Outcome::Ready),
@@ -106,7 +105,7 @@ fn decide_two_verbs_faults() {
 }
 
 /// RED: a `verbs` bit outside the known set is FAULT even though exactly one dimension
-/// verb is also set.
+
 #[test]
 fn decide_unknown_verb_bit_faults() {
     let mut out = decide_out();
@@ -118,7 +117,7 @@ fn decide_unknown_verb_bit_faults() {
 }
 
 /// PASS: a FAILED answer with `verbs == 0` is legal — `verbs` carries no meaning outside
-/// READY.
+
 #[test]
 fn decide_failed_zero_verbs_passes() {
     let mut out = decide_out();
@@ -214,7 +213,7 @@ fn order_needed_without_failed_faults() {
 }
 
 /// RED (the multi-buffer short answer): `order_needed <= order_cap`, and no other dimension's
-/// `needed` exceeds its cap either, so nothing justifies the re-call.
+
 #[test]
 fn order_needed_not_larger_than_cap_faults() {
     let mut out = decide_out();
@@ -227,7 +226,7 @@ fn order_needed_not_larger_than_cap_faults() {
 }
 
 /// PASS (the multi-buffer short answer): `order_needed <= order_cap` (fits) is legal when `reject_message`'s
-/// `needed` exceeds ITS cap — one dimension's overflow is enough to justify the whole re-call.
+
 #[test]
 fn order_needed_fits_while_reject_message_overflows_passes() {
     let mut out = decide_out();
@@ -250,7 +249,7 @@ fn order_needed_past_hard_max_faults() {
 }
 
 /// The legitimate too-small answer passes: nothing written, `needed` bigger than `cap`,
-/// FAILED (one dimension's overflow justifies the re-call).
+
 #[test]
 fn legitimate_reject_message_too_small_passes() {
     let mut out = decide_out();
@@ -283,7 +282,7 @@ fn decide_reject_message_needed_past_hard_max_faults() {
 }
 
 /// RED: `decide`'s `restrict_tags_written` beyond `restrict_tags_cap` is FAULT (the first
-/// of both restrict_tags arms).
+
 #[test]
 fn decide_restrict_tags_written_beyond_cap_faults() {
     let mut out = decide_out();
@@ -295,7 +294,7 @@ fn decide_restrict_tags_written_beyond_cap_faults() {
 }
 
 /// RED (the multi-buffer short answer): `restrict_tags`
-/// fits its cap, and nothing else overflows either, so nothing justifies the re-call.
+
 #[test]
 fn decide_restrict_tags_needed_not_larger_than_cap_faults() {
     let mut out = decide_out();
@@ -319,7 +318,7 @@ fn transform_rewrite_written_beyond_cap_faults() {
 }
 
 /// RED: `transform`'s reject-message written beyond its cap is FAULT (transform's
-/// reject-message arm).
+
 #[test]
 fn transform_reject_message_written_beyond_cap_faults() {
     let mut out = transform_out();
@@ -394,7 +393,7 @@ fn status_ready_material_without_lease_faults() {
 }
 
 /// RED: a READY `status` answer with no material but a lease is FAULT (the spurious-lease
-/// arm).
+
 #[test]
 fn status_ready_no_material_with_lease_faults() {
     let mut out = StatusOut {
@@ -423,7 +422,7 @@ fn describe_null_with_len_faults() {
 }
 
 /// RED: a READY `describe` answer with material but no lease is FAULT (the missing-lease
-/// arm).
+
 #[test]
 fn describe_ready_material_without_lease_faults() {
     let byte = 0u8;
@@ -437,7 +436,7 @@ fn describe_ready_material_without_lease_faults() {
 }
 
 /// RED: a READY `describe` answer with no material but a lease is FAULT (the
-/// spurious-lease arm).
+
 #[test]
 fn describe_ready_no_material_with_lease_faults() {
     let mut out = DescribeOut {
@@ -539,7 +538,7 @@ fn serve_ready_material_without_lease_faults() {
 }
 
 /// RED: a READY `serve` answer with no headers and no body but a lease is FAULT (the
-/// spurious-lease arm).
+
 #[test]
 fn serve_ready_no_material_with_lease_faults() {
     let mut out = ServeOut {
@@ -564,7 +563,7 @@ fn notify_out_passes() {
 }
 
 /// RED: `notify`'s NULL-error check fires on a FAILED answer with `error.len > 0` and a
-/// NULL `error.ptr`.
+
 #[test]
 fn notify_null_error_faults() {
     let mut out = head(Outcome::Failed);
@@ -573,7 +572,7 @@ fn notify_null_error_faults() {
 }
 
 /// RED (the multi-buffer short answer): both `reject_message_needed` and
-/// `rewrite_needed` fit their own caps, so nothing justifies the re-call.
+
 #[test]
 fn transform_joint_both_dims_fit_faults() {
     let mut out = transform_out();
@@ -587,8 +586,7 @@ fn transform_joint_both_dims_fit_faults() {
 }
 
 /// PASS (the multi-buffer short answer): `rewrite_needed` fits its cap while
-/// `reject_message_needed` overflows its own — one dimension's overflow justifies the whole
-/// re-call.
+
 #[test]
 fn transform_joint_one_dim_overflows_other_fits_passes() {
     let mut out = transform_out();
@@ -695,8 +693,7 @@ fn describe_oversize_faults() {
 }
 
 /// RED (the multi-buffer short answer): `decide`'s `reject_message` dimension is short
-/// (`needed > cap`), so the WHOLE answer must write nothing — even `restrict_tags`, which
-/// itself fits (`needed == 0`) and would otherwise be free to report a partial write.
+
 #[test]
 fn decide_short_answer_writes_something_faults() {
     let mut out = decide_out();
@@ -710,7 +707,7 @@ fn decide_short_answer_writes_something_faults() {
 }
 
 /// RED (the multi-buffer short answer): same rule for `transform` — `rewrite` is short, so
-/// `reject_message` (itself fitting) must not have written anything either.
+
 #[test]
 fn transform_short_answer_writes_something_faults() {
     let mut out = transform_out();
@@ -724,7 +721,7 @@ fn transform_short_answer_writes_something_faults() {
 }
 
 /// A zeroed `out` on PENDING and on REFUSED passes every op's check: those outcomes carry no
-/// verb, no buffer and no lease.
+
 #[test]
 fn zeroed_pending_and_refused_pass_every_op() {
     for o in [Outcome::Pending, Outcome::Refused] {
@@ -785,8 +782,6 @@ fn transform_has_reject_status_without_reject_verb_faults() {
         red(Rule::Contradiction, "transform.has_reject_status")
     );
 }
-
-// ── check_prompt_view (WIRE-HOOK Q1: the 1.5.5 `(role, text)` messages on the view) ─────────────
 
 /// One message, for a view whose `messages` must be non-NULL (leaked: a test-lifetime buffer).
 fn one_message() -> *const crate::abi::hook::MessageView {
@@ -859,8 +854,6 @@ fn prompt_view_body_blob_rules_hold() {
         red(Rule::NullWithCount, "prompt.body")
     );
 }
-
-// ── check_notify_in (WIRE-HOOK Q5: the 1.5.5 tap view's signals and prompt) ────────────────────
 
 fn notify_in() -> crate::abi::hook::NotifyIn {
     // SAFETY: every field is an integer, a raw pointer or a plain struct of those.

@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The operator credential on the auth kind's memory ABI: the request's lines handed through as
-//! presented, the answer read as the admin chain reads it — an overloaded verifier and an outage
-//! kept apart from a bad credential.
 
 use crate::operator::{Judgement, OperatorCredential};
 use busbar_contract::auth::AuthVerdict;
@@ -17,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 /// The lines each crossing was handed, in order, still sealed (compared in constant time, never
-/// revealed: a test double holds no seal).
+
 type Seen = Mutex<Vec<Vec<(String, Secret<Vec<u8>>)>>>;
 
 /// Answers `verified` on every call and records the lines it was handed.
@@ -153,10 +151,7 @@ fn every_answer_is_read_as_the_admin_chain_reads_it() {
 }
 
 /// SIGN-auth-kind 2026-10-30 (lead-signed under owner delegation, extending the owner-signed
-/// 2026-10-30 rule "an IdP outage answers 503, never 401"): a verifier that answered NO VERDICT is
-/// still refused (a `Reject`, fail-closed) and is marked `no_verdict`, so the door answers it 503
-/// rather than the bad credential's 401. An overloaded verifier and a bad credential are not
-/// marked. RED before the decision: nothing told the verdict-less refusal apart.
+
 #[test]
 fn a_verdict_less_answer_is_refused_and_marked() {
     for (verified, no_verdict) in [

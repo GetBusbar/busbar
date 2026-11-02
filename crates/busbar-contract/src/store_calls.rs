@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE STORE'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (THE DESIGN, the plugin ABI; the
-//! K1 pattern of `plane_calls`): the [`StoreCalls`] trait the plugin loader implements over one
-//! loaded store instance, reached through the store v3 table, and the kernel calls through. The
-//! kernel names this and never a loader type.
-//!
-//! Every method is a FUTURE. An op crosses on a ticket's dispatcher worker; the caller's task
-//! awaits its completion and no runtime thread is parked. An instance at its `max_inflight` answers
-//! [`StoreFailure::Overloaded`] without a crossing (the 503 of R8).
-//!
-//! The 1.5.5 op set stays reachable through [`RecordStore`](crate::records::RecordStore), which
-//! the loader's handle also implements, synchronously, for the consumers that have not moved here:
-//! each of its ops is submitted on a ticket like these and the caller waits for the completion, so
-//! a store that pends completes it there too. M6: that synchronous bridge is deleted when no
-//! consumer remains (the remaining consumers are listed on the loader's implementation).
 
 use std::future::Future;
 use std::pin::Pin;
@@ -24,8 +11,7 @@ use crate::kinds::RecordBytes;
 use crate::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 
 /// THE NODE'S ONE `op_id` ALLOCATOR, as a store handle is handed it: every `op_id` a handle mints
-/// for itself (the synchronous bridge's additive writes) comes from the kernel's one allocator, so no
-/// handle owns a counter and no two handles, reloads or boots mint the same id.
+
 pub type OpIdMint = fn() -> OpId;
 
 /// One store call in flight.
@@ -71,7 +57,7 @@ pub trait StoreCalls: Send + Sync {
     }
 
     /// Submit one immutable correction. Retain this exact id and body after an unknown outcome;
-    /// only a definitive condition conflict permits replanning. Never emulate with additive writes.
+
     fn apply_usage_correction<'a>(
         &'a self,
         request: &'a crate::records::correction::Request,
@@ -88,7 +74,7 @@ pub trait StoreCalls: Send + Sync {
     }
 
     /// Submit one immutable atomic conditional-record candidate asynchronously. Unknown outcomes
-    /// require replaying this exact id and body; no current-row observation proves application.
+
     fn record_transaction<'a>(
         &'a self,
         request: &'a crate::abi::sdk::store::conditional::Request,
@@ -233,22 +219,19 @@ pub trait StoreCalls: Send + Sync {
         now: u64,
     ) -> StoreCall<'a, bool>;
     /// `list_plane_record_parents`: every distinct parent `kind`'s records name. An implementation
-    /// that does not serve it REFUSES it.
+
     fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
         let _ = kind;
         not_served("list_plane_record_parents")
     }
     /// `purge_plane_records_before`: `kind`'s records older than `before` removed, as the store's
-    /// retention rule for the kind reads it; how many went. An implementation that does not serve
-    /// it REFUSES it.
+
     fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
         let _ = (kind, before);
         not_served("purge_plane_records_before")
     }
     /// The usage ledger's purge: every usage window whose start is nonzero and earlier than
-    /// `before` removed, the all-time window kept; how many went
-    /// ([`RETENTION_USAGE_WINDOWS`](crate::abi::store::RETENTION_USAGE_WINDOWS)). An
-    /// implementation that does not serve it REFUSES it.
+
     fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
         let _ = before;
         not_served("purge_usage_before")
@@ -262,11 +245,8 @@ fn not_served<'a, T: Send + 'a>(op: &'static str) -> StoreCall<'a, T> {
     )))))
 }
 
-// THE STORE AXIS (WIRE-STORE Q8/Q9: the kernel receives the store kind's axis from the
-// composition root and never names the loader or the dispatcher) ─────────────────────────────
-
 /// Where one store's door comes from: a compiled-in row's door, or a dropped-in plugin's verified
-/// library bytes with the Statement rendering its signed manifest states.
+
 pub enum StoreDoor {
     /// A compiled-in row's door.
     Linked(crate::abi::mechanism::door::DoorFn),
@@ -294,7 +274,7 @@ impl std::fmt::Debug for StoreDoor {
 }
 
 /// ONE OPENED STORE, as the axis hands it to the kernel (WIRE-STORE Q9): the 1.5.5 op set
-/// synchronously (`records`, the transitional bridge until M6) and the typed v3 calls.
+
 pub struct OpenedStore {
     /// The 1.5.5 op set.
     pub records: std::sync::Arc<dyn crate::records::RecordStore>,
@@ -311,15 +291,10 @@ impl std::fmt::Debug for OpenedStore {
 }
 
 /// THE STORE AXIS, as the composition root installs it in the kernel: every store, compiled in or
-/// dropped in, is loaded through the process's ONE dispatcher and opened through the store v3
-/// table (`abi::store`), its bridge writes minted by the kernel's one `op_id` allocator.
+
 pub trait StoreAxis: Send + Sync {
     /// Load `door` under the host's instance `label` and OPEN it on `settings` (the store section's
-    /// JSON, its secret references already resolved).
-    ///
-    /// # Errors
-    /// Why it will not open: the door refused the load, or the store refused its settings (in the
-    /// store's own words).
+
     fn open(&self, door: StoreDoor, label: &str, settings: &[u8]) -> Result<OpenedStore, String>;
 }
 

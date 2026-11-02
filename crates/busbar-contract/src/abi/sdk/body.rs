@@ -2,21 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Shared plane-SDK readers for a body declared
-//! by pointer. Every reader goes through the
-//! contract's own span grammar ([`crate::spans`]), the kernel's: a plane that carried a scanner of
-//! its own would be a closed grammar with a second reading.
 
 use crate::bounded::{Ir, PlaneAlloc};
 use crate::wire::Decode;
 
 /// The span view of a body, built from the pointers a plane declared: one scan of one closed
-/// grammar, into the unit's own arena, so the loop reads the spans the plane resolved instead of
-/// walking the same bytes a second time. The arena refusing is a decode failure at the step that
-/// asked for the bytes, which is what the arena's budget means.
-///
-/// # Errors
-///
-/// [`Decode::Oversize`] when the arena refuses the spans.
+
 pub fn view_with_arena<'u>(
     body: &'u [u8],
     pointers: &[&'u str],

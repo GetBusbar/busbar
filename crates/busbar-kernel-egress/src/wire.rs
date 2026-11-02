@@ -2,16 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The client-facing answers this unit can produce, and the literal words in them.
-//!
-//! Every string in this module is the one the previous release put on the wire. They are gathered
-//! here, once, so a terminal cannot quietly reword itself: the walk and its exhaustion terminals
-//! all build their answer from these constants, and the tests assert the constants
-//! rather than a paraphrase.
-//!
-//! What this unit produces is a DESCRIPTION of the answer — a status, a kind, a detail and a
-//! retry hint — not the bytes. The bytes are the plane's: the kernel hands this description to the
-//! plane's refusal encoder, so the same shed renders in each dialect's own envelope, exactly as
-//! the previous release rendered its 503 through the ingress protocol's native error writer.
 
 /// The kind a shed carries when the pool had nowhere to send the request.
 pub const KIND_OVERLOADED: &str = "overloaded";
@@ -30,8 +20,7 @@ pub const DETAIL_INTERNAL_ERROR: &str =
     "We received an unexpected internal error. Please try again.";
 
 /// The words a spill says when a gate's restriction left no eligible member in the pool it spilled
-/// into. Failing closed here is the point: spilling into a member the restriction excludes would
-/// break the promise that a restriction holds across a failover.
+
 pub const DETAIL_RESTRICT_NO_LANE: &str =
     "No upstream satisfies a required gate's restriction. Please retry shortly.";
 
@@ -88,8 +77,7 @@ impl Shed {
     }
 
     /// The walk deadline passed. No wait is advertised: the previous release sent this one with no
-    /// `Retry-After` at all, and a client that has already waited out the whole budget is not told
-    /// to wait again.
+
     #[must_use]
     pub fn request_timeout() -> Self {
         Self::of(
@@ -101,7 +89,7 @@ impl Shed {
     }
 
     /// The pool has no members at all. Same words as an exhausted pool and, like the previous
-    /// release's own arm, no wait: there is nothing to wait for.
+
     #[must_use]
     pub fn empty_pool() -> Self {
         Self::of(
@@ -124,8 +112,7 @@ impl Shed {
     }
 
     /// Nothing could be sent and nothing was recorded against the member: the dispatch could not
-    /// be made durable. 1.5.5's own internal failures before a dispatch answered exactly this
-    /// (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1514-1526`, `:1621-1631`).
+
     #[must_use]
     pub fn internal() -> Self {
         Self::of(

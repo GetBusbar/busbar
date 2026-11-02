@@ -3,21 +3,14 @@
 
 #![deny(unsafe_code)]
 
-//! THE KERNEL'S TEST FIXTURES, on the kernel's pub API. Each module is also mounted into the
-//! kernel's own unit-test build by `#[path]`, so it names the kernel as `busbar_kernel` (the kernel
-//! aliases itself under that name) and never as `crate`.
-
-/// An App built from a test's configuration through the kernel's own build.
 pub mod app;
-/// A process-wide limits posture for a test's duration, rolled back on drop.
+
 pub mod limits {
     pub use crate::test_support::fixture_limits::*;
 }
-/// The base data router's mounted surface for an App, as plain data.
+
 pub mod routes;
 
-// Fixture source is also mounted privately by the kernel's unit tests. Production paths in
-// that shared source resolve through the kernel's existing public API here.
 use busbar_kernel::*;
 pub mod ingress;
 pub mod test_support;

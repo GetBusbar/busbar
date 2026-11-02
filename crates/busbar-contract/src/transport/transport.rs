@@ -18,20 +18,17 @@
 //! [`Transport::name`]'s strings are frozen, because they are a bounded metric and tracing label.
 
 /// Wire-format names shared by the plane declarations that state them and the readers that compare
-/// against them, spelled once so a declaration and a reader cannot spell one format two ways.
-///
-/// They are words, not planes: a plane declares the formats it speaks, and these are three of the
-/// words it may use. `busbar_kernel::plane::WIRE_*` re-exports them at their historical path.
+
 pub mod plane {
     /// JSON-RPC 2.0: an envelope where a BODY MEMBER names the operation.
     pub const WIRE_JSONRPC: &str = "jsonrpc";
 
     /// HTTP+JSON: the same exchange with the REQUEST LINE naming the operation instead of a body
-    /// member. A served card's upper-cased `HTTP+JSON` is this word lower-cased and nothing else.
+
     pub const WIRE_HTTP_JSON: &str = "http+json";
 
     /// The call-per-path binary wire format, as a wire-format name: lower-case here, upper-cased
-    /// once by the plane that advertises it.
+
     pub const WIRE_GRPC: &str = "grpc";
 }
 
@@ -69,18 +66,13 @@ pub enum Transport {
 
 impl Transport {
     /// Every transport, so a site that must cover all of them cannot silently cover some: a variant
-    /// absent from here is a variant nothing enumerates.
-    ///
-    /// Its readers are tests: what it buys is that the axis is enumerable, so adding a variant with
-    /// a duplicate or off-vocabulary name is a failing test rather than a metric label nobody
-    /// notices is wrong.
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [Transport] =
         &[Transport::Http, Transport::Stdio, Transport::WebSocket];
 
     /// Stable identifier — a bounded metric/tracing label, exactly like
-    /// [`OpVerb::name`](crate::operation::OpVerb::name): the label that says which channel a
-    /// request rode.
+
     pub fn name(self) -> &'static str {
         match self {
             Transport::Http => "http",

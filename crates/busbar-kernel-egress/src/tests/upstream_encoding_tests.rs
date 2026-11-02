@@ -6,7 +6,7 @@
 use super::{apply_upstream_encoding, strip_re_derived, upstream_encoding, UpstreamEncoding};
 
 /// Busbar asks a provider for identity, as 1.5.5 did: after the client's own field is stripped,
-/// busbar's choice writes no `accept-encoding` back.
+
 #[test]
 fn busbar_asks_a_provider_for_identity_and_sends_no_accept_encoding() {
     assert_eq!(upstream_encoding(), UpstreamEncoding::Identity);

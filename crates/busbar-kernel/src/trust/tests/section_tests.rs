@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel reads a plane's declared trust keys and refuses a bad pin or a bad cadence with the
-//! exact sentence the plane spoke before the keys moved. The plane here is one busbar does not
-//! have, with its own key names and tokens, so nothing below is true of one instance only.
-
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 
 use super::{judge_entry, parse_entry, parse_section, DeclaredPin};
@@ -175,7 +171,7 @@ fn an_absent_or_null_key_takes_the_declared_default() {
             }
         );
     }
-    // A plane that declares no default for a key reads its absence as zero.
+
     let parsed = parse_entry("`bays.dock`", &entry("url: x"), &[]).expect("no keys, no rules");
     assert_eq!(
         parsed.policy,
@@ -204,8 +200,6 @@ fn a_section_is_read_per_registration_skipping_the_reserved_words() {
     );
 }
 
-/// Before the plane parses its section, the kernel judges only VALUES: a malformed shape is left for
-/// the plane's own parse to refuse in its own words, while a value rule still fires.
 #[test]
 fn the_pre_parse_judgement_leaves_a_malformed_shape_to_the_plane() {
     for yaml in [
@@ -234,10 +228,6 @@ fn the_pre_parse_judgement_leaves_a_malformed_shape_to_the_plane() {
     );
 }
 
-/// RED (SEAM-4f): a plane that declares a PRIVATE REACH key has it read off each registration as a
-/// boolean: `true` only where written `true`; absent or `false` is no reach; any other value
-/// refuses the load in the trust keys' words (and reads as no reach where the plane's own parse
-/// speaks first).
 #[test]
 fn a_registrations_private_reach_is_its_declared_boolean() {
     use super::private_reach;
@@ -263,10 +253,6 @@ fn a_registrations_private_reach_is_its_declared_boolean() {
     assert!(parse_entry("`bays.dock`", &entry("inside: true"), REACHING).is_ok());
 }
 
-/// THE CONFIGURED ITEM APPROVALS (`TRUST_ITEM_APPROVALS`): each item whose object carries a
-/// non-blank digest under the declared field is approved at it (trimmed); a blank or absent digest
-/// is allowed and approved at none; a shape that is not an item object approves nothing (the
-/// plane's own grammar refuses it in its words).
 #[test]
 fn configured_item_approvals_are_read_under_the_declared_field() {
     const APPROVALS: &[TrustKeyDecl] = &[TrustKeyDecl {
@@ -292,8 +278,6 @@ fn configured_item_approvals_are_read_under_the_declared_field() {
     assert!(none.approved.is_empty());
 }
 
-/// A REGISTRATION WITH NO AUTHENTICITY ROOT SEEDS NO APPROVAL: its configured digests approve
-/// nothing (as an unrooted registration never served), and a rooted one's do.
 #[test]
 fn a_rootless_registration_seeds_no_configured_approval() {
     const ROOTED_APPROVALS: &[TrustKeyDecl] = &[

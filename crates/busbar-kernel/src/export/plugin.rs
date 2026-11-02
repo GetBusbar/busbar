@@ -1,25 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT AXIS — how an `export:` instance names a module that is not one of the built-ins, and
-//! how the sink that module opens is fed (item 141; #2 rule (1): compiled in or dropped in, same
-//! contract, same loading path).
-//!
-//! The axis is the contract's [`ExportAxis`]: every `kind: export` row the composition root
-//! admitted, compiled in or dropped in through one registration, opened on the export kind's
-//! memory ABI through the process's one dispatcher. The composition root installs it through its
-//! root rows ([`crate::preflight::RootInstall`]); the kernel names no module and no export crate,
-//! holds each opened instance as a contract [`ExportCalls`] handle, and never asks which door a row
-//! came in by.
-//!
-//! From there an instance is an ordinary sink: `resolve_export` accepts its `module:` because the
-//! axis holds it, [`open`] opens it at boot and committed configuration changes refresh its
-//! settings in place. Its projection is resolved against the streams the sink DECLARED, and the host feeds
-//! it exactly as it feeds a built-in — the payload built to the sink's own projection, off the
-//! request path, bounded and shed under pressure (the export kind's property 3), each hand-off
-//! recorded as an access amendment. Its declared routes join the route table under the confinement
-//! every export route gets, and its `status` is asked when the host renders `/metrics`.
-
 use super::projection::{resolve_projection, Projection};
 use super::PayloadCache;
 use crate::config::secret::ResolvedSettings;
@@ -33,27 +14,12 @@ use busbar_contract::export_calls::{Delivered, ExportAxis, ExportCalls, ServeReq
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
-/// How many deliveries ONE plugin sink may have in flight: past it a line is shed — counted on the
-/// gate and on the sink's declared shed counter — never queued.
 const MAX_INFLIGHT_PLUGIN_DELIVERIES: usize = 64;
 
-/// The export axis the composition root installed through its root rows
-/// ([`crate::preflight::RootInstall`]), before the configuration is resolved. Absent (no plugins
-/// directory, nothing linked) ⇒ no export module resolves.
 pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
     crate::preflight::root_rows().export_axis
 }
 
-/// What the axis says of `module` for instance `name` (what `resolve_export` asks of a module that
-/// is not a built-in): `None` when no `kind: export` row names it; else the streams its sink
-/// declares (none when it will not open here) — the projection is resolved against them at
-/// configuration time, as a built-in's is — and the sink's own VALIDATION of the instance's
-/// `settings` (K9a S2), rendered under the instance, so a plugin sink's settings errors surface at
-/// the same moment and in the same words a built-in's do.
-///
-/// The sink validates its settings with each reference at a declared path resolved
-/// ([`sink_settings`]); one that does not resolve is the instance's problem, in place of the
-/// sink's verdict on a value it was never handed.
 pub(crate) fn probe(
     name: &str,
     module: &str,
@@ -72,18 +38,6 @@ pub(crate) fn probe(
     Some((streams, problems))
 }
 
-/// `settings` as the sink is handed them: each secret reference (`{env:}`, `{file:}`, `{module:}`)
-/// at a path `module`'s Statement declares, secret (`secret_refs`) or reference-capable (its
-/// extensions' `reference_fields`, lead ruling item 7a), RESOLVED IN PLACE to its string, as 1.5.5
-/// resolved an exporter's `url` (the export host lends nothing, so a sink reads the value itself at
-/// probe, check and open alike). A literal is handed as written. Resolved through the built-in
-/// sources (`env`, `file`) at config time, fail-closed: an unresolvable reference is the `Err`,
-/// naming the field, never a dangling reference handed to the sink. A reference at a path the
-/// module did NOT declare leaves the settings as written: that is the undeclared-reference
-/// refusal's to word (`config_validate`), not this.
-///
-/// The configuration keeps the reference; only the returned value carries what it resolved to, and
-/// only for the one call it is handed to.
 pub(crate) fn sink_settings(
     axis: &dyn ExportAxis,
     module: &str,
@@ -109,7 +63,6 @@ pub(crate) fn sink_settings(
     )
 }
 
-/// Stream bytes as the vocabulary's streams (a byte outside it was refused at load).
 fn streams_of(bytes: &[u8]) -> Vec<ExportStream> {
     bytes
         .iter()
@@ -117,28 +70,18 @@ fn streams_of(bytes: &[u8]) -> Vec<ExportStream> {
         .collect()
 }
 
-/// The `module:` words of the export rows this build links, in the composition root's order.
 pub(crate) fn linked_modules() -> Vec<String> {
     axis().map(|axis| axis.linked_modules()).unwrap_or_default()
 }
 
-/// Whether `module` names a row the host grants FIRST-PARTY — linked, or dropped in signed by the
-/// release key: the only kind of sink busbar's own `/metrics` is rendered by (#65).
 pub(crate) fn first_party(module: &str) -> bool {
     axis().is_some_and(|axis| axis.first_party(module))
 }
 
-/// Whether `module`'s row states the `one_instance` mark (at most one instance may be configured).
 pub(crate) fn one_instance(module: &str) -> bool {
     axis().is_some_and(|axis| axis.one_instance(module))
 }
 
-/// The refusal of a `one_instance` module configured more than once, across `instances` — asked
-/// while the configuration is resolved; `module`'s own check at the LIMITS phase gives its reason
-/// ([`word_one_instance`]).
-///
-/// Each instance is handed as its sink reads it ([`sink_settings`]); one whose declared reference
-/// does not resolve is already refused by [`probe`] and is left out.
 pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
     let names: Vec<String> = instances.iter().map(|(n, _)| n.clone()).collect();
     let found = axis()
@@ -170,14 +113,9 @@ pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) ->
     word_one_instance(module, &names, found)
 }
 
-/// Why a second instance of a `one_instance` module cannot run, when its check gives no reason.
 const ONE_INSTANCE_WHY: &str = "The module runs as one instance, so a second instance could only \
                                 be silently ignored — keep a single instance.";
 
-/// THE ONE-INSTANCE REFUSAL, worded by the host (export ABI defect 8): one line for each of
-/// `names` (configuration order) after the first, naming the first, around the reason `module`'s
-/// LIMITS check `found` (its lines joined), or [`ONE_INSTANCE_WHY`] when it found none. A plugin
-/// built on an SDK that worded the whole line (`export.<name>: …`) keeps its lines verbatim.
 pub(crate) fn word_one_instance(module: &str, names: &[String], found: Vec<String>) -> Vec<String> {
     if found.iter().any(|line| line.starts_with("export.")) {
         return found;
@@ -200,9 +138,6 @@ pub(crate) fn word_one_instance(module: &str, names: &[String], found: Vec<Strin
         .collect()
 }
 
-/// The sinks' own checks across every instance of each axis module `cfg` configures, in
-/// configuration order (export ABI minors 8, 9) — run while the configuration is validated, at
-/// `phase` (among its limits' checks, or after them); each line joins `errors` verbatim.
 pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>) {
     let Some(axis) = axis() else {
         return;
@@ -218,8 +153,7 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
             continue;
         }
         modules.push(module);
-        // Each instance as its sink is handed it ([`sink_settings`]); one whose declared reference
-        // does not resolve was already refused when the configuration was resolved ([`probe`]).
+
         let held: Vec<(String, ResolvedSettings)> = cfg
             .plugins
             .iter()
@@ -238,34 +172,27 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
     }
 }
 
-/// One opened plugin sink.
 pub(super) struct PluginSink {
     name: String,
     module: String,
     sink: Arc<dyn ExportCalls>,
-    /// Whether this is the boot's SCRAPE SINK (the first-party instance subscribed to `metrics`):
-    /// it serves `/metrics/hooks` for the process's life ([`route_decls`]).
+
     scrape: bool,
     pub(super) projection: Projection,
-    /// It takes each `traces` line's full span record (`ExportCalls::takes_span_records`).
+
     pub(super) span_record: bool,
-    /// Its admission, as it stated it when started ([`start`]).
+
     admission: OnceLock<Admission>,
-    /// THE NODE'S AMENDMENT JOURNAL every hand-off to this sink is recorded on, as an access: the
-    /// one the node's first generation holds ([`record_reads_on`]).
+
     reads: OnceLock<Arc<crate::audit::amend::NodeAmendments>>,
 }
 
-/// A started sink's admission: whether it takes deliveries this run, and its in-flight gate.
 struct Admission {
     live: bool,
     gate: AdmissionGate,
 }
 
 impl Admission {
-    /// The admission a sink of `module` is held to: as it `stated` when started — whether it takes
-    /// deliveries, its in-flight bound (`0`: the host's) and its gate's name (empty: the module's)
-    /// — or, stating none, the host's: live, [`MAX_INFLIGHT_PLUGIN_DELIVERIES`], the module's name.
     fn of(module: &str, stated: Option<(bool, u64, String)>) -> Admission {
         let (live, inflight, gate) = stated.unwrap_or((true, 0, String::new()));
         let bound = match inflight {
@@ -285,25 +212,20 @@ impl Admission {
     }
 }
 
-/// The opened sinks, set once at boot by [`open`].
 static SINKS: OnceLock<Vec<PluginSink>> = OnceLock::new();
 
 pub(super) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
     SINKS.get().into_iter().flatten()
 }
 
-/// Open every export-axis instance `cfg` names, once, before the first app is built (so its routes
-/// are in the boot route table). Every failure is collected and returned: a sink that will not
-/// open, or an instance subscribing to a stream its sink does not carry, refuses the boot.
 pub fn open(cfg: &ExportCfg) -> Result<(), String> {
-    // No axis ⇒ no instance resolved through it, so there is nothing to open.
     let Some(axis) = axis() else {
         return Ok(());
     };
     let (mut errors, mut opened) = (Vec::new(), Vec::new());
     for p in &cfg.plugins {
         let (name, module, def) = (&p.name, p.def.module.trim(), &p.def);
-        // Each declared reference resolved in place, fail-closed ([`sink_settings`]).
+
         let settings = match sink_settings(axis, module, &def.settings) {
             Ok(settings) => settings,
             Err(e) => {
@@ -315,8 +237,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         let Ok(sink) = opened_sink.map_err(|e| errors.push(format!("export.{name}: {e}"))) else {
             continue;
         };
-        // Resolved again against the streams the sink DECLARED. `durable: true` never reaches
-        // here: config resolution already refused it.
+
         let projection = resolve_projection(
             name,
             module,
@@ -342,7 +263,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         return Err(errors.join("\n  - "));
     }
     let _ = SINKS.set(opened);
-    // What a span CALLSITE's interest is depends on which sinks exist (`super::traces::layer`).
+
     tracing::callsite::rebuild_interest_cache();
     Ok(())
 }
@@ -360,7 +281,6 @@ static REFRESHES: std::sync::Mutex<Refreshes> = std::sync::Mutex::new(Refreshes 
     next: None,
 });
 
-/// Record the committed configuration while its transaction is serialized. No plugin is called.
 pub(crate) fn queue_refresh(defs: &crate::config::ExportDefs, generation: u64) {
     let mut queued = REFRESHES.lock().unwrap_or_else(|p| p.into_inner());
     if queued.version.is_none_or(|version| generation > version) {
@@ -369,8 +289,6 @@ pub(crate) fn queue_refresh(defs: &crate::config::ExportDefs, generation: u64) {
     }
 }
 
-/// Drain committed settings after the config transaction has released its guard. Concurrent
-/// commits replace the queued generation; the running caller applies the newest one next.
 pub(crate) fn refresh_pending() {
     {
         let mut queued = REFRESHES.lock().unwrap_or_else(|p| p.into_inner());
@@ -418,30 +336,21 @@ fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
     }
 }
 
-/// RECORD EVERY HAND-OFF TO THE OPENED SINKS ON `amendments`, the node's amendment journal: set
-/// once, by the node's first generation (the sinks are opened before it is built, and live as long
-/// as the process does). A second call leaves each sink on the journal it was first given.
 pub(crate) fn record_reads_on(amendments: &Arc<crate::audit::amend::NodeAmendments>) {
     for s in sinks() {
         let _ = s.reads.set(Arc::clone(amendments));
     }
 }
 
-/// Hand the request-log line to every opened sink subscribed to `logs`, built to that sink's own
-/// projection, off the request path.
 pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
     let op = cache.facts.ingress_protocol;
     deliver(ExportStream::Logs, op, |projection| cache.get(projection));
 }
 
-/// Hand `stream`'s payload — built by `f` to each sink's own projection — to every opened, live
-/// sink subscribed to it ([`deliver_to`]).
 pub(crate) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Arc<Value>) {
     deliver_to(stream, op, |projection, _| f(projection));
 }
 
-/// [`deliver`], `f` told also whether the sink takes full span records
-/// ([`PluginSink::span_record`]).
 pub(super) fn deliver_to(
     stream: ExportStream,
     op: &str,
@@ -452,14 +361,6 @@ pub(super) fn deliver_to(
     }
 }
 
-/// Hand `stream`'s payload to ONE sink, under the admission it stated when started ([`start`]). A
-/// sink not yet started has stated nothing, so it is fed nothing: the delivery is shed, never let in
-/// at a default that would then hold for the life of the process. A sink at its in-flight bound, or
-/// whose queue refuses it, sheds it (counted on its gate and on its declared shed counter); a sink
-/// that errors is logged. Neither reaches the caller. The access amendment records what the sink
-/// QUEUED, on the node's journal the sink was given ([`record_reads_on`]): a shed line never
-/// reached it, so it is never audited as read. `f` is told whether the sink takes full span
-/// records ([`PluginSink::span_record`]).
 fn deliver_one(
     s: &PluginSink,
     stream: ExportStream,
@@ -489,14 +390,6 @@ fn deliver_one(
     }
 }
 
-/// START every opened sink — at the moment the host starts its PUSH sinks, where 1.5.5 configured
-/// its exporters: each is readied ([`ExportCalls::start`], so what it says of its own target is
-/// said here, once), then states its admission (whether it takes deliveries this run, its
-/// in-flight bound, its gate's name), or none and is fed at the host's default admission. Set
-/// exactly once, here: nothing is delivered before.
-///
-/// # Errors
-/// Every sink whose start was refused, under its instance: a refused start refuses the boot.
 pub fn start() -> Result<(), String> {
     let mut errors = Vec::new();
     for s in sinks() {
@@ -513,36 +406,17 @@ pub fn start() -> Result<(), String> {
     }
 }
 
-/// Start one sink: the admission it states, or the host's default when it states none.
 fn start_one(s: &PluginSink) {
     let stated = s.sink.admission();
     let _ = s.admission.set(Admission::of(&s.module, stated));
 }
 
-/// Ask every opened sink for its `status` — its envelope folds into this process's recorder —
-/// called when the WHOLE snapshot is read (`snapshot.read`), on the scrape's blocking thread.
 pub(crate) fn status() {
     sinks().for_each(|s| {
         let _ = s.sink.status();
     });
 }
 
-/// The routes `cfg`'s instances declare (an instance removed by a config apply drops its routes on
-/// the next table build, as a removed built-in's do), each opened sink's own. The SCRAPE SINK's
-/// come first, owned by the module its instance names (the name a colliding sink is refused
-/// against), marked [`RouteDecl::scrape`] and dispatched through the snapshot grant
-/// ([`super::scrape::Granted`]): its `serve` reads the host snapshot service. Every other sink's are
-/// owned by its instance name and lent nothing, and a well-known exposition path one of them
-/// declares is not its to claim (only the first-party scrape sink serves `/metrics`, #65): it is
-/// dropped, with a warning. A scrape instance a configuration apply added is served by the boot's
-/// scrape sink of its module when the boot opened one; when it did not, the instance declares its
-/// row's routes, so the apply reports the paths awaiting a restart, and nothing serves them until
-/// then.
-///
-/// `/metrics/hooks` FOLLOWS 1.5.5, where it was a core route mounted with the recorder at boot and
-/// answering for the process's life: it is the BOOT's scrape sink's, declared whether or not a
-/// configuration apply still names that instance (ARCHITECT 2026-10-05, Q-U2-4 follow-up), while
-/// `/metrics` follows the configuration, as 1.5.5's plugin route did (removed: `404`).
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
     route_decls_from(cfg, SINKS.get().map(Vec::as_slice).unwrap_or_default())
 }
@@ -556,12 +430,9 @@ fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl
         } else {
             p.name.clone()
         };
-        // A scrape instance this process did not open under its name (a configuration apply
-        // renamed or re-added it) is served by the boot's scrape sink of the same module, as
-        // 1.5.5's host-held recorder served `/metrics` whatever the instance was called.
+
         let module = p.def.module.trim();
-        // Reusing a display name never transfers the opened module's identity or increases
-        // its grant. A configuration may remove a grant, but only boot can confer one.
+
         let opened = boot_sinks
             .iter()
             .find(|s| s.name == p.name && s.module == module && (!p.scrape || s.scrape))
@@ -598,7 +469,6 @@ fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl
         };
         for route in routes {
             if persistent_routes.contains(&route.path) {
-                // The boot's scrape sink's, below.
                 continue;
             }
             if !p.scrape && public_routes.contains(&route.path) {
@@ -645,7 +515,6 @@ fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl
     out
 }
 
-/// The dispatcher of a route whose sink this process has not opened: a `502` with no body.
 struct Unopened;
 
 impl PluginHttpDispatch for Unopened {
@@ -658,15 +527,11 @@ impl PluginHttpDispatch for Unopened {
     }
 }
 
-/// `sink` as a route dispatcher ([`Served`]) — a test app's scrape routes.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn served(sink: Arc<dyn ExportCalls>) -> Arc<dyn PluginHttpDispatch> {
     Arc::new(Served(sink))
 }
 
-/// A plugin sink as a route dispatcher: the exchange crosses the ABI through `serve`. A sink that
-/// cannot answer is a `502` with no body to the client and a warning naming it to the operator —
-/// the exchange never fails open into a partial response.
 pub(super) struct Served(pub(super) Arc<dyn ExportCalls>);
 
 impl PluginHttpDispatch for Served {

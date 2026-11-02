@@ -2,14 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE UPSTREAM STATUS TABLE, checked here rather than three times over in the crates that
-//! used to each declare it. The rows are data; these are the properties a row must have.
 
 use std::collections::BTreeSet;
 
 use busbar_contract::upstream::{Disposition, StatusClass};
 
 /// Nine classes and four dispositions: the cardinalities the renderers outside this crate match
-/// on exhaustively, so a row added here is a row every one of them has to answer for.
+
 #[test]
 fn the_table_has_nine_classes_and_four_dispositions() {
     assert_eq!(StatusClass::ALL.len(), 9);
@@ -36,7 +35,7 @@ fn every_label_is_distinct() {
 }
 
 /// The tokens and labels, verbatim: operator spellings and dashboard dimensions are part of the
-/// observable surface and are reworded only with the configurations and dashboards that read them.
+
 #[test]
 fn the_tokens_and_labels_are_the_pinned_bytes() {
     let tokens: Vec<&str> = StatusClass::ALL.iter().map(|c| c.token()).collect();

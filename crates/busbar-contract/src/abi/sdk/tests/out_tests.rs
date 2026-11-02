@@ -66,8 +66,6 @@ fn a_scalar_is_set_in_place_however_nested() {
 #[test]
 #[should_panic(expected = "the head is written by the SDK's writers only")]
 fn red_a_head_field_is_not_set_by_hand() {
-    // C1 M5 (a): a body naming another answer's lease (or a length) in the head would have the
-    // host release or read memory this answer does not own.
     let mut o: TickOut = zeroed();
     Out::new(&mut o).set(|o| &o.head.lease, 7);
 }
@@ -104,7 +102,7 @@ fn a_leased_blob_is_held_until_release_and_named_in_the_head() {
 }
 
 /// RED: a leased string is named where its lease holds it, and the lease's release drops it
-/// (a released string's pointer names nothing: the lease is gone).
+
 #[test]
 fn a_leased_string_is_held_until_release_and_named_in_the_head() {
     let leases = Leases::default();
@@ -189,7 +187,6 @@ fn a_published_value_is_the_sdks_until_its_retire() {
 #[test]
 #[should_panic(expected = "the field names memory an SDK writer set")]
 fn red_a_leased_blobs_length_is_not_set_by_hand() {
-    // C1 M5 (a): a one-byte lease stated sixteen MiB long would have the host read past it.
     let leases = Leases::default();
     let mut o: StatusOut = zeroed();
     let mut out = Out::new(&mut o);
@@ -199,9 +196,6 @@ fn red_a_leased_blobs_length_is_not_set_by_hand() {
 
 #[test]
 fn a_publish_from_generations_that_died_is_witnessed() {
-    // C1 M5 (b), the witness the SDK's FAULT reads (the RED is safe_tests'
-    // `red_an_answer_leased_from_a_table_the_body_dropped_is_fault`): generations the body made
-    // for itself are gone when it returns, and so is what the host would read.
     let holders: Holders = std::cell::RefCell::new(Vec::new());
     let mut o: PlaneOpenOut = zeroed();
     {
@@ -215,7 +209,7 @@ fn a_publish_from_generations_that_died_is_witnessed() {
         assert!(holders_live(&holders), "alive while the body holds them");
     }
     assert!(!holders_live(&holders));
-    // The GREEN twin: generations the instance holds outlive the call.
+
     let held: Generations<PlaneSnapshot> = Generations::new();
     let holders: Holders = std::cell::RefCell::new(Vec::new());
     let mut o: PlaneOpenOut = zeroed();
@@ -268,7 +262,7 @@ fn unrelated_tickets_cannot_evict_owned_texts_and_one_reply_keeps_all_of_its_tex
             Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed(format!("n{i}")));
         kept.keep(other_key, reporting.take().expect("other reply"));
     }
-    // Inspect current owners, never a saved pointer that a broken implementation freed.
+
     assert_eq!(
         kept.replies.with(first_key, |r| r.owned[0].to_string()),
         Some("first".into())
@@ -347,7 +341,6 @@ fn retired_reply_owners_are_dropped_after_the_table_unlocks() {
 
 #[test]
 fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text() {
-    // `validate`: the bytes, cut on a char boundary, named in `head.error` inside the buffer.
     let mut buf = [0_u8; 4];
     let lent = Reason {
         buf: buf.as_mut_ptr(),
@@ -360,7 +353,7 @@ fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text()
     assert_eq!(answered, Outcome::Failed);
     assert_eq!((v.error.ptr, v.error.len), (buf.as_ptr(), 3));
     assert_eq!(&buf, b"a\xc3\xa9\0");
-    // `open`: the same, with the length in `err_len`.
+
     let mut buf = [0_u8; 16];
     let lent = Reason {
         buf: buf.as_mut_ptr(),
@@ -373,7 +366,7 @@ fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text()
     assert_eq!(answered, Outcome::Refused);
     assert_eq!(o.err_len, 7);
     assert_eq!(&buf[..7], b"boom: x");
-    // No buffer lent: the fixed text, and nothing reported.
+
     let mut n: OpenOut = zeroed();
     let mut out = Out::lent(&mut n, None, holders());
     assert_eq!(
@@ -398,7 +391,7 @@ fn a_body_reports_metrics_and_declared_diagnostics_in_its_envelope() {
     assert!(out.diag(1, 2, String::from("BUSBAR-7070 the webhook refused")));
     let env = o.head.envelope;
     assert_eq!((env.metrics_len, env.diags_len), (2, 1));
-    // The call returns: its envelope goes to the instance, which keeps it.
+
     kept.keep(
         ReplyKey::of(Ticket::NONE),
         reporting.take().expect("the call reported"),
@@ -418,7 +411,7 @@ fn a_body_reports_metrics_and_declared_diagnostics_in_its_envelope() {
         .all(|e| e.label_vals.is_null() && e.label_vals_len == 0));
     assert_eq!((d.id_idx, d.severity), (1, 2));
     assert_eq!(read(d.text), b"BUSBAR-7070 the webhook refused");
-    // The next call starts an empty envelope of its own; the first stays as it was.
+
     let mut o2: CancelOut = zeroed();
     assert!(Out::kept(&mut o2, &kept, &reporting, holders()).metric(0, METRIC_ADD, 3.0));
     assert_eq!(o2.head.envelope.metrics_len, 1);
@@ -456,9 +449,7 @@ fn an_arrival_names_its_route_and_keeps_the_name() {
 }
 
 /// A READY ARRIVAL'S ROUTE NAME COSTS NO HEAP ONCE THE INSTANCE HAS KEPT IT (THE DESIGN
-/// Appendix A.8, "Zero allocation on the READY path"). A plane names the entries of its own
-/// section, a set its config bounds: the first arrival naming an entry keeps the name, and every
-/// later one names the kept copy.
+
 #[test]
 fn a_route_entry_already_kept_is_named_without_allocating() {
     use crate::abi::plane::{ArriveOut, ROUTE_DIRECT};
@@ -516,7 +507,7 @@ fn an_arrival_states_its_trust_facts_and_keeps_them() {
 }
 
 /// `keep` names a lease for an answer whose only material is program memory: the static header
-/// list a `serve` answers with is then under a lease the host releases, as the kind's check asks.
+
 #[test]
 fn keep_names_a_lease_for_static_material() {
     const HEADERS: &[AbiStr] = &[AbiStr {

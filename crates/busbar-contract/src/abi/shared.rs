@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SHARED SHAPES: the borrowed string and field, the connection facts and the closed
-//! vocabularies as bytes that the memory ABI's connection table (`abi::host::conn`) carries. Their
-//! one home is here, under `abi/` and outside the condemned HOT and COLD lanes (`BUSBAR-1.6.0.md`
-//! THE DESIGN, the plugin ABI: the memory ABI alone).
 
 /// A borrowed UTF-8 range — the `(ptr, len)` pair a declared vocabulary field spells out
 /// inline, as one `#[repr(C)]` value so a list of them can be borrowed too. A NULL `ptr` is the
@@ -36,7 +33,7 @@ impl DeclStr {
     }
 
     /// A stated string that lives for the program: [`DeclStr::new`], named as
-    /// [`AbiStr::of`](crate::abi::mechanism::call::AbiStr::of) is (status row 194).
+
     #[must_use]
     pub const fn of(s: &'static str) -> Self {
         Self::new(s)
@@ -132,10 +129,8 @@ pub struct WireField {
     pub value: DeclStr,
 }
 
-// ── the closed vocabularies, as bytes ────────────────────────────────────────────────────────────
-
 /// Every closed vocabulary a slot or the row carries crosses as a byte, `0` = absent where the
-/// value is optional; these are the encodings, each with its inverse (an unknown byte is `None`).
+
 pub mod code {
     use crate::grammar::SelectorForm;
     use crate::transport::wire::{Framing, StatusAt, Unit0Trigger, WireStatusClass};

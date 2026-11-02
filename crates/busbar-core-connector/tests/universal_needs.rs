@@ -2,28 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE UNIVERSAL-NEEDS WITNESS (THE DESIGN: connections — "any plugin of any kind reaches the
-//! network only through a need"): the connector drives a dropped-in transport framer door through the
-//! one dispatcher's crossing, every byte through the connection table.
-//!
-//! The JSON-lane secret fixture this file also drove (`examples/need_dialler.rs`, loaded through the
-//! secret kind's JSON lane) went with that lane (THE DESIGN §11.1, the P2 switch-over): a secret
-//! plugin reaches the network through its door's needs, on the connector its host hands the
-//! instance at open.
-//!
-//! THE SECRET KIND'S LEG of "a secret-kind plugin that dials through the connector"
-//! (BUSBAR-1.6.0.md l.664) is proven by a REAL secret plugin, never an in-tree test plugin (no test
-//! plugins): GetBusbar/busbar-secret-vault's `secret-vault-plugin/tests/conformance.rs` runs
-//! busbar's published suite (pinned by its `.busbar-ref`) LINKED and DROPPED IN with busbar's own
-//! `Connector` as the host (`tests/support/conformance_host.rs`, rendered by the fleet template):
-//! its `http` need is dialled through the connector to a real TLS far end, every `dialing_steps`
-//! step of its `conformance.json` must resume on its ticket
-//! (`busbar_test_kit::conformance::resumed`), and the suite's RED arms are kept. plugin-ci
-//! runs it on every change to that repo.
 
 use std::sync::OnceLock;
 
 use busbar_contract::conn::{ConnError, PieceKind};
-// The test support's own paths (`super::carrier`, `super::hostio`, ...) resolve at this crate root.
+
 #[allow(unused_imports)]
 use busbar_core_connector::{carrier, compose, framer, hostio};
 
@@ -54,8 +37,7 @@ fn libraries_beside_the_test() -> Vec<std::path::PathBuf> {
 }
 
 /// THE SOCKET FRAMER these tests drive alone: the neutral frame door (the plugin loader's
-/// `neutral_frame_door` example, an identity framer under a neutral claim that names no transport),
-/// beside this test binary.
+
 fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
     let file = busbar_plugin_loader::plugin_library_filename("neutral_frame_door");
     libraries_beside_the_test()
@@ -65,7 +47,7 @@ fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::fram
 }
 
 /// `path` admitted and opened through the one dispatcher as a transport door; `None` when it is
-/// not one.
+
 fn open_door(
     path: &std::path::Path,
 ) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
@@ -84,7 +66,7 @@ fn open_stated(
         load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, NoSink,
     };
     static ONE: OnceLock<std::sync::Arc<Dispatcher>> = OnceLock::new();
-    // The library's own Statement rendering, as its signed manifest would state it.
+
     let rendering = rendering_of_library(path).ok()??;
     let on = ONE.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
     let bind = Bind {
@@ -92,7 +74,7 @@ fn open_stated(
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: on.adopter(),
-        // A transport door is a framer the connector drives: it declares no need.
+
         conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &rendering, bind).ok()?;
@@ -107,11 +89,7 @@ fn open_stated(
 }
 
 /// THE CONNECTOR DRIVES THE DROPPED-IN HTTP DOOR AGAINST A REAL SERVER: the connector dials the
-/// host socket on the worker's reactor, the door encodes the request and frames the server's
-/// HTTP/1.1 response into a head piece (with its status), body pieces and the empty piece that ends
-/// the stream. DOOR-TRANSPORT's own conformance proves the http door's linked and dropped doors
-/// answer alike through one table; the linked arm here arrives when
-/// http becomes a root door row.
+
 #[test]
 fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
     use busbar_core_connector::compose::{Connection, Dial};
@@ -158,7 +136,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
             .expect("the server answers")
             .expect("no failure");
             let Some(p) = p else { break };
-            // The stream's end: its empty closing piece (an empty head is a fields piece).
+
             let last = !p.fields && p.end_of_frame && p.bytes.is_empty();
             pieces.push(p);
             if last {
@@ -179,10 +157,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
 }
 
 /// A BODIED REQUEST GOES OUT THROUGH THE DROPPED-IN HTTP DOOR, its length stated once: whichever
-/// side states it (the host, before the auth, for a door that leaves the length to the host; the
-/// door itself, for one that predates that), the far end reads exactly one `content-length`, the
-/// body's, and no request is refused for a body no length frames (transport-http #45: "the
-/// envelope cannot be expressed on this wire").
+
 #[test]
 fn a_bodied_request_goes_out_through_the_dropped_in_http_door_with_its_length() {
     use busbar_core_connector::compose::{Connection, Dial};
@@ -246,8 +221,7 @@ fn a_bodied_request_goes_out_through_the_dropped_in_http_door_with_its_length() 
 }
 
 /// THE CONNECTOR DRIVES A DROPPED-IN DOOR THAT FRAMES THE HOST'S SOCKET against a real far end: the
-/// opening message and a write go out through the door, the echo comes back as its frames, byte for
-/// byte. The door is the neutral frame door, which names no transport.
+
 #[test]
 fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
     use busbar_core_connector::compose::{Connection, Dial};
@@ -311,7 +285,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
 }
 
 /// Every piece one need's exchange answers through the connection table, from a server that
-/// writes `response`, up to the empty piece that ends the stream: `(kind, status, bytes)`.
+
 fn pieces_through_the_table(response: &'static str) -> Vec<(PieceKind, Option<u32>, Vec<u8>)> {
     head_through_the_table(response).0
 }
@@ -326,17 +300,15 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
-    // The connector serves a CARRIER beside the framer (no transport names another; the carrier is
-    // the connector's choice): the test carrier over the process's host I/O.
+
     let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
         std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
     let response = respond(scheme, response);
-    // An IP literal is its own address: the judge the test needs, and no more.
+
     let judge = |dest: &str, _: u32, _: Judged| {
         Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
     };
     let c = Connector::serving(
-        // The door composes over its layer's door, so the view serves both.
         Transports::new(vec![
             Entry {
                 door,
@@ -379,7 +351,6 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
                 Err(ConnError::Pending) => tokio::task::yield_now().await,
                 Err(e) => panic!("the exchange failed: {e}"),
                 Ok(p) => {
-                    // The stream's end: its empty closing piece (an empty head is a Fields piece).
                     let done = p.kind == PieceKind::Completion
                         || (p.kind == PieceKind::Body && p.end && p.len == 0);
                     if let Some(r) = p.reason.clone() {
@@ -398,9 +369,7 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
 }
 
 /// RED: THE CONNECTOR YIELDS THE FAR END'S HEAD. A response with head fields reads, through the
-/// connection table, as ONE Fields piece carrying the status — the field block, lower-case names in
-/// the far end's order, a repeated field on its own lines, hop-by-hop fields (and what `connection`
-/// names) and `content-length` dropped — and then the Body.
+
 #[test]
 fn a_response_with_head_fields_yields_fields_then_body() {
     let got = pieces_through_the_table(
@@ -413,8 +382,7 @@ fn a_response_with_head_fields_yields_fields_then_body() {
         String::from_utf8_lossy(head),
         "x-b: 1\r\nx-b: 2\r\nx-session-id: s1\r\n"
     );
-    // The answer whole is the exchange's completion (the stream's empty closing piece), and every
-    // piece between the head and it is Body.
+
     let (last, between) = got[1..].split_last().expect("pieces after the head");
     assert_eq!(last.0, PieceKind::Completion, "{got:?}");
     let body: Vec<u8> = between
@@ -426,9 +394,7 @@ fn a_response_with_head_fields_yields_fields_then_body() {
 }
 
 /// RED: AN EMPTY HEAD STILL COMES FIRST. A head with no field left after the hop-by-hop drop reads
-/// as ONE EMPTY Fields piece, carrying the status, before anything else: the head is always the
-/// answer's first piece, and the only Fields piece (a trailer section is dropped, as 1.5.5's
-/// client dropped it).
+
 #[test]
 fn an_empty_head_yields_one_empty_fields_piece() {
     let got = pieces_through_the_table("{V} 204 No Content\r\nConnection: close\r\n\r\n");
@@ -447,7 +413,7 @@ fn an_empty_head_yields_one_empty_fields_piece() {
 }
 
 /// RED: the reply's head crosses whole: its fields as the field block and its reason phrase exactly
-/// as sent, as a range of the caller's buffer right after the block.
+
 #[test]
 fn the_reply_head_carries_its_reason_phrase_exactly_as_sent() {
     let (got, reason) =
@@ -462,7 +428,7 @@ fn the_reply_head_carries_its_reason_phrase_exactly_as_sent() {
 }
 
 /// RED: a request's head words reach the framer byte for byte and ARE its request line; a framer
-/// whose wire has no head words renders exactly what it did without them.
+
 #[test]
 fn the_head_words_reach_the_framer_byte_for_byte() {
     use busbar_core_connector::framer::{encode, encode_head};
@@ -491,7 +457,7 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
 }
 
 /// The actual dropped request framer's sealed opening crosses host wire ownership and TLS with
-/// exactly its ordinary encoding, including the unmodified application body.
+
 #[test]
 fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
     use busbar_contract::conn::SEALED_FIELDS_FIELD;
@@ -531,8 +497,7 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
             rustls_pki_types::PrivateKeyDer::try_from(signing_key.serialize_der()).unwrap(),
         )
         .unwrap();
-    // The stateless encode_head oracle below renders the ordinary HTTP/1.1 envelope. Negotiate
-    // that declared protocol here too: a valid h2 negotiation produces different wire bytes.
+
     let protocol = framer::accept_offer(door.as_ref())
         .unwrap()
         .into_iter()
@@ -627,10 +592,7 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
 }
 
 /// THE REQUEST/RESPONSE FRAMER the head tests drive: of the libraries beside this test binary, the
-/// FRAMER (its stated role) whose own claim carries no session (one request, one response), found
-/// by what it states and never by a name. It is a pinned plugin repo's cdylib, which is in no graph
-/// of this workspace: the hop's `build:dlopen-cdylibs` builds it from the pinned checkout busbar's
-/// root resolves, into this target dir. A missing door is a failure, never a skip.
+
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
     use busbar_contract::abi::transport::ROLE_FRAMER;
     libraries_beside_the_test()
@@ -642,7 +604,7 @@ fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerD
 }
 
 /// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so
-/// the test names no wire.
+
 fn respond(scheme: &str, template: &str) -> Vec<u8> {
     template
         .replace("{V}", &format!("{}/1.1", scheme.to_ascii_uppercase()))
@@ -650,7 +612,7 @@ fn respond(scheme: &str, template: &str) -> Vec<u8> {
 }
 
 /// A loopback far end that reads one request head and answers `response`: its address, and the
-/// request head it read.
+
 async fn serve_once(
     response: Vec<u8>,
 ) -> (std::net::SocketAddr, tokio::sync::oneshot::Receiver<String>) {
@@ -674,9 +636,7 @@ async fn serve_once(
 }
 
 /// RED: A FRAMED REQUEST'S HEAD WORDS GO OUT THROUGH THE CONNECTION TABLE. An open whose
-/// descriptor states head words sends them as the opening message's own request line, byte for
-/// byte; an open that names no target dials the need's declared one. The table reports the
-/// composing door's need framed and the carrier's raw.
+
 #[test]
 fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
     use busbar_contract::conn::{Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
@@ -685,9 +645,7 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
-    // The framer rides the connector's ADDRESS carrier (the first carrier in declared order whose
-    // claim serves a port): the test carrier over the process's host I/O. A need over the carrier's
-    // own claim is a raw stream.
+
     let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
         std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
     let raw = layer.facts().claims[0];
@@ -742,7 +700,7 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
                 std::time::Instant::now() < deadline,
                 "the far end reads the request"
             );
-            // Reading drives the connection: its opening message goes out.
+
             match c.read(owner, id, 7, &mut buf) {
                 Err(ConnError::Pending) | Ok(_) => {}
                 Err(e) => panic!("the exchange failed: {e}"),
@@ -762,7 +720,7 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
 }
 
 /// The download's table over a connector serving the composing door beside the test carrier, every
-/// IP literal its own address: the door's own plain scheme, and the table.
+
 fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
     use busbar_core_connector::Judged;
     let judge = |dest: &str, _: u32, _: Judged| {
@@ -772,7 +730,7 @@ fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
 }
 
 /// The download's table over a connector serving the composing door beside the test carrier, its
-/// dials judged by `judge`: the door's own plain scheme, and the table.
+
 fn fetch_table_judged(
     judge: std::sync::Arc<dyn busbar_core_connector::DialJudge>,
 ) -> (&'static str, busbar_core_connector::fetch::Table) {
@@ -811,7 +769,7 @@ fn fetch_table_judged(
 }
 
 /// One download of `path` from a far end answering `response` (a [`respond`] template), off the
-/// runtime as boot and reload run it: what came back, and the request head the far end read.
+
 fn fetch_once(path: &str, response: &str, cap: usize) -> (Result<Vec<u8>, String>, String) {
     fetch_once_over(fetch_table(), path, response, cap)
 }
@@ -847,8 +805,7 @@ fn fetch_once_over(
 }
 
 /// THE DOWNLOAD'S WIRE IS 1.5.5's: `GET <path>` with the client defaults the transport owns,
-/// `accept: */*` and then `host`, and nothing else (oracle cell `egress.fetch|plugins|url`; the
-/// kernel engine sent no `accept`), and the artifact comes back byte for byte.
+
 #[test]
 fn the_plugins_fetch_download_sends_1_5_5s_request_through_the_table() {
     let (got, head) = fetch_once(
@@ -876,8 +833,7 @@ fn the_plugins_fetch_download_sends_1_5_5s_request_through_the_table() {
 }
 
 /// An oversized body is refused under the cap, from an honest `Content-Length` (before a body
-/// byte) and from a chunked answer with none (counted as it arrives); a within-cap body downloads
-/// byte for byte.
+
 #[test]
 fn the_plugins_fetch_download_refuses_an_oversized_body_and_keeps_a_small_one() {
     let big = "x".repeat(256);
@@ -935,7 +891,7 @@ fn the_plugins_fetch_download_refuses_to_follow_a_redirect() {
 }
 
 /// The deployment's own dial judge: the one destination guard over `destinations`, the owner's
-/// default (`block_private_addresses: true`) and the extra refusals named.
+
 fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJudge> {
     let destinations = busbar_kernel::config::Destinations {
         block_private_addresses: true,
@@ -949,10 +905,7 @@ fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJu
 }
 
 /// RED (a plaintext private plugin registry): 1.5.5's download took plaintext http to a loopback or
-/// private host (a local dev registry) and refused only cloud metadata (v1.5.5
-/// `crates/busbar/src/main.rs` `plugin_fetch_downloader_with_cap`). Under the deployment's own
-/// guard and its default, a `plugins.fetch` URL is the operator's own destination: a private
-/// registry downloads, as it did.
+
 #[test]
 fn a_plaintext_private_registry_downloads_under_the_default_guard() {
     let (got, _) = fetch_once_over(
@@ -965,7 +918,7 @@ fn a_plaintext_private_registry_downloads_under_the_default_guard() {
 }
 
 /// GREEN twin: the download is still judged by the one guard: an address the operator's extra
-/// refusals name is refused before any request reaches it.
+
 #[test]
 fn a_download_the_guard_refuses_never_reaches_the_registry() {
     let (got, head) = fetch_once_over(

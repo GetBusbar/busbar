@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Legacy bearer and paired-credential fixtures, implemented on the kernel's existing public
-//! store/cache API. A shipped kernel mints signed bindings; no fixture mint lives behind a feature.
-
 use busbar_contract::records::{
     CredentialMeta, CredentialSecret, RecordStoreError, RecordStoreResult, SecretForm, VirtualKey,
 };
 use busbar_kernel::governance::{GovState, NewKeySpec};
 
-/// Prefix of a legacy hashed bearer used only by fixtures.
 pub const SK_SECRET_PREFIX: &str = "sk-bb-";
 const VK_ID_PREFIX: &str = "vk_";
 const VK_ID_HASH_PREFIX_LEN: usize = 16;
 
-/// Draw the legacy bearer fixture's full 256-bit secret from the OS CSPRNG.
 pub fn generate_secret() -> Result<String, getrandom::Error> {
     let mut buf = [0u8; 32];
     getrandom::fill(&mut buf)?;
@@ -30,7 +25,6 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
     }
 }
 
-/// External fixture methods for an existing real governance instance.
 pub trait GovStateFixtures {
     fn create_key(&self, spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)>;
     fn create_key_with_aws(
@@ -52,25 +46,14 @@ impl GovStateFixtures for GovState {
     }
 }
 
-/// Seed the fixture through the real Store and refresh its real verification caches.
 pub fn create_key(
     gov: &GovState,
     spec: NewKeySpec,
     now: u64,
 ) -> RecordStoreResult<(VirtualKey, String)> {
-    // `?` converts a getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
-    // admin handler returns a 500 via its existing error_response path instead of panicking.
     let secret = generate_secret().store()?;
     let hash = busbar_contract::redacted::sha256_hex(secret.as_bytes());
-    // `id` is a 64-bit prefix of the 256-bit secret hash, while `generation_hash` is the full hash with
-    // a UNIQUE constraint. Two distinct secrets sharing the same 64-bit prefix would produce the
-    // same `id` but different `generation_hash`; since `put_key` UPSERTs on the PRIMARY KEY `id`, the
-    // second mint would silently OVERWRITE the first key's row (replacing its `generation_hash`),
-    // invalidating the previously-issued secret with no error. Birthday-bound at ~2^32 keys, but
-    // the failure is silent, so guard it explicitly: if the derived id already exists for a
-    // DIFFERENT generation_hash, refuse rather than clobber an unrelated key. (A genuine retry that
-    // somehow reproduces the same secret — and thus the same generation_hash — is idempotent and allowed
-    // through, since it overwrites the row with identical data.)
+
     let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
     gov.ensure_id_free_for_hash(&id, &hash)?;
     let key = VirtualKey {
@@ -95,20 +78,16 @@ pub fn create_key(
     Ok((key, secret))
 }
 
-/// Seed the fixture through the real Store and refresh its real verification caches.
 pub fn create_key_with_aws(
     gov: &GovState,
     spec: NewKeySpec,
     now: u64,
 ) -> RecordStoreResult<(VirtualKey, String, String, String)> {
-    // `?` converts any getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
-    // admin handler returns a 500 via its existing error_response path instead of panicking.
     let secret = generate_secret().store()?;
     let hash = busbar_contract::redacted::sha256_hex(secret.as_bytes());
     let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
     gov.ensure_id_free_for_hash(&id, &hash)?;
-    // The shape and kind the linked signed-request verifier states, as the test double holds
-    // them (`test_support::issued`).
+
     let (kind, shape) = crate::test_support::issued::double();
     let (access_key_id, secret_access_key) =
         busbar_kernel::governance::issue_credential_for_test(&shape).store()?;
@@ -133,9 +112,7 @@ pub fn create_key_with_aws(
         revision: 0,
         ..Default::default()
     };
-    // ATOMIC: persist the bearer key row and its paired credential in ONE transaction (see
-    // `put_key_with_credential`). The previous two-call autocommit sequence could orphan an
-    // inert key row if the credential write failed after the key write committed.
+
     gov.store().put_key_with_credential(
         &key,
         &CredentialSecret {

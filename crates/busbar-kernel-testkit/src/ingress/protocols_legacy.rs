@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE INSTALLED PROTOCOL SET: the `ProtocolDecl`s the composition root installs once at boot
-//! ([`install_protocols`]), the aggregates folded from them, and the lookups ingress reads to decide
-//! which dialect a request speaks and how to answer it in that dialect. The declaration shapes are
-//! the contract's (`busbar_contract::protocol`). Production carries no built-in protocol.
-
 pub use busbar_contract::protocol::ProtocolDecl;
 
-/// Install the kit's implementation behind the kernel's feature-scoped fixture responses.
-/// Repeated registrations change this module's registry, never the function table.
 fn install_kernel_hooks() {
     busbar_kernel::ingress::protocols::install_test_hooks(
         busbar_kernel::ingress::protocols::ProtocolTestHooks {
@@ -24,23 +17,17 @@ fn install_kernel_hooks() {
     );
 }
 
-/// The declarations plus the aggregates folded from them. Built once; every field is derived from
-/// the declarations and from nothing else.
 pub struct Registry {
     decls: Vec<&'static ProtocolDecl>,
-    /// Every declared head key plus every declared shim key, sorted and deduped.
+
     head_keys: &'static [&'static str],
     streaming_content_types: &'static [&'static str],
     array_stream_shim_keys: &'static [&'static str],
-    /// The protocols that ship a wire codec: the set a provider's `protocol:` may name.
+
     codec_protocols: &'static [&'static str],
 }
 
 impl Registry {
-    /// Build a registry from declarations.
-    ///
-    /// # Panics
-    /// If two declarations claim the same name.
     pub fn new(decls: impl IntoIterator<Item = &'static ProtocolDecl>) -> Self {
         let decls: Vec<&'static ProtocolDecl> = decls.into_iter().collect();
         let mut head_keys: Vec<&'static str> = Vec::new();
@@ -83,8 +70,6 @@ impl Registry {
         }
     }
 
-    /// The declaration named `name`. An interned name resolves by pointer AND length (a prefix
-    /// slice of an interned name shares its pointer), anything else by value.
     pub fn decl(&self, name: &str) -> Option<&'static ProtocolDecl> {
         self.decls.iter().copied().find(|d| {
             (d.name.as_ptr() == name.as_ptr() && d.name.len() == name.len()) || d.name == name
@@ -112,13 +97,9 @@ impl Registry {
     }
 }
 
-/// The process registry: null until the first read folds the installed declarations, or a
-/// registry [`publish_protocols`] set. Every pointer stored here comes from `Box::leak` and is never
-/// freed or written through, so a reader holds it for `'static`.
 static REGISTRY: std::sync::atomic::AtomicPtr<Registry> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
-/// The registry behind a non-null [`REGISTRY`] pointer.
 #[allow(unsafe_code)]
 fn registry_at(ptr: *mut Registry) -> &'static Registry {
     // SAFETY: `ptr` is non-null and was stored in `REGISTRY` from `Box::leak`, which is never freed
@@ -126,8 +107,6 @@ fn registry_at(ptr: *mut Registry) -> &'static Registry {
     unsafe { &*ptr }
 }
 
-/// The boot fold's tail after the installed declarations: none in any build but the kernel's own
-/// unit-test binary, which folds its neutral synthetic set.
 fn builtins() -> &'static [&'static ProtocolDecl] {
     #[cfg(test)]
     {
@@ -139,7 +118,6 @@ fn builtins() -> &'static [&'static ProtocolDecl] {
     }
 }
 
-/// Declarations the composition root installed before the registry was first read.
 static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
 
 /// THE KERNEL'S CODEC HOST: the host services every codec the kernel drives is handed (the OS
@@ -147,7 +125,6 @@ static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::O
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CodecHostServices;
 
-/// The kernel's codec host, as the borrowed handle a codec call takes.
 pub const CODEC_HOST: &dyn busbar_contract::codec::CodecHost = &CodecHostServices;
 
 impl busbar_contract::codec::CodecHost for CodecHostServices {
@@ -166,12 +143,6 @@ impl busbar_contract::codec::CodecHost for CodecHostServices {
     }
 }
 
-/// INSTALL PROTOCOL DECLARATIONS: the composition root's one write, from `main`, before any config
-/// read, in the caller's order.
-///
-/// # Panics
-/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
-/// - if called after the registry was first read.
 pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
     install_kernel_hooks();
     assert!(
@@ -187,8 +158,6 @@ pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
     );
 }
 
-/// THE BOOT FOLD: installed declarations ahead of built-ins, one entry per name, a later same-name
-/// registration skipped audibly.
 pub fn merged_boot_decls(
     installed: &[&'static ProtocolDecl],
     builtins: &[&'static ProtocolDecl],
@@ -208,7 +177,6 @@ pub fn merged_boot_decls(
     decls
 }
 
-/// The process registry. One acquire-load once set.
 pub fn registry() -> &'static Registry {
     install_kernel_hooks();
     use std::sync::atomic::Ordering;
@@ -228,7 +196,7 @@ pub fn registry() -> &'static Registry {
         Ordering::Acquire,
     ) {
         Ok(_) => registry_at(fresh),
-        // Another reader (or a publish) set the registry first: that one stands.
+
         Err(set) => registry_at(set),
     }
 }
@@ -247,13 +215,10 @@ pub fn publish_protocols(registered: &[&'static ProtocolDecl]) {
     REGISTRY.store(fresh, std::sync::atomic::Ordering::Release);
 }
 
-/// The installed declaration named `name`.
 pub fn decl_for(name: &str) -> Option<&'static ProtocolDecl> {
     registry().decl(name)
 }
 
-/// `(path, headers)` -> which installed protocol a request speaks, or `None` for a path that names
-/// none: the tightest [`ProtocolDecl::claims`] claim, a tie broken by registration order.
 pub fn detect_protocol(path: &str, headers: &http::HeaderMap) -> Option<&'static str> {
     let fields: Vec<(&[u8], &[u8])> = headers
         .iter()
@@ -267,9 +232,6 @@ pub fn detect_protocol(path: &str, headers: &http::HeaderMap) -> Option<&'static
         .map(|(_, name)| name)
 }
 
-/// THE RESIDUAL ARM of the ingress resolver: which dialect a path names from its shape alone, once
-/// the mount table declined it (`PlaneDispatch::ingress_of` is the whole answer). `None` when it
-/// names none.
 pub fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
     registry()
         .decls()
@@ -279,8 +241,6 @@ pub fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
         .map(|(_, name)| name)
 }
 
-/// The dialect named when no dialect claimed a request yet one must be named
-/// ([`ProtocolDecl::residual_default`]); `None` when no such protocol is installed.
 pub fn residual_default_dialect() -> Option<&'static str> {
     registry()
         .decls()
@@ -289,23 +249,18 @@ pub fn residual_default_dialect() -> Option<&'static str> {
         .map(|d| d.name)
 }
 
-/// Every protocol name busbar ships a wire codec for: the set a provider's `protocol:` may name.
 pub fn known_protocols() -> &'static [&'static str] {
     registry().codec_protocols()
 }
 
-/// The streaming `Content-Type` values across every installed protocol.
 pub fn streaming_content_types() -> &'static [&'static str] {
     registry().streaming_content_types()
 }
 
-/// The array-stream shim keys across every installed protocol.
 pub fn array_stream_shim_keys() -> &'static [&'static str] {
     registry().array_stream_shim_keys()
 }
 
-/// The vendor-plausible auth-failure wire message for an ingress protocol; an unknown protocol
-/// gets the generic copy.
 pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
     registry()
         .decl(proto)
@@ -313,17 +268,14 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
         .unwrap_or("authentication failed")
 }
 
-/// Whether a fixture declaration requires signed ingress authentication.
 pub fn uses_signed_ingress_auth(proto: &str) -> bool {
     decl_for(proto).is_some_and(|decl| decl.uses_sigv4_ingress_auth())
 }
 
-/// The fixture registry's declared quota status, or the shipped neutral default.
 pub fn quota_exceeded_status(proto: &str) -> u16 {
     decl_for(proto).map_or(429, |decl| decl.quota_exceeded_status)
 }
 
-/// The fixture registry's declared authentication refusal, or the shipped neutral default.
 pub fn auth_failure_status_and_kind(proto: &str) -> (u16, &'static str) {
     decl_for(proto).map_or(
         (401, busbar_contract::protocol::KIND_AUTHENTICATION),
@@ -331,7 +283,6 @@ pub fn auth_failure_status_and_kind(proto: &str) -> (u16, &'static str) {
     )
 }
 
-/// Render the fixture codec's bytes while keeping all executable codec calls in this kit.
 pub fn error_parts(
     proto: &str,
     status: u16,
@@ -349,7 +300,6 @@ pub fn error_parts(
     )
 }
 
-/// Register fixture protocols into this kit's own process registry.
 pub use crate::test_support::protocols::register_test_protocols;
 
 #[cfg(test)]

@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `auth_outbound_door!` over a safe test plugin, driven through its real table: open, a binding
-//! and its `ready` fact, `fields` READY with a field and with none, THE SHORT-BUFFER ANSWER and its
-//! one re-call, the inbound ops it does not serve, a pending `fields` and its redrive, and the
-//! combined verify-and-outbound door. Each `fields` answer is judged by the kind's own validator
-//! (`check_fields`).
 
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -198,7 +194,6 @@ fn ops() -> &'static Ops {
 }
 
 fn ops_of(door: DoorFn) -> &'static Ops {
-    // The macro's door and table are `'static` consts.
     let d: &Door = door();
     // SAFETY: as above; the door's ops are an auth table.
     unsafe { &*d.ops.cast::<Ops>() }
@@ -477,7 +472,7 @@ fn check(o: Outcome, out: &FieldsOut, input: &FieldsIn, host: &Host) {
 }
 
 /// (a) A binding answers its handle, and its `ready` fact is 1; a style it does not serve is
-/// FAILED with the plugin's lines, and an unknown handle is not ready.
+
 #[test]
 fn a_binding_answers_a_handle_and_is_ready() {
     let t = ops();
@@ -496,7 +491,7 @@ fn a_binding_answers_a_handle_and_is_ready() {
 }
 
 /// (b) `fields` answers READY with one field, written into the host's buffers, and the kind's
-/// check accepts it.
+
 #[test]
 fn fields_answers_ready_with_one_field() {
     let t = ops();
@@ -669,9 +664,7 @@ fn sealed_fields_pending_resume_and_cancel_do_not_publish_staged_material() {
 }
 
 /// (c) RED, THE SHORT-BUFFER RULE: twenty fields into a sixteen-field array is the short answer
-/// (FAILED, `needed_fields` 20, `needed_bytes` the full size) and not one byte of the host's
-/// buffers changes; the re-call with room for thirty-two answers READY with all twenty. The kind's
-/// check accepts both.
+
 #[test]
 fn red_fields_that_do_not_fit_are_the_short_answer_and_write_nothing() {
     let t = ops();
@@ -680,7 +673,7 @@ fn red_fields_that_do_not_fit_are_the_short_answer_and_write_nothing() {
     let mut host = Host::new(4096, 16);
     let (o, out, input) = fields(t, inst, bound.handle, &mut host);
     assert_eq!(o, Outcome::Failed);
-    // Twenty names `x-huge-NN` (9 bytes) and twenty values `k` (1 byte).
+
     assert_eq!((out.needed_fields, out.needed_bytes), (20, 200));
     assert_eq!(out.fields_len, 0);
     check(o, &out, &input, &host);
@@ -700,7 +693,6 @@ fn red_fields_that_do_not_fit_are_the_short_answer_and_write_nothing() {
         "nothing past the answer"
     );
 
-    // Bytes short, fields fitting: still the short answer, both at their full sizes.
     let mut host = Host::new(64, 32);
     let (o, out, input) = fields(t, inst, bound.handle, &mut host);
     assert_eq!(
@@ -723,7 +715,7 @@ fn ready_with_zero_fields_is_no_header() {
     assert_eq!((o, out.fields_len), (Outcome::Ready, 0));
     check(o, &out, &input, &host);
     assert!(host.untouched());
-    // An unknown handle is the plugin's REFUSED.
+
     let (o, out, input) = fields(t, inst, bound.handle + 100, &mut host);
     assert_eq!(o, Outcome::Refused);
     check(o, &out, &input, &host);
@@ -758,12 +750,11 @@ fn verify_on_an_outbound_only_door_is_refused() {
 }
 
 /// (f) A `fields` that pends answers PENDING on its ticket, writing nothing, and the host's
-/// redrive (`FLAG_RESUME` on the same ticket) answers READY. A ticket-less `fields` cannot pend:
-/// it is REFUSED there, and the host submits it on a ticket.
+
 #[test]
 fn a_pending_fields_answers_pending_and_the_redrive_answers_ready() {
     let t = ops();
-    // On the spot: REFUSED, not PENDING (the plugin pends once per instance; this was it).
+
     let inst = opened(t);
     let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"slow"), b"{}");
     let mut host = Host::new(64, 16);
@@ -773,7 +764,6 @@ fn a_pending_fields_answers_pending_and_the_redrive_answers_ready() {
     check(o, &out, &input, &host);
     assert!(host.untouched());
 
-    // On a ticket, on a fresh instance: PENDING, then the redrive answers.
     let inst = opened(t);
     let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"slow"), b"{}");
     let mut host = Host::new(64, 16);
@@ -799,7 +789,7 @@ fn a_pending_fields_answers_pending_and_the_redrive_answers_ready() {
 }
 
 /// The view reads every fact the host lent: the method, authority, path, query, timestamp, point,
-/// connection, unit, mode and the header envelope.
+
 #[test]
 fn the_view_reads_the_requests_facts() {
     let t = ops();
@@ -857,7 +847,7 @@ mod stray {
 }
 
 /// A flag outside `FIELD_SENSITIVE | FIELD_QUERY` is the plugin's bug: the call is FAULT, and
-/// nothing reaches the host's buffers.
+
 #[test]
 fn a_stray_field_flag_is_fault() {
     let t = ops_of(stray::door);
@@ -946,7 +936,7 @@ fn combined_door_leases_instance_carriers_on_open_and_refresh() {
     use crate::abi::mechanism::lifecycle::RefreshIn;
     let t = ops_of(both::door);
     let opened = open_answer(t);
-    // Exercise OPEN's instance move and another allocation before reading its leased bytes.
+
     let other = open_answer(t);
     let selected = |head: &OutHead| {
         assert_ne!(head.lease, 0);
@@ -985,7 +975,7 @@ fn combined_door_leases_instance_carriers_on_open_and_refresh() {
 }
 
 /// THE COMBINED DOOR (`auth_door!(verify_and_outbound: ..)`): one instance verifies inbound and
-/// presents outbound, and its tail states both capabilities.
+
 #[test]
 fn a_verify_and_outbound_door_serves_both_families() {
     let t = ops_of(both::door);
@@ -1030,7 +1020,7 @@ fn a_verify_and_outbound_door_serves_both_families() {
 }
 
 /// The declared diagnostics a reply's envelope carries, as the host reads them: `(id, severity,
-/// text)`.
+
 fn reported(head: &OutHead) -> Vec<(u32, u8, String)> {
     let e = &head.envelope;
     if e.diags_len == 0 {
@@ -1054,9 +1044,7 @@ fn reported(head: &OutHead) -> Vec<(u32, u8, String)> {
 }
 
 /// RED, THE DECLARED DIAGNOSTICS: what `open_outbound` notes rides its reply's envelope, READY or
-/// FAILED, under the Statement's id index and the plugin's severity, word for word; a binding
-/// that notes nothing reports nothing. RED with the kit dropping the staged diagnostics (the
-/// envelope stays empty, and the host logs no line).
+
 #[test]
 fn red_open_outbound_reports_its_diagnostics_ready_or_failed() {
     let t = ops();
@@ -1085,7 +1073,7 @@ fn red_open_outbound_reports_its_diagnostics_ready_or_failed() {
 }
 
 /// RED, THE DECLARED DIAGNOSTICS ON THE REQUEST: what `fields` notes rides that request's reply,
-/// with its answer. RED with the kit dropping the writer's diagnostics.
+
 #[test]
 fn red_fields_reports_its_diagnostics_with_its_answer() {
     let t = ops();
@@ -1111,9 +1099,7 @@ fn red_fields_reports_its_diagnostics_with_its_answer() {
 }
 
 /// Mints on its driver ticket: `tick` notes the ticket it ran on and whether it was handed host
-/// tables, and wants the next tick 1000 ns on; `drive` notes its driver ticket and waits,
-/// re-driven at 42 at the latest; `cancel` keeps the work of [`WAITING`] going
-/// (`CANCEL_CONTINUES`) and abandons any other.
+
 struct Minter;
 
 /// The call ticket [`Minter`] has a mint running for.
@@ -1230,9 +1216,7 @@ fn cancel(t: &Ops, inst: *mut std::ffi::c_void, ticket: Ticket) -> (Outcome, u32
 }
 
 /// THE DRIVER TICKET: `tick` runs the plugin on the instance's driver ticket with the host tables
-/// `open` handed it (none here), its notes and next tick in the reply; `drive` on that ticket
-/// answers PENDING with the plugin's latest re-drive, and a ticket-less `drive` (which cannot pend)
-/// READY; `cancel` answers the plugin's own disposition for the cancelled ticket.
+
 #[test]
 fn a_minting_plugin_runs_on_its_driver_ticket() {
     let t = ops_of(minter::door);
@@ -1240,7 +1224,7 @@ fn a_minting_plugin_runs_on_its_driver_ticket() {
 
     let (o, out) = tick(t, inst, DRIVER, 5_000);
     assert_eq!((o, out.next_tick_ns), (Outcome::Ready, 6_000));
-    // `open` was handed no host tables, so none reach `tick`.
+
     assert_eq!(
         reported(&out.head),
         vec![(NOTED, SEVERITY_INFO, "minted on 3/1 host=false".to_string())]
@@ -1266,7 +1250,7 @@ fn a_minting_plugin_runs_on_its_driver_ticket() {
 }
 
 /// A plugin that holds no driver ticket keeps the kit's defaults: `tick` wants none, `drive` is
-/// REFUSED, `cancel` is `CANCEL_ABANDONED`.
+
 #[test]
 fn a_plugin_without_a_driver_ticket_keeps_the_defaults() {
     let t = ops();
@@ -1282,7 +1266,7 @@ fn a_plugin_without_a_driver_ticket_keeps_the_defaults() {
 }
 
 /// Judges its settings (`{"bad":true}` is refused, in its own words) and answers each binding's
-/// handle as the generation it was opened at.
+
 struct Generational(AtomicU64);
 
 /// The settings [`Generational`] refuses.
@@ -1343,9 +1327,7 @@ fn error_text(head: &OutHead) -> String {
 }
 
 /// A HANDLE IS GENERATION DATA: `open` and `refresh` hand the plugin the generation, so the
-/// handles a binding opens after a reload belong to the new one; `validate` and `refresh` refuse
-/// settings that are not the plugin's with the plugin's own outcome and words, and a refused
-/// reload changes nothing.
+
 #[test]
 fn open_and_refresh_hand_the_plugin_its_generation_and_its_refusals() {
     let t = ops_of(generational::door);
@@ -1413,9 +1395,7 @@ fn staged_diagnostics_read_back_in_order() {
 }
 
 /// RED (open160 A9, "every refusal says why"): an outbound door's REFUSED answers named no text,
-/// so the host's log of the refusal could not say what was refused. An op the door does not serve,
-/// a style that is not UTF-8 and a `fields` on a handle the plugin does not hold each answer
-/// REFUSED saying why.
+
 #[test]
 fn red_every_outbound_refusal_says_why() {
     let t = ops();

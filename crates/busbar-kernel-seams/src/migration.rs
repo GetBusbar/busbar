@@ -2,16 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE MIGRATION SEAMS: what the previous release's rows hold, read once and sealed as the opening.
-//!
-//! The ledger states what an opening figure MEANS; the store side reads it off the previous
-//! release's rows, because that is where the loaded plugin and its row shapes already are. These
-//! are the shapes the two halves trade and the three traits the store side implements and the
-//! ledger consumes, so they are this seams crate's: neither side names the other.
-//!
-//! **It never writes to what it read.** A deployment may be booting against a read-only replica or
-//! a grant-restricted database — the previous release's supported shape — so the source seams have a
-//! read and nothing else. The marker the migration writes goes to the ledger's own records
-//! ([`MigrationRecords`]), never onto the rows it read.
 
 /// Why a checkpoint could not be signed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +54,7 @@ impl MigrationHead {
 /// Reads the previous release's chain head and balances at migration time.
 pub trait MigrationSource {
     /// The head and balances. An implementation that cannot answer returns an empty head rather
-    /// than an error, and the migration seals a zero opening balance.
+
     fn read_head(&self) -> MigrationHead;
 }
 
@@ -129,15 +119,10 @@ pub struct MigrationFigures {
 }
 
 /// Reads the figures behind the previous release's chain head.
-///
-/// Note what is NOT on this trait: a write. The rows this reads may be on a read-only replica, and
-/// the way to guarantee a migration never writes to them is to give it nothing it could write with.
-///
-/// It extends the head-reading seam rather than replacing it, so the head and the figures come from
-/// one object that read one store, and the two cannot disagree about what was there.
+
 pub trait MigrationLedgerRows: MigrationSource {
     /// The figures. An implementation that cannot answer returns an empty set rather than an error,
-    /// exactly as the head does, and the migration seals a zero opening balance.
+
     fn read_figures(&self) -> MigrationFigures;
 }
 
@@ -165,26 +150,14 @@ pub struct MigrationMarker {
 }
 
 /// The ledger's own records, which is where the marker lives.
-///
-/// Deliberately NOT the rows the migration read. The rows may be read-only, and a marker written
-/// beside somebody else's data is a migration that has quietly taken ownership of a schema it does
-/// not own. This seam is the ledger's own, and the integrator binds whatever durability the
-/// deployment actually has to it.
+
 pub trait MigrationRecords {
     /// The marker, if this deployment has already migrated.
-    ///
-    /// # Errors
-    ///
-    /// The records could not be read. The caller decides what to do about it; the ledger will not
-    /// guess, because "unreadable" and "absent" are different facts and treating one as the other is
-    /// how a migration runs twice.
+
     fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError>;
 
     /// Seal the marker.
-    ///
-    /// # Errors
-    ///
-    /// The records could not be written.
+
     fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError>;
 }
 

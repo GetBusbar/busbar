@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Every record the book seals names this node, before a restart and after it.
-
 use super::tests::{open, seal, Scratch};
 use super::*;
 
-/// Every record names the Store-assigned node, and a restarted book on that same Store resumes it.
 #[test]
 fn every_record_the_book_seals_names_this_node() {
     let node = 7;

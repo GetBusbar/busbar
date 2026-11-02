@@ -2,22 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! HOST-OWNED TRUST, as seam currency between the unit that decides it and the transport that
-//! applies it.
-//!
-//! Two byte-producing capabilities used to live only inside a fat plane crate, with no twin on the
-//! spine a neutral onboarding plane could reach. This module is that twin: the plain, dependency-free
-//! shapes a composition root fills in and hands ACROSS a seam, so the transport that consumes them
-//! never has to name the unit that produced them and the unit never has to name the transport that
-//! will apply them. Both sides name only this crate — which is exactly why the three transport-facing
-//! units (egress, trust, transport-key) are told to name it directly.
-//!
-//! ## The unset value is today's behaviour, exactly
-//!
-//! Every field here defaults to "the host decided nothing extra". A default [`EgressTrust`] asks a
-//! transport for precisely the posture it already had — platform trust anchors, the stack's own
-//! certificate check, and no client certificate — so a seam handed a default value is byte-for-byte
-//! the seam that was handed nothing. The capability is therefore ADDITIVE: it changes no existing
-//! caller until a caller fills a field in.
 
 /// A parsed client identity: a certificate chain and the private key that proves it, both in DER.
 ///
@@ -38,8 +22,7 @@ pub struct ClientIdentity {
 
 impl core::fmt::Debug for ClientIdentity {
     /// Hand-rolled so the text stays exactly what 1.5.5 printed (log text is customer-visible): the
-    /// certificate chain is public and prints as itself, and the key prints as `<redacted>`, not as
-    /// `Secret`'s own `[REDACTED]`.
+
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ClientIdentity")
             .field("cert_chain", &self.cert_chain)
@@ -72,8 +55,7 @@ pub struct EgressTrust {
 
 impl core::fmt::Debug for EgressTrust {
     /// Hand-rolled so the `client_identity`'s private key is redacted through [`ClientIdentity`]'s
-    /// own `Debug`. The anchors and pins are public bytes and print as themselves; the shape is
-    /// exactly what the derive produced, minus the key material.
+
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EgressTrust")
             .field("extra_anchors", &self.extra_anchors)
@@ -85,10 +67,7 @@ impl core::fmt::Debug for EgressTrust {
 
 impl EgressTrust {
     /// Whether the host decided nothing extra — no added anchors, no pins, no client identity.
-    ///
-    /// A seam that sees this returns to the exact platform-roots / no-client-auth posture it had
-    /// before this type existed, and MUST take that path rather than a reconstructed-equal one, so
-    /// the unset case is provably unchanged.
+
     #[must_use]
     pub fn is_unset(&self) -> bool {
         self.extra_anchors.is_empty()
@@ -98,15 +77,11 @@ impl EgressTrust {
 }
 
 /// THE TAG of a key pin's canonical spelling: `sha256/<standard base64>`, the spelling an operator
-/// is shown and writes in the operator docs, the same one `openssl ... | base64` gives
-/// after it and the one the kernel's egress pin renders.
+
 pub const KEY_PIN_TAG: &str = crate::abi::sdk::digest::SHA256_TAG;
 
 /// THE ONE SPELLING OF A KEY PIN: the SHA-256 of a certificate's whole SubjectPublicKeyInfo (its
-/// DER, tag and length included), as `sha256/<standard base64 with padding>`, spelled by the
-/// contract's one tagged-digest renderer (`abi::sdk::digest::sha256_tagged`). What the connector
-/// reports as observed and what every written pin is read to ([`canonical_key_pin`]), so a pin and
-/// an observation compare as the digest they spell.
+
 #[must_use]
 pub fn key_pin(subject_public_key_info: &[u8]) -> String {
     crate::abi::sdk::digest::sha256_tagged(subject_public_key_info)
@@ -130,17 +105,7 @@ impl std::fmt::Display for BadKeyPin {
 impl std::error::Error for BadKeyPin {}
 
 /// THE ONE READER OF A WRITTEN KEY PIN, to its canonical spelling ([`key_pin`]), surrounding
-/// whitespace ignored. The two spellings are told apart by what DECODES, never by the prefix alone:
-///
-/// * canonical: `sha256/` followed by standard, padded base64 that decodes to exactly 32 bytes;
-/// * otherwise the WHOLE value is the plain alias: standard, padded base64 of exactly 32 bytes.
-///
-/// So a plain alias whose own base64 happens to begin `sha256/` (`/` is a base64 digit) reads as
-/// that alias, its 37-character tail being no padded base64.
-///
-/// # Errors
-///
-/// Neither reading names one SHA-256 digest.
+
 pub fn canonical_key_pin(written: &str) -> Result<String, BadKeyPin> {
     use base64::Engine as _;
     let decode = |encoded: &str| -> Option<[u8; 32]> {

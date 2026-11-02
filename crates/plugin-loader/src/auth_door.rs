@@ -1,34 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE OPENED AUTH INSTANCE ON THE ONE DISPATCHER (THE DESIGN: the auth kind, the one dispatcher):
-//! [`AuthInstance`] calls a `kind: auth` plugin through its v3 table (`abi::auth`) and nothing else,
-//! and implements the contract's [`AuthCalls`], so the kernel's identity chain names neither this
-//! crate nor the plugin's.
-//!
-//! * `verify` ON THE SPOT ([`AuthCalls::verify_now`]): one ticket-less crossing on the caller's
-//!   thread, watchdog-bounded. A plugin that must wait answers REFUSED there, and the caller submits.
-//! * `verify` SUBMITTED ([`AuthCalls::verify`]): on a request ticket of the dispatcher, awaited
-//!   through the reply's waker, so no thread is parked. The memory the `in` lends (the field lines,
-//!   the peer facts, the body, the request facts, the identity buffer and the strip array) travels
-//!   with the op
-//!   ([`Dispatcher::submit_lent`]) and outlives a caller that stops waiting. The instance's
-//!   `max_inflight` full is [`Verified::Overloaded`] (R8: the host answers 503).
-//! * A SHORT answer is re-called ONCE with the buffers it named; a second is [`Verified::Failed`].
-//! * `refresh` ([`AuthCalls::refresh`]) re-opens the settings under a NEW generation: the plugin
-//!   drops its inbound cache and reports how many entries under its
-//!   [`METRIC_CACHE_FLUSHED`](busbar_contract::abi::auth::METRIC_CACHE_FLUSHED) family, which this
-//!   answers.
-//! * `tick` runs on the one clock from the instance's open, as an outbound instance's does
-//!   ([`crate::dispatch::auth_ticks`]): its key set refreshes ahead of the TTL. The schedule stops
-//!   when the instance is dropped (retired, or replaced on apply).
-//!
-//! Every answer is a [`VerifyAnswer`]: the verdict (with the identity and its credential, a
-//! secret), the decision and the lines to strip (THE DESIGN, "Auth points and guest lists").
-//!
-//! The credential and every line value are secret: their bytes are zeroed when the op's lent
-//! memory is dropped, and nothing here prints them.
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -62,13 +34,10 @@ use crate::dispatch::{
     Metric, OutFrame, Plugin,
 };
 
-/// A submitted `verify`'s deadline: past it the op is cancelled and answers FAILED.
 pub const VERIFY_DEADLINE: Duration = Duration::from_secs(10);
 
-/// The most bytes a short answer may ask the identity buffer to grow to.
 const IDENTITY_BUF_MAX: u64 = 1024 * 1024;
 
-/// Bytes the host lends for a call, as a blob of `fmt` with `flags`; empty is absent.
 fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
     if b.is_empty() && fmt != BLOB_OCTETS {
         return crate::dispatch::NO_BLOB;
@@ -81,7 +50,6 @@ fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
     }
 }
 
-/// A fresh `verify` `out`: no verdict, no identity, no decision, no strip.
 fn identify_out() -> IdentifyOut {
     let absent = Span {
         offset: SPAN_ABSENT,
@@ -116,15 +84,11 @@ fn identify_out() -> IdentifyOut {
     }
 }
 
-/// Overwrite secret bytes before their allocation is freed.
 fn zero(bytes: &mut [u8]) {
     bytes.fill(0);
     std::hint::black_box(bytes);
 }
 
-/// THE MEMORY ONE `verify` LENDS: the owned request, the line list pointing into it, and the
-/// identity buffers and strip array the plugin writes. Built once, then only read (by the plugin through the `in`,
-/// and by the host after the op completed), so it is shared behind an `Arc` with the dispatcher.
 struct Held {
     credential: Vec<u8>,
     lines: Vec<(String, Vec<u8>)>,
@@ -139,13 +103,13 @@ struct Held {
     path: String,
     query: Option<String>,
     timestamp: u64,
-    /// The strip names: an allocation of `strip_cap` entries the plugin writes through `in`.
+
     strip: *mut StripName,
     strip_cap: u32,
-    /// The identity bytes: an allocation of `buf_cap` bytes the plugin writes through `in`.
+
     buf: *mut u8,
     buf_cap: usize,
-    /// The group spans: an allocation of `groups_cap` spans the plugin writes through `in`.
+
     groups: *mut Span,
     groups_cap: u32,
 }
@@ -157,13 +121,10 @@ unsafe impl Send for Held {}
 // SAFETY: as above.
 unsafe impl Sync for Held {}
 
-/// Whether `req` carries secret material a `verify` lends the plugin: a reveal, which only a
-/// dispatcher lent the host's seal may make (Part 2 #54).
 fn reveals(req: &VerifyRequest) -> bool {
     req.credential.is_some() || !req.lines.is_empty()
 }
 
-/// One call's header capability, retained across buffer negotiation and dispatcher resumes.
 enum Headers {
     None,
     All,
@@ -181,9 +142,6 @@ impl Headers {
 }
 
 impl Held {
-    /// `seal` is the host's, lent to the dispatcher ([`Dispatcher::lend_seal`]): the credential and
-    /// the lines are revealed under it to be lent to the plugin's `verify`. The caller refuses a
-    /// request that [`reveals`] anything when none was lent, so `None` here reveals nothing.
     fn new(
         req: &VerifyRequest,
         seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
@@ -207,7 +165,6 @@ impl Held {
         let strip =
             Box::into_raw(vec![unnamed; strip_cap as usize].into_boxed_slice()).cast::<StripName>();
         let mut held = Self {
-            // The candidate the host extracted, lent as `verify`'s `credential` blob.
             credential: req
                 .credential
                 .as_ref()
@@ -248,7 +205,6 @@ impl Held {
         Arc::new(held)
     }
 
-    /// The `in` over this memory; `presented` says whether a credential was presented at all.
     fn input(&self, presented: bool) -> VerifyIn {
         VerifyIn {
             head: in_head(),
@@ -281,7 +237,7 @@ impl Held {
             _reserved: 0,
             conn: self.conn,
             unit: self.unit,
-            // Present (even when empty) exactly when the request carries one.
+
             peer: self
                 .peer
                 .as_deref()
@@ -296,7 +252,6 @@ impl Held {
         }
     }
 
-    /// The strip names a READY answer reported, as names and places.
     fn strips(&self, out: &IdentifyOut) -> Vec<Strip> {
         let n = out.strip_len.min(self.strip_cap) as usize;
         if n == 0 {
@@ -321,10 +276,6 @@ impl Held {
             .collect()
     }
 
-    /// The delay a `complete_login` LOGIN_OUTAGE states under `EXT_RETRY_AFTER` in its reply
-    /// extensions `ext`, read ONLY when the blob lies wholly inside this identity buffer, the one
-    /// memory the host still holds once the op completed; a blob anywhere else, or none, is no
-    /// delay. Unclamped: the host bounds it.
     fn retry_after(&self, ext: Blob) -> Option<u64> {
         if ext.ptr.is_null() || ext.len == 0 {
             return None;
@@ -339,7 +290,6 @@ impl Held {
         busbar_contract::abi::auth::retry_after_of(bytes)
     }
 
-    /// The text at `s` in the identity buffer; `None` when absent.
     fn text(&self, s: Span) -> Option<String> {
         if s.offset == SPAN_ABSENT {
             return None;
@@ -354,7 +304,6 @@ impl Held {
         Some(String::from_utf8_lossy(bytes).into_owned())
     }
 
-    /// The identity a READY `VERDICT_IDENTITY` answer reported.
     fn identity(&self, o: &IdentityOut) -> VerifiedIdentity {
         let n = (o.groups_len.min(self.groups_cap)) as usize;
         // SAFETY: `groups` holds `groups_cap` initialized spans; `n` is bounded by it.
@@ -377,7 +326,7 @@ impl Held {
                         ttl_secs: o.replay_ttl_secs,
                     })
                 }),
-            // `len == 0` is absent.
+
             credential: if o.credential.len == 0 {
                 None
             } else {
@@ -411,10 +360,6 @@ impl Drop for Held {
     }
 }
 
-/// An answer, read over `held`: the verdict (the kernel's), the decision and the strips (the
-/// transport's). The strips are named whatever the verdict; an answer that is not READY is
-/// [`Verified::Failed`] with the decision to stop. A REJECT's reason (the answer's error text) is
-/// written to `plugin`'s own log and the host log, and kept on the answer; never the client's.
 fn verdict(
     outcome: Outcome,
     out: &IdentifyOut,
@@ -445,9 +390,6 @@ fn verdict(
     }
 }
 
-/// THE REASON a READY answer that declined names (`abi::auth::IdentifyOut`), read at once (the
-/// text is plugin memory valid until the next op on the ticket): written as `what: <reason>` at
-/// `severity` to `plugin`'s own log and to the host log. `None` when it names none.
 pub(crate) fn declined(
     plugin: &Plugin<Auth>,
     out: &IdentifyOut,
@@ -465,8 +407,6 @@ pub(crate) fn declined(
     Some(reason)
 }
 
-/// The bigger buffers a SHORT answer names (bytes, groups, strip names); `None` when it asks past
-/// the host's limits.
 fn grown(out: &IdentifyOut, held: &Held) -> Option<(usize, u32, u32)> {
     if out.needed_bytes > IDENTITY_BUF_MAX
         || out.needed_groups > busbar_contract::abi::auth::IDENTITY_GROUPS_HARD_MAX
@@ -481,8 +421,6 @@ fn grown(out: &IdentifyOut, held: &Held) -> Option<(usize, u32, u32)> {
     ))
 }
 
-/// THE ENVELOPE of an auth instance: the cache-flush counter is summed for `refresh`; a
-/// diagnostic is logged under the instance; every other metric is dropped.
 struct FlushSink {
     plugin: String,
     family: Mutex<Option<u32>>,
@@ -516,7 +454,6 @@ impl EnvelopeSink for FlushSink {
 pub struct AuthSink(Arc<FlushSink>);
 
 impl AuthSink {
-    /// A sink logging under `plugin`.
     #[must_use]
     pub fn new(plugin: &str) -> Self {
         Self(Arc::new(FlushSink {
@@ -526,20 +463,11 @@ impl AuthSink {
         }))
     }
 
-    /// The sink as the bind takes it.
     #[must_use]
     pub fn bind(&self) -> Arc<dyn EnvelopeSink> {
         self.0.clone()
     }
 
-    /// The sink an instance OPENED TO SERVE binds with (THE DESIGN §11.2: "all plugins should log
-    /// to their plugin's log file ... The HOST writes it to that plugin instance's own log file"):
-    /// its log records and its declared diagnostics go to the instance `label`'s own file under
-    /// `logs`; a declared diagnostic also keeps its host-log line, as an outbound auth instance's
-    /// does; its metrics go on to this sink's cache-flush counter.
-    ///
-    /// # Errors
-    /// The plugin log file cannot be opened (`plugins.logs.dir <dir>: <error>`).
     pub fn to_file(
         &self,
         logs: &crate::dispatch::PluginLogConfig,
@@ -557,7 +485,6 @@ impl AuthSink {
     }
 }
 
-/// An opened auth instance's envelope: its file first, the host's log for a declared diagnostic.
 struct InstanceSink {
     file: crate::dispatch::PluginLogSink,
     host: Arc<FlushSink>,
@@ -586,7 +513,6 @@ impl std::fmt::Debug for AuthSink {
     }
 }
 
-/// What a verify's in-flight state shares with the instance.
 struct Shared {
     plugin: Arc<Plugin<Auth>>,
     dispatcher: Arc<Dispatcher>,
@@ -594,7 +520,6 @@ struct Shared {
 }
 
 impl Shared {
-    /// A call on a request ticket of its own, on a worker picked by the counter.
     fn call<I: InFrame, O: OutFrame>(&self) -> Option<Ticketed<I, O>> {
         let n = self.minted.fetch_add(1, Ordering::Relaxed);
         let worker = (n % u64::from(self.dispatcher.workers().max(1))) as u32;
@@ -620,24 +545,20 @@ impl Shared {
     }
 }
 
-/// ONE AUTH INSTANCE, opened, as the kernel's chain calls it.
 pub struct AuthInstance {
     shared: Arc<Shared>,
     sink: AuthSink,
     facts: AuthFacts,
     carriers: Mutex<Vec<String>>,
     metadata_valid: AtomicBool,
-    // settings-leak-lint: allow — NON-PROJECTION engine type: the settings bytes this instance was
-    // opened over, re-sent on `refresh`. No `Serialize`; the hand-written `Debug` below prints the
-    // plugin and the label only (`an_instance_debug_never_shows_its_settings_or_secrets`).
+
     settings: Vec<u8>,
-    /// The service credentials `refresh` re-lends, in the holder that wipes them on drop.
+
     secrets: KeptSecrets,
     generation: AtomicU64,
     label: String,
     lifecycle: Mutex<()>,
-    /// THE INSTANCE'S TICK SCHEDULE, on the runtime it was opened on (none off any runtime);
-    /// aborted when the instance is dropped.
+
     schedule: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -650,13 +571,6 @@ impl std::fmt::Debug for AuthInstance {
     }
 }
 
-/// THE SERVICE CREDENTIALS OUT OF THE SETTINGS: each exact path `plugin`'s Statement names as a
-/// secret-ref is taken out of the `settings` object (its value already resolved by the kernel, as
-/// 1.5.5 resolved a provider's secret-refs) and handed to `open` as `secrets`, in the Statement's
-/// order — a missing or non-string one as empty bytes, which the plugin refuses. Then each
-/// wildcard path's string matches follow, in document order, each replaced in the settings by its
-/// `{"$secret": <index>}` marker (`busbar_contract::secret_fields::lend`). The settings the plugin
-/// sees no longer carry them.
 pub fn split_secrets(
     plugin: &Plugin<Auth>,
     settings: &serde_json::Value,
@@ -681,19 +595,13 @@ pub fn split_secrets(
     (settings, secrets)
 }
 
-/// THE SECRETS AN AUTH INSTANCE KEEPS: the one copy of its resolved service credentials busbar
-/// must hold past `open`, because `refresh` re-lends them (security.md:318). Each is a zeroising
-/// buffer, overwritten with zeroes (its whole allocation) when the instance drops; `Debug` shows
-/// how many there are and no byte of any.
 pub(crate) struct KeptSecrets(Vec<zeroize::Zeroizing<Vec<u8>>>);
 
 impl KeptSecrets {
-    /// Take `secrets` into the holder (moved: no copy of a byte is made).
     fn new(secrets: Vec<Vec<u8>>) -> Self {
         Self(secrets.into_iter().map(zeroize::Zeroizing::new).collect())
     }
 
-    /// The secrets list the host lends `open`/`refresh`, over the bytes held here.
     fn blobs(&self) -> Vec<Blob> {
         self.0
             .iter()
@@ -715,7 +623,6 @@ impl std::fmt::Debug for KeptSecrets {
     }
 }
 
-/// Copy the selected carrier names while the READY reply still owns its extension bytes.
 fn instance_carriers(
     blob: Blob,
     previous: &[String],
@@ -770,8 +677,6 @@ fn instance_carriers(
 }
 
 impl AuthInstance {
-    /// Snapshot the configured capability before revealing or copying any field value. The lock
-    /// ends here, before plugin code runs; a refresh only changes subsequent calls' snapshots.
     fn headers(&self, point: AuthPoint) -> Option<Headers> {
         let carriers = self
             .carriers
@@ -789,11 +694,6 @@ impl AuthInstance {
         })
     }
 
-    /// OPEN `plugin` (bound to `dispatcher` with `sink`) with `settings` (one JSON document) and the
-    /// resolved `secrets`, after `validate`, as the host's instance `label`.
-    ///
-    /// # Errors
-    /// The plugin refused its settings, or would not open.
     pub fn open(
         plugin: Plugin<Auth>,
         sink: AuthSink,
@@ -802,7 +702,6 @@ impl AuthInstance {
         settings: &[u8],
         secrets: Vec<Vec<u8>>,
     ) -> Result<Self, String> {
-        // Held from the first line, so a refusal below wipes them too.
         let secrets = KeptSecrets::new(secrets);
         let facts = plugin.context::<AuthFacts>().cloned().unwrap_or_default();
         *sink.0.family.lock().unwrap_or_else(|e| e.into_inner()) = facts.cache_family;
@@ -827,22 +726,17 @@ impl AuthInstance {
         let carriers = match carriers {
             Ok(carriers) => carriers,
             Err(error) => {
-                // OPEN installed a live instance. Return its output lease before CLOSE drops it.
                 close(&plugin);
                 return Err(error);
             }
         };
         drop(blobs);
-        // READY, as boot runs it for every door instance (`boot::open_ready`): what the instance
-        // must do on the network before it serves (an IdP's discovery and key warm-up through its
-        // declared needs), awaited on a ticket; a door that states none is not called. A refusal
-        // refuses the open in the plugin's words.
+
         if let Err(error) = plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE) {
             close(&plugin);
             return Err(error);
         }
-        // ITS TICK SCHEDULE, on the runtime the composition runs on, as an outbound instance's: it
-        // shares the instance (a `Plugin` is `!Clone`).
+
         let plugin = Arc::new(plugin);
         let schedule =
             crate::dispatch::auth_ticks::spawn(Arc::clone(&plugin), dispatcher.clone(), 0);
@@ -865,17 +759,14 @@ impl AuthInstance {
         })
     }
 
-    /// The plugin handle.
     pub fn plugin(&self) -> &Plugin<Auth> {
         &self.shared.plugin
     }
 
-    /// The host's instance label.
     pub fn label(&self) -> &str {
         &self.label
     }
 
-    /// Whether the instance's tick schedule has ended (or never ran: opened off any runtime).
     #[must_use]
     pub fn ticks_ended(&self) -> bool {
         self.schedule
@@ -883,14 +774,11 @@ impl AuthInstance {
             .is_none_or(tokio::task::JoinHandle::is_finished)
     }
 
-    /// The secrets this instance keeps for `refresh`, as a test reads their holder.
     #[cfg(test)]
     pub(crate) fn kept_secrets(&self) -> &KeptSecrets {
         &self.secrets
     }
 
-    /// The dispatcher instance this auth instance serves on, held weakly: a test reads whether
-    /// anything still keeps it once this instance is dropped.
     #[cfg(test)]
     pub(crate) fn instance(&self) -> std::sync::Weak<crate::dispatch::plugin::Instance> {
         Arc::downgrade(&self.shared.plugin.inner)
@@ -902,7 +790,6 @@ impl Drop for AuthInstance {
         if let Some(schedule) = self.schedule.take() {
             schedule.abort();
         }
-        // `secrets` wipes itself as it drops (`KeptSecrets`).
     }
 }
 
@@ -940,7 +827,7 @@ impl AuthCalls for AuthInstance {
         };
         let presented = request.credential.is_some();
         let plugin = &self.shared.plugin;
-        // No seal lent to the dispatcher: secret material is not revealed, and the verify fails.
+
         let seal = self.shared.dispatcher.seal();
         if reveals(request) && seal.is_none() {
             return Some(Verified::Failed.into());
@@ -986,7 +873,7 @@ impl AuthCalls for AuthInstance {
             return Box::new(Settled(Some(Verified::Overloaded.into())));
         };
         let presented = request.credential.is_some();
-        // No seal lent to the dispatcher: secret material is not revealed, and the verify fails.
+
         let seal = sh.dispatcher.seal();
         if reveals(&request) && seal.is_none() {
             return Box::new(Settled(Some(Verified::Failed.into())));
@@ -1014,9 +901,6 @@ impl AuthCalls for AuthInstance {
     }
 
     fn refresh(&self) -> Result<u64, String> {
-        // ONE REFRESH AT A TIME, never waited for: the refresh crossing is plugin code, so a caller
-        // that finds one in flight is answered at once rather than parked behind a lock a wedged
-        // plugin may never let go (THE DESIGN §11.13 M1).
         let _one = match self.lifecycle.try_lock() {
             Ok(one) => one,
             Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
@@ -1044,14 +928,10 @@ impl AuthCalls for AuthInstance {
             },
             out_head(),
         );
-        // Keep the last validated selection available while plugin code is in flight. Each
-        // verify owns that selection's snapshot; only a completed refresh publishes replacement
-        // metadata (or invalidates it), without holding other callers behind the lifecycle lock.
+
         let was_valid = self.metadata_valid.load(Ordering::Acquire);
         let called = self.shared.plugin.call(lc::REFRESH, &mut f);
         if called.outcome != Outcome::Ready {
-            // A refusal/failure leaves the previous selection in force. FAULT (including a
-            // ticket-less PENDING) gives no trustworthy completed refresh to serve afterwards.
             self.metadata_valid.store(
                 was_valid && matches!(called.outcome, Outcome::Refused | Outcome::Failed),
                 Ordering::Release,
@@ -1105,7 +985,6 @@ impl AuthCalls for AuthInstance {
     }
 }
 
-/// A verify answered before it was submitted (overload).
 struct Settled(Option<VerifyAnswer>);
 
 impl Future for Settled {
@@ -1121,7 +1000,6 @@ impl Verifying for Settled {
     }
 }
 
-/// A submitted verify: the one re-call a short answer earns, then its verdict.
 struct Verify {
     shared: Arc<Shared>,
     request: VerifyRequest,
@@ -1170,7 +1048,7 @@ impl Verifying for Pending<VerifyIn, IdentifyOut, Verify> {
 }
 
 #[path = "auth_login.rs"]
-#[doc(hidden)] // TEST SEAM: busbar-test-kit
+#[doc(hidden)]
 pub mod login;
 
 #[cfg(test)]

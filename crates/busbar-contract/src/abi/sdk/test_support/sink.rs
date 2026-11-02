@@ -9,11 +9,7 @@ use crate::abi::sdk::{Lent, Out};
 use crate::abi::transport::{FramePiece, FramerOut, FramerSink, HeadSlots};
 
 /// Fill the caller's real buffers from `owed` using the SDK's unchanged sink implementation.
-/// The returned counts and flags can be consumed by the caller's normal framing reader; the
-/// buffers remain owned by the caller. No raw sink or pointer-taking constructor is exposed.
-///
-/// The SDK fill reads no sink timestamps, so both timestamp fields are zero here. Deadlines
-/// returned by `owed` are preserved by the SDK itself.
+
 pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
     owed: &mut F,
     wire: &mut [u8],
@@ -42,8 +38,7 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
     // slice for this synchronous call. Rust's borrows keep all four buffers live and disjoint;
     // sink itself stays initialized here and the SDK retains none of these ranges.
     let sink = unsafe { Lent::new(&sink) };
-    // Use the normal custody constructor, also present under the test-support feature. Fill
-    // writes only scalar yield fields and the caller's buffers, so no holder escapes this call.
+
     let holders = crate::abi::sdk::out::Holders::default();
     sink::fill(
         owed,

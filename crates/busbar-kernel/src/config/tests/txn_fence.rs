@@ -29,22 +29,18 @@ use super::TxnError as AdminError;
 use super::{config_transaction, Outcome};
 use crate::state::AppHandle;
 
-/// (1) + (2): the body has no store in scope and `Txn` yields none.
 pub(crate) async fn fence_no_store_in_scope(handle: &Arc<AppHandle>) -> Result<usize, AdminError> {
     config_transaction(handle, |txn| {
-        // ERROR: cannot find value `store` in this scope.
         let n = store.list_keys().unwrap().len();
-        // ERROR: no method named `store` found for reference `&Txn<'_>`.
+
         let _also = txn.store().list_keys();
         Ok(Outcome::Value(n))
     })
     .await
 }
 
-/// (3): the body is synchronous, so it cannot hold the lock across an await.
 pub(crate) async fn fence_no_await_in_body(handle: &Arc<AppHandle>) -> Result<(), AdminError> {
     config_transaction(handle, |txn| {
-        // ERROR: `await` is only allowed inside `async` functions and blocks.
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         Ok(txn.done(()))
     })

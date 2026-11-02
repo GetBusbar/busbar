@@ -245,7 +245,7 @@ fn a_form_body_encodes_as_serde_urlencoded_and_seals_its_credential() {
 }
 
 /// RED (type level): a form body's public values (an authorization code, a PKCE verifier) travel
-/// with its credential, so the body wipes them on drop.
+
 #[test]
 fn a_form_body_wipes_on_drop() {
     fn wipes<T: zeroize::ZeroizeOnDrop>(_: &T) {}
@@ -339,8 +339,7 @@ fn jws_requires_a_complete_pkcs8_rsa_key_on_validation_and_signing() {
 #[test]
 fn jws_rejects_an_inconsistent_private_exponent_before_signing() {
     use base64::Engine as _;
-    // These offsets identify the fixture's 256-byte d INTEGER. Changing its last
-    // byte retains the encoded size and oddness, but invalidates d * e modulo p-1.
+
     const PRIVATE_EXPONENT_HEADER: usize = 299;
     const PRIVATE_EXPONENT_END: usize = PRIVATE_EXPONENT_HEADER + 4 + 256;
     let mut der = base64::engine::general_purpose::STANDARD
@@ -414,8 +413,7 @@ fn jws_preserves_pkcs8_algorithm_and_optional_attribute_rules() {
 }
 
 /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): the operator's URL decides. A secure scheme or a
-/// TLS mode that refuses cleartext requires the password to go out secured; a unix socket, or a
-/// mode that allows cleartext, requires nothing.
+
 #[test]
 fn the_operators_url_decides_whether_the_password_goes_out_secured() {
     let required = |text: &str| {

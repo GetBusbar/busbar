@@ -76,8 +76,7 @@ fn lifecycle_head_is_owned_before_its_ffi_worker_returns_and_restored_after_cons
     })
     .unwrap();
     let original_pointer = snapshot.original.error.ptr;
-    // Free the old source owners. Every assertion below reads only snapshot-owned storage,
-    // never an old raw pointer, so a failed retention witness does not itself invoke UB.
+
     drop(source);
     for expected in [
         b"original error".as_slice(),

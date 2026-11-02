@@ -1,24 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EGRESS OF THE PLANE SERVING THE `pools` MAP, sealed with the previous release's pool
-//! semantics (BUSBAR-1.6.0.md Part 3 §12 "The route pump": the route step is the kernel's existing
-//! egress walk; Part 1: customer-visible behaviour is 1.5.5's).
-//!
-//! The generic door egress ([`crate::root::door_steps::compose_egress`]) seals every member at
-//! weight 1 under the default breaker ladder on a breaker of its own. The `pools:` grammar is the
-//! kernel's and says more, and 1.5.5 honoured all of it: each member's weight and attempt timeout,
-//! each model's concurrency cap and context window, each pool's failover budget, hop cap and
-//! exclusions, its exhaustion terminal and its breaker ladder. And the breaker cells a member trips
-//! are the kernel's own lane cells (`AppHandle::store`), keyed by the model's lane index, so the
-//! admission the kernel reads, the `busbar_lane_*` gauges a scrape renders and the admin health views
-//! all read the trip a door-served attempt recorded, as they read the previous release's. Every
-//! outcome is recorded through the lane store's own record calls, the ones the previous release's
-//! attempt made (success, transient, rate limit, client fault, hard-down), so the lane's lifetime
-//! counters `/stats` renders count it too. A route that names a model directly walks it alone under
-//! the model's name (its metric label) on the lane-default cell (`""`), as 1.5.5 attributed a
-//! model-routed fault.
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -56,7 +38,6 @@ impl AppFallback {
 }
 
 impl LiveApp {
-    /// The live App: `handle`'s once it is set, `fallback` until then.
     #[must_use]
     pub fn new(
         handle: Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>,
@@ -68,7 +49,6 @@ impl LiveApp {
         }
     }
 
-    /// One App, never swapped.
     #[must_use]
     pub fn fixed(app: Arc<busbar_kernel::state::App>) -> Self {
         LiveApp {
@@ -77,14 +57,12 @@ impl LiveApp {
         }
     }
 
-    /// The live App, owned.
     #[must_use]
     pub fn load(&self) -> Arc<busbar_kernel::state::App> {
         self.try_load()
             .expect("the serving application owner has retired")
     }
 
-    /// A retired live owner never falls back to an older configuration.
     #[must_use]
     pub fn try_load(&self) -> Option<Arc<busbar_kernel::state::App>> {
         match self.handle.get() {
@@ -93,7 +71,6 @@ impl LiveApp {
         }
     }
 
-    /// Whether `app` is still the live App: a borrow of the handle's pointer, no refcount.
     fn is_current(&self, app: &Arc<busbar_kernel::state::App>) -> bool {
         match self.handle.get() {
             Some(h) => h
@@ -148,7 +125,6 @@ pub struct ModelPools {
 }
 
 impl ModelPools {
-    /// The pools and models `cfg` resolved.
     #[must_use]
     pub fn of(cfg: &busbar_kernel::config::RootCfg) -> Self {
         use busbar_kernel::config::pools::OnExhaustedCfg;
@@ -227,8 +203,7 @@ impl ModelPools {
             .iter()
             .filter_map(|(name, m)| {
                 let provider = cfg.providers.get(&m.provider)?;
-                // A keyless lane (`api_key: none`) is not probed: it holds no credential, as
-                // 1.5.5's prober skipped a lane with no key ("no key, no probe").
+
                 if provider.api_key.is_none() {
                     return None;
                 }
@@ -294,8 +269,6 @@ impl ModelPools {
 }
 
 impl ModelServing {
-    /// THE MEMBERS THE HEALTH-PROBE SERVICE SCHEDULES (K7), in lane order: each model with a
-    /// probing mode, at its lane's index and destination, under its resolved settings.
     #[must_use]
     pub fn probe_members(
         &self,
@@ -323,15 +296,11 @@ impl ModelServing {
     }
 }
 
-/// WHAT THE MODEL-SERVING EGRESS IS SEALED OVER beside the plane's member routes: the pools, the
-/// lane index of each model in the generation's lane table (the kernel's breaker cells are keyed by
-/// it), and the breaker unit those cells live in, as the live configuration answers it.
 pub struct ModelServing {
-    /// The pools and models.
     pub pools: ModelPools,
-    /// Each model's lane index.
+
     pub lanes: HashMap<String, usize>,
-    /// The kernel's App: its lane store and its telemetry bank.
+
     pub app: LiveApp,
 }
 
@@ -344,7 +313,6 @@ impl std::fmt::Debug for ModelServing {
     }
 }
 
-/// The number of latency samples a lane's p95 reservoir holds (1.5.5's ring).
 const LATENCY_RESERVOIR_LEN: usize = 128;
 
 /// ONE LANE'S P95 LATENCY RESERVOIR (1.5.5's `LatencyReservoir`, moved verbatim): a ring of the
@@ -373,13 +341,12 @@ impl Default for LatencyReservoir {
 }
 
 impl LatencyReservoir {
-    /// Record one sample, in milliseconds. A non-finite or non-positive sample is ignored.
     pub fn record(&self, latency_ms: f64) {
         use std::sync::atomic::Ordering;
         if !latency_ms.is_finite() || latency_ms <= 0.0 {
             return;
         }
-        // `as` saturates a float-to-int cast, so an absurdly long sample clamps to `u32::MAX` us.
+
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let us = ((latency_ms * 1000.0).round() as u32).max(1);
         let slot = self.cursor.fetch_add(1, Ordering::Relaxed) % LATENCY_RESERVOIR_LEN;
@@ -387,12 +354,7 @@ impl LatencyReservoir {
         self.written.fetch_add(1, Ordering::Release);
     }
 
-    /// The nearest-rank 95th percentile of the held samples, in whole milliseconds rounded UP;
-    /// `None` while the ring holds no sample. Answered from the cache while no sample has landed
-    /// since it was computed; a sample landing mid-compute moves `written` past the tag, so the
-    /// next read computes again.
     #[must_use]
-    // The cache's two halves are 32-bit by construction.
     #[allow(clippy::cast_possible_truncation)]
     pub fn p95_ms(&self) -> Option<u64> {
         use std::sync::atomic::Ordering;
@@ -423,10 +385,6 @@ impl LatencyReservoir {
     }
 }
 
-/// EACH MEMBER'S STANDING AS THE RANKING HOOKS READ IT, off the generation's lane store, as 1.5.5's
-/// candidate projection read it: the latency signal, the free concurrency (the member's own permits
-/// where its `max_concurrent` is stated, the lane's otherwise), the remaining lifetime budget, the
-/// breaker state and error rate in the routing pool, and the lane's p95 reservoir.
 pub struct ModelSignals {
     app: LiveApp,
     names: Arc<HashMap<DestinationId, String>>,
@@ -471,24 +429,18 @@ impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
     }
 }
 
-/// What the hooks are shown of the model-serving pools beside the walk: each pool's member meta
-/// and the members' live standing.
 pub struct ModelShown {
-    /// Each pool's member meta, by pool.
     pub described: BTreeMap<String, Arc<HashMap<String, busbar_kernel::plane_driver::MemberFacts>>>,
-    /// The members' live standing.
+
     pub signals: Arc<dyn busbar_kernel::plane_driver::MemberSignals>,
 }
 
-/// What the lane cells are sealed over beside the App: each pool's ladder as the store's record
-/// calls take it, and the pools that are a model a route names directly.
 struct CellPlan {
     records: HashMap<String, busbar_kernel::store::BreakerCfg>,
     direct: HashSet<String>,
     names: Arc<HashMap<DestinationId, String>>,
 }
 
-/// One App and its lane store's breaker unit, resolved together.
 struct Bound {
     app: Arc<busbar_kernel::state::App>,
     unit: Arc<busbar_kernel_breaker::BreakerUnit>,
@@ -503,16 +455,9 @@ impl Bound {
     }
 }
 
-/// Spent budgets retain their originating breaker unit and translated destination for refunds.
 type SpentBudgets =
     HashMap<DestinationId, Vec<(Arc<busbar_kernel_breaker::BreakerUnit>, DestinationId)>>;
 
-/// The kernel's breaker port over the live App's lane store, for one walk: a model-named direct
-/// route is mapped onto the lane-default cell, every read is the lane store's breaker unit's own,
-/// and every outcome is recorded through the store's own record calls (the lane's counters move
-/// with its cells). The App is resolved once at the walk's start and kept while it is the live
-/// one; a config apply mid-walk is seen at the next call, which moves to the new App, so every
-/// call lands on the store the live configuration answers then.
 struct WalkCells {
     live: LiveApp,
     bound: arc_swap::ArcSwap<Bound>,
@@ -548,7 +493,6 @@ impl WalkCells {
         }
     }
 
-    /// The App and unit this call lands on: the walk's, unless the live App has moved since.
     fn bound(&self) -> arc_swap::Guard<Arc<Bound>> {
         let bound = self.bound.load();
         if self.live.is_current(&bound.app) {
@@ -572,7 +516,6 @@ impl WalkCells {
     }
 }
 
-/// Destination numbers belong to the retained egress. Cross a generation only by model name.
 fn model_lane(
     app: &busbar_kernel::state::App,
     names: &HashMap<DestinationId, String>,
@@ -585,7 +528,6 @@ fn model_lane(
         .filter(|&lane| lane < tables.lane_count())
 }
 
-/// The lane a destination of this egress names (its destination is the model's lane index).
 fn lane_of(destination: DestinationId) -> usize {
     usize::try_from(destination.get()).unwrap_or(usize::MAX)
 }
@@ -684,9 +626,6 @@ impl Breaker for WalkCells {
         self.observe_stated(pool, destination, outcome, None, now, token)
     }
 
-    /// The outcome recorded with the reason the plane's reading states, verbatim: a hard-down's
-    /// down reason (the lane's `dead_reason` and its operator diagnostic) is the plane's words, as
-    /// 1.5.5's classifier wrote its own; with none stated, the outcome's own name.
     fn observe_stated(
         &self,
         pool: &str,
@@ -702,9 +641,7 @@ impl Breaker for WalkCells {
             return false;
         };
         let (store, lane) = (&bound.app.store, lane_of(translated));
-        // The caller's own fault (the one answer the far end records as nothing): counted on the
-        // lane, its breaker untouched, whatever its pool configured (1.5.5's `record_outcome`
-        // `ClientFault` arm). The far end records through this call alone, so the count is here.
+
         if matches!(outcome, Outcome::RecordNothing) {
             store.record_client_fault(lane);
             return false;
@@ -713,10 +650,6 @@ impl Breaker for WalkCells {
             return false;
         };
         match outcome {
-            // At the walk's `now`, the instant its admission and its shed read: the outcome a
-            // success or a failure pushes into the error-rate window, the cooldown a failure arms
-            // and the wait a shed advertises are one clock's, as 1.5.5's record took its
-            // `now_time`.
             Outcome::Success => {
                 store.record_success_in(cell, lane, now);
                 false
@@ -727,7 +660,7 @@ impl Breaker for WalkCells {
             Outcome::HardDown => {
                 store.record_hard_down_all_cells(lane, reason.unwrap_or("hard_down"), now)
             }
-            // Counted as the caller's fault above.
+
             Outcome::RecordNothing => false,
         }
     }
@@ -741,8 +674,7 @@ impl Breaker for WalkCells {
         token: &Pass<Route>,
     ) -> (Classified, bool) {
         let classified = adapters::classify(status);
-        // The far end's number in the kernel's first reserved numbering (the one the previous
-        // release's ladder reads its 429 and 4xx in), read as the kernel's far end reads it.
+
         let code = status.code.and_then(|c| {
             c.in_namespace(busbar_contract::transport::registry::status_ns::RESERVED[0])
         });
@@ -753,8 +685,6 @@ impl Breaker for WalkCells {
         };
         let lane = lane_of(translated);
         let tripped = match (classified.outcome, code) {
-            // The previous release's rate-limit record: its own ladder step, the far end's wait
-            // honoured.
             (Outcome::Transient { retry_after }, Some(429)) => match self.plan.records.get(cell) {
                 Some(cfg) => {
                     bound
@@ -764,8 +694,7 @@ impl Breaker for WalkCells {
                 }
                 None => false,
             },
-            // The caller's own fault is counted by `observe`, the one call the far end records
-            // through.
+
             (outcome, _) => self.observe(pool, destination, outcome, now, token),
         };
         (classified, tripped)
@@ -777,11 +706,6 @@ impl Breaker for WalkCells {
             .is_some_and(|translated| bound.app.store.lane_needs_probe(lane_of(translated), now))
     }
 
-    /// A health probe's answer, recorded as 1.5.5's prober recorded it (`engine/health.rs`): a
-    /// success recovers the lane in every cell, then joins every cell's window; a transient failure
-    /// joins every cell's window under its own pool's ladder; a hard-down parks the lane in every
-    /// cell; a client fault records nothing. Every write is at the walk's `now`, the one clock the
-    /// walk's own records and reads take (BUSBAR-1.6.0.md l.161).
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, _token: &Pass<Route>) {
         let bound = self.bound();
         let Some(translated) = self.destination(&bound, destination) else {
@@ -822,7 +746,7 @@ impl Breaker for WalkCells {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&epoch);
-        // Drop invokes the originating unit outside the custody lock, even after model removal.
+
         drop(held);
     }
 
@@ -856,14 +780,11 @@ impl Breaker for WalkCells {
     }
 }
 
-/// The walk's counters on the kernel's telemetry bank, as the previous release's attempt counted
-/// them: each member by its lane index, under the pool label the walk names (a pool, or the model a
-/// direct route names); the wait-terminal depth as the root's walk counters keep it.
 struct ModelTelemetry {
     app: LiveApp,
     names: Arc<HashMap<DestinationId, String>>,
     queued: crate::root::egress_ports::WalkTelemetry,
-    /// Each lane's p95 reservoir, fed only while the generation declares the signal.
+
     reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
 }
 
@@ -895,15 +816,12 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
     }
 
     fn upstream_latency(&self, destination: DestinationId, ms: f64) {
-        // The lane's latency signal (the admin pool listing's `latency_ms`, the `fastest` order's
-        // input), as 1.5.5's served attempt recorded it.
         let app = self.app.load();
         let Some(lane) = model_lane(&app, &self.names, destination) else {
             return;
         };
         app.store.record_latency_in("", lane, ms);
-        // The same sample into the lane's p95 reservoir, ONLY while the generation declares the
-        // signal, as 1.5.5 collected it.
+
         if app
             .requested_signals
             .wants(busbar_contract::signal::Signal::CandidateLatencyP95Ms)
@@ -916,24 +834,11 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
 
     fn queued(&self, pool: &str, delta: i64) {
         busbar_kernel_egress::ports::Telemetry::queued(&self.queued, pool, delta);
-        // Balanced deltas include waits still held by a previous egress generation.
+
         busbar_kernel::plane_driver::route_tables::change_pool_queued_depth(pool, delta);
     }
 }
 
-/// THE EGRESS OF THE PLANE SERVING THE `pools` MAP (module doc): one member per sealed entry (its
-/// destination the model's lane index, its name the model's), a pool per configured pool with its
-/// own bounds and terminal, a pool per model a route may name directly, the kernel's breaker cells
-/// under each pool's ladder, each model's concurrency cap, the node's counters, `journal` and
-/// `clock`, the walk's clock the plane was composed on (the node's,
-/// [`crate::root::egress_ports::NodeClock`]): the cooldown a failure
-/// arms is recorded at the walk's reading of it, so the wait a shed advertises is measured on the
-/// same clock.
-///
-/// # Errors
-///
-/// A configured pool naming a model with no sealed route or no lane: the load is refused, naming
-/// both.
 #[allow(clippy::too_many_arguments)]
 pub fn compose(
     facts: &crate::root::door_steps::DoorFacts,

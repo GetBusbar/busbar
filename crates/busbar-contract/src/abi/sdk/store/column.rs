@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A RECORD'S FIELDS AS A BACKEND STORES THEM: what the store plugins wrote alike, stated once.
-//!
-//! * [`scope_columns`] / [`scopes_from_columns`] — a key's `allowed_scopes` split over two text
-//!   columns, `pool` grants (a JSON array of names, 1.5.x's own shape) and every other kind
-//!   (`{kind: [value, ...]}`), the omitted grant and the empty grant kept apart.
-//! * [`storable_i64`] — a `u64` a signed 64-bit column cannot hold, refused naming the method and
-//!   the field (a value that would not read back as itself).
-//! * [`clamp`] / [`read_u64`] — a counter into and out of a signed 64-bit column, pinned rather
-//!   than wrapped.
-//! * [`prefix_end`] — the exclusive upper bound of a key-prefix range scan (`record_scan`).
 
 use std::collections::BTreeMap;
 
@@ -20,8 +11,7 @@ use crate::records::{RecordStoreError, RecordStoreResult, ScopeRef};
 pub type ScopeColumns = (Option<String>, Option<String>);
 
 /// `scopes` as [`ScopeColumns`]. `None` (the grant omitted: every scope) is two NULLs; `Some` always
-/// writes the pool column, even as `[]`, so `Some([])` never reads back as `None` and a grant with
-/// no pool never reads back as every pool. The other-kinds column is NULL when there are none.
+
 #[must_use]
 pub fn scope_columns(scopes: Option<&[ScopeRef]>) -> ScopeColumns {
     let Some(list) = scopes else {
@@ -43,8 +33,7 @@ pub fn scope_columns(scopes: Option<&[ScopeRef]>) -> ScopeColumns {
 }
 
 /// The inverse of [`scope_columns`]: pools first, then every other kind in kind order. Both columns
-/// NULL is the omitted grant. A column that does not parse (reachable only by an out-of-band edit)
-/// adds nothing, so a malformed grant reads as the more restrictive one, never a wider one.
+
 #[must_use]
 pub fn scopes_from_columns(
     pools: Option<String>,
@@ -72,10 +61,7 @@ pub fn scopes_from_columns(
 }
 
 /// `v` as a signed 64-bit column holds it.
-///
-/// # Errors
-/// `v` is above `i64::MAX`: refused naming `method` and `field`, since the row read back would not
-/// be the row written.
+
 pub fn storable_i64(method: &str, field: &str, v: u64) -> RecordStoreResult<i64> {
     i64::try_from(v).map_err(|_| {
         RecordStoreError(format!(
@@ -92,15 +78,14 @@ pub fn clamp(v: u64) -> i64 {
 }
 
 /// A signed 64-bit column read back as a counter: a negative (a corrupt or hand-edited row) reads
-/// as `0`, never wraps.
+
 #[must_use]
 pub fn read_u64(v: i64) -> u64 {
     u64::try_from(v).unwrap_or(0)
 }
 
 /// The smallest key above every key that starts with `prefix`: the last byte that is not `0xff`
-/// incremented, the rest dropped. `None` when there is none (every byte `0xff`, or empty): the
-/// range is then unbounded above.
+
 #[must_use]
 pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let i = prefix.iter().rposition(|&b| b != u8::MAX)?;

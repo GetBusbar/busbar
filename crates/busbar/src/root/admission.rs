@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLUGIN ADMISSION AND THE DURABLE WRITE, THE ROOT'S (`BUSBAR-1.6.0.md` THE DESIGN l.322: the
-//! kernel never names the loader). The operator surface's plugin verbs — the catalog's inventory,
-//! an upload, an inspect, a rollback — judge a tarball through the loader's structure, signature
-//! and conflict machinery under THE ROOT'S ONE TRUST BUILDER ([`crate::root::boot::trust_policy`],
-//! the one boot admits plugins under), and the kernel reaches them as its own
-//! [`PluginAdmission`] seam ([`ADMISSION`], installed by `root::linked::register_stores`). Every
-//! judgement is MANIFEST-ONLY: nothing here loads a plugin.
-//!
-//! [`DURABLE`] is the loader's one durable-write primitive (`root::loader::durable`) as the kernel's
-//! [`DurableFs`] seam: the `plugins.fetch` directory and the admin plugin verbs write
-//! through it.
-
 use std::path::Path;
 
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
@@ -23,13 +11,10 @@ use crate::root::loader::sign::{
     evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
 };
 
-/// The process's plugin admission (`RootInstall::admission`).
 pub static ADMISSION: RootAdmission = RootAdmission;
 
-/// The process's durable write (`RootInstall::durable`).
 pub static DURABLE: RootDurable = RootDurable;
 
-/// What a manifest states, in the kernel's words.
 fn stated(m: &Manifest) -> Stated {
     Stated {
         name: m.name.clone(),
@@ -42,14 +27,10 @@ fn stated(m: &Manifest) -> Stated {
     }
 }
 
-/// `cfg`'s trust under the root's one builder; `binary_version` is carried for diagnostics only.
 fn policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String> {
     crate::root::boot::trust_policy(cfg, binary_version)
 }
 
-/// New uploads and their previews judge expiry. Installed inventory, conflict scans and explicit
-/// rollback use boot rules: time passing alone never stops an installed artifact from loading.
-/// Both contexts keep signatures, revocations and the Store-backed keys-document floor enforced.
 fn install_policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String> {
     policy(cfg, binary_version).map(|policy| TrustPolicy {
         release_enforce_expiry: true,
@@ -57,8 +38,6 @@ fn install_policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy,
     })
 }
 
-/// The audited action relaxes only its target's two independent floor gates. Trust and all
-/// other names retain the running posture.
 fn rollback_policy(mut policy: TrustPolicy, manifest: &Manifest) -> TrustPolicy {
     policy
         .min_versions
@@ -69,8 +48,6 @@ fn rollback_policy(mut policy: TrustPolicy, manifest: &Manifest) -> TrustPolicy 
     policy
 }
 
-/// `tarball` unpacked in memory and its manifest checked for completeness, integrity and a
-/// supported ABI; `what` names the tarball in a refusal (empty: the upload's own words).
 fn unpack_checked(
     tarball: &[u8],
     what: &str,
@@ -151,11 +128,6 @@ impl PluginAdmission for RootAdmission {
             .collect())
     }
 
-    /// The upload pipeline's steps 2-4b (`POST /plugins`): STRUCTURAL (the tarball unpacks in
-    /// memory; the manifest is complete, its sha256 binds the library, its ABI is supported) ->
-    /// TRUST re-verified against the RUNNING posture (an untrusted upload is a conflict) -> CONFLICT
-    /// with a DIFFERENT installed loadable plugin by any identifier -> THE ONE-VERSION RULE against
-    /// the rows this build links, after trust.
     fn admit_upload(
         &self,
         dir: &Path,
@@ -169,8 +141,7 @@ impl PluginAdmission for RootAdmission {
         let judged = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
             Ok(Verdict::Trusted { publisher, .. }) => Judged::Trusted { publisher },
             Ok(Verdict::Allowed { .. }) => Judged::Allowed,
-            // An untrusted upload with no matching opt-in is a terminal state conflict (retrying
-            // the same bytes cannot fix it); the evaluator's reason names the flag to set.
+
             Err(rejected) => {
                 return Err(Refusal::Conflict(format!(
                     "plugin rejected by the trust policy: {}",
@@ -178,8 +149,7 @@ impl PluginAdmission for RootAdmission {
                 )));
             }
         };
-        // A corrupt tarball already in the directory makes the scan refuse: the conflict status of
-        // the upload cannot be determined, so it is refused rather than published unchecked.
+
         let installed_policy = TrustPolicy {
             release_enforce_expiry: false,
             ..policy.clone()
@@ -194,11 +164,9 @@ impl PluginAdmission for RootAdmission {
             })?;
         for existing in installed.loadable() {
             if existing.file == file {
-                continue; // overwriting the same tarball file is a legitimate upgrade
+                continue;
             }
-            // Every identifier either claims (name, alias, former names) against the other's. A
-            // same-name upload under a different file would brick the next boot (phase 3 refuses
-            // two files claiming one plugin), so it is refused here.
+
             if manifest
                 .identities()
                 .any(|word| existing.manifest.answers_to(word))
@@ -236,8 +204,7 @@ impl PluginAdmission for RootAdmission {
     fn inspect(&self, tarball: &[u8], cfg: &PluginsCfg) -> Result<(Stated, Judged), Refusal> {
         let policy = install_policy(cfg, env!("CARGO_PKG_VERSION")).map_err(Refusal::Validation)?;
         let unpacked = unpack_checked(tarball, "")?;
-        // Trust is REPORTED, never a refusal to answer: an untrusted candidate is the case an
-        // operator most wants to preview.
+
         let judged = match evaluate(&unpacked.lib_bytes, &unpacked.manifest, &policy) {
             Ok(Verdict::Trusted { publisher, .. }) => Judged::Trusted { publisher },
             Ok(Verdict::Allowed { .. }) => Judged::Allowed,
@@ -248,9 +215,6 @@ impl PluginAdmission for RootAdmission {
         Ok((stated(&unpacked.manifest), judged))
     }
 
-    /// The EXPLICIT rollback's trust: the policy with this plugin's floor LOWERED to the target's
-    /// own version, so a validly-signed OLDER artifact clears it; a signature or opt-in failure is
-    /// still fatal (a rollback authenticates the operator, never the artifact).
     fn rollback_target(
         &self,
         file: &str,
@@ -375,11 +339,6 @@ impl DurableFs for RootDurable {
     }
 }
 
-/// THE `plugins.logs` CHECK (`RootInstall::plugin_logs`): the block in the loader's words.
-///
-/// # Errors
-///
-/// A level, directory or rotation the plugin log sinks cannot use.
 pub fn plugin_logs(cfg: &PluginsCfg) -> Result<(), String> {
     let l = &cfg.logs;
     crate::root::loader::dispatch::PluginLogConfig::from_words(
@@ -392,20 +351,15 @@ pub fn plugin_logs(cfg: &PluginsCfg) -> Result<(), String> {
     .map(|_| ())
 }
 
-/// Whether a DROPPED-IN `kind: hook` row of `rows` answers `module` by the rule the hook axis opens
-/// it by (`RootInstall::hook_answers`); rows this root did not build carry none.
 pub fn hook_answers(rows: &dyn busbar_contract::plugin_rows::PluginRows, module: &str) -> bool {
     crate::root::loader::rows::registry_of(rows)
         .is_some_and(|registry| crate::root::loader::hook_door::dropped_answers(registry, module))
 }
 
-/// Whether a linked auth door's Statement declares an INBOUND auth-chain module
-/// (`RootInstall::auth_chain_module`).
 pub fn auth_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
     crate::root::loader::dispatch::kinds::auth::declares_chain_module(door)
 }
 
-/// Whether the process's off-crossing latch has tripped (`RootInstall::dispatch_latched`).
 pub fn dispatch_latched() -> bool {
     crate::root::loader::dispatch::handle::latched()
 }

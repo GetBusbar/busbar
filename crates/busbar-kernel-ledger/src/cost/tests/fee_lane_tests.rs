@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE FEE-LANE RESOLUTION (#44, #47): the settlement lookup (`price_at_card`) and the one
-//! function's accumulator (`Tally::row`) price a plane's fee lane the same way, because both ask
-//! `RateCard::lane_pricing`.
-//!
-//! They used to disagree. On a fee lane `"<plane>\u{1f}"` whose plane card is PRESENT, the lookup
-//! looked up the empty lane, found nothing, flagged the whole lane unpriced and priced only the
-//! posting's fee count, so settlement (`price_fail_closed`) REFUSED a fee unit every read priced at
-//! the plane's fee. On an ABSENT plane card the lookup's lines showed a fee unit at a unit price of
-//! nothing while the figure carried the fee.
 
 use crate::cost::{
     compose_plane_cards, plane_fee_lane, price_at_card, price_fail_closed, HistorySeq, LaneClass,
@@ -21,7 +13,7 @@ use crate::cost::{
 const LANE: &str = "lane-p";
 
 /// A composed card: a flat card (fee 5), plane `p` with a PRESENT card (one lane, `calls` priced)
-/// and its own fees (3 a request, 40 a session), and plane `s` with fees (2 a request) and NO card.
+
 fn card() -> RateCard {
     use std::collections::BTreeMap;
     let flat = BTreeMap::from([(
@@ -90,8 +82,7 @@ fn tallied(card: &RateCard, p: &Posting) -> Result<u128, crate::cost::MoneyError
 }
 
 /// A present plane card: four request units and one session on `p`'s fee lane are 4 × 3 + 1 × 40
-/// minor units, on the settlement lookup exactly as on the accumulator, and settlement does not
-/// refuse them.
+
 #[test]
 fn a_fee_lane_on_a_present_plane_card_prices_the_same_on_settlement_and_on_every_read() {
     let card = card();
@@ -131,7 +122,7 @@ fn a_fee_lane_on_a_present_plane_card_prices_the_same_on_settlement_and_on_every
 }
 
 /// An absent plane card: plane `s` bills its fee units at its own fee, and the lookup's line says
-/// so rather than showing a unit price of nothing beside a figure that carries the fee.
+
 #[test]
 fn a_fee_lane_on_an_absent_plane_card_shows_the_fee_it_bills() {
     let card = card();
@@ -151,7 +142,7 @@ fn a_fee_lane_on_an_absent_plane_card_shows_the_fee_it_bills() {
 }
 
 /// A class that is not a fee class on a present card's fee lane stays a refusal on both paths, and
-/// an ordinary lane on the same card is untouched by the fee-lane rule.
+
 #[test]
 fn a_stray_class_on_a_fee_lane_still_refuses_and_an_ordinary_lane_is_untouched() {
     let card = card();
@@ -166,7 +157,6 @@ fn a_stray_class_on_a_fee_lane_still_refuses_and_an_ordinary_lane_is_untouched()
         .iter()
         .any(|l| l.class == "calls" && l.unpriced));
 
-    // `calls` at 7,000 nano-units on p's served lane, plus two requests at p's fee of 3.
     let served = posting(
         format!("p{}{LANE}", crate::cost::PLANE_LANE_SEP),
         &[("calls", 2)],

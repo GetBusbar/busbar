@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The negotiated transaction carrier crosses the actual linked and dropped store tables.
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -199,9 +197,6 @@ fn only_a_complete_correlated_leased_ready_result_is_a_decision_both_ways() {
     }
 }
 
-// A valid RECORD_GET SHORT must ask for at most MAX_RECORD_BYTES, above the lent capacity.
-// The normal runner starts at 16 KiB, so use its same typed request and submit path with an
-// intentionally empty host value buffer to exercise the one permitted bounded recall.
 async fn transaction_with_short_buffer(
     store: &LoadedStore,
     candidate: &Request,

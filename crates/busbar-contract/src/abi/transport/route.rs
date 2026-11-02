@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ROUTE MATCH VOCABULARY, defined once (spec: THE DESIGN, Auth points and guest lists, step 3):
-//! how a line on a listener's guest list recognises the requests that are its own. A plane declares
-//! its claims in it, the kernel orders a listener's lines by it, and the listener's transport
-//! matches a decoded head against it. All three answer through the functions here, so what boot
-//! proves and what a request matches cannot differ.
-//!
-//! A route is a METHOD SET, a PATH in one of five forms, and optional FIELD PREDICATES over the
-//! head's field lines. Field names are compared case-insensitively (they are lower-case in a route,
-//! refused otherwise at check); a [`FIELD_VALUE_PREFIX`] value is compared case-sensitively.
 
 use std::collections::{HashMap, HashSet};
 
@@ -41,8 +33,7 @@ pub const METHOD_ANY: u32 = (1 << 9) - 1;
 /// The whole path equals the route's path.
 pub const PATH_EXACT: u32 = 1;
 /// A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a
-/// `{name+}` segment one or more (at most one per pattern), a last `{*name}` segment everything that
-/// remains, including nothing.
+
 pub const PATH_PATTERN: u32 = 2;
 /// Exactly one segment under the route's path (`/a` admits `/a/b`, never `/a`, `/ab` or `/a/b/c`).
 pub const PATH_PREFIX: u32 = 3;
@@ -117,7 +108,7 @@ pub struct LineEntry {
 }
 
 /// HOW THE ROUTE ROW IS MADE: from [`RouteMatch::EMPTY`], its plain fields set
-/// directly and each list by its setter, to items that live for the program.
+
 impl RouteMatch {
     /// Nothing stated: every string absent, every list empty, every number zero.
     pub const EMPTY: RouteMatch = RouteMatch {
@@ -187,7 +178,7 @@ pub fn method_bit(method: &str) -> u32 {
 }
 
 /// A `PATH_PATTERN` spelling as segments borrowed from it; `None` when it breaks the syntax (a `{`
-/// segment that is not whole, an empty name, a `{*name}` that is not last, or a second `{name+}`).
+
 #[must_use]
 pub fn pattern_segments(pattern: &str) -> Option<Vec<SegRef<'_>>> {
     let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
@@ -240,7 +231,7 @@ impl Interner {
     }
 
     /// A `PATH_PATTERN` as the grammar's `'static` segments, parsed and kept once per distinct
-    /// pattern; `None` when it breaks the syntax.
+
     #[must_use]
     pub fn intern_pattern(&mut self, pattern: &str) -> Option<&'static [PathSeg]> {
         let seen = self.strings.get(pattern).copied();
@@ -271,7 +262,7 @@ impl Interner {
 }
 
 /// Whether `path` matches a route's path in `form`, the one spelling of every form. A pattern that
-/// breaks the syntax matches nothing.
+
 #[must_use]
 pub fn path_matches(form: u32, route_path: &str, path: &str) -> bool {
     match form {
@@ -285,7 +276,7 @@ pub fn path_matches(form: u32, route_path: &str, path: &str) -> bool {
 }
 
 /// Whether one field predicate holds over a head's field lines (`(name, value)`, names in any
-/// case): the name case-insensitively, a value prefix case-sensitively.
+
 #[must_use]
 pub fn field_holds(op: u32, name: &str, value: &[u8], fields: &[(&str, &[u8])]) -> bool {
     fields

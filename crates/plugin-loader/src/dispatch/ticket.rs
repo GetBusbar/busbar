@@ -1,91 +1,58 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TICKETS, THE HOST'S WAKE AND COMPLETION HANDLES.
-//!
-//! * A [`Ticket`] is `(slot, generation)`, unique per instance across ALL workers: the slot encodes
-//!   `worker << INDEX_BITS | index` (host-private; a plugin never decodes it). Each worker owns a
-//!   slab of generations; generation `0` is never minted, and recycling a slot bumps it, so a late
-//!   wake for a recycled slot names a generation that no longer exists and is DROPPED.
-//! * [`host_wake`] is the host's `WakeFn`: callable from any thread, never blocks on the plugin or
-//!   on I/O (it pushes onto the owning worker's channel), never fails. It routes by decoding the
-//!   slot; the worker checks the generation.
-//! * A host service's result under its completion handle `(ticket, seq)` is held by
-//!   [`super::services::ServiceStore`]: a re-issued handle on RESUME redeems the stored result,
-//!   and nothing ever runs the service twice.
-
 use std::sync::{OnceLock, Weak};
 
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 
-/// Bits of a ticket's slot that index the worker's slab.
 pub(crate) const INDEX_BITS: u32 = 20;
-/// The most tickets one worker's slab holds.
+
 pub(crate) const MAX_INDEX: u32 = (1 << INDEX_BITS) - 1;
-/// The most workers a dispatcher has (the rest of the slot's bits).
+
 pub(crate) const MAX_WORKERS: u32 = 1 << (32 - INDEX_BITS);
 
-/// `worker`'s ticket slot for slab `index`.
 pub(crate) fn encode(worker: u32, index: u32) -> u32 {
     (worker << INDEX_BITS) | index
 }
 
-/// `(worker, index)` of a ticket slot.
 pub(crate) fn decode(slot: u32) -> (u32, u32) {
     (slot >> INDEX_BITS, slot & MAX_INDEX)
 }
 
-/// Where an instance's wakes go: the dispatcher that holds its tickets.
 pub(crate) trait WakeRoute: Send + Sync {
-    /// Push `t` to the worker that owns it, with `supplier` the instance whose context handed the
-    /// host `t` (#74: a forged generation the worker finds is that instance's; `None` = the host's
-    /// own wake, blamed on no one and counted against the process's latch). Never blocks on the
-    /// plugin.
     fn wake(&self, t: Ticket, supplier: Option<&'static InstanceWake>);
 
-    /// The host services this route's instances are served from, borrowed; `None` = none.
     fn services(&self) -> Option<super::services::Served<'_>> {
         None
     }
 
-    /// The store of this route's dispatcher: the services' kept results and the driver tickets'
-    /// held exchanges (`super::held`); `None` = none.
     fn store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
         None
     }
 
-    /// The host's I/O this route's instances are served from; `None` = none.
     fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
         None
     }
 
-    /// The store a service's results are kept under, whether or not this route serves the host
-    /// services (the auth handle's slots run on it without them).
     fn service_store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
         self.services().map(|s| std::sync::Arc::clone(s.store))
     }
 
-    /// The kernel's side of the host auth handle this route's instances are served from; `None` =
-    /// none, and every auth-handle service answers REFUSED past its checks.
     fn auth_handle(&self) -> Option<std::sync::Arc<dyn super::auth_handle::AuthHandleHost>> {
         None
     }
 
-    /// The seal the host lent this route's dispatcher (Part 2 #54); `None` = none, and a reveal of
-    /// a `Secret` its instances' services would make is refused.
     fn seal(
         &self,
     ) -> Option<std::sync::Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
         None
     }
 
-    /// The waker of an INLINE ticket's task (`super::inline`); `None` for any other ticket.
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         let _ = t;
         None
     }
 
-    /// The INLINE tickets of this route's dispatcher (`super::inline`); `None` = none.
     fn inline(&self) -> Option<std::sync::Arc<super::inline::InlineTickets>> {
         None
     }
@@ -159,8 +126,6 @@ pub(crate) struct Waking {
 }
 
 impl Waking {
-    /// The waking of the instance `wake` names (resolved by the caller): its dispatcher, and itself
-    /// as the supplier. `None` before a dispatcher is bound.
     pub(crate) fn of(wake: &'static InstanceWake) -> Option<Self> {
         Some(Self {
             route: wake.route.get()?.clone(),
@@ -168,7 +133,6 @@ impl Waking {
         })
     }
 
-    /// Wake `t` through the route, naming the supplier.
     pub(crate) fn wake(&self, t: Ticket) {
         if let Some(route) = self.route.upgrade() {
             route.wake(t, self.supplier);
@@ -179,16 +143,12 @@ impl Waking {
 /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;
 /// never fails. A wake for an unknown worker or a stale generation is dropped (the latter by the
 /// worker, which alone knows the generation).
-#[doc(hidden)] // TEST SEAM: busbar-test-kit
+#[doc(hidden)]
 pub extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
-    // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
-    // counted by the worker, never silently lost here.
-    // THE HANDLE IS VERIFIED BEFORE IT NAMES ANYTHING (#74): a context the host did not mint wakes
-    // nothing and is counted.
     let Some(target) = super::handle::resolve(ctx) else {
         return;
     };
-    // The supplier is the context's own instance, resolved above (#74).
+
     if let Some(route) = target.route.get().and_then(Weak::upgrade) {
         route.wake(ticket, Some(target));
     }

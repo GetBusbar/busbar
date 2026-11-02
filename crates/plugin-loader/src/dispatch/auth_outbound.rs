@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE LOADED AUTH INSTANCE'S OUTBOUND CALLS AS THE KERNEL MAKES THEM: [`OutboundInstance`]
-//! implements the contract's `OutboundAuth` over the one dispatcher's auth handle (THE DESIGN, section 6,
-//! section 11.6), so the kernel's egress walk reaches a compiled-in and a dropped-in auth plugin through
-//! the same table without naming this crate. The composition root builds it, opens each provider's
-//! binding at generation seal, and hands the kernel the handle.
-//!
-//! `fields` is tried ticket-less first (a cached header answers in place, one crossing on the
-//! caller's thread); a plugin that must wait for a refresh is submitted on a ticket and awaited, the
-//! host buffers its `in` names lent to the dispatcher until the op completes, so a caller that stops
-//! waiting frees nothing a worker still reads.
-
 #![allow(unsafe_code)]
 
 use std::future::Future;
@@ -47,9 +36,6 @@ pub struct OutboundInstance {
     worker: u32,
 }
 
-/// THE OUTBOUND STYLES `plugin`'s tail states (THE DESIGN §6 step 3: the auth plugin that serves
-/// a style opens the binding). Read once per row by the host, which then binds only the row that
-/// serves the style it is asked for.
 #[must_use]
 pub fn outbound_styles(plugin: &Plugin<Auth>) -> Vec<OutboundStyle> {
     plugin
@@ -59,8 +45,6 @@ pub fn outbound_styles(plugin: &Plugin<Auth>) -> Vec<OutboundStyle> {
 }
 
 impl OutboundInstance {
-    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`, a waiting `fields`
-    /// submitted on `worker`.
     pub fn new(
         plugin: impl Into<Arc<Plugin<Auth>>>,
         dispatcher: Arc<Dispatcher>,
@@ -73,14 +57,6 @@ impl OutboundInstance {
         }
     }
 
-    /// `plugin`'s instance OPENED over the settings document `settings` (a JSON object): the
-    /// binding's own settings, for a plugin whose needs take their target from them (`target_from`:
-    /// the loader declares each such need pinned to what its path resolves to in `settings`, at
-    /// this `open`, THE DESIGN §5 PB-100).
-    ///
-    /// # Errors
-    ///
-    /// `validate` or `open` did not answer READY, naming the plugin.
     pub fn open_with(
         plugin: Plugin<Auth>,
         dispatcher: Arc<Dispatcher>,
@@ -110,9 +86,6 @@ impl OutboundInstance {
         Ok(Self::new(plugin, dispatcher, worker))
     }
 
-    /// THE INSTANCE'S TICK SCHEDULE (THE DESIGN §6.5: a minted credential refreshes ahead of
-    /// expiry on `tick`): the one auth schedule, [`super::auth_ticks::ticks`], holding the instance
-    /// for as long as it runs.
     pub async fn ticks(self: Arc<Self>) {
         super::auth_ticks::ticks(&self.plugin, &self.dispatcher, self.worker).await;
     }
@@ -153,9 +126,6 @@ const NO_FIELD: FieldSpan = FieldSpan {
     _reserved: 0,
 };
 
-/// THE HOST MEMORY ONE `fields` LENDS THE PLUGIN: the request's bytes, the envelope's named values
-/// pointing into them, and the buffers the answer is written into. Every pointer an `in` holds
-/// points into a heap allocation owned here, which never moves while this lives.
 struct Lend {
     request: FieldsRequest,
     named: Vec<NamedValue>,
@@ -171,10 +141,7 @@ unsafe impl Send for Lend {}
 unsafe impl Sync for Lend {}
 
 impl Drop for Lend {
-    /// The caller's credential and the auth fields are credential material: zeroised once the
-    /// crossing's memory is dropped (after the op's last crossing and the host's copy-out).
     fn drop(&mut self) {
-        // The caller's credential zeroises itself (`Secret`); the field bytes are wiped here.
         self.field_buf.fill(0);
     }
 }
@@ -200,9 +167,6 @@ impl Lend {
         })
     }
 
-    /// The `in` naming this memory under `handle`. `seal` is the host's, lent to the dispatcher: the
-    /// caller's credential is revealed under it to be lent to the plugin (the caller refuses a
-    /// request that carries one when none was lent).
     fn input(
         &mut self,
         handle: u64,
@@ -210,8 +174,7 @@ impl Lend {
     ) -> FieldsIn {
         let r = &self.request;
         let mut head = in_head();
-        // The call's extensions blob (the per-call scope, when the request stated one), lent with
-        // the rest of the request's bytes.
+
         if !r.extensions.is_empty() {
             head.extensions = blob(&r.extensions, BLOB_OCTETS, 0);
         }
@@ -248,8 +211,7 @@ impl Lend {
             headers_len: self.named.len(),
             conn: r.conn,
             unit: r.unit,
-            // The body is lent only at `HeadBody`, never at another point; a signing style hashes
-            // it itself.
+
             body: match (r.point, r.body.as_deref()) {
                 (AuthPoint::HeadBody, Some(b)) => blob(b, BLOB_OCTETS, 0),
                 _ => NO_BLOB,
@@ -257,8 +219,6 @@ impl Lend {
         }
     }
 
-    /// The fields a READY answer wrote, copied out of the host buffer. The dispatcher's validator
-    /// (`check_fields`) already bounded every span.
     fn answer(&self, out: &FieldsOut) -> Fields {
         let Some(require_secure) = security_requirement(out.head.extensions) else {
             return Fields::Failed;
@@ -286,8 +246,6 @@ impl Lend {
     }
 }
 
-/// Decode while the READY reply's lease/generation still owns its bytes. Malformed envelopes,
-/// repeated custody markers and unknown versions never degrade a protected batch to raw bytes.
 fn security_requirement(blob: Blob) -> Option<bool> {
     if blob.fmt == BLOB_ABSENT && blob.len == 0 {
         return Some(false);
@@ -311,8 +269,6 @@ fn security_requirement(blob: Blob) -> Option<bool> {
     (consumed == bytes.len()).then_some(secure)
 }
 
-/// A copy of `r` for one crossing's lent memory (the caller's credential included; each copy is
-/// zeroised when its crossing's memory is dropped).
 fn copy(r: &FieldsRequest) -> FieldsRequest {
     FieldsRequest {
         point: r.point,
@@ -339,7 +295,6 @@ fn fields_out() -> FieldsOut {
     }
 }
 
-/// The sizes a short answer named, never below the host's starting sizes.
 fn grown(out: &FieldsOut) -> (usize, usize) {
     (
         usize::try_from(out.needed_bytes)
@@ -358,11 +313,6 @@ fn settled(outcome: Outcome, lend: &Lend, out: &FieldsOut) -> Fields {
 }
 
 impl OutboundInstance {
-    /// `open_outbound`, its refusal as the plugin wrote it: the outcome and the plugin's own error
-    /// text (empty when it wrote none).
-    ///
-    /// # Errors
-    /// The binding did not open: the outcome and the plugin's words.
     pub fn open_outbound_raw(
         &self,
         style: &str,
@@ -428,15 +378,13 @@ impl OutboundAuth for OutboundInstance {
                 _reserved: 0,
             },
         );
-        // Not READY (a handle this generation does not hold, a fault): not ready, so a prober never
-        // sends an unauthenticated request on it.
+
         let called = self.plugin.call(slot::OUTBOUND_READY, &mut frame);
         let _lease = AnswerLease::new(&self.plugin, called.lease);
         called.outcome == Outcome::Ready && frame.out.ready != 0
     }
 
     fn fields_now(&self, handle: u64, request: &FieldsRequest) -> Option<Fields> {
-        // No seal lent to the dispatcher: a caller credential is not revealed, and the fields fail.
         let seal = self.dispatcher.seal();
         if request.caller_credential.is_some() && seal.is_none() {
             return Some(Fields::Failed);
@@ -457,7 +405,6 @@ impl OutboundAuth for OutboundInstance {
     }
 
     fn fields(&self, handle: u64, request: FieldsRequest, deadline_ns: u64) -> Box<dyn Fielding> {
-        // No seal lent to the dispatcher: a caller credential is not revealed, and the fields fail.
         if request.caller_credential.is_some() && self.dispatcher.seal().is_none() {
             return Box::new(Failed);
         }
@@ -478,7 +425,6 @@ impl OutboundAuth for OutboundInstance {
     }
 }
 
-/// A `fields` that failed before anything crossed.
 struct Failed;
 
 impl Future for Failed {
@@ -495,20 +441,17 @@ impl Fielding for Failed {
     }
 }
 
-/// One `fields`, submitted on its ticket when first polled: the one re-call a short answer earns,
-/// then the fields its lent memory holds.
 struct Asked {
     this: OutboundInstance,
     handle: u64,
     request: FieldsRequest,
     deadline_ns: u64,
-    /// The memory the last op was lent (the buffers its answer was written into).
+
     lend: Option<Arc<Lend>>,
     first: bool,
 }
 
 impl Asked {
-    /// Submit `fields` on `call` over buffers of `bytes` and `fields`.
     fn submit(
         &mut self,
         call: &mut Ticketed<FieldsIn, FieldsOut>,
@@ -543,8 +486,6 @@ impl Answering<FieldsIn, FieldsOut> for Asked {
     ) -> Option<Fields> {
         let out = done.frame.as_ref().map(|f| f.out);
         let answer = match (done.short && self.first, out, &self.lend) {
-            // THE ONE RE-CALL, on the same ticket, with what the answer said it needs; the
-            // dispatcher answers a second short answer FAULT.
             (true, Some(out), _) => {
                 self.first = false;
                 self.submit(call, grown(&out));

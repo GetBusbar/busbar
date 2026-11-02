@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! One transaction witness, compiled as a linked module and as an actual dropped library.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR: the OTLP sink on the export kind's table (`busbar_contract::abi::export`), its
-//! lifecycle the SDK's generic one over [`Otlp`] (`abi::sdk::life`), every kind op a [`SafeSlot`].
-//!
-//! * `validate` — the settings parse as [`OtlpSettings`], refusing in serde's words.
-//! * `open` / `refresh` — the settings become the endpoint (userinfo split into a Basic header).
-//!   Settings that do not parse still open, taking nothing: the configuration refused them.
-//! * `deliver` — the batch's spans as one OTLP request, sent by `exchange()` over the declared need,
-//!   PENDING while the host carries it; READY whatever became of it (a dropped export is logged at
-//!   debug). The host's first answer settles the run: carried, `OTLP tracing enabled`; refused by
-//!   the connector, `…; disabling OTLP trace export`, and no later batch is sent.
-//! * `scrape` and `serve` — REFUSED: the sink carries no metrics and serves no route.
-//! * `status` and `check` — READY with nothing to report.
-
 use std::sync::{Mutex, PoisonError, RwLock};
 use std::task::Poll;
 
@@ -37,15 +24,8 @@ use crate::{
     EXPORT_TIMEOUT_MS, NAME,
 };
 
-/// The one need's index in [`STATEMENT`]'s needs.
 pub const NEED: u32 = 0;
 
-/// The collector, reached through the host: framed `http`, under the `loopback-allowed` egress class
-/// 1.5.5's exporter held its endpoint to, its target the `url` setting (THE DESIGN §5, PB-100): the
-/// host declares the need pinned to the operator's collector, its userinfo left out, and refuses a
-/// dial to any other host. Each export names the same collector ([`Endpoint::collector`], the URL
-/// with its userinfo stripped), so no credential is ever part of what the host dials; the userinfo
-/// travels only as the request's `Authorization`.
 pub(crate) const NEEDS: &[Need] = &[Need {
     direction: DIRECTION_OUTBOUND,
     egress_class: EGRESS_LOOPBACK_ALLOWED,
@@ -57,14 +37,13 @@ pub(crate) const NEEDS: &[Need] = &[Need {
     keep_response_headers: std::ptr::null(),
     keep_response_headers_len: 0,
     timeout_ms: EXPORT_TIMEOUT_MS,
-    // The collector's response head is not read: the named (empty) list, nothing denied beyond it.
+
     keep_mode: KEEP_NAMED,
     _reserved: 0,
     deny_response_headers: std::ptr::null(),
     deny_response_headers_len: 0,
 }];
 
-/// The one stream the sink carries.
 const STREAMS: &[u8] = &[ExportStream::Traces as u8];
 
 const TAIL: Tail = Tail {
@@ -78,12 +57,11 @@ const TAIL: Tail = Tail {
     routes_len: 0,
 };
 
-/// This plugin's Statement: its name and version, the `traces` stream, and the collector need.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
     needs: NEEDS.as_ptr(),
     needs_len: NEEDS.len(),
-    // OTLP installs the ONE process-global tracer subscriber: at most one instance.
+
     marks: MARK_ONE_INSTANCE,
     ..statement(NAME, env!("CARGO_PKG_VERSION"), 64)
 };
@@ -102,7 +80,6 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// The endpoint `settings` name.
     #[must_use]
     pub fn of(settings: &[u8]) -> Self {
         match OtlpSettings::parse(settings) {
@@ -118,7 +95,6 @@ impl Endpoint {
         }
     }
 
-    /// The request carrying `body` to this endpoint; `None` when it names none.
     #[must_use]
     pub fn request(&self, body: Vec<u8>) -> Option<Request> {
         let (target, authorization) = self.target.as_ref()?;
@@ -145,7 +121,6 @@ pub struct Otlp {
 }
 
 impl Otlp {
-    /// The endpoint this instance sends to.
     #[must_use]
     pub fn endpoint(&self) -> Endpoint {
         self.endpoint
@@ -154,15 +129,10 @@ impl Otlp {
             .clone()
     }
 
-    /// Whether the host refused this run's exports: its connector refused the first one (the
-    /// egress class's verdict on the target, or no connector at all).
     fn refused(&self) -> bool {
         *self.admitted.lock().unwrap_or_else(PoisonError::into_inner) == Some(false)
     }
 
-    /// What became of one export: the first answer the host gives settles whether this run takes
-    /// spans (the line a rollout check greps for, or the refusal and that export is disabled); a
-    /// non-2xx or failed export drops that batch, logged at debug.
     fn settle(&self, shown: &str, result: &Result<ExchangeResponse, ConnFailure>) {
         {
             let mut admitted = self.admitted.lock().unwrap_or_else(PoisonError::into_inner);
@@ -217,7 +187,6 @@ impl Life for Otlp {
     }
 }
 
-/// The OTLP request a JSON-lines batch makes, each record that is no span logged and skipped.
 fn batch_body(batch: &[u8]) -> Option<Vec<u8>> {
     let records: Vec<serde_json::Value> = batch
         .split(|b| *b == b'\n')
@@ -230,7 +199,6 @@ fn batch_body(batch: &[u8]) -> Option<Vec<u8>> {
     proto::export_request(&records)
 }
 
-/// `deliver`: the batch as one OTLP request, exchanged over the need.
 pub struct Deliver;
 
 impl SafeSlot for Deliver {
@@ -289,7 +257,6 @@ impl SafeSlot for Deliver {
     }
 }
 
-/// The line an export that did not reach the collector writes.
 fn dropped(shown: &str, error: &ConnFailure) {
     tracing::debug!(
         endpoint = %shown,
@@ -298,7 +265,6 @@ fn dropped(shown: &str, error: &ConnFailure) {
     );
 }
 
-/// `scrape`: REFUSED — the sink carries no metrics.
 pub struct Scrape;
 
 impl SafeSlot for Scrape {
@@ -310,7 +276,6 @@ impl SafeSlot for Scrape {
     }
 }
 
-/// `status`: nothing to report.
 pub struct Status;
 
 impl SafeSlot for Status {
@@ -322,9 +287,6 @@ impl SafeSlot for Status {
     }
 }
 
-/// `check`: at the limits phase, 1.5.5's refusal of every instance after the first
-/// ([`crate::check_limits`]) — the sink states the `one_instance` mark, so the host asks it while
-/// the configuration is resolved; READY with nothing otherwise.
 pub struct Check;
 
 impl SafeSlot for Check {
@@ -356,7 +318,6 @@ impl SafeSlot for Check {
     }
 }
 
-/// `serve`: REFUSED — the sink serves no route.
 pub struct Serve;
 
 impl SafeSlot for Serve {
@@ -382,5 +343,4 @@ mod table {
     }
 }
 
-/// This plugin's door: the one a compiled-in build links and the dropped-in image exports.
 pub use table::door;

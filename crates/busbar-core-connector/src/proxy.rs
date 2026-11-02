@@ -2,55 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PROXY ENVIRONMENT, AS EVERY CONNECTOR DIAL HONOURS IT (the engine's proxy behaviour moves
-//! into the connector UNCHANGED, so every dial through the connector honours `HTTPS_PROXY` /
-//! `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` exactly as 1.5.5's reqwest clients did).
-//!
-//! This is the ONE place the proxy environment is read (a move, not a copy): the parser is the
-//! kernel engine's former one (`busbar-kernel` `egress/engine/mod.rs`, `mod tunnel`, deleted with
-//! that engine), moved verbatim into here, and it fills the choice
-//! ([`crate::proxy_route`]) every dial of this connector honours; the kernel dials nothing
-//! and reads no environment of its own. The rules: scheme-scoped slots (https targets use
-//! `HTTPS_PROXY`, everything else `HTTP_PROXY`, each falling back to `ALL_PROXY`, uppercase read
-//! before lowercase), `NO_PROXY` with reqwest's full rule set (host, domain suffix, IP literal,
-//! CIDR), `Proxy-Authorization: Basic` from the proxy URL's userinfo, an `https://` proxy refused
-//! loudly, a garbage value a boot refusal that never echoes the proxy password. What changes is
-//! where the bytes go: the connection ([`crate::compose`]) dials the proxy, writes
-//! [`connect_request`] before anything else, reads the proxy's answer ([`connect_answer`]) and only
-//! then runs the secure layer (the target's name, the target's certificate) and the framer over the
-//! tunnel, so the proxy sees `CONNECT host:port` and never a decrypted byte. Plain-http targets are
-//! tunnelled too (CONNECT for everything, as the engine and `curl -p` do; the request bytes are
-//! identical either way).
-//!
-//! A FRAMED dial is tunnelled (an application protocol over the stream, as 1.5.5's HTTP clients
-//! were); a carrier carried as itself (a database's or a directory's raw stream) and a program
-//! never are, as 1.5.5's drivers never were.
 
 use std::{ffi::OsString, sync::Arc};
 
 pub use crate::proxy_route::{ProxyChoice, ProxyHop};
 
 /// The proxy env value as a REFUSAL may render it: userinfo replaced by `***`, everything
-/// else verbatim.
-///
-/// `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` carry `user:password@` (RFC 3986 §3.2.1) in every
-/// corporate deployment that authenticates its proxy, and [`parse_proxy`]'s refusals are not
-/// swallowed: `resolve_config` hands them to [`from_env`], whose `Err` refuses the boot. Interpolating the raw value put the
-/// operator's proxy password on stderr, in the crash report and in whatever CI log collected
-/// them. The host, port and scheme are what the operator needs to fix the variable, so they
-/// survive — only the credential goes.
-///
-/// TEXTUAL, not a re-parse, deliberately: the first caller is the arm where `url::Url::parse`
-/// has ALREADY FAILED, so a masker that had to parse could only fail the same way and return
-/// the raw value. Userinfo is everything before the LAST `@` of the authority — last, because
-/// a password may itself contain an unencoded `@` (`svcacct:hunter2-Pr0xyP@ss@proxy.corp`),
-/// and the authority ends at the first `/`, `?` or `#` because userinfo may not contain one, and
-/// at a `\` because the dialling stack reads it as `/`.
-/// An `@` that appears only AFTER the authority cannot be userinfo, but neither can this
-/// function prove the value is well-formed enough for that reasoning to hold, so that residue
-/// case redacts wholesale rather than print a maybe-credential.
+
 fn redact_userinfo(v: &str) -> String {
-    // The authority the one split reads ([`busbar_contract::net::url_authority`]): it ends at a
-    // `\` as the dialling stack ends it, so the text after one is never shown as the host.
     let parts = busbar_contract::net::url_authority(v);
     let (host_port, tail) = (parts.host_port, parts.tail);
     let shown = if parts.userinfo.is_some() {
@@ -67,15 +26,7 @@ fn redact_userinfo(v: &str) -> String {
 }
 
 /// Parse a proxy env value (`http://[user:pass@]host[:port]`; a bare `host:port` is accepted
-/// too). `https://` proxies are refused loudly: TLS-to-proxy is a different transport this
-/// tunnel does not speak, and silently downgrading it to a plain stream would be a lie.
-///
-/// Every refusal renders the value through [`redact_userinfo`] — see there for why the raw
-/// value must never reach the message, and why the host still does.
-///
-/// # Errors
-///
-/// The value does not read as an `http://` proxy URL with a host.
+
 pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
     let shown = redact_userinfo(v);
     let url = if v.contains("://") {
@@ -100,8 +51,7 @@ pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
     let port = parsed.port().unwrap_or(80);
     let auth = (!parsed.username().is_empty()).then(|| {
         use base64::Engine;
-        // The userinfo as the URL spells it is percent-encoded; the credential is what it
-        // encodes, as reqwest decoded it before Basic-encoding it.
+
         let creds = [
             percent_decoded(parsed.username()),
             b":".to_vec(),
@@ -117,7 +67,7 @@ pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
 }
 
 /// `text` with every `%XX` escape decoded to its byte; a `%` not followed by two hex digits is
-/// kept as written.
+
 fn percent_decoded(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -159,13 +109,7 @@ const NO_PROXY_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
 
 impl ProxyEnvValues {
     /// Uppercase read before lowercase, empty values treated as unset — hyper-util
-    /// `matcher::Builder::from_env`'s `get_first_env(&["HTTPS_PROXY", "https_proxy"])`
-    /// ordering (empty parses to nothing there; skipping it here is the same outcome).
-    ///
-    /// # Errors
-    ///
-    /// A selected nonempty value is not Unicode, including `NO_PROXY`. The refusal names
-    /// only the variable, never its value, which may contain a proxy credential.
+
     pub fn from_process_env() -> Result<Self, String> {
         Self::from_lookup(|key| std::env::var_os(key))
     }
@@ -188,10 +132,7 @@ impl ProxyEnvValues {
         };
         Ok(ProxyEnvValues {
             https: first(HTTPS_PROXY_KEYS)?,
-            // Read unconditionally — hyper-util's matcher additionally skips uppercase
-            // `HTTP_PROXY` under CGI (`REQUEST_METHOD` set; the httpoxy guard). busbar is a
-            // server binary, never a CGI child, so the guard's precondition cannot hold and
-            // the unconditional read is behavior-identical where this process runs.
+
             http: first(HTTP_PROXY_KEYS)?,
             all: first(ALL_PROXY_KEYS)?,
             no: first(NO_PROXY_KEYS)?,
@@ -200,15 +141,7 @@ impl ProxyEnvValues {
 }
 
 /// Resolve the value bag into the per-scheme slots, reqwest's precedence: scheme-specific
-/// var first, `ALL_PROXY` as the fallback for BOTH slots (hyper-util `Builder::build`:
-/// `http: http.or(all)`, `https: https.or(all)`). No proxy var at all → `None`, the direct
-/// arm. Any PRESENT value that does not parse is a hard error — reqwest silently ignored
-/// garbage and fell through, but silently egressing direct past a configured proxy is the
-/// dangerous direction, so busbar refuses to boot instead (documented deviation).
-///
-/// # Errors
-///
-/// A set value that does not parse ([`parse_proxy`]).
+
 pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyChoice>>, String> {
     let all = env
         .all
@@ -235,26 +168,20 @@ pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyChoice>>, 
 }
 
 /// THE PROCESS'S PROXY CHOICE, read once from its environment: `None` when no proxy variable is
-/// set (the direct arm every known deployment takes).
-///
-/// # Errors
-///
-/// A selected proxy or `NO_PROXY` variable is not Unicode, or a proxy variable does not parse:
-/// the boot refuses (fail-loud beats silently egressing direct past a configured proxy), the
-/// password never in the text.
+
 pub fn from_env() -> Result<Option<Arc<ProxyChoice>>, String> {
     resolve_config(&ProxyEnvValues::from_process_env()?)
 }
 
 /// Hard ceiling on the proxy's CONNECT response head; a real response is one status line + a few
-/// headers. Anything larger is a misbehaving proxy and fails the connect.
+
 pub const CONNECT_HEAD_CAP: usize = 8 * 1024;
 
 /// Wall-clock bound on the CONNECT handshake — the same 10s the socket connect itself carries.
 pub const CONNECT_HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `CONNECT host:port HTTP/1.1` (+ Host, + Proxy-Authorization when configured), the bytes the
-/// engine's `connect_handshake` wrote, for `target` (`host:port`, a v6 host bracketed).
+
 #[must_use]
 pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
     let mut req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
@@ -268,13 +195,7 @@ pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
 }
 
 /// What the proxy has answered so far to a CONNECT for `addr` (`host:port`): `Ok(None)` = its head is not
-/// complete yet; `Ok(Some(n))` = the tunnel is up and the head is the first `n` bytes (anything
-/// after them is the target's); `Err` = the proxy refused (any status but 2xx: RFC 9110, 2xx means
-/// the tunnel is established) or its head ran past [`CONNECT_HEAD_CAP`].
-///
-/// # Errors
-///
-/// The refusal, in the engine's words.
+
 pub fn connect_answer(head: &[u8], addr: &str) -> Result<Option<usize>, String> {
     let Some(at) = head.windows(4).position(|w| w == b"\r\n\r\n") else {
         if head.len() > CONNECT_HEAD_CAP {
@@ -282,8 +203,7 @@ pub fn connect_answer(head: &[u8], addr: &str) -> Result<Option<usize>, String> 
         }
         return Ok(None);
     };
-    // Status line: `HTTP/1.x NNN ...` — accept any 2xx (some proxies say 200 Connection
-    // established, some plain 200 OK).
+
     let line = head.split(|&b| b == b'\r').next().unwrap_or_default();
     let status_2xx = line
         .split(|&b| b == b' ')
@@ -308,7 +228,7 @@ pub fn host_of(target: &str) -> &str {
 }
 
 /// A whole choice whose BOTH slots point at one proxy at `host:port`: what a test wires directly
-/// so parallel tests never race an environment variable.
+
 #[cfg(test)]
 pub(crate) fn test_config(
     host: &str,

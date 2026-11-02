@@ -32,7 +32,7 @@ fn a_tombstone_is_absent_and_a_queued_one_hides_the_stored_row_before_the_limit(
 }
 
 /// A chained record's listed key is its scope, `/` and twenty digits; the parts read back from it,
-/// and a key that is no record's (a bare scope, a short or non-digit tail) names none.
+
 #[test]
 fn a_chain_key_is_its_scope_and_its_sequence_and_reads_back() {
     let key = chain_key(b"a11ce/t1", 7);

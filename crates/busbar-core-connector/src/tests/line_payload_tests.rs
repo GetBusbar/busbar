@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A mirrored LINE stream relays PAYLOAD only. `busbar_contract::abi::transport`, "fields by
-//! piece" and "streams end by flag": a `PIECE_FIELDS` piece is a field block, never payload (a
-//! head split across pieces, trailers, an empty head); a `PIECE_STREAM_FAILED` piece's bytes are
-//! the failure reason, never payload, and it is the stream's LAST piece; `PIECE_END` ends the
-//! stream whole and nothing follows it; an EMPTY piece with none of those is an empty frame and
-//! still crosses. The expected bytes and counts below are written out from that contract, never
-//! derived from the code under test. Every sequence keeps a stream's failed or end piece LAST on
-//! that stream, as the ABI requires: no piece of a stream follows its terminal piece.
 
 use super::{Across, Bridge, Leg, LegSink, Pairing};
 use crate::framer::{Got, Yielded};
@@ -16,11 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// The caller's first line stream and its upstream counterpart (line position 0 of each leg).
-/// Where a test ends a stream with a FAILED piece, that stream carries nothing after it.
+
 const CALLER_LINE: u64 = 10;
 const UPSTREAM_LINE: u64 = 20;
 /// The caller's second line stream and its upstream counterpart (line position 1 of each leg):
-/// the stream a test uses for an ordinary `PIECE_END` beside the first line's failure.
+
 const CALLER_ENDING: u64 = 11;
 const UPSTREAM_ENDING: u64 = 21;
 
@@ -62,7 +55,7 @@ fn fields(stream: u64, bytes: &[u8], end_of_frame: bool) -> Got {
 }
 
 /// A failed stream's last piece: the bytes are the reason, and `PIECE_END` is NOT set. Nothing
-/// follows it on its stream.
+
 fn failed(stream: u64, reason: &[u8]) -> Got {
     Got {
         failed: true,
@@ -128,7 +121,7 @@ fn line_heads(first: u64, second: u64) -> Vec<Got> {
 }
 
 /// A bridge whose caller lines `CALLER_LINE`/`CALLER_ENDING` mirror upstream lines
-/// `UPSTREAM_LINE`/`UPSTREAM_ENDING`, position for position.
+
 fn mirrored_bridge() -> Bridge {
     let mut b = Bridge::new();
     let (session, across) = b.sort(Leg::Caller, line_heads(CALLER_LINE, CALLER_ENDING));
@@ -140,7 +133,7 @@ fn mirrored_bridge() -> Bridge {
 }
 
 /// The rest of a known line's head, split by a small sink after the piece that named the line:
-/// field-block pieces, none of which is payload. They come before the stream's first payload.
+
 fn head_tail(stream: u64) -> Vec<Got> {
     vec![
         fields(stream, b"x-continued: tail\r\n", false),
@@ -149,7 +142,7 @@ fn head_tail(stream: u64) -> Vec<Got> {
 }
 
 /// A known line's fields after its body: trailers, and a field block with no field left in it.
-/// None is payload. They come after the stream's last payload and before its terminal piece.
+
 fn trailers(stream: u64) -> Vec<Got> {
     vec![
         fields(stream, b"x-trailer: done\r\n", true),
@@ -162,16 +155,14 @@ fn a_known_lines_field_blocks_and_failure_reason_never_cross_but_its_frames_do()
     let mut b = mirrored_bridge();
     let mut pieces = head_tail(CALLER_LINE);
     pieces.extend([
-        // One frame in two pieces: the first does not complete it.
         partial(CALLER_LINE, b"fi"),
         payload(CALLER_LINE, b"rst"),
-        // A true EMPTY text frame is a message, not metadata and not an end.
         text(CALLER_LINE, b""),
         text(CALLER_LINE, b"hi"),
         payload(CALLER_LINE, b"\x00\x01"),
     ]);
     pieces.extend(trailers(CALLER_LINE));
-    // The stream's terminal piece, last on it: the reason is never media.
+
     pieces.push(failed(CALLER_LINE, b"peer reset the stream"));
     let (session, crossed) = b.sort(Leg::Caller, pieces);
     assert!(
@@ -193,7 +184,6 @@ fn a_known_lines_field_blocks_and_failure_reason_never_cross_but_its_frames_do()
 
 #[test]
 fn a_known_lines_ordinary_end_is_consumed_and_its_earlier_frames_and_trailers_are_not() {
-    // A fresh mirrored bridge: nothing failed on this stream, and nothing follows the end.
     let mut b = mirrored_bridge();
     let (session, crossed) = b.sort(
         Leg::Caller,
@@ -221,7 +211,7 @@ fn the_upstream_legs_field_blocks_and_failure_reason_never_cross_back_to_the_cal
     let mut pieces = head_tail(UPSTREAM_LINE);
     pieces.push(payload(UPSTREAM_LINE, b"back"));
     pieces.extend(trailers(UPSTREAM_LINE));
-    // Terminal, so last on its stream.
+
     pieces.push(failed(UPSTREAM_LINE, b"upstream reset the stream"));
     let (session, crossed) = b.sort(Leg::Upstream, pieces);
     assert!(session.is_empty());
@@ -230,7 +220,6 @@ fn the_upstream_legs_field_blocks_and_failure_reason_never_cross_back_to_the_cal
 
 #[test]
 fn a_failed_reason_without_the_end_flag_is_not_media_on_its_own() {
-    // The failed piece is the only piece after the head: a stream may fail before any payload.
     let mut b = mirrored_bridge();
     let reason = failed(CALLER_LINE, b"upstream timed out");
     assert!(!reason.end, "a failed piece never carries PIECE_END");
@@ -268,12 +257,11 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
             payload(CALLER_LINE, b"a"),
             payload(CALLER_LINE, b""),
             text(CALLER_LINE, b"bcd"),
-            // The second line ends whole beside the first line's failure.
             payload(CALLER_ENDING, b"e"),
             ended(CALLER_ENDING),
         ]);
         pieces.extend(trailers(CALLER_LINE));
-        // The first line's terminal piece, last on that stream.
+
         pieces.push(failed(CALLER_LINE, b"peer reset the stream"));
         let batch = pairing.publish(
             Leg::Caller,
@@ -297,7 +285,7 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
             ]
         );
         assert!(caller.lines().is_empty());
-        // Four frames of 1 + 0 + 3 + 1 payload bytes, all taken; nothing else is a frame.
+
         assert_eq!(
             (
                 outcome.accepted_frames,
@@ -322,7 +310,6 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
             "no application input was accepted"
         );
 
-        // The upstream leg's metadata and failure publish nothing back, and count nothing.
         let mut pieces = head_tail(UPSTREAM_LINE);
         pieces.extend(trailers(UPSTREAM_LINE));
         pieces.push(failed(UPSTREAM_LINE, b"upstream reset the stream"));
@@ -340,7 +327,6 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
         assert!(caller.lines().is_empty());
         assert_eq!((outcome.accepted_frames, outcome.handed_frames), (4, 4));
 
-        // A close after all of it cancels nothing and fails nothing.
         pairing.close();
         let outcome = pairing.publication_outcome();
         assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
@@ -361,8 +347,7 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
 fn a_close_after_metadata_only_pieces_has_nothing_accepted_handed_or_cancelled() {
     crate::support::worker().block_on(async {
         let (pairing, caller, upstream) = paired(None);
-        // The first line: the rest of its head, trailers, then its terminal failure. The second
-        // line: trailers, then its end. Neither stream carries anything after its terminal piece.
+
         let mut pieces = head_tail(CALLER_LINE);
         pieces.extend(trailers(CALLER_LINE));
         pieces.push(failed(CALLER_LINE, b"peer reset the stream"));
@@ -380,8 +365,7 @@ fn a_close_after_metadata_only_pieces_has_nothing_accepted_handed_or_cancelled()
         assert!(batch.pieces.is_empty());
         let outcome = pairing.published().await;
         assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
-        // Closing computes accepted - handed; a metadata piece handed without being accepted
-        // would make it underflow.
+
         pairing.close();
         let outcome = pairing.publication_outcome();
         assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
@@ -412,7 +396,7 @@ fn metadata_pieces_release_the_batch_custody_with_the_frames_that_did_cross() {
         let mut pieces = head_tail(CALLER_LINE);
         pieces.push(payload(CALLER_LINE, b"xy"));
         pieces.extend(trailers(CALLER_LINE));
-        // Terminal, so last on its stream.
+
         pieces.push(failed(CALLER_LINE, b"peer reset the stream"));
         let batch = pairing.publish(
             Leg::Caller,

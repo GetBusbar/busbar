@@ -1,15 +1,3 @@
-//! THE PROTOCOL AXIS AS THE SHIPPED BUILD LINKS IT — the registry and detection folds over the REAL
-//! declarations the root installs, read off the linked table (`crate::LINKED.protocols`), never named.
-//!
-//! These assertions moved here from the composition root's integration suites: what they prove is a property of the composition — the host's folds over what this
-//! build links — so the root holds them. The protocol names, paths, headers and bodies they are held
-//! to are fixture DATA, so this source names no
-//! plane. The registry's own machinery over synthetic declarations is the kernel's to prove
-//! (`busbar-kernel`'s `proto` tests, `registry_fold`).
-//!
-//! Compiled only in a build that links every plane door (`linked_every_plane_door`): the fixture is the shipped
-//! composition's, and a single-plane build links a different protocol set.
-
 use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::protocol::ProtocolDecl;
@@ -19,13 +7,11 @@ use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::sync::LazyLock;
 
-/// The fixture the assertions below are held to.
 static FIXTURE: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str(include_str!("fixtures/linked_protocols.json"))
         .expect("the linked-protocols fixture is JSON")
 });
 
-/// Every protocol declaration the root links, in the linked table's order.
 fn linked_decls() -> Vec<&'static ProtocolDecl> {
     crate::LINKED
         .protocols
@@ -34,15 +20,12 @@ fn linked_decls() -> Vec<&'static ProtocolDecl> {
         .collect()
 }
 
-/// Seed the process registry with the linked declarations, exactly as the root's boot does — before
-/// any fold is read, so no verdict depends on which test ran first.
 fn registered() {
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
 }
 
-/// The registry the linked declarations build, as production folds it.
 fn builtins() -> Registry {
     Registry::new(linked_decls())
 }
@@ -70,17 +53,10 @@ fn headers(v: &Value) -> HeaderMap {
     h
 }
 
-/// The cell a protocol declares, read off the process registry the linked table seeded.
 fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
     busbar_kernel::ingress::protocols::decl_for(proto).and_then(|d| d.handler)
 }
 
-// ══ THE SURFACE THAT MUST NOT MOVE ═══════════════════════════════════════════════════════════════
-
-/// **THE METRIC-SURFACE PIN.** Protocol names are metric LABELS and `providers.*.protocol` config
-/// keys, and telemetry indexes its per-protocol families BY POSITION in this list. Held to the
-/// fixture, not derived from the declarations it checks. The order is the published 1.5.5 binary's
-/// (shadow-oracle `boot.refusal|BOOT-020|validate`).
 #[test]
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
     registered();
@@ -92,8 +68,6 @@ fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
     );
 }
 
-/// THE DERIVED LIST IS NEVER EMPTY IN A BUILD THAT SHIPS A PROTOCOL: an empty fold would make the
-/// validator reject every provider with an empty "must be one of:" tail.
 #[test]
 fn the_derived_protocol_list_is_not_empty() {
     registered();
@@ -104,8 +78,6 @@ fn the_derived_protocol_list_is_not_empty() {
     );
 }
 
-/// The three `OnceLock` sweeps the registry absorbed produce exactly these sets, folded from the
-/// declarations at boot.
 #[test]
 fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
     registered();
@@ -127,8 +99,6 @@ fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
     );
 }
 
-/// A declaration that CLAIMS a verb it does not serve 404s a working route; one that HIDES a verb it
-/// serves makes the metric label space a lie. Both directions, over every linked declaration.
 #[test]
 fn the_declared_verbs_are_the_verbs_the_handler_serves() {
     registered();
@@ -164,8 +134,6 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
     }
 }
 
-/// The registry-level EXHAUSTIVENESS contract: every verb a declaration claims resolves to a serving
-/// cell on that declaration's handler.
 #[test]
 fn every_declared_verb_has_a_serving_handler() {
     registered();
@@ -188,12 +156,6 @@ fn every_declared_verb_has_a_serving_handler() {
     }
 }
 
-/// A linked protocol that declares no codec still resolves, still dispatches, and MUST NOT be offered
-/// to a provider lane: it is absent from the codec-protocol list, without anything comparing its
-/// name. Every such linked declaration is checked. The shipped build links none (the one it linked
-/// was a deleted engine's; its plane is served through its door and declares no protocol row), so
-/// the rule over a codec-less declaration is held by the planted one in
-/// [`a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead`].
 #[test]
 fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
     registered();
@@ -217,7 +179,6 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
     }
 }
 
-/// Two declarations of one name would make one unroutable; a boot panic is the only honest answer.
 #[test]
 #[should_panic(expected = "two protocol declarations claim the same name")]
 fn two_declarations_of_one_name_are_refused() {
@@ -226,10 +187,6 @@ fn two_declarations_of_one_name_are_refused() {
     let _ = Registry::new(decls);
 }
 
-/// **THE FOLD-AHEAD RULE IS SAFE FOR A CODEC-LESS PROTOCOL.** The operator-visible list is
-/// `codec_protocols`, built by SKIPPING every declaration whose `codec` is `None`, so a codec-less
-/// declaration at the TAIL (the monolith's shape) or the HEAD (the extracted binary's shape) derives
-/// the identical list over the linked codec declarations.
 #[test]
 fn a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead() {
     static CODEC_LESS: ProtocolDecl = ProtocolDecl::named("codec-less");
@@ -257,11 +214,6 @@ fn a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_f
     );
 }
 
-// ══ DETECTION ════════════════════════════════════════════════════════════════════════════════════
-
-/// The resolver table through the REAL two-step pipeline: the fold IDs the protocol, then that
-/// protocol's `RequestHandler::resolve_operation` decides the operation — including collision
-/// defaults and ordering, then the cases the body disambiguates.
 #[test]
 fn resolver_table() {
     registered();
@@ -299,8 +251,6 @@ fn resolver_table() {
     }
 }
 
-/// A request carrying a dialect's mandatory header resolves to that dialect even on a path that
-/// another dialect's ordering would also claim.
 #[test]
 fn mandatory_header_beats_path_ordering() {
     registered();
@@ -309,8 +259,6 @@ fn mandatory_header_beats_path_ordering() {
     assert_eq!(p, case[2].as_str().expect("proto"));
 }
 
-/// The headerless residual classifier: a model id that CONTAINS a colon stays with its dialect, and
-/// only the known action suffixes move to another — each row as the fixture records it.
 #[test]
 fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
     registered();
@@ -324,8 +272,6 @@ fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
     }
 }
 
-/// A PATH THAT NAMES NO DIALECT ANSWERS `None` — including the paths other planes are mounted at. The
-/// positive control first: an unseeded registry answers `None` everywhere, so the fold must be live.
 #[test]
 fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
     registered();
@@ -344,10 +290,6 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
     }
 }
 
-// ══ THE METRIC LABELS ARE DECLARED DATA ═════════════════════════
-
-/// The fallback plane every linked door row folds to, as the composition root folds it: the one
-/// linked door whose Statement tail flags it the fallback.
 fn fallback_door_row() -> &'static busbar_kernel::plane_driver::registry::PlaneDecl {
     use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
     let mut fallbacks: Vec<_> = crate::LINKED
@@ -360,13 +302,6 @@ fn fallback_door_row() -> &'static busbar_kernel::plane_driver::registry::PlaneD
     busbar_kernel::plane_driver::door::fold(fallbacks.remove(0)).expect("the door folds")
 }
 
-/// **THE `/metrics` LABEL VOCABULARY IS UNCHANGED FROM 1.5.5.** The kernel banks
-/// `busbar_requests_total{ingress_protocol,..}`, `busbar_request_duration_seconds{ingress_protocol,..}`
-/// and `busbar_translations_total{from,to}` over the fallback plane's DECLARED dialects (its door's
-/// Statement tail, read through its registry row), never a codec list; telemetry indexes the families
-/// by position, so the order is load-bearing too. Held to the 1.5.5 list (the fixture's
-/// `protocol_order`, the published binary's). RED arm: a fallback door that declared a different
-/// list, or one in another order, renames or renumbers every banked series.
 #[test]
 fn the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels() {
     let row = fallback_door_row();
@@ -377,13 +312,6 @@ fn the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels() {
     );
 }
 
-/// **THE PROVIDER PROTOCOLS ARE DECLARED DATA, AND 1.5.5'S**. The
-/// boot accepts a provider whose `protocol` a registered plane declares provider-capable (its
-/// door's `dialect_auth` lines flagged `DIALECT_PROVIDER`), and the validator's `must be one of:`
-/// tail and the lane build's `(supported: …)` list are that declaration, in order. Held to the 1.5.5
-/// list (the fixture's `protocol_order`); `tests/cli_validate.rs` holds the binary's refusal bytes.
-/// RED arm: a fallback door that flagged no dialect refuses every provider, and one that flagged
-/// them in another order reorders the operator's refusal.
 #[test]
 fn the_fallback_doors_provider_dialects_are_the_1_5_5_provider_protocols() {
     let row = fallback_door_row();

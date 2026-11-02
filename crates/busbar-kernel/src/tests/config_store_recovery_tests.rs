@@ -180,7 +180,7 @@ fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_
         &Default::default(),
     )
     .unwrap();
-    // These are the ordinary diagnostic read paths. Neither may advance the old App's baseline.
+
     assert!(backend
         .read_required()
         .unwrap()
@@ -286,7 +286,7 @@ fn native_bootstrap_archive_pins_match_exact_retained_bytes_and_canonical_identi
     };
     target.sha256 = Some(pinned);
     crate::appbuild::validate_bootstrap_artifacts(rows.as_ref(), &dependencies, &plugins).unwrap();
-    // The unused hook is a normal post-recovery candidate and needs no bootstrap fetch pin.
+
     assert!(rows.resolve("unused-hook").is_some());
 }
 

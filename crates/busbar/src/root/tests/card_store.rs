@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The versioned Store record formats: an entry round-trips through its parts and commit, an entry
-//! with no commit part (or a commit that does not match) is never read, and a VOID is its own record.
-
 use super::*;
 use busbar_kernel_ledger::cost::EntryKey;
 
@@ -51,14 +48,12 @@ fn an_entry_round_trips_through_its_parts_and_its_commit_is_written_last() {
     let scanned = Scanned::of(records.clone());
     assert_eq!(scanned.entries, vec![e.clone()]);
 
-    // No commit: never read.
     let mut torn = records.clone();
     torn.pop();
     let scanned = Scanned::of(torn);
     assert!(scanned.entries.is_empty());
     assert_eq!(scanned.uncommitted, vec![e.key]);
 
-    // A part missing under a commit: never read.
     let mut holed = records;
     holed.remove(0);
     assert!(Scanned::of(holed).entries.is_empty());
@@ -342,7 +337,7 @@ fn genuinely_pending_store_calls_wake_and_timeout_retry_the_same_original() {
     );
     assert!(matches!(answer, PutOutcome::Doubtful(_)));
     assert_eq!(next_progress.load(Ordering::Acquire), 0);
-    store.pause(false); // Waking a timed-out/dropped call is harmless.
+    store.pause(false);
     assert_eq!(
         put_from(
             store.calls().as_ref(),

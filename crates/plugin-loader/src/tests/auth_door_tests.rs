@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! [`AuthInstance`] over a linked safe auth door (`auth_verify_door!`), opened through
-//! [`crate::auth_axis::AuthRows`] on a real dispatcher: every verdict on the spot and submitted, with
-//! its decision and strips, the lent lines and body, the short answer's one re-call, the overloaded
-//! instance, refresh's flushed count, a refused setting, and the instance label.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,17 +21,10 @@ use crate::auth_axis::AuthRows;
 use crate::dispatch::{Budgets, DispatchConfig, Dispatcher};
 use crate::{LinkedPlugin, PluginRegistry};
 
-/// Identifies `good` (or the `x-alt` line `good`, or the query `good`), rejects `bad`, passes
-/// the rest; `wide` identifies with more groups than the host's default buffer holds; `slow` passes
-/// after holding its crossing for 200 ms; `body` identifies only at `HeadBody` on connection 3,
-/// unit 4, over the body `signed`. Every answer names the `x-alt` line to strip. Settings must be
-/// `"ok"`, or `"wedge"`: the same judge whose `refresh` holds its crossing until [`REFRESH_GATE`]
-/// is released.
 pub(super) struct Judge {
     wedge: bool,
 }
 
-/// A wedged judge's refresh gate: (entered, released).
 static REFRESH_GATE: (std::sync::Mutex<(bool, bool)>, std::sync::Condvar) = (
     std::sync::Mutex::new((false, false)),
     std::sync::Condvar::new(),
@@ -184,8 +172,6 @@ fn opened(label: &str) -> Arc<dyn AuthCalls> {
         .expect("the linked door opens")
 }
 
-/// The host's request carries no credential of its own: the script's `credential` reaches the
-/// judge as the query, and `alt` as the `X-Alt` field line.
 fn request(credential: Option<&str>, alt: Option<&str>) -> VerifyRequest {
     VerifyRequest {
         query: credential.map(str::to_string),
@@ -215,7 +201,6 @@ fn alice() -> VerifyAnswer {
     }))
 }
 
-/// `verified` as the host reads the judge's answer: its default decision, and the `x-alt` strip.
 fn answered(verified: Verified) -> VerifyAnswer {
     VerifyAnswer {
         strips: vec![Strip::field("x-alt")],
@@ -223,7 +208,6 @@ fn answered(verified: Verified) -> VerifyAnswer {
     }
 }
 
-/// The judge's reject of `bad`, with the reason it names (the operator's, never the client's).
 fn rejected() -> VerifyAnswer {
     VerifyAnswer {
         reason: Some("the judge rejects `bad`".into()),
@@ -231,7 +215,6 @@ fn rejected() -> VerifyAnswer {
     }
 }
 
-/// The script: every verdict, on the query and on the field line.
 fn script() -> Vec<(VerifyRequest, VerifyAnswer)> {
     vec![
         (request(Some("good"), None), alice()),
@@ -242,8 +225,6 @@ fn script() -> Vec<(VerifyRequest, VerifyAnswer)> {
     ]
 }
 
-/// The request with `credential` LENT as the candidate credential (`VerifyRequest::credential`, the
-/// `credential` blob of `verify`'s `in`), and nothing on the query or the field lines.
 fn lent(credential: &str) -> VerifyRequest {
     VerifyRequest {
         credential: Some(Secret::new(credential.as_bytes().to_vec())),
@@ -261,12 +242,6 @@ fn lent(credential: &str) -> VerifyRequest {
     }
 }
 
-/// THE PRESENTED CREDENTIAL REACHES THE DOOR (AUTH-CHAIN-SWITCH, ARCHITECT lane L2-AUTH): the
-/// candidate the host lends is the credential the plugin judges, on the spot and submitted — a
-/// wrong one is REFUSED and the right one identifies.
-///
-/// RED before the loader lent it: `verify`'s `in` carried no credential (`presented = false`), the
-/// plugin saw none, and every lent candidate PASSED — a door could never refuse a wrong credential.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lent_credential_is_judged_and_a_wrong_one_refused() {
     let a = opened("judge-a");
@@ -344,7 +319,7 @@ fn refresh_answers_the_count_the_plugin_reported() {
     assert_eq!(a.refresh(), Ok(3));
     assert_eq!(a.refresh(), Ok(3));
     assert!(FLUSHES.load(Ordering::Relaxed) >= before + 2);
-    // Still serving after two generations.
+
     assert_eq!(a.verify_now(&request(Some("good"), None)), Some(alice()));
 }
 
@@ -382,9 +357,6 @@ fn two_instances_of_one_plugin_are_two_callers() {
     assert_eq!(b.verify_now(&request(Some("bad"), None)), Some(rejected()));
 }
 
-/// THE DECISION AND THE STRIPS reach the host whatever the verdict: CONTINUE for an identity or a
-/// pass, STOP for a reject, and the `x-alt` line named each time (THE DESIGN, "Auth points and
-/// guest lists", step 3).
 #[test]
 fn every_answer_carries_its_decision_and_strips() {
     let a = opened("judge-a");
@@ -399,9 +371,6 @@ fn every_answer_carries_its_decision_and_strips() {
     }
 }
 
-/// HEADBODY: the host lends the point, the connection, the unit and the body, so a mechanism that
-/// signs the body verifies it. RED: the same request at `Head` (no body), or over another body, is
-/// not identified.
 #[test]
 fn the_body_reaches_the_plugin_at_head_body_only() {
     let a = opened("judge-a");
@@ -426,10 +395,6 @@ fn the_body_reaches_the_plugin_at_head_body_only() {
     }
 }
 
-/// OVERLOAD (THE DESIGN's accepted differences): a `verify` past the instance's `max_inflight`
-/// is never queued and never crosses: it answers [`Verified::Overloaded`] at once, with the decision
-/// to stop and nothing to strip, and the host answers the request 503. RED: a second `verify` while
-/// the first holds the instance's one unit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     use crate::auth_door::{AuthInstance, AuthSink};
@@ -447,8 +412,7 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
     let a = AuthInstance::open(p, sink, d.clone(), "judge-1", b"\"ok\"", Vec::new()).unwrap();
     assert_eq!(a.plugin().max_inflight(), 1);
-    // The instance's tick schedule (one tick: the judge asks for no other) holds the one unit
-    // while it crosses; the overload is proven against the verifies alone.
+
     tokio::time::timeout(Duration::from_secs(5), async {
         while !a.ticks_ended() {
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -462,7 +426,7 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     assert_eq!(answer, VerifyAnswer::from(Verified::Overloaded));
     assert_eq!(answer.decision, Decision::Stop);
     assert!(answer.strips.is_empty());
-    // The first finishes; the unit is back, and the instance serves again.
+
     assert_eq!(
         Box::into_pin(slow).await.verified,
         Verified::Pass,
@@ -474,13 +438,10 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     );
 }
 
-/// A plugin with a service credential: its Statement names `token` as a secret-ref; it opens only
-/// when handed that credential as `secrets` and settings that no longer carry it.
 struct Keyed;
 
 impl VerifyPlugin for Keyed {
     fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
-        // Its `open` needs its credential: the settings are judged alone.
         serde_json::from_slice::<serde_json::Value>(settings)
             .map(drop)
             .map_err(|_| busbar_contract::abi::sdk::life::Refusal::failed("not json"))
@@ -537,7 +498,7 @@ fn a_statement_secret_ref_is_handed_to_open_as_a_secret_not_a_setting() {
     let settings = serde_json::json!({ "token": "s3cret", "other": 1 });
     rows.open("keyed", "keyed", &settings)
         .expect("the credential reaches open as its secret");
-    // RED: without the credential the plugin refuses.
+
     let err = rows
         .open("keyed", "keyed", &serde_json::json!({ "other": 1 }))
         .err()
@@ -545,10 +506,6 @@ fn a_statement_secret_ref_is_handed_to_open_as_a_secret_not_a_setting() {
     assert!(err.contains("no service credential"), "{err}");
 }
 
-/// THE SETTINGS AND THE SECRETS NEVER PRINT. An instance holds the settings bytes it was opened
-/// over (a resolved bag: a DSN with its password) and its service credentials, and re-sends both on
-/// `refresh`; its `Debug` names the plugin and the label and nothing else, so `{:?}` of an instance
-/// in a log line, a `tracing` field or a panic cannot carry them.
 #[test]
 fn an_instance_debug_never_shows_its_settings_or_secrets() {
     use crate::auth_door::{AuthInstance, AuthSink};
@@ -583,7 +540,6 @@ fn an_instance_debug_never_shows_its_settings_or_secrets() {
     }
 }
 
-/// A linked auth plugin whose Statement states one alias rewrite.
 mod aliased {
     use super::*;
     use busbar_contract::abi::mechanism::door::{Rewrite, REWRITE_ALIAS};
@@ -615,9 +571,6 @@ mod aliased {
     );
 }
 
-/// THE ALIAS IS A STATEMENT REWRITE (the design's One Statement: an auth provider's alias is its
-/// Statement's `REWRITE_ALIAS` rewrite, never a tail fact): the auth rows answer, link and open a
-/// row by the alias its Statement states, beside its own name; a word no row states stays refused.
 #[test]
 fn an_auth_row_answers_to_its_statements_alias_rewrite() {
     let registry = PluginRegistry::empty()
@@ -633,7 +586,6 @@ fn an_auth_row_answers_to_its_statements_alias_rewrite() {
         .expect("the row opens by its Statement's alias");
 }
 
-/// Two auth doors declaring they read the `signed` credential kind, and one declaring `bearer`.
 mod readers {
     use busbar_contract::abi::sdk::auth_door::with_credential_kinds;
 
@@ -667,9 +619,6 @@ mod readers {
     }
 }
 
-/// ONE VERIFIER PER CREDENTIAL KIND (ARCHITECT 2026-10-01, Q2 ruling B): a row declaring a
-/// credential kind another auth row also declares refuses to open, naming both rows and the kind;
-/// a row whose kinds no other row declares opens. RED: without the check both readers opened.
 #[test]
 fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
     let registry = PluginRegistry::empty()
@@ -702,10 +651,6 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
         .is_ok());
 }
 
-/// THE LINKED AUTH ROW UNDER ITS CANONICAL NAME (ARCHITECT C'): the root names a built-in auth row
-/// canonically beside its key; the axis answers, opens and counts it as linked by EITHER name, and
-/// a row that will not load is refused in its KEY's words, as before the canonical name existed
-/// (the load error and its sink's `plugin=` field are one binding: `AuthRows::load`'s `name`).
 #[test]
 fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     let registry = PluginRegistry::empty()
@@ -740,11 +685,8 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     }
 }
 
-// ── THE AUTH AXIS'S CONNECTION TABLE (Q-P4-3): a networked auth door opened to serve ──
-
 crate::needs_restated::tcp_restated!(networked_judge, judge::door);
 
-/// The judge restated with a `tcp` need (a directory it dials), linked as `judge`.
 fn networked_rows() -> AuthRows {
     let registry = PluginRegistry::empty()
         .link(vec![LinkedPlugin::auth_door_raw("judge", networked_judge)])
@@ -761,8 +703,6 @@ fn serving_table() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
         .clone()
 }
 
-/// An auth instance OPENED TO SERVE declares its needs on the host's table the axis was handed
-/// (`AuthRows::with_conns`, the process's one connector in the root): its `tcp` need reaches it.
 #[test]
 fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() {
     let rows = networked_rows().with_conns(serving_table);
@@ -778,10 +718,6 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
     );
 }
 
-/// RED (THE DESIGN §11.13 M1): one refresh at a time, never waited for. A refresh wedged in its
-/// plugin holds no other caller behind the instance's lifecycle lock: a second refresh is
-/// answered at once, naming the one in flight, and a verify, on the spot and submitted, is still
-/// judged.
 #[test]
 fn a_wedged_refresh_holds_no_other_caller() {
     let a = rows()
@@ -841,9 +777,6 @@ fn a_wedged_refresh_holds_no_other_caller() {
     let _ = wedged.join().unwrap();
 }
 
-/// THE OUTBOUND KIT ON THE LOADER'S ROWS: a door built by `auth_outbound_door!` (no `unsafe` in the
-/// plugin) is served for its style, binds a credential and answers its field, as the host drives
-/// the auth ABI.
 mod outbound {
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -951,7 +884,6 @@ mod outbound {
     }
 }
 
-/// The plugin log directory [`logged_rows`] writes under: one per test process.
 fn log_dir() -> std::path::PathBuf {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
@@ -976,13 +908,6 @@ fn log_config() -> crate::dispatch::PluginLogConfig {
     .expect("the named directory resolves")
 }
 
-/// AN AUTH INSTANCE WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2: "all plugins
-/// should log to their plugin's log file. no logs for plugins is not an option ... The HOST writes
-/// it to that plugin instance's own log file").
-///
-/// RED before an opened auth instance was bound to its instance's log file: every auth instance
-/// bound a sink that wrote its records into the host's log, keyed by plugin name, and no auth
-/// plugin log file was ever written.
 #[test]
 fn an_auth_instance_logs_to_its_own_plugin_log_file() {
     let registry = PluginRegistry::empty()
@@ -1016,12 +941,6 @@ fn an_auth_instance_logs_to_its_own_plugin_log_file() {
     );
 }
 
-// ── A TICKETED `verify` OVER `records.secret`: the kit's pendable form, through the services double ──
-
-/// THE TICKETED VERIFY (ARCHITECT ruling: the auth kit's `verify` may wait on `records.secret`): a
-/// safe door whose `verify` reads the presented id's secret on its ticket, through the SDK's
-/// `VerifyOp`. The credential lent is `<id>:<proof>`; it identifies `<id>` when the host's secret
-/// for it is live and equals the proof, and rejects anything else. No `unsafe` in the plugin.
 mod ticketed {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -1044,13 +963,10 @@ mod ticketed {
     use crate::dispatch::{DispatchConfig, Dispatcher, HostServices};
     use crate::{LinkedPlugin, PluginRegistry};
 
-    /// The credential kind the door reads.
     const KIND: &str = "signing-key";
 
-    /// The one live credential the double holds: its id and its secret.
     const HELD: (&str, &[u8]) = ("AKID", b"open-sesame");
 
-    /// The double's fixed dummy for an id it does not hold.
     const DUMMY: &[u8] = b"dummy-secret-0000";
 
     pub(super) struct Proves;
@@ -1082,8 +998,7 @@ mod ticketed {
                     return Poll::Ready(Verdict::reject("the secret could not be read").into())
                 }
             };
-            // The whole check runs over whatever came back (the dummy for an unknown id); the
-            // live verdict is read last.
+
             let matches = held.secret() == proof.as_bytes();
             Poll::Ready(if matches && held.live() {
                 Verdict::Identity(VerifiedIdentity {
@@ -1176,12 +1091,6 @@ mod ticketed {
         }
     }
 
-    /// A verify that PENDS on `records.secret` and RESUMES READY: on the spot (no ticket) the door
-    /// answers REFUSED without reading anything, so the host submits it; submitted, it pends on the
-    /// double's read, the host's wake re-enters it on the same ticket, and the re-issued handle
-    /// reads the stored secret: identified, with the double served ONCE (nothing ran twice). RED
-    /// before the kit's ticketed form: `VerifyPlugin::verify` had no services and no ticket, so the
-    /// secret could not be read at all.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_ticketed_verify_pends_on_records_secret_and_resumes_ready() {
         let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
@@ -1203,15 +1112,12 @@ mod ticketed {
         };
         assert_eq!(id.subject, "AKID");
         assert_eq!(double.served.load(Ordering::SeqCst), 1, "served once");
-        // A wrong proof over a live credential takes the same path and is rejected.
+
         let wrong = Box::into_pin(a.verify(lent("AKID:guess"))).await;
         assert_eq!(wrong.verified, Verified::Reject);
         assert_eq!(double.served.load(Ordering::SeqCst), 2);
     }
 
-    /// AN UNKNOWN ID TAKES THE SAME PATH: it pends on `records.secret` as a held id does, resumes
-    /// READY with the host's dummy, not live, and is rejected after the whole check ran; never an
-    /// error, never a short cut.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unknown_id_pends_and_resumes_on_the_same_path_and_is_rejected() {
         let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
@@ -1231,8 +1137,6 @@ mod ticketed {
         );
     }
 
-    /// A SYNC `VerifyPlugin` IS UNCHANGED beside the ticketed form, on a dispatcher that serves
-    /// host services: the judge answers on the spot and submitted, reading no service.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_sync_verify_plugin_still_answers_on_the_spot_and_submitted() {
         let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
@@ -1255,9 +1159,6 @@ mod ticketed {
     }
 }
 
-/// AN AUTH CHAIN MODULE WHOSE `open` FAILS IS NAMED IN 1.5.5's WORDS (oracle BOOT-162): the
-/// operator reads `plugin '<name>' open failed: <reason>`, the plugin's own name and its reason,
-/// as at boot ([`crate::dispatch::Called::open_failure`]). RED before: `auth plugin '<module>': …`.
 #[test]
 fn an_auth_module_whose_open_fails_is_named_in_1_5_5s_words() {
     use crate::dispatch::ready::ready_plugins::auth::with_secret;
@@ -1278,13 +1179,6 @@ fn an_auth_module_whose_open_fails_is_named_in_1_5_5s_words() {
     );
 }
 
-/// A CREDENTIAL FORM IS FORMED ONLY THROUGH THE ONE CAPPED, VALIDATED READER (`BUSBAR-1.6.0.md`
-/// THE DESIGN §11.13 M1: "Every slice built from a plugin-reported length is capped and validated
-/// before it is formed").
-///
-/// RED before `begin_login`'s form went through `dispatch::validate::lent`: a READY answer whose
-/// `form` pointer is not aligned for `LoginField` (the kind's check refuses only NULL) was formed
-/// into a slice as it stood, so the host read plugin memory as fields it does not hold.
 #[test]
 fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
     use busbar_contract::abi::auth::{BeginLoginOut, LoginField, BEGIN_FORM};
@@ -1294,7 +1188,7 @@ fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
         align > 1,
         "a field holds pointers, so it has an alignment to miss"
     );
-    // Zeroed bytes are one well-formed field (two empty strings), one byte past an aligned start.
+
     let buf = vec![0u64; size.div_ceil(8) + 2];
     let at = buf.as_ptr().cast::<u8>().wrapping_add(1);
     assert!(!at.cast::<LoginField>().is_aligned());
@@ -1316,9 +1210,6 @@ fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
     drop(buf);
 }
 
-/// "Busbar … overwriting its own copies with zeroes once the plugin has them" (security.md:318):
-/// the one copy an auth instance must keep is the secrets it re-lends `refresh`, and it keeps them
-/// in a holder that wipes them when the instance drops and whose `Debug` shows no byte of them.
 #[test]
 fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
     use crate::auth_door::{AuthInstance, AuthSink};
@@ -1354,10 +1245,6 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
     assert!(a.refresh().is_ok(), "refresh is still lent the kept secret");
 }
 
-// ── open160 A1 / AQ2: a reject's and a sign-in outage's reason reach the operator ───────────────
-
-/// A door that says WHY: its `verify` rejects every credential naming the reason in the answer's
-/// error text, and its `complete_login` answers an outage naming the IdP's status the same way.
 mod reasons {
     use busbar_contract::abi::auth::{
         AuthPoints, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
@@ -1372,9 +1259,8 @@ mod reasons {
     use busbar_contract::abi::sdk::life::Held;
     use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 
-    /// What the reject says.
     pub(super) const REJECTED: &str = "the signature timestamp is 400 s old (window 300 s)";
-    /// What the outage says.
+
     pub(super) const OUTAGE: &str = "the IdP token endpoint answered 503";
 
     pub(super) struct Says;
@@ -1446,10 +1332,6 @@ mod reasons {
     }
 }
 
-/// RED (open160 A1, HIGH; AQ2): a `verify` REJECT and a `complete_login` OUTAGE carried no reason
-/// the host read, so the operator's log could not say why a credential was rejected, nor what the
-/// IdP answered during a sign-in outage. The host now reads the reason the answer names and writes
-/// it to the instance's own plugin log (never to the client: the verdict is the same 401).
 #[test]
 fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
     let registry = PluginRegistry::empty()
@@ -1510,10 +1392,6 @@ fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
     );
 }
 
-/// A LOGIN_OUTAGE's delay (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors") is read from
-/// the reply's extensions only where they lie wholly inside the identity buffer the host lent: the
-/// one memory the host still holds after the call. The same bytes anywhere else, an entry that
-/// runs past the buffer's end, or no extensions at all read as no delay (the host's own 5 s).
 #[test]
 fn a_login_outages_retry_after_is_read_only_from_the_hosts_identity_buffer() {
     use busbar_contract::abi::auth::retry_after_extensions;

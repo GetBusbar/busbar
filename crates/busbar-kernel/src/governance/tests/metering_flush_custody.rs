@@ -261,7 +261,7 @@ fn concurrent_flush_and_abandoned_caller_leave_one_replay_owner() {
         let gov = gov.clone();
         std::thread::spawn(move || gov.flush_metering_final())
     };
-    drop(held); // dropping a caller's join handle cannot release its running operation
+    drop(held);
     release.wait();
     assert_eq!(completion.recv().unwrap(), 0);
     assert_eq!(final_flush.join().unwrap(), 2);
@@ -337,8 +337,8 @@ fn expired_unknown_metering_is_not_replayed_by_periodic_or_final_flush() {
     let gov = GovState::new(store.clone(), None).unwrap();
     let era = RawRateEra::entry(0, EntryId::parse_hex("050505050505050505050505").unwrap());
     accrue_raw(&gov, 3, era);
-    assert_eq!(gov.flush_metering(), 0); // Applied, but the acknowledgement was lost.
-    assert_eq!(gov.flush_metering(), 0); // Still unknown; retains the first operation.
+    assert_eq!(gov.flush_metering(), 0);
+    assert_eq!(gov.flush_metering(), 0);
     let first = store.calls.lock().unwrap()[0].clone();
     assert_eq!(store.calls.lock().unwrap()[1], first);
     gov.pending_metering
@@ -348,7 +348,7 @@ fn expired_unknown_metering_is_not_replayed_by_periodic_or_final_flush() {
         .front_mut()
         .unwrap()
         .expire_attempt();
-    accrue_raw(&gov, 5, era); // Fresh arrivals remain separate from the uncertain body.
+    accrue_raw(&gov, 5, era);
 
     for final_flush in [false, true, false] {
         assert_eq!(

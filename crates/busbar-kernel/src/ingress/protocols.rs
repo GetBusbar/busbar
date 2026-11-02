@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Neutral ingress fallbacks. Test registry and codec implementations live in the external kit;
-//! a test build can install only the responses its fixtures supply to these existing calls.
-//! A shipping kernel has no registry, executable codec or installation entry point here.
-
 #[cfg(test)]
 #[path = "../../../busbar-kernel-testkit/src/ingress/protocols_legacy.rs"]
 mod legacy;
 #[cfg(test)]
 pub use legacy::*;
 
-/// A fixture-rendered response body and its header fields.
 #[cfg(any(test, feature = "test-support"))]
 pub type ProtocolErrorParts = (serde_json::Value, Vec<(String, Vec<u8>)>);
 
@@ -32,8 +27,6 @@ pub struct ProtocolTestHooks {
 #[cfg(any(test, feature = "test-support"))]
 static TEST_HOOKS: std::sync::OnceLock<ProtocolTestHooks> = std::sync::OnceLock::new();
 
-/// Install the process's test-kit responses once. Later registrations update the kit's own
-/// registry, which these callbacks read; installing the same table again has no effect.
 #[cfg(any(test, feature = "test-support"))]
 pub fn install_test_hooks(hooks: ProtocolTestHooks) {
     let _ = TEST_HOOKS.set(hooks);
@@ -68,7 +61,6 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
     "authentication failed"
 }
 
-/// The fallback has no dialect-specific quota policy. A door renders its own refusal.
 #[cfg(not(test))]
 pub fn quota_exceeded_status(proto: &str) -> u16 {
     #[cfg(feature = "test-support")]
@@ -79,7 +71,6 @@ pub fn quota_exceeded_status(proto: &str) -> u16 {
     429
 }
 
-/// The fallback has no dialect-specific authentication policy.
 #[cfg(not(test))]
 pub fn auth_failure_status_and_kind(proto: &str) -> (u16, &'static str) {
     #[cfg(feature = "test-support")]
@@ -90,7 +81,6 @@ pub fn auth_failure_status_and_kind(proto: &str) -> (u16, &'static str) {
     (401, busbar_contract::protocol::KIND_AUTHENTICATION)
 }
 
-/// Neutral fallback bytes. Shipping requests use their owning door's refusal operation first.
 #[cfg(not(test))]
 pub fn error_parts(
     proto: &str,
@@ -109,8 +99,6 @@ pub fn error_parts(
     )
 }
 
-/// Whether the fixture's dialect declares signed ingress. Shipping paths acquire that policy
-/// through the owning door, so an uninstalled fallback has no signed-ingress policy.
 #[cfg(not(test))]
 pub fn uses_signed_ingress_auth(proto: &str) -> bool {
     #[cfg(feature = "test-support")]

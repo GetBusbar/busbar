@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TRACES PRODUCER (K9a S7; BUSBAR-1.6.0 18b(d)) — the `traces` record stream, built by the
-//! kernel from its own tracing spans and delivered to the export-axis sinks that subscribe to it.
-//!
-//! `traces` has always been in the export vocabulary and in the projection mask, but nothing built
-//! a traces RECORD. This layer is that record producer — and, since K9e-2, the only way a span
-//! leaves the process: the `otlp` module is an export plugin fed by it. Each span it
-//! sees closing becomes one record of the stream's documented fields — `trace_id` (the root span's
-//! id), `span_id`, `parent_span_id`, `name`, `start` (epoch microseconds), `duration_us`, and the
-//! span's own `pool` / `ingress` / `op` / `lane` / `provider` / `model` where it carries them —
-//! built TO each subscribed sink's projection ([`super::projection::ProjectedRecord`]), off the
-//! span's thread, bounded per sink exactly as `logs` is.
-//!
-//! COST. The layer exists only when an export axis is installed, and its per-layer filter answers
-//! per span CALLSITE — cached, asked again once when the axis opens its sinks — whether any opened
-//! sink subscribes to `traces`: a deployment with no such sink creates no span it did not create
-//! before and builds no record. Events are never its business, and nothing above `floor` is.
-
 use super::projection::{ProjectedRecord, Projection};
 use busbar_contract::abi::export::{ExportField as F, ExportStream::Traces};
 use serde_json::Value;
@@ -29,12 +12,6 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-/// The producer, when an export axis is installed: a SPAN at or under `floor` (the level the span
-/// exporter has always taken — `observability::log_levels`), while some opened sink subscribes to
-/// `traces`; and an EVENT at or under `floor` while some such sink takes full span records (an
-/// event joins the record of the span it happened in, as the previous release's exporter added it,
-/// status row 173). The answer is per CALLSITE and cached, so the axis re-asks once its sinks are
-/// open.
 pub fn layer<S: Subscriber + for<'a> LookupSpan<'a>>(floor: LevelFilter) -> Option<impl Layer<S>> {
     let wanted = move |m: &tracing::Metadata<'_>| {
         let subscribed = |s: &super::plugin::PluginSink| s.projection.wants_stream(Traces);
@@ -51,9 +28,6 @@ pub fn layer<S: Subscriber + for<'a> LookupSpan<'a>>(floor: LevelFilter) -> Opti
     super::plugin::axis().map(|_| producer)
 }
 
-/// Hand one closed span's record to every opened sink subscribed to `traces`, built to that sink's
-/// own projection, off the span's thread — never from a thread with no runtime to hand it to. A
-/// sink that takes full span records gets the span's [`SpanRecord`] as the line's `span` member.
 fn deliver(facts: &[(F, Value)], span: Option<&Value>) {
     let ingress = facts.iter().find(|(f, _)| *f == F::Ingress);
     let ingress = ingress.and_then(|(_, v)| v.as_str()).unwrap_or_default();
@@ -64,9 +38,6 @@ fn deliver(facts: &[(F, Value)], span: Option<&Value>) {
     }
 }
 
-/// One sink's record: the span's facts, each written only if the sink's projection grants it, and,
-/// for a sink that takes it, the full span record as the reserved `span` member, which `fields:`
-/// never selects.
 fn record(projection: Projection, facts: &[(F, Value)], span: Option<&Value>) -> Arc<Value> {
     let mut rec = ProjectedRecord::new(projection, Traces);
     facts.iter().for_each(|(f, v)| _ = rec.set(*f, v.clone()));
@@ -77,25 +48,15 @@ fn record(projection: Projection, facts: &[(F, Value)], span: Option<&Value>) ->
     Arc::new(line)
 }
 
-/// The reserved member of a `traces` line that carries the full span record.
 pub(crate) const SPAN_MEMBER: &str = "span";
 
-/// A span as it opened: when (monotonic, and epoch microseconds), the stream's fields it carries,
-/// its own id for the export, unique for the process (the subscriber's span ids are reused once a
-/// span closes, so two requests' spans would otherwise share an id and a trace), and, where some
-/// sink takes them, its full span record.
 struct Opened(Instant, u64, Fields, u64, Option<SpanRecord>);
 
-/// The next export id: one per span opened, never reused within the process, never zero, and
-/// starting at a value drawn from OS entropy once per process, so a restarted busbar or a second
-/// replica does not mint the same trace and span ids as another (the previous release sent random
-/// ids; a backend joins on them).
 static NEXT_ID: std::sync::LazyLock<std::sync::atomic::AtomicU64> =
     std::sync::LazyLock::new(|| {
         std::sync::atomic::AtomicU64::new(crate::state::seed_request_id_counter())
     });
 
-/// A fresh export id: the counter's next value, skipping zero where the counter wraps through it.
 fn next_id() -> u64 {
     loop {
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -105,8 +66,6 @@ fn next_id() -> u64 {
     }
 }
 
-/// The `traces` fields a span records, by the field's own name — and only those: a span field that
-/// shares a name with another stream's field (`key_id`, say) is not a traces fact.
 struct Fields(Vec<(F, Value)>);
 
 impl tracing::field::Visit for Fields {
@@ -118,11 +77,6 @@ impl tracing::field::Visit for Fields {
         self.fact(field, Value::from(value));
     }
 
-    // A FIELD KEEPS THE TYPE THE PREVIOUS RELEASE'S EXPORTER GAVE IT (status row 173;
-    // tracing-opentelemetry 0.33, v1.5.5 `crates/busbar/Cargo.toml:149`): an `i64`, a `bool` and an
-    // `f64` are typed values; a `u64` is its text, as 0.33's attribute visitor wrote it (it has no
-    // `record_u64`, so `tracing`'s default sends a `u64` through `record_debug`: `lane = i`, a
-    // `usize`, went out as a string).
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
         self.fact(field, Value::from(value));
     }
@@ -137,25 +91,21 @@ impl tracing::field::Visit for Fields {
 }
 
 impl Fields {
-    /// The value of `field`, where it is one of the stream's own fields.
     fn fact(&mut self, field: &tracing::field::Field, value: Value) {
         let traced = F::from_token(field.name()).filter(|f| Traces.default_fields().contains(f));
         self.0.extend(traced.map(|f| (f, value)));
     }
 }
 
-/// Nanoseconds since the epoch, now.
 fn now_ns() -> u64 {
     u64::try_from(UNIX_EPOCH.elapsed().unwrap_or_default().as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// The span fields 0.33 reads as the span's own name, kind and status, never as attributes.
 const OTEL_NAME: &str = "otel.name";
 const OTEL_KIND: &str = "otel.kind";
 const OTEL_STATUS_CODE: &str = "otel.status_code";
 const OTEL_STATUS_MESSAGE: &str = "otel.status_message";
 
-/// 0.33's exception event and attribute names.
 const EVENT_EXCEPTION: &str = "exception";
 const EXCEPTION_MESSAGE: &str = "exception.message";
 const EXCEPTION_STACKTRACE: &str = "exception.stacktrace";
@@ -171,17 +121,12 @@ thread_local! {
     };
 }
 
-/// THE FULL SPAN RECORD (status row 173; K9e-2): everything the previous release's
-/// tracing-opentelemetry 0.33 layer exported for a span, whatever `fields:` selected, in its
-/// attribute order and types: `code.file.path`, `code.module.name`, `code.line.number`,
-/// `thread.id`, `thread.name`, `target`, the span's own fields as it recorded them, then `busy_ns`
-/// and `idle_ns`; its events; its status; its start, and its end at its last exit.
 struct SpanRecord {
     start_ns: u64,
     end_ns: Option<u64>,
     attributes: Vec<(String, Value)>,
     events: Vec<Value>,
-    /// `None`: unset; `Some(message)`: error.
+
     status: Option<String>,
     busy: i64,
     idle: i64,
@@ -190,7 +135,6 @@ struct SpanRecord {
 }
 
 impl SpanRecord {
-    /// The record a span opens with.
     fn open(meta: &tracing::Metadata<'_>, attrs: &Attributes<'_>) -> Self {
         let mut attributes: Vec<(String, Value)> = Vec::new();
         if let Some(file) = meta.file() {
@@ -222,7 +166,6 @@ impl SpanRecord {
         record
     }
 
-    /// The record as the span's `span` member.
     fn finish(self, ids: (u64, u64, Option<u64>), name: &str) -> Value {
         let hex = |id: u64| Value::from(format!("{id:016x}"));
         let (trace, own, parent) = ids;
@@ -252,7 +195,6 @@ impl SpanRecord {
     }
 }
 
-/// `[{key, value}, …]`, in order.
 fn key_values(attributes: Vec<(String, Value)>) -> Value {
     Value::Array(
         attributes
@@ -262,10 +204,6 @@ fn key_values(attributes: Vec<(String, Value)>) -> Value {
     )
 }
 
-/// 0.33's span attribute visitor: every field an attribute (a `u64` its text, see [`Fields`]),
-/// but `otel.name` / `otel.kind`, which are no attributes, and `otel.status_code` /
-/// `otel.status_message`, which set the status; an error value its message, its source chain, and
-/// the `exception.*` pair.
 struct Attrs<'a>(&'a mut SpanRecord);
 
 impl Attrs<'_> {
@@ -273,7 +211,6 @@ impl Attrs<'_> {
         self.0.attributes.push((key.to_string(), value));
     }
 
-    /// A string-valued field, or one of the `otel.*` fields 0.33 reads as the span's own.
     fn text(&mut self, key: &str, value: String) {
         match key {
             OTEL_NAME | OTEL_KIND => {}
@@ -325,7 +262,6 @@ impl tracing::field::Visit for Attrs<'_> {
     }
 }
 
-/// An error's source chain, each its message, as 0.33 wrote it.
 fn source_chain(value: &(dyn std::error::Error + 'static)) -> Value {
     let mut chain = Vec::new();
     let mut next = value.source();
@@ -336,9 +272,6 @@ fn source_chain(value: &(dyn std::error::Error + 'static)) -> Value {
     Value::Array(chain)
 }
 
-/// 0.33's span event visitor: `message` names the event; an `error` field before any name makes
-/// it an `exception` event carrying `exception.message` and sets the span's status; `log.*`
-/// fields are the log bridge's own and dropped; every other field an attribute.
 struct EventFields<'a> {
     name: String,
     attributes: &'a mut Vec<(String, Value)>,
@@ -418,13 +351,10 @@ impl tracing::field::Visit for EventFields<'_> {
     }
 }
 
-/// Whether some opened sink subscribed to `traces` takes full span records.
 fn records_wanted() -> bool {
     super::plugin::sinks().any(|s| s.projection.wants_stream(Traces) && s.span_record)
 }
 
-/// The producer, handing each closed span's record facts (and its full record, where kept) to its
-/// sink (the export axis's delivery).
 struct Producer(fn(&[(F, Value)], Option<&Value>), fn() -> bool);
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
@@ -439,10 +369,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
             .insert(Opened(Instant::now(), epoch, fields, own, full));
     }
 
-    /// A value the span records after it opened (status row 173: `forward`'s `pool`, `ingress`
-    /// and `op` are known once the plane has read the request): it joins the span's facts, a
-    /// field recorded again keeping its last value; and the full record's attributes, appended, as
-    /// 0.33 appended them.
     fn on_record(&self, id: &Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
         let mut recorded = Fields(Vec::new());
@@ -460,7 +386,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
         }
     }
 
-    /// The span is entered: the time since it last left it is idle (0.33's timings).
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
         let mut extensions = span.extensions_mut();
@@ -474,7 +399,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
         }
     }
 
-    /// The span is left: the time it was in is busy, and its end is the last exit (0.33's).
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
         let mut extensions = span.extensions_mut();
@@ -489,9 +413,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
         }
     }
 
-    /// An event in a span joins its full record, as 0.33 added it: its name (`message`), its time,
-    /// `level`, `target`, its fields, then its code location; an ERROR one marks the span's status
-    /// an error.
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         let span = event.parent().and_then(|id| ctx.span(id)).or_else(|| {
             event
@@ -541,9 +462,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
         }));
     }
 
-    /// The span's record: its facts, its parent's id, its ROOT's id as the trace id (a root is its
-    /// own trace), its own id and name, when it opened and how long it stayed open; and, where
-    /// kept, its full record.
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(&id) else { return };
         let Some(Opened(start, epoch, Fields(mut facts), own, full)) =
@@ -552,8 +470,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
             return;
         };
         let hex = |id: u64| Value::from(format!("{id:016x}"));
-        // A span's export id, as it opened (`Opened`); one opened before this layer saw it keeps
-        // the subscriber's id.
+
         let export_id = |s: &tracing_subscriber::registry::SpanRef<'_, S>| {
             s.extensions()
                 .get::<Opened>()

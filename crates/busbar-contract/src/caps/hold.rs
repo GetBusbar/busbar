@@ -110,17 +110,13 @@ pub enum Admission {
 }
 
 /// The unit's admission, as a fact: whose it is and which call opened it. It carries no figure.
-///
-/// `#[must_use]`, no `Clone`, no `Copy`, no `Drop`, and not unwind-safe. One unit has at most one.
+
 #[must_use = "a hold must reach the exit path; dropping it here loses the unit's admission"]
 pub struct Hold {
     principal: PrincipalId,
     /// The call whose admittance grant opened it (#74): the grant that later admits it into a cell
-    /// must be that call's.
     call: CallId,
     /// Makes a hold not unwind-safe, so the compiler refuses to let one be captured by a
-    /// `catch_unwind` closure. (A caller that wraps the closure in `AssertUnwindSafe` defeats this;
-    /// that is precisely the shape the source scan bans.)
     _not_unwind_safe: PhantomData<&'static mut ()>,
 }
 
@@ -174,12 +170,7 @@ impl HoldAccrual {
     }
 
     /// Convert an outstanding accrual into a child-owned hold, at the parent's exit, so the child
-    /// ends on a hold of its own.
-    ///
-    /// # Errors
-    ///
-    /// The accrual itself, untouched, when `token` was minted for another call than the one that
-    /// accrued it (#74): a grant of call A never converts call B's accrual.
+
     pub fn convert_at_parent_exit(self, token: &Grant<Admittance>) -> Result<Hold, HoldAccrual> {
         if token.call() != self.call {
             return Err(self);
@@ -287,9 +278,6 @@ impl HoldCell {
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, Slot> {
-        // A poisoned cell still owns a hold, and losing it would lose the unit's end. Recovering the
-        // guard is the only correct answer here; the panic that poisoned it is already on its way to
-        // an end.
         self.slot.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -303,12 +291,8 @@ impl HoldCell {
     }
 
     /// The one transition: swap the arrival hold for the admitted one, and hand the arrival hold
-    /// back so the admission unit can fold it into the record.
-    ///
-    /// A second attempt is refused, and the hold that lost comes back untouched.
+
     pub fn admit(&self, admitted: Hold, token: &Grant<Admittance>) -> Result<Hold, AdmitRejected> {
-        // THE PER-CALL BINDING (#74): the grant that admits a hold is the grant of the call that
-        // opened it. A grant from another call is refused and the hold comes back untouched.
         if token.call() != admitted.call {
             return Err(AdmitRejected {
                 hold: admitted,
@@ -339,8 +323,7 @@ impl HoldCell {
     }
 
     /// Take the hold, whichever state it is in. Exactly three take sites hold an exit grant, all in
-    /// the kernel — the exit path and a child unit's end (`busbar-kernel/src/teller.rs`), and the
-    /// node's sweep (`busbar-kernel/src/tick.rs`) — and whichever reaches a cell second gets `None`.
+
     pub fn take(&self, _token: &Grant<Exit>) -> Option<Hold> {
         let mut slot = self.slot();
         match std::mem::replace(&mut *slot, Slot::Taken) {
@@ -350,9 +333,7 @@ impl HoldCell {
     }
 
     /// Let a child unit run under this cell's admission.
-    ///
-    /// Refused unless the cell is admitted and the principals match — the runtime seal that stands
-    /// in for a type-level one, because a parent's hold is a value the child never sees.
+
     pub fn accrue_child(
         &self,
         principal: &PrincipalId,
@@ -376,13 +357,7 @@ impl HoldCell {
     }
 
     /// Write a child's posting into this cell's admission, under one guard.
-    ///
-    /// The state that decides the answer and the answer itself come out of the same critical
-    /// section, so a clean in-parent posting is never written against a slot that had already been
-    /// emptied by the parent's exit or the node's sweep.
-    ///
-    /// The refusal hands the accrual back rather than consuming it, because a child that missed
-    /// its parent still has to post; it posts late, on its own.
+
     pub fn post_child(
         &self,
         accrual: HoldAccrual,
@@ -456,10 +431,7 @@ pub struct Posted {
 
 impl Posted {
     /// Close a hold at the count its unit reported. Takes the hold by value: a hold that has been
-    /// posted no longer exists, so a second posting of the same hold cannot be written.
-    ///
-    /// The report is taken for its evidence: whether the destination confirmed the count or the
-    /// node floored it travels from here onto the posting's flags.
+
     pub fn settle(hold: Hold, quantity: u64, usage: &Usage, _token: &Grant<WriteMoney>) -> Self {
         let flags = if usage.is_estimated() {
             PostingFlags::ESTIMATED
@@ -474,8 +446,7 @@ impl Posted {
     }
 
     /// Post a child's run that ended inside its parent's admission. The caller-facing spelling of
-    /// the cell's own [`HoldCell::post_child`], because the state and the posting come out of one
-    /// guard. A parent that exited between the door and here hands the accrual back.
+
     pub fn into_parent(
         accrual: HoldAccrual,
         parent: &HoldCell,

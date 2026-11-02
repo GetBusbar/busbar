@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The probe service's cadence, ported from 1.5.5's prober and proven against a test double: the
-//! same modes, defaults, first-probe delay and swap-stable deadlines.
-
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,7 +35,6 @@ fn member(mode: HealthMode, interval_secs: u64) -> Vec<ProbeMember> {
 }
 
 async fn run_for(secs: u64) {
-    // Yield so spawned tasks register their timers, then move the paused clock.
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(secs)).await;
     for _ in 0..8 {
@@ -46,8 +42,6 @@ async fn run_for(secs: u64) {
     }
 }
 
-/// THE DEFAULTS AND THE FLOOR: a member's own value wins, the process-wide default fills the
-/// rest (30 s / 5 s), and nothing is below one second.
 #[test]
 fn settings_resolve_to_the_member_then_the_default_floored_at_one_second() {
     let c = ProbeCfg::resolve(HealthMode::Active, None, None, 30, 5);
@@ -68,7 +62,6 @@ fn settings_resolve_to_the_member_then_the_default_floored_at_one_second() {
     assert!(!ProbeCfg::resolve(HealthMode::None, None, None, 30, 5).probes());
 }
 
-/// THE MODES: `active` always; `dead` only while the breaker suppresses; `none` never.
 #[test]
 fn the_modes_decide_what_a_tick_probes() {
     assert!(due(HealthMode::Active, false));
@@ -78,7 +71,6 @@ fn the_modes_decide_what_a_tick_probes() {
     assert!(!due(HealthMode::None, true));
 }
 
-/// THE FIRST PROBE IS ONE INTERVAL IN, never at boot; then it repeats each interval.
 #[tokio::test(start_paused = true)]
 async fn the_first_probe_is_one_interval_after_the_start() {
     let t = Arc::new(Double::default());
@@ -96,8 +88,6 @@ async fn the_first_probe_is_one_interval_after_the_start() {
     assert_eq!(t.probed.load(Ordering::Relaxed), 2, "then every interval");
 }
 
-/// A member in `dead` mode that the breaker is not suppressing is never probed; suppress it and
-/// the next tick probes it. A `none` member has no task at all.
 #[tokio::test(start_paused = true)]
 async fn dead_mode_probes_only_a_suppressed_member() {
     let t = Arc::new(Double::default());
@@ -125,9 +115,6 @@ async fn dead_mode_probes_only_a_suppressed_member() {
     );
 }
 
-/// A SWAP MUST NOT MOVE THE DEADLINE. Under swap churn faster than the interval, every generation
-/// used to be replaced before its first tick and probing went dark. The deadline is inherited;
-/// only the newest generation probes; the older ones exit.
 #[tokio::test(start_paused = true)]
 async fn a_snapshot_swap_never_pushes_the_probe_deadline_out() {
     let t = Arc::new(Double::default());
@@ -153,7 +140,6 @@ async fn a_snapshot_swap_never_pushes_the_probe_deadline_out() {
     );
 }
 
-/// A SHORTENED INTERVAL takes effect within one new interval, not after the old, longer one.
 #[tokio::test(start_paused = true)]
 async fn a_shortened_interval_takes_effect_on_the_inherited_deadlines() {
     let t = Arc::new(Double::default());
@@ -169,8 +155,6 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_deadlines() {
     assert_eq!(t.probed.load(Ordering::Relaxed), 1);
 }
 
-/// A late tick's write does not revert a newer generation's clamp: `compare_exchange` on the
-/// value this prober last owned, not a `store`.
 #[test]
 fn a_late_tick_never_reverts_a_newer_generations_clamp() {
     let slot = std::sync::atomic::AtomicU64::new(3_600_000);
@@ -180,7 +164,6 @@ fn a_late_tick_never_reverts_a_newer_generations_clamp() {
     assert_eq!(got, 10_000, "the late prober adopts the newer value");
 }
 
-/// A generation whose target was dropped exits instead of probing an orphan.
 #[tokio::test(start_paused = true)]
 async fn a_dropped_target_ends_its_probers_and_is_never_pinned() {
     let t = Arc::new(Double::default());
@@ -197,7 +180,6 @@ async fn a_dropped_target_ends_its_probers_and_is_never_pinned() {
     assert!(weak.upgrade().is_none());
 }
 
-/// A timeout the clock cannot represent never panics: the deadline falls back to "never".
 #[tokio::test(start_paused = true)]
 async fn an_unrepresentable_timeout_falls_back_to_never() {
     let d = probe_deadline(Duration::MAX);

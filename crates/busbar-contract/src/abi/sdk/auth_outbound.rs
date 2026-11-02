@@ -2,46 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE AUTH KIND'S OUTBOUND DOOR, FOR A SAFE PLUGIN (`abi::auth`, the outbound family; THE DESIGN,
-//! section 6 and sections 11.4 and 11.6): the auth kind's outbound bits over the SDK's safe layer
-//! ([`SafeSlot`], [`Lent`], [`HostBuf`]). An auth plugin that presents credentials to an upstream
-//! implements [`OutboundPlugin`], and [`auth_outbound_door!`](macro@crate::auth_outbound_door)
-//! builds its whole door over the auth table: the lifecycle, `open_outbound`, `outbound_ready`,
-//! `fields`, and
-//! the inbound ops answering REFUSED (the plugin states only
-//! [`CAP_OUTBOUND`](crate::abi::auth::CAP_OUTBOUND)). A plugin that also verifies (one mechanism
-//! both ways, as SigV4) implements [`VerifyPlugin`] too and names
-//! [`auth_door!`](macro@crate::auth_door)`(verify_and_outbound: ..)`. The plugin crate holds no `unsafe`.
-//!
-//! * The lifecycle is the SDK's shared one (`abi::sdk::life`), over [`Outbound`], the kind's
-//!   [`Life`]: `open` builds the plugin from its settings blob and secrets
-//!   ([`OutboundPlugin::open`]); `refresh`, `retire` and `tick` forward to the plugin (a minted
-//!   token refreshes ahead of expiry on `tick`).
-//! * `open_outbound` binds a style to its credential and settings and answers the plugin's handle
-//!   ([`OutboundPlugin::open_outbound`]); a refusal is FAILED with the plugin's lines
-//!   ([`OpenRefusal`]).
-//! * `fields` hands [`OutboundPlugin::fields`] a [`FieldsView`] of the request at one auth point
-//!   and a [`FieldsWriter`]. The plugin stages its fields there; the kit writes them under THE
-//!   SHORT-BUFFER RULE ([`FieldsOut`]): all of them, or (when they do not fit) nothing and the
-//!   full sizes, so the host re-calls once with buffers that large and the plugin answers again.
-//!   The staging copy is zeroised when the call returns (THE DESIGN: auth material is zeroised).
-//! * A `fields` that waits (an expired token whose refresh is in flight) answers
-//!   [`Poll::Pending`] while its one [`Op::exchange`] pends, as a hook does: the op answers
-//!   PENDING and the host re-enters it on its ticket when the wake fires. A TICKET-LESS `fields`
-//!   (the host's on-the-spot try) cannot pend: it answers REFUSED there, and the host submits the
-//!   same call on a ticket.
-//! * THE DECLARED DIAGNOSTICS (#85, the reply envelope's `diags` in every op's out head): the
-//!   lines the plugin's Statement names in `diag_ids` (its 1.5.5 builders' own lines), staged into
-//!   [`Diags`] by `open_outbound` (READY or FAILED), `fields` ([`FieldsWriter::diag`]), `tick` and
-//!   `drive`, and written by the kit into that call's envelope through [`Out::diag`]: kept by the
-//!   answering instance until the host has copied the reply. The host renders each as the plugin's
-//!   main-log line.
-//! * THE DRIVER TICKET (`abi::mechanism::lifecycle`, `tick`/`drive`/`cancel`): a plugin that mints
-//!   ahead of expiry runs its exchange on the instance's driver ticket. `tick` hands it the host
-//!   tables and that ticket ([`OutboundPlugin::tick`]); `drive` re-enters it when the ticket is
-//!   woken ([`OutboundPlugin::drive`]); `cancel` answers the plugin's own disposition for the
-//!   cancelled ticket ([`OutboundPlugin::cancel`]). The defaults are a plugin that holds no driver
-//!   ticket: `tick` wants none, `drive` is REFUSED, `cancel` is
-//!   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED).
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -70,9 +30,7 @@ use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
 
 /// Versioned sealed-field custody handshake in the existing call extensions. In a request,
-/// value `[1]` promises that the host preserves the reply's secure-connection requirement until
-/// the actual connector sends the fields. In a READY reply, `[1]` requires that connection to
-/// be secured. It does not assert that any current connection is secure.
+
 pub const EXT_SEALED_FIELDS: &str = "auth.sealed_fields";
 
 /// The version-one custody capability (request) or secure-connection requirement (reply).
@@ -114,7 +72,7 @@ impl<'a> FieldsView<'a> {
     }
 
     /// Whose credential to present. (A mode outside the vocabulary never reaches the plugin: the
-    /// kit answers it FAULT.)
+
     #[must_use]
     pub fn mode(&self) -> Mode {
         if self.input.mode == MODE_PASSTHROUGH {
@@ -174,7 +132,7 @@ impl<'a> FieldsView<'a> {
     }
 
     /// The exact head envelope the framer will send, in order: (name, value). Empty unless the
-    /// style declares [`STYLE_NEEDS_HEADERS`](crate::abi::auth::STYLE_NEEDS_HEADERS).
+
     pub fn headers(&self) -> impl Iterator<Item = (&'a [u8], &'a [u8])> + 'a {
         self.input
             .headers()
@@ -196,7 +154,7 @@ impl<'a> FieldsView<'a> {
     }
 
     /// The per-call scope the request stated ([`EXT_SCOPE`] in the call's extensions); `None` =
-    /// none.
+
     #[must_use]
     pub fn scope(&self) -> Option<&'a [u8]> {
         let ext = self.input.field(|i| &i.head.extensions).bytes();
@@ -240,7 +198,7 @@ impl Diags {
     }
 
     /// The staged diagnostics, in order: `(id_idx, severity, text)` (a plugin's own tests read
-    /// what it noted here).
+
     pub fn iter(&self) -> impl Iterator<Item = (u32, u8, &str)> {
         self.staged
             .iter()
@@ -266,9 +224,7 @@ struct Staged {
 }
 
 /// THE FIELDS A `fields` ANSWERS, staged by the plugin and written by the kit into the host's
-/// field buffer and field array when the plugin answers [`FieldsAnswer::Ready`]: all of them, or
-/// (short) none. The staging bytes are credential material: zeroised when the writer drops, and
-/// never left behind in a freed allocation as they grow.
+
 pub struct FieldsWriter<'a> {
     bytes: HostBuf<'a, u8>,
     spans: HostBuf<'a, FieldSpan>,
@@ -282,7 +238,6 @@ pub struct FieldsWriter<'a> {
 
 impl std::fmt::Debug for FieldsWriter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Never the staged bytes: they are credential material.
         f.debug_struct("FieldsWriter")
             .field("fields", &self.fields.len())
             .finish_non_exhaustive()
@@ -307,14 +262,13 @@ impl<'a> FieldsWriter<'a> {
     }
 
     /// Report the declared diagnostic `id_idx` at `severity`, saying `text`, in this call's reply
-    /// envelope (whatever the call answers): [`Diags::push`].
+
     pub fn diag(&mut self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) {
         self.diags.push(id_idx, severity, text);
     }
 
     /// Stage the field `name: value`, after those staged before it. `flags` holds only
-    /// [`FIELD_SENSITIVE`] and [`FIELD_QUERY`]; any other bit is the plugin's bug, and the call
-    /// answers FAULT.
+
     pub fn push(&mut self, name: &[u8], value: &[u8], flags: u32) {
         if flags & !(FIELD_SENSITIVE | FIELD_QUERY) != 0 {
             self.stray = true;
@@ -330,9 +284,7 @@ impl<'a> FieldsWriter<'a> {
     }
 
     /// Stage public and sealed pieces as one field without exposing its value to the plugin.
-    /// Sealed fields are always sensitive. Every piece's secure-connection requirement is kept
-    /// for the host connector; a host without version-one custody support is refused before any
-    /// field is copied to its buffers. `flags` otherwise follows [`FieldsWriter::push`].
+
     pub fn push_sealed(&mut self, name: &[u8], value: Parts, flags: u32) {
         if flags & !(FIELD_SENSITIVE | FIELD_QUERY) != 0 {
             self.stray = true;
@@ -356,7 +308,7 @@ impl<'a> FieldsWriter<'a> {
     }
 
     /// Append `b` to the staging bytes. Growing moves them into a new allocation and drops the old
-    /// one zeroised, so no copy of a credential is freed unwiped.
+
     fn stage(&mut self, b: &[u8]) {
         let want = self.staged.len().saturating_add(b.len());
         if want > self.staged.capacity() {
@@ -369,8 +321,7 @@ impl<'a> FieldsWriter<'a> {
     }
 
     /// WRITE the staged fields into the host's buffers and answer READY, or, when they do not fit,
-    /// the SHORT FAILED: nothing written, `needed_fields`/`needed_bytes` at their full sizes (the
-    /// host re-calls once with buffers that large). Never writes past a capacity.
+
     fn write(mut self, out: &mut Out<'_, FieldsOut>) -> Outcome {
         if self.stray {
             return Outcome::Fault;
@@ -383,7 +334,7 @@ impl<'a> FieldsWriter<'a> {
         if u32::try_from(bytes).is_err() {
             return out.fail(Refusal::failed("auth fields: over 4 GiB"));
         }
-        // The fit check first: a short answer writes nothing into the host's buffers.
+
         if count > self.spans.cap() || bytes > self.bytes.cap() {
             out.set(
                 |o| &o.needed_fields,
@@ -492,32 +443,18 @@ impl From<String> for OpenRefusal {
 /// AN AUTH PLUGIN THAT PRESENTS CREDENTIALS UPSTREAM, in safe Rust.
 pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     /// `validate`: whether `settings` (one JSON document) open an instance; `Err` answers its
-    /// outcome (REFUSED or FAILED) with its text. The default takes any settings (`open` judges).
-    ///
-    /// # Errors
-    /// The settings are not this plugin's.
+
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         let _ = settings;
         Ok(())
     }
 
     /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
-    /// per Statement `secret_refs` key, in order), at `generation` (the generation the handles it
-    /// opens belong to until [`OutboundPlugin::refresh`] names the next). `Err` answers `open`
-    /// with the refusal's outcome and text.
-    ///
-    /// # Errors
-    /// The settings are not this plugin's.
+
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
     /// Bind `style` (one the tail declares) to its resolved `credential` (`None` for a
-    /// passthrough-only binding) and the provider's auth `settings` (`None` when absent); the
-    /// handle, valid until `retire` of this generation. Never waits: a first mint runs on the
-    /// driver ticket ([`OutboundPlugin::tick`]; `host` wakes it at once). What the binding notes
-    /// (a credential it opened but cannot present) goes in `diags`, READY or FAILED alike.
-    ///
-    /// # Errors
-    /// The binding is refused, in the plugin's own lines.
+
     fn open_outbound(
         &self,
         style: &str,
@@ -528,7 +465,7 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     ) -> Result<u64, OpenRefusal>;
 
     /// The auth fields for `request`, staged into `out`; [`Poll::Pending`] while `op`'s one
-    /// exchange pends (an expired token being refreshed), re-entered from the top on the wake.
+
     fn fields(
         &self,
         request: &FieldsView<'_>,
@@ -537,15 +474,11 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     ) -> Poll<FieldsAnswer>;
 
     /// Whether `fields` on `handle` would answer with a credential now (`false` before a minting
-    /// style's first mint, or expired with a failed refresh, or for a handle it does not hold).
+
     fn outbound_ready(&self, handle: u64) -> bool;
 
     /// A reload to `generation`, with the new settings and secrets: the handles opened from now on
-    /// belong to it. The outbound token cache survives it (it is keyed by style, credential and
-    /// settings, never by handle). `Err` refuses the reload with the refusal's outcome and text.
-    ///
-    /// # Errors
-    /// The new settings are not this plugin's.
+
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<(), Refusal> {
         let _ = (settings, secrets, generation);
         Ok(())
@@ -557,30 +490,21 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     }
 
     /// `tick` at `now_ns` on the instance's DRIVER TICKET `driver` (owned by the instance, outside
-    /// `max_inflight`), over the host tables `open` handed the instance (`None`: none): refresh
-    /// what is about to expire, starting its exchange on `driver` (`host.connector(driver)`); the
-    /// next tick wanted, `0` = none. What it notes goes in `diags`.
+
     fn tick(&self, now_ns: u64, host: Option<&Host>, driver: Ticket, diags: &mut Diags) -> u64 {
         let _ = (now_ns, host, driver, diags);
         0
     }
 
     /// `drive`: the driver ticket `driver` was woken (a read of the exchange that pended, or a
-    /// mint wanted at once): carry the exchange on. [`Driven::Pending`] while it waits, with the
-    /// instant to be re-driven at even if nothing wakes it; the plugin wakes the call tickets that
-    /// wait on what it minted ([`Host::wake`]). The default holds no driver ticket: REFUSED.
+
     fn drive(&self, host: Option<&Host>, driver: Ticket, diags: &mut Diags) -> Driven {
         let _ = (host, driver, diags);
         Driven::Refused
     }
 
     /// `cancel` of `ticket` (a call that waited, or the driver ticket): forget what waits on it,
-    /// and answer the kind's disposition (`abi::auth`: [`CANCEL_ABANDONED`] = nothing kept,
-    /// [`CANCEL_CONTINUES`] = the work it started completes and fills the cache). The SDK has
-    /// already dropped what the ticket parked.
-    ///
-    /// [`CANCEL_ABANDONED`]: crate::abi::auth::CANCEL_ABANDONED
-    /// [`CANCEL_CONTINUES`]: crate::abi::auth::CANCEL_CONTINUES
+
     fn cancel(&self, ticket: Ticket) -> u32 {
         let _ = ticket;
         crate::abi::auth::CANCEL_ABANDONED
@@ -604,22 +528,14 @@ pub enum Driven {
 }
 
 /// A [`Life`] that holds an [`OutboundPlugin`] `T`: [`Outbound<T>`], or [`Both<T>`] for a plugin
-/// that verifies too. The outbound slots serve either.
+
 pub trait HoldsOutbound<T: OutboundPlugin>: Life {
     /// The plugin.
     fn outbound(&self) -> &T;
 }
 
 /// THE AUTH KIND'S [`Life`] over an [`OutboundPlugin`] `T`: the instance state the shared
-/// lifecycle slots (`abi::sdk::life`) serve, a [`Held`] of it. Each per-kind value is stated here:
-///
-/// * `validate`, `open`, `refresh` and `retire` are the plugin's (`open` and `refresh` with the
-///   generation, so a handle is generation data);
-/// * `tick`, `drive` and `cancel` are the plugin's too, through the kit's own slots
-///   ([`OutboundTick`], [`OutboundDrive`], [`OutboundCancel`]), which hand it the host tables and
-///   the driver ticket: [`Life::DRIVE`] and [`Life::CANCEL`] here are what a door naming the
-///   generic slots would answer for a plugin with no driver ticket (REFUSED, and
-///   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED)).
+
 pub struct Outbound<T>(T);
 
 impl<T> std::fmt::Debug for Outbound<T> {
@@ -670,11 +586,7 @@ impl<T: OutboundPlugin> HoldsOutbound<T> for Outbound<T> {
 }
 
 /// THE AUTH KIND'S [`Life`] over a plugin `T` that both verifies and presents (the SigV4 shape):
-/// ONE `T`, built by [`OutboundPlugin::open`] (its [`VerifyPlugin::open`] must build the same
-/// plugin). `refresh` calls both refreshes and reports the inbound entries
-/// [`VerifyPlugin::refresh`] dropped under [`VerifyPlugin::CACHE_FAMILY`] (the outbound side's
-/// refusal first: a refused reload flushes nothing); `validate`, `retire`, `tick`, `drive` and
-/// `cancel` are the outbound side's.
+
 pub struct Both<T>(T);
 
 impl<T> std::fmt::Debug for Both<T> {
@@ -713,7 +625,6 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
         secrets: &[&[u8]],
         generation: u64,
     ) -> Result<Refreshed, Refusal> {
-        // The outbound side judges the new settings first: a refused reload flushes nothing.
         OutboundPlugin::refresh(&self.0, settings, secrets, generation)?;
         let dropped = VerifyPlugin::reload(&self.0, settings, secrets)?;
         Ok(Refreshed {
@@ -750,7 +661,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OpenOutboundSlot<T, L>
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        // A style that is not UTF-8 is none the plugin declares.
+
         let Ok(style) = input.field(|i| &i.style).as_str() else {
             return out.fail(Refusal::refused(
                 "open_outbound: the style is not UTF-8, so it is none this plugin declares",
@@ -810,7 +721,6 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
             return Outcome::Fault;
         };
         if !matches!(input.mode, MODE_OWN | MODE_PASSTHROUGH) {
-            // A host bug: the plugin never reads a mode outside the vocabulary.
             return Outcome::Fault;
         }
         let mut writer = FieldsWriter::of(input);
@@ -818,13 +728,10 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
         let plugin = h.life().outbound();
         let answer = plugin.fields(&FieldsView { input }, &mut writer, &op);
         if writer.stray {
-            // The plugin's bug: FAULT, and a FAULT reply carries no envelope.
             return Outcome::Fault;
         }
         std::mem::take(&mut writer.diags).write(&mut out);
         match answer {
-            // On the spot the call cannot pend (a ticket-less PENDING is FAULT): REFUSED there,
-            // and the host submits it on a ticket.
             Poll::Pending if instance.ticket().is_none() => out.fail(Refusal::refused(
                 "fields waits on its exchange: it is answered on a ticket, not on the spot",
             )),
@@ -892,7 +799,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundDrive<T, L> {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        // The driver ticket that woke (`DriveIn::driver`); the call's own when the host named none.
+
         let driver = if input.driver.is_none() {
             instance.ticket()
         } else {
@@ -903,7 +810,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundDrive<T, L> {
         diags.write(&mut out);
         match driven {
             Driven::Ready => Outcome::Ready,
-            // A ticket-less PENDING is FAULT: only a drive on the driver ticket waits.
+
             Driven::Pending { .. } if instance.ticket().is_none() => Outcome::Ready,
             Driven::Pending { wake_at_ns } => {
                 if wake_at_ns != 0 {
@@ -1090,7 +997,7 @@ macro_rules! auth_door {
 }
 
 /// One outbound style the plugin serves, as its tail states it: `name`, its `STYLE_*` `flags` and
-/// the auth `points` it needs (a valid, non-empty set: the loader refuses any other).
+
 #[must_use]
 pub const fn style(name: &'static str, flags: u32, points: AuthPoints) -> StyleDecl {
     StyleDecl {
@@ -1119,7 +1026,7 @@ pub const fn outbound_tail(facts: u32, styles: &'static [StyleDecl]) -> AuthTail
 }
 
 /// `tail` as a verifier too: it states [`CAP_INBOUND`](crate::abi::auth::CAP_INBOUND), called at
-/// the inbound `points` (a valid, non-empty set).
+
 #[must_use]
 pub const fn with_inbound(tail: AuthTail, points: AuthPoints) -> AuthTail {
     AuthTail {

@@ -91,8 +91,6 @@
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Mutex, OnceLock};
 
-/// One unit of work handed to a permanent worker: an erased closure pointer, the trampoline that
-/// knows its concrete type, and the channel the worker reports completion on.
 struct Job {
     /// # Safety
     /// Must be called exactly once with the `data` pointer from the same [`Job`].
@@ -111,21 +109,12 @@ struct Job {
 // be `Send + Sync` by the ABI's own contract (see `unsafe impl Send for RawPlugin`).
 unsafe impl Send for Job {}
 
-/// Every worker ever created, by index, and the subset currently idle.
-///
-/// The `SyncSender`s in `all` are the reason a worker never exits: its receive loop ends only when
-/// every sender is dropped, and `all` never shrinks, so that cannot happen. Handing callers a CLONE
-/// (rather than moving a sender out) is deliberate — if a caller panics between acquire and release,
-/// the clone drops, but `all` still holds the original, so the worker survives with plugin TLS
-/// intact instead of exiting into the very crash this module prevents. The cost of that panic is one
-/// permanently idle thread, which is a leak we accept in exchange for never taking the unsafe path.
 struct Pool {
     all: Vec<SyncSender<Job>>,
     idle: Vec<usize>,
 }
 
 impl Pool {
-    /// A pool with no workers yet.
     const fn empty() -> Self {
         Self {
             all: Vec::new(),
@@ -134,8 +123,6 @@ impl Pool {
     }
 }
 
-/// THE process's pool. (The tests that assert which worker runs a job use pools of their own, so
-/// no other test's crossing can take that worker between their two calls.)
 fn pool() -> &'static Mutex<Pool> {
     static POOL: OnceLock<Mutex<Pool>> = OnceLock::new();
     POOL.get_or_init(|| Mutex::new(Pool::empty()))
@@ -146,14 +133,10 @@ std::thread_local! {
     static PERMANENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Whether the calling thread is one of this module's permanent workers.
 pub(crate) fn on_permanent_worker() -> bool {
     PERMANENT.with(std::cell::Cell::get)
 }
 
-/// THE ASSERTION every routed crossing makes just before it enters plugin code: the calling thread
-/// is a permanent worker. `what` names the crossing. Debug builds only; a release build relies on
-/// the routing it checks.
 #[track_caller]
 pub(crate) fn debug_assert_permanent(what: &str) {
     debug_assert!(
@@ -163,19 +146,16 @@ pub(crate) fn debug_assert_permanent(what: &str) {
     );
 }
 
-/// A worker's receive loop. NEVER returns: `pool().all` holds a sender for this receiver for the
-/// life of the process, so `recv` can never see a disconnect. That is the whole invariant.
 fn worker(rx: Receiver<Job>) {
     PERMANENT.with(|p| p.set(true));
     while let Ok(job) = rx.recv() {
         // SAFETY: `run`/`data` come from the same `Job`, and the caller is blocked on `done`.
         unsafe { (job.run)(job.data) };
-        // The caller is waiting on this; capacity 1 so the worker never blocks handing it over.
+
         let _ = job.done.send(());
     }
 }
 
-/// A borrowed worker, returned to its pool's idle list on drop (including on unwind).
 struct Lease {
     pool: &'static Mutex<Pool>,
     idx: usize,
@@ -192,9 +172,6 @@ impl Drop for Lease {
     }
 }
 
-/// Borrow an idle worker, or create a new permanent one. Growing on demand (rather than capping) is
-/// what makes re-entrancy deadlock-free: plugin code that calls back into the loader takes a fresh
-/// worker instead of waiting for the one its own caller is occupying.
 fn acquire(pool: &'static Mutex<Pool>) -> Lease {
     {
         let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
@@ -220,21 +197,10 @@ fn acquire(pool: &'static Mutex<Pool>) -> Lease {
     }
 }
 
-/// Run `f` on a worker thread that will never exit, block until it finishes, and hand back what it
-/// returned — or `Err` if it panicked.
-///
-/// The `catch_unwind` lives on the WORKER, not the caller: a panic that escaped the trampoline would
-/// unwind past the `done` send and hang the caller forever, so the guard is what makes the
-/// rendezvous total: a panic comes back as `Err`, never as an unwind on the caller.
-///
-/// Neither `F` nor `R` is `Send`, deliberately: the closures capture raw plugin handles and the
-/// returns include raw pointers. Soundness comes from the caller blocking for the entire window (see
-/// the `unsafe impl Send for Job` note), not from the types.
 pub(crate) fn on_plugin_thread<F: FnOnce() -> R, R>(f: F) -> std::thread::Result<R> {
     on_plugin_thread_in(pool(), f)
 }
 
-/// [`on_plugin_thread`] on a worker of `pool`.
 fn on_plugin_thread_in<F: FnOnce() -> R, R>(
     pool: &'static Mutex<Pool>,
     f: F,
@@ -259,7 +225,7 @@ fn on_plugin_thread_in<F: FnOnce() -> R, R>(
         f: Some(f),
         r: None,
     };
-    // Capacity 1: the worker must be able to report completion without blocking.
+
     let (done_tx, done_rx) = sync_channel::<()>(1);
     let lease = acquire(pool);
     let job = Job {
@@ -271,7 +237,7 @@ fn on_plugin_thread_in<F: FnOnce() -> R, R>(
         .tx
         .send(job)
         .expect("a plugin FFI worker never exits, so its receiver is always live");
-    // THE RENDEZVOUS. Everything the worker borrowed stays valid until this returns.
+
     done_rx
         .recv()
         .expect("the worker always reports completion, panic or not");

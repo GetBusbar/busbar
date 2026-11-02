@@ -23,38 +23,18 @@ use busbar_contract::auth_calls::{
 };
 use busbar_kernel_identity::operator::Judgement;
 
-/// The Bearer auth-scheme token (case-insensitive match in `extract_bearer_token`).
 const AUTH_SCHEME_BEARER: &str = "bearer";
-/// The liveness-probe path, mounted `RouteAuth::None` on every router that serves it (see
-/// [`crate::core_routes`]). One constant so the mount and the reserved-path list cannot drift.
+
 pub const HEALTHZ_PATH: &str = "/healthz";
-/// The exact `/api` path (the native-API root — every busbar-own surface mounts under it;
-/// see `admin::v1::contract::API_ROOT`). `pub` so the config validator derives its
-/// reserved-name segment from THIS constant rather than a copied literal (see
-/// `config_validate::reserved_admin_name`), which is what keeps the reserved name and the
-/// middleware's `is_admin` boundary from drifting apart.
+
 pub const ADMIN_PATH: &str = "/api";
-/// The `/api/` prefix that all native-API sub-routes share. A path must match ADMIN_PATH exactly
-/// OR start with ADMIN_PATH_PREFIX to be treated as an admin-plane request — preventing sibling
-/// paths like `/apix/…` from being mis-classified. The WHOLE `/api/` root is admin-classified
-/// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
-/// default and must explicitly carve out a weaker class if it ever wants one.
+
 const ADMIN_PATH_PREFIX: &str = "/api/";
-// The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
-// so a plane names it without reaching into busbar-core; re-exported here so every
-// crate::auth::UpstreamCreds caller is unchanged.
+
 pub use busbar_contract::config::UpstreamCreds;
 
-// The caller's bearer token carrier now lives beside [`busbar_contract::auth::AuthPrincipal`] — the other
-// request-extension carrier the auth middleware inserts — because it has NOTHING of the engine in
-// it: a `Option<String>` newtype and a redacting `Debug`. A plane's test that builds a request
-// extension map needs to name it, and naming it used to be a reach into `busbar_kernel::auth`.
-// Re-exported here BY IDENTITY so every `crate::auth::CallerToken` caller is unchanged.
 pub use busbar_contract::auth::CallerToken;
 
-// The auth CONTRACT — [`Principal`], [`AuthVerdict`], the [`AuthModule`] trait, and the
-// constant-time credential primitives — lives in the `busbar-api` crate (the one crate both the
-// engine and every plugin build against). Re-exported here so engine-internal paths are unchanged.
 pub use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 
 /// The whole CHAIN's verdict for one request: admitted-with-identity, admitted-anonymously (the
@@ -88,96 +68,45 @@ pub enum ChainVerdict {
     Denied,
 }
 
-// 1.5.0: the static-token allowlist module is GONE. Data-plane auth is the built-in `keys`
-// signed-token verifier (engine-handled on the governance path) plus IdP auth modules; the engine
-// holds only the `AuthModule` contract (re-exported above from `busbar-api`).
-
-/// AuthMiddleware holds the resolved auth chain and the upstream-credential mode.
 pub struct AuthMiddleware {
-    // 1.5.3: `upstream_creds` is NO LONGER a field here. The mode moved off `auth:` onto the `pools:`
-    // section (an all-pools default plus a per-pool override), because whose credential
-    // reaches the upstream is a property of the route, not of the inbound auth chain. It now lives on
-    // `App::upstream_credentials` (the all-pools default) and `PoolRuntime::upstream_credentials` (the
-    // per-pool override), resolved per request by `App::pool_upstream_creds`.
-    /// Whether the config chain names the built-in `keys` signed-key verifier. The actual
-    /// verification rides the governance virtual-key path (the signed-token verifier is separate);
-    /// this flag records the operator's intent for validation and reporting.
     pub keys_in_chain: bool,
-    /// The AUTH CHAIN — the ordered `auth.chain` modules. `validate_token` runs it: the first module
-    /// to `Identify` admits, a `Reject` denies, and if every module `Pass`es (no usable credential
-    /// matched) a NON-EMPTY chain denies (fail-closed). An EMPTY chain admits unconditionally — the
-    /// open front door (`chain: []`, the old none/passthrough). No `AuthMode` — the front-door policy
-    /// is the chain shape, the egress policy is `upstream_creds`.
-    /// Each entry is the provider NAME — the `identity-providers:` key this chain position
-    /// referenced, and what a successful `Identify` reports as [`ChainVerdict::Identified::module`]
-    /// — and the `kind: auth` instance the auth axis opened for it ([`ChainEntry`]).
+
     chain: Vec<ChainEntry>,
-    /// THE HOST-HELD CREDENTIALS' VERIFIERS (THE DESIGN §6, "Auth points and guest lists": core's
-    /// `keys` verifies the credential that style yields, through the same handle): the auth rows
-    /// whose Statement states they read host-held credentials, opened when the chain names `keys`.
-    /// Called on a request whose dialect declares a signed ingress and which carries one of the
-    /// verifier's own carrier lines; the kernel names no credential line itself.
+
     readers: Vec<CredentialReader>,
-    /// THE HOST'S DEFAULT INBOUND STYLE's carriers (THE DESIGN §6, "Auth points and guest lists":
-    /// the line's style names where its credentials sit): the carrier marks of the one auth row
-    /// stating `FACT_DEFAULT_INBOUND_STYLE`, in its Statement's order, read on every line the
-    /// operator's config leaves without a style. Opaque words: the kernel names none of them.
+
     carriers: Vec<HeaderName>,
-    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the first host-held credentials'
-    /// verifier stating an issued shape, as its first kind and that shape ([`Self::issued_credential`]).
+
     issued: Option<(String, busbar_contract::auth_calls::IssuedShape)>,
 }
 
-/// ONE HOST-HELD CREDENTIAL'S VERIFIER: the opened instance, the credential kinds it reads through
-/// `records.secret` (opaque words), and the carrier lines its credential sits on (its own words).
 struct CredentialReader {
-    /// The `kind: auth` plugin this verifier is (the name its replay claims are made under).
     name: String,
     calls: std::sync::Arc<dyn AuthCalls>,
     kinds: Vec<String>,
     carriers: Vec<HeaderName>,
-    /// The shape of the credential the host issues for `kinds`, as the verifier's Statement states
-    /// it; `None` = the host issues none for it.
+
     issued: Option<busbar_contract::auth_calls::IssuedShape>,
 }
 
 impl CredentialReader {
-    /// Whether `headers` carry one of this verifier's carrier lines.
     fn carried(&self, headers: &HeaderMap) -> bool {
         self.carriers.iter().any(|c| headers.contains_key(c))
     }
 }
 
-/// ONE DATA-PLANE CHAIN POSITION (AUTH-CHAIN-SWITCH; THE DESIGN 11.6, "Auth is on the memory ABI"):
-/// the provider name and the `kind: auth` instance the auth axis opened for it
-/// ([`crate::preflight::auth_axis`]), called through the contract's [`AuthCalls`] — ONE `verify`
-/// per request per position, the candidate credential lent.
 struct ChainEntry {
-    /// The provider name from the configuration.
     provider: String,
-    /// The opened instance.
+
     calls: std::sync::Arc<dyn AuthCalls>,
-    /// The instance's name as its Statement (or its in-process module) states it, for the plugin
-    /// catalogue ([`AuthMiddleware::chain_names`]).
+
     name: String,
 }
 
-/// A position's `verify` answer as the chain walks it: the verdict, together with the identity's
-/// replay claim (THE DESIGN §6, Inbound verify: the verify caller claims it before admitting) and
-/// the lines the auth named for the transport to strip, whatever its verdict (§6.4). FAIL-CLOSED:
-/// an answer with no verdict (FAILED, FAULT, REFUSED, a timeout, a second short answer) and an
-/// overloaded verifier are a `Reject`, never an admit and never a pass. An answer with NO VERDICT
-/// is a server-side failure, not the caller's bad credential: it is marked
-/// ([`Judgement::no_verdict`]) and every caller that answers HTTP answers it 503 with
-/// `Retry-After`, where 1.5.5 rejected on a module failure (its 401) — SIGN-auth-kind 2026-10-30,
-/// lead-signed under owner delegation, extending the owner-signed 2026-10-30 rule "an IdP outage
-/// answers 503, never 401". The data-plane walk reads both apart first ([`data_verdict_of`]).
 fn chain_verdict_of(answer: VerifyAnswer) -> Judgement {
     Judgement::answered(answer)
 }
 
-/// A refusal that keeps the lines `answer` named: a verifier that was overloaded still named what
-/// the transport strips.
 fn refused_keeping_strips(answer: VerifyAnswer) -> Judgement {
     Judgement {
         strips: answer.strips,
@@ -185,11 +114,6 @@ fn refused_keeping_strips(answer: VerifyAnswer) -> Judgement {
     }
 }
 
-/// THE ANSWER A VERIFY WITH NO VERDICT EARNS, logged for the operator (SIGN-auth-kind 2026-10-30):
-/// the `plane` it was asked on, the `provider` that answered nothing, and `kind` (FAILED, FAULT, a
-/// timeout). Never the credential, never a line the request carried: the plugin's own log names
-/// its reason. Warn on the transition into the state, debug while it recurs (a failing IdP fails
-/// every request until it recovers), as the fault diagnostics latch.
 fn verify_without_verdict(plane: &'static str, provider: &str, kind: &'static str) {
     if tripped(&NO_VERDICT_WARNED) {
         tracing::warn!(
@@ -210,17 +134,8 @@ fn verify_without_verdict(plane: &'static str, provider: &str, kind: &'static st
     }
 }
 
-/// The record kind a replay claim is held under in governance's record store.
 const AUTH_REPLAY: &str = "auth-replay";
 
-/// THE REPLAY CLAIM (THE DESIGN §6, Inbound verify: "a verified identity may carry a replay_key and
-/// replay_ttl_secs, and the verify caller claims the record ... already TAKEN is 401"): the identity
-/// `provider` verified is admitted only by the call that first claims `<provider>/<key>` in
-/// governance's record store, the claim standing `ttl_secs` from `now`, awaited through the store's
-/// v3 calls. An empty key asks for no claim. FAIL-CLOSED: a claim already taken, a store that
-/// cannot answer, and no governance store to claim in each refuse — a ledger that cannot say
-/// whether the message was seen must not be read as saying it was not. A sender's retry inside the
-/// window is a replay, refused alike.
 pub(crate) async fn replay_claimed(
     gov: Option<&crate::governance::GovState>,
     provider: &str,
@@ -257,7 +172,6 @@ struct ReplayClaim {
 }
 
 impl ReplayClaim {
-    /// The claim `replay` asks `provider` for at `now`; `None` when it asks for none.
     fn of(provider: &str, replay: Option<Box<Replay>>, now: u64) -> Option<Self> {
         replay.map(|replay| ReplayClaim {
             provider: provider.to_string(),
@@ -266,16 +180,11 @@ impl ReplayClaim {
         })
     }
 
-    /// Win the claim in `gov`'s record store: `true` only for the one call that redeems it first
-    /// (the store's redeem is the atomic step, so two racing identical requests admit at most one).
     async fn win(&self, gov: Option<&crate::governance::GovState>) -> bool {
         replay_claimed(gov, &self.provider, &self.replay, self.now).await
     }
 }
 
-/// A REPLAY CLAIM AN ADMITTING CALLER WINS ITSELF, once its own last deny decision is made
-/// ([`ReplayClaim`]): the claim and the governance store it is won in. FAIL-CLOSED as
-/// [`replay_claimed`]: with no store to claim in it is lost.
 pub struct PendingClaim {
     claim: ReplayClaim,
     gov: Option<std::sync::Arc<crate::governance::GovState>>,
@@ -305,20 +214,16 @@ impl PendingClaim {
         claim.map(|claim| PendingClaim { claim, gov })
     }
 
-    /// Win the claim: `true` when this call redeemed it.
     pub async fn win(&self) -> bool {
         self.claim.win(self.gov.as_deref()).await
     }
 
-    /// [`Self::win`] on the caller's own thread, for a synchronous caller (the root's admin units
-    /// answer on the blocking pool, never on a runtime worker).
     #[must_use]
     pub fn win_now(&self) -> bool {
         futures::executor::block_on(self.win())
     }
 }
 
-/// Whether `pending` lets its request through: no claim asked, or the claim won.
 async fn claim_won(pending: Option<&PendingClaim>) -> bool {
     match pending {
         None => true,
@@ -326,12 +231,6 @@ async fn claim_won(pending: Option<&PendingClaim>) -> bool {
     }
 }
 
-/// THE SIGNED INGRESS'S REPLAY CLAIM (THE DESIGN §6 "Inbound verify", l.845-846: "a verified
-/// identity may carry a replay_key and replay_ttl_secs, and the verify caller claims the record
-/// (auth-replay, plugin/key, ttl) ... already TAKEN is 401"): the claim `id` asks for, made under
-/// the verifier `reader` exactly as the data chain and the admin door make theirs. `true` when the
-/// identity asks for none, or when this call won the claim. The gate wins it as the last step of
-/// admission ([`ReplayClaim`]); this is that claim, won on the spot.
 #[cfg(test)]
 async fn signed_replay_claimed(
     gov: Option<&crate::governance::GovState>,
@@ -345,11 +244,6 @@ async fn signed_replay_claimed(
     }
 }
 
-/// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request (THE DESIGN §6.4:
-/// "the transport strips both, so the plane never sees a credential"). Each field line joins what
-/// the gate consumed, beside the gate's own carriers (kept for 1.5.5 parity), so every handoff that
-/// strips those strips it too. Each query key leaves the request's target here, once, so every
-/// downstream reader of the URI (and of the router's original URI) reads the query without it.
 fn strike_named(req: &mut Request<Body>, consumed: &mut ConsumedCredentials, strips: &[Strip]) {
     let fields: Vec<HeaderName> = strips
         .iter()
@@ -375,8 +269,6 @@ fn strike_named(req: &mut Request<Body>, consumed: &mut ConsumedCredentials, str
     }
 }
 
-/// `uri` without the query pairs whose key is one of `keys` — matched case-sensitively, as sent or
-/// percent-decoded — every other pair kept byte for byte, in order; `None` when no pair goes.
 pub(crate) fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option<axum::http::Uri> {
     let query = uri.query()?;
     let named = |pair: &&str| {
@@ -400,45 +292,20 @@ pub(crate) fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option
     axum::http::Uri::from_parts(parts).ok()
 }
 
-// ── THE AUTH ADMISSION BUDGETS (await-only) ─────────────────────────────────────────────────────
-//
-// These are ADMISSION budgets, NOT the deleted offload pools: nothing here is offloaded or parks a
-// thread. A door's `verify` is submitted and AWAITED; the budget only bounds how many awaited
-// verifies are admitted at once, process-wide, and how long a request waits for a slot — 1.5.5's
-// bounds (64 data-plane / 16 admin in flight, a 5s wait), so a saturated verifier is denied as 1.5.5
-// denied it, with 1.5.5's diagnostic text byte for byte. A data-plane door's own instance-level
-// `Overloaded` (its `max_inflight` full) is NOT that saturation: nothing was judged, so it is
-// handed back apart as [`VerifierUnavailable::Overloaded`] and answered 503 with `Retry-After` and
-// no 4005 (owner ruling Q134, [`data_verdict_of`]). An admin door's `Overloaded` is 4008 and a deny
-// ([`admin_verdict_of`]). A door of either plane that answered NO VERDICT is refused and answered
-// 503 with `Retry-After` (SIGN-auth-kind 2026-10-30, [`VerifierUnavailable::NoVerdict`]).
-
-/// How many data-plane auth verifies are admitted at once, process-wide (1.5.5's bound).
 const AUTH_ADMISSION_MAX_INFLIGHT: usize = 64;
 
-/// How long a data-plane request waits for an admission slot before it is denied (1.5.5's).
 const AUTH_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The data-plane admission slots ([`AUTH_ADMISSION_MAX_INFLIGHT`]). Process-wide, so a config
-/// reload's new chain shares the bound with the verifies still in flight on the old one.
 static AUTH_ADMISSION_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(AUTH_ADMISSION_MAX_INFLIGHT));
 
-/// How many admin-plane external-module verifies are admitted at once — a SEPARATE budget, so a
-/// wedged admin IdP never starves data-plane auth, and vice versa (1.5.5's bound).
 const ADMIN_ADMISSION_MAX_INFLIGHT: usize = 16;
 
-/// How long an admin request waits for an admission slot, and separately for its admitted verify
-/// to answer, before it is denied (1.5.5's).
 const ADMIN_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The admin-plane admission slots ([`ADMIN_ADMISSION_MAX_INFLIGHT`]).
 static ADMIN_ADMISSION_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(ADMIN_ADMISSION_MAX_INFLIGHT));
 
-/// Warn-once transition latches, as 1.5.5's: a saturated or faulting verifier recurs per request
-/// until it recovers, so the TRANSITION warns and the rest log at debug; a verify that answers
-/// clean resets its latch.
 static AUTH_SATURATED_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static AUTH_FAULTED_WARNED: std::sync::atomic::AtomicBool =
@@ -449,23 +316,18 @@ static ADMIN_STALLED_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static NO_VERDICT_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether `latch` was clear: this is the transition into the state it tracks.
 fn tripped(latch: &std::sync::atomic::AtomicBool) -> bool {
     !latch.swap(true, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Clear `latch`: the state it tracks has ended.
 fn cleared(latch: &std::sync::atomic::AtomicBool) {
     latch.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// 4005: a data-plane verifier is saturated (no admission slot within the wait, or the door's own
-/// `max_inflight` full). 1.5.5's text, byte for byte.
 fn auth_saturated() {
     auth_saturated_on(&AUTH_SATURATED_WARNED);
 }
 
-/// [`auth_saturated`] on `latch`.
 fn auth_saturated_on(latch: &std::sync::atomic::AtomicBool) {
     if tripped(latch) {
         diag_warn!(
@@ -484,13 +346,10 @@ fn auth_saturated_on(latch: &std::sync::atomic::AtomicBool) {
     }
 }
 
-/// 4006: a data-plane verify FAULTED (the plugin broke its contract: a caught panic, a malformed
-/// answer). 1.5.5's text, byte for byte.
 fn auth_faulted() {
     auth_faulted_on(&AUTH_FAULTED_WARNED);
 }
 
-/// [`auth_faulted`] on `latch`.
 fn auth_faulted_on(latch: &std::sync::atomic::AtomicBool) {
     let error = "the auth plugin faulted";
     if tripped(latch) {
@@ -500,13 +359,10 @@ fn auth_faulted_on(latch: &std::sync::atomic::AtomicBool) {
     }
 }
 
-/// 4008: an admin verifier is saturated (no admission slot within the wait, or the door's own
-/// `max_inflight` full). 1.5.5's text, byte for byte.
 fn admin_saturated() {
     admin_saturated_on(&ADMIN_SATURATED_WARNED);
 }
 
-/// [`admin_saturated`] on `latch`.
 fn admin_saturated_on(latch: &std::sync::atomic::AtomicBool) {
     if tripped(latch) {
         diag_warn!(
@@ -525,13 +381,10 @@ fn admin_saturated_on(latch: &std::sync::atomic::AtomicBool) {
     }
 }
 
-/// 4009: an admitted admin verify did not answer within the wait, or FAULTED. 1.5.5's text, byte
-/// for byte.
 fn admin_stalled() {
     admin_stalled_on(&ADMIN_STALLED_WARNED);
 }
 
-/// [`admin_stalled`] on `latch`.
 fn admin_stalled_on(latch: &std::sync::atomic::AtomicBool) {
     if tripped(latch) {
         diag_warn!(
@@ -548,11 +401,6 @@ fn admin_stalled_on(latch: &std::sync::atomic::AtomicBool) {
     }
 }
 
-/// The data-plane position `provider`'s verdict of a verify that answered `answer` (`faulted`: the
-/// plugin broke its contract). Each is handed back apart, the request refused: a verifier whose own
-/// `max_inflight` is full ([`VerifierUnavailable::Overloaded`], the data plane's 503, owner ruling
-/// Q134), and one that answered NO VERDICT — FAILED, or a FAULT (4006 too) —
-/// ([`VerifierUnavailable::NoVerdict`], 503 with `Retry-After`, SIGN-auth-kind 2026-10-30).
 fn data_verdict_of(
     provider: &str,
     answer: VerifyAnswer,
@@ -576,16 +424,6 @@ fn data_verdict_of(
     Ok(chain_verdict_of(answer))
 }
 
-/// THE SIGNED-REQUEST VERIFIER'S ANSWER, as the data-plane gate reads it: the lines the verifier
-/// named join `strips` on every arm (THE DESIGN §6.3, l.925: "Every auth called names its
-/// credential lines whatever its verdict, and the transport strips the union"), and a FAULT (the
-/// plugin broke its contract) is 4006 and [`Verified::Failed`]: no verdict, refused and answered
-/// 503 with `Retry-After` as on every other data-plane verify (SIGN-auth-kind 2026-10-30).
-///
-/// PARITY (1.5.5): this verify draws no data-plane admission slot. 1.5.5 verified a signed request
-/// in-process, on the request task, with no offload permit (v1.5.5 `crates/busbar/src/auth/mod.rs`
-/// :1441-1502; the permit pool at :149-168 bounded only the offloaded plugin chain), so a saturated
-/// budget never refused a signed request there and does not here.
 fn signed_verdict_of(answer: VerifyAnswer, faulted: bool, strips: &mut Vec<Strip>) -> Verified {
     let VerifyAnswer {
         verified,
@@ -601,10 +439,6 @@ fn signed_verdict_of(answer: VerifyAnswer, faulted: bool, strips: &mut Vec<Strip
     verified
 }
 
-/// An external admin module's verdict of a verify that answered `answer` (`faulted`: the plugin
-/// broke its contract): a saturated verifier is 4008 and a deny (1.5.5's 401); a fault is 4009 and,
-/// like a FAILED answer, NO VERDICT ([`Judgement::no_verdict`]: refused, 503 with `Retry-After`,
-/// SIGN-auth-kind 2026-10-30).
 fn admin_verdict_of(answer: VerifyAnswer, faulted: bool) -> Judgement {
     if faulted {
         admin_stalled();
@@ -661,7 +495,6 @@ pub struct ChainHead {
 }
 
 impl ChainHead {
-    /// The head of `req`.
     pub fn of(req: &Request<Body>) -> Self {
         Self::of_parts(
             req.method().as_str(),
@@ -672,7 +505,6 @@ impl ChainHead {
         )
     }
 
-    /// The head of a request's `method`, `target` (path, then `?query`) and `headers`.
     pub fn of_parts(method: &str, target: &str, headers: &HeaderMap) -> Self {
         let (path, query) = match target.split_once('?') {
             Some((path, query)) => (path, Some(query.to_string())),
@@ -697,8 +529,6 @@ impl ChainHead {
         }
     }
 
-    /// One position's `verify` request: this head at `Head`, `candidate` lent as the credential,
-    /// stamped `now`.
     fn request(&self, candidate: Option<&str>, now: u64) -> VerifyRequest {
         VerifyRequest {
             point: busbar_contract::abi::auth::AuthPoint::Head,
@@ -718,32 +548,17 @@ impl ChainHead {
     }
 }
 
-/// The RESOLVED admin auth chain (1.5.2 admin-plane OIDC): every `admin_auth:` entry's module,
-/// opened through the auth kind's registry (same loader/trust pipeline as the data-plane chain and
-/// store/secret plugins). Keyed by the config provider name — the SAME string `App::admin_chain`
-/// names and `role_bindings.<name>` binds. The OPERATOR CREDENTIAL is held apart, in
-/// [`Self::operator`]: its module is opened with the operator token's digest rather than with
-/// settings, and it answers for the operator credential's provider name whether or not the chain
-/// this snapshot was built from named it (an admin-API chain swap reuses this value). Held behind an
-/// `Arc` on the `App` snapshot.
 pub struct AdminAuthChain {
-    /// The resolved EXTERNAL admin modules, keyed by provider name: each a `kind: auth` instance the
-    /// auth axis opened on the one dispatcher (L2-AUTH-4, ARCHITECT 2026-10-03), its `verify`
-    /// awaited. The plugin caches inside itself (THE DESIGN 11.11 R3); the kernel keeps no verdict.
     pub modules: std::collections::HashMap<String, AdminModule>,
-    /// The operator credential, as the auth axis answers it, and the providers it answers for: a
-    /// provider is the operator credential by its module, never by its name ([`Operator`]).
+
     pub operator: Operator,
 }
 
-/// ONE EXTERNAL ADMIN MODULE: the instance the auth axis opened for an `admin_auth:` provider.
 pub struct AdminModule {
-    /// The opened instance.
     pub calls: std::sync::Arc<dyn AuthCalls>,
 }
 
 impl AdminModule {
-    /// An in-process module (a TEST stand-in, answered on the spot) as an external admin module.
     #[cfg(test)]
     pub fn in_process(module: Box<dyn AuthModule>) -> Self {
         Self {
@@ -757,10 +572,6 @@ pub use busbar_kernel_identity::{
     operator::{Operator, OperatorCredential},
 };
 
-/// Open the operator credential from `registry` through this build's auth axis: the row answering
-/// [`crate::config::operator_provider`], opened on its door over the operator token's SHA-256 hex
-/// `digest` (the plaintext never crosses the seam), answering for every provider the effective
-/// `providers` back with its module ([`Operator::backed`]).
 pub fn open_operator(
     registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     digest: Option<String>,
@@ -771,8 +582,7 @@ pub fn open_operator(
     let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
     let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
     let is_op = |m: &str| crate::config::names_operator(m);
-    // The operator row's carriers, read from its Statement whether or not a token opens it: the
-    // admin lines are stripped and read where the style says, never where the kernel says.
+
     let carriers = axis.as_ref().map(|a| a.carriers(op)).unwrap_or_default();
     Operator::open(op, defs, &is_op, answered, digest, |d| {
         let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
@@ -781,8 +591,6 @@ pub fn open_operator(
     .map(|operator| operator.with_carriers(carriers))
 }
 
-/// Why no door on the auth axis answers `module`, in the registry's own words: the kind-neutral
-/// refusal every axis gives ([`busbar_contract::plugin_rows::PluginRows::kind_refusal`]).
 pub(crate) fn auth_refusal(
     registry: &dyn busbar_contract::plugin_rows::PluginRows,
     module: &str,
@@ -803,9 +611,6 @@ impl fmt::Debug for AdminAuthChain {
 }
 
 impl AdminAuthChain {
-    /// The empty chain (the operator credential alone, or the open dev posture) — no external admin
-    /// plugin, so the admin chain always runs inline. The default for tests and builtin-only builds;
-    /// the operator credential is opened beside it ([`open_operator`]).
     #[cfg(any(test, feature = "test-support"))]
     pub fn empty() -> Self {
         Self {
@@ -814,14 +619,6 @@ impl AdminAuthChain {
         }
     }
 
-    /// Resolve every `admin_auth:` entry OTHER than the operator credential as a `kind: auth`
-    /// plugin via the validated `registry` — the exact trust/load pipeline the data-plane chain and
-    /// store/secret plugins use. The operator credential is opened by [`open_operator`] once the
-    /// build has resolved its token; until then it is [`OperatorCredential::Unanswered`]. The
-    /// compiled-in test stand-ins are skipped (they dispatch inline in `run_admin_chain`).
-    /// SecretRef-typed settings resolve BEFORE the config crosses the ABI (ADR-0010). FAIL-CLOSED: a
-    /// configured admin module that cannot load is a HARD boot/reload error, never a
-    /// silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
     pub fn build(
         cfg: &AuthCfg,
         registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
@@ -834,7 +631,6 @@ impl AdminAuthChain {
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.admin_auth {
             match entry.module.as_str() {
-                // The operator credential is opened beside the chain ([`open_operator`]).
                 module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
                 other => {
                     let name = entry.name.as_str();
@@ -853,8 +649,7 @@ impl AdminAuthChain {
                              loaded as a `kind: auth` plugin: {e}"
                         )
                     };
-                    // ON THE AUTH AXIS (L2-AUTH-4): the build's rows over the one dispatcher, the
-                    // axis the data-plane chain and the operator credential open through.
+
                     let axis = match &axis {
                         Some(axis) => axis.clone(),
                         None => {
@@ -865,22 +660,17 @@ impl AdminAuthChain {
                             axis.insert(opened).clone()
                         }
                     };
-                    // A module no door answers is refused in the registry's own words (a name only
-                    // a door's Statement alias answers is the axis's).
+
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
-                    // The host label is unique per opened instance: the admin chain's provider,
-                    // apart from a data-plane provider of the same name.
+
                     let label = format!("admin_auth.{name}");
-                    // `resolved` is wiped when it drops, at the end of this arm: once `open` has
-                    // answered, busbar's copy of the resolved secrets is gone.
+
                     let calls = axis
                         .open(other, &label, resolved.as_value())
                         .map_err(refused)?;
-                    // KEYED BY PROVIDER NAME (1.5.3): `run_admin_chain` dispatches by the same name
-                    // `admin_chain` lists and `role_bindings.<name>` binds, so two named providers
-                    // sharing one module stay distinct admin identities.
+
                     modules.insert(name.to_string(), AdminModule { calls });
                 }
             }
@@ -902,23 +692,6 @@ impl fmt::Debug for AuthMiddleware {
 }
 
 impl AuthMiddleware {
-    /// Build the auth chain by RESOLVING the configured module entries against the plugin
-    /// `registry`. The built-in `keys` (signed-key verifier) is engine-handled: virtual keys
-    /// authenticate on the governance path, not through a chain position, so its entry sets a flag
-    /// rather than a position. Any OTHER name is a `kind: auth` PLUGIN, opened on this build's AUTH
-    /// AXIS ([`crate::preflight::auth_axis`]: the composition root's rows over the process's one
-    /// dispatcher, AUTH-CHAIN-SWITCH) — a memory-ABI door, linked or dropped in (a 1.5.5 JSON auth
-    /// plugin does not load, THE DESIGN §11). FAIL-CLOSED: a configured auth module that cannot
-    /// be loaded (missing tarball, wrong kind, untrusted under the running policy, a load or ABI
-    /// failure, an `open` that refused) is a HARD boot error — never a silently-dropped module that
-    /// would leave the front door open. `--validate`/`plugins_preflight` catches most of these
-    /// manifest-only, so this is the belt-and-suspenders load-time gate. An EMPTY chain is the open
-    /// front door (none/passthrough).
-    ///
-    /// The plugin's settings are its chain entry's opaque `settings:` map (verbatim, exactly like a
-    /// store/secret plugin's `settings:`), its secret-refs resolved first. The position's RUNTIME
-    /// identity is the provider NAME, which is what `role_bindings.<module>` and the scope caps key
-    /// off; the instance is opened under it as its host label.
     pub fn new(
         cfg: &AuthCfg,
         registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
@@ -933,10 +706,6 @@ impl AuthMiddleware {
                     keys_in_chain = true;
                 }
                 other => {
-                    // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
-                    // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an
-                    // unresolvable ref aborts the chain build rather than handing the plugin a
-                    // dangling reference.
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
                         &registry.secret_slots(other),
@@ -962,14 +731,12 @@ impl AuthMiddleware {
                             axis.insert(opened).clone()
                         }
                     };
-                    // A module no door answers is refused in the registry's own words (a name only
-                    // a door's Statement alias answers is the axis's).
+
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     let opened = axis.open(other, &entry.name, resolved.as_value());
-                    // busbar's copy of the resolved secrets is wiped the moment `open` answers,
-                    // whatever it answered (security.md:318).
+
                     drop(resolved);
                     let calls = opened.map_err(refused)?;
                     chain.push(ChainEntry {
@@ -988,9 +755,6 @@ impl AuthMiddleware {
             );
         }
 
-        // THE HOST-HELD CREDENTIALS' VERIFIERS, opened only when the chain names `keys` (a credential
-        // busbar minted and holds IS a `keys` credential). FAIL-CLOSED: a verifier that will not
-        // open is a hard boot error, like any other chain position.
         let mut readers = Vec::new();
         if keys_in_chain {
             let axis = match &axis {
@@ -1024,8 +788,6 @@ impl AuthMiddleware {
             }
         }
 
-        // THE DEFAULT INBOUND STYLE: where the caller's credential sits on a line the config leaves
-        // without a style. FAIL-CLOSED: two rows stating it is a hard boot error, naming both.
         let carriers = match &axis {
             Some(axis) => axis.default_inbound_style()?,
             None => crate::preflight::auth_axis(registry.clone())
@@ -1034,10 +796,6 @@ impl AuthMiddleware {
                 .unwrap_or_default(),
         };
 
-        // THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the build's fact, read from the
-        // linked rows' Statements whatever the chain names (status row 186: 1.5.5 minted the
-        // `issue_aws_credential` pair on the flag alone, `auth.chain` or not). An opened verifier
-        // states the same shape its Statement does, so with `keys` in the chain it answers first.
         let issued = readers
             .iter()
             .find_map(|r| {
@@ -1058,10 +816,6 @@ impl AuthMiddleware {
         })
     }
 
-    /// TEST-ONLY convenience: build the chain against an EMPTY plugin registry (only builtins and
-    /// the modules the test build's auth axis answers in process resolve). Panics on a plugin-name entry — a test that
-    /// needs a real `kind: auth` plugin builds a registry and calls [`new`] directly. Keeps the
-    /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
     #[cfg(test)]
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
         let mut mw = Self::new(
@@ -1073,25 +827,17 @@ impl AuthMiddleware {
         if mw.carriers.is_empty() {
             mw.carriers = test_inbound_style();
         }
-        // An empty registry opens no host-held credentials' verifier, so none states the issued
-        // shape: the double stands for it, whatever rows the test binary links.
+
         if mw.issued.is_none() {
             mw.issued = Some(crate::test_support::issued::double());
         }
         mw
     }
 
-    /// The ordered names of the auth chain's positions (each instance's stated name). For the Admin API
-    /// v1 plugin catalog — reporting which compiled-in/external auth modules are ACTIVE (in the
-    /// chain). Never a secret: a module name is a plugin identifier, not a credential.
     pub fn chain_names(&self) -> Vec<String> {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }
 
-    /// The opened instance a guest-list line's auth `provider` is called through by the inbound
-    /// handle ([`crate::inbound`]): the chain position's. `None` for any other name: `keys` is the
-    /// kernel's own arm there, as here, and a name the chain opened nothing for refuses, fail
-    /// closed.
     #[must_use]
     pub fn position_calls(&self, provider: &str) -> Option<std::sync::Arc<dyn AuthCalls>> {
         self.chain
@@ -1100,9 +846,6 @@ impl AuthMiddleware {
             .map(|e| std::sync::Arc::clone(&e.calls))
     }
 
-    /// THE HOST-HELD CREDENTIAL VERIFIER a signed request carries the lines of, with the credential
-    /// kinds it reads: the first such reader, and only when the chain names `keys` (1.5.5's gate
-    /// asked it ahead of the token path; the inbound handle does the same, [`crate::inbound`]).
     pub(crate) fn signed_reader(
         &self,
         headers: &HeaderMap,
@@ -1119,9 +862,6 @@ impl AuthMiddleware {
         })
     }
 
-    /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` (THE DESIGN §6, "Auth points and
-    /// guest lists"): the points its opened instance's `verify` is called at. A provider that is no
-    /// boxed position (`keys`) is its host-held credentials' verifiers' union, `{Head}` with none.
     pub fn position_points(&self, provider: &str) -> busbar_contract::abi::auth::AuthPoints {
         use busbar_contract::abi::auth::AuthPoints;
         if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
@@ -1138,44 +878,14 @@ impl AuthMiddleware {
         }
     }
 
-    /// Whether the front door is OPEN — no boxed module AND no keys arm, so every request is
-    /// admitted unconditionally (the old `none`/`passthrough`). Governance, when enabled,
-    /// supersedes this.
-    ///
-    /// Both halves are load-bearing. `keys` is engine-handled: it sets [`Self::keys_in_chain`] and
-    /// installs no boxed module, so `chain` stays empty while authentication is very much on.
-    /// Reading emptiness alone reported `chain: [keys]` as open, and `Root::admin_grant` turns that
-    /// report into `VerbScope::Full` for every caller — an operator ENABLING key auth would have
-    /// handed out full administrative scope. The construction path has always spelled the predicate
-    /// correctly (`chain.is_empty() && !keys_in_chain`, where it warns `AUTH_CHAIN_OPEN_RELAY`);
-    /// this accessor now says the same thing.
     pub fn is_open(&self) -> bool {
         self.chain.is_empty() && !self.keys_in_chain
     }
 
-    /// Run the auth chain over the presented candidate credential. Empty chain -> admit with NO
-    /// principal (the `none`/`passthrough` open front door — anonymous). Otherwise the first
-    /// `Identify` admits with its [`Principal`], a `Reject` denies, and all-`Pass` (no module
-    /// matched a presented credential) denies — fail-closed for a configured chain. Constant-time
-    /// within each module; the loop order is config order.
     pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
         self.run_chain_with(candidate, None, busbar_kernel::store::now(), None)
     }
 
-    /// [`run_chain`] at the instant `now`, the `keys` engine arm verifying against `gov`. The
-    /// kernel keeps no verdict of any position: a plugin caches inside itself (THE DESIGN 11.11 R3).
-    /// `expected_aud` is the AUDIENCE the plane this request arrived on requires of a busbar-signed
-    /// token — `None` for the residual data plane (which rejects any token that carries one), and
-    /// `Some(uri)` for an audience-bound ingress (which rejects a token whose audience is absent or
-    /// different). It is threaded here rather than read from a handler because the check belongs to
-    /// the VERIFIER: a route added to an audience-bound plane later inherits it and cannot forget.
-    ///
-    /// No verdict is cached here: an auth plugin that caches its verdicts does so inside itself,
-    /// and drops them on its `refresh` (THE DESIGN 11.11 R3, Q-INCACHE).
-    ///
-    /// `now` is taken as an explicit clock, not read internally, for the same reason
-    /// [`crate::governance::GovState::verify_token`] does: a TTL boundary is untestable against the
-    /// live wall clock without sleeping, and one chain run reasons about one instant.
     pub fn run_chain_with(
         &self,
         candidate: Option<&str>,
@@ -1183,11 +893,6 @@ impl AuthMiddleware {
         now: u64,
         expected_aud: Option<&str>,
     ) -> ChainVerdict {
-        // A SYNC caller: every position on this thread (`Reach::Inline`). Nothing the walk awaits
-        // is pending unless a door must wait, and then this thread waits for it, as the caller
-        // asked by calling synchronously. A sync caller has no 503 to answer: an overloaded
-        // position, or one that answered no verdict, is a denial here. The lines a position
-        // names are the transport's, and a sync caller hands no request on.
         futures::executor::block_on(async {
             let mut claim = None;
             let verdict = self
@@ -1203,7 +908,7 @@ impl AuthMiddleware {
                 )
                 .await
                 .unwrap_or(ChainVerdict::Denied);
-            // The chain's verdict is all this caller decides: the claim is its last step.
+
             match claim {
                 Some(claim) if !claim.win(gov).await => ChainVerdict::Denied,
                 _ => verdict,
@@ -1211,15 +916,6 @@ impl AuthMiddleware {
         })
     }
 
-    /// THE CHAIN WALK, one `verify` per position per request (THE DESIGN 11.6): config order, the
-    /// first `Identify` admits, a `Reject` denies, all-`Pass` on a non-empty chain denies, and the
-    /// `keys` engine arm runs after every position. A position whose verifier is overloaded, or
-    /// answered no verdict, stops the walk as [`VerifierUnavailable`]; each caller decides what that
-    /// answers (refused whichever it decides). `head` is what
-    /// each position is lent beside the candidate; `reach` how each is called. Every position that
-    /// answered adds the lines it named to `strips`, whatever its verdict (THE DESIGN §6.4). An
-    /// identity that asks for a replay claim hands it back in `claim`, UNWON: the caller wins it as
-    /// the last step of its own admission ([`ReplayClaim`]), and a claim it loses is `Denied`.
     #[allow(clippy::too_many_arguments)]
     async fn walk(
         &self,
@@ -1232,10 +928,6 @@ impl AuthMiddleware {
         strips: &mut Vec<Strip>,
         claim: &mut Option<ReplayClaim>,
     ) -> Result<ChainVerdict, VerifierUnavailable> {
-        // The OPEN front door: no chain position AND no built-in `keys` engine arm → admit
-        // anonymously. `keys_in_chain` (an engine arm, not a position) keeps the door CLOSED even
-        // though `self.chain` may be empty, so `chain:[keys]` runs the keys arm below rather than
-        // short-circuiting to `Open`.
         if self.chain.is_empty() && !self.keys_in_chain {
             return Ok(ChainVerdict::Open);
         }
@@ -1244,13 +936,8 @@ impl AuthMiddleware {
             strips.extend(judged.strips);
             match judged.verdict {
                 AuthVerdict::Identify(principal) => {
-                    // The replay claim travels with the verdict, unwon: the caller wins it once
-                    // nothing it still decides can refuse the request.
                     *claim = ReplayClaim::of(&entry.provider, judged.replay, now);
-                    // No per-module role filter: the NESTED role_bindings table IS the allowlist -
-                    // a role this module asserts grants nothing unless
-                    // `role_bindings.<this module>.<role>` binds it. A PLUGIN module never resolves
-                    // a VirtualKey (the ABI can't carry one) → `resolved: None`.
+
                     return Ok(ChainVerdict::Identified {
                         module: entry.provider.clone(),
                         principal,
@@ -1261,22 +948,13 @@ impl AuthMiddleware {
                 AuthVerdict::Pass => {}
             }
         }
-        // The built-in `keys` ENGINE ARM — a sibling to the plugin positions above, run AFTER them
-        // (a plugin that positively identified already returned). It is NOT a chain position on
-        // purpose: an auth verdict can only `Identify` a principal, never hand back a resolved
-        // `VirtualKey`, so vkey resolution lives here where it can. Revocation is per-request
-        // `verify_token` + a short denylist sync.
+
         if self.keys_in_chain {
             return Ok(keys_arm_verdict(gov, candidate, now, expected_aud));
         }
         Ok(ChainVerdict::Denied)
     }
 
-    /// THE CACHE FLUSH (`POST /admin/auth/cache/flush`): every chain position's instance (or only
-    /// the provider `module`'s) `refresh`ed with unchanged settings, so each auth plugin drops the
-    /// verified credentials it caches inside itself (THE DESIGN 11.11 R3); the sum of the entries
-    /// they report dropping (1.5.5's `{"flushed": N}`). Every selected position is attempted;
-    /// any failed refresh makes the overall flush incomplete, even if others already succeeded.
     pub fn flush_verified(&self, module: Option<&str>) -> Result<u64, String> {
         let mut flushed = 0;
         let mut failure = None;
@@ -1295,18 +973,6 @@ impl AuthMiddleware {
         failure.map_or(Ok(flushed), Err)
     }
 
-    /// THE REQUEST-PATH ENTRY POINT for the data-plane auth chain, for a caller with no 503 to
-    /// answer (a plane's inbound identity admission): an overloaded position, and one that answered
-    /// no verdict, is a denial here. `auth_middleware` and the `/auth/token` exchange call
-    /// [`Self::judge_chain_on_request_path`], which hands such a verifier back apart.
-    ///
-    /// Each position is called on the auth kind's memory ABI (AUTH-CHAIN-SWITCH): a door's `verify`
-    /// is SUBMITTED on a dispatcher ticket and awaited through its reply's waker, so no thread is
-    /// parked however long the plugin waits — a slow identity provider never holds a Tokio worker,
-    /// so other requests, the admin plane and `/healthz` keep being polled.
-    ///
-    /// `head` is the request's head each position is lent beside the candidate ([`ChainHead`]).
-    /// FAIL-CLOSED: a door that answers no verdict is `Denied`, never an admit.
     pub async fn run_chain_on_request_path(
         auth: &std::sync::Arc<AuthMiddleware>,
         candidate: Option<String>,
@@ -1319,10 +985,6 @@ impl AuthMiddleware {
             .unwrap_or(ChainVerdict::Denied)
     }
 
-    /// [`Self::run_chain_on_request_path`] with a verifier that judged nothing handed back apart, so
-    /// the data plane answers a full `max_inflight` 503 with `Retry-After` (owner ruling Q134,
-    /// 2026-10-07), and a verify that answered no verdict the same (SIGN-auth-kind 2026-10-30), and
-    /// every other refusal as before.
     pub async fn judge_chain_on_request_path(
         auth: &std::sync::Arc<AuthMiddleware>,
         candidate: Option<String>,
@@ -1333,7 +995,7 @@ impl AuthMiddleware {
         let (verdict, _, pending) =
             Self::judge_chain_on_request_path_naming(auth, candidate, head, gov, expected_aud)
                 .await;
-        // The chain's verdict is all this caller decides: the claim is its last step.
+
         match verdict {
             Ok(ChainVerdict::Identified { .. }) if !claim_won(pending.as_ref()).await => {
                 Ok(ChainVerdict::Denied)
@@ -1342,11 +1004,6 @@ impl AuthMiddleware {
         }
     }
 
-    /// [`Self::judge_chain_on_request_path`], with the lines every position that answered named for
-    /// the transport to strip, whatever its verdict (THE DESIGN §6.4), and the identity's replay
-    /// claim UNWON ([`PendingClaim`]): for a caller that still decides after the chain
-    /// (`auth_middleware`, a session's admission, the token exchange), which wins the claim as the
-    /// last step of its own admission, so a request it refuses claims nothing.
     pub async fn judge_chain_on_request_path_naming(
         auth: &std::sync::Arc<AuthMiddleware>,
         candidate: Option<String>,
@@ -1358,8 +1015,6 @@ impl AuthMiddleware {
         Vec<Strip>,
         Option<PendingClaim>,
     ) {
-        // Captured once, before the first position: the clock the chain reasons about is the
-        // instant the request reached this decision, not whenever a position got scheduled.
         let now = busbar_kernel::store::now();
         let mut strips = Vec::new();
         let mut claim = None;
@@ -1378,16 +1033,10 @@ impl AuthMiddleware {
         (verdict, strips, PendingClaim::of(claim, gov))
     }
 
-    /// Constant-time string comparison — the single timing-safe primitive, now provided by the
-    /// `busbar-api` contract crate (plugins compare with the SAME primitive). Kept as an associated
-    /// fn so engine call sites are unchanged.
     pub fn constant_time_eq(a: &str, b: &str) -> bool {
         busbar_contract::redacted::constant_time_eq(a, b)
     }
 
-    /// Extract the token from an `Authorization: Bearer <token>` header (scheme match is
-    /// case-insensitive). Splits on the first space rather than byte-slicing, so a malformed header
-    /// with a multibyte character in the scheme position can't panic on a UTF-8 boundary.
     pub fn extract_bearer_token(auth_header: &str) -> Option<String> {
         let (scheme, token) = auth_header.split_once(' ')?;
         let token = token.trim_start_matches(' ');
@@ -1398,52 +1047,30 @@ impl AuthMiddleware {
         }
     }
 
-    /// The caller's credential, as the host's default inbound style yields it ([`carried_credential`] over
-    /// this chain's carriers): the first of its carrier lines, in its Statement's order, that
-    /// presents one. The kernel names no credential line (THE DESIGN §6, "Auth points and guest
-    /// lists"); the returned token is validated identically whichever line carried it.
     pub fn extract_client_token(&self, headers: &HeaderMap) -> Option<String> {
         carried_credential(&self.carriers, headers)
     }
 
-    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key (the admin `POST /keys` second
-    /// credential, 1.5.5's `issue_aws_credential`): the first host-held credentials' verifier whose
-    /// Statement states an issued shape, as its first credential kind and that shape, whether or not
-    /// `auth.chain` names `keys` (a linked row's fact, not the chain's). `None` when no linked row
-    /// states one: the host then issues none. Kind and shape are the verifier's words.
     pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
         self.issued.clone()
     }
 
-    /// The default inbound style's carriers: every line the host strips from a plane's request
-    /// whichever of them carried this request's credential.
     pub(crate) fn carriers(&self) -> &[HeaderName] {
         &self.carriers
     }
 
-    /// Validate the request's token by running the AUTH CHAIN. `token` accepts a credential extracted
-    /// from ANY supported carrier (see `extract_client_token`); the comparison is identical and
-    /// constant-time regardless of which header carried it. No `AuthMode` branch here — the front-door
-    /// policy is entirely encoded in the chain shape (`[]` admits, `[tokens]` validates).
-    // Thin admit/deny view over `run_chain` — kept for tests and callers that don't need the
-    // principal. The middleware itself calls `run_chain` (it attaches the principal).
     #[allow(dead_code)]
     pub fn validate_token(&self, token: Option<&str>) -> bool {
         !matches!(self.run_chain(token), ChainVerdict::Denied)
     }
 }
 
-/// ONE POSITION'S VERDICT over `request` (its candidate lent), reached as `reach` says; an
-/// overloaded verifier, and one that answered no verdict, is handed back apart
-/// ([`VerifierUnavailable`]).
 async fn judge(
     entry: &ChainEntry,
     request: VerifyRequest,
     reach: Reach,
 ) -> Result<Judgement, VerifierUnavailable> {
     match reach {
-        // A sync caller: on the spot; a door that must wait answers REFUSED there, and is
-        // submitted and awaited where the caller polls.
         Reach::Inline => match entry.calls.verify_now(&request) {
             Some(answer) => data_verdict_of(&entry.provider, answer, false),
             None => {
@@ -1452,8 +1079,7 @@ async fn judge(
                 data_verdict_of(&entry.provider, answer, call.faulted())
             }
         },
-        // ONE `verify`, admitted on the data-plane budget, submitted and awaited. A slot that does
-        // not come free within the wait is a saturated verifier: denied, never admitted unverified.
+
         Reach::RequestPath => {
             let Ok(Ok(permit)) =
                 tokio::time::timeout(AUTH_ADMISSION_WAIT, AUTH_ADMISSION_PERMITS.acquire()).await
@@ -1469,18 +1095,6 @@ async fn judge(
     }
 }
 
-/// The built-in `keys` ENGINE-ARM verdict for one request (see `run_chain_with`). Verifies a
-/// busbar-MINTED signed virtual key against governance and, on success, hands back the ENFORCED
-/// [`VirtualKey`] in [`ChainVerdict::Identified::resolved`] — the one place a data-plane verdict
-/// carries a resolved key (a plugin module never can). Outcomes, preserving today's behavior:
-/// - no credential presented → `Denied` (fail-closed; the arm is the terminal authenticator).
-/// - no governance handle → `Denied` (cannot verify a busbar-signed key).
-/// - a present token that resolves to an ENABLED key → `Identified { resolved: Some(key) }`.
-/// - a present token that does NOT resolve to an enabled key (unknown / expired / rotated /
-///   REVOKED / **disabled**) → `Denied`. A disabled key is REJECTED here, never handed to the
-///   role-binding synth to be silently re-admitted (`verify_token` already filters non-enabled keys
-///   to `None`, so this arm can only ever return `resolved: Some(enabled_key)` or a denial — it
-///   never emits `Identified { resolved: None }`).
 pub(crate) fn keys_arm_verdict(
     gov: Option<&crate::governance::GovState>,
     candidate: Option<&str>,
@@ -1493,13 +1107,7 @@ pub(crate) fn keys_arm_verdict(
     let Some(gov) = gov else {
         return ChainVerdict::Denied;
     };
-    // THE PLANE BOUNDARY, enforced in the verifier (1.6.0 P1). `expected_aud` is `None` on the
-    // residual data plane, and the verifier then rejects any token that CARRIES an audience — a
-    // token minted for an audience-bound plane is inadmissible on the residual data plane. On an
-    // audience-bound ingress it is that plane's canonical URI, and the verifier rejects a token
-    // whose audience is absent or different: the
-    // RFC 8707 confused-deputy defence, which is what stops a token an agent legitimately obtained
-    // for some other resource from being spendable against busbar's pools and budget.
+
     match gov.verify_token(token, now, expected_aud) {
         Some(key) => ChainVerdict::Identified {
             module: crate::config::KEYS_MODULE.to_string(),
@@ -1510,10 +1118,6 @@ pub(crate) fn keys_arm_verdict(
     }
 }
 
-/// The data-plane [`Principal`] for a resolved [`VirtualKey`]: id = the stable key id, name = its
-/// label, no roles (a vkey is a direct grant, not a group membership resolved through
-/// role_bindings). Shared by the bearer `keys` arm and the ingress-protocol AWS SigV4
-/// request-signing pre-step so both attach an identical principal.
 pub(crate) fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
     Principal {
         id: key.id.clone(),
@@ -1523,15 +1127,6 @@ pub(crate) fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Princi
     }
 }
 
-/// The ingress a request targets — which plane by MOUNT, and in which wire dialect — resolved from
-/// the path and the deployment's mount table. Auth runs BEFORE routing, so those two are the only
-/// signals available for shaping a native 401 envelope.
-///
-/// A THIN delegation to the CANONICAL `crate::plane_driver::dispatch::PlaneDispatch::ingress_of`, which is the ONE
-/// resolver: a private copy here (there was one, and before that a wire-identical duplicate of the
-/// path classifier) is the exact indistinguishability tell where one handler shapes `/model/foo/bar`
-/// in one dialect and another handler shapes it in a different dialect — or where auth answers a
-/// MOUNTED, audience-bound path in the residual plane's envelope because it could not see the mount.
 fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane_driver::dispatch::Ingress {
     if crate::router::is_private_listener() {
         crate::plane_driver::dispatch::Ingress::Fallback(None)
@@ -1540,38 +1135,10 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane_driver:
     }
 }
 
-/// The auth-failure wire message for an inferred ingress protocol — a THIN delegation to the
-/// CANONICAL `crate::proto::vendor_auth_failure_message` so the auth path and any other site that
-/// shapes a native bad-credential body cannot drift on the protocol's own copy. The string lands
-/// verbatim in the native error body — the exact field it lands in (and any wrapping shape) is a
-/// registry-resolved per-protocol writer's concern, not core's — so it MUST read like the copy the
-/// REAL protocol returns for a bad/missing credential and carry NO busbar-internal vocabulary
-/// ("virtual key", "client token", "allowlist", "disabled", "passthrough", …). The wording is chosen
-/// PURELY from the inferred protocol and is deliberately independent of WHY auth failed (missing
-/// token vs. wrong token vs. disabled virtual key vs. admin-token mismatch) — surfacing that
-/// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
 fn vendor_auth_failure_message(proto: &str) -> &'static str {
     crate::ingress::protocols::vendor_auth_failure_message(proto)
 }
 
-/// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
-/// inferred ingress protocol. The pair is chosen to MATCH what the genuine protocol returns for a
-/// bad API key, because the status code and the writer-mapped `error.type`/`error.status` are both
-/// deterministic protocol tells a native SDK keys its typed exception off — a native SDK's
-/// typed-exception match is often keyed off the exact status/error-shape pairing, so a mismatched
-/// pair (e.g. the right status with the wrong error code) is itself a deterministic proxy tell.
-///
-/// This function holds NO protocol-specific knowledge itself; the default (401,
-/// "authentication_error") is what an unknown or standard protocol gets. A registry-resolved
-/// per-protocol writer may override that default to match its own genuine failure shape (a
-/// different status code, a different `kind`, or both) — that mapping lives entirely in the writer
-/// vtable, outside this crate, so a new protocol is onboarded there without touching this agnostic
-/// function.
-///
-/// Not a disposition/breaker match, so an unknown future proto falls back to the standard
-/// 401 authentication_error, keeping the request path panic-free.
-///
-/// Read from the protocol registry's `ProtocolDecl::auth_failure_status_and_kind`.
 pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
     let (status, kind) = crate::ingress::protocols::auth_failure_status_and_kind(proto);
     StatusCode::from_u16(status)
@@ -1582,66 +1149,26 @@ pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
         ))
 }
 
-/// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.
-/// Auth runs before routing, so the protocol is inferred from the request path. A native SDK
-/// hitting busbar in `token`/governance mode with a bad credential gets that protocol's own JSON
-/// error shape (`application/json`) instead of a bare `text/plain` 401 — removing a deterministic
-/// proxy tell. Falls back to the generic envelope for an unknown path.
-///
-/// The wire `message` comes from `vendor_auth_failure_message(proto)` — protocol-plausible copy
-/// keyed solely off the inferred protocol — NOT from the call site. Callers must never thread a
-/// busbar-internal reason ("invalid or disabled virtual key", "unauthorized", "admin unauthorized")
-/// onto the wire: that vocabulary is a protocol tell and an auth-model disclosure, and the
-/// invalid-vs-disabled / missing-vs-wrong distinction is itself an oracle. A caller may still log
-/// the real reason server-side; it just never reaches the client body.
-///
-/// Status and the writer `kind` are protocol-shaped too (see `auth_failure_status_and_kind`): a
-/// registry-resolved per-protocol writer may override the default (401, "authentication_error") to
-/// match that protocol's own genuine failure status/headers/shape — for example, a protocol
-/// whose auth is inbound AWS SigV4 request-signing genuinely rejects with HTTP 403 and carries its
-/// own error-type/request-id headers, not the generic 401 pair. That per-protocol knowledge lives
-/// entirely in the writer, not in this crate.
-///
-/// No unwrap / expect / panic on this request path: `ingress_error` degrades a serialization failure
-/// to a generic JSON object internally.
-///
-/// The envelope is built by `crate::ingress::native::native_error`, the single source of truth for
-/// shaping an answer from a resolved ingress: on the residual it selects the protocol writer, sets
-/// `application/json` and attaches any protocol-specific error headers via the
-/// `ProtocolWriter::attach_error_response_headers` vtable method; on a MOUNTED, audience-bound plane
-/// it answers in that plane's own dialect instead of handing a JSON-RPC client the residual plane's
-/// envelope. Using the shared builder means the auth path, the forward path, and the route/fallback
-/// path CANNOT diverge on error shape or headers — each protocol writer keeps its own error `kind`,
-/// status, and any header attach it needs consistent with each other, all outside this crate.
 fn unauthorized_response(
     app: &crate::state::App,
     path: &str,
     door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
 ) -> Response {
-    // A DOOR ROUTE'S 401 (spec Part 3 section 12, "Refusals"): the kernel decided it, exactly as on
-    // any data-plane path; the route's plane renders it, unit-less, in the route's refusal dialect
-    // for the request target. Every other path keeps the residual data plane's envelope.
     if let Some((refuse, target)) = door {
         return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
     }
     let ingress = ingress_for_path(app, path);
-    // The dialect names the PROTOCOL whose bad-credential status, `kind` and copy a client expects.
-    // A mounted, audience-bound plane names its own wire format, which has no registered protocol
-    // writer, so both lookups take their neutral defaults (401 + `authentication_error`) and the
-    // body is that plane's own — the same two facts a plane-specific 401 would have had to restate.
+
     let dialect = crate::ingress::native::envelope_dialect(ingress);
     let message = vendor_auth_failure_message(dialect);
     let (status, kind) = auth_failure_status_and_kind(dialect);
     crate::ingress::native::native_error(ingress, status, kind, message)
 }
 
-/// The candidate lent to inbound verifiers before the final request gate checks sender proof.
 pub(crate) fn inbound_candidate(
     app: &crate::state::App,
     headers: &HeaderMap,
 ) -> Option<busbar_contract::redacted::Secret<String>> {
-    // This selects bytes for the real credential verifier, not a proven sender. The final
-    // request gate still verifies DPoP (including replay) and rejects a bound bearer.
     app.oauth_as
         .as_ref()
         .and_then(|_| dpop::dpop_credential(headers))
@@ -1649,11 +1176,6 @@ pub(crate) fn inbound_candidate(
         .map(busbar_contract::redacted::Secret::new)
 }
 
-/// THE CREDENTIAL A STYLE'S CARRIERS YIELD on `headers`: the first carrier line, in `carriers`'
-/// order, that presents one. The `authorization` field is read in the Bearer scheme (RFC 6750; the
-/// protocol's vocabulary, owner Q1), another scheme presenting nothing there; every other line is
-/// taken raw, a present-but-blank value ABSENT so a blank line never masks a credential on a later
-/// one and never reaches a constant-time compare. The lines are the style's own words.
 pub fn carried_credential(carriers: &[HeaderName], headers: &HeaderMap) -> Option<String> {
     carriers.iter().find_map(|carrier| {
         let value = headers.get(carrier)?.to_str().ok()?;
@@ -1665,7 +1187,6 @@ pub fn carried_credential(carriers: &[HeaderName], headers: &HeaderMap) -> Optio
     })
 }
 
-/// A style's carrier words as field names; a word that is no field name names no line.
 pub(crate) fn header_names(words: &[String]) -> Vec<HeaderName> {
     words
         .iter()
@@ -1673,14 +1194,8 @@ pub(crate) fn header_names(words: &[String]) -> Vec<HeaderName> {
         .collect()
 }
 
-/// Request-extension carrier for the authenticated [`Principal`]. Relocated to `busbar-api` in
-/// Phase-B B0-a (beside [`Principal`]) so an extracted plane crate names it without a path back to
-/// core; re-exported here so every in-core call site (`crate::auth::AuthPrincipal`) is unchanged.
-/// Its `actor_id()` accessor and tuple field were promoted from `pub` to `pub` in the move —
-/// the type is now cross-crate, but it still never carries the credential.
 pub use busbar_contract::auth::AuthPrincipal;
 
-/// One admin chain's answer: the chain verdict and the identifying module's scope ceiling.
 type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 
 /// What an admin chain walk carries beside its answer: the lines every module it called named for
@@ -1695,15 +1210,6 @@ pub(crate) struct AdminCarried {
     no_verdict: bool,
 }
 
-/// Execute the ADMIN auth chain (`admin_auth:`) over one request (`method`, `target`, `headers`).
-/// Mirrors `AuthMiddleware::run_chain` (first Identify admits, Reject denies, all-Pass denies, empty
-/// chain = the explicit open posture). The operator credential is judged on the request's head
-/// ([`admin_head`]) through its door ([`OperatorCredential::judge`]; the both-carriers fold is the
-/// plugin's); an external admin module takes the candidate the operator credential's carriers yield
-/// ([`carried_credential`]).
-/// Unknown names are skipped with a loud log (config_validate rejects them at boot). `probe`: each
-/// module answers on the spot (`verify_now`, the sync [`admin_door`]); else its verify is AWAITED
-/// (the middleware). The kernel keeps no verdict of any module: a plugin caches inside itself.
 async fn run_admin_chain(
     app: &crate::state::App,
     method: &str,
@@ -1715,8 +1221,7 @@ async fn run_admin_chain(
     if app.admin_chain.is_empty() {
         return (ChainVerdict::Open, None);
     }
-    // The candidate the operator credential's style yields on its own carriers (1.5.5 handed every
-    // admin module the Bearer, else the second line): the style names the lines, not the kernel.
+
     let candidate = carried_credential(
         &header_names(app.admin_modules.operator.carriers()),
         headers,
@@ -1726,16 +1231,10 @@ async fn run_admin_chain(
     for name in &app.admin_chain {
         let operator = app.admin_modules.operator.is(name);
         let outcome = match name.as_str() {
-            // The operator credential (its row, opened through the auth axis by the provider key),
-            // judged on the request's head through its door: an overloaded verifier is denied, as
-            // 1.5.5 refused (its 401: the admin-door 503 for an overloaded verifier is not a signed
-            // accepted difference); one that answered no verdict is denied and marked, answered 503
-            // (SIGN-auth-kind 2026-10-30).
             _ if operator => {
                 let operator = &app.admin_modules.operator;
                 let mut head = admin_head(method, target, headers, now);
-                // The candidate its own carriers yield, lent as the credential beside the lines the
-                // plugin reads its carriers from.
+
                 head.credential = candidate
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
                 match probe {
@@ -1743,19 +1242,14 @@ async fn run_admin_chain(
                     false => operator.judge(head).await,
                 }
             }
-            // An EXTERNAL `kind: auth` admin plugin, resolved at load into `app.admin_modules`
-            // (keyed by config name — the same `name` this loop iterates).
+
             other => {
-                // The external module is lent the request's head and the candidate 1.5.5 handed
-                // it (the Bearer, else the second admin line).
                 let mut request = admin_head(method, target, headers, now);
                 request.credential = candidate
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
                 external_admin_module(app, other, request, probe).await
             }
         }
-        // A name with no resolved module (impossible after a successful boot — the build fails
-        // closed on an unresolvable name) is a `Pass`, loudly.
         .unwrap_or_else(|| {
             diag_error!(
                 ADMIN_MODULE_UNRESOLVED,
@@ -1767,17 +1261,13 @@ async fn run_admin_chain(
         });
         carried.strips.extend(outcome.strips);
         if outcome.no_verdict {
-            // Refused (the verdict is a `Reject`), and answered 503 by the door that serves it.
             verify_without_verdict("admin", name, "no verdict");
             carried.no_verdict = true;
         }
         match outcome.verdict {
             AuthVerdict::Identify(principal) => {
-                // The replay claim travels with the verdict, out to the door that claims it.
                 carried.replay = outcome.replay.map(|r| (name.clone(), r));
-                // Carry the identifying MODULE out (role_bindings are nested by module) plus the
-                // module's admin-scope ceiling for the authorization step. There is no per-module
-                // role filter: the nested bindings table IS the allowlist.
+
                 let cap = module_admin_scope_cap(app, name);
                 return (
                     ChainVerdict::Identified {
@@ -1795,15 +1285,6 @@ async fn run_admin_chain(
     (ChainVerdict::Denied, None)
 }
 
-/// One EXTERNAL admin module's verdict over `request` (its candidate lent); `None` when no module is
-/// resolved under `name`. Awaited, its `verify` is submitted on the dispatcher and awaited, so a slow
-/// admin IdP never parks a reactor worker. `probe` (the sync [`admin_door`]): it answers on the spot
-/// (`verify_now`), and a door that must wait cannot, so the probe fails closed. FAIL-CLOSED as 1.5.5
-/// denied an admin module that could not be judged: an overloaded verifier and one that answered no
-/// verdict are a `Reject`, never an admit. An overloaded verifier is the 401 (the admin-door 503 for
-/// it is not a signed accepted difference); one that answered NO VERDICT — FAILED, a FAULT, a verify
-/// that did not answer within the wait — is marked ([`Judgement::no_verdict`]) and answered 503
-/// with `Retry-After` (SIGN-auth-kind 2026-10-30).
 async fn external_admin_module(
     app: &crate::state::App,
     name: &str,
@@ -1817,9 +1298,7 @@ async fn external_admin_module(
             |answer| admin_verdict_of(answer, false),
         ));
     }
-    // Admitted on the admin budget (a slot that does not come free within the wait is a saturated
-    // verifier, 4008), then bounded by the same wait to answer (one that does not is stalled, 4009):
-    // either is denied, never admitted unverified.
+
     let Ok(Ok(permit)) =
         tokio::time::timeout(ADMIN_ADMISSION_WAIT, ADMIN_ADMISSION_PERMITS.acquire()).await
     else {
@@ -1838,10 +1317,6 @@ async fn external_admin_module(
     })
 }
 
-/// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the operator credential
-/// is exempt (full by definition — the root credential); every other module is capped at its
-/// configured ceiling, DEFAULT `read-only` — `full` through an external chain is an explicit opt-in
-/// (boot-warned in config_validate).
 fn module_admin_scope_cap(
     app: &crate::state::App,
     module: &str,
@@ -1859,23 +1334,10 @@ fn module_admin_scope_cap(
     )
 }
 
-/// DRY-RUN: evaluate what EFFECTIVE admin scope the presented carriers would earn under
-/// `app`'s admin chain (chain verdict → role_bindings resolution → module ceiling), without serving
-/// anything. Empty `Grants` = denied / no grant. `PUT /api/v1/admin/auth` runs the CALLER through
-/// the CANDIDATE chain with this before committing — a chain that would lock the caller out is
-/// rejected instead of applied (restart remains the backstop).
 pub fn dry_run_admin_scope(
     app: &crate::state::App,
     headers: &HeaderMap,
 ) -> busbar_contract::authz::Grants {
-    // An EMPTY admin chain is the anonymous, full-authority OPEN posture — a property of the CHAIN,
-    // not a grant THIS caller earned. Letting it fall through (`run_admin_chain` → `Open` → the
-    // `None`-principal arm of `admin_scope_for`) would report `Grants::of(Full)`, INDISTINGUISHABLE
-    // from a genuine full-scope credential — which MASKS the fail-open: the lock-out guard on
-    // `PUT /api/v1/admin/admin-auth` reads "you keep full scope" and would swing the admin API open
-    // to the whole network on one unnoticed call. Surface it truthfully instead — a loud coded
-    // diagnostic and NO earned grant — so the open posture stays a config.yaml + restart opt-in
-    // (which carries its own loud boot warning), never a thing the live admin API flips on unseen.
     if app.admin_chain.is_empty() {
         diag_warn!(
             ADMIN_AUTH_CHAIN_EMPTY,
@@ -1885,11 +1347,10 @@ pub fn dry_run_admin_scope(
         );
         return busbar_contract::authz::Grants::default();
     }
-    // A DRY RUN claims no replay: it asks what the caller WOULD earn, and the live door already
-    // claimed this request's.
+
     match probe_admin_door(app, "GET", "/", headers, false) {
         AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => grants,
-        // `Open` is unreachable past the early return above, and is no earned grant if reached.
+
         AdminDoor::Open | AdminDoor::Denied | AdminDoor::Unavailable(_) => {
             busbar_contract::authz::Grants::default()
         }
@@ -1918,11 +1379,6 @@ pub enum AdminDoor {
     Denied,
 }
 
-/// THE REQUEST'S HEAD at `Head`, as the operator credential's door reads it: the request's
-/// `method`, its `target` (path, then `?query`), its authority off the `host` line, and its field
-/// lines as presented (lower-cased names, in order), stamped `now` (wall-clock seconds). The style
-/// names its credential lines; the kernel hands the lines through and names none (THE DESIGN, "Auth
-/// points and guest lists").
 fn admin_head(
     method: &str,
     target: &str,
@@ -1958,13 +1414,6 @@ fn admin_head(
     }
 }
 
-/// THE ADMIN DOOR'S VERDICT of one request (`method`, `target`, `headers`) on `app`'s live admin
-/// chain. `probe`: see [`run_admin_chain`]. `claim`: an identity that asks for a replay claim is
-/// admitted only once the door wins it in governance's record store ([`replay_claimed`]), a claim
-/// it loses `Denied`; a dry run (`false`) claims nothing. The lines every module named for the
-/// transport are added to `strips`. A chain denied because a module answered NO VERDICT is handed
-/// back apart ([`VerifierUnavailable::NoVerdict`]): refused, and answered 503 with `Retry-After`
-/// (SIGN-auth-kind 2026-10-30).
 async fn judge_admin_door(
     app: &App,
     method: &str,
@@ -1980,7 +1429,7 @@ async fn judge_admin_door(
         return Err(VerifierUnavailable::NoVerdict);
     }
     let (door, pending) = admin_door_claim_of(app, verdict, cap, replay);
-    // The claim is the door's LAST step: won only for a request the door admits, scope included.
+
     if claim && admin_door_admits(&door, method, target) && !claim_won(pending.as_ref()).await {
         return Ok(AdminDoor::Denied);
     }
@@ -2004,7 +1453,6 @@ impl From<AdminDoor> for AdminVerdict {
     }
 }
 
-/// The door a chain verdict opens under `cap`, and the replay claim its identity asks for, unwon.
 fn admin_door_claim_of(
     app: &App,
     verdict: ChainVerdict,
@@ -2022,9 +1470,6 @@ fn admin_door_claim_of(
     )
 }
 
-/// Whether `door` AUTHORIZES `method` on `target` (its query ignored): the scope the operation
-/// requires within the door's grants, and, for a principal holding verbs by name, the verb on its
-/// allow-list (#77(9) l.2279). The one authorization decision the admin middleware refuses 403 on.
 pub fn admin_door_admits(door: &AdminDoor, method: &str, target: &str) -> bool {
     let path = target.split_once('?').map_or(target, |(path, _)| path);
     let required = crate::admin::scope::admin_required_scope(method, path);
@@ -2039,9 +1484,6 @@ pub fn admin_door_admits(door: &AdminDoor, method: &str, target: &str) -> bool {
     }
 }
 
-/// The admin chain's verdict of one request, its scope cap, the replay claim its identity asks
-/// for (unclaimed), and whether a module it called answered no verdict. The lines every module
-/// named for the transport are added to `strips`.
 async fn judge_admin_chain(
     app: &App,
     method: &str,
@@ -2061,7 +1503,6 @@ async fn judge_admin_chain(
     (verdict, cap, carried.replay, carried.no_verdict)
 }
 
-/// The admin door a chain verdict opens, under its scope `cap`.
 fn admin_door_of(
     app: &App,
     verdict: ChainVerdict,
@@ -2079,8 +1520,7 @@ fn admin_door_of(
             if named.is_empty() {
                 return AdminDoor::Identified(principal, rungs);
             }
-            // Every rung a named verb needs joins the matrix the gate compares first; the list
-            // then narrows what that reach admits (`VerbAllowList::admits`).
+
             let reach = (named.iter())
                 .filter_map(|verb| crate::admin::seam::admin_verb_rung(verb.as_str()))
                 .fold(rungs, busbar_contract::authz::Grants::with);
@@ -2089,25 +1529,15 @@ fn admin_door_of(
     }
 }
 
-/// Judge one request (`method`, `target`, `headers`) on `app`'s live admin chain, SYNCHRONOUSLY: the
-/// operator credential through its door's on-the-spot `verify_now`, an in-process stand-in inline. A
-/// overloaded verifier is `Denied`; a verifier that answered no verdict is `Unavailable`, so a
-/// synchronous HTTP caller preserves its 503 answer. Both fail closed. The middleware awaits the
-/// same verdict instead.
-/// An identity's replay claim is won as the door's last step, only for a request the door admits
-/// ([`admin_door_admits`]); a claim it loses is `Denied`.
 pub fn admin_door(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminDoor {
     probe_admin_door(app, method, target, headers, true)
 }
 
-/// [`admin_door`] with the identity's replay claim UNWON ([`AdminVerdict`]): for the root's admin
-/// units, which decide revocation and scope after the door and win the claim last.
 pub fn admin_verdict(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminVerdict {
     let (door, claim) = probe_admin_verdict(app, method, target, headers);
     AdminVerdict { door, claim }
 }
 
-/// [`admin_door`], claiming an identity's replay claim or not (`claim`: see [`judge_admin_door`]).
 fn probe_admin_door(
     app: &App,
     method: &str,
@@ -2116,10 +1546,7 @@ fn probe_admin_door(
     claim: bool,
 ) -> AdminDoor {
     let (door, pending) = probe_admin_verdict(app, method, target, headers);
-    // THE PROBE'S ONE WAIT: the replay claim is a store call, awaited on this caller's own thread,
-    // as the synchronous caller asked by calling synchronously (the root's admin units answer on
-    // the blocking pool, never on a runtime worker or a dispatcher worker). Won last, and only for
-    // a request the door admits.
+
     if claim
         && admin_door_admits(&door, method, target)
         && pending.as_ref().is_some_and(|p| !p.win_now())
@@ -2129,14 +1556,12 @@ fn probe_admin_door(
     door
 }
 
-/// The probe's door and its identity's replay claim, unwon.
 fn probe_admin_verdict(
     app: &App,
     method: &str,
     target: &str,
     headers: &HeaderMap,
 ) -> (AdminDoor, Option<PendingClaim>) {
-    // The lines a module names are the transport's; a probe hands no request on.
     let mut strips = Vec::new();
     let judged = std::pin::pin!(judge_admin_chain(
         app,
@@ -2149,7 +1574,7 @@ fn probe_admin_verdict(
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     let (verdict, cap, replay, no_verdict) = match std::future::Future::poll(judged, &mut cx) {
         std::task::Poll::Ready(judged) => judged,
-        // Never pending: the probe crosses on the spot and an in-process stand-in runs inline.
+
         std::task::Poll::Pending => {
             return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None)
         }
@@ -2160,15 +1585,6 @@ fn probe_admin_verdict(
     admin_door_claim_of(app, verdict, cap, replay)
 }
 
-/// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
-/// the operator credential's principal is FULL by definition (it is the
-/// root credential); any other principal gets the UNION of what its bound roles grant in
-/// `role_bindings.<identifying module>` (bindings are NESTED BY MODULE - a role asserted by
-/// module A never rides module B's binding; an unbound role grants nothing - fail closed). A
-/// principal can hold two roles bound to INCOMPARABLE scopes at once (a hooks-register role and a
-/// mint role) — `Grants` keeps both rather than collapsing to one (in-tree precedent:
-/// `allowed_pools` already unions across a principal's granting roles). No principal = the explicit
-/// open admin posture (empty `admin_auth:`) - full, dev-only.
 fn admin_scope_for(
     app: &crate::state::App,
     module: Option<&str>,
@@ -2178,21 +1594,8 @@ fn admin_scope_for(
     let Some(p) = principal else {
         return Grants::of(Scope::Full);
     };
-    // The operator credential. Scope is MODULE-intrinsic, keyed off the fixed principal id the
-    // operator credential's module mints — an external module returning that id cannot reach here
-    // with it, because role-carrying principals resolve THROUGH role_bindings below only when they
-    // carry roles; a roleless external "admin" id would land Grants::of(Full) - so the id is
-    // reserved: config_validate forbids bindings that could shadow it, and external modules are
-    // capped by `max_admin_scope` when they land. Until external ADMIN modules exist (none are
-    // compiled today), the only producer of a roleless principal on this path is the operator
-    // credential itself.
+
     if p.roles.is_empty() {
-        // Full-by-reserved-id is gated on the identifying PROVIDER being the operator credential
-        // (its module is the operator credential's, whatever its name), NOT merely on the id
-        // string or the provider's name: an EXTERNAL admin module returning a roleless principal
-        // that happens to carry the reserved id must NOT reach `Grants::of(Full)` — it falls to
-        // `Grants::default()`. Only the operator credential mints the operator identity, so only
-        // it confers operator authority.
         let op = &app.admin_modules.operator;
         if op.mints(module, &p.id, crate::config::operator_principal_id()) {
             return Grants::of(Scope::Full);
@@ -2202,8 +1605,7 @@ fn admin_scope_for(
     let Some(table) = module.and_then(|m| app.role_bindings.get(m)) else {
         return Grants::default();
     };
-    // `verbs: "*"` is exactly `admin_scope: full` (#77(9) l.2279); a NAMED list is not a rung and
-    // is read by [`admin_verbs_named`].
+
     let all = |b: &crate::config::RoleBindingCfg| {
         matches!(b.verb_grant(), Some(Ok(crate::config::VerbGrant::All))).then_some(Scope::Full)
     };
@@ -2231,21 +1633,12 @@ pub struct VerbAllowList {
 }
 
 impl VerbAllowList {
-    /// Whether this allow-list admits the verb `verb` (`None` = the request names no verb of the
-    /// closed table), which requires the rung `needed`: a rung held whole reaches it, or the verb
-    /// is held by name.
     #[must_use]
     pub fn admits(&self, verb: Option<&str>, needed: busbar_contract::authz::Scope) -> bool {
         self.rungs.allows(needed) || verb.is_some_and(|v| self.named.contains(v))
     }
 }
 
-/// The verbs a role principal holds BY NAME: the union of the `verbs: [ … ]` lists its bound roles
-/// grant under `role_bindings.<module>` (nested by module, an unbound role granting nothing, as
-/// [`admin_scope_for`] reads `admin_scope`). The operator credential and a roleless principal hold
-/// none. A name the closed table does not declare is dropped (fail closed), and so is one whose
-/// rung the identifying provider's ceiling (`cap`) does not reach: `max_admin_scope:` caps a named
-/// verb exactly as it caps an `admin_scope`.
 fn admin_verbs_named(
     app: &crate::state::App,
     module: &str,
@@ -2269,11 +1662,6 @@ fn admin_verbs_named(
         .collect()
 }
 
-/// A 403 in the frozen admin error envelope (`{"error":{"code":"forbidden","message":…}}`),
-/// naming the scope that WOULD have sufficed — never any other principal's data.
-/// A 401 in the frozen admin error envelope — no/invalid admin credential. The admin plane's
-/// most-frequent error must carry the SAME `{error:{code,message}}` shape tooling branches on;
-/// the data plane keeps protocol-native 401 shaping (`unauthorized_response`).
 fn admin_unauthorized_response() -> Response {
     let e = crate::admin::gate::ApiError::Unauthorized;
     let body = serde_json::json!({
@@ -2306,8 +1694,6 @@ fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
         .expect("static forbidden response")
 }
 
-/// A 429 in the frozen admin error envelope — the per-principal mutation budget is spent. Carries
-/// `Retry-After: 60` (the fixed window length): a compliant client backs off without guessing.
 fn rate_limited_response() -> Response {
     let e = crate::admin::gate::ApiError::RateLimited;
     let body = serde_json::json!({
@@ -2325,42 +1711,16 @@ fn rate_limited_response() -> Response {
         .expect("static rate-limited response")
 }
 
-/// Fire the synthetic `rejected_by_auth` response taps (fire-and-forget) and return the auth
-/// denial — so audit taps see auth denials, not just served traffic. The
-/// request body is unparsed at the auth stage, so the shape is the zeroed default bucket with the
-/// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
-/// PROTOCOL-NATIVE for an auth failure — the default is 401, but a registry-resolved per-protocol
-/// writer may override it to match that protocol's own genuine failure status (see
-/// `auth_failure_status_and_kind`). Hardcoding 401 made a tap watching an ingress denial on one of
-/// those overriding protocols contradict the response the client actually got.
 pub(crate) fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
     door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
 ) -> Response {
-    // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
-    // mounted plane is tapped as that plane's dialect rather than as whichever residual-plane
-    // dialect its path happens to resemble; a residual path that names none is labelled with the
-    // dialect its answer is shaped in, so the tap and the response can never disagree.
     let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
     if !app.tap_hooks_response.is_empty() {
-        // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
-        // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
-        // counter so this synthetic completion notification still carries a real, unique
-        // correlation id rather than a misleading placeholder.
-        // The pre-routing auth denial has no resolved operation and no readable body — `operation:
-        // None` short-circuits the seam to the zeroed shape before any read.
-        // The pre-routing auth denial has no resolved operation and no readable body — build the
-        // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
-        // `operation: None` capture to exactly this before any IR read), so core names no
-        // plane reader here.
         let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = auth_failure_status_and_kind(proto).0.as_u16();
-        // Fired through the hook kind's one stage-tap fan-out, so this synthetic auth-denial tap shares
-        // the ONE 1024-permit bounded-spawn gate with every other stage tap (one cap, one
-        // `busbar_tap_notifications_dropped_total` + `busbar_admission_denied_total{gate="tap"}` on
-        // saturation). The host is minted over `app` (an alloc-free `engine_host_value`); the
-        // group-scope walk folds `&app.groups_registry` in host-side.
+
         let host = crate::plane_driver::engine_host_value(app);
         let host: &dyn crate::plane_driver::EngineHost = &host;
         crate::hooks::taps::fire_stage_taps_where(
@@ -2375,35 +1735,20 @@ pub(crate) fn unauthorized_with_completion_taps(
                 outcome: Some("rejected_by_auth"),
                 status: Some(status),
             },
-            // A denial served no answer, so no response-phase signal has a value.
             Default::default(),
-            // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
-            // group-scoped taps do not (a groupless caller matches only an unscoped hook).
             &|groups: &[String]| host.caller_in_hook_groups(None, groups),
         );
     }
     unauthorized_response(app, path, door)
 }
 
-/// THE DATA PLANE'S ANSWER TO A VERIFIER THAT JUDGED NOTHING: one whose `max_inflight` is full
-/// (owner ruling Q134, 2026-10-07; THE DESIGN §11.11 R8), and one that answered NO VERDICT — FAILED,
-/// a FAULT, a timeout (SIGN-auth-kind 2026-10-30, lead-signed under owner delegation, extending the
-/// owner-signed 2026-10-30 rule "an IdP outage answers 503, never 401"). The caller's credential was
-/// never judged, so the request is refused and answered as the gateway answers any arrival it has
-/// no capacity for, the at-capacity 503 with `Retry-After: 1` the inbound cap sheds with, byte for
-/// byte. No new customer string, and never a bad credential's 401. The admin plane answers its own
-/// envelope ([`admin_unavailable_response`]).
 pub(crate) fn verifier_unavailable_response() -> Response {
     crate::limits::admission::inbound_overloaded_response()
 }
 
-/// THE ADMIN PLANE'S ANSWER TO A VERIFIER THAT ANSWERED NO VERDICT (SIGN-auth-kind 2026-10-30): the
-/// request is refused and answered 503 in the frozen admin envelope (`code = unavailable`), with
-/// the `Retry-After` the data plane's 503 names. Never the bad credential's 401.
 pub const ADMIN_AUTH_UNAVAILABLE_MESSAGE: &str =
     "admin authentication is unavailable (the auth module answered no verdict); retry shortly";
 
-/// The retry window shared by awaited middleware and the synchronous root admin door.
 pub const ADMIN_AUTH_RETRY_AFTER: &str = crate::limits::admission::OVERLOADED_RETRY_AFTER;
 
 fn admin_unavailable_response() -> Response {
@@ -2417,11 +1762,6 @@ fn admin_unavailable_response() -> Response {
     resp
 }
 
-/// EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS on one request: the data-plane carriers
-/// (whichever one carried this request's token, and the SigV4 signature on `Authorization`), the
-/// admin carriers when an admin chain is configured, and the DPoP proof — on the data plane once
-/// it was proven, and always on the admin plane, whose door judges none and whose routes' planes
-/// have no use for one. The host strips all of them before any plane sees the request.
 pub(crate) fn gate_consumed(app: &App, is_admin: bool, dpop_proven: bool) -> ConsumedCredentials {
     let mut consumed = ConsumedCredentials::carrying(app.auth.carriers());
     if !app.admin_chain.is_empty() {
@@ -2433,14 +1773,10 @@ pub(crate) fn gate_consumed(app: &App, is_admin: bool, dpop_proven: bool) -> Con
     consumed
 }
 
-/// Axum middleware layer that validates auth before routing.
-// Both arms are `Response` (axum requires the Err arm to be an IntoResponse we can return
-// directly); `Response` exceeds clippy's result_large_err threshold but boxing it would break the
-// middleware signature, so the large-Err is intrinsic here, not a smell.
 #[allow(clippy::result_large_err)]
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
-    // The serving router owns this table, including when a physical listener changes generation.
+
     core_routes: &crate::core_routes::CoreRouteTable,
     mut req: Request<Body>,
     next: Next,
@@ -2452,9 +1788,7 @@ pub(crate) async fn auth_middleware(
     let inbound_headers = inbound
         .as_ref()
         .map(|admission| crate::inbound::header_map(&admission.inner.original));
-    // Clone the path so no immutable borrow of `req` is held while we later mutate its extensions.
-    // Stage timer for the middleware's OWN work; taken (recording) before every `next.run` below so
-    // downstream handler time is never attributed to auth. No-op unless `BUSBAR_PROFILE` is set.
+
     let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
     let admission = inbound.as_ref().map_or_else(
@@ -2465,10 +1799,7 @@ pub(crate) async fn auth_middleware(
         },
         crate::inbound::RequestAdmission::plane_admission,
     );
-    // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
-    // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
-    // on every residual data-plane path, which keeps its envelope byte for byte.
-    // `(the route's plane rendering, the request target it renders for)`.
+
     let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
         core_routes.door_refusal(&path, req.method()).map(|refuse| {
             let target = req
@@ -2478,24 +1809,8 @@ pub(crate) async fn auth_middleware(
             (refuse.clone(), target)
         });
 
-    // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
-    // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
-    // table is THIS router's, not the process's: `/healthz` is open wherever it is mounted because
-    // it declares itself open (a liveness probe must not require a caller token), and
-    // `/auth/token` bypasses on the data plane because the handler runs the auth chain ITSELF (it
-    // needs the identified principal to self-scope the minted key) — on the admin plane, which does
-    // not mount it, there is no declaration and therefore no bypass.
-    //
-    // EXACT path + method match, never a prefix, so nothing else rides a bypass. `/metrics` is NOT
-    // exempted anywhere — Prometheus telemetry (lane/pool topology, per-protocol counters, error
-    // rates) is a fingerprinting / information-disclosure surface, so it goes through the same auth
-    // check as any other route. Operators scraping from a localhost sidecar use a configured token
-    // (or run under `none`/`passthrough` mode, where `validate_token` admits unconditionally).
     let mut declared_admin = false;
-    // A ROUTE THIS ROUTER DECLARED AT THE DATA-PLANE BAR, AT EXACTLY THIS PATH: a plane's exact claim
-    // (a door route is recorded in this table at the bar it declares). It wins over the `/api/`
-    // admin prefix below: the prefix fails closed for the admin surface's own routes, never over a
-    // path a plane claimed by name.
+
     let mut claimed_at_key = false;
     if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
         match auth {
@@ -2508,13 +1823,6 @@ pub(crate) async fn auth_middleware(
         }
     }
 
-    // PLUGIN HTTP ROUTES: a registered plugin route carries its OWN declared auth level,
-    // enforced through THIS chain. `none` bypasses (like `/healthz`); `admin` is forced down the admin
-    // chain below; `key` needs no special handling (it flows through the normal client-token check).
-    // Consulted off the LIVE snapshot so a hot-swap that changes a route's auth takes effect at once.
-    // `declared_auth` returns `None` for every non-plugin path, so this is a no-op on the hot path.
-    // A core/plane route belongs to this physical router. A plugin on another listener may
-    // declare the same path, but its policy cannot replace this router's matched route policy.
     if let Some(auth) = (!claimed_at_key && !declared_admin)
         .then(|| app.plugin_routes.declared_auth(&path, req.method()))
         .flatten()
@@ -2529,29 +1837,15 @@ pub(crate) async fn auth_middleware(
         }
     }
 
-    // Derive owned values up front so no immutable borrow of `req` is live when we mutate its
-    // extensions below.
-    //
-    // Admin detection must be path-boundary-safe: a bare `starts_with("/api")` also captures
-    // sibling paths like `/apix/v1/messages`, which are NOT native-API routes. Such a path would be
-    // sent down the admin auth branch and (with a valid admin token) early-return WITHOUT the
-    // `CallerToken` extension a non-admin handler requires — yielding a 500 MissingExtension and
-    // leaking that the path was treated as admin-protected. Require either the exact `/api` segment
-    // or an `/api/` delimiter so only the native-API root (`/api/<version>/<area>/…`) matches.
     let is_admin = declared_admin
         || (!claimed_at_key && (path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX)));
-    // The busbar client token, taken from whichever of the default inbound style's carriers the
-    // caller used, in that style's order (`carried`). This single value drives BOTH the static-allowlist
-    // check and the governance virtual-key lookup, so every scheme is validated identically and in
-    // constant time. Replaces the previous Bearer-only `bearer_token`.
+
     let client_token: Option<String> = app
         .auth
         .extract_client_token(inbound_headers.as_ref().unwrap_or_else(|| req.headers()));
-    // RFC 9449 SENDER CONSTRAINT, on the data plane only (`auth::dpop`). A request that is neither
-    // a DPoP presentation nor a bound bearer is `Unconstrained` and nothing below changes for it.
+
     let mut dpop_proven = false;
-    // The bearer's payload, read at most once: by the DPoP binding check, then the audience
-    // pre-filter. A proven DPoP token was never read here, so the pre-filter reads it afresh.
+
     let mut read = None;
     let client_token = if is_admin {
         client_token
@@ -2585,9 +1879,7 @@ pub(crate) async fn auth_middleware(
             }
         }
     };
-    // EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS ([`gate_consumed`]), with the caller's
-    // token as a ref. Handed on with the request so the host strips all of them before any plane
-    // sees it (`caller_credential`).
+
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
     consumed.caller =
         match &inbound {
@@ -2597,26 +1889,9 @@ pub(crate) async fn auth_middleware(
             None => client_token.as_deref().map(CallerCredential::verified),
         };
 
-    // Thread the caller's token into request extensions for passthrough forwarding, using the same
-    // carrier precedence as auth (the default inbound style's carriers, in order). Inserted BEFORE
-    // any early-return below so EVERY request that reaches `next.run(req)` through this middleware
-    // carries the extension — the `Extension<CallerToken>` extractor in handlers never sees it
-    // absent (which would surface as a 500 MissingExtension). Always inserted (even when `None`).
     req.extensions_mut()
         .insert(CallerToken(client_token.clone()));
 
-    // THE PLANE'S ADMISSION FACTS. `None` for every path on the residual data plane, which is every
-    // path in a deployment that has no mounted, audience-bound plane — one `Option` test, then nothing below
-    // this point costs anything. `Some` means this path is an OAuth 2.1 protected resource: a token
-    // presented here must be bound to this resource's canonical URI, and a refusal owes the caller
-    // a machine-readable challenge naming where to go and get one.
-
-    // the /admin management API is gated by the ADMIN AUTH CHAIN (`admin_auth:`, default
-    // the operator credential — the single operator token, Bearer or X-Admin-Token) — NOT a virtual key,
-    // and NOT the native-SDK carriers (admin is a busbar operator surface, not a native SDK
-    // ingress). The chain authenticates (WHO); the principal's admin SCOPE then authorizes against
-    // the endpoint's required scope (WHAT) — the matrix, checked here at the one chokepoint
-    // every /admin path crosses, over the operator credential's carriers (`carried`).
     if is_admin {
         let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
         let mut strips = Vec::new();
@@ -2629,45 +1904,27 @@ pub(crate) async fn auth_middleware(
             true,
             &mut strips,
         );
-        // The admin door AWAITS a pending verify. An overloaded verifier is denied, 1.5.5's 401
-        // (the admin-door 503 for it is not a signed accepted difference). One that answered NO
-        // VERDICT is refused and answered 503 with `Retry-After`, never the bad credential's 401
-        // (SIGN-auth-kind 2026-10-30).
+
         let Ok(door) = judged.await else {
             return Err(admin_unavailable_response());
         };
         let authorized = admin_door_admits(&door, req.method().as_str(), &path);
         strike_named(&mut req, &mut consumed, &strips);
         req.extensions_mut().insert(consumed);
-        // AUTHORIZATION rides the door's verdict: the principal's admin scope (module-intrinsic for
-        // the operator token; `role_bindings:` for group-carrying principals, unmapped groups grant
-        // nothing), CAPPED by the identifying module's `max_admin_scope:` ceiling. An identified
-        // principal with NO grant is 403, never 401 — authenticated but not authorized.
+
         let principal = match door {
             AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
                 Some(principal)
             }
-            // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
-            // symmetric with the data plane's empty chain. The default config never lands here.
+
             AdminDoor::Open => None,
-            // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}})
-            // — tooling branches on the SAME `code` seam as every other admin error, never a
-            // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
+
             AdminDoor::Denied => return Err(admin_unauthorized_response()),
             AdminDoor::Unavailable(_) => return Err(admin_unavailable_response()),
         };
         let required = crate::admin::gate::required_scope(req.method(), &path);
-        // A principal holding verbs BY NAME is admitted only to a verb its allow-list reaches
-        // (#77(9) l.2279), refused in the same envelope as a rung it does not hold. A path the
-        // closed verb table does not declare is no verb, so only a rung held whole reaches it
-        // ([`admin_door_admits`]).
+
         if !authorized {
-            // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
-            // an operator wants to see) — but at most once per (principal, window). The durable
-            // write-through is a blocking store round-trip under a process-global lock, and this path
-            // returns BEFORE the mutation limiter runs (and a GET never reaches it at all), so an
-            // unbounded audit here is an unmetered I/O amplifier on the reactor. Same bound, same
-            // reason, as the rate-limited audit below.
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())
@@ -2686,28 +1943,18 @@ pub(crate) async fn auth_middleware(
                     actor,
                 );
             } else {
-                // Suppressed records still leave a per-request signal, at zero I/O cost.
                 diag_debug!(ADMIN_FORBIDDEN_SUPPRESSED, principal = %actor, path = %path, required = %required.as_str(),
                     "admin request forbidden (audit suppressed: already recorded this window)");
             }
             return Err(forbidden_response(required));
         }
-        // MUTATION RATE LIMITS: per-principal fixed windows, spent BEFORE the handler so
-        // FAILED attempts count too (anti-enumeration). Config-plane mutations (apply/rollback)
-        // are the tight class; every other mutation is the CRUD class. Reads are unmetered.
+
         let method = req.method();
         let is_mutation = method == axum::http::Method::POST
             || method == axum::http::Method::PUT
             || method == axum::http::Method::PATCH
             || method == axum::http::Method::DELETE;
         if is_mutation {
-            // The CONFIG class (10/min) is the blast-radius set: whole-config mutations AND the
-            // admin auth chain itself. Everything else that mutates (hooks, keys, cache flush) is
-            // the CRUD class (60/min). Matched RELATIVE to the one contract prefix so this gate
-            // can never drift from the mount grammar. Classification itself lives in
-            // `ratelimit::classify_mutation`, driven by a const table rather than an inline
-            // predicate, so it can be enumerated and cross-checked against
-            // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
             let rel = path
                 .strip_prefix(crate::admin::gate::ADMIN_PREFIX)
                 .unwrap_or(&path);
@@ -2720,10 +1967,6 @@ pub(crate) async fn auth_middleware(
                 .mutation_limiter
                 .check(actor, class, busbar_kernel::store::now())
             {
-                // Audit the first denial of the window only. The durable audit write-through is a
-                // blocking store round-trip, and this is the SHED path — auditing every rejected
-                // attempt would let a client that ignores its 429s drive unbounded blocking work
-                // through the limiter whose entire purpose is to stop doing work.
                 if first_in_window {
                     crate::audit_ring::AUDIT.record_by(
                         "admin.rate_limited",
@@ -2736,37 +1979,13 @@ pub(crate) async fn auth_middleware(
             }
         }
         req.extensions_mut().insert(AuthPrincipal(principal));
-        // (1.5.2 scope collapse: the EFFECTIVE-scope extension is no longer threaded to handlers —
-        // every mutation now requires `Full` at the route matrix, so the former body-derived
-        // refinements a handler applied via `AdminScope` are gone; the `required_scope` check above
-        // is the whole authorization decision.)
-        // INTENTIONAL governance bypass for the operator admin token. A successful admin auth attaches
-        // an EMPTY `GovCtx::default()` (no resolved virtual key) and returns HERE — BEFORE the
-        // virtual-key governance resolution below — so per-key controls (`allowed_pools`, budget, RPM/
-        // TPM) are deliberately NOT applied to admin requests. This is by design, not an oversight:
-        // the admin token is an operator-only credential, and the /admin routes expose ONLY
-        // key-management (create / list / disable / usage), never inference. There is no per-key
-        // budget or pool to enforce on a key-management call, and holding the admin token already
-        // confers full authority over EVERY key by design, so subjecting it to a single key's
-        // governance would be meaningless. Inference ingress (every non-/admin path) still falls
-        // through to the governance resolution below and is fully governed.
+
         req.extensions_mut()
             .insert(crate::governance::GovCtx::default());
         drop(_mw.take());
         return Ok(next.run(req).await);
     }
 
-    // ── DATA PLANE ── the ADMIN TOKEN NO LONGER APPEARS HERE. Admission is decided SOLELY by the
-    // data-plane chain verdict (fed by the `keys` engine arm, any IdP plugin, or the SigV4 pre-step),
-    // NOT by whether an admin token is set. `chain:[]` is a genuine open front door again (admit
-    // anonymous); `chain:[keys]` requires and resolves a virtual key; an IdP chain requires the IdP.
-    // Enforcement rides whatever principal-with-key the chain resolved, independent of the admin token.
-
-    // keys-in-chain makes every data-plane request present a valid virtual key, which SUPERSEDES
-    // `upstream_credentials: passthrough` (there is no caller credential to forward — the vkey is
-    // busbar's own). Warn once so an operator who set passthrough expecting caller-credential
-    // forwarding sees why a no-vkey request is rejected. (Reframed off the deleted admin-token gate
-    // onto the actual axis: keys-in-chain.)
     if app.auth.keys_in_chain && app.upstream_creds() == UpstreamCreds::Passthrough {
         static WARN_ONCE: std::sync::Once = std::sync::Once::new();
         WARN_ONCE.call_once(|| {
@@ -2780,33 +1999,17 @@ pub(crate) async fn auth_middleware(
         });
     }
 
-    // INGRESS via a SIGNED REQUEST (a dialect whose clients sign each request with a credential
-    // busbar minted and holds) is a real INGRESS-PROTOCOL PRE-STEP: it needs the BUFFERED BODY to
-    // bind the payload hash. The signature is the verifying AUTH PLUGIN's to judge (THE DESIGN §6,
-    // "Inbound verify": the host-held credential read through `records.secret`, the dummy-secret
-    // timing equivalence for an unknown identifier); the kernel makes ONE `verify` call at
-    // `HeadBody` and resolves the identity it answers to the governance key. It runs ONLY when the
-    // running chain names `keys` AND the ingress dialect declares a signed ingress AND the request
-    // carries one of the verifier's own carrier lines (the kernel names no credential line). Gating
-    // on `keys_in_chain` keeps an OPEN `chain:[]` open. A credential that is not the verifier's
-    // (it PASSes) takes the unchanged token path below. Which paths are signed is a DECLARED plane
-    // fact, never a name-branch and never a path-shape guess: a door plane states its signed paths
-    // on raw-affix claims (`CLAIM_SIGNED_INGRESS` on `CLAIM_RAW_AFFIX`, ARCHITECT rulings 2026-10-16,
-    // 3b A and B, and 2026-10-17), looked up by the raw path whatever the verb.
     let ingress_signed = core_routes.signed_ingress(&path);
-    // The lines the chain's positions named for the transport, struck once the request is admitted.
+
     let mut strips = inbound
         .as_ref()
         .map_or_else(Vec::new, |admission| admission.inner.strips.clone());
-    // The pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An audience-bound
-    // plane admits bearer tokens only: a signed request produces an identity with no audience
-    // anywhere in it, so allowing it here would be a second door into an audience-bound plane that
-    // the RFC 8707 check does not stand behind.
+
     let reader =
         (inbound.is_none() && admission.is_none() && app.auth.keys_in_chain && ingress_signed)
             .then(|| app.auth.readers.iter().find(|r| r.carried(req.headers())))
             .flatten();
-    // The verified identity's replay claim, UNWON until the gate's last deny decision is made.
+
     let mut pending: Option<PendingClaim> = None;
     let signed = match reader {
         None => inbound
@@ -2814,15 +2017,6 @@ pub(crate) async fn auth_middleware(
             .filter(|admission| admission.inner.signed)
             .map(|admission| admission.verdict()),
         Some(reader) => {
-            // BODY INTEGRITY: the verifier re-hashes the bytes received and confirms they match the
-            // signed payload hash. Buffer the body HERE, then reconstruct the request from the SAME
-            // bytes so the downstream handler receives the payload intact. A buffering failure (a
-            // truncated/aborted body) is itself a failed request — the same opaque auth error.
-            //
-            // CAP the buffer at the SAME knob (`limits.request_body_max_bytes`) that drives the
-            // inbound `DefaultBodyLimit` layer: this runs BEFORE authentication is confirmed and is
-            // reachable from attacker-controlled headers alone, so the cap is enforced here, not
-            // assumed of the layer stack.
             let (parts, body) = req.into_parts();
             let Ok(body_bytes) = axum::body::to_bytes(
                 body,
@@ -2839,9 +2033,6 @@ pub(crate) async fn auth_middleware(
             match signed_verdict_of(answer, call.faulted(), &mut strips) {
                 Verified::Pass => None,
                 Verified::Identity(id) => {
-                    // The identity names the credential it verified; the governance key that holds
-                    // it is the identity busbar admits. Governance is always constructed (RAM by
-                    // default); absent, there is no store to resolve against → fail closed.
                     let now = busbar_kernel::store::now();
                     let key = app.governance.as_deref().and_then(|gov| {
                         reader.kinds.iter().find_map(|kind| {
@@ -2850,9 +2041,7 @@ pub(crate) async fn auth_middleware(
                                 .then(|| (*key).clone())
                         })
                     });
-                    // THE REPLAY CLAIM, won as the last step of admission exactly as every other
-                    // verify caller wins it: a key the identity asks to be admitted once is
-                    // claimed under this verifier; a claim already taken is the same refusal.
+
                     pending = PendingClaim::of(
                         ReplayClaim::of(&reader.name, id.replay, now),
                         app.governance.clone(),
@@ -2866,28 +2055,19 @@ pub(crate) async fn auth_middleware(
                         None => return Err(unauthorized_response(&app, &path, door.as_ref())),
                     }
                 }
-                // EVERY rejection (malformed signature, unknown identifier, expired date, a body
-                // whose bytes don't match the signed hash) maps to the identical native auth error:
-                // there is no oracle.
+
                 Verified::Reject => return Err(unauthorized_response(&app, &path, door.as_ref())),
-                // The verifier answered NO VERDICT (FAILED, a FAULT): nothing was judged, so this is
-                // no answer about the credential. Refused, 503 with `Retry-After`
-                // (SIGN-auth-kind 2026-10-30).
+
                 Verified::Failed => {
                     verify_without_verdict("data", &reader.name, "no verdict");
                     return Err(verifier_unavailable_response());
                 }
-                // The verifier's `max_inflight` is full: nothing was judged, so this is no answer
-                // about the credential. 503 with `Retry-After` (owner ruling Q134, 2026-10-07).
+
                 Verified::Overloaded => return Err(verifier_unavailable_response()),
             }
         }
     };
-    // THE TICKET ARM (row 132, the ARCHITECT ticket ruling): on a door route that takes tickets,
-    // a credential carrying its plane's declared issued-id prefix is a ticket, which `keys` admits
-    // ONCE as the key it was minted for. The gate spends it here and hands its record on with the
-    // request; any ticket that is not a standing, unspent one of this deployment is the door's
-    // `401`, the same as a bad key. Only where the chain names `keys`: a ticket is a busbar token.
+
     let ticketed = match (
         signed.is_none(),
         core_routes.door_ticket(&path, req.method()),
@@ -2919,20 +2099,9 @@ pub(crate) async fn auth_middleware(
     } else if let Some(verdict) = ticketed {
         verdict
     } else {
-        // Not `run_chain_with` directly: that blocks its caller's thread on a door that must wait. The
-        // `keys` engine arm (inside the chain run) needs the governance handle to verify a
-        // busbar-signed key; pass `app.governance` in PER-REQUEST (governance is built AFTER
-        // `AuthMiddleware::new`, so the arm takes it as a call parameter, never a struct field).
-        // THE AUDIENCE PRE-FILTER, for credentials busbar did not mint. The chain's plugin modules
-        // verify an operator IdP's signature and cannot be asked about RFC 8707 — the module ABI
-        // has no shape for it — so core establishes the binding itself, BEFORE the chain runs, and
-        // only ever to refuse. See `auth::audience`: a token that passes here still has to pass the
-        // chain, so this can narrow what is admitted and can never widen it.
         if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token.as_deref()) {
             let read = read.get_or_insert_with(|| audience::Bearer::read(tok));
             match read.binding(&adm.audience) {
-                // A busbar-signed token: the verifier below has the claims and the signature, and
-                // does the real check. Pre-judging it here would refuse every valid one.
                 audience::Binding::Deferred | audience::Binding::Bound => {}
                 audience::Binding::Mismatch => {
                     return Err(challenge::refuse(
@@ -2966,30 +2135,17 @@ pub(crate) async fn auth_middleware(
         };
         match judged {
             Ok(verdict) => {
-                // The union (THE DESIGN §6.3): a signed-request verifier that PASSed named its
-                // lines too.
                 strips.extend(named);
                 pending = claim;
                 verdict
             }
-            // A position's `max_inflight` is full (owner ruling Q134, 2026-10-07), or its verify
-            // answered no verdict (SIGN-auth-kind 2026-10-30): refused, 503 with `Retry-After`,
-            // never a bad credential's 401.
+
             Err(VerifierUnavailable::Overloaded | VerifierUnavailable::NoVerdict) => {
                 return Err(verifier_unavailable_response())
             }
         }
     };
 
-    // THE SINGLE DATA-PLANE GATE — one resolution of the chain verdict, with NO branch anywhere on
-    // admin-token presence. The DECISION lives in [`resolve_data_plane_identity`], shared with the
-    // stdio serve mode's boot-time session bind, so "who does this credential make you" cannot be
-    // answered differently on the two transports; only the WORDING of a refusal differs here
-    // (an RFC 6750 challenge or a native envelope, where the stdio binding words it on stderr).
-    //
-    // The replay claim is the gate's LAST step: won only once the verdict resolved to an admitted
-    // identity, before the request reaches budget, rate admission or the plane. A refused request
-    // claims nothing; a claim lost is the refusal a denied chain answers.
     let resolved = match resolve_data_plane_identity(&app, verdict) {
         Ok(admitted)
             if match &inbound {
@@ -3004,19 +2160,12 @@ pub(crate) async fn auth_middleware(
     };
     match resolved {
         Ok((principal, gov)) => {
-            // ALWAYS inserted — including `AuthPrincipal(None)` + empty `GovCtx` on the open front
-            // door — so downstream `Extension` extraction never 500s `MissingExtension`.
             req.extensions_mut().insert(principal);
             req.extensions_mut().insert(gov);
             strike_named(&mut req, &mut consumed, &strips);
             req.extensions_mut().insert(consumed);
         }
         Err(IdentityRefusal::Denied) => {
-            // On an audience-bound plane the refusal is an RFC 6750 challenge, not a protocol-shaped
-            // envelope: the caller is an OAuth client, and the `WWW-Authenticate` header is the only
-            // place the discovery loop's next step was ever going to come from. `Absent` (no
-            // credential at all) and `invalid_token` (one was presented and failed) are different
-            // signals and clients branch on the difference, so they are not collapsed.
             if let Some(adm) = admission.as_ref() {
                 let kind = if client_token.is_none() {
                     challenge::ChallengeError::Absent
@@ -3057,26 +2206,8 @@ pub(crate) async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
-// IdentityRefusal (WHY a chain verdict did not resolve to an admitted identity) now lives in the
-// neutral contracts crate so a plane names it without reaching into busbar-core; re-exported here so
-// every crate::auth::IdentityRefusal caller is unchanged.
 pub use busbar_contract::auth::IdentityRefusal;
 
-/// WHO A CHAIN VERDICT MAKES YOU on the data plane — the one resolution of verdict →
-/// (principal, governance context), shared by the HTTP auth middleware and the stdio serve mode's
-/// boot-time session bind so the two transports cannot come to different answers.
-///
-/// - `Open` (`chain: []`, no keys arm) admits ANONYMOUS: `AuthPrincipal(None)` and an empty
-///   `GovCtx`, the explicit open-front-door posture the boot banner warns about.
-/// - `Identified` rides the RESOLVED key when an engine arm (keys / SigV4) produced one; otherwise
-///   a group-carrying principal is re-keyed through `role_bindings` via
-///   [`crate::governance::synthesize_principal_key`]. A DISABLED vkey never reaches here as
-///   `Identified` (the keys arm denies it), so it can never be re-admitted through synth.
-/// - An identified principal that earned NO enforcement key is judged by [`admits_ungoverned`]:
-///   as 1.5.5 judged it, a principal carrying roles under a module that HAS a `role_bindings`
-///   table is refused `NoGrant` (its roles were to define its access and defined none), and a
-///   ROLELESS principal, or any principal of a module with no table, is admitted ungoverned
-///   (`key: None`). Pinned by `auth::tests::an_ungoverned_principal_is_judged_as_1_5_5_judged_it`.
 pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
@@ -3089,8 +2220,6 @@ pub fn resolve_data_plane_identity(
             principal,
             resolved,
         } => {
-            // Synthesized through `synthesize_bound_key` so the key records its admission (module +
-            // roles): a long-lived response's `Standing` then re-checks it against the LIVE bindings.
             let gov_key = resolved.or_else(|| {
                 crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
             });
@@ -3111,16 +2240,8 @@ pub fn resolve_data_plane_identity(
     }
 }
 
-/// Whether an identified principal that earned NO governance key is refused whatever its roles and
-/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None`, such a principal
-/// met no pool ACL and no budget and its spend was booked to the `anonymous` actor (1.5.5's
-/// three-part guard, v1.5.5 crates/busbar/src/auth/mod.rs:1543). OWNER-SIGNED 2026-10-24 (M30): an
-/// identified principal with no grant is refused (`NoGrant`, 401), so every admitted request is
-/// governed and its spend attributed.
 pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = true;
 
-/// Whether `principal`, identified by `module` and earning no governance key, is admitted ungoverned
-/// under [`REFUSE_EVERY_UNGOVERNED_PRINCIPAL`].
 fn admits_ungoverned(
     module: &str,
     principal: &busbar_contract::auth::Principal,
@@ -3134,11 +2255,6 @@ fn admits_ungoverned(
     )
 }
 
-/// [`admits_ungoverned`] under a stated `refuse_every`. Without it, 1.5.5's guard (v1.5.5
-/// crates/busbar/src/auth/mod.rs:1543, `gov_key.is_none() && !principal.roles.is_empty() &&
-/// bindings.is_some()` refuses): a ROLELESS principal, or any principal of a module with no
-/// `role_bindings` table, is admitted; a principal with roles under a module that has a table is
-/// refused. With it, no keyless principal is admitted.
 fn admits_ungoverned_under(
     refuse_every: bool,
     module: &str,
@@ -3148,8 +2264,6 @@ fn admits_ungoverned_under(
     !refuse_every && (principal.roles.is_empty() || !role_bindings.contains_key(module))
 }
 
-/// The one `verify` request for a signed ingress, at `HeadBody`: every field line as presented, the
-/// whole (bounded) body, the method, the authority, the raw path and query, and the time read once.
 fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequest {
     use busbar_contract::redacted::Secret;
     VerifyRequest {
@@ -3188,10 +2302,6 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
     }
 }
 
-/// TEST-ONLY: the default inbound style a chain built without the build's registry reads: the
-/// LINKED rows' where the test binary links auth rows (a composition root's test links the real
-/// header auth, and reads only what it states), else the stand-in double's (a test binary that
-/// links no auth plugin at all).
 #[cfg(test)]
 fn test_inbound_style() -> Vec<HeaderName> {
     if crate::preflight::linked_auth_names().is_empty() {
@@ -3206,9 +2316,6 @@ fn test_inbound_style() -> Vec<HeaderName> {
 
 #[cfg(any(test, feature = "test-support"))]
 impl AuthMiddleware {
-    /// Build a chain over already-opened calls and explicit carrier names. This behavioral
-    /// injector keeps the chain's private representation inside the kernel; the external testkit
-    /// owns all fixture selection, fallback styles, and stand-in implementations.
     pub fn from_calls_for_test(
         chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>,
         carriers: &[&str],
@@ -3233,8 +2340,6 @@ impl AuthMiddleware {
         }
     }
 
-    /// Supply explicit fixture metadata only where the normal constructor resolved none.
-    /// The external kit selects those values; metadata from an opened auth row always stands.
     pub fn with_fallback_test_metadata(
         mut self,
         carriers: &[&str],
@@ -3252,7 +2357,6 @@ impl AuthMiddleware {
         self
     }
 
-    /// The kernel's own unit tests retain their local convenience; external suites use the kit.
     #[cfg(test)]
     pub fn from_doors_for_test(chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>) -> Self {
         let carriers = test_inbound_style();
@@ -3260,8 +2364,6 @@ impl AuthMiddleware {
         Self::from_calls_for_test(chain, &names)
     }
 
-    /// TEST-ONLY: this chain naming `keys`, with `calls` as a host-held credentials' verifier that
-    /// reads `kinds` and whose credential sits on `carriers`.
     #[must_use]
     pub fn with_reader_for_test(
         mut self,
@@ -3284,44 +2386,23 @@ impl AuthMiddleware {
     }
 }
 
-/// A session's admission outside an HTTP request: the chain and the one verdict resolution.
 pub mod admit;
-/// What the gate holds of the caller: every credential carrier it reads (stripped from every plane's
-/// request) and the caller's credential as a ref only the host presents upstream.
+
 pub mod caller_credential;
 pub use caller_credential::{present_caller, CallerCredential, ConsumedCredentials};
 
-/// RFC 8707 audience binding for credentials busbar did not mint — the confused-deputy defence for
-/// the operator-IdP deployment shape, where an auth plugin verifies the signature and core still has
-/// to decide whether the token was minted for THIS resource.
 pub mod audience;
 
-/// RFC 9449 DPoP at the resource: `Authorization: DPoP` with its proof, verified through the
-/// authorization-server seam, and a DPoP-bound token refused as a bearer where an authorization
-/// server is configured.
 pub mod dpop;
 
-/// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers:
-/// implemented here (`challenge.rs`, pure `axum::http` + `serde_json`), and called as
-/// `crate::auth::challenge::{refuse, ChallengeError}`.
 pub mod challenge;
 
-/// The self-serve key SEAM (1.5.2 token-exchange): `SelfServeKeys` trait + the deterministic
-/// GovState-backed impl, and the verdict→mint decision the `POST /auth/token` handler drives.
 pub mod self_keys;
 
-/// The `POST /auth/token` data-plane exchange handler (identity from the verified chain, mint via
-/// the [`self_keys`] seam).
 pub mod exchange;
 
-/// The hosted login's identity side (row 159, K3#2): the login methods, one login step on a
-/// plugin's door, and the self-serve key a verified identity is issued through the SAME
-/// [`self_keys`] seam as the headless `POST`. The flow itself (pages, cookie, PKCE) is
-/// `busbar-core-oauth2`'s, reached through [`login::seam`].
 pub mod login;
 
-// The adapter belongs to the external kernel testkit. Unit tests mount the same source privately;
-// no feature-enabled kernel library exports or links the fixture.
 #[cfg(test)]
 #[path = "../../../busbar-kernel-testkit/src/test_support/auth_stand_in.rs"]
 pub(crate) mod stand_in;
@@ -3334,8 +2415,6 @@ mod tests;
 #[path = "tests/plugin_chain_tests.rs"]
 mod plugin_chain_tests;
 
-/// The auth acceptance suite: black-box 1.5.5 parity pins the scattered unit suites above don't
-/// directly assert.
 #[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
 mod acceptance_1_5_5_tests;

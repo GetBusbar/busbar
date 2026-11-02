@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel's RFC 9728 render, and the bar a declared route carries beside its mount.
-
 use axum::response::Response;
 use serde_json::{json, Value};
 
 use super::super::protocol::{metadata, Metadata};
 
-/// The status and the parsed body of one response.
 async fn read(r: Response) -> (u16, Value) {
     let status = r.status().as_u16();
     let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
@@ -16,9 +13,6 @@ async fn read(r: Response) -> (u16, Value) {
     (status, value)
 }
 
-/// One document from three facts: the audience, and each OPTIONAL member omitted when empty, never
-/// emitted empty (RFC 9728 §2). Scopes with no authorization servers is a combination neither
-/// shipped plane states, so a render that assumed one plane's facts would show here.
 #[tokio::test]
 async fn the_resource_document_renders_its_facts_and_omits_an_empty_member() {
     let scopes = vec!["zeta.read".to_string()];
@@ -38,9 +32,6 @@ async fn the_resource_document_renders_its_facts_and_omits_an_empty_member() {
     );
 }
 
-/// A DECLARED ROUTE CARRIES THE BAR ITS MOUNT DECLARED: `CoreRouter::route` records the path, the
-/// method and the bar in one act, so the audience check stays beside the mount and no handler has
-/// to remember to ask.
 #[test]
 fn a_declared_route_inherits_the_bar_beside_its_mount() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};

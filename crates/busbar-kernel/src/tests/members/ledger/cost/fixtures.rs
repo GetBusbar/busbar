@@ -1,66 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The pricing law under test.
-//!
-//! The three files below split by clause: rates and the pin, the stored posting and the tier, and
-//! the read-time derivation. The identity file is the one that ties the two readers together — the
-//! older release's derivation at a pinned card against the sum of the stored nano-units.
-
 use busbar_contract::caps::step::MeterClassId;
 use busbar_contract::caps::{Consumption, Grant, KernelSeal, QuantitySource, Usage, UsageLine};
 
 use busbar_kernel_ledger::cost::{price, History, LaneClass, Posting, Priced, RateCard};
 
-/// A nano-unit total in whole MINOR units through the CHECKED projection (item 28): the one money
-/// type, which refuses a figure the served type cannot hold rather than pinning it at a ceiling.
 pub(crate) fn minor_nanos(nanos: u128) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
     busbar_kernel_ledger::cost::Money::of_nanos(nanos)
         .and_then(busbar_kernel_ledger::cost::Money::minor_i64)
 }
 
-/// [`minor_nanos`] at the micro scale: the same checked projection, the finer narrowing.
 pub(crate) fn micros_nanos(nanos: u128) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
     busbar_kernel_ledger::cost::Money::of_nanos(nanos)
         .and_then(busbar_kernel_ledger::cost::Money::micros_i64)
 }
 
-/// A priced posting's figure in minor units, checked. Every fixture here is in range.
 pub(crate) fn minor(p: &Priced) -> i64 {
     minor_nanos(p.priced_nanos).expect("the fixture's figure is in range")
 }
 
-/// A priced posting's figure in micro-units, checked. Every fixture here is in range.
 pub(crate) fn micros(p: &Priced) -> i64 {
     micros_nanos(p.priced_nanos).expect("the fixture's figure is in range")
 }
 
-/// The four classes the older release priced, under the names it used for them.
 pub(crate) const INPUT: &str = "input";
 pub(crate) const OUTPUT: &str = "output";
 pub(crate) const CACHE_READ: &str = "cache_read";
 pub(crate) const CACHE_WRITE: &str = "cache_write";
 
-/// Build a usage report for a test.
-///
-/// Minting a token here is what a test needs in order to have a report at all: the report type can
-/// only be built by the usage unit holding its own token, which is the property being relied on
-/// everywhere else in this crate. The seal is confined to the kernel in real code; these lines are
-/// test-only and are the same exception the capability crate's own tests take.
 pub(crate) fn usage(entries: &[(&'static str, u64)]) -> Usage {
     let seal = KernelSeal::acquire_for_kernel();
     let token = Grant::<Consumption>::mint(&seal);
     Usage::report(&token, lines(entries)).expect("a test report stays within the line bound")
 }
 
-/// The same, marked as the kernel's own floor rather than a reported figure.
 pub(crate) fn estimated_usage(entries: &[(&'static str, u64)]) -> Usage {
     let seal = KernelSeal::acquire_for_kernel();
     let token = Grant::<Consumption>::mint(&seal);
     Usage::estimate(&token, lines(entries)).expect("a test report stays within the line bound")
 }
 
-/// The plain line form the read-time derivation takes.
 pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
     entries
         .iter()
@@ -73,8 +53,6 @@ pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
         .collect()
 }
 
-/// A card over one lane, priced in micro-units per token for the two reserved classes the older
-/// release's tests used.
 pub(crate) fn card(
     lane: &'static str,
     input_micro: f64,
@@ -90,7 +68,6 @@ pub(crate) fn card(
     )
 }
 
-/// A card over one lane pricing all four of the older release's classes.
 pub(crate) fn card4(lane: &'static str, rates: [f64; 4], fee_cents: i64) -> RateCard {
     RateCard::from_micro_rates(
         [
@@ -103,13 +80,6 @@ pub(crate) fn card4(lane: &'static str, rates: [f64; 4], fee_cents: i64) -> Rate
     )
 }
 
-/// Price a usage report against ONE card, through the whole lookup path.
-///
-/// The card is wrapped in a single-entry history effective from instant zero and the posting is
-/// dated at zero, so `card_at` resolves to that entry and the answer is the lookup's, not a
-/// shortcut's. Every case in these files that used to price against a pinned card now runs through
-/// the history, which is the point: the migration's claim is that a single-entry history IS the old
-/// pinned card, and the cheapest way to keep that claim honest is to make the old cases prove it.
 pub(crate) fn priced(
     card: &RateCard,
     lane: &str,
@@ -122,7 +92,6 @@ pub(crate) fn priced(
     price(&history.current(), &posting).expect("a card at instant zero covers a posting at zero")
 }
 
-/// A posting carrying one class's quantity, dated at a named instant.
 pub(crate) fn posting_at(lane: &str, arrived_ms: u64, lines: &[(&'static str, u64)]) -> Posting {
     Posting::from_usage(
         lane,

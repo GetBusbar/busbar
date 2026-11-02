@@ -1,25 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LOGIN HALF OF AN AUTH INSTANCE (WIRE-AUTH, ARCHITECT ruling 2026-09-30 (A)(3)): the hosted
-//! login's `begin_login` and `complete_login` on the one dispatcher, in the same shape as `verify`:
-//! submitted on a request ticket, answered through the reply's waker, the memory the `in` lends
-//! travelling with the op. The plugin runs its own token exchange over its own need, holding its own
-//! client secret; the kernel names neither this crate nor the plugin.
-//!
-//! * `begin_login`: [`LoginOutcome::Authorize`] (`BEGIN_AUTHORIZE`) or [`LoginOutcome::Prompt`]
-//!   (`BEGIN_FORM`), copied out of the plugin memory its lease holds, then the lease is released.
-//! * `complete_login`: `LOGIN_IDENTITY` is [`LoginOutcome::Identify`], `LOGIN_BAD_CREDENTIAL`
-//!   [`LoginOutcome::Reject`], `LOGIN_OUTAGE` [`LoginOutcome::Outage`],
-//!   `LOGIN_SECURITY_CHECK_FAILED` [`LoginOutcome::SecurityCheckFailed`]. A SHORT answer is
-//!   re-called ONCE with the buffers it named.
-//! * Anything else (FAILED, FAULT, REFUSED, a timeout, a second short answer, the instance at
-//!   `max_inflight`) is [`LoginOutcome::Reject`]: 1.5.5 refused a login plugin that failed or could
-//!   not be started.
-//!
-//! The code, the PKCE verifier and every submitted field are secret: zeroed when the op's lent
-//! memory is dropped, and never printed.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,25 +21,17 @@ use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::lifecycle::{release, AnswerLease};
 use crate::dispatch::{in_head, now_ns, out_head, Done, Frame, InFrame, OutFrame, Plugin};
 
-/// A submitted `begin_login`'s deadline.
 pub const BEGIN_LOGIN_DEADLINE: Duration = Duration::from_secs(10);
 
-/// A submitted `complete_login`'s deadline: 1.5.5's bound on a callback's hops (six, ten seconds
-/// each), now the plugin's own exchange.
 pub const COMPLETE_LOGIN_DEADLINE: Duration = Duration::from_secs(60);
 
-/// The most fields a login form may declare.
 const FORM_MAX: usize = 64;
 
-/// The instance cannot take another op now: fail closed.
 fn overloaded(shared: &Shared) -> bool {
     let p = &shared.plugin;
     p.max_inflight() != 0 && p.inflight() >= p.max_inflight()
 }
 
-// ── begin_login ─────────────────────────────────────────────────────────────────────────────────
-
-/// THE MEMORY ONE `begin_login` LENDS. Nothing in it is secret.
 struct BeginHeld {
     redirect_uri: String,
     state: String,
@@ -119,14 +92,13 @@ fn begin_out() -> BeginLoginOut {
     }
 }
 
-/// Plugin text under the op's lease, copied; `None` when malformed.
 fn text(s: AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
 /// What a READY `begin_login` answered, copied out of the plugin memory its lease holds; `None`
 /// when malformed. The one reading of an answer: the auth conformance suite spells it from here.
-#[doc(hidden)] // TEST SEAM: busbar-test-kit
+#[doc(hidden)]
 pub fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
     match out.shape {
         BEGIN_AUTHORIZE => text(out.authorize_url)
@@ -162,7 +134,6 @@ pub fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
     }
 }
 
-/// Submit `begin_login` on `shared`.
 pub(super) fn begin(shared: &Arc<Shared>, request: BeginLogin) -> Box<dyn LoginCall> {
     if overloaded(shared) {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
@@ -189,7 +160,6 @@ pub(super) fn begin(shared: &Arc<Shared>, request: BeginLogin) -> Box<dyn LoginC
     ))
 }
 
-/// A submitted `begin_login`.
 struct Begin {
     shared: Arc<Shared>,
     _held: Arc<BeginHeld>,
@@ -212,7 +182,6 @@ impl Answering<BeginLoginIn, BeginLoginOut> for Begin {
     }
 }
 
-/// A submitted login step (`begin_login`, `complete_login`).
 impl<I, O, A> LoginCall for Pending<I, O, A>
 where
     I: InFrame,
@@ -229,10 +198,6 @@ where
     }
 }
 
-// ── complete_login ──────────────────────────────────────────────────────────────────────────────
-
-/// THE MEMORY ONE `complete_login` LENDS: the callback, the submitted fields pointing into it, and
-/// the identity buffers the plugin writes (a [`Held`] over no request).
 struct CompleteHeld {
     code: Option<Vec<u8>>,
     state: String,
@@ -251,9 +216,6 @@ unsafe impl Send for CompleteHeld {}
 unsafe impl Sync for CompleteHeld {}
 
 impl CompleteHeld {
-    /// `seal` is the host's, lent to the dispatcher: the submitted fields are revealed under it to
-    /// be lent to the plugin's `complete_login`. The caller refuses a login that submits any when
-    /// none was lent, so `None` here reveals nothing.
     fn new(
         req: &LoginCallback,
         seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
@@ -331,9 +293,6 @@ impl Drop for CompleteHeld {
     }
 }
 
-/// What a completed `complete_login` answered. A verdict that is not an identity has its reason
-/// (the answer's error text: the check that failed, or what the identity provider answered to an
-/// outage) written to the instance's own log and the host log, never to the browser.
 fn completed(
     outcome: Outcome,
     out: &IdentifyOut,
@@ -360,7 +319,7 @@ fn completed(
                 1,
                 "sign-in outage: the identity provider was not reached",
             );
-            // Read the IdP delay only from the host-owned identity buffer.
+
             LoginOutcome::Outage {
                 retry_after_secs: held.id.retry_after(out.head.extensions),
             }
@@ -377,7 +336,6 @@ fn completed(
     }
 }
 
-/// Submit `complete_login` on `shared`.
 pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn LoginCall> {
     if overloaded(shared) {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
@@ -385,8 +343,7 @@ pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn 
     let Some(mut call) = shared.call() else {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
     };
-    // No seal lent to the dispatcher: the submitted fields are not revealed, and the login is
-    // refused.
+
     let seal = shared.dispatcher.seal();
     if !request.login.submitted.is_empty() && seal.is_none() {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
@@ -420,7 +377,6 @@ fn submit_complete(
     );
 }
 
-/// A submitted `complete_login`: the one re-call a short answer earns, then its answer.
 struct Complete {
     shared: Arc<Shared>,
     request: LoginCallback,

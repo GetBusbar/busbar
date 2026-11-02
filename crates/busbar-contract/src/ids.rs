@@ -1,14 +1,4 @@
 //! The open vocabulary: the keys a plugin declares and the kernel dispatches on.
-//!
-//! The open-vocabulary section of the design draws the line these types sit on. The kernel has no
-//! closed list a plugin could need to extend; everything a plugin varies is a key into a registry
-//! or into config. Only structure is closed. So each identifier below is a name, not a variant,
-//! and the kernel never compares one against a literal of its own.
-//!
-//! Every identifier is a borrowed static string. That is deliberate: the declarations that carry
-//! them are associated constants on the meta traits, and a constant cannot own a heap allocation.
-//! A dynamically loaded plugin's keys come in through its adapter, which leaks the strings once at
-//! load and hands over static names.
 
 use core::fmt;
 
@@ -144,14 +134,7 @@ impl PrincipalId {
     }
 
     /// The anonymous principal: the kernel's own, carried by a round that has established no
-    /// identity yet.
-    ///
-    /// A challenge round has no principal — that is what it is FOR — yet it must still face the
-    /// policy seats that decide whether the node will engage at all (the `approve` hook-veto seat
-    /// and the `admit` door). Those seats decide ABOUT a principal, so the round needs one to
-    /// present, and this is it. It carries no bucket, so it draws against no budget; it exists only
-    /// to give the policy seats a subject to answer about, and it spells the same word the auth
-    /// chain's own open-front-door admit already spells for a caller nothing identified.
+
     #[must_use]
     pub fn anonymous() -> Self {
         Self(String::from("anonymous"))

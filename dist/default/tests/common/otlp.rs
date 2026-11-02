@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A LOOPBACK OTLP COLLECTOR for the tests that drive the shipped binary's `traces` sinks: every
-//! request's head and body kept, each answered `200`, and the spans read back by the OpenTelemetry
-//! project's own generated types — each request required to re-encode to the very bytes received.
-
 #![allow(dead_code)]
 
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
@@ -13,19 +9,8 @@ use prost::Message as _;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
-/// Every request the collector received: its head (lowercased) and its body.
 pub type Received = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
-/// A loopback collector on a free port: every request kept, answered 200.
-///
-/// It is an HTTP/1.1 server as a real OTLP collector is one: a connection is PERSISTENT, so every
-/// request on it is read and answered until the client closes it (or asks to, `connection: close`).
-/// The host's connector keeps an HTTP/1.1 line whose exchange finished whole and lends it to the
-/// next export to the same place (its per-worker pool, 1.5.5's pooled egress client), and an export
-/// whose bytes left on a line is never sent again. A collector that
-/// answered one request and then closed the connection unannounced lost every export the pool lent
-/// that line to before its close arrived: the request was written, the socket was dropped with it
-/// unread, and the batch's spans were gone — how often depended only on how late this thread ran.
 pub fn collector() -> (u16, Received) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the collector");
     let port = listener.local_addr().expect("an address").port();
@@ -40,13 +25,10 @@ pub fn collector() -> (u16, Received) {
     (port, seen)
 }
 
-/// Every request on one persistent connection, kept and answered `200`, until the client closes it
-/// or asks to.
 fn serve(mut conn: std::net::TcpStream, keep: &Received) {
     let mut raw = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
-        // One whole request at the front of `raw`: its head, then the body its length states.
         let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
             match conn.read(&mut buf) {
                 Ok(0) | Err(_) => return,
@@ -84,8 +66,6 @@ fn serve(mut conn: std::net::TcpStream, keep: &Received) {
     }
 }
 
-/// The requests the collector received at `path` (every path when `None`), each decoded and
-/// required to be the canonical encoding of what arrived.
 pub fn requests(seen: &Received, path: Option<&str>) -> Vec<ExportTraceServiceRequest> {
     let received = seen.lock().unwrap().clone();
     received
@@ -105,7 +85,6 @@ pub fn requests(seen: &Received, path: Option<&str>) -> Vec<ExportTraceServiceRe
         .collect()
 }
 
-/// Every span of `requests`, in order.
 pub fn spans(requests: &[ExportTraceServiceRequest]) -> Vec<Span> {
     requests
         .iter()

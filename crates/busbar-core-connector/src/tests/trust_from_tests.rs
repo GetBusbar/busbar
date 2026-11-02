@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A NEED'S `trust_from`(`BUSBAR-1.6.0.md` section 5, the host
-//! connector: "`trust_from` (an extra trusted root added on top of the public roots, as in 1.5.5)").
-//! Through the connector, over a real TLS far end whose certificate chains to a private CA: the
-//! need is refused without the operator's CA and served with it, a CA PEM that does not parse
-//! refuses the need at declaration, and a re-declaration (a refresh) with another CA moves the
-//! trust.
 
 use std::sync::Arc;
 
@@ -26,7 +21,7 @@ fn private_ca() -> (String, Vec<u8>, Vec<u8>) {
 }
 
 /// A TLS far end on loopback presenting `leaf`: every connection whose handshake completes has its
-/// first five bytes echoed. Answers the address a need dials.
+
 async fn tls_far_end(leaf: Vec<u8>, key: Vec<u8>) -> String {
     let server = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -57,7 +52,7 @@ async fn tls_far_end(leaf: Vec<u8>, key: Vec<u8>) -> String {
 }
 
 /// The process's connector shape: a door whose targets ask for connection security, every literal
-/// admitted, and the default outbound trust (the public roots alone).
+
 fn secure_connector() -> Connector {
     crate::tls::install_crypto_provider();
     let view = Transports::new(vec![
@@ -132,8 +127,7 @@ async fn exchange(c: &Connector, far: &str) -> Result<Vec<u8>, ConnError> {
 }
 
 /// RED: a far end whose certificate chains to a private CA is refused over the public roots alone,
-/// and served once the need's `trust_from` names that CA: the CA is added on top of the public
-/// roots and the chain and name are still verified.
+
 #[test]
 fn a_private_ca_upstream_is_refused_without_trust_from_and_served_with_it() {
     let (ca_pem, leaf, key) = private_ca();
@@ -160,7 +154,7 @@ fn a_private_ca_upstream_is_refused_without_trust_from_and_served_with_it() {
 }
 
 /// RED: a `trust_from` that resolved to nothing, or to a PEM that holds no parsable certificate,
-/// refuses the need at declaration, its answer kept, and nothing opens on it.
+
 #[test]
 fn a_trust_from_that_does_not_parse_refuses_the_need() {
     let (ca_pem, _, _) = private_ca();
@@ -200,7 +194,7 @@ fn a_trust_from_that_does_not_parse_refuses_the_need() {
 }
 
 /// RED: re-declaring the need (a refresh) with another CA moves its trust: the far end the old CA
-/// signed is refused, and served again once the old CA is declared back.
+
 #[test]
 fn a_refresh_with_a_changed_ca_re_declares_the_trust() {
     let (ca_pem, leaf, key) = private_ca();
@@ -225,10 +219,7 @@ fn a_refresh_with_a_changed_ca_re_declares_the_trust() {
 }
 
 /// THE OWNED NAMESPACE (`owned.<section>.<key>`): an anchor named in a plane's other owned sections
-/// is OPTIONAL. Absent, the need is declared, not refused, and its connections trust the public
-/// roots alone, so a private CA's far end is refused as it is over a need naming no anchor. RED
-/// before the fix: a `trust_from` that resolved to nothing refused the need whatever its namespace,
-/// so a deployment that wrote no `agent_push:` section lost push delivery entirely.
+
 #[test]
 fn an_absent_owned_trust_anchor_declares_the_need_over_the_public_roots_alone() {
     let (_, leaf, key) = private_ca();
@@ -251,7 +242,7 @@ fn an_absent_owned_trust_anchor_declares_the_need_over_the_public_roots_alone() 
 }
 
 /// RED: an owned anchor the operator wrote is the operator CA added on top of the public roots, as
-/// a `settings.` one is: the far end under it is served, and one under another CA is refused.
+
 #[test]
 fn an_owned_trust_anchor_serves_its_ca_and_refuses_another() {
     let (ca_pem, leaf, key) = private_ca();
@@ -274,7 +265,7 @@ fn an_owned_trust_anchor_serves_its_ca_and_refuses_another() {
 }
 
 /// RED: an owned anchor the operator wrote that is no trust anchor refuses the need, exactly as a
-/// `settings.` one does: optional means absent is fine, never that a broken value is ignored.
+
 #[test]
 fn a_written_owned_trust_anchor_that_does_not_parse_refuses_the_need() {
     let (ca_pem, _, _) = private_ca();
@@ -295,9 +286,7 @@ fn a_written_owned_trust_anchor_that_does_not_parse_refuses_the_need() {
 }
 
 /// A `settings.` trust anchor that resolved to nothing is OPTIONAL, as an owned one is: an auth
-/// plugin with an optional private CA declares the need, and with no CA configured its connections
-/// trust the public roots alone (a private CA's far end is still refused). RED before the fix: the
-/// need was refused, and an audit record written at every open and refresh for a correct config.
+
 #[test]
 fn an_absent_settings_trust_anchor_declares_the_need_over_the_public_roots_alone() {
     let (_, leaf, key) = private_ca();

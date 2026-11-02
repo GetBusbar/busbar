@@ -2,22 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE TABLE'S RETENTION ACROSS A RACING CLOSE, and the out-slot preflight (B3-C04, B3-C03).
-//!
-//! * A `read`/`facts` whose backend answered `Ok` and was then overtaken by a successful raw
-//!   `close` of the same connection must answer `Closed`, publish no success out-slot, and leave no
-//!   retention behind (the late interning used to recreate the entry the close had just removed).
-//!   The operation captures the retention's epoch BEFORE the backend is asked; the tests park the
-//!   backend AFTER its answer is built (the "barrier after backend validation"), close the
-//!   connection through the raw slot, and resume.
-//! * An operation's scaffolding entry (made so the epoch exists before the backend answers) is
-//!   pruned whenever nothing was published: every error, a panic, an absent answer; and never while
-//!   another operation still holds the same epoch.
-//! * `close` ends the borrows on success or `Closed`, and on nothing else.
-//! * The required out-slots of `open`/`write`/`wait`/`facts` are checked before any backend effect.
-//!
-//! The raw slots are called directly. NO SAVED RANGE IS EVER DEREFERENCED: the strings the host
-//! keeps are inspected through the host's own table by address+length ([`owner`]), as in the
-//! retention tests, and nothing is touched after a close.
 
 use super::*;
 use crate::conn::ConnSlab;
@@ -56,7 +40,7 @@ struct Backend {
 }
 
 /// The gate, if one is armed, taken OUT of its mutex before anyone waits on it (so an overlapping
-/// operation is never held up by the lock).
+
 fn park(gate: &Mutex<Option<Gate>>) {
     let armed = gate.lock().unwrap().take();
     if let Some((entered, release)) = armed {
@@ -195,8 +179,6 @@ fn descriptor() -> WireOpenDesc {
     }
 }
 
-// ── THE RAW SLOTS ────────────────────────────────────────────────────────────────────────────────
-
 fn open_slot(ctx: ConnCtx, desc: &WireOpenDesc, out: *mut u64) -> Result<(), ConnError> {
     // SAFETY: this private fixture keeps ctx/desc live; out is its exclusive initialized slot
     // or NULL, which this host rejects before opening anything.
@@ -251,15 +233,13 @@ fn close_slot(ctx: ConnCtx, conn: ConnId) -> Result<(), ConnError> {
     unsafe { (host_slots().close.unwrap())(ctx, conn.0) }.result()
 }
 
-// ── THE WITNESS (host's private table) ───────────────────────────────────────────────────────────
-
 /// How many connections the host's table holds an entry for (scaffolding included).
 fn entries(host: &ConnHost) -> usize {
     host.state.held().len()
 }
 
 /// A copy of the string the connection's retention CURRENTLY owns at exactly `d`'s address and
-/// length, read through the owner's own fresh reference; `d` itself is only compared.
+
 fn owner(host: &ConnHost, conn: ConnId, d: DeclStr) -> Option<String> {
     host.state.held().get(&conn).and_then(|held| {
         held.retention
@@ -270,7 +250,7 @@ fn owner(host: &ConnHost, conn: ConnId, d: DeclStr) -> Option<String> {
 }
 
 /// A successful answer on a fresh connection of `host`: the numbering and the sni are published and
-/// owned by the retention (the fresh ctx works after a race).
+
 fn assert_a_fresh_connection_serves(backend: &Backend, host: &ConnHost) {
     *backend.namespace.lock().unwrap() = Some("fresh-numbering".into());
     *backend.facts.lock().unwrap() = ConnFacts {
@@ -294,12 +274,8 @@ fn assert_a_fresh_connection_serves(backend: &Backend, host: &ConnHost) {
     assert_eq!(entries(host), 0);
 }
 
-// ── B3-C04: A LATE ANSWER AFTER A RAW CLOSE ──────────────────────────────────────────────────────
-
 /// RED before the epoch: the read's backend answered `Ok` and was parked with its answer built; the
-/// raw close removed the retention; the resumed read then interned its numbering with
-/// `entry().or_default()` (recreating a retention nobody closes) and published a success. Now it
-/// answers `Closed`, writes nothing, keeps nothing, and the host still serves a fresh connection.
+
 #[test]
 fn a_read_resumed_after_a_raw_close_answers_closed_publishes_nothing_and_keeps_nothing() {
     let (backend, a, _b) = rig();
@@ -384,29 +360,20 @@ fn a_facts_resumed_after_a_raw_close_answers_closed_publishes_nothing_and_keeps_
 }
 
 /// A reentrant backend (its `read` closes the very connection through the raw slot, from inside the
-/// backend) does not deadlock: no host table lock is held across a backend call. The read then
-/// answers `Closed`. Run on a thread with a bound so a deadlock fails the test instead of hanging.
-///
-/// THREAD OWNERSHIP: the worker OWNS the boxed host (its `HostState` heap allocation is what the
-/// context, and the backend's re-entrant context, point at; moving the outer `Box` does not move
-/// it), and hands it back through the channel with the result. If the bounded wait fails, the test
-/// unwinds without freeing anything the still-running worker can dereference: the host lives and
-/// dies with the worker (a failed `send` drops it there, an unwinding worker drops it with its
-/// frame), and the backend is kept alive by the host's own `Arc`. Nothing raw escapes the owner.
+
 #[test]
 fn a_backend_that_closes_through_the_raw_slot_while_reading_does_not_deadlock() {
     let (backend, a, _b) = rig();
     let conn = open_conn(&a);
     *backend.namespace.lock().unwrap() = Some("reentrant-numbering".into());
-    // The address of the host's heap state, for the backend's re-entrant call only: it is
-    // dereferenced inside the worker's own `read_slot` call, while the worker owns the host.
+
     let addr = a.ctx().ptr as usize;
     *backend.reenter.lock().unwrap() = Some((addr, conn));
     let (done_tx, done) = mpsc::channel();
     let worker = std::thread::spawn(move || {
         let mut piece = unwritten_piece();
         let answer = read_slot(a.ctx(), conn, &mut piece);
-        // The host goes back with the answer; a send nobody receives drops it here, in its owner.
+
         let _ = done_tx.send((answer, piece.size, a));
     });
     let (answer, marker, a) = done
@@ -419,12 +386,8 @@ fn a_backend_that_closes_through_the_raw_slot_while_reading_does_not_deadlock() 
     assert_eq!(entries(&a), 0);
 }
 
-// ── THE SCAFFOLDING ENTRY ────────────────────────────────────────────────────────────────────────
-
 /// Overlapping operations that publish nothing cannot prune the entry the other still needs: A is
-/// parked in its backend with only the scaffolding entry; B (a read, then a facts, both absent
-/// answers) completes meanwhile; A then publishes successfully, which it could not if B's drop had
-/// removed (or replaced) the shared epoch. Once A is done nothing is left.
+
 #[test]
 fn overlapping_empty_operations_cannot_prune_a_shared_active_epoch() {
     let (backend, a, _b) = rig();
@@ -448,7 +411,6 @@ fn overlapping_empty_operations_cannot_prune_a_shared_active_epoch() {
         entered.recv_timeout(LONG).expect("A parked in its backend");
         assert_eq!(entries(&a), 1);
 
-        // B, overlapping and empty, runs to completion on this thread: two operations in turn.
         let mut piece = unwritten_piece();
         assert_eq!(read_slot(a.ctx(), conn, &mut piece), Ok(()));
         assert_ne!(piece.size, UNWRITTEN, "B's read published its answer");
@@ -471,8 +433,7 @@ fn overlapping_empty_operations_cannot_prune_a_shared_active_epoch() {
 }
 
 /// Every way an operation can end without publishing prunes its entry: each error, a panic in the
-/// backend (the unwind drops the guard), an absent answer, a closed id, another instance's
-/// connection; for both `read` and `facts`.
+
 #[test]
 fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_nothing() {
     let (backend, a, b) = rig();
@@ -497,7 +458,6 @@ fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_not
         assert_eq!(entries(&a), 0, "a facts that ended {error:?} left an entry");
     }
 
-    // The backend panics: the slot answers Fault and the guard is dropped by the unwind.
     backend.panic_next.store(true, Ordering::SeqCst);
     let mut piece = unwritten_piece();
     assert_eq!(read_slot(a.ctx(), conn, &mut piece), Err(ConnError::Fault));
@@ -507,7 +467,6 @@ fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_not
     assert_eq!(facts_slot(a.ctx(), conn, &mut facts), Err(ConnError::Fault));
     assert_eq!(entries(&a), 0, "a panicking facts left an entry");
 
-    // Another instance's connection: refused, nothing kept in the refuser's table either.
     let mut piece = unwritten_piece();
     assert_eq!(
         read_slot(b.ctx(), conn, &mut piece),
@@ -520,7 +479,6 @@ fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_not
     );
     assert_eq!(entries(&b), 0);
 
-    // Absent answers publish successfully and keep nothing.
     *backend.namespace.lock().unwrap() = None;
     *backend.facts.lock().unwrap() = ConnFacts::default();
     let mut piece = unwritten_piece();
@@ -531,7 +489,6 @@ fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_not
     assert!(facts.sni.ptr.is_null() && facts.claim.ptr.is_null());
     assert_eq!(entries(&a), 0, "absent answers left an entry");
 
-    // A closed id: the backend says Closed; nothing is left behind.
     assert_eq!(close_slot(a.ctx(), conn), Ok(()));
     let mut piece = unwritten_piece();
     assert_eq!(read_slot(a.ctx(), conn, &mut piece), Err(ConnError::Closed));
@@ -543,12 +500,8 @@ fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_not
     assert_eq!(entries(&a), 0);
 }
 
-// ── CLOSE ────────────────────────────────────────────────────────────────────────────────────────
-
 /// `close` ends the borrows on success or `Closed` and on nothing else: another instance's close
-/// (`NotOwner`) and a backend fault preserve every live owned string; a backend `Closed` (explicitly
-/// closed, or never open) cleans the retention definitively while the plugin is still told
-/// `Closed`.
+
 #[test]
 fn only_success_or_closed_retires_and_the_backends_outcome_is_what_the_plugin_is_told() {
     let (backend, a, b) = rig();
@@ -568,31 +521,23 @@ fn only_success_or_closed_retires_and_the_backends_outcome_is_what_the_plugin_is
     still_owned("kept-numbering", piece.ns);
     still_owned("kept.sni.test", facts.sni);
 
-    // NotOwner: not this instance's connection.
     assert_eq!(close_slot(b.ctx(), conn), Err(ConnError::NotOwner));
     still_owned("kept-numbering", piece.ns);
     still_owned("kept.sni.test", facts.sni);
 
-    // A backend fault: the close's effect is unknown, so nothing is retired.
     *backend.close_as.lock().unwrap() = Some(ConnError::Fault);
     assert_eq!(close_slot(a.ctx(), conn), Err(ConnError::Fault));
     still_owned("kept-numbering", piece.ns);
     still_owned("kept.sni.test", facts.sni);
 
-    // The backend says the connection is closed (or never was): definitive, retired, and the
-    // plugin is told exactly that.
     *backend.close_as.lock().unwrap() = Some(ConnError::Closed);
     assert_eq!(close_slot(a.ctx(), conn), Err(ConnError::Closed));
     assert_eq!(entries(&a), 0, "a backend Closed left the retention behind");
     *backend.close_as.lock().unwrap() = None;
 }
 
-// ── B3-C03: THE OUT-SLOTS ARE CHECKED BEFORE ANY EFFECT ──────────────────────────────────────────
-
 /// Each of `open`/`write`/`wait`/`facts` given a NULL required out-slot answers Fault BEFORE the
-/// backend opens, writes, registers interest or answers anything (counted at the backend, which
-/// counts at entry); `read` (which already preflighted) is the control. The same calls with their
-/// out-slots work and are counted exactly once.
+
 #[test]
 fn a_null_out_slot_faults_before_any_backend_effect_and_valid_calls_still_work() {
     let (backend, a, _b) = rig();
@@ -645,7 +590,6 @@ fn a_null_out_slot_faults_before_any_backend_effect_and_valid_calls_still_work()
     assert_eq!(backend.reads.load(Ordering::SeqCst), 0);
     assert_eq!(entries(&a), 0);
 
-    // The valid calls work, once each.
     let mut opened = 0_u64;
     assert_eq!(open_slot(ctx, &descriptor(), &mut opened), Ok(()));
     assert_eq!(backend.opens.load(Ordering::SeqCst), 2);

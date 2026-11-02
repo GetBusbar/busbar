@@ -52,22 +52,12 @@ use serde::de::{DeserializeSeed, Deserializer, Error as _, IntoDeserializer, Map
 use serde::Deserialize;
 
 use super::{AuthDeployCfg, DeployCfg};
-// Every carrier is lifted through the config seam's plane-NEUTRAL spellings, so this generic lift
-// machinery names no concrete plane (DECISIONS #1).
+
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
 use crate::plane_driver::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
 
-/// The KERNEL-OWNED top-level keys that exist only in 1.6.0 and must never reach the frozen
-/// top-level struct: busbar AS an OAuth 2.1 authorization server, and the at-rest keys of a
-/// recoverable credential (`credentials:`). Every entry is a key the published 1.5.5 binary refuses
-/// as unknown, and none may appear in the frozen struct's field set.
-///
-/// A PLANE's top-level sections are not here: they are read off the registered planes'
-/// declarations ([`lift_table`]), so a build without a plane never lifts its section.
 pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] = &["oauth_as", "credentials"];
 
-/// The keys lifted out of the `auth:` block. `policy:` is a 1.6.0 addition (token-mint caps); the
-/// five keys around it are 1.5.5's and stay in the frozen struct.
 pub(crate) const LIFTED_AUTH_KEYS: &[&str] = &["policy"];
 
 /// Where one lifted key's value lands: one [`Lifted`] carrier each.
@@ -84,9 +74,6 @@ enum Dest {
 }
 
 impl Dest {
-    /// The carrier `key` lands in when `decl` declares it. A section owned BESIDE the declaring one
-    /// is its owner's endpoint door, else RAW; a declaring section lands in the map
-    /// carrier ([`DeclaredSections::holds`]) or RAW ([`DeployCfg::plane_raw`]), whichever door.
     fn for_declared(decl: &PlaneDeclaration, key: &'static str) -> Dest {
         let carried = if key == decl.config_section {
             DeclaredSections::holds(decl).then_some(Dest::Declared)
@@ -97,9 +84,6 @@ impl Dest {
     }
 }
 
-/// THE TOP-LEVEL LIFT TABLE for one document: the kernel's own keys, then every section a
-/// REGISTERED plane declares (its declaring section and the sections it owns beside it), minus the
-/// sections core still owns concretely (a frozen field, never lifted). First declaration wins.
 fn lift_table() -> Vec<(&'static str, Dest)> {
     let mut table: Vec<(&'static str, Dest)> = vec![
         (LIFTED_TOP_LEVEL_KEYS[0], Dest::OauthAs),
@@ -117,7 +101,6 @@ fn lift_table() -> Vec<(&'static str, Dest)> {
     table
 }
 
-/// The `auth:` block's lift table.
 const AUTH_LIFTS: &[(&str, Dest)] = &[(LIFTED_AUTH_KEYS[0], Dest::AuthPolicy)];
 
 /// Everything the pre-pass pulled out of one document: the `#[serde(skip)]` carriers of
@@ -140,7 +123,6 @@ pub(crate) struct Lifted {
 }
 
 impl Lifted {
-    /// Install what was lifted onto the freshly parsed frozen struct.
     fn install(self, deploy: &mut DeployCfg) {
         deploy.plane_rate_cards = self.plane_rate_cards;
         deploy.plane_fees = self.plane_fees;
@@ -153,9 +135,6 @@ impl Lifted {
     }
 }
 
-/// Deserialize the value of one lifted key straight into its [`Dest`] carrier (rather than into a
-/// generic value that is re-parsed afterwards) — this is what keeps a malformed 1.6.0 section's
-/// error message positioned and path-prefixed exactly like every other section's.
 struct LiftedSeed<'a> {
     key: &'static str,
     dest: Dest,
@@ -169,8 +148,6 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
         let (key, lifted) = (self.key, self.lifted);
         match self.dest {
             Dest::Endpoint => {
-                // An endpoint block is a section its plane owns, so it is kept as written too
-                // ([`DeployCfg::declared_raw`]): its plane's door opens with it beside its settings.
                 let section = serde_yaml::Value::deserialize(de)?;
                 if !section.is_null() {
                     lifted.declared_raw.insert(key, section.clone());
@@ -190,25 +167,15 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
                 lifted.plane_raw.insert(key, section);
             }
             Dest::AuthPolicy => lifted.auth_policy = Some(Deserialize::deserialize(de)?),
-            // `credentials:` with no value (`credentials:` alone) is the all-default block.
+
             Dest::Credentials => lifted.credentials = Option::deserialize(de)?.unwrap_or_default(),
         }
         Ok(())
     }
 }
 
-/// **THE CORE-OWNED SUB-KEYS OF A PLANE'S SECTION** (#43, #47): its `rate_card`, and its `fees`.
-/// Authored beside the plane's own settings for ergonomics, and LIFTED OFF the section here, before
-/// its remainder is handed to the plane — a plane plugin never sees its card or its fees, exactly
-/// as it never sees a secret (#40). Each lands under the plane's registry key — the card on
-/// [`DeployCfg::plane_rate_cards`], the fees (`{ per_request, per_session }`, #44) on
-/// [`DeployCfg::plane_fees`] — and prices that plane's rows alone (#42 "scoped per plane"). The
-/// fallback (`pools:`) plane's card and fee are still the flat top-level `rate_card:` and
-/// `per_request_fee:`, loaded byte-identically.
 pub(crate) const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
 
-/// A plane section with its core-owned sub-keys (see [`PLANE_CARD_KEYS`]) lifted off it and banked
-/// under the plane's registry key: the REMAINDER, which is the plane's own.
 fn plane_remainder<'de, D: Deserializer<'de>>(
     section_key: &'static str,
     de: D,
@@ -216,8 +183,7 @@ fn plane_remainder<'de, D: Deserializer<'de>>(
 ) -> Result<serde_yaml::Value, D::Error> {
     let [card_key, fees_key] = PLANE_CARD_KEYS;
     let decl = crate::plane_driver::registry::plane_decl_for_config_section(section_key);
-    // An entry named after a reserved key is refused here, at its own position, before anything is
-    // lifted (spec :567; Q-STEP9-a).
+
     let noun = decl.map_or("entry", |d| d.subject_noun);
     let mut section = crate::config_validate::deal::read_section(de, section_key, noun)?;
     let plane = decl.map_or(section_key, |d| d.key);
@@ -241,21 +207,16 @@ fn plane_remainder<'de, D: Deserializer<'de>>(
     Ok(section)
 }
 
-/// What reading one map key produced: a key for the frozen struct, or a key this pass lifts (in
-/// which case the untouched seed comes back, so the caller can read the next key with it).
 enum KeyOutcome<V, S> {
     Forward(V),
     Lift(S),
 }
 
-/// Reads one map key: lifted keys are reported without ever reaching `inner`, so the frozen
-/// struct's field matcher — and therefore its `expected one of` list — never sees them. A
-/// forwarded key is struck off the `watch` list.
 struct KeySeed<'a, S> {
     inner: S,
     lift: &'a [(&'static str, Dest)],
     watch: &'a mut Vec<&'static str>,
-    /// Set to the matched entry of `lift` when the key is lifted.
+
     lifted: &'a mut Option<(&'static str, Dest)>,
 }
 
@@ -271,8 +232,6 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
     type Value = KeyOutcome<S::Value, S>;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // The same wording serde's derived key matcher uses, so a non-string key produces the
-        // message it always did.
         f.write_str("field identifier")
     }
 
@@ -295,8 +254,6 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
     }
 }
 
-/// A `MapAccess` that hides the lifted keys from whoever it is handed to, banking their values in
-/// [`Lifted`] on the way past.
 struct LiftingMap<'a, M> {
     inner: M,
     lift: &'a [(&'static str, Dest)],
@@ -352,12 +309,6 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
     }
 }
 
-/// The `auth:` block ([`DeployCfg::auth`]'s reader): its 1.6.0 keys ([`LIFTED_AUTH_KEYS`]) are
-/// lifted off it, and the remainder is parsed by the frozen [`AuthDeployCfg`].
-///
-/// # Errors
-///
-/// The frozen struct's, the lifted key's, or a value that is not a section.
 pub(crate) fn auth_section<'de, D: Deserializer<'de>>(
     de: D,
 ) -> Result<Option<AuthDeployCfg>, D::Error> {
@@ -400,7 +351,6 @@ impl<'de> Visitor<'de> for AuthVisitor {
     }
 }
 
-/// The whole document: the frozen struct plus whatever the pre-pass lifted off it.
 struct SplitDocument(DeployCfg);
 
 impl<'de> Deserialize<'de> for SplitDocument {
@@ -430,10 +380,7 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             lifted: &mut lifted,
             seen_lifted: Vec::new(),
         }))?;
-        // A section a registered plane requires and the document omits: serde's own refusal for it,
-        // raised where the frozen struct raised it (after the document's keys), so its bytes are the
-        // ones 1.5.5 printed. The first in declaration order, as the derive reports the first.
-        // `auth:` is never refused here: it has a reader of its own ([`auth_section`]).
+
         if let Some(s) = lifted.watch.iter().find(|k| **k != "auth") {
             return Err(M::Error::missing_field(s));
         }
@@ -442,26 +389,14 @@ impl<'de> Visitor<'de> for DocumentVisitor {
     }
 }
 
-/// Parse a configuration document: the 1.6.0-additive keys are lifted off it first, and the
-/// remainder is parsed by the frozen 1.5.5-shaped structs.
-///
-/// THE entry point for turning config text into a [`DeployCfg`]. A bare
-/// `serde_yaml::from_str::<DeployCfg>` skips the lift and leaves every plane section at its
-/// default, so it is only ever right for a document that has none.
 pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, serde_yaml::Error> {
     deploy_from_deserializer(serde_yaml::Deserializer::from_str(text))
 }
 
-/// The format-agnostic form of [`deploy_from_yaml_str`] — the lift is a property of the DOCUMENT,
-/// not of YAML, so the JSON-shaped paths (a config document built by the management surface) get
-/// it too.
 pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(de: D) -> Result<DeployCfg, D::Error> {
     SplitDocument::deserialize(de).map(|d| d.0)
 }
 
-/// The [`serde_yaml::Value`] twin of [`deploy_from_yaml_str`], for the paths that have already
-/// built a document in memory (the management-surface overlay merge). Source positions are gone by then, so no
-/// error can carry one — the text entry point above is the one boot uses.
 pub fn deploy_from_yaml_value(value: serde_yaml::Value) -> Result<DeployCfg, serde_yaml::Error> {
     deploy_from_deserializer(value)
 }

@@ -1,62 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE GENERIC NAMED-DEFINITION MAP CRUD — one handler set for every 1.5.3 named map.
-//!
-//! 1.5.3 froze the config grammar into ONE pattern: every plugin-instance kind is a top-level named
-//! DEFINITION map (`name → {module, settings, …}`) referenced by bare name. This module is that
-//! pattern on the ADMIN API, so the two mirror each other exactly:
-//!
-//! | route | scope | meaning |
-//! |---|---|---|
-//! | `GET    <section>`                  | `read-only` | list every definition |
-//! | `GET    <section>/{name}`           | `read-only` | one definition |
-//! | `PUT    <section>/{name}`           | `full`      | create-or-replace (upsert) |
-//! | `PATCH  <section>/{name}/settings`  | `full`      | replace only the opaque settings bag |
-//! | `DELETE <section>/{name}`           | `full`      | remove |
-//!
-//! `<section>` is `/identity-providers` or `/export` today. **Adding a plane's own named-map
-//! section (e.g. `tools:` or `agents:`) is ONE variant on [`NamedMapSection`]** — [`routes`] mounts from
-//! `NamedMapSection::ALL`, `openapi_paths` emits from it, and the error taxonomy declares per route
-//! SHAPE — so a new section is purely additive and BREAKS NOTHING already shipped.
-//!
-//! ## Why this rebuilds the whole `App` instead of patching the snapshot
-//!
-//! `resolve()` LOWERS these definition maps into runtime shapes — `identity-providers:` becomes the
-//! data + admin auth chains, the hosted-login methods and the per-provider scope ceilings; `export:`
-//! becomes the recorder, the request-log sinks and the tracer. There is no in-place edit of those
-//! that is equivalent to the config path. So a mutation writes the definition into the config
-//! OVERLAY and re-runs the boot pipeline (disk truth → overlay → resolve → build), exactly as
-//! `PUT /config/settings` does. Same durability contract as every other config mutation:
-//! PERSIST-then-SWAP, fail-closed, inside the one `config_transaction`.
-//!
-//! ## What a successful mutation CANNOT make live: a new plugin ROUTE
-//!
-//! Every plugin-route PATH is registered on the axum router ONCE, at process start, and a config
-//! apply swaps only the `Arc<App>` snapshot — the router is never rebuilt. The two directions are
-//! therefore not symmetric: REMOVING an `export:` instance takes effect immediately (the mounted
-//! dispatcher resolves the owner from the CURRENT snapshot and 404s when it finds none), while ADDING
-//! one that declares a path this process never mounted (a `prometheus` instance, hence `GET /metrics`,
-//! where none existed at boot) is stored and live on the snapshot yet keeps 404ing until a RESTART.
-//!
-//! That used to be a silent 200. The mutation response now carries
-//! `reload_to_apply` + `note` ([`MutatedDefView`]) naming exactly the paths this mutation declared and
-//! the process cannot serve — the same restart-required contract `PUT /config/settings` has for its
-//! boot-frozen fields. Both fields are omitted when nothing is pending, so a mutation that changes no
-//! route (including every removal) is byte-identical to what it always answered.
-//!
-//! ## The `max_admin_scope` TRUST CEILING (identity-providers)
-//!
-//! `max_admin_scope:` is the ceiling on the admin authority obtainable THROUGH a provider — the
-//! backstop that keeps an external IdP from ever minting `full` admins. Raising it over the API is
-//! therefore a privilege-escalation lever, so **this API refuses to raise it at all** (409
-//! `conflict`, `Cond::TrustCeilingRaise`): a ceiling may be LOWERED (tightening is always safe) or
-//! left alone, and raising one is an operator FILE edit. That is strictly stronger than gating the
-//! raise on `full` scope — every mutation here already requires `full` at the route matrix, so a
-//! scope gate alone would permit exactly the operators this rule stops. It also mirrors the hooks
-//! surface's existing rule that a GRANT can never widen in place. Every attempt, allowed or refused,
-//! is audited.
-
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -78,14 +22,9 @@ use busbar_kernel::audit_ring as audit;
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::state::{App, AppHandle};
 
-/// Mount the five routes of EVERY named-map section. Driven by `NamedMapSection::ALL`, so a new
-/// section's routes appear here the moment its variant exists — there is no per-section handler,
-/// no per-section route literal, and nothing to forget.
 pub(crate) fn routes() -> Router<Arc<AppHandle>> {
     let mut router = Router::new();
     for section in NamedMapSection::sections() {
-        // The section rides each request as an extension, so the handlers are the routed functions
-        // themselves rather than a closure per verb that curries the section in.
         router = router.merge(
             Router::new()
                 .route(
@@ -106,19 +45,14 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
     router
 }
 
-/// The path of one definition in a section, `{name}` being the axum capture and the OpenAPI
-/// template alike.
 fn item_path(section: NamedMapSection) -> String {
     format!("{}/{{name}}", section.path_root())
 }
 
-/// The path of one definition's opaque `settings:` bag.
 fn settings_path(section: NamedMapSection) -> String {
     format!("{}/settings", item_path(section))
 }
 
-/// `GET /api/v1/admin/<section>` — every definition in the section (+ the config-plane `ETag`, so a
-/// caller chains straight into an `If-Match` mutation without a second read).
 async fn list(
     State(handle): State<Arc<AppHandle>>,
     Extension(section): Extension<NamedMapSection>,
@@ -136,7 +70,6 @@ async fn list(
     )
 }
 
-/// `GET /api/v1/admin/<section>/{name}` — one definition (404 if unknown; + the config-plane `ETag`).
 async fn get_one(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
@@ -155,8 +88,6 @@ async fn get_one(
     )
 }
 
-/// A method the path does not serve: the router's `405` — or, for an unconfigured plane's section, the
-/// `404` its unmounted path gives (Law 7), so the wrong method leaks no plane surface either.
 async fn wrong_method(
     State(handle): State<Arc<AppHandle>>,
     Extension(section): Extension<NamedMapSection>,
@@ -164,8 +95,6 @@ async fn wrong_method(
     plane_gate(&handle, section).unwrap_or_else(|| err_json(&AdminError::MethodNotAllowed))
 }
 
-/// LAW 7: a PLANE section whose plane this generation did not configure is not served — the same
-/// `404` its unmounted path gives. The two core sections are always served.
 pub(super) fn plane_gate(handle: &AppHandle, section: NamedMapSection) -> Option<Response> {
     let decl = match section {
         NamedMapSection::Plane(key) => {
@@ -176,19 +105,15 @@ pub(super) fn plane_gate(handle: &AppHandle, section: NamedMapSection) -> Option
     super::unconfigured_plane(handle, decl)
 }
 
-/// What a mutation does to the section's overlay entry — the ONE axis the three write verbs differ
-/// on. Everything else (guards, rebuild, persist, swap, audit, versioning) is shared below.
 enum Mutation {
-    /// `PUT` — the whole definition document, create-or-replace.
     Replace(serde_json::Value),
-    /// `PATCH …/settings` — replace ONLY the `settings:` bag of an existing definition.
+
     Settings(serde_json::Map<String, serde_json::Value>),
-    /// `DELETE` — remove the definition.
+
     Remove,
 }
 
 impl Mutation {
-    /// The audit ACTION verb (`identity-provider.replace`, `export.delete`, …).
     fn verb(&self) -> &'static str {
         match self {
             Mutation::Replace(_) => "replace",
@@ -197,16 +122,11 @@ impl Mutation {
         }
     }
 
-    /// Does this verb require the name to already exist? `PUT` is an upsert; the other two are not.
     fn requires_existing(&self) -> bool {
         !matches!(self, Mutation::Replace(_))
     }
 }
 
-/// `PUT /api/v1/admin/<section>/{name}` — create-or-replace one definition, live after an atomic
-/// swap. Body is the definition document exactly as `config.yaml` spells it
-/// (`{"module": …, "settings": {…}, …}`), parsed into the section's `deny_unknown_fields` config
-/// struct, so a typo is the same loud reject the file would give.
 async fn put(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
@@ -241,13 +161,6 @@ async fn put(
     .await
 }
 
-/// `PATCH /api/v1/admin/<section>/{name}/settings` — replace ONLY the opaque `settings:` bag,
-/// leaving every other field of the definition untouched. The narrow edit an operator reaches for
-/// (retarget a webhook URL, retune a buffer) without restating the whole definition.
-///
-/// Unlike `PATCH /hooks/{name}/settings` there is no configure-ack round-trip: a hook is a LIVE
-/// process that must acknowledge new settings, while these settings are consumed by re-resolving the
-/// config, so the rebuild-and-swap IS the acknowledgement.
 async fn patch_settings(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
@@ -285,17 +198,9 @@ async fn patch_settings(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct NamedSettingsReq {
-    // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
-    // WRITING the bag; the matching READ projects `settings_keys` (see `NamedDefView`).
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
-/// `DELETE /api/v1/admin/<section>/{name}` — remove one definition, live after an atomic swap.
-/// `204 No Content` (carrying the new config-plane `ETag`).
-///
-/// REFUSED as a terminal `conflict` when another config site still references the name (see
-/// `NamedMapSection::referents`) — removing an identity provider that `auth.chain:` still names
-/// would otherwise take the whole config down at the next resolve.
 async fn delete(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
@@ -309,22 +214,8 @@ async fn delete(
     apply(handle, principal, section, name, headers, Mutation::Remove).await
 }
 
-/// A rejection that KNOWS its taxonomy condition. The transaction body returns these through the
-/// SUCCESS channel (`Ok(Outcome::Value(Err(…)))`) rather than the error channel, purely so the
-/// wire projection can name the `Cond` — the transaction's own `Err` channel carries only an
-/// `AdminError`, and a 400 whose condition is anonymous is a 400 `openapi.json` cannot describe.
-/// Returning through the success channel is behaviourally identical here: every one of these is
-/// decided BEFORE anything is persisted or swapped, so nothing is committed either way.
 type Rejection = (AdminError, Cond);
 
-/// THE SHARED MUTATION PATH for every named-map write verb.
-///
-/// In order: parse the guard header → refuse a deployment that cannot durably record a config change
-/// → 404 an unknown name (for the verbs that need one) → then, inside the ONE config transaction:
-/// re-validate `If-Match` against a fresh post-lock snapshot, re-read BASE config from disk, refuse
-/// to shadow a base-defined entry, apply the section-specific guards, rebuild a complete `App` from
-/// (disk truth + the mutated overlay), and PERSIST-then-SWAP fail-closed. Audited and version-logged
-/// on both outcomes.
 async fn apply(
     handle: Arc<AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
@@ -350,8 +241,7 @@ async fn apply(
         }
     };
     let current = handle.load();
-    // NO DISK BASE: this rebuild re-reads `config.yaml` as the base truth the overlay layers onto.
-    // An ephemeral busbar has none — the same 400 `config/reload` and `PUT /config/settings` give.
+
     let (Some(config_path), Some(providers_path)) =
         (current.config_path.clone(), current.providers_path.clone())
     else {
@@ -365,17 +255,14 @@ async fn apply(
             &actor,
         );
     };
-    // LOCKED CONFIG: no writable overlay backend ⇒ runtime config mutation is refused by design
-    // (1.5.3 boot invariant: `config.locked` XOR a writable overlay). Refused up front rather than
-    // after a full rebuild we could never durably record.
+
     if current.overlay_path.is_none() {
         audit::AUDIT.record_by(&action, &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::Validation(
             busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
         ));
     }
-    // EXISTENCE before the concurrency guard — the same status precedence the hooks surface
-    // establishes, so a stale guard on a nonexistent entry answers 404, never 409.
+
     if mutation.requires_existing() && !section_contains(&current, section, &name) {
         return reject(
             &AdminError::not_found(format!("{} `{name}`", section.singular())),
@@ -389,15 +276,11 @@ async fn apply(
         }
     }
     if let Mutation::Settings(settings) = &mutation {
-        // Bound the settings map on EVERY write path (the same caps the hooks settings push uses):
-        // it is persisted verbatim into the config overlay, so an unbounded map bloats durable state.
         if let Err(e) = crate::v1::service::validate_hook_settings_size(settings) {
             return reject(&e, Cond::InvalidConfig, &actor);
         }
     }
 
-    // Captured BEFORE the mutation moves into the transaction body: a removal answers `204`, an
-    // upsert answers the stored definition.
     let removes = matches!(mutation, Mutation::Remove);
     let txn_section = section;
     let txn_name = name.clone();
@@ -407,8 +290,8 @@ async fn apply(
             return Err(e);
         }
         let snapshot = current.clone();
-        // Everything below reads config files + the overlay and re-runs the boot pipeline, so it is
-        // queued onto `spawn_blocking` — under the mutation guard, off the reactor.
+
+
         Ok(txn.read_store(move || {
             let mut loaded = busbar_kernel::load_config_from_disk_with_store(
                 &config_path,
@@ -419,10 +302,10 @@ async fn apply(
                 snapshot.overlay_path.clone(),
             )
             .map_err(AdminError::Validation)?;
-            // BASE-CONFIG PROTECTION: an entry declared in `config.yaml` is operator file config and
-            // is never shadowed, retuned or subtracted through the API — the same posture the hooks
-            // and groups surfaces take. Checked against the FRESHLY loaded, PRE-overlay deploy, which
-            // is the only place base truth actually lives.
+
+
+
+
             if txn_section.contains(&loaded.deploy, &txn_name) {
                 return Ok(Outcome::Value(Err((
                     AdminError::Conflict(format!(
@@ -438,9 +321,9 @@ async fn apply(
             let next_def: Option<serde_json::Value> = match &mutation {
                 Mutation::Replace(def) => Some(def.clone()),
                 Mutation::Settings(settings) => {
-                    // The target is necessarily an OVERLAY entry (a base entry was refused above),
-                    // so its raw definition document is in hand — patch just its `settings` key and
-                    // leave every other field byte-identical.
+
+
+
                     let Some(existing) = entries.get(&txn_name) else {
                         return Ok(Outcome::Value(Err((
                             AdminError::not_found(format!(
@@ -471,9 +354,9 @@ async fn apply(
                     Some(def)
                 }
                 Mutation::Remove => {
-                    // DANGLING-REFERENCE GUARD: refuse to remove a definition another config site
-                    // still names, rather than letting the rebuild fail with a less actionable
-                    // "references X, which is not defined" further down the pipeline.
+
+
+
                     let referents = txn_section.referents(&loaded.deploy, &txn_name);
                     if !referents.is_empty() {
                         return Ok(Outcome::Value(Err((
@@ -489,14 +372,14 @@ async fn apply(
                     None
                 }
             };
-            // THE TYPED SCHEMA CHECK — the SAME `deny_unknown_fields` parse `config.yaml` gets, run
-            // against the SAME structs (`NamedMapSection::validate_def` delegates to the one
-            // `parse_def` the overlay applier uses). Without it the API's grammar and the file's
-            // grammar were two different things: a typo'd key (`buffer:` for `buffer_size:`) passed
-            // the structural check above, was persisted verbatim into the overlay, and was then
-            // silently DROPPED at the next rebuild with only a `tracing::error!` — an accepted 200
-            // for config that never took effect. Runs BEFORE anything is persisted or swapped, and
-            // covers PATCH …/settings too (its composed document is the thing that must parse).
+
+
+
+
+
+
+
+
             if let Some(def) = next_def.as_ref() {
                 if let Err(e) = txn_section.validate_def(&txn_name, def) {
                     return Ok(Outcome::Value(Err((
@@ -505,9 +388,9 @@ async fn apply(
                     ))));
                 }
             }
-            // TRUST CEILING (identity-providers): a `max_admin_scope` may be lowered or left alone,
-            // never RAISED through the API. See this module's header for why refusing outright is
-            // the right rule rather than gating the raise on a scope the caller necessarily holds.
+
+
+
             if let Some(def) = next_def.as_ref() {
                 if let Err(e) = check_trust_ceiling(txn_section, &snapshot, &txn_name, def) {
                     return Ok(Outcome::Value(Err(e)));
@@ -524,9 +407,9 @@ async fn apply(
             if entries.is_empty() {
                 doc.named_maps.remove(txn_section.key());
             }
-            // Re-run the boot pipeline over (disk truth + the MUTATED overlay): the named maps and
-            // the other pre-resolve sections apply to the `DeployCfg`, then resolve lowers them, then
-            // the post-resolve hooks/groups overlay sections merge on — exactly the reload mechanism.
+
+
+
             loaded.overlay_doc = Some(doc.clone());
             let built = (|| {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
@@ -540,7 +423,7 @@ async fn apply(
                 busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
-                    // Publish the loader's fresh carrier only after persistence and rebuild succeed.
+
                     loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
@@ -551,7 +434,7 @@ async fn apply(
             })();
             let (built, gov_rotate, limits) = match built {
                 Ok(v) => v,
-                // The rebuild rejected the mutated config — NOTHING was persisted or swapped.
+
                 Err(e) => {
                     return Ok(Outcome::Value(Err((
                         AdminError::Validation(e),
@@ -560,26 +443,26 @@ async fn apply(
                 }
             };
             let installed = Arc::new(built);
-            // RESTART-TO-APPLY, decided on the REBUILT snapshot while the
-            // pre-mutation one is still in hand: a mutation that introduces a plugin-route PATH the
-            // router never mounted at boot is stored and live on the snapshot, but the path itself
-            // keeps 404ing until a restart. Carried out of the transaction so the response can SAY so.
+
+
+
+
             let awaiting_restart = busbar_kernel::plugin_routes::paths_awaiting_restart(
                 &installed.plugin_routes,
                 &snapshot.plugin_routes,
                 &installed.boot_route_paths,
             );
-            // …and, on the same discipline, a mutation that FIRST writes the section of a plane the
-            // process did not open at boot: stored and validated, but the plane is opened once, at
-            // process start, so it serves nothing until a restart (the build gave it no slot).
+
+
+
             let awaiting_restart = (
                 awaiting_restart,
                 busbar_kernel::state::planes_awaiting_restart_added(&installed, &snapshot),
             );
-            // PERSIST-then-SWAP, fail-closed: the overlay takes the change FIRST; only if the Store
-            // accepts it do prices get confirmed and the engine swap. Credential rotation follows
-            // publication of the App and its confirmed prices.
-            // Retain unknown-write custody on the currently published generation's carrier.
+
+
+
+
             let persist_overlay = snapshot.overlay_path.clone();
             let persist_name = txn_name.clone();
             let persist_def = next_def.clone();
@@ -616,9 +499,7 @@ async fn apply(
     let (installed, awaiting_restart) = match out {
         Ok(Ok(v)) => v,
         Ok(Err((e, cond))) => return reject(&e, cond, &actor),
-        // The transaction's own error channel: the `If-Match` staleness guard (whose condition is
-        // fixed, so it is named) and persist/infrastructure failures (which are not per-condition
-        // documentable and ride the algorithmic responses).
+
         Err(e @ AdminError::VersionConflict(_)) => {
             return reject(&e, Cond::StaleIfMatch, &actor);
         }
@@ -631,9 +512,6 @@ async fn apply(
     installed.record_version(&actor, &format!("{action} {resource}"));
     let version = installed.config_version;
     if removes {
-        // 204 still carries the NEW config-plane ETag, so a scripted chain needs no re-read. A
-        // removal never needs a restart notice: the path stays registered on the router and the
-        // dispatcher, resolving the owner from the current snapshot, now finds nothing and 404s.
         return with_config_etag(StatusCode::NO_CONTENT.into_response(), version);
     }
     with_config_etag(
@@ -676,8 +554,6 @@ pub(crate) struct MutatedDefView {
 }
 
 impl MutatedDefView {
-    /// Wrap one stored definition with the restart signal, if any: the route `paths` and the plane
-    /// `planes` this mutation introduced that the process cannot serve until it restarts.
     fn new(
         def: crate::v1::contract::NamedDefView,
         paths: Vec<String>,
@@ -694,11 +570,6 @@ impl MutatedDefView {
     }
 }
 
-/// THE OPERATOR'S SENTENCE for a restart-to-apply signal: the newly declared route `paths` (each
-/// registered on the router once, at boot) and the plane sections `planes` first written for a
-/// plane the process did not open at boot (each plane opened once, at boot, Law 7). `None` when
-/// neither.
-/// The routes-only sentence is the one this answer has always given.
 pub(crate) fn restart_note(paths: &[String], planes: &[String]) -> Option<String> {
     let routes = (!paths.is_empty()).then(|| {
         format!(
@@ -723,14 +594,11 @@ pub(crate) fn restart_note(paths: &[String], planes: &[String]) -> Option<String
     }
 }
 
-/// Is `name` present in this section of the LIVE (effective) snapshot? The read-side twin of
-/// `NamedMapSection::contains`, which answers the same question about BASE config.
 fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     match section {
         NamedMapSection::IdentityProviders => app.identity_providers.contains_key(name),
         NamedMapSection::Export => app.export_defs.contains_key(name),
-        // A plane section answers membership through the plane's `registry_contains` seam, so this
-        // read names no plane registry type; a plane compiled out has no decl and answers `false`.
+
         NamedMapSection::Plane(_) => {
             busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
                 .and_then(|d| d.registry_contains.map(|f| (d, f)))
@@ -739,12 +607,6 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     }
 }
 
-/// Structural validation of a PUT definition, BEFORE any rebuild: the name is a durable registry key
-/// written verbatim into the overlay and every audit row, and `settings:` is persisted verbatim, so
-/// both are bounded here exactly as the hooks write path bounds its own. The typed
-/// `deny_unknown_fields` parse (the real schema check) runs inside [`apply`]'s transaction against
-/// the section's own config struct, before anything is persisted — see the `validate_def` call
-/// there.
 fn validate_definition(
     section: NamedMapSection,
     name: &str,
@@ -765,8 +627,6 @@ fn validate_definition(
         )));
     }
     let Some(obj) = def.as_object() else {
-        // 1.5.5's sentence, byte for byte, for a section whose entries name a `module:` (its wire
-        // bytes: Q128 core-admin u19); a section with no plugin behind it has no `module` to show.
         return Err(AdminError::Validation(if section.requires_module() {
             format!(
                 "a {} definition must be an object (`{{\"module\": …}}`)",
@@ -776,12 +636,7 @@ fn validate_definition(
             format!("a {} definition must be an object", section.singular())
         }));
     };
-    // `module:` is required only of a PLUGIN-INSTANCE section. A `tools:` or an `agents:` entry is
-    // a remote endpoint somebody else runs; there is no plugin behind either to name, and demanding
-    // one would make the API refuse exactly the definitions `config.yaml` accepts — the two-grammars
-    // defect this handler's `validate_def` call exists to prevent. The value is read ONCE, out here,
-    // because the converse check below needs it too: a non-plugin section must not merely tolerate
-    // a `module:`, it must refuse one.
+
     let module = obj.get("module").and_then(|m| m.as_str()).unwrap_or("");
     if section.requires_module() && module.trim().is_empty() {
         return Err(AdminError::Validation(format!(
@@ -790,10 +645,6 @@ fn validate_definition(
         )));
     }
     if !section.requires_module() && !module.trim().is_empty() {
-        // A section whose entries are not plugin instances must not quietly ACCEPT a `module:`
-        // either. Storing a key the rebuild will drop is the silent-drop defect this whole path
-        // was hardened against; the typed parse below would refuse it, and saying so here gives
-        // the operator the section-shaped reason rather than a serde message.
         return Err(AdminError::Validation(format!(
             "a definition in `{}` is a remote endpoint, not a plugin instance, so it has no \
              `module:`",
@@ -806,20 +657,6 @@ fn validate_definition(
     Ok(())
 }
 
-/// THE TRUST-CEILING GUARD. `Ok(())` unless the definition would RAISE this entry's
-/// `max_admin_scope` above what is live today (a NEW entry's baseline is the most restrictive
-/// default, so an API-created provider cannot be born with a raised ceiling either).
-///
-/// Comparison is by the scope LATTICE (`Scope::allows`), never by string equality, so it stays
-/// correct if the scope model ever grows a rung. A ceiling token is reduced to a `Scope` by the SAME
-/// rule the auth middleware applies (`module_admin_scope_cap`): absent is the most restrictive rung.
-///
-/// An UNRECOGNIZED token never reaches here: `NamedMapSection::parse_def` (run by the `validate_def`
-/// call above, before this guard) rejects it with the boot validator's own check, so a ceiling the
-/// engine would refuse to boot answers 400 rather than being read as "most restrictive, therefore
-/// never a raise" and applied. `none` was exactly that case — it is not a value; the most
-/// restrictive ceiling is `read-only` (or the key omitted), and granting NO admin authority is done
-/// by granting no `admin_scope` under the provider's `role_bindings:`.
 fn check_trust_ceiling(
     section: NamedMapSection,
     current: &App,
@@ -830,16 +667,13 @@ fn check_trust_ceiling(
     if !section.has_trust_ceiling() {
         return Ok(());
     }
-    /// One ceiling token → the scope it actually confers. Mirrors `auth::module_admin_scope_cap`'s
-    /// `.and_then(Scope::parse).unwrap_or(Scope::ReadOnly)` exactly: two encodings of the ceiling
-    /// rule is precisely how a guard drifts open.
+
     fn ceiling_of(token: Option<&str>) -> Scope {
         token.and_then(Scope::parse).unwrap_or(Scope::ReadOnly)
     }
     let requested_token = def.get("max_admin_scope").and_then(|v| v.as_str());
     let requested = ceiling_of(requested_token);
-    // A name that does not exist yet has the DEFAULT (most restrictive) baseline — so an API-created
-    // provider cannot be born with a raised ceiling either.
+
     let live_token = section.max_admin_scope(&current.identity_providers, name);
     let live = ceiling_of(live_token.as_deref());
     if live.allows(requested) {
@@ -858,17 +692,11 @@ fn check_trust_ceiling(
     ))
 }
 
-/// The OpenAPI path items for every named-map section — emitted in the SAME loop the router mounts
-/// from, so the document and the router can never disagree about which sections exist. Returns
-/// `(absolute path, path item)` pairs; the generator merges them into `paths` and then stamps the
-/// scope annotation, the `If-Match` parameter, the algorithmic responses and the taxonomy-projected
-/// 4xx set onto them exactly as it does for every hand-written entry.
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
     use super::RESPONSES_KEY;
     use serde_json::{json, Value};
-    /// One operation: its summary, the `name` path parameter when the path carries one, and its
-    /// single response (`status` described by `description`).
+
     fn operation(
         summary: String,
         name_param: Option<&Value>,
@@ -888,7 +716,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
         "name": "name", "in": "path", "required": true, "schema": {"type": "string"}
     });
     let name_param = Some(&name_param);
-    /// The status every read and write answers with.
+
     const OK: &str = "200";
     let mut out = Vec::new();
     for section in NamedMapSection::sections() {

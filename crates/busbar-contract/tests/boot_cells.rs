@@ -1,10 +1,4 @@
 //! One boot cell per route of the previous release's protocol-detection ladder.
-//!
-//! The claims section of the design pins that ladder at fourteen rungs and requires a boot cell per
-//! route. A rung is a claim; a request is a concrete selector of the same family; and the cell
-//! asserts two things — that the rung accepts the requests it is meant to accept, and that it
-//! rejects the ones belonging to a different rung. Both halves matter: a predicate that accepted
-//! everything would keep every rung green while making the ladder meaningless.
 
 use busbar_contract::grammar::{Claim, PathSeg, Selector};
 
@@ -139,7 +133,7 @@ fn every_rung_of_the_ladder_routes() {
 }
 
 /// Every rung is a well-formed claim, and every claim's selector overlaps itself (whether two CLAIMS
-/// collide, binding and schemes included, is the kernel registry's `claims_overlap`).
+
 #[test]
 fn every_rung_is_a_claim_that_a_boot_would_check() {
     for rung in ladder() {
@@ -159,11 +153,7 @@ fn every_rung_is_a_claim_that_a_boot_would_check() {
 }
 
 /// Two rungs of the path family that share a prefix are still told apart.
-///
-/// This is the case the design's most-specific-wins precedence exists for: the rungs *do* overlap,
-/// so a boot that only asked "do these overlap" would refuse a configuration the previous release
-/// serves. Overlap is the question for two claims of *different* planes; within one plane the
-/// ordered pattern set decides, literal before variable, longer before shorter.
+
 #[test]
 fn overlapping_rungs_within_one_plane_are_an_ordering_question_not_a_refusal() {
     let general = Selector::PathPattern(&[PathSeg::Var, PathSeg::Lit("v1"), PathSeg::Tail]);
@@ -175,18 +165,13 @@ fn overlapping_rungs_within_one_plane_are_an_ordering_question_not_a_refusal() {
     assert!(general.overlaps(&request));
     assert!(specific.overlaps(&request));
 
-    // Most specific wins: the literal-headed pattern is the narrower of the two, and it is the
-    // one that does not accept a request the other does.
     let other = Selector::ExactPath("/gadget/v1/messages");
     assert!(general.overlaps(&other));
     assert!(!specific.overlaps(&other));
 }
 
 /// Registration refuses a transport that publishes a reserved fact key it did not declare.
-///
-/// The six reserved keys are the structural values the arrival grammar resolves against, and a
-/// plane cannot see a connection, so the request target reaches it as one of them. A transport that
-/// writes one without declaring it is a value a plane reads and no boot check knows about.
+
 #[test]
 fn a_transport_must_declare_every_reserved_key_it_publishes() {
     use busbar_contract::transport::facts;
@@ -195,19 +180,18 @@ fn a_transport_must_declare_every_reserved_key_it_publishes() {
     for key in facts::RESERVED {
         assert!(facts::is_reserved(key));
     }
-    // A transport's own facts are open vocabulary, and none of this applies to them.
+
     assert!(!facts::is_reserved("tls_session_ticket"));
 
-    // Declared and published agree: nothing to report.
     let declared = [facts::PATH, facts::METHOD, facts::PEER];
     assert_eq!(facts::undeclared(&declared, &[facts::PATH]), None);
-    // A transport's own key is published freely, declared or not.
+
     assert_eq!(facts::undeclared(&declared, &["retries"]), None);
-    // A reserved key published without a declaration is named, and it is the one at fault.
+
     assert_eq!(
         facts::undeclared(&declared, &["retries", facts::SNI, facts::PATH]),
         Some(facts::SNI)
     );
-    // A transport declaring nothing may still publish its own; it may not publish a reserved key.
+
     assert_eq!(facts::undeclared(&[], &[facts::PEER]), Some(facts::PEER));
 }

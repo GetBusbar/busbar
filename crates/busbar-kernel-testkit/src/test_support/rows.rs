@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLUGIN-ROWS DOUBLE: the registry a test build reads, as the contract's [`PluginRows`] view
-//! (BUSBAR-1.6.0.md THE DESIGN l.322: the kernel never names the loader, so a test build has no
-//! registry of the loader's to read). A test states its rows here — the build's linked rows, and the
-//! rows a plugins directory would admit — and the kernel reads them through the same view it reads
-//! the root's registry through. No tarball is packed, scanned or verified: what the loader admits
-//! from a directory, and in which words it refuses, is the loader's and the root's to prove
-//! (`crates/plugin-loader`, `crates/busbar/tests`).
-//!
-//! The double resolves as the loader's registry does: canonical name first, then alias or former
-//! name; the linked rows ahead of the directory's. Its refusals are the loader's words
-//! (`crates/plugin-loader/src/registry.rs`, `resolve_kind` / `kind_refusal` / `store_door`).
-
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -22,10 +10,8 @@ use busbar_contract::store_calls::StoreDoor;
 
 use crate::preflight::{BuildNote, LinkedRow, RegistryIn};
 
-/// The file a linked row states (the loader's `LINKED_FILE`).
 pub const LINKED_FILE: &str = "(linked)";
 
-/// The publisher a linked row states (the loader's `FIRST_PARTY_PUBLISHER`).
 pub const LINKED_PUBLISHER: &str = "busbar";
 
 /// One row, with the former names it also answers to and, for a linked row, its door.
@@ -60,13 +46,11 @@ pub struct Rows {
     archives: std::collections::BTreeMap<String, String>,
 }
 
-/// A dropped-in row named `name`, aliased `alias`, of `kind`: unsigned, admitted under an explicit
-/// opt-in, declaring no need and no schema. A test sets any other field on the returned row.
 #[must_use]
 pub fn row(name: &str, alias: &str, kind: &str) -> Row {
     Row {
         file: format!("{name}.tar.gz"),
-        // A dropped-in row is keyed by its canonical name (the loader's scan admits it so).
+
         key: name.to_string(),
         name: name.to_string(),
         alias: if alias.is_empty() { name } else { alias }.to_string(),
@@ -85,8 +69,6 @@ pub fn row(name: &str, alias: &str, kind: &str) -> Row {
     }
 }
 
-/// A plugin present in the directory and SKIPPED, `reason` in the trust evaluator's words, its
-/// category `unsigned` (a test sets another `code` on the returned row).
 #[must_use]
 pub fn skipped(name: &str, alias: &str, reason: &str) -> Skipped {
     Skipped {
@@ -98,9 +80,6 @@ pub fn skipped(name: &str, alias: &str, reason: &str) -> Skipped {
     }
 }
 
-/// A linked row as the loader's `LinkedPlugin::built_in` states it: `name` canonical, answering
-/// also to `alias` (and printed by it when the two differ) and to the former names the root legacy
-/// table gives that alias.
 fn linked_entry(name: &str, alias: &str, kind: &str, door: DoorFn, ephemeral: bool) -> Entry {
     let mut row = row(name, alias, kind);
     row.file = LINKED_FILE.to_string();
@@ -112,7 +91,7 @@ fn linked_entry(name: &str, alias: &str, kind: &str, door: DoorFn, ephemeral: bo
     row.ephemeral = ephemeral;
     row.in_process = kind == busbar_contract::abi::mechanism::kind::STORE;
     row.linked = true;
-    // A linked row given an alias other than its name is keyed and printed by that alias.
+
     if !alias.is_empty() && alias != name {
         row.key = alias.to_string();
     }
@@ -131,13 +110,11 @@ fn linked_entry(name: &str, alias: &str, kind: &str, door: DoorFn, ephemeral: bo
 }
 
 impl Rows {
-    /// No rows at all.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// `self` with the build's linked `row` registered after the linked rows it already has.
     #[must_use]
     pub fn with_linked(mut self, row: LinkedRow) -> Self {
         self.linked.push(match row {
@@ -159,12 +136,6 @@ impl Rows {
         self
     }
 
-    /// `self` with the build's linked auth `row` registered as [`Self::with_linked`] does, its door
-    /// stating the default inbound style over `lines`, in order (`FACT_DEFAULT_INBOUND_STYLE` and
-    /// its carrier marks). A test build has no loader to read a door's Statement (BUSBAR-1.6.0.md
-    /// THE DESIGN l.322), so the row states here what its door's Statement states; the loader's
-    /// reading of the Statement is the loader's to prove (`crates/plugin-loader`,
-    /// `auth_axis::default_inbound_style`).
     #[must_use]
     pub fn with_linked_style(mut self, row: LinkedRow, lines: &[&str]) -> Self {
         self = self.with_linked(row);
@@ -174,11 +145,6 @@ impl Rows {
         self
     }
 
-    /// `self` with the build's linked auth `row` registered as [`Self::with_linked`] does, its door
-    /// stating `slots` as the secret references its Statement names (`secret_refs`). As with
-    /// [`Self::with_linked_style`], the row states here what its door's Statement states; the
-    /// loader's reading of the Statement is proven in `crates/plugin-loader`
-    /// (`rows_tests::secret_slots_are_the_secret_refs_the_statement_names`).
     #[must_use]
     pub fn with_linked_secret_slots(mut self, row: LinkedRow, slots: &[&str]) -> Self {
         self = self.with_linked(row);
@@ -188,8 +154,6 @@ impl Rows {
         self
     }
 
-    /// The linked rows stating the default inbound style ([`Self::with_linked_style`]), in
-    /// registration order: each row's key and its lines.
     pub(crate) fn inbound_styles(&self) -> Vec<(String, Vec<String>)> {
         self.linked
             .iter()
@@ -198,8 +162,6 @@ impl Rows {
             .collect()
     }
 
-    /// `self` with the dropped-in `row` admitted, its Statement naming the secret references
-    /// `slots` (the declared paths, `*` = any key or index).
     #[must_use]
     pub fn with_dropped_secret_slots(mut self, row: Row, slots: &[&str]) -> Self {
         self = self.with_dropped(row);
@@ -209,8 +171,6 @@ impl Rows {
         self
     }
 
-    /// `self` with the dropped-in `row` admitted, its Statement's extensions naming `slots`
-    /// reference-capable, not secret (`reference_fields`, lead ruling item 7a).
     #[must_use]
     pub fn with_dropped_reference_slots(mut self, row: Row, slots: &[&str]) -> Self {
         self = self.with_dropped(row);
@@ -220,7 +180,6 @@ impl Rows {
         self
     }
 
-    /// `self` with the dropped-in `row` admitted after the rows it already has.
     #[must_use]
     pub fn with_dropped(mut self, row: Row) -> Self {
         self.dropped.push(Entry {
@@ -234,29 +193,23 @@ impl Rows {
         self
     }
 
-    /// `self` with `skipped` recorded as present and not loaded.
     #[must_use]
     pub fn with_skipped(mut self, skipped: Skipped) -> Self {
         self.skipped.push(skipped);
         self
     }
 
-    /// Give an admitted test row the host-owned digest of its retained archive.
     #[must_use]
     pub fn with_archive_sha256(mut self, canonical_name: &str, digest: &str) -> Self {
         self.archives.insert(canonical_name.into(), digest.into());
         self
     }
 
-    /// The rows, as the kernel reads a registry.
     #[must_use]
     pub fn into_rows(self) -> Arc<dyn PluginRows> {
         Arc::new(self)
     }
 
-    /// The linked rows with their doors, in registration order, each with every word config may
-    /// name it by (its canonical name, its alias, the former names the root migration table gives the
-    /// alias): what the test kit's in-process axes answer a linked door by.
     pub(crate) fn linked_doors(&self) -> Vec<(Row, Vec<String>, DoorFn)> {
         self.linked
             .iter()
@@ -280,7 +233,6 @@ impl Rows {
             .or_else(|| self.all().find(|e| e.answers_by_alias(word)))
     }
 
-    /// The loader's `resolve_kind`, in its words.
     fn resolve_kind(&self, word: &str, kind: &str, role: &str) -> Result<&Entry, String> {
         let Some(e) = self.entry(word) else {
             return Err(match self.unresolved_reason(word) {
@@ -405,13 +357,11 @@ impl PluginRows for Rows {
     }
 }
 
-/// The empty registry: no linked row, no directory.
 #[must_use]
 pub fn empty() -> Arc<dyn PluginRows> {
     Rows::new().into_rows()
 }
 
-/// The build's linked rows alone ([`crate::preflight::linked_rows`]), as the double.
 #[must_use]
 pub fn linked_only() -> Rows {
     crate::preflight::linked_rows()
@@ -419,8 +369,6 @@ pub fn linked_only() -> Rows {
         .fold(Rows::new(), Rows::with_linked)
 }
 
-/// What a test has DROPPED INTO a plugins directory: the rows the stand-in registry build admits
-/// when a `plugins:` block names that directory and is enabled.
 type DroppedIn = Vec<(PathBuf, Vec<Row>, Vec<Skipped>)>;
 
 fn dropped_in() -> &'static Mutex<DroppedIn> {
@@ -428,28 +376,16 @@ fn dropped_in() -> &'static Mutex<DroppedIn> {
     ONE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Drop `rows` (and the `skipped` plugins) into the plugins directory `dir`: from now on, a test
-/// build's registry build over an enabled `plugins:` block naming `dir` admits them after the linked
-/// rows. A second drop into the same directory replaces the first.
 pub fn drop_in(dir: &Path, rows: Vec<Row>, skipped: Vec<Skipped>) {
     let mut all = dropped_in().lock().unwrap_or_else(|p| p.into_inner());
     all.retain(|(d, _, _)| d != dir);
     all.push((dir.to_path_buf(), rows, skipped));
 }
 
-/// A test build's registry build (it has no composition root): the linked rows, then — when the
-/// `plugins:` block is enabled — the rows a test dropped into its directory ([`drop_in`]). The steps
-/// are noted as the root's build notes them.
-///
-/// # Errors
-/// Never: the double admits what it was handed.
 pub fn registry_stand_in(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
-    // A test build has no loader to read a door's Statement, so the double's row states here the
-    // secret paths its door's Statement declares, as the production registry reads them off the
-    // linked store's door (`PluginRegistry::secret_slots`).
     use crate::test_support::store_double::{NAME as DOUBLE, SECRET_REF_PATHS};
     let mut rows = i
         .linked

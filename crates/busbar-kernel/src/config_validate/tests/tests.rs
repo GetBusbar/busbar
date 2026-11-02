@@ -12,7 +12,7 @@ fn make_root_cfg(
         plane_pools: Default::default(),
         plane_sections: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
-        // No endpoint plane configured.
+
         endpoint_resources: Default::default(),
         oauth_as: None,
         credentials: Default::default(),
@@ -21,7 +21,7 @@ fn make_root_cfg(
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
         auth: None,
-        // Each whole-entry fixture as the resolved provider `resolve` would produce from it.
+
         providers: providers
             .into_iter()
             .map(|(name, p)| (name, p.into()))
@@ -49,7 +49,6 @@ fn make_root_cfg(
     }
 }
 
-/// Like [`make_root_cfg`] but with operator-supplied `security.blocked_metadata_hosts` entries.
 fn make_root_cfg_with_blocked(
     providers: HashMap<String, config::ProviderCfg>,
     blocked_metadata_hosts: Vec<String>,
@@ -60,15 +59,13 @@ fn make_root_cfg_with_blocked(
 }
 
 fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::ProviderCfg {
-    // Provide a minimal valid error_map to satisfy validation
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());
 
     config::ProviderCfg {
         protocol: protocol.into(),
         base_url: base_url.into(),
-        // The credential is a SECRET REFERENCE now; the env-var sugar keeps the old
-        // helper signature usable across every existing test.
+
         api_key: config::SecretRef::env(api_key_env),
         health: None,
         error_map,
@@ -83,10 +80,6 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
     }
 }
 
-/// The `nth` wire-codec protocol this test binary ships, read by POSITION off core's own test
-/// built-in table (the shipped install order) rather than spelled here. The validator's provider
-/// sweep asks only "is this a compiled-in codec protocol?", never which one, so a fixture needs a
-/// registered name, not a particular dialect — and the neutral kernel's tests name none.
 fn shipped_protocol(nth: usize) -> &'static str {
     crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
         .iter()
@@ -101,26 +94,20 @@ fn shipped_protocol(nth: usize) -> &'static str {
         })
 }
 
-/// The first shipped codec protocol — the one most fixtures use.
 fn proto_a() -> &'static str {
     shipped_protocol(0)
 }
 
-/// A second, distinct shipped codec protocol.
 fn proto_b() -> &'static str {
     shipped_protocol(1)
 }
 
 fn make_model(provider: &str, max_concurrent: usize) -> config::ModelCfg {
-    // Existing callers pass a concrete cap; wrap it as `Some` now that the field is optional
-    // (None = unbounded). The omitted-cap case is covered by `make_model_unbounded`.
     let mut m = make_model_unbounded(provider);
     m.max_concurrent = Some(max_concurrent);
     m
 }
 
-/// A model config with `max_concurrent` OMITTED (None = unbounded), exercising the opt-in-limiter
-/// default that mirrors `max_requests: -1`.
 fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
         reasoning: None,
@@ -162,13 +149,6 @@ fn make_member(model: &str) -> config::PoolMember {
     }
 }
 
-/// RED (arch-audit u29 F1; BUSBAR-1.6.0.md #50: "the auth style resolves ... as opaque
-/// strings"): a provider's `auth:` is an OPAQUE word some loaded auth plugin declares, never a
-/// closed kernel set. Every declared word parses, a dropped-in one (`x-double-mint`, a style no
-/// release named) as well as 1.5.5's four; a word no plugin declares is refused at deserialize time
-/// in serde's own unknown-variant words over the declared list, ranked first, so 1.5.5's refusal of
-/// an unknown word is the prefix of this one. The words here are the test double's declarations
-/// (`test_support::outbound_auth::double_outbound_styles`).
 #[test]
 fn test_provider_auth_style_is_a_declared_word() {
     for word in [
@@ -194,10 +174,6 @@ fn test_provider_auth_style_is_a_declared_word() {
     );
 }
 
-/// RED (arch-audit u29 F1): a style's token endpoint is judged by the bit its plugin DECLARES
-/// (`STYLE_ENDPOINT_TOKEN_URL`), never by its name: a style no release named that states the bit
-/// gets 1.5.5's `token_url` and `scope` findings, in 1.5.5's sentences over its own word, and a
-/// style that does not state it (`bearer`) is left unjudged, as 1.5.5 left it.
 #[test]
 fn a_token_url_is_judged_for_any_style_declaring_it() {
     crate::test_support::register_neutral_test_plane();
@@ -235,15 +211,12 @@ fn a_token_url_is_judged_for_any_style_declaring_it() {
 
 #[test]
 fn test_validate_rejects_bad_protocol() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // An unknown `protocol` must be COLLECTED by validate() (alongside any other config error),
-    // not escape to a lone `die()` at lane construction in main.rs. Mirrors
-    // test_validate_rejects_bad_auth_style.
+
     let mut providers = HashMap::new();
     let bad = make_provider("nope", "https://api.example.com", "API_KEY");
     providers.insert("bad".to_string(), bad);
-    // A provider on a real protocol must NOT trigger this error.
+
     let ok = make_provider(
         proto_a(),
         "https://api.vendor-a.example.com",
@@ -258,7 +231,7 @@ fn test_validate_rejects_bad_protocol() {
             .any(|e| e.contains("unknown protocol 'nope'") && e.contains("'bad'")),
         "expected an unknown-protocol error naming provider 'bad' and 'nope'; got: {errs:?}"
     );
-    // The error must enumerate the allowed set so the operator can self-correct.
+
     let msg = errs
         .iter()
         .find(|e| e.contains("unknown protocol 'nope'"))
@@ -269,7 +242,7 @@ fn test_validate_rejects_bad_protocol() {
             "allowed-set list must include '{proto}'; got: {msg}"
         );
     }
-    // A real (shipped) protocol must not be flagged as unknown.
+
     let shipped = proto_a();
     assert!(
         !errs
@@ -281,13 +254,9 @@ fn test_validate_rejects_bad_protocol() {
 
 #[test]
 fn test_error_map_invalid_class_message_lists_full_valid_set() {
-    // The invalid-StatusClass diagnostic must enumerate EVERY class that
-    // StatusClass::parse accepts; `context_length` was historically
-    // omitted from the message even though it is a valid mapping target, so an
-    // operator who saw the error could not learn it was an allowed value.
     let mut providers = HashMap::new();
     let mut p = make_provider(proto_a(), "https://api.example.com", "API_KEY");
-    // Replace the minimal valid map with one bad entry to force the diagnostic.
+
     p.error_map.clear();
     p.error_map
         .insert("429".to_string(), "not_a_class".to_string());
@@ -305,8 +274,6 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
             "valid-values list must include 'context_length' (it is accepted by StatusClass::parse); got: {msg}"
         );
 
-    // Guard against drift in the other direction: every class the breaker accepts
-    // must appear in the message's valid-values list.
     for class in [
         "rate_limit",
         "overloaded",
@@ -331,8 +298,6 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
 
 #[test]
 fn test_error_map_context_length_is_a_valid_class() {
-    // `context_length` must be accepted as an error_map target without producing
-    // an invalid-StatusClass error (it is a real breaker StatusClass).
     let mut providers = HashMap::new();
     let mut p = make_provider(proto_a(), "https://api.example.com", "API_KEY");
     p.error_map.clear();
@@ -361,7 +326,7 @@ fn test_validate_rejects_zero_default_max_tokens() {
     let mut m = make_model("myprovider", 10);
     m.default_max_tokens = Some(0);
     models.insert("mymodel".to_string(), m);
-    // A positive value (and the unset None default) must NOT error.
+
     let mut ok = make_model("myprovider", 10);
     ok.default_max_tokens = Some(4096);
     models.insert("okmodel".to_string(), ok);
@@ -379,10 +344,6 @@ fn test_validate_rejects_zero_default_max_tokens() {
     );
 }
 
-/// REGRESSION: `limits.request_body_read_timeout_secs` had NO zero-guard, unlike its siblings `tls_handshake_timeout_secs` /
-/// `webhook_delivery_timeout_secs`. A value of 0 makes the inter-frame body timer
-/// (`Duration::from_secs(0)`) fire immediately, tearing down EVERY request whose body is not
-/// instantly buffered. `validate()` must reject it; a positive value must validate.
 #[test]
 fn test_validate_rejects_zero_request_body_read_timeout() {
     let mut providers = HashMap::new();
@@ -402,7 +363,6 @@ fn test_validate_rejects_zero_request_body_read_timeout() {
         "expected a request_body_read_timeout_secs guard error; got: {errs:?}"
     );
 
-    // A positive value (the production default) must NOT trip this guard.
     cfg.limits.request_body_read_timeout_secs = 30;
     let errs2 = validate(&cfg).err().unwrap_or_default();
     assert!(
@@ -421,11 +381,11 @@ fn test_validate_rejects_empty_upstream_model() {
         make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
-    // Whitespace-only override → empty wire model id → must error.
+
     let mut bad = make_model("myprovider", 10);
     bad.upstream_model = Some("   ".to_string());
     models.insert("badmodel".to_string(), bad);
-    // A real override (and the unset None default) must NOT error.
+
     let mut ok = make_model("myprovider", 10);
     ok.upstream_model = Some("acme.model-3-5-20241022-v2:0".to_string());
     models.insert("okmodel".to_string(), ok);
@@ -445,7 +405,6 @@ fn test_validate_rejects_empty_upstream_model() {
 
 #[test]
 fn test_validate_rejects_pool_name_equals_provider_name() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
@@ -458,7 +417,7 @@ fn test_validate_rejects_pool_name_equals_provider_name() {
 
     let mut pools = HashMap::new();
     pools.insert(
-        "myprovider".to_string(), // Same name as provider!
+        "myprovider".to_string(),
         make_pool(vec![make_member("mymodel")]),
     );
 
@@ -474,7 +433,6 @@ fn test_validate_rejects_pool_name_equals_provider_name() {
 
 #[test]
 fn test_validate_rejects_unknown_member_ref() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
@@ -487,7 +445,7 @@ fn test_validate_rejects_unknown_member_ref() {
     let mut pools = HashMap::new();
     pools.insert(
         "mypoool".to_string(),
-        make_pool(vec![make_member("unknownmodel")]), // References non-existent model
+        make_pool(vec![make_member("unknownmodel")]),
     );
 
     let cfg = make_root_cfg(providers, models, pools);
@@ -502,10 +460,8 @@ fn test_validate_rejects_unknown_member_ref() {
 
 #[test]
 fn test_validate_token_url_ssrf_and_scheme() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // token_url carries the client secret in the POST body, so it must clear BOTH the https
-    // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url.
+
     let build = |token_url: &str| -> Vec<String> {
         let mut providers = HashMap::new();
         let mut entra = make_provider(
@@ -525,19 +481,18 @@ fn test_validate_token_url_ssrf_and_scheme() {
         validate(&cfg).err().unwrap_or_default()
     };
 
-    // A legitimate Entra token endpoint validates clean.
     assert!(
         build("https://login.microsoftonline.com/TENANT/oauth2/v2.0/token").is_empty(),
         "a valid https token_url must pass"
     );
-    // Case-insensitive scheme: uppercase HTTPS must NOT trip the scheme guard.
+
     let up = build("HTTPS://login.microsoftonline.com/t/token");
     assert!(
         !up.iter()
             .any(|e| e.contains("token_url") && e.contains("must use")),
         "uppercase HTTPS token_url must not trip the scheme guard; got: {up:?}"
     );
-    // Public http:// is rejected (cleartext secret) — and uppercase HTTP:// cannot bypass it.
+
     for scheme in ["http", "HTTP"] {
         let errs = build(&format!("{scheme}://token.example.com/oauth"));
         assert!(
@@ -546,8 +501,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
             "{scheme}:// public token_url must be rejected; got: {errs:?}"
         );
     }
-    // The 1.5.5 rule (v1.5.5 config_validate/mod.rs:436-476): plaintext http is permitted for a
-    // PRIVATE or loopback token endpoint, not loopback alone (spec l.609, ARCHITECT D1 MINT CLASS (B)).
+
     for tu in [
         "http://10.0.0.5/oauth2/token",
         "http://172.16.4.2/token",
@@ -562,14 +516,14 @@ fn test_validate_token_url_ssrf_and_scheme() {
             "http token_url to a private/loopback host must be accepted, as 1.5.5 did ({tu}); got: {errs:?}"
         );
     }
-    // A public http token_url is refused in 1.5.5's words, byte for byte.
+
     let errs = build("http://example.com/token");
     let want = "provider 'entra' token_url must use https for a public host (got 'http://example.com/token'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint";
     assert!(
         errs.iter().any(|e| e == want),
         "public http token_url must be refused with the 1.5.5 text; got: {errs:?}"
     );
-    // SSRF: an https token_url pointed at cloud metadata is blocked (would leak the client secret).
+
     for host in ["169.254.169.254", "metadata.google.internal"] {
         let errs = build(&format!("https://{host}/token"));
         assert!(
@@ -578,7 +532,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
             "token_url at {host} must be SSRF-blocked; got: {errs:?}"
         );
     }
-    // Whitespace-only token_url is treated as absent (trimmed), not a valid endpoint.
+
     let ws = build("   ");
     assert!(
         ws.iter().any(|e| e.contains("token_url")),
@@ -588,8 +542,6 @@ fn test_validate_token_url_ssrf_and_scheme() {
 
 #[test]
 fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
-    // The service account's token_uri gets the same 1.5.5 rule as token_url
-    // (v1.5.5 egress_auth/jwt_bearer.rs:120-149): http only for a private or loopback endpoint.
     for uri in [
         "http://10.0.0.5/token",
         "http://192.168.1.20/token",
@@ -620,8 +572,6 @@ fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
 
 #[test]
 fn test_validate_conflicting_context_max_across_pools() {
-    // A model maps to one lane, so a DIFFERING context_max across pools must be a validate() error —
-    // not only a boot-time `die`. Else a clean --validate would still crash at real boot.
     let build = |ca: Option<usize>, cb: Option<usize>| -> Vec<String> {
         let mut providers = HashMap::new();
         providers.insert(
@@ -663,7 +613,6 @@ fn test_validate_conflicting_context_max_across_pools() {
 
 #[test]
 fn test_validate_collects_all_errors() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
@@ -675,12 +624,12 @@ fn test_validate_collects_all_errors() {
     models.insert("model1".to_string(), make_model("conflict_provider", 10));
 
     let mut pools = HashMap::new();
-    // Pool with same name as provider
+
     pools.insert(
         "conflict_provider".to_string(),
         make_pool(vec![make_member("model1")]),
     );
-    // Pool with unknown member
+
     pools.insert(
         "otherpool".to_string(),
         make_pool(vec![make_member("nonexistent_model")]),
@@ -692,7 +641,6 @@ fn test_validate_collects_all_errors() {
     assert!(result.is_err());
     let errs = result.unwrap_err();
 
-    // Should collect BOTH errors (pool-name conflict + unknown member)
     assert_eq!(errs.len(), 2);
 
     let err_text = errs.join(" | ");
@@ -702,10 +650,9 @@ fn test_validate_collects_all_errors() {
 
 #[test]
 fn test_validate_heterogeneous_pool_is_ok() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
-    // Two different protocols.
+
     providers.insert(
         "acme_provider".to_string(),
         make_provider(proto_a(), "https://api.acme.example.com", "ACME_KEY"),
@@ -727,7 +674,7 @@ fn test_validate_heterogeneous_pool_is_ok() {
     );
 
     let mut pools = HashMap::new();
-    // Pool with members from different protocols (heterogeneous)
+
     pools.insert(
         "mixedpool".to_string(),
         make_pool(vec![
@@ -739,13 +686,11 @@ fn test_validate_heterogeneous_pool_is_ok() {
     let cfg = make_root_cfg(providers, models, pools);
     let result = validate(&cfg);
 
-    // Should return Ok (heterogeneous pool is a warning, not an error)
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_validate_valid_config_succeeds() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
@@ -758,7 +703,7 @@ fn test_validate_valid_config_succeeds() {
 
     let mut pools = HashMap::new();
     pools.insert(
-        "mypool".to_string(), // Distinct from provider name
+        "mypool".to_string(),
         make_pool(vec![make_member("mymodel")]),
     );
 
@@ -770,7 +715,6 @@ fn test_validate_valid_config_succeeds() {
 
 #[test]
 fn test_validate_model_without_provider_error() {
-    // No providers defined - should error on orphan model reference
     let providers = HashMap::new();
 
     let mut models = HashMap::new();
@@ -786,31 +730,19 @@ fn test_validate_model_without_provider_error() {
 
     assert!(result.is_err());
     let errs = result.unwrap_err();
-    // Should have exactly 1 error (orphan model), no error_map errors since providers is empty
+
     assert_eq!(errs.len(), 1);
     assert!(errs[0].contains("orphan_model"));
     assert!(errs[0].contains("references unknown provider"));
 }
 
-/// An `AuthCfg` with the given serving-path `auth.chain` module names (bare built-in entries),
-/// as opposed to the separate `admin_auth` chain.
-/// The 1.4.x `make_auth(mode, client_tokens)` helper is gone with `client_tokens`/`modules`;
-/// chain semantics replace the mode string: `[keys]` = signed-key auth, `[]` = open front door.
-/// 1.5.3: `upstream` is no longer part of `auth:` at all (it moved to the `pools:` section)
-/// — callers that care set it on the `RootCfg`/pool instead; the parameter is kept so the
-/// dozens of call sites still read as "this chain, that egress posture".
 fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> config::AuthCfg {
     let mut auth = config::AuthCfg::default_none();
     auth.chain = modules
         .iter()
         .map(|m| config::AuthChainEntry::bare(*m))
         .collect();
-    // 1.5.1: the built-in `keys` verifier REQUIRES a signing key (config_validate fails closed
-    // otherwise). 1.5.2: it also requires a USABLE MINT PATH via `admin_auth` — a vkey can only be
-    // minted through that privileged chain, so `[keys]` with nothing that can mint one is a boot
-    // error. Attach a signing-key ref and an explicit open `admin_auth: []` — the one structural
-    // mint path that validates whether or not an auth row answers the operator credential (with none,
-    // a configured admin token would itself be rejected).
+
     if modules.contains(&crate::config::KEYS_MODULE) {
         auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
         auth.admin_auth = vec![];
@@ -846,8 +778,6 @@ fn make_trip(
     }
 }
 
-// A minimal valid single-provider/single-model/single-pool config, returned as its three maps
-// so individual tests can mutate one field and re-assemble via `make_root_cfg`.
 fn valid_maps() -> (
     HashMap<String, config::ProviderCfg>,
     HashMap<String, config::ModelCfg>,
@@ -870,10 +800,8 @@ fn valid_maps() -> (
 
 #[test]
 fn test_validate_rejects_non_https_base_url() {
-    // A PUBLIC host over plaintext http leaks the key on the wire → rejected with the https rule.
     for (bad, fragment) in [
         ("http://api.example.com", "must use https for a public host"),
-        // A non-http(s) scheme (file://) or an empty url is not a valid upstream scheme at all.
         ("file:///etc/shadow", "must use http or https"),
         ("", "must use http or https"),
     ] {
@@ -888,8 +816,7 @@ fn test_validate_rejects_non_https_base_url() {
             "expected a scheme error ('{fragment}') for '{bad}'; got: {errs:?}"
         );
     }
-    // An http:// IMDS literal passes the scheme rule (link-local ⇒ private/loopback) but is then
-    // rejected by the metadata denylist.
+
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -909,12 +836,8 @@ fn test_validate_rejects_non_https_base_url() {
     );
 }
 
-/// E1 PARITY: `--validate` accepts a provider at a private or loopback LITERAL, as 1.5.5 did. The
-/// destination guard refuses such a dial at the dial (the connector's name arm, unless
-/// `advanced.allow_destinations` names it); the configuration check does not move with it.
 #[test]
 fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     for url in [
         "http://127.0.0.1:11434",
@@ -933,10 +856,6 @@ fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
     }
 }
 
-/// The boot line's COUNT keeps 1.5.5's eleven displayed entries (E1 parity), and
-/// `--print-metadata-blocklist` prints EVERY entry the guard enforces (security.md: the flag is the
-/// ground truth; owner ruling for 1.6.0: the doc binds): the eleven plus the EC2 task-metadata
-/// endpoint `fd00:ec2::23` and IPv6 link-local `fe80::/10`, each of which the guard refuses.
 #[test]
 fn test_the_boot_count_shows_eleven_and_the_printed_list_every_enforced_entry() {
     let counted = crate::config_validate::metadata_denylist_entries();
@@ -967,7 +886,6 @@ fn test_the_boot_count_shows_eleven_and_the_printed_list_every_enforced_entry() 
 
 #[test]
 fn test_validate_accepts_https_base_url() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
@@ -987,7 +905,7 @@ fn test_validate_rejects_zero_max_concurrent() {
     );
     let mut models = HashMap::new();
     models.insert("zeromodel".to_string(), make_model("myprovider", 0));
-    // A positive max_concurrent must NOT error.
+
     models.insert("okmodel".to_string(), make_model("myprovider", 1));
 
     let cfg = make_root_cfg(providers, models, HashMap::new());
@@ -1003,12 +921,6 @@ fn test_validate_rejects_zero_max_concurrent() {
     );
 }
 
-/// An operator-supplied `max_concurrent` above `Semaphore::MAX_PERMITS` must
-/// be REJECTED as a normal `400 invalid_request` validation error — not accepted and left to panic
-/// later inside `Semaphore::new` (`permits <= Semaphore::MAX_PERMITS`) in `build_app_from_config`.
-/// The bound is the exact panic precondition (`usize::MAX >> 3`), not an invented policy cap: this
-/// module's operational-limit checks are deliberately permissive (see `validate_limits`'s doc
-/// comment) and reject only what would actually break the gateway.
 #[test]
 fn test_validate_rejects_oversized_max_concurrent() {
     let mut providers = HashMap::new();
@@ -1017,17 +929,14 @@ fn test_validate_rejects_oversized_max_concurrent() {
         make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
-    // ONE past the exact panic precondition — the tightest possible "plausible but wrong" probe,
-    // and proof this is a hard ceiling, not an arbitrary round-number policy cap.
+
     models.insert(
         "hugemodel".to_string(),
         make_model("myprovider", tokio::sync::Semaphore::MAX_PERMITS + 1),
     );
-    // A value that boots/applies FINE today (5 million, far above any real deployment but nowhere
-    // near the panic ceiling) must keep validating cleanly — this is not a "sane limit" policy
-    // check, so it must not newly reject a config that never panicked.
+
     models.insert("bigbutok".to_string(), make_model("myprovider", 5_000_000));
-    // The exact boundary value must NOT error either.
+
     models.insert(
         "boundarymodel".to_string(),
         make_model("myprovider", tokio::sync::Semaphore::MAX_PERMITS),
@@ -1050,12 +959,6 @@ fn test_validate_rejects_oversized_max_concurrent() {
     );
 }
 
-/// The exact same `Semaphore::new` panic precondition, on the two sibling
-/// operator-config values that feed a `Semaphore::new` with no bound of their own —
-/// `limits.max_inbound_concurrent` (tower's `GlobalConcurrencyLimitLayer`, main.rs). (The webhook
-/// sink's `max_inflight_deliveries` is the sink's own check now — `busbar-export-webhook`'s
-/// `the_validation_phase_checks_are_the_compiled_in_sinks_lines`, same boundary.) This test exists
-/// so the class stays closed if the call site changes independently of `models.<m>.max_concurrent`.
 #[test]
 fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
@@ -1067,8 +970,6 @@ fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
         "expected an oversized max_inbound_concurrent error; got: {errs:?}"
     );
 
-    // The boundary value, and 0 (max_inbound_concurrent's explicit "disable the layer" posture),
-    // must both stay clean.
     cfg.limits.max_inbound_concurrent = 0;
     assert!(
         validate(&cfg).is_ok(),
@@ -1076,12 +977,8 @@ fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
     );
 }
 
-/// `max_concurrent` OMITTED (None = unbounded) must VALIDATE cleanly — it is an opt-in limiter, not
-/// a required field. Only an explicit `Some(0)` is rejected; absence carries no requirement, exactly
-/// like `max_requests: -1`.
 #[test]
 fn test_validate_accepts_omitted_max_concurrent() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
@@ -1089,22 +986,15 @@ fn test_validate_accepts_omitted_max_concurrent() {
         make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
     let mut models = HashMap::new();
-    models.insert(
-        "unbounded".to_string(),
-        make_model_unbounded("myprovider"), // max_concurrent: None
-    );
+    models.insert("unbounded".to_string(), make_model_unbounded("myprovider"));
 
     let cfg = make_root_cfg(providers, models, HashMap::new());
     validate(&cfg)
         .expect("a model omitting max_concurrent must validate (unbounded is the default)");
 }
 
-/// A minimal model config that OMITS max_concurrent must DESERIALIZE — proving the field is no
-/// longer mandatory at the serde layer (the config-load foot-gun this fix removes).
 #[test]
 fn test_minimal_model_config_without_max_concurrent_deserializes() {
-    // Only `provider` is required; every other ModelCfg field (max_requests, max_concurrent, …)
-    // defaults. Before the fix this failed with "missing field `max_concurrent`".
     let m: config::ModelCfg = serde_yaml::from_str("provider: myprovider\n")
         .expect("a model config with only `provider` must load (max_concurrent is optional)");
     assert_eq!(m.provider, "myprovider");
@@ -1130,7 +1020,7 @@ fn test_validate_rejects_bad_reasoning_effort_budgets() {
         models.insert("m".to_string(), make_model("p", 10));
         make_root_cfg(providers, models, HashMap::new())
     };
-    // zero entry -> rejected
+
     let mut cfg = base();
     cfg.limits.reasoning_effort_budgets = crate::config::ReasoningEffortBudgets {
         minimal: 0,
@@ -1142,7 +1032,7 @@ fn test_validate_rejects_bad_reasoning_effort_budgets() {
     assert!(errs
         .iter()
         .any(|e| e.contains("reasoning_effort_budgets") && e.contains("> 0")));
-    // non-ascending -> rejected
+
     let mut cfg2 = base();
     cfg2.limits.reasoning_effort_budgets = crate::config::ReasoningEffortBudgets {
         minimal: 4096,
@@ -1158,10 +1048,6 @@ fn test_validate_rejects_bad_reasoning_effort_budgets() {
 
 #[test]
 fn test_validate_rejects_zero_attempt_timeout_ms() {
-    // attempt_timeout_ms: 0 races a zero-duration timer against req.send() — every attempt
-    // "times out" before the connection is tried, permanently poisoning the lane. Must fail
-    // loud at boot at BOTH levels (model default and pool-member override); omitted (None)
-    // and positive values must not error.
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
@@ -1174,9 +1060,8 @@ fn test_validate_rejects_zero_attempt_timeout_ms() {
     let mut positive = make_model("myprovider", 10);
     positive.attempt_timeout_ms = Some(5000);
     models.insert("okcap".to_string(), positive);
-    models.insert("nocap".to_string(), make_model("myprovider", 10)); // None
+    models.insert("nocap".to_string(), make_model("myprovider", 10));
 
-    // Pool with one zero-override member and one positive-override member.
     let mut zero_member = make_member("okcap");
     zero_member.attempt_timeout_ms = Some(0);
     let mut ok_member = make_member("nocap");
@@ -1210,10 +1095,8 @@ fn test_validate_rejects_zero_attempt_timeout_ms() {
 
 #[test]
 fn test_validate_rejects_zero_max_requests() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // Twin of the max_concurrent:0 foot-gun on the lifetime-budget axis: max_requests:0 yields
-    // limited=true, budget=0, which store::usable() rejects forever — must fail loud at boot.
+
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
@@ -1223,8 +1106,8 @@ fn test_validate_rejects_zero_max_requests() {
     let mut zero = make_model("myprovider", 10);
     zero.max_requests = 0;
     models.insert("zeroreq".to_string(), zero);
-    // -1 (unlimited, the default) and a positive cap must NOT error.
-    models.insert("unlimited".to_string(), make_model("myprovider", 10)); // max_requests = -1
+
+    models.insert("unlimited".to_string(), make_model("myprovider", 10));
     let mut positive = make_model("myprovider", 10);
     positive.max_requests = 100;
     models.insert("capped".to_string(), positive);
@@ -1236,7 +1119,7 @@ fn test_validate_rejects_zero_max_requests() {
             .any(|e| e.contains("zeroreq") && e.contains("max_requests: 0")),
         "expected a max_requests:0 error for 'zeroreq'; got: {errs:?}"
     );
-    // Exactly one error, naming only the zero-budget model — the -1 and positive lanes are clean.
+
     assert_eq!(
         errs.len(),
         1,
@@ -1252,25 +1135,22 @@ fn test_validate_rejects_zero_max_requests() {
 
 #[test]
 fn test_localhost_is_allowed_by_default() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // Under the metadata-denylist model, `localhost` is a legitimate LOCAL-MODEL upstream and is
-    // ALLOWED with NO flag — it is not a metadata endpoint. Both the bare name and the
-    // trailing-dot FQDN form, case-insensitively, are NOT flagged by the SSRF guard.
+
     for ok in [
         "https://localhost/",
         "https://localhost:11434/",
         "https://LOCALHOST/v1",
         "https://localhost./",
         "https://localhost.:443/api",
-        "http://localhost:11434/", // plaintext to loopback is fine
+        "http://localhost:11434/",
     ] {
         assert!(
             ssrf_blocked_host(ok, &[], false, &[]).is_none(),
             "expected '{ok}' to be allowed (localhost is a local-model target, not metadata)"
         );
     }
-    // A full validate() pass must ACCEPT an https localhost base_url with no flag.
+
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -1288,7 +1168,7 @@ fn test_localhost_is_allowed_by_default() {
 fn test_validate_rejects_pool_name_equals_model_name() {
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
-    // Pool named identically to the model would shadow it on the `named` route.
+
     pools.insert(
         "mymodel".to_string(),
         make_pool(vec![make_member("mymodel")]),
@@ -1304,11 +1184,6 @@ fn test_validate_rejects_pool_name_equals_model_name() {
 
 #[test]
 fn test_validate_rejects_pool_named_api() {
-    // A pool named `api` is reached at `/api/v1/messages`, whose first segment the auth middleware
-    // intercepts as a reserved routing prefix — making the pool unreachable to clients and
-    // (in governance mode) bypassing per-pool enforcement. Must fail loud at boot. The name is
-    // `api`, not `admin`, because the reserved segment is `ADMIN_PATH = /api`; the validator derives
-    // the reserved segment from that constant, so this and the middleware cannot drift.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     pools.insert("api".to_string(), make_pool(vec![make_member("mymodel")]));
@@ -1323,8 +1198,6 @@ fn test_validate_rejects_pool_named_api() {
 
 #[test]
 fn test_validate_rejects_provider_named_api() {
-    // A provider named `api` is reachable via the adhoc route `/api/<model>/v1/messages`, whose
-    // first segment the auth middleware likewise intercepts as the native-API surface. Symmetric.
     let mut providers = HashMap::new();
     providers.insert(
         "api".to_string(),
@@ -1341,12 +1214,6 @@ fn test_validate_rejects_provider_named_api() {
 
 #[test]
 fn test_validate_rejects_model_named_api() {
-    // Regression: a MODEL named `api` is reached at `/api/v1/messages`, whose first segment the
-    // auth middleware intercepts as a reserved routing prefix — unreachable to clients and (in
-    // governance mode) a per-model `allowed_pools` bypass via the GovCtx::default() no-key
-    // (governance-disabled) branch.
-    // The model loop previously skipped the reserved-name check the pool/provider loops run. Must
-    // fail loud at boot, symmetric with the pool and provider cases.
     let (mut providers, mut models, pools) = valid_maps();
     providers
         .entry("myprovider".to_string())
@@ -1361,9 +1228,6 @@ fn test_validate_rejects_model_named_api() {
     );
 }
 
-/// The three refusals of the reserved name `admin` that earlier releases enforced, pinned by their
-/// exact message text: the reverse-compatibility oracle compares this output byte-for-byte against
-/// the published binary, so the wording is part of the contract, not just the verdict.
 #[test]
 fn test_validate_rejects_pool_named_admin_with_legacy_message() {
     let (providers, models, _) = valid_maps();
@@ -1412,12 +1276,8 @@ fn test_validate_rejects_model_named_admin_with_legacy_message() {
 
 #[test]
 fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // The reserved check mirrors the auth middleware's PATH-BOUNDARY-SAFE `is_admin` test: only
-    // the exact `api` segment collides. `apix` and friends are normal routes (proven by
-    // test_admin_prefix_is_boundary_safe in auth.rs) and must NOT be rejected. `adminx` is a normal
-    // name for the same reason; bare `admin` is refused separately by the legacy rule below.
+
     for name in ["apix", "api-pool", "api_portal", "adminx"] {
         assert!(
             !reserved_admin_name(name),
@@ -1442,7 +1302,6 @@ fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
         "'admin' is not the native-API root; it is refused by the legacy rule, not this one"
     );
 
-    // A full validate() pass with an `apix` pool must succeed (no reserved-name error).
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     pools.insert("apix".to_string(), make_pool(vec![make_member("mymodel")]));
@@ -1455,7 +1314,6 @@ fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
 
 #[test]
 fn test_validate_rejects_bad_breaker_params() {
-    // (description, breaker, substring expected in the error)
     let cases: Vec<(&str, config::BreakerCfg, &str)> = vec![
         (
             "min_requests 0",
@@ -1558,7 +1416,6 @@ fn test_validate_rejects_bad_breaker_params() {
 
 #[test]
 fn test_validate_accepts_good_breaker_params() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
@@ -1566,13 +1423,7 @@ fn test_validate_accepts_good_breaker_params() {
     pool.breaker = Some(make_breaker(
         15,
         120,
-        Some(make_trip(
-            config::BreakerTripMode::ErrorRate,
-            30,
-            1.0, // boundary: rate-cap value is valid
-            1,   // boundary: minimum floor
-            3,
-        )),
+        Some(make_trip(config::BreakerTripMode::ErrorRate, 30, 1.0, 1, 3)),
     ));
     pools.insert("mypool".to_string(), pool);
     let cfg = make_root_cfg(providers, models, pools);
@@ -1584,14 +1435,8 @@ fn test_validate_accepts_good_breaker_params() {
 
 #[test]
 fn test_validate_rejects_zero_cooldown_breaker() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // A breaker with base_cooldown_secs == 0 or max_cooldown_secs == 0
-    // passes the inversion check (0 <= 0) yet is degenerate — when it trips open it re-admits the
-    // failing backend immediately because the cooldown window is zero seconds, defeating the
-    // back-off the breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-
-    // floor guards and must fail loud at boot. The breaker has NO `trip` block here, proving the
-    // cooldown floor is enforced independently of trip validation.
+
     for (base, max, expected) in [
         (0u64, 120u64, "base_cooldown_secs must be >= 1"),
         (15, 0, "max_cooldown_secs must be >= 1"),
@@ -1613,7 +1458,6 @@ fn test_validate_rejects_zero_cooldown_breaker() {
         );
     }
 
-    // The boundary (both fields == 1) is the minimum well-formed breaker and must validate.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -1628,10 +1472,6 @@ fn test_validate_rejects_zero_cooldown_breaker() {
 
 #[test]
 fn test_validate_rejects_zero_failover_deadline() {
-    // Twin of the breaker window_s:0 / max_concurrent:0 foot-guns on the failover-budget axis:
-    // RequestCtx::new(0) sets deadline == start, so the failover loop's first (primary) deadline
-    // check rejects with a 503 before the primary attempt runs — the pool serves ZERO requests
-    // with no boot diagnostic. Must fail loud at startup.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -1652,10 +1492,8 @@ fn test_validate_rejects_zero_failover_deadline() {
 
 #[test]
 fn test_validate_accepts_positive_failover_deadline_and_zero_cap() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // A positive deadline validates. cap == 0 is deliberately BENIGN (the `0..=cap` loop still
-    // runs the primary once), so it must NOT be rejected.
+
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -1674,16 +1512,12 @@ fn test_validate_accepts_positive_failover_deadline_and_zero_cap() {
 
 #[test]
 fn test_validate_rejects_unknown_failover_exclusion() {
-    // A `failover.exclusions` entry is a member model name benched
-    // from the pool's candidate set at runtime; the runtime matches it against member targets. A
-    // misspelled / stale entry resolves to nothing and silently fails to bench the intended
-    // member, so it must fail loud at boot (mirroring the dangling-fallback-pool rule).
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
     pool.failover = Some(config::FailoverCfg {
         timeout_secs: 30,
-        exclusions: Some(vec!["mymodell".to_string()]), // typo: pool member is `mymodel`
+        exclusions: Some(vec!["mymodell".to_string()]),
         max_hops: 3,
     });
     pools.insert("mypool".to_string(), pool);
@@ -1697,10 +1531,6 @@ fn test_validate_rejects_unknown_failover_exclusion() {
     );
 }
 
-/// W9 — A ROLE BINDING'S PLANE GRANT NAMES A DECLARED KIND, OR IT IS REFUSED. `allowed_{kind}s`
-/// beside `allowed_pools` is a role-binding key, and a kind no installed plane declares is refused
-/// at validation naming the binding and the field, never left to sit inert while the operator
-/// believes it granted. A key that is not a grant field at all stays refused at parse.
 #[test]
 fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
     let binding: config::RoleBindingCfg = serde_yaml::from_str("allowed_widgets: [x]\n")
@@ -1734,15 +1564,11 @@ fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
 
 #[test]
 fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
-    // Both scope-token rules, on the 1.5.0 surface: a typo'd chain-entry `max_admin_scope` and a
-    // typo'd `role_bindings.<module>.<role>.admin_scope` each fail loud at boot, naming the
-    // offender. (The 1.4.x `auth.modules` caps map and `group_map.<g>.admin_scope` are GONE;
-    // these are their direct replacements.)
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
     let mut entry = config::AuthChainEntry::bare("keys");
-    entry.max_admin_scope = Some("superuser".to_string()); // typo
+    entry.max_admin_scope = Some("superuser".to_string());
     auth.chain = vec![entry];
     auth.role_bindings.insert(
         "keys".to_string(),
@@ -1751,7 +1577,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
             config::RoleBindingCfg {
                 allowed_pools: None,
                 group: None,
-                admin_scope: Some("readonly".to_string()), // typo (it's read-only)
+                admin_scope: Some("readonly".to_string()),
                 verbs: None,
                 plane_grants: Default::default(),
             },
@@ -1769,15 +1595,14 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
             && e.contains("unknown admin_scope 'readonly'")),
         "expected the role_bindings admin_scope error; got: {errs:?}"
     );
-    // Both messages must teach the valid set so the operator can self-correct. After the 1.5.2
-    // scope collapse the valid set is exactly `read-only` and `full`.
+
     assert!(
         errs.iter()
             .filter(|e| e.contains("superuser") || e.contains("readonly"))
             .all(|e| e.contains("read-only") && e.contains("full")),
         "scope errors must enumerate the valid scope tokens (read-only or full); got: {errs:?}"
     );
-    // The retired tokens must NOT appear in the guidance any more.
+
     assert!(
         errs.iter()
             .filter(|e| e.contains("superuser") || e.contains("readonly"))
@@ -1786,11 +1611,6 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
     );
 }
 
-/// #77(9) l.2279 — THE PER-VERB ALLOW-LIST FAILS CLOSED AT VALIDATION. `role_bindings.<m>.<role>.verbs`
-/// parses off the config text (`"*"` or a list of names), and a name the closed admin verb table
-/// does not declare, or a value of any other shape, is refused naming the binding — never left to
-/// sit inert while the operator believes it granted. RED before the allow-list: `verbs` was an
-/// unknown `role_bindings` key, so the first parse below failed.
 #[test]
 fn a_verb_allow_list_naming_an_unknown_verb_is_refused_at_validation() {
     crate::test_support::install_admin_verb_table_double();
@@ -1838,9 +1658,6 @@ fn a_verb_allow_list_naming_an_unknown_verb_is_refused_at_validation() {
     }
 }
 
-/// 1.5.2 scope collapse: the delegated `mint` token (and its `hooks-register` sibling) are RETIRED —
-/// a `role_bindings.<m>.<role>.admin_scope: mint` (or a `max_admin_scope: mint`) is now an UNKNOWN
-/// scope token, failing validation with the two-rung guidance.
 #[test]
 fn validate_admin_scope_mint_now_errors() {
     let (providers, models, pools) = valid_maps();
@@ -1877,10 +1694,6 @@ fn validate_admin_scope_mint_now_errors() {
     );
 }
 
-/// 1.5.2: a NON-BUILTIN module name in `admin_auth` (an external `kind: auth` plugin backing the
-/// privileged mint path) is no longer statically rejected by config_validate — it resolves at LOAD,
-/// exactly as a module name in `auth.chain` does. So `admin_auth: [oidc-admin]` must NOT produce an
-/// "unknown module" error here.
 #[test]
 fn validate_admin_auth_plugin_name_no_longer_rejected() {
     let (providers, models, pools) = valid_maps();
@@ -1902,9 +1715,8 @@ fn validate_admin_auth_plugin_name_no_longer_rejected() {
 
 #[test]
 fn test_validate_accepts_known_failover_exclusion() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // An exclusion that names a real member of the pool is the supported case and must validate.
+
     let (mut providers, mut models, _) = valid_maps();
     providers
         .entry("myprovider".to_string())
@@ -1916,7 +1728,7 @@ fn test_validate_accepts_known_failover_exclusion() {
     let mut pool = make_pool(vec![make_member("mymodel"), make_member("secondmodel")]);
     pool.failover = Some(config::FailoverCfg {
         timeout_secs: 30,
-        exclusions: Some(vec!["secondmodel".to_string()]), // a real member — benched on purpose
+        exclusions: Some(vec!["secondmodel".to_string()]),
         max_hops: 3,
     });
     pools.insert("mypool".to_string(), pool);
@@ -1927,14 +1739,6 @@ fn test_validate_accepts_known_failover_exclusion() {
     );
 }
 
-// ── operator-credential token placement + secret-module resolvability (the 1.5.0 heirs of the
-// governance.admin_token validation family) ──────────────────────────────────────────────────────
-
-/// The operator credential is a SECRET REFERENCE; `validate()` checks its MODULE's shape without
-/// resolving the value, and a malformed built-in ref (env without settings.key) fails loud, naming
-/// the dotted path of its entry, whether or not an auth row answers the credential. (The accepting
-/// half — a well-formed ref validates clean — needs the operator credential's row, which this crate
-/// links none of: it lives beside the row, in the composition root's `root/tests/linked_auth.rs`.)
 #[test]
 fn test_validate_operator_token_secret_module_checked() {
     let (providers, models, pools) = valid_maps();
@@ -1948,10 +1752,7 @@ fn test_validate_operator_token_secret_module_checked() {
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("an env secret ref without settings.key must fail");
-    // The path is the DOTTED config path down to the individual chain entry. It used to be a prose
-    // label that could only ever describe ONE entry, because `secret_refs` reported only the FIRST
-    // operator-credential entry `AuthCfg::admin_token_ref` finds. Every entry is enumerated now, so
-    // each one names itself.
+
     let path = format!("auth.admin_auth.{}.token", config::operator_provider());
     assert!(
         errs.iter()
@@ -1960,11 +1761,6 @@ fn test_validate_operator_token_secret_module_checked() {
     );
 }
 
-/// NO OPERATOR ROW: a configured admin token in a build that links no auth row answering the
-/// operator credential's provider (this crate's own test binary links none — the composition root
-/// links the build's rows) is a loud boot error, never a silently ignored credential (a lockout).
-/// The refusal is v1.5.5's `--no-default-features` refusal, byte for byte
-/// (`git show v1.5.5:crates/busbar/src/config_validate/mod.rs`, line 1723).
 #[test]
 fn test_validate_rejects_admin_token_without_module() {
     let (providers, models, pools) = valid_maps();
@@ -1975,7 +1771,7 @@ fn test_validate_rejects_admin_token_without_module() {
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("must be a boot error");
-    // v1.5.5's text over the handed-in word (this build's double); the root pins 1.5.5's bytes.
+
     let op = config::operator_provider();
     assert!(
         errs.iter().any(|e| *e
@@ -1990,9 +1786,6 @@ fn test_validate_rejects_admin_token_without_module() {
 
 #[test]
 fn test_validate_rejects_zero_rate_sweep_interval() {
-    // `advanced.rate_sweep_interval: 0` (formerly governance.rate_sweep_interval) is rejected
-    // fail-loud rather than silently disabling the rate-map eviction sweep (which would ride on
-    // the non-obvious `u32::is_multiple_of(0) == false`). The message names the NEW config path.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.limits.rate_sweep_interval = 0;
@@ -2002,7 +1795,7 @@ fn test_validate_rejects_zero_rate_sweep_interval() {
             .any(|e| e.contains("advanced.rate_sweep_interval")),
         "the error must name advanced.rate_sweep_interval, got: {err:?}"
     );
-    // The default (non-zero) value carries no error.
+
     cfg.limits.rate_sweep_interval = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
     if let Err(errs) = validate(&cfg) {
         assert!(
@@ -2014,10 +1807,6 @@ fn test_validate_rejects_zero_rate_sweep_interval() {
 
 #[test]
 fn test_validate_chain_tokens_module_removed_message() {
-    // The 1.4.x static-token allowlist modules (`tokens` / `static-tokens`) are GONE in 1.5.0. A
-    // chain still naming one must fail with the REMOVED-in-1.5.0 migration message pointing at
-    // `keys` - never a silently-dropped auth module (which would open the relay). This is the
-    // heir of the "token mode requires client tokens" family: the whole surface is removed.
     for legacy in ["tokens", "static-tokens"] {
         let (providers, models, pools) = valid_maps();
         let mut cfg = make_root_cfg(providers, models, pools);
@@ -2036,20 +1825,8 @@ fn test_validate_chain_tokens_module_removed_message() {
 
 #[test]
 fn test_validate_chain_unknown_module_rejected_keys_accepted() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // `config_validate::validate` runs BEFORE the plugin registry exists (see this crate's
-    // `config_validate::check` doc comment), so it genuinely cannot tell a real `kind: auth`
-    // plugin name from a typo -- that distinction is made by main.rs's later, registry-aware check
-    // (`auth.chain module '{name}' does not match any plugin in ...`), run right after this one. A
-    // plugin-shaped name (like `okta`, standing in for any real IdP plugin alias) must therefore NOT
-    // be rejected at THIS layer -- an earlier version of this rule hard-rejected every non-`keys`
-    // name right here, which meant NO `kind: auth` plugin (including the real `auth-oidc` plugin)
-    // could ever pass config_validate, since this always-first check always lost before the
-    // plugin-aware one got a chance to run. See `crates/busbar/tests/cli_validate.rs`'s
-    // `validate_fails_on_unresolvable_auth_chain_plugin` for the regression test proving the LATER
-    // layer still catches a genuinely unresolvable name -- fail-closed is preserved end to end, just
-    // at the check that can actually tell.
+
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(make_auth_chain(&["okta"], crate::auth::UpstreamCreds::Own));
@@ -2060,8 +1837,6 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
         validate(&cfg)
     );
 
-    // The REMOVED 1.4.x names are still rejected here, precisely -- this layer CAN judge them
-    // without any registry access, so there's no reason to defer that one.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(make_auth_chain(
@@ -2074,7 +1849,6 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
         "expected the removed-module migration message; got: {errs:?}"
     );
 
-    // `keys` (the built-in signed-key verifier) is accepted.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(make_auth_chain(&["keys"], crate::auth::UpstreamCreds::Own));
@@ -2084,7 +1858,6 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
         validate(&cfg)
     );
 
-    // The empty chain (open front door) carries no requirement.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(make_auth_chain(&[], crate::auth::UpstreamCreds::Own));
@@ -2094,16 +1867,11 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     );
 }
 
-/// 1.5.2: `auth.chain: [keys]` with a signing key but NO usable MINT PATH via `admin_auth`
-/// (the default operator-credential `admin_auth:` carrying no `token:`) is a BOOT ERROR — a vkey can
-/// only be minted through the `admin_auth` chain, so nothing could ever mint one and every
-/// request would be rejected. Before 1.5.2 no mint-path rule existed, so this config validated
-/// clean (and booted as a silent sealed relay).
 #[test]
 fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    // default_none carries the operator credential with NO token ref → no usable mint path.
+
     let mut auth = crate::config::AuthCfg::default_none();
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
@@ -2119,28 +1887,17 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
     );
 }
 
-/// 1.5.1+: `auth.chain: [keys]` with a usable mint path via `admin_auth` but NO
-/// `auth.signing_key` is a BOOT ERROR — busbar no longer auto-generates a signing key, so the
-/// built-in `keys` verifier has nothing to verify busbar-signed tokens with and every request
-/// would be rejected. Isolates the signing-key rule from the mint-path rule by supplying a
-/// usable mint path: an explicit empty `admin_auth: []`, the one structural mint path that
-/// validates whether or not an auth row answers the operator credential (with none, a configured
-/// admin token would itself be a second, unrelated error —
-/// see `make_auth_chain`). Setting `signing_key` clears the error. Before 1.5.1 busbar
-/// auto-generated a key at boot, so this config validated clean.
 #[test]
 fn test_keys_chain_without_signing_key_is_boot_error() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
 
-    // RED: keys verifier + a usable mint path (empty admin_auth) but NO signing_key.
     let mut auth = crate::config::AuthCfg::default_none();
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
     )];
-    auth.admin_auth = vec![]; // explicit OPEN admin ⇒ usable mint path, so the mint-path rule stays quiet
+    auth.admin_auth = vec![];
     assert!(
         auth.signing_key.is_none(),
         "the RED case sets no signing_key"
@@ -2153,7 +1910,6 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
         "expected the signing-key requirement boot error; got: {errs:?}"
     );
 
-    // GREEN: setting auth.signing_key clears it (empty-admin_auth mint path already present).
     let mut auth_ok = crate::config::AuthCfg::default_none();
     auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
@@ -2168,12 +1924,8 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
     );
 }
 
-/// 1.5.2: an IdP chain (`[oidc]`, a plugin) needs NO mint path via `admin_auth` — its
-/// identities are EXTERNALLY issued, so the mint-path rule must NOT fire. Boots clean with no
-/// spurious mint-path error even when `admin_auth` grants no mint capability.
 #[test]
 fn test_1_5_2_oidc_chain_needs_no_mint_path() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
@@ -2188,31 +1940,18 @@ fn test_1_5_2_oidc_chain_needs_no_mint_path() {
     );
 }
 
-/// 1.5.2, the github/ldap gap. `auth.chain: [keys]` whose ONLY entry in `admin_auth` is an
-/// EXTERNAL IdP module (github/ldap) is a usable mint path ONLY if that module declares
-/// `max_admin_scope: full`; otherwise nothing can mint a vkey and EVERY request is rejected.
-/// This is the exact config that cost a cycle: the gate's Phase B github/ldap arms named the
-/// module in `admin_auth` but did NOT grant it `max_admin_scope: full`, so `keys`
-/// failed to validate with "no admin credential can mint one" — deep in a phase, hard to read.
-/// This locks that in as a fast, obvious boot error. Isolates the EXTERNAL-module branch of
-/// `AuthCfg::usable_mint_path` (the earlier mint-path test covers only the operator branch);
-/// signing_key is supplied so the signing-key rule stays quiet and only the mint-path rule can fire.
-/// Feature-independent (the branch is purely structural), so it holds under `--no-default-features`.
 #[test]
 fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
 
-    // RED: keys verifier + signing_key, but the only entry in admin_auth (an external github/ldap
-    // IdP module) does NOT declare max_admin_scope: full ⇒ NO usable mint path ⇒ boot error.
     let mut auth = crate::config::AuthCfg::default_none();
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
     )];
     auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
-    // external IdP, no mint grant
+
     auth.admin_auth = vec![crate::config::AuthChainEntry::bare("test-external-idp")];
     cfg.auth = Some(auth);
     let errs = validate(&cfg)
@@ -2223,8 +1962,6 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
         "expected the mint-path boot error for the github/ldap gap; got: {errs:?}"
     );
 
-    // GREEN: the SAME external module in admin_auth, now declaring max_admin_scope: full, IS a
-    // usable mint path — an external IdP can mint — so the config validates clean.
     let mut auth_ok = crate::config::AuthCfg::default_none();
     auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
@@ -2243,9 +1980,6 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
 
 #[test]
 fn test_validate_token_on_non_operator_entry_rejected() {
-    // `token:` is the operator credential; on any other chain entry it is inert and almost
-    // certainly a misplaced secret. Fail loud, with the paste-ready relocation stub — v1.5.5's
-    // refusal, byte for byte (`git show v1.5.5:crates/busbar/src/config_validate/mod.rs`, 1175).
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
@@ -2254,7 +1988,7 @@ fn test_validate_token_on_non_operator_entry_rejected() {
     auth.chain = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("token on a non-operator entry must fail validation");
-    // v1.5.5's text over the handed-in word (this build's double); the root pins 1.5.5's bytes.
+
     let op = config::operator_provider();
     assert!(
         errs.iter().any(|e| *e
@@ -2269,9 +2003,6 @@ fn test_validate_token_on_non_operator_entry_rejected() {
 
 #[test]
 fn test_legacy_auth_keys_are_rejected_at_parse() {
-    // CLEAN BREAK: the removed 1.4.x auth keys (`mode:`, `token:`, `client_tokens:`, `modules:`)
-    // are rejected AT PARSE by `AuthCfg`'s deny_unknown_fields - never a silent credential drop
-    // and never a deferred validate-time check.
     let yaml = r#"
 listen: "0.0.0.0:8080"
 auth:
@@ -2293,15 +2024,12 @@ models:
         msg.contains("unknown field"),
         "expected serde's unknown-field error at parse; got: {msg}"
     );
-    // The rejected secret value is NEVER echoed back in the parse error.
+
     assert!(
         !msg.contains("stale-legacy-secret"),
         "the parse error must not leak the configured token value; got: {msg}"
     );
 
-    // The removed `api_key_env:` provider key is likewise a parse error (renamed to
-    // `api_key: { env: ... }`): it is not the credential, so the entry names none. (A key beyond
-    // busbar's is a provider option, judged at validation by the plane, owner ruling 2026-10-27.)
     let yaml2 = r#"
 listen: "0.0.0.0:8080"
 providers:
@@ -2323,26 +2051,15 @@ use crate::test_support::warn_capture::WarnCapture;
 
 #[test]
 fn test_validate_passthrough_warns_on_nonempty_configured_key() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // In passthrough mode the proxy engine selects the upstream key as
-    // `caller_token.unwrap_or("")` (NOT `lane.api_key` - that was hardened per LOW #15), so under
-    // passthrough the configured `api_key` is NEVER forwarded: it is inert dead config. Its presence
-    // means the operator likely wanted static-key gating (`upstream_credentials: own`) but wired
-    // passthrough. validate() must emit a prominent boot WARNING for any provider whose `api_key_env`
-    // resolves to a NON-EMPTY value while auth.mode=passthrough. A legit signature-auth passthrough
-    // provider authenticates per-request (no static key ever resolves) and resolves an EMPTY key, so
-    // it must NOT warn - that is the second half of this test.
+
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    // Unique env-var names so parallel tests cannot clobber the values we set/read here.
     let leak_env = "BUSBAR_T_R22_PASSTHROUGH_LEAK_KEY";
     let vendor_b_env = "BUSBAR_T_R22_PASSTHROUGH_VENDOR_B_KEY";
     std::env::set_var(leak_env, "sk-busbar-secret-should-not-leak");
-    std::env::remove_var(vendor_b_env); // signature-auth passthrough: no static key (per-request signing)
+    std::env::remove_var(vendor_b_env);
 
-    // Provider WITH a non-empty resolved key (the leak case) + signature-auth-style provider whose
-    // key env is unset (the legit case). Both providers need a model so validate() has full context.
     let mut providers = HashMap::new();
     providers.insert(
         "leaky".to_string(),
@@ -2364,8 +2081,7 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
         &[],
         crate::auth::UpstreamCreds::Passthrough,
     ));
-    // 1.5.3: the credential MODE is the reserved `pools.upstream_credentials:` key now,
-    // resolved onto `RootCfg` — not a field of `auth:`.
+
     cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
 
     let cap = WarnCapture::default();
@@ -2374,9 +2090,6 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
 
     std::env::remove_var(leak_env);
 
-    // The combo is a WARN, not a hard error: passthrough has no token-allowlist requirement, so
-    // validation still succeeds (the warning is the diagnostic, so a deliberate static-key
-    // fallback is not broken).
     assert!(
         result.is_ok(),
         "passthrough + non-empty key is a warning, not a hard error; got: {result:?}"
@@ -2388,9 +2101,7 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
             .any(|m| m.contains("inert dead config") && m.contains("leaky")),
         "expected a passthrough inert-configured-key warning naming the 'leaky' provider; got: {msgs:?}"
     );
-    // The signature-auth-style provider with an EMPTY resolved key must NOT trip the warning —
-    // otherwise a legit per-request-signing passthrough deployment is spammed with a false-positive
-    // credential-leak alert.
+
     assert!(
             !msgs.iter().any(|m| m.contains("vendor-b")),
             "a provider whose api_key_env resolves empty must NOT warn (legit signature-auth passthrough); got: {msgs:?}"
@@ -2399,11 +2110,8 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
 
 #[test]
 fn test_validate_passthrough_no_warn_when_all_keys_empty() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // Counter-case: with auth.mode=passthrough and EVERY provider's api_key_env unset, no
-    // credential-leak warning fires — the guard keys off the RESOLVED value, not merely the
-    // presence of the passthrough mode. This pins the false-positive boundary.
+
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let empty_env = "BUSBAR_T_R22_PASSTHROUGH_EMPTY_KEY";
@@ -2421,8 +2129,7 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
         &[],
         crate::auth::UpstreamCreds::Passthrough,
     ));
-    // 1.5.3: the credential MODE is the reserved `pools.upstream_credentials:` key now,
-    // resolved onto `RootCfg` — not a field of `auth:`.
+
     cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
 
     let cap = WarnCapture::default();
@@ -2440,9 +2147,8 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
 
 #[test]
 fn test_validate_empty_chain_carries_no_requirement() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // The 1.4.x "mode: none" posture is an EMPTY chain now: no auth module, no requirement.
+
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(make_auth_chain(&[], crate::auth::UpstreamCreds::Own));
@@ -2454,47 +2160,37 @@ fn test_validate_empty_chain_carries_no_requirement() {
 
 #[test]
 fn test_ssrf_blocks_metadata_denylist_by_default() {
-    // Under the metadata-denylist model, ONLY cloud-metadata endpoints are blocked by default —
-    // and every obfuscation form of each metadata IP must be caught, not just the canonical
-    // spelling. The link-local /16 covers IMDS, ECS task-creds, Tencent, etc. in one range.
     for blocked in [
-        // --- link-local /16 (IMDS, ECS, Tencent, …) ---
-        "https://169.254.169.254/latest/meta-data/", // IMDS
+        "https://169.254.169.254/latest/meta-data/",
         "https://169.254.169.254/",
-        "http://169.254.169.254/", // http form (link-local ⇒ scheme ok, then metadata-blocked)
-        "https://169.254.170.2/v2/credentials", // AWS ECS task-credentials
-        "https://169.254.0.23/",   // Tencent metadata (still link-local)
-        // --- non-link-local metadata literals ---
-        "https://100.100.100.200/latest/meta-data/", // Alibaba ECS (inside CGNAT /10)
+        "http://169.254.169.254/",
+        "https://169.254.170.2/v2/credentials",
+        "https://169.254.0.23/",
+        "https://100.100.100.200/latest/meta-data/",
         "http://100.100.100.200/",
-        "https://168.63.129.16/",   // Azure WireServer/platform
-        "https://[fd00:ec2::254]/", // EC2 IMDSv6
-        // --- metadata hostnames (case-insensitive, trailing-dot stripped) ---
+        "https://168.63.129.16/",
+        "https://[fd00:ec2::254]/",
         "https://metadata.google.internal/computeMetadata/v1/",
         "https://METADATA.INTERNAL/",
         "https://metadata.tencentyun.com/",
         "https://metadata.platformequinix.com/",
         "https://instance-data/latest/meta-data/",
         "https://instance-data.ec2.internal/",
-        "https://metadata.google.internal./", // trailing-dot FQDN form
-        // --- obfuscation forms of the metadata IPs (must apply to every literal) ---
-        "https://[::ffff:169.254.169.254]/", // IMDS via IPv4-mapped IPv6
-        "https://[::169.254.169.254]/",      // IMDS via IPv4-compatible IPv6
-        "https://[::ffff:169.254.170.2]/",   // ECS creds via mapped IPv6
-        "https://[::ffff:100.100.100.200]/", // Alibaba via mapped IPv6
-        "https://[::ffff:168.63.129.16]/",   // Azure via mapped IPv6
-        "https://2852039166/",               // IMDS via decimal-int (= 169.254.169.254)
-        "https://0xa9fea9fe/",               // IMDS via hex
-        "https://169.254.169.254./",         // IMDS, trailing dot
-        "https://169%2E254%2E169%2E254/",    // IMDS, percent-encoded dots
-        "https://169.254.169.254:8443/",     // IMDS with port
-        "https://user:pass@169.254.169.254/latest", // IMDS behind userinfo
-        // --- obfuscated inet_aton forms of IMDS (must be caught and canonicalized) ---
-        "https://169.254.43518/", // 3-part inet_aton of 169.254.169.254
-        "https://169.16689662/",  // 2-part inet_aton of 169.254.169.254
+        "https://metadata.google.internal./",
+        "https://[::ffff:169.254.169.254]/",
+        "https://[::169.254.169.254]/",
+        "https://[::ffff:169.254.170.2]/",
+        "https://[::ffff:100.100.100.200]/",
+        "https://[::ffff:168.63.129.16]/",
+        "https://2852039166/",
+        "https://0xa9fea9fe/",
+        "https://169.254.169.254./",
+        "https://169%2E254%2E169%2E254/",
+        "https://169.254.169.254:8443/",
+        "https://user:pass@169.254.169.254/latest",
+        "https://169.254.43518/",
+        "https://169.16689662/",
     ] {
-        // Assert the ACTUAL returned host is a non-empty string (so a bug returning
-        // Some("") / Some("garbage") cannot pass). The returned host is the normalized authority.
         let got = ssrf_blocked_host(blocked, &[], false, &[]);
         let host = got.as_deref().unwrap_or_else(|| {
             panic!("expected '{blocked}' to be flagged as a metadata SSRF target")
@@ -2508,8 +2204,6 @@ fn test_ssrf_blocks_metadata_denylist_by_default() {
 
 #[test]
 fn test_ssrf_blocked_returns_exact_host_string() {
-    // Pin the EXACT host string `ssrf_blocked_host` returns for representative targets, so a
-    // regression returning `Some("")` / `Some("garbage")` (which `.is_some()` would accept) fails.
     assert_eq!(
         ssrf_blocked_host("https://169.254.169.254/latest", &[], false, &[]).as_deref(),
         Some("169.254.169.254")
@@ -2531,8 +2225,6 @@ fn test_ssrf_blocked_returns_exact_host_string() {
 
 #[test]
 fn test_expand_alternate_ipv4_imds_obfuscations() {
-    // DIRECT unit tests for the inet_aton canonicalizer. The 1-, 2-, and 3-part obfuscated
-    // forms of the IMDS address all canonicalize to 169.254.169.254. (0xA9FEA9FE = 2852039166.)
     let imds: std::net::Ipv4Addr = "169.254.169.254".parse().unwrap();
     assert_eq!(
         expand_alternate_ipv4("2852039166"),
@@ -2549,15 +2241,14 @@ fn test_expand_alternate_ipv4_imds_obfuscations() {
         Some(imds),
         "3-part inet_aton"
     );
-    // Don't-double-process invariant: an already-canonical dotted quad returns None (left to the
-    // IpAddr parse path), so the expander never re-canonicalizes a normal address.
+
     assert_eq!(
         expand_alternate_ipv4("169.254.169.254"),
         None,
         "an already-canonical dotted quad must return None from the expander"
     );
     assert_eq!(expand_alternate_ipv4("8.8.8.8"), None);
-    // And those obfuscated forms must be BLOCKED through the full guard.
+
     for base in [
         "https://2852039166/",
         "https://169.16689662/",
@@ -2572,13 +2263,8 @@ fn test_expand_alternate_ipv4_imds_obfuscations() {
 
 #[test]
 fn test_expand_alternate_ipv4_imds_hex_octal_forms() {
-    // Companion to `test_expand_alternate_ipv4_imds_obfuscations` (which covers the DECIMAL
-    // inet_aton forms): the canonicalizer must also collapse the HEX and OCTAL encodings of the
-    // IMDS address 169.254.169.254 (= 0xA9FEA9FE = 2852039166 = octal 025177524776) so the SSRF
-    // guard can't be bypassed by spelling the octets in base 16 or base 8.
     let imds: std::net::Ipv4Addr = "169.254.169.254".parse().unwrap();
 
-    // HEX, single 32-bit integer (`0xA9FEA9FE`) and dotted per-octet hex (`0xA9.0xFE.0xA9.0xFE`).
     assert_eq!(
         expand_alternate_ipv4("0xA9FEA9FE"),
         Some(imds),
@@ -2590,7 +2276,6 @@ fn test_expand_alternate_ipv4_imds_hex_octal_forms() {
         "dotted per-octet hex form of IMDS"
     );
 
-    // OCTAL: single 32-bit integer and dotted per-octet octal (leading-zero octets).
     assert_eq!(
         expand_alternate_ipv4("025177524776"),
         Some(imds),
@@ -2602,7 +2287,6 @@ fn test_expand_alternate_ipv4_imds_hex_octal_forms() {
         "dotted per-octet octal form of IMDS"
     );
 
-    // Each form must be BLOCKED through the full guard (ssrf_blocked_host returns the host).
     for base in [
         "https://0xA9FEA9FE/",
         "https://0xA9.0xFE.0xA9.0xFE/",
@@ -2618,10 +2302,6 @@ fn test_expand_alternate_ipv4_imds_hex_octal_forms() {
 
 #[test]
 fn test_reject_cidr_metadata_entries() {
-    // A `/`-bearing entry in any metadata host-list is a no-op (these lists match by EXACT
-    // IP/hostname), so validate() must REJECT it at boot with a clear, key+value-naming error.
-
-    // Global blocked list.
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -2638,7 +2318,6 @@ fn test_reject_cidr_metadata_entries() {
         "expected a CIDR rejection naming the key+value; got: {errs:?}"
     );
 
-    // Global allow list.
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -2653,7 +2332,6 @@ fn test_reject_cidr_metadata_entries() {
         "expected a CIDR rejection naming security.allow_metadata_hosts; got: {errs:?}"
     );
 
-    // Per-provider allow list.
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
@@ -2669,8 +2347,6 @@ fn test_reject_cidr_metadata_entries() {
         "expected a CIDR rejection naming the provider's allow_metadata_hosts; got: {errs:?}"
     );
 
-    // Sanity: exact IPs/hostnames (no slash) do NOT trip the CIDR guard. (validate() may still
-    // error for other reasons — assert specifically that no CIDR error is produced.)
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -2687,13 +2363,8 @@ fn test_reject_cidr_metadata_entries() {
     }
 }
 
-/// RED (HIGH, the list entry read as written while every target is mapped): a metadata host-list
-/// entry is read as a target's host is read, through UTS #46. A full-width blocked entry blocks the
-/// ASCII target it maps to (it matched nothing, and the target was dialled), and an allow entry
-/// written the same way lifts it.
 #[test]
 fn test_metadata_list_entries_are_mapped() {
-    // `１０.９９.９９.９９` and `ｍｅｔａ.example`.
     let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";
     let full_width_name = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
     for (entry, target) in [
@@ -2713,10 +2384,6 @@ fn test_metadata_list_entries_are_mapped() {
     }
 }
 
-/// Metadata host-list entries that name no host the guard judges, one per class: UTS #46 refuses
-/// it, a `%` outside an IPv6 zone id, a last label that reads as a number but is no IPv4 address
-/// (ASCII and full width). v1.5.5 booted with every one of them and matched it to nothing: its
-/// validator refused only a `/` entry (v1.5.5 crates/busbar/src/config_validate/mod.rs:1998-2005).
 const NO_HOST_ENTRIES: [&str; 10] = [
     "b\u{fc}cher\u{ff1c}.example",
     "%6c%6fcalhost",
@@ -2730,8 +2397,6 @@ const NO_HOST_ENTRIES: [&str; 10] = [
     "\u{ff11}.\u{ff12}.\u{ff13}.\u{ff14}.\u{ff15}",
 ];
 
-/// A config valid on its own: the baseline `test_validate_empty_chain_carries_no_requirement`
-/// validates clean.
 fn no_host_entries_baseline() -> RootCfg {
     crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
@@ -2740,10 +2405,6 @@ fn no_host_entries_baseline() -> RootCfg {
     cfg
 }
 
-/// OWNER 2026-10-27: a metadata host-list entry that names no usable host FAILS STARTUP, in each of
-/// the three lists, with one error naming the key, the entry and the reason. RED: 1.5.5 booted and
-/// silently matched nothing; the 1.6.0 draft booted with one BUSBAR-3024 warning. Neither tells the
-/// operator, before traffic, that a security rule they wrote protects nothing.
 #[test]
 fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
     let entries: Vec<String> = NO_HOST_ENTRIES.iter().map(|e| e.to_string()).collect();
@@ -2780,7 +2441,6 @@ fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
         "exactly one error per entry per key: {errs:?}"
     );
 
-    // The exact errors, one per reason, as the operator reads them.
     for said in [
         "security.blocked_metadata_hosts entry 'db.1' names no usable host: its last label reads \
          as a number but it is no IPv4 address a URL client reads, so it could never match a \
@@ -2798,7 +2458,6 @@ fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
         assert!(errs.iter().any(|e| e == said), "{said}: {errs:?}");
     }
 
-    // Mappable and judgeable entries boot.
     let mut cfg = no_host_entries_baseline();
     cfg.blocked_metadata_hosts = vec![
         "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}".to_string(),
@@ -2817,9 +2476,6 @@ fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
     assert!(result.is_ok(), "mappable entries boot; got: {result:?}");
 }
 
-/// The dropped entries leave the hardened guard whole: with every list full of entries that name
-/// no host (the `%`-escaped spelling of the IMDS address among them, as an allow entry), the real
-/// internal targets are still refused, at the config's own reader and at boot.
 #[test]
 fn test_a_dropped_metadata_entry_lifts_no_real_target() {
     let entries: Vec<String> = NO_HOST_ENTRIES.iter().map(|e| e.to_string()).collect();
@@ -2855,9 +2511,6 @@ fn test_a_dropped_metadata_entry_lifts_no_real_target() {
     );
 }
 
-/// TWIN (1.5.5 parity): a `/` entry is the one class 1.5.5 refused at boot (v1.5.5
-/// crates/busbar/src/config_validate/mod.rs:1998-2005, called at :68-77 and :320-324), so it is
-/// still refused with 1.5.5's exact text and no other error of its own.
 #[test]
 fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
     let mut cfg = no_host_entries_baseline();
@@ -2889,22 +2542,20 @@ fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
 
 #[test]
 fn test_global_allow_overrides_blocked_metadata_hosts() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // global security.allow_metadata_hosts must override an entry in blocked_metadata_hosts
-    // (allow always wins) — both at the guard level and through full validate().
+
     let blocked = vec!["10.77.77.77".to_string()];
     let allow = vec!["10.77.77.77".to_string()];
     assert!(
         ssrf_blocked_host("https://10.77.77.77/", &allow, false, &blocked).is_none(),
         "global allow_metadata_hosts must override blocked_metadata_hosts"
     );
-    // Without the allow, it is blocked (proving the block entry is real).
+
     assert!(
         ssrf_blocked_host("https://10.77.77.77/", &[], false, &blocked).is_some(),
         "the host must be blocked when not allow-listed"
     );
-    // Full validate(): global allow overrides global blocked.
+
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -2921,14 +2572,12 @@ fn test_global_allow_overrides_blocked_metadata_hosts() {
 
 #[test]
 fn test_allow_all_metadata_beats_nonempty_blocked_list() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // allow_all_metadata: true wins even with a NON-EMPTY blocked_metadata_hosts — the nuclear
-    // override disables the guard wholesale.
+
     let blocked = vec!["10.0.0.7".to_string(), "metadata.x.example".to_string()];
     for base in [
-        "https://169.254.169.254/", // hardcoded denylist
-        "https://10.0.0.7/",        // operator-listed
+        "https://169.254.169.254/",
+        "https://10.0.0.7/",
         "https://metadata.x.example/",
     ] {
         assert!(
@@ -2952,10 +2601,6 @@ fn test_allow_all_metadata_beats_nonempty_blocked_list() {
 
 #[test]
 fn test_ssrf_allows_private_and_loopback_by_default() {
-    // Loopback / RFC-1918 / CGNAT / localhost are legitimate LOCAL-MODEL upstreams and are
-    // ALLOWED with no flag — they are NOT metadata endpoints. (The link-local /16 minus the
-    // metadata literals is still allowed too, but link-local is unusual for a model; the key
-    // cases are loopback/RFC-1918/CGNAT.)
     for allowed in [
         "https://127.0.0.1/",
         "https://10.0.0.1/v1",
@@ -2963,17 +2608,17 @@ fn test_ssrf_allows_private_and_loopback_by_default() {
         "https://192.168.1.1:8443/",
         "https://[::1]/",
         "https://[::1]:443/",
-        "https://[fe80::1]/", // IPv6 link-local (not a metadata literal)
-        "https://[fc00::1]/", // IPv6 ULA
+        "https://[fe80::1]/",
+        "https://[fc00::1]/",
         "https://0.0.0.0/",
         "https://user:pass@10.0.0.5/path",
-        "https://100.64.0.1/", // CGNAT (Tailscale)
+        "https://100.64.0.1/",
         "https://100.127.255.255/",
-        "https://[::ffff:10.0.0.1]/",   // RFC-1918 via mapped IPv6
-        "https://[::ffff:100.64.0.1]/", // CGNAT via mapped IPv6
-        "https://[::127.0.0.1]/",       // loopback via compatible IPv6
-        "https://2130706433/",          // decimal int = 127.0.0.1 (private, allowed)
-        "https://127.1/",               // short dotted form = 127.0.0.1
+        "https://[::ffff:10.0.0.1]/",
+        "https://[::ffff:100.64.0.1]/",
+        "https://[::127.0.0.1]/",
+        "https://2130706433/",
+        "https://127.1/",
         "https://localhost/",
         "https://api.localhost:11434/v1",
         "https://service.internal.localhost/",
@@ -2988,20 +2633,11 @@ fn test_ssrf_allows_private_and_loopback_by_default() {
 
 #[test]
 fn test_ssrf_blocks_backslash_authority_bypass() {
-    // `https` is a WHATWG special scheme, so reqwest's `url` crate
-    // rewrites every `\` to `/` while parsing — terminating the authority at the FIRST `\`. A
-    // hand-parser that split only on `['/', '?', '#']` saw the whole `10.0.0.1\x.allowed.com` as
-    // the host (passing every internal/metadata check) while reqwest connected to `10.0.0.1` /
-    // `169.254.169.254` with the lane API key attached — a credential-relay SSRF. The guard must
-    // normalize `\`→`/` BEFORE splitting so it sees the SAME authority boundary reqwest will.
-    // The real host before the `\` here is a METADATA endpoint; the trick tries to disguise it as
-    // a benign `allowed.com` suffix. The guard must still see the metadata target.
     for blocked in [
         "https://169.254.169.254\\a.b",
         "https://169.254.169.254\\x.allowed.com/v1/messages",
         "https://100.100.100.200\\evil.example.com/",
         "https://metadata.google.internal\\x.allowed.com",
-        // Mixed delimiters: the backslash must still terminate the authority before the slash.
         "https://169.254.169.254\\@allowed.com/path",
     ] {
         assert!(
@@ -3010,8 +2646,7 @@ fn test_ssrf_blocks_backslash_authority_bypass() {
                  (reqwest rewrites \\ to /), so the real host is the metadata target before it"
         );
     }
-    // A full validate() pass must reject a base_url using the backslash-authority trick to reach
-    // a metadata host.
+
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -3032,14 +2667,6 @@ fn test_ssrf_blocks_backslash_authority_bypass() {
 
 #[test]
 fn test_ssrf_blocks_embedded_tab_newline_bypass() {
-    // The WHATWG URL spec's basic parser strips ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D)
-    // bytes from the ENTIRE input as its very first step, before scheme/authority parsing even
-    // begins — not just leading/trailing whitespace. reqwest's `url` crate implements this. A tab
-    // is a legal byte inside a YAML double-quoted scalar, so an operator-editable `base_url` like
-    // `"https://169.254.169\t.254/"` is a real, reachable config shape. Without mirroring the
-    // strip, the guard sees the non-IP, non-metadata-matching host `169.254.169\t.254` (passes
-    // every check) while the connecting stack deletes the tab and connects to the actual IMDS
-    // address `169.254.169.254` — an SSRF bypass.
     for blocked in [
         "https://169.254.169\t.254/v1/messages",
         "https://169.254.169.254\t/v1/messages",
@@ -3052,8 +2679,7 @@ fn test_ssrf_blocks_embedded_tab_newline_bypass() {
                  the WHATWG parser and reqwest's `url` crate do) reveals the real metadata host"
         );
     }
-    // A full validate() pass must reject a base_url using the embedded-tab trick to reach a
-    // metadata host.
+
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -3070,11 +2696,6 @@ fn test_ssrf_blocks_embedded_tab_newline_bypass() {
 
 #[test]
 fn test_validate_rejects_path_override_host_fusion() {
-    // A provider `path` override is appended to base_url VERBATIM
-    // at request time (`format!("{base}{wire_path}")`), and the composed string chooses the
-    // connect host. base_url validation alone misses this: a path NOT starting with '/' fuses
-    // into the authority — base_url `https://api.example.com` + path `.evil.com/v1` connects to
-    // host `api.example.com.evil.com` with the lane API key attached (credential-relay SSRF).
     let mut providers = HashMap::new();
     let mut fused = make_provider(proto_b(), "https://api.example.com", "API_KEY");
     fused.path = Some(".evil.com/v1/chat/completions".to_string());
@@ -3087,12 +2708,6 @@ fn test_validate_rejects_path_override_host_fusion() {
         "expected a leading-slash path error for 'fused'; got: {errs:?}"
     );
 
-    // The host-fusion vector is symmetric for any non-slash leading char that extends the host
-    // label — a `@` (userinfo flip) or a bare label both fuse. base_url `https://api.example.com`
-    // + path `@169.254.169.254/x` composes to `https://api.example.com@169.254.169.254/x`, whose
-    // host is the IMDS endpoint with `api.example.com` demoted to userinfo. The leading-slash
-    // rule rejects it (it does not start with '/'), and as belt-and-suspenders the composed url
-    // is also an SSRF target — assert at minimum the leading-slash diagnostic fires.
     let mut providers2 = HashMap::new();
     let mut imds = make_provider(proto_b(), "https://api.example.com", "API_KEY");
     imds.path = Some("@169.254.169.254/latest/meta-data".to_string());
@@ -3109,10 +2724,8 @@ fn test_validate_rejects_path_override_host_fusion() {
 
 #[test]
 fn test_validate_accepts_well_formed_path_override() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // The shipped catalog form — a leading-slash path on a public host — must validate. Mirrors
-    // the `zai-payg` provider (`base_url: .../api/paas/v4` + `path: /chat/completions`).
+
     let mut providers = HashMap::new();
     let mut p = make_provider(proto_b(), "https://api.example.com/api/paas/v4", "API_KEY");
     p.path = Some("/chat/completions".to_string());
@@ -3126,14 +2739,11 @@ fn test_validate_accepts_well_formed_path_override() {
 
 #[test]
 fn test_ssrf_cgnat_allowed_but_alibaba_literal_blocked() {
-    // CGNAT 100.64.0.0/10 is a legitimate local-model range (Tailscale) and is ALLOWED — EXCEPT
-    // the single Alibaba metadata literal 100.100.100.200 that lives inside it, which stays
-    // blocked. Addresses just outside the /10 are ordinary public addresses (also allowed).
     assert!(ssrf_blocked_host("https://100.64.0.0/", &[], false, &[]).is_none());
     assert!(ssrf_blocked_host("https://100.127.255.255/", &[], false, &[]).is_none());
     assert!(ssrf_blocked_host("https://100.63.255.255/", &[], false, &[]).is_none());
     assert!(ssrf_blocked_host("https://100.128.0.1/", &[], false, &[]).is_none());
-    // The Alibaba metadata literal inside the CGNAT range stays blocked.
+
     assert!(
             ssrf_blocked_host("https://100.100.100.200/", &[], false, &[]).is_some(),
             "the Alibaba metadata literal 100.100.100.200 must stay blocked even though CGNAT is allowed"
@@ -3158,11 +2768,6 @@ fn test_validate_rejects_zero_weight_member() {
 
 #[test]
 fn test_validate_rejects_empty_pool_members() {
-    // A pool with an EMPTY member list parses fine but is permanently un-routable: every
-    // request to it exhausts immediately and 503s with a misleading "overloaded" message, with
-    // no boot diagnostic. This is the empty-set twin of the weight:0 / max_concurrent:0 /
-    // breaker n:0 fail-loud guards — reject it at startup. (Fails against old code, which had
-    // no empty-members check and let such a pool boot.)
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     pools.insert("emptypool".to_string(), make_pool(vec![]));
@@ -3177,7 +2782,6 @@ fn test_validate_rejects_empty_pool_members() {
 
 #[test]
 fn test_validate_accepts_pool_with_at_least_one_member() {
-    // A pool with one or more members must NOT trip the empty-members guard.
     let (providers, models, pools) = valid_maps();
     let cfg = make_root_cfg(providers, models, pools);
     let result = validate(&cfg);
@@ -3191,9 +2795,8 @@ fn test_validate_accepts_pool_with_at_least_one_member() {
 
 #[test]
 fn test_validate_accepts_positive_weight_member() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // The default weight (1) and any positive weight must validate.
+
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut w = make_member("mymodel");
@@ -3208,19 +2811,15 @@ fn test_validate_accepts_positive_weight_member() {
 
 #[test]
 fn test_ssrf_blocked_host_allows_public_targets() {
-    // Public hostnames and public IPs must NOT be flagged.
     for ok in [
         "https://api.acme.example.com/v1/messages",
         "https://api.vendor-a.example.com",
         "https://example.com:8443/v1",
         "https://8.8.8.8/",
         "https://[2606:4700:4700::1111]/",
-        // Public hostnames whose right-most label merely CONTAINS "localhost" but is not the
-        // reserved `.localhost` TLD must NOT be flagged — only an exact right-most `localhost`
-        // label is loopback. These are ordinary public DNS names.
         "https://mylocalhost.com/",
         "https://notlocalhost.example.com/",
-        "https://localhost.example.com/", // `localhost` is a left label, TLD is `com`
+        "https://localhost.example.com/",
     ] {
         assert!(
             ssrf_blocked_host(ok, &[], false, &[]).is_none(),
@@ -3231,7 +2830,6 @@ fn test_ssrf_blocked_host_allows_public_targets() {
 
 #[test]
 fn test_validate_rejects_https_internal_base_url() {
-    // A full validate() pass must reject an https:// base_url pointing at IMDS.
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -3266,10 +2864,6 @@ fn test_validate_rejects_unknown_fallback_pool() {
     );
 }
 
-/// The 1.5.0 heir of the malformed-action drift test: `on_exhausted` is a STRUCTURED enum
-/// now, so a malformed action (`bogus`, or the retired `fallback_pool:name` string form) is
-/// rejected AT PARSE - it can never reach validate() or boot at all, closing the drift by
-/// construction. The three well-formed spellings parse to the expected variants.
 #[test]
 fn test_on_exhausted_is_structured_and_rejects_malformed_at_parse() {
     assert!(
@@ -3296,14 +2890,13 @@ fn test_on_exhausted_is_structured_and_rejects_malformed_at_parse() {
 
 #[test]
 fn test_validate_accepts_existing_fallback_pool() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
     pool.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("backup".to_string()));
     pools.insert("mypool".to_string(), pool);
-    // The referenced fallback pool exists → no error.
+
     pools.insert(
         "backup".to_string(),
         make_pool(vec![make_member("mymodel")]),
@@ -3317,8 +2910,6 @@ fn test_validate_accepts_existing_fallback_pool() {
 
 #[test]
 fn test_queue_config_parses_and_both_keys_conflict() {
-    // Disambiguation: a `queue` mapping parses to Queue{max_ms}; a mapping carrying BOTH
-    // `fallback_pool` and `queue` is an explicit "exactly one of" error, not a silent force-fit.
     match serde_yaml::from_str::<config::OnExhaustedCfg>("{ queue: { max_ms: 250 } }").unwrap() {
         config::OnExhaustedCfg::Queue { max_ms } => assert_eq!(max_ms, 250),
         other => panic!("expected Queue, got {other:?}"),
@@ -3335,12 +2926,11 @@ fn test_queue_config_parses_and_both_keys_conflict() {
 
 #[test]
 fn test_validate_accepts_queue_within_budget() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
-    // Default resolved failover budget is 120s = 120000ms; 250ms is well within it.
+
     pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 250 });
     pools.insert("mypool".to_string(), pool);
     let cfg = make_root_cfg(providers, models, pools);
@@ -3368,8 +2958,6 @@ fn test_validate_rejects_queue_max_ms_zero() {
 
 #[test]
 fn test_validate_rejects_queue_max_ms_exceeding_resolved_budget() {
-    // The budget is the RESOLVED per-pool failover timeout: set this pool's own timeout to 1s
-    // (1000ms) and ask for a 2000ms queue — it exceeds the pool's OWN budget and must be rejected.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -3390,17 +2978,13 @@ fn test_validate_rejects_queue_max_ms_exceeding_resolved_budget() {
     );
 }
 
-/// Boundary: `queue.max_ms` EXACTLY equal to the resolved failover budget is ACCEPTED (only a value
-/// strictly greater is rejected — the validator uses `max_ms > budget_ms`). Guards the `<` vs `<=`
-/// off-by-one the sibling reject test cannot catch.
 #[test]
 fn test_validate_accepts_queue_max_ms_equal_to_resolved_budget() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
-    // Resolved budget = 1s = 1000ms; ask for EXACTLY 1000ms.
+
     pool.failover = Some(config::FailoverCfg {
         timeout_secs: 1,
         exclusions: None,
@@ -3415,9 +2999,6 @@ fn test_validate_accepts_queue_max_ms_equal_to_resolved_budget() {
     );
 }
 
-/// Rule 6b upper bound: a `failover.timeout_secs` beyond the 24h maximum is a fat-finger typo (an
-/// over-large value would otherwise feed `RequestCtx::new` an `Instant`-overflowing duration). It must
-/// be rejected at `--validate`/boot with an actionable message.
 #[test]
 fn test_validate_rejects_failover_timeout_secs_over_max() {
     let (providers, models, _) = valid_maps();
@@ -3441,12 +3022,10 @@ fn test_validate_rejects_failover_timeout_secs_over_max() {
 
 #[test]
 fn test_validate_rejects_self_referential_fallback_pool() {
-    // A pool whose on_exhausted fallback points at ITSELF (A -> A) never engages at runtime
-    // (the loop guard terminates on re-entry) — reject it at boot.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
-    // points at its own name
+
     pool.on_exhausted = Some(config::OnExhaustedCfg::FallbackPool("mypool".to_string()));
     pools.insert("mypool".to_string(), pool);
     let cfg = make_root_cfg(providers, models, pools);
@@ -3456,17 +3035,14 @@ fn test_validate_rejects_self_referential_fallback_pool() {
             .any(|e| e.contains("references itself as its fallback pool") && e.contains("mypool")),
         "expected a self-referential fallback-pool error; got: {errs:?}"
     );
-    // It must NOT be misreported as a dangling/unknown fallback pool (the pool exists).
+
     assert!(
         !errs
             .iter()
             .any(|e| e.contains("references unknown fallback pool")),
         "a self-reference must not be reported as an unknown fallback pool; got: {errs:?}"
     );
-    // Rule 7b (the multi-hop cycle detector) deliberately excludes the length-1 ring a self-loop
-    // produces (`ring.len() > 1`) — Rule 7 above already reports it, and Rule 7b re-reporting it
-    // would be a confusing duplicate diagnostic for the same misconfiguration. A mutated `> 1` ->
-    // `>= 1` would let Rule 7b's ring (len 1 for a self-loop) also fire here.
+
     assert!(
         !errs
             .iter()
@@ -3477,9 +3053,6 @@ fn test_validate_rejects_self_referential_fallback_pool() {
 
 #[test]
 fn test_validate_rejects_two_pool_fallback_cycle() {
-    // A <-> B: pool A falls back to B and B falls back to A. The runtime loop guard collapses
-    // the ring into a 503, so startup must reject it. The cycle must be reported EXACTLY ONCE
-    // (not once per ring member).
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut a = make_pool(vec![make_member("mymodel")]);
@@ -3508,7 +3081,6 @@ fn test_validate_rejects_two_pool_fallback_cycle() {
 
 #[test]
 fn test_validate_rejects_three_pool_fallback_cycle() {
-    // A -> B -> C -> A: a longer ring must also be rejected, and reported exactly once.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     for (name, next) in [("p1", "p2"), ("p2", "p3"), ("p3", "p1")] {
@@ -3531,10 +3103,8 @@ fn test_validate_rejects_three_pool_fallback_cycle() {
 
 #[test]
 fn test_validate_accepts_acyclic_fallback_chain() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // A -> B -> C (no loop back) is a legitimate degraded-routing chain and must NOT be flagged
-    // as a cycle (guard against an over-broad cycle detector). C has no fallback.
+
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut a = make_pool(vec![make_member("mymodel")]);
@@ -3555,11 +3125,8 @@ fn test_validate_accepts_acyclic_fallback_chain() {
 
 #[test]
 fn test_validate_accepts_diamond_fallback_no_cycle() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // A->C and B->C (two pools share a downstream fallback) is NOT a cycle: C is visited from
-    // two distinct walks but neither walk loops. Guards the min-member dedup logic against a
-    // false positive on a converging (non-looping) graph.
+
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut a = make_pool(vec![make_member("mymodel")]);
@@ -3580,9 +3147,6 @@ fn test_validate_accepts_diamond_fallback_no_cycle() {
 
 #[test]
 fn test_affinity_mode_is_a_closed_enum() {
-    // `affinity.mode` is now an `AffinityMode` enum, so an unrecognized spelling ('sticky') is
-    // rejected at DESERIALIZE time rather than by a hand-check in validate(). The one accepted
-    // wire string ('session') is unchanged from the pre-enum `String` field.
     assert_eq!(
         serde_yaml::from_str::<config::AffinityMode>("session").unwrap(),
         config::AffinityMode::Session
@@ -3595,7 +3159,6 @@ fn test_affinity_mode_is_a_closed_enum() {
 
 #[test]
 fn test_validate_accepts_session_affinity_mode() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
@@ -3612,14 +3175,11 @@ fn test_validate_accepts_session_affinity_mode() {
     );
 }
 
-/// The provider `base_url` scheme check is CASE-INSENSITIVE (RFC 3986 §3.1) — an uppercase `HTTPS://` (which reqwest lowercases and accepts) must validate, not be
-/// rejected with a misleading "must use http or https". Mirrors the webhook guard's `scheme_is`.
 #[test]
 fn test_validate_accepts_uppercase_url_scheme() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (mut providers, models, _) = valid_maps();
-    // Point an existing provider at an uppercase-scheme https URL.
+
     if let Some((_, p)) = providers.iter_mut().next() {
         p.base_url = "HTTPS://api.example.com".to_string();
     }
@@ -3629,21 +3189,14 @@ fn test_validate_accepts_uppercase_url_scheme() {
         "an uppercase HTTPS:// scheme is RFC-valid and must not be rejected: {:?}",
         validate(&cfg)
     );
-    // The scheme helper itself is case-insensitive and anchored on `://`.
+
     assert!(scheme_is("HTTPS://h", "https"));
     assert!(scheme_is("Http://h", "http"));
     assert!(!scheme_is("httpsx://h", "https"));
 }
 
-/// ROW 74 (F25): a provider `base_url` carrying `user:pass@` is ACCEPTED, as 1.5.5 accepted it
-/// (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`), and a PLANTED SCAN over every base-URL refusal
-/// this validator writes — the scheme arm, the plaintext-to-a-public-host arm, the metadata arm and
-/// the two composed (`path`, `path_base`) arms — finds neither half of the planted spelling in any
-/// error it returns, while each still names the host it is about. RED before the fix: every arm
-/// echoed the base URL as written.
 #[test]
 fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     const PLANTED: &str = "svcuser:hunter2-P4ss@";
     let with_base = |base_url: String, path: Option<&str>, path_base: Option<&str>| {
@@ -3662,7 +3215,7 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
     );
 
     let secure = format!("https://{PLANTED}api.example.com");
-    // The same URL in the plaintext scheme (a public host, so refused).
+
     let plaintext = secure.replacen("s://", "://", 1);
     let planted = [
         (
@@ -3697,13 +3250,13 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
             "each refusal still names the host it is about: {about:?}"
         );
     }
-    // The token endpoint (row 74, F25): accepted as 1.5.5 accepted it, and repeated redacted.
+
     let with_token_url = |token_url: String| {
         let mut providers = HashMap::new();
         let mut p = make_provider(proto_b(), "https://api.example.com", "API_KEY");
         p.token_url = Some(token_url);
         p.scope = Some("api://x/.default".into());
-        // The style as the operator's config spells it (a fixture), read by the config's own parser.
+
         p.auth = Some(
             serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
                 .expect("a provider style"),
@@ -3751,10 +3304,6 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
     }
 }
 
-/// An EMPTY `affinity.header_name` must be REJECTED at boot. It passes
-/// the ASCII + length checks but silently disables session affinity at runtime
-/// (`headers.get("")` is always None) — the exact silent-disable the validator's comment promises
-/// to catch.
 #[test]
 fn test_validate_rejects_empty_affinity_header_name() {
     let (providers, models, _) = valid_maps();
@@ -3814,18 +3363,12 @@ fn test_validate_affinity_header_names_follow_the_http_token_grammar() {
 
 #[test]
 fn test_pool_member_model_with_unresolvable_provider_is_not_unknown_model() {
-    // A pool member that names a model which IS defined, but whose provider does not resolve,
-    // must NOT be reported as an "unknown model" (the model exists). The model loop already
-    // emits a "references unknown provider" error for the model itself; the pool-member check
-    // must emit a distinct, accurate diagnostic pointing at the unresolvable provider rather
-    // than misleadingly claiming the model is undefined.
     let mut providers = HashMap::new();
     providers.insert(
         "realprovider".to_string(),
         make_provider(proto_a(), "https://api.example.com", "API_KEY"),
     );
 
-    // `definedmodel` is a real model entry, but its provider `ghostprovider` is not configured.
     let mut models = HashMap::new();
     models.insert("definedmodel".to_string(), make_model("ghostprovider", 10));
 
@@ -3840,7 +3383,6 @@ fn test_pool_member_model_with_unresolvable_provider_is_not_unknown_model() {
         "a model with an unresolvable provider must fail validation".to_string(),
     );
 
-    // The model loop must still report the root cause on the model itself.
     assert!(
         errs.iter().any(|e| e.contains("definedmodel")
             && e.contains("references unknown provider")
@@ -3848,7 +3390,6 @@ fn test_pool_member_model_with_unresolvable_provider_is_not_unknown_model() {
         "expected the model-level unknown-provider error; got: {errs:?}"
     );
 
-    // The pool-member check must NOT call a DEFINED model "unknown".
     assert!(
         !errs
             .iter()
@@ -3856,7 +3397,6 @@ fn test_pool_member_model_with_unresolvable_provider_is_not_unknown_model() {
         "a defined model must not be reported as an unknown model; got: {errs:?}"
     );
 
-    // It must instead emit the accurate provider-unresolvable diagnostic for the pool member.
     assert!(
         errs.iter().any(|e| e.contains("mypool")
             && e.contains("definedmodel")
@@ -3867,9 +3407,6 @@ fn test_pool_member_model_with_unresolvable_provider_is_not_unknown_model() {
 
 #[test]
 fn test_pool_member_truly_unknown_model_still_reports_unknown_model() {
-    // Guard the other side of the distinction: a member naming a model that is NOT defined at
-    // all must still get the "references unknown model" diagnostic (not the new
-    // provider-unresolvable one).
     let mut providers = HashMap::new();
     providers.insert(
         "realprovider".to_string(),
@@ -3899,9 +3436,6 @@ fn test_pool_member_truly_unknown_model_still_reports_unknown_model() {
     );
 }
 
-/// Build a single-pool config whose pool's gate hook names the given `kind: hook` plugin (empty =
-/// no plugin ref). The pool has one member targeting a valid model+provider, so the ONLY thing under
-/// test is the hook plugin-reference validation rule.
 fn plugin_pool_cfg(plugin: &str) -> RootCfg {
     let mut providers = HashMap::new();
     providers.insert(
@@ -3919,7 +3453,6 @@ fn plugin_pool_cfg(plugin: &str) -> RootCfg {
     cfg
 }
 
-/// A gate `HookCfg` backed by the given `kind: hook` plugin ref (test builder).
 fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
     config::HookCfg {
         kind: config::HookKind::Gate,
@@ -3940,7 +3473,6 @@ fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
     }
 }
 
-/// A minimal valid RootCfg with an empty hooks registry (for on_error chain tests).
 fn hooks_test_cfg() -> RootCfg {
     let mut providers = HashMap::new();
     providers.insert(
@@ -3957,19 +3489,16 @@ fn hooks_test_cfg() -> RootCfg {
     make_root_cfg(providers, models, pools)
 }
 
-/// 1.5.3: a pool referencing an UNDEFINED hook name (`pool.gates`) AND an undefined all-pools
-/// reference (`pools.hooks:` → runtime `global_hooks`) are both boot/validate errors that name the
-/// missing hook. A hook is DEFINED once under the top-level `hooks:` map and referenced by bare name.
 #[test]
 fn test_pool_and_all_pools_undefined_hook_ref_rejected() {
     let mut cfg = hooks_test_cfg();
-    // A per-pool bare-name reference to a hook that is not defined.
+
     cfg.pools
         .get_mut("p1")
         .unwrap()
         .gates
         .push("no-such-hook".to_string());
-    // An all-pools attach reference (runtime global_hooks) to another undefined hook.
+
     cfg.global_hooks.push("also-missing".to_string());
     let errs = validate(&cfg).expect_err("undefined hook references must fail validate");
     let joined = errs.join("\n");
@@ -3983,7 +3512,6 @@ fn test_pool_and_all_pools_undefined_hook_ref_rejected() {
     );
 }
 
-/// `on_error` naming an unknown fallback is a boot error (chains resolve against the registry).
 #[test]
 fn test_hook_on_error_unknown_name_rejected() {
     let mut cfg = hooks_test_cfg();
@@ -3998,7 +3526,6 @@ fn test_hook_on_error_unknown_name_rejected() {
     );
 }
 
-/// `on_error` naming a TAP is a boot error (a fallback must decide; a tap only observes).
 #[test]
 fn test_hook_on_error_tap_fallback_rejected() {
     let mut cfg = hooks_test_cfg();
@@ -4016,10 +3543,8 @@ fn test_hook_on_error_tap_fallback_rejected() {
     );
 }
 
-/// An on_error CYCLE (including a self-reference) is a boot error — every chain must terminate.
 #[test]
 fn test_hook_on_error_cycle_rejected() {
-    // a -> b -> a
     let mut cfg = hooks_test_cfg();
     let mut a = gate_hook("test-hook", 150);
     a.on_error = "b".to_string();
@@ -4033,7 +3558,6 @@ fn test_hook_on_error_cycle_rejected() {
         "{errs:?}"
     );
 
-    // self-reference
     let mut cfg = hooks_test_cfg();
     let mut selfy = gate_hook("test-hook", 150);
     selfy.on_error = "s".to_string();
@@ -4045,13 +3569,12 @@ fn test_hook_on_error_cycle_rejected() {
     );
 }
 
-/// A terminating gate chain (a -> b -> weighted) and a strategy fallback are both accepted.
 #[test]
 fn test_hook_on_error_terminating_chain_ok() {
     let mut cfg = hooks_test_cfg();
     let mut a = gate_hook("test-hook", 150);
     a.on_error = "b".to_string();
-    let b = gate_hook("test-hook", 150); // on_error: weighted
+    let b = gate_hook("test-hook", 150);
     cfg.hooks.insert("a".to_string(), a);
     cfg.hooks.insert("b".to_string(), b);
     if let Err(errs) = validate(&cfg) {
@@ -4061,10 +3584,6 @@ fn test_hook_on_error_terminating_chain_ok() {
         );
     }
 
-    // A ranking-strategy fallback terminates the chain when the build links a ranking row (a test
-    // build always links the kernel's ranking double). A build that links none refuses it at boot
-    // (compliance-by-compilation): the composition root's build without its `hooks-ranking`
-    // feature, proven where that build is made (`scripts/no-plugins-gate.sh`, RED-B).
     let mut cfg = hooks_test_cfg();
     let mut c = gate_hook("test-hook", 150);
     c.on_error = "cheapest".to_string();
@@ -4079,8 +3598,6 @@ fn test_hook_on_error_terminating_chain_ok() {
 
 #[test]
 fn test_hook_reserved_name_rejected() {
-    // A hook cannot reuse a built-in's name (ranking strategy or auth module) — registry name
-    // uniqueness. Each reserved name, defined as a valid gate hook, must be rejected by name.
     for reserved in [
         "weighted",
         "cheapest",
@@ -4116,7 +3633,6 @@ fn test_hook_reserved_name_rejected() {
 
 #[test]
 fn test_hook_at_most_one_default() {
-    // Two hooks claiming `default: true` is a boot error naming both; one (or zero) is fine.
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
@@ -4141,7 +3657,6 @@ fn test_hook_at_most_one_default() {
         "the error must name both offending defaults; got: {errs:?}"
     );
 
-    // Exactly one default is accepted (no default-rule error).
     cfg.hooks.remove("rank_b");
     if let Err(errs) = validate(&cfg) {
         assert!(
@@ -4153,7 +3668,6 @@ fn test_hook_at_most_one_default() {
 
 #[test]
 fn test_hook_default_on_tap_rejected() {
-    // `default: true` on a tap is meaningless (a tap never orders) → boot error.
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
@@ -4181,7 +3695,6 @@ fn test_hook_default_on_tap_rejected() {
 
 #[test]
 fn test_hook_nonreserved_name_ok() {
-    // A normal hook name is NOT flagged by the reserved-name rule.
     let mut providers = HashMap::new();
     providers.insert(
         "prov".to_string(),
@@ -4205,9 +3718,6 @@ fn test_hook_nonreserved_name_ok() {
     }
 }
 
-/// A hook naming a NON-EMPTY plugin passes the structural hook rule (the plugin's real existence +
-/// `kind: hook` is resolved against the registry at the plugin pre-flight, not here). The retired
-/// webhook/socket SSRF-URL validation is gone — a hook's egress (if any) now lives inside its plugin.
 #[test]
 fn test_hook_with_plugin_ref_passes_structural_rule() {
     let cfg = plugin_pool_cfg("my-hook-plugin");
@@ -4221,7 +3731,6 @@ fn test_hook_with_plugin_ref_passes_structural_rule() {
     }
 }
 
-/// A hook with an EMPTY `plugin:` reference is a startup error (it names no `kind: hook` plugin).
 #[test]
 fn test_hook_requires_plugin_ref() {
     let cfg = plugin_pool_cfg("   ");
@@ -4234,7 +3743,6 @@ fn test_hook_requires_plugin_ref() {
     );
 }
 
-// Small ergonomic helper: like `expect_err` but with a custom message and returning the Vec.
 trait UnwrapErrOrDefault {
     fn unwrap_err_or_default(self, msg: String) -> Vec<String>;
 }
@@ -4244,9 +3752,6 @@ impl UnwrapErrOrDefault for Result<(), Vec<String>> {
     }
 }
 
-// ---- metadata-denylist model: local upstreams allowed by default; metadata blocked ----
-
-/// Build a provider whose per-provider `allow_metadata_hosts` lists the given entries.
 fn make_provider_allow_hosts(base_url: &str, hosts: &[&str]) -> config::ProviderCfg {
     let mut p = make_provider(proto_b(), base_url, "API_KEY");
     p.allow_metadata_hosts = hosts.iter().map(|s| s.to_string()).collect();
@@ -4255,21 +3760,18 @@ fn make_provider_allow_hosts(base_url: &str, hosts: &[&str]) -> config::Provider
 
 #[test]
 fn test_local_upstreams_allowed_by_default_no_flag() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // The core use case: an operator fronts a local Ollama / vLLM / LM Studio. Under the
-    // metadata-denylist model this validates with NO flag — plain http:// is allowed because the
-    // host is private/loopback, and the SSRF guard allows everything that is not metadata.
+
     for base in [
         "http://localhost:11434",
         "http://127.0.0.1",
         "http://127.0.0.1:11434",
-        "http://10.0.0.5:8000",     // RFC-1918
-        "http://192.168.1.50:1234", // RFC-1918 (LM Studio)
-        "http://172.16.3.4:8000",   // RFC-1918
-        "http://100.64.0.5:8000",   // CGNAT (Tailscale)
-        "http://[::1]:11434",       // IPv6 loopback
-        "https://localhost",        // https local also fine
+        "http://10.0.0.5:8000",
+        "http://192.168.1.50:1234",
+        "http://172.16.3.4:8000",
+        "http://100.64.0.5:8000",
+        "http://[::1]:11434",
+        "https://localhost",
         "https://localhost:11434",
     ] {
         let mut providers = HashMap::new();
@@ -4288,11 +3790,8 @@ fn test_local_upstreams_allowed_by_default_no_flag() {
 
 #[test]
 fn test_scheme_rule_public_http_rejected_https_allowed() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // PUBLIC http:// is rejected (cleartext would leak the API key on the wire); public https://
-    // is allowed; local http:// is allowed (no off-box wiretap, local models are plaintext).
-    // public http → rejected with the https-for-public-host diagnostic.
+
     let mut providers = HashMap::new();
     providers.insert(
         "pub".to_string(),
@@ -4306,7 +3805,6 @@ fn test_scheme_rule_public_http_rejected_https_allowed() {
         "expected the public-host https diagnostic; got: {errs:?}"
     );
 
-    // public https → allowed; local http → allowed.
     for ok in ["https://api.example.com", "http://10.0.0.5:8000"] {
         let mut providers = HashMap::new();
         providers.insert("p".to_string(), make_provider(proto_b(), ok, "API_KEY"));
@@ -4321,34 +3819,28 @@ fn test_scheme_rule_public_http_rejected_https_allowed() {
 
 #[test]
 fn test_metadata_blocked_by_default_every_form() {
-    // SECURITY INVARIANT: every metadata form stays blocked by default (no flag). Covers the
-    // canonical literals, the link-local /16 (IMDS, ECS), the non-link-local literals (Alibaba,
-    // Azure), IMDSv6, the metadata hostnames, and the obfuscated encodings.
     for base in [
-        "http://169.254.169.254/latest/meta-data/", // IMDSv4, plain http
-        "https://169.254.169.254/",                 // IMDSv4, https
-        "https://169.254.170.2/v2/credentials",     // AWS ECS task-credentials
-        "https://100.100.100.200/",                 // Alibaba (CGNAT range)
-        "https://168.63.129.16/",                   // Azure WireServer
-        "http://[fd00:ec2::254]/latest/meta-data/", // EC2 IMDSv6
+        "http://169.254.169.254/latest/meta-data/",
+        "https://169.254.169.254/",
+        "https://169.254.170.2/v2/credentials",
+        "https://100.100.100.200/",
+        "https://168.63.129.16/",
+        "http://[fd00:ec2::254]/latest/meta-data/",
         "https://[fd00:ec2::254]/",
-        // Metadata DNS names over https (a DNS name is not classed private/loopback, so an http
-        // scheme rule would preempt the SSRF check; https reaches the metadata denylist directly).
         "https://metadata.google.internal/computeMetadata/v1/",
         "https://metadata.tencentyun.com/",
         "https://instance-data/latest/meta-data/",
-        "http://[::ffff:169.254.169.254]/", // IMDS via IPv4-mapped IPv6
-        "http://[::169.254.169.254]/",      // IMDS via IPv4-compatible IPv6
-        "http://2852039166/",               // IMDS via decimal-int encoding
-        "https://169%2E254%2E169%2E254/",   // IMDS via percent-encoded dots
-        "https://169.254.169.254./",        // IMDS, trailing dot
+        "http://[::ffff:169.254.169.254]/",
+        "http://[::169.254.169.254]/",
+        "http://2852039166/",
+        "https://169%2E254%2E169%2E254/",
+        "https://169.254.169.254./",
     ] {
-        // Direct guard call (no flag, no extra entries).
         assert!(
             ssrf_blocked_host(base, &[], false, &[]).is_some(),
             "metadata target '{base}' must be blocked by default"
         );
-        // And full validate() pass.
+
         let mut providers = HashMap::new();
         providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
         let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
@@ -4364,14 +3856,10 @@ fn test_metadata_blocked_by_default_every_form() {
 
 #[test]
 fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // Per-provider `allow_metadata_hosts: ["169.254.169.254"]` unblocks ONLY that host for ONLY
-    // that provider: a DIFFERENT metadata IP stays blocked, and another provider still blocks the
-    // same IP. (https so the scheme rule passes — the override governs the SSRF denylist only.)
+
     let allow = vec!["169.254.169.254".to_string()];
 
-    // Direct guard: the listed host is unblocked; a different metadata IP is still blocked.
     assert!(
         ssrf_blocked_host("https://169.254.169.254/", &allow, false, &[]).is_none(),
         "the listed host must be unblocked by the override"
@@ -4385,8 +3873,6 @@ fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
         "another link-local metadata IP must stay blocked (override is exact, not the /16)"
     );
 
-    // Full validate(): provider `surgical` allows IMDS; provider `other` (no override) targeting a
-    // different metadata IP must still fail.
     let mut providers = HashMap::new();
     providers.insert(
         "surgical".to_string(),
@@ -4399,7 +3885,6 @@ fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
         validate(&cfg)
     );
 
-    // Another provider WITHOUT the override still blocks the same IP (scope is per-provider).
     let mut providers = HashMap::new();
     providers.insert(
         "other".to_string(),
@@ -4411,9 +3896,8 @@ fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
 
 #[test]
 fn test_global_allow_metadata_hosts_unblocks_all_providers() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // security.allow_metadata_hosts unblocks the listed host for EVERY provider.
+
     let mut providers = HashMap::new();
     providers.insert(
         "a".to_string(),
@@ -4431,7 +3915,6 @@ fn test_global_allow_metadata_hosts_unblocks_all_providers() {
         validate(&cfg)
     );
 
-    // A metadata host NOT in the global allow-list is still blocked.
     let mut providers = HashMap::new();
     providers.insert(
         "c".to_string(),
@@ -4444,9 +3927,8 @@ fn test_global_allow_metadata_hosts_unblocks_all_providers() {
 
 #[test]
 fn test_allow_all_metadata_disables_guard_entirely() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // security.allow_all_metadata: true disables the metadata guard for everything.
+
     for base in [
         "https://169.254.169.254/",
         "https://metadata.google.internal/",
@@ -4454,7 +3936,6 @@ fn test_allow_all_metadata_disables_guard_entirely() {
         "https://168.63.129.16/",
         "https://[fd00:ec2::254]/",
     ] {
-        // Direct guard: allow_all=true ⇒ never blocked.
         assert!(
             ssrf_blocked_host(base, &[], true, &[]).is_none(),
             "allow_all_metadata must unblock '{base}'"
@@ -4476,22 +3957,19 @@ fn test_allow_all_metadata_disables_guard_entirely() {
 
 #[test]
 fn test_allow_override_matches_obfuscated_spellings() {
-    // An allow entry written as the canonical IP also unblocks that IP's obfuscated spellings
-    // (mirroring how a block entry blocks all spellings). Allow `169.254.169.254` and confirm its
-    // decimal-int, IPv4-mapped-IPv6, and trailing-dot forms are all permitted too.
     let allow = vec!["169.254.169.254".to_string()];
     for base in [
-        "https://169.254.169.254/",         // canonical
-        "http://2852039166/",               // decimal-int
-        "http://[::ffff:169.254.169.254]/", // IPv4-mapped IPv6
-        "https://169.254.169.254./",        // trailing dot
+        "https://169.254.169.254/",
+        "http://2852039166/",
+        "http://[::ffff:169.254.169.254]/",
+        "https://169.254.169.254./",
     ] {
         assert!(
             ssrf_blocked_host(base, &allow, false, &[]).is_none(),
             "an allow entry must unblock the obfuscated spelling '{base}'"
         );
     }
-    // A DIFFERENT metadata IP's obfuscated form is still blocked.
+
     assert!(
         ssrf_blocked_host("https://168.63.129.16/", &allow, false, &[]).is_some(),
         "a non-allowed metadata IP must stay blocked"
@@ -4500,22 +3978,15 @@ fn test_allow_override_matches_obfuscated_spellings() {
 
 #[test]
 fn test_blocked_metadata_hosts_extends_denylist() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // security.blocked_metadata_hosts appends to the hardcoded denylist. An RFC-1918 address that
-    // is normally ALLOWED becomes blocked once listed; a DNS hostname likewise; and an obfuscated
-    // spelling of a listed IP is caught too. An UN-listed RFC-1918 host stays allowed.
-    // IP entry blocks the literal AND its mapped-IPv6 form.
-    for base in [
-        "https://10.99.99.99/",
-        "https://[::ffff:10.99.99.99]/", // mapped form of the listed IP
-    ] {
+
+    for base in ["https://10.99.99.99/", "https://[::ffff:10.99.99.99]/"] {
         assert!(
             ssrf_blocked_host(base, &[], false, &["10.99.99.99".to_string()]).is_some(),
             "'{base}' must be blocked once 10.99.99.99 is in blocked_metadata_hosts"
         );
     }
-    // A different RFC-1918 host (not listed) stays allowed.
+
     assert!(
         ssrf_blocked_host(
             "https://10.0.0.1/",
@@ -4526,7 +3997,7 @@ fn test_blocked_metadata_hosts_extends_denylist() {
         .is_none(),
         "an un-listed private host must stay allowed"
     );
-    // Hostname entry (case-insensitive).
+
     assert!(
         ssrf_blocked_host(
             "https://metadata.mycloud.example/",
@@ -4538,7 +4009,6 @@ fn test_blocked_metadata_hosts_extends_denylist() {
         "a listed metadata hostname must be blocked"
     );
 
-    // Full validate() pass: the provider base_url is RFC-1918 (normally allowed) but listed.
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -4553,7 +4023,6 @@ fn test_blocked_metadata_hosts_extends_denylist() {
         "expected a metadata-host error for the listed host; got: {errs:?}"
     );
 
-    // An allow-override beats even an operator-listed blocked host (allow always wins).
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -4569,9 +4038,8 @@ fn test_blocked_metadata_hosts_extends_denylist() {
 
 #[test]
 fn test_public_targets_unaffected() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // A normal public https provider validates and the guard allows it regardless of the flag.
+
     for base in [
         "https://api.vendor-a.example.com",
         "https://api.acme.example.com/v1/messages",
@@ -4591,9 +4059,8 @@ fn test_public_targets_unaffected() {
 
 #[test]
 fn test_path_override_composition_under_metadata_rules() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // A leading-slash path on a local http base_url validates (composed url re-checked, allowed).
+
     let mut ok = make_provider(proto_b(), "http://localhost:11434", "API_KEY");
     ok.path = Some("/v1/chat/completions".to_string());
     let mut providers = HashMap::new();
@@ -4605,19 +4072,13 @@ fn test_path_override_composition_under_metadata_rules() {
         validate(&cfg)
     );
 
-    // A path that fuses into the authority to re-home at IMDS is rejected by the leading-slash
-    // rule (and the composed url is a metadata target).
     let mut evil = make_provider(proto_b(), "https://api.example.com", "API_KEY");
-    evil.path = Some(".169.254.169.254/latest".to_string()); // no leading slash → host fusion
+    evil.path = Some(".169.254.169.254/latest".to_string());
     let mut providers = HashMap::new();
     providers.insert("evil".to_string(), evil);
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
     validate(&cfg).expect_err("authority-fusing path must be rejected");
 
-    // A leading-slash path whose composition still lands on a metadata host (base already
-    // metadata-ish via an allowed-by-scheme local host, path extends to nothing risky) — verify
-    // the composed-url metadata recheck fires when base is a benign public host but allow_metadata
-    // is off and a path cannot smuggle a host (leading slash) — so this should PASS.
     let mut p = make_provider(proto_b(), "https://api.example.com/api/paas/v4", "API_KEY");
     p.path = Some("/chat/completions".to_string());
     let mut providers = HashMap::new();
@@ -4628,12 +4089,7 @@ fn test_path_override_composition_under_metadata_rules() {
         "well-formed leading-slash path on a public host must validate"
     );
 }
-// ---- Cost-model validation (1.5.0): rate_card completeness + groups tree + store + secrets ----
-// The dissolved 1.4.x governance block's checks live in validate_cost_model(&RootCfg) now and run
-// inside the ONE shared validate() that boot and --validate both call.
 
-/// A valid single-provider/model/pool RootCfg for the cost-surface tests (provider `p`, models as
-/// named, pool `pool1` over the first model).
 fn cost_cfg(model_names: &[&str]) -> RootCfg {
     let mut providers = HashMap::new();
     providers.insert(
@@ -4651,8 +4107,6 @@ fn cost_cfg(model_names: &[&str]) -> RootCfg {
     make_root_cfg(providers, models, pools)
 }
 
-/// One fully-written, genuinely priced card entry — every tier PRESENT, none of them zero. The
-/// shape a real Anthropic card has, used where the test is about something other than the rates.
 fn priced_entry() -> config::RateEntryCfg {
     serde_yaml::from_str(
         "input_utok: 3.0\noutput_utok: 15.0\ncache_read_utok: 0.3\ncache_write_utok: 3.75\n",
@@ -4660,9 +4114,6 @@ fn priced_entry() -> config::RateEntryCfg {
     .expect("a fully-written entry must parse")
 }
 
-/// A `tools:` section the operator actually WROTE content for, through the same neutral
-/// type-erased seam `DeployCfg` deserializes it through — so this reads the same in a build with
-/// the owning plane compiled in (a parsed registry) and one with it compiled out (a raw capture).
 fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::PlaneCfg> {
     let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     let written: serde_yaml::Value =
@@ -4680,7 +4131,6 @@ fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::Pla
     section
 }
 
-/// A zeroed rate card over the given CONFIG model names.
 fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
     entries
         .iter()
@@ -4688,13 +4138,8 @@ fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::
         .collect()
 }
 
-/// ALL-OR-NOTHING completeness: `rate_card` present with a configured model missing FAILS, and the
-/// error carries a COPY-PASTEABLE zeroed YAML stub of exactly the missing CONFIG model name. A card
-/// entry naming a model that does not exist is dead config and errors too. The absent-card config
-/// passes (token pricing 0), and a complete card passes.
 #[test]
 fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-opus-4"]);
     cfg.rate_card = Some(rate_card_of(&["some-other-model"]));
@@ -4711,14 +4156,13 @@ fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
         ),
         "must print the paste-ready zeroed stub for exactly the missing model: {joined}"
     );
-    // The card entry naming a NON-EXISTENT model is dead config (almost always a typo).
+
     assert!(
         joined.contains("rate_card names model 'some-other-model'")
             && joined.contains("not defined under models:"),
         "a card entry for an unknown model must error: {joined}"
     );
 
-    // Complete card passes.
     let mut cfg_ok = cost_cfg(&["claude-opus-4"]);
     cfg_ok.rate_card = Some(rate_card_of(&["claude-opus-4"]));
     assert!(
@@ -4727,22 +4171,12 @@ fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
         validate(&cfg_ok)
     );
 
-    // Absent card passes regardless (token pricing is 0 for every model - the OFF arm).
     let cfg_absent = cost_cfg(&["claude-opus-4"]);
     assert!(validate(&cfg_absent).is_ok());
 }
 
-/// W3.c / DECISION #77(5) + #42: UNPRICED CLASS WITH BILLING ON ⇒ THE SERVER REFUSES TO BOOT.
-///
-/// Billing is on exactly when a `rate_card:` is present (there is no `billing: on/off` flag — the
-/// card's presence IS the switch, #42). With billing on, a configured class that the card does not
-/// price is money-sacred boot refusal, never a silent zero: `validate()` is the SAME pipeline boot
-/// runs (`build_app_from_config`) and `--validate` runs, so a non-empty error here is the boot
-/// `die()`. This test pins the refusal itself — billing on, one unpriced class, boot fails — and its
-/// twin below (`..._absent_card_boots_free`) pins the other arm of #42: billing off, no refusal.
 #[test]
 fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
-    // Billing ON: a rate_card is present. One configured class (`claude-opus-4`) is left unpriced.
     let mut cfg = cost_cfg(&["claude-opus-4"]);
     cfg.rate_card = Some(rate_card_of(&["some-priced-model"]));
     cfg.models
@@ -4756,14 +4190,10 @@ fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
     );
 }
 
-/// W3.c / DECISION #42: BILLING OFF (rate_card ABSENT) ⇒ NO boot refusal — busbar boots as a free
-/// failover/routing proxy. The complement of the refusal above: with no card present, an unpriced
-/// class is not a refusal because there is no card for it to be missing from, so boot succeeds.
 #[test]
 fn test_validate_absent_card_boots_free_no_refusal() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // Billing OFF: no rate_card at all. Every class is unpriced, and that is legal (serve free).
+
     let cfg = cost_cfg(&["claude-opus-4", "claude-sonnet-4"]);
     assert!(
         cfg.rate_card.is_none(),
@@ -4776,23 +4206,13 @@ fn test_validate_absent_card_boots_free_no_refusal() {
     );
 }
 
-/// #77(5), item 22: A RATE THE CARD CANNOT HOLD IS A BOOT REFUSAL, naming the model, the class and
-/// the rate. The card holds integer nano-units and never rounds (OWNER rule 21): a positive rate that
-/// is not a whole number of them (`0.0004`, `0.0005`, `0.0015`, `0.5005`, or `$0.10/GB` a byte =
-/// `0.00009313`) or one past the integer's range has no representation, and the card holds it as an
-/// UNPRICED cell (`RateCard::refused_cells`) that refuses at runtime. Validation refuses the whole
-/// configuration first, so it never boots with a class it claims to price and cannot. 1.5.5 booted
-/// these configs and billed them at a rounded rate (or at 0).
 #[test]
 fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     for (tier, v) in [
         ("input_utok", 0.0004),
         ("output_utok", 0.000_093_13),
         ("cache_write_utok", 2.0e16),
-        // OWNER rule 21: half a nano-unit, and a rate between two of them, are refused — never
-        // rounded to 1, 2 or 501.
         ("input_utok", 0.0005),
         ("output_utok", 0.0015),
         ("cache_write_utok", 0.5005),
@@ -4812,7 +4232,7 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
             "must name the model, class and rate ({want}): {errs:?}"
         );
     }
-    // The boundary and the explicit zero both hold: 0.001 is one nano-unit, 0 is a free class.
+
     let mut cfg = cost_cfg(&["m"]);
     let mut entry = priced_entry();
     entry.input_utok = 0.001;
@@ -4821,11 +4241,10 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }
 
-/// EVERY missing model is stubbed (sorted), not just the first - the operator pastes once.
 #[test]
 fn test_validate_rate_card_stubs_every_missing_model() {
     let mut cfg = cost_cfg(&["alpha", "long-model-name"]);
-    // rate_card {} with two configured models: both missing.
+
     cfg.rate_card = Some(rate_card_of(&[]));
     let errs = validate(&cfg).expect_err("two unpriced models must fail validation");
     let joined = errs.join("\n");
@@ -4841,17 +4260,12 @@ fn test_validate_rate_card_stubs_every_missing_model() {
     }
 }
 
-/// The card is keyed by CONFIG model name: two providers serving one upstream are two
-/// `models:` entries with two card entries, and `upstream_model` does NOT change the rate key.
-/// (The 1.4.x behavior priced the resolved upstream name; that resolution is identity now.)
 #[test]
 fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["smart"]);
     cfg.models.get_mut("smart").unwrap().upstream_model = Some("gpt-5".to_string());
 
-    // Pricing the CONFIG name passes.
     cfg.rate_card = Some(rate_card_of(&["smart"]));
     assert!(
         validate(&cfg).is_ok(),
@@ -4859,7 +4273,6 @@ fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
         validate(&cfg)
     );
 
-    // Pricing the UPSTREAM name fails both ways: `smart` is unpriced and `gpt-5` is unknown.
     cfg.rate_card = Some(rate_card_of(&["gpt-5"]));
     let errs = validate(&cfg).expect_err("pricing the upstream name must fail");
     let joined = errs.join("\n");
@@ -4873,7 +4286,6 @@ fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
     );
 }
 
-/// Malformed rates (NaN / negative / infinite) are rejected naming the exact config path + tier.
 #[test]
 fn test_validate_rate_card_rejects_nan_and_negative_rates() {
     let mut cfg = cost_cfg(&["m"]);
@@ -4901,10 +4313,6 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
     );
 }
 
-/// ITEM 123 — THE OPEN-CLASS GRAMMAR. `rate_card.<model>.units` prices open classes, each rate read
-/// EXACTLY (integer, or a decimal STRING) into the card's integer nano-units; a bare float, a rate
-/// finer than one nano-unit, and a negative rate are refused at parse; a RESERVED class named under
-/// `units:` would price one class twice and is refused at validation, naming the path.
 #[test]
 fn test_rate_card_open_class_grammar_is_exact_and_refuses_a_reserved_class() {
     let parse = |y: &str| {
@@ -4945,20 +4353,12 @@ fn test_rate_card_open_class_grammar_is_exact_and_refuses_a_reserved_class() {
     );
 }
 
-/// G2 fail-open-to-underbill guard: a rate_card entry PRESENT but priced at ALL ZERO meters the
-/// model as free (its token usage costs $0, so a group `budget:` limit never accrues against it —
-/// effectively uncapped). The completeness check only enforces presence (and hands out an all-zero
-/// stub), and the well-formedness check accepts 0 as a valid non-negative rate, so an accidental
-/// all-zero entry sails through. A deliberately free model is legal, so this must be a WARN (naming
-/// the model), NOT a hard error — validation still succeeds. A priced entry must NOT warn.
 #[test]
 fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    // Two models: one priced normally, one left at the all-zero default (the unfilled-stub case).
     let mut cfg = cost_cfg(&["priced-model", "free-by-accident"]);
     let mut card = std::collections::BTreeMap::new();
     card.insert(
@@ -4971,8 +4371,7 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
             ..Default::default()
         },
     );
-    // All-zero: every tier 0.0 (RateEntryCfg::default()), the exact shape the completeness stub
-    // pastes and an operator might leave unfilled.
+
     card.insert(
         "free-by-accident".to_string(),
         config::RateEntryCfg::default(),
@@ -4983,7 +4382,6 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
 
-    // WARN, not a hard error: a deliberately free model stays legal.
     assert!(
         result.is_ok(),
         "an all-zero rate_card entry is a WARNING, not a hard error (a free model is legal); got: {result:?}"
@@ -4995,51 +4393,18 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
             .any(|m| m.contains("free-by-accident") && m.contains("every tier at zero")),
         "an all-zero-priced model must WARN, naming the model: {msgs:?}"
     );
-    // The genuinely priced model must NOT trip the warning — otherwise every normal config is spammed.
+
     assert!(
         !msgs.iter().any(|m| m.contains("priced-model")),
         "a model with non-zero rates must NOT warn: {msgs:?}"
     );
 }
 
-// ── #77(5) / #42 — ABSENT IS NOT ZERO ────────────────────────────────────────────────────────────
-// `docs/design/BUSBAR-1.6.0.md:423` (#77(5)): *"Unpriced class = BOOT REFUSAL when billing is on;
-// free is an EXPLICIT zero row, never silent"*. `:370` (#42): *"a hit class not priced ⇒ REFUSE
-// (money-sacred, never a silent 0) … A silent 0 is ONLY ever returned when rate_card is absent."*
-//
-// These two tests are a PAIR and neither is meaningful alone: the first says an OMITTED tier
-// refuses, the second says an EXPLICITLY WRITTEN zero does not. A rule that refuses everything
-// satisfies the first and is still wrong, because #77(5)'s whole point is that the two facts are
-// different facts.
-
-/// **M-07, WITNESSED — PARKED, NOT FIXED.** A card entry that OMITS a tier key is ACCEPTED today,
-/// and that class's entire traffic bills at NOTHING.
-///
-/// #77(5) (`docs/design/BUSBAR-1.6.0.md:423`) requires the opposite: *"Unpriced class = BOOT
-/// REFUSAL when billing is on; free is an EXPLICIT zero row, never silent"*. The refusal cannot
-/// fire because `RateEntryCfg` defaults an omitted tier to `0.0`, which `RateCard::from_config`
-/// then writes as a PRESENT cell — so `class_priced()` answers true about a class the operator
-/// never priced, and `MoneyError::ClassUnpriced` is unreachable for any card a deployment can
-/// build.
-///
-/// THIS TEST ASSERTS THE DEFECT, DELIBERATELY, because the correction is blocked on a recorded
-/// 1.5.5 difference and not on code: every shadow-oracle rate-card cell writes exactly this shape
-/// (`{"m-anthropic":{"input_utok":10000000,"output_utok":20000000}, …}`), as do the back-compat
-/// corpus cards (`02_rate_card_tiers.yaml` `gpt-4o`, `05_full_billing_surface.yaml`
-/// `gemini-flash`) and `examples/clean-config-1.5.0.yaml` (`sonnet-bedrock`). Turning the refusal
-/// on converts each of those from a 200 to a 400, which moves goldens. When that difference is
-/// accepted, this test inverts: the `is_ok` below becomes `expect_err`, and the two
-/// `rate_card['claude-sonnet'].cache_*_utok` paths become the thing the message must name.
-///
-/// Driven through the YAML parse rather than a struct literal ON PURPOSE: the fact under test is
-/// what serde does with a key the document does not carry, which a Rust literal cannot express.
 #[test]
 fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_class_at_zero() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
-    // The exact card from the M-07 worked example: the two token tiers priced, both cache tiers
-    // simply not written.
+
     let card: std::collections::BTreeMap<String, config::RateEntryCfg> =
         serde_yaml::from_str("claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n")
             .expect("the two-tier card must parse");
@@ -5052,11 +4417,6 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
          inverted, not deleted."
     );
 
-    // …and here is what that acceptance costs, in the units the ledger bills in. A prompt-caching
-    // workload of ten million cache-read tokens in a day, against a card whose `cache_read_utok`
-    // was never written.
-    // Measured through THE ONE FUNCTION (the kernel's cost model prices every figure with it), in
-    // micro-units: 1,000 micro-units is one whole unit.
     let micros = |card: &std::collections::BTreeMap<String, config::RateEntryCfg>,
                   units: &std::collections::BTreeMap<String, u64>| {
         let model = crate::cost::CostModel::resolve_parts(
@@ -5083,8 +4443,7 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
         0,
         "the silent zero, measured: ten million cache-read tokens bill at nothing"
     );
-    // Had the operator's intended 0.3 micro-units/token been written, the SAME traffic bills three
-    // whole units a day — ninety over a thirty-day month, delivered and never charged for.
+
     let priced: config::RateEntryCfg = serde_yaml::from_str(
         "input_utok: 3.0\noutput_utok: 15.0\ncache_read_utok: 0.3\ncache_write_utok: 3.75\n",
     )
@@ -5099,13 +4458,8 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     );
 }
 
-/// THE CONTROL. An EXPLICIT `0.0` is a priced-at-free row under #77(5) and must NOT refuse.
-///
-/// Without this arm the test above is satisfied by a rule that refuses every card, which would
-/// collapse exactly the distinction #77(5) exists to draw.
 #[test]
 fn test_validate_rate_card_entry_with_explicit_zero_tiers_is_free_not_unpriced() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     let card: std::collections::BTreeMap<String, config::RateEntryCfg> = serde_yaml::from_str(
@@ -5123,11 +4477,8 @@ fn test_validate_rate_card_entry_with_explicit_zero_tiers_is_free_not_unpriced()
     );
 }
 
-/// The all-four-explicitly-zero entry stays a WARN (it is deliberate free), not a refusal — the
-/// boundary between the two tests above, held at the extreme.
 #[test]
 fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["free-on-purpose"]);
     let card: std::collections::BTreeMap<String, config::RateEntryCfg> = serde_yaml::from_str(
@@ -5143,16 +4494,8 @@ fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
     );
 }
 
-// ── #42 "scoped per plane" / #47 — EACH PLANE'S CARD IS ITS OWN SWITCH ─────────────────────────────
-
-/// The flat `rate_card:` PRESENT beside a configured other plane that has NO card of its
-/// own: that plane is billing OFF (#42: reads 0), so the node boots. This used to be a whole-node
-/// refusal — billing was one global switch and no key could price another plane — which #47's
-/// per-plane cards retire: the refusal narrowed to "this plane's card does not price this plane's
-/// class", which the one function answers at run time on a hit.
 #[test]
 fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     cfg.rate_card = Some(std::collections::BTreeMap::from([(
@@ -5170,12 +4513,8 @@ fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
     );
 }
 
-/// A plane's own card (composed beside an ABSENT flat card, as `resolve` composes it) is held to the
-/// rate card's well-formedness, named by its own path — and it never makes the flat card's
-/// completeness rule fire: the flat plane stays billing OFF.
 #[test]
 fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_off() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     let bad: config::RateEntryCfg =
@@ -5202,11 +4541,8 @@ fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_
     );
 }
 
-/// THE CONTROL: billing OFF (no `rate_card:`) and the same plane configured must
-/// still boot. #42: *"rate_card ABSENT ⇒ NOT billed … no boot-refusal"*.
 #[test]
 fn test_validate_allows_a_non_fallback_plane_when_billing_is_off() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     assert!(cfg.rate_card.is_none(), "the fixture starts billing-off");
@@ -5221,11 +4557,8 @@ fn test_validate_allows_a_non_fallback_plane_when_billing_is_off() {
     );
 }
 
-/// A negative `per_request_fee` would CREDIT every request - rejected; 0 (default) and positive
-/// values pass.
 #[test]
 fn test_validate_rejects_negative_per_request_fee() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["m"]);
     cfg.per_request_fee = -1;
@@ -5242,11 +4575,8 @@ fn test_validate_rejects_negative_per_request_fee() {
     }
 }
 
-/// An empty `store.module` names no store at all - rejected; the compiled-in `memory` module passes.
-/// (An ABSENT store block is refused too: `store_required_tests.rs`, Q-STORE = (B).)
 #[test]
 fn test_validate_rejects_empty_store_module() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["m"]);
     cfg.store = Some(config::StoreCfg {
@@ -5260,13 +4590,10 @@ fn test_validate_rejects_empty_store_module() {
         "expected the empty-store-module error; got: {errs:?}"
     );
 
-    let cfg = cost_cfg(&["m"]); // store: {module: memory}
+    let cfg = cost_cfg(&["m"]);
     assert!(validate(&cfg).is_ok(), "store.module: memory must validate");
 }
 
-// ---- groups: the ONE limit tree - parents exist, acyclic, depth <= 8, sane amounts ----
-
-/// Build a GroupCfg with the given parent and limits.
 fn group(parent: Option<&str>, limits: Vec<crate::config::groups::LimitCfg>) -> config::GroupCfg {
     config::GroupCfg {
         parent: parent.map(String::from),
@@ -5289,15 +4616,10 @@ fn limit_requests_per_minute(amount: u64) -> crate::config::groups::LimitCfg {
     }
 }
 
-/// groups faults are named with fixes: a missing parent gets a PASTE-READY stub; a cycle names
-/// the exact path; a zero-amount limit is rejected (it rejects every request); a valid nested
-/// hierarchy passes, at ANY depth (no arbitrary depth ceiling - the cycle check is what bounds
-/// the walk). (Heir of the budget_groups validation family.)
 #[test]
 fn test_validate_groups_faults_are_named_with_fixes() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // Missing parent -> paste-ready stub of the missing group.
+
     let mut cfg = cost_cfg(&["m"]);
     cfg.groups.insert(
         "bob".to_string(),
@@ -5316,7 +4638,6 @@ fn test_validate_groups_faults_are_named_with_fixes() {
         "missing parent gets a paste-ready stub: {joined}"
     );
 
-    // Cycle -> detected and the diagnostic names the path.
     let mut cfg = cost_cfg(&["m"]);
     cfg.groups.insert("a".to_string(), group(Some("b"), vec![]));
     cfg.groups.insert("b".to_string(), group(Some("a"), vec![]));
@@ -5327,8 +4648,6 @@ fn test_validate_groups_faults_are_named_with_fixes() {
         "the cycle diagnostic must name the path: {errs:?}"
     );
 
-    // Deep chains are LEGAL: hierarchy depth is the operator's structure, not our policy (only a
-    // cycle is a fault). A 10-deep acyclic chain validates clean.
     let mut cfg = cost_cfg(&["m"]);
     for i in 0..10 {
         let parent = if i == 9 {
@@ -5348,9 +4667,6 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     }
     validate(&cfg).expect("an acyclic chain of any depth must validate");
 
-    // A `pool:` qualifier must name a real pool - a dangling one is an unenforced budget and
-    // fails loud, naming the group, the field, and the bogus pool. Both the group's own limits
-    // and its child_default template are covered; a valid pool passes.
     let mut cfg = cost_cfg(&["m"]);
     let mut bad = limit_requests_per_minute(5);
     bad.scope = Some(busbar_contract::records::ScopeRef::pool("nope"));
@@ -5380,8 +4696,6 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     cfg.groups.insert("team".to_string(), group(None, vec![ok]));
     validate(&cfg).expect("a pool qualifier naming a real pool must pass");
 
-    // Zero-amount limit -> rejects every request through the group; must fail loud, and the
-    // message must name the metric and teach the `enabled: false` freeze alternative.
     let mut cfg = cost_cfg(&["m"]);
     cfg.groups.insert(
         "team".to_string(),
@@ -5395,7 +4709,6 @@ fn test_validate_groups_faults_are_named_with_fixes() {
         "expected the zero-amount limit error with the freeze hint; got: {errs:?}"
     );
 
-    // A valid nested hierarchy passes.
     let mut cfg = cost_cfg(&["m"]);
     cfg.groups.insert(
         "acme".to_string(),
@@ -5416,8 +4729,6 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     );
 }
 
-/// CLEAN BREAK: the 1.4.x pool-member keys are GONE - `cost_per_mtok:` (rate_card is the
-/// only cost source) and `target:` (renamed `model:`) both fail AT PARSE via deny_unknown_fields.
 #[test]
 fn test_removed_member_keys_rejected_at_parse() {
     let legacy_cost =
@@ -5437,14 +4748,10 @@ fn test_removed_member_keys_rejected_at_parse() {
         "expected an unknown-field error for target; got: {err}"
     );
 
-    // The 1.5.0 spelling parses.
     let ok = serde_yaml::from_str::<config::PoolCfg>("members:\n  - model: m\n").unwrap();
     assert_eq!(ok.members[0].model, "m");
 }
 
-// ---- role_bindings: nested by module; module active; scopes parse; groups exist ----
-
-/// One binding under `module` for `role`, in an AuthCfg whose data-plane chain is `chain`.
 fn auth_with_binding(
     chain: &[&str],
     module: &str,
@@ -5459,17 +4766,14 @@ fn auth_with_binding(
     auth
 }
 
-/// A binding under a module that appears in NO chain is dead config (grants nothing) - fail loud
-/// with the paste-ready chain stub; the same binding under an active module passes.
 #[test]
 fn test_validate_role_binding_module_must_be_in_a_chain() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(auth_with_binding(
         &["keys"],
-        "test-idp-double", // not in chain or admin_auth
+        "test-idp-double",
         "platform",
         config::RoleBindingCfg::default(),
     ));
@@ -5483,7 +4787,6 @@ fn test_validate_role_binding_module_must_be_in_a_chain() {
         "expected the inactive-module error with the chain paste stub; got: {errs:?}"
     );
 
-    // The same binding under the ACTIVE `keys` module carries no such error.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(auth_with_binding(
@@ -5499,11 +4802,8 @@ fn test_validate_role_binding_module_must_be_in_a_chain() {
     );
 }
 
-/// A binding's `group:` must exist in the top-level `groups:` tree - fail loud with the
-/// paste-ready group stub; binding to an existing group passes.
 #[test]
 fn test_validate_role_binding_group_must_exist() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let binding = config::RoleBindingCfg {
         allowed_pools: None,
@@ -5524,7 +4824,6 @@ fn test_validate_role_binding_group_must_exist() {
         "expected the missing-group error with the paste-ready stub; got: {joined}"
     );
 
-    // With the group defined, the binding passes.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(auth_with_binding(&["keys"], "keys", "dev", binding));
@@ -5539,11 +4838,6 @@ fn test_validate_role_binding_group_must_exist() {
     );
 }
 
-/// A role name shadowing the operator principal id is reserved only while an auth row answers the
-/// operator credential — that row mints the principal. This crate's test binary links none (the
-/// composition root links the build's rows), so here the name is an ordinary role, exactly as in
-/// v1.5.5's `--no-default-features` build. The reserved arm is proven beside the row, in the root's
-/// `root/tests/linked_auth.rs`.
 #[test]
 fn test_validate_role_binding_reserved_role_name_rejected() {
     let (providers, models, pools) = valid_maps();
@@ -5565,21 +4859,10 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
     );
 }
 
-// ---- secret-module resolvability: every SecretRef's MODULE must be known ----
-
-/// Unknown secret modules on the provider api_key and the TLS blocks are fail-closed errors
-/// naming the exact config path with a paste-ready `{ env: ... }` stub; env/file refs missing
-/// their required setting fail too. Well-formed env/file refs pass (values are NOT resolved).
 #[test]
 fn test_validate_secret_module_resolvability() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // A NON-built-in module (a `kind: secret` PLUGIN reference such
-    // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
-    // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
-    // module-EXISTENCE check is DEFERRED to `registry_refusal` at plugin pre-flight (see the
-    // `secret_ref_*` tests in the main tests module). Therefore `validate` must NOT reject a
-    // plugin-backed module here; it must ONLY enforce the built-in `env`/`file` STRUCTURAL shape.
+
     let (mut providers, models, pools) = valid_maps();
     providers.get_mut("myprovider").unwrap().api_key = config::SecretRef {
         module: "vault".to_string(),
@@ -5592,9 +4875,6 @@ fn test_validate_secret_module_resolvability() {
         validate(&cfg)
     );
 
-    // The STRUCTURAL env/file shape checks still fire: a plugin-backed `tls.cert` passes `validate`
-    // (existence deferred), but a `file` ref missing settings.path and an `env` ref missing
-    // settings.key are structural errors validate STILL catches.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.tls = Some(config::TlsCfg {
@@ -5604,15 +4884,15 @@ fn test_validate_secret_module_resolvability() {
         },
         key: config::SecretRef {
             module: "file".to_string(),
-            settings: serde_json::Map::new(), // missing settings.path
+            settings: serde_json::Map::new(),
         },
         client_ca: Some(config::SecretRef {
             module: "env".to_string(),
-            settings: serde_json::Map::new(), // missing settings.key
+            settings: serde_json::Map::new(),
         }),
     });
     let errs = validate(&cfg).expect_err("structurally-bad tls secret refs must fail validation");
-    // The plugin-backed `tls.cert` is NOT rejected by validate (its existence is a pre-flight concern).
+
     assert!(
         !errs.iter().any(|e| e.contains("tls.cert")),
         "a plugin-backed tls.cert must not be rejected by pre-registry validate; got: {errs:?}"
@@ -5628,7 +4908,6 @@ fn test_validate_secret_module_resolvability() {
         "tls.client_ca env ref without settings.key must error; got: {errs:?}"
     );
 
-    // Well-formed env/file refs pass without resolving the values (CI has no secrets present).
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.tls = Some(config::TlsCfg {
@@ -5642,7 +4921,6 @@ fn test_validate_secret_module_resolvability() {
         validate(&cfg)
     );
 
-    // auth.signing_key with a plugin-backed module is likewise NOT rejected by pre-registry validate.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
@@ -5658,12 +4936,6 @@ fn test_validate_secret_module_resolvability() {
     );
 }
 
-// ---- --validate == boot: validation runs on the RESOLVED RootCfg ----
-
-/// Resolve a DeployCfg yaml through `config::resolve` (the boot path) with a minimal catalog
-/// containing the `acme` provider def. The catalog KEY (`acme`) is an arbitrary operator-chosen
-/// provider name; the `protocol:` value inside the def must stay a REAL compiled-in protocol
-/// (the crate's own test binary links the shipped dialect set), so it is read as [`proto_a`].
 fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     let deploy: config::DeployCfg =
         serde_yaml::from_str(yaml).expect("the test DeployCfg yaml must parse");
@@ -5676,9 +4948,6 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     config::resolve(&deploy, &defs)
 }
 
-/// `--validate` and boot share ONE pipeline: DeployCfg yaml -> config::resolve -> RootCfg ->
-/// validate(). A fully wired 1.5.0 config (chain, role_bindings, groups, rate_card, store,
-/// advanced) resolves and validates clean end to end.
 #[test]
 fn test_validate_runs_on_resolved_root_cfg_clean_config() {
     crate::test_support::register_neutral_test_plane();
@@ -5722,7 +4991,7 @@ advanced:
         "the resolved clean config must validate; got: {:?}",
         validate(&cfg)
     );
-    // The resolution really produced the new-surface fields validate() reads.
+
     assert_eq!(cfg.per_request_fee, 1);
     assert!(cfg.rate_card.as_ref().unwrap().contains_key("claude"));
     assert!(cfg.groups.contains_key("eng"));
@@ -5733,22 +5002,6 @@ advanced:
     assert_eq!(cfg.limits.rate_sweep_interval, 256);
 }
 
-/// BOOT-043b — AN UNDEFINED POOL MEMBER IS REFUSED BY THE VALIDATOR, IN 1.5.5's WORDS, NOT BY THE
-/// RESOLVER.
-///
-/// 1.6.0 resolves pool members against three top-level maps (`models:`/`tools:`/`agents:`) to infer
-/// a pool's plane, and the inference loop briefly refused a member that resolved to NONE of them —
-/// which moved the refusal from `config validation failed:` to the resolver's `config errors:`
-/// frame. The sentence was better; the frame line is what a CI job greps, and moving it breaks the
-/// job over a config that was already broken. The inference loop no longer refuses it.
-///
-/// THE POINT OF THE TEST IS BOTH HALVES: `resolve` must return `Ok` (nothing about the dangling
-/// member may reach the operator from that stage), and `validate` must then refuse it with 1.5.5's
-/// exact sentence. Without the second half the first is just a hole.
-///
-/// The fixture names NO provider and NO model on purpose. A pool whose member nothing defines is
-/// the whole subject, so a provider entry would only add a dialect name to a neutral crate's test
-/// text (which `plane-purity-strict` counts, rightly) for a member the test never looks up.
 #[test]
 fn test_undefined_pool_member_is_refused_by_validate_in_1_5_5_words() {
     crate::test_support::register_neutral_test_plane();
@@ -5774,12 +5027,6 @@ store:
     );
 }
 
-/// The DOCUMENTED "secrets are plugins" vault example — a provider
-/// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
-/// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
-/// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the
-/// deferred `registry_refusal` pre-flight (proven in the main tests module). This closes a
-/// regression where `validate` hard-rejected every plugin-backed secret module.
 #[test]
 fn test_validate_accepts_plugin_backed_secret_module_config() {
     crate::test_support::register_neutral_test_plane();
@@ -5811,8 +5058,6 @@ store:
     );
 }
 
-/// The faulty twin: every NEW cost/auth-surface fault in one resolved config is collected by the
-/// SAME validate() call boot uses (collect-all, no first-error short-circuit).
 #[test]
 fn test_validate_runs_on_resolved_root_cfg_collects_new_surface_faults() {
     crate::test_support::register_neutral_test_plane();
@@ -5853,12 +5098,12 @@ advanced:
         resolve_yaml(yaml).expect("the faulty config still RESOLVES (faults are validate-time)");
     let errs = validate(&cfg).expect_err("the resolved faulty config must fail validation");
     let joined = errs.join("\n");
-    // rate_card completeness (haiku unpriced) with the paste stub.
+
     assert!(
         joined.contains("haiku:") && joined.contains("no rate entry"),
         "{joined}"
     );
-    // role_bindings module inactive + group missing.
+
     assert!(
         joined.contains("role_bindings names module 'oidc'"),
         "{joined}"
@@ -5867,9 +5112,9 @@ advanced:
         joined.contains("role_bindings.oidc.platform names group 'ghost-group'"),
         "{joined}"
     );
-    // groups zero-amount limit.
+
     assert!(joined.contains("groups.frozen"), "{joined}");
-    // per_request_fee, store.module, advanced.rate_sweep_interval.
+
     assert!(joined.contains("per_request_fee must be >= 0"), "{joined}");
     assert!(
         joined.contains("store.module must be non-empty"),
@@ -5878,10 +5123,6 @@ advanced:
     assert!(joined.contains("advanced.rate_sweep_interval"), "{joined}");
 }
 
-/// `validate_limits`'s many "must be >= 1" checks are each an EXACT boundary: 1 must be accepted,
-/// 0 must be rejected. A mutated `< 1` -> `<= 1`/`== 1` would reject the boundary value itself (1)
-/// as well as 0, or only catch the exact value 1 rather than the whole 0 case — either way silently
-/// diverging from "0 is invalid, 1 is the floor". Table-driven over every field this rule governs.
 #[test]
 fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
     macro_rules! check_floor_one {
@@ -5913,8 +5154,7 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
         request_body_read_timeout_secs,
         "request_body_read_timeout_secs"
     );
-    // The webhook sink's `delivery_timeout_secs` / `max_inflight_deliveries` floors are the sink's
-    // own checks (`busbar-export-webhook`), not `LimitsResolved` fields.
+
     check_floor_one!(max_honored_retry_after_secs, "max_honored_retry_after_secs");
     check_floor_one!(hard_down_cooldown_secs, "hard_down_cooldown_secs");
     check_floor_one!(
@@ -5924,8 +5164,7 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
     check_floor_one!(default_max_tokens, "default_max_tokens");
     check_floor_one!(default_probe_interval_secs, "default_probe_interval_secs");
     check_floor_one!(default_probe_timeout_secs, "default_probe_timeout_secs");
-    // Found missing by adversarial review: a repo-wide grep confirmed NO test anywhere set these
-    // two fields to 0 — deleting either `< 1` guard in mod.rs left the whole suite green.
+
     check_floor_one!(
         upstream_request_timeout_secs,
         "upstream_request_timeout_secs must be >= 1"
@@ -5936,8 +5175,6 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
     );
 }
 
-/// `request_body_max_bytes`'s floor and ceiling are each an EXACT boundary
-/// (`REQUEST_BODY_MAX_BYTES_FLOOR`/`_CEIL`) — found missing entirely by adversarial review.
 #[test]
 fn test_validate_limits_request_body_max_bytes_floor_and_ceiling_are_exact() {
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
@@ -6016,9 +5253,6 @@ fn datagram_line_memory_limit_zero_is_a_config_validation_error() {
     );
 }
 
-/// `max_inbound_concurrent`'s ceiling is `MAX_SEMAPHORE_PERMITS` itself (the value that panics is
-/// `MAX_SEMAPHORE_PERMITS + 1`, not the ceiling itself) — a mutated `>` -> `>=` would reject the
-/// ceiling value too.
 #[test]
 fn test_validate_limits_max_inbound_concurrent_ceiling_is_exact() {
     let at_cap = config::LimitsResolved {
@@ -6047,9 +5281,6 @@ fn test_validate_limits_max_inbound_concurrent_ceiling_is_exact() {
     );
 }
 
-/// The pool-hooks-list `Rule (hooks/pool-ref)` requires every hook a pool's `gates:` list names to
-/// be a GATE, not a tap (a tap is fire-and-forget and cannot influence routing). A mutated match
-/// guard (`h.kind != HookKind::Gate` -> `false`) would let a pool reference a tap silently.
 #[test]
 fn test_pool_gate_ref_rejects_a_tap() {
     let mut cfg = hooks_test_cfg();
@@ -6069,7 +5300,6 @@ fn test_pool_gate_ref_rejects_a_tap() {
     );
 }
 
-/// The SAME rule must accept a real gate reference (no false-positive on the correct case).
 #[test]
 fn test_pool_gate_ref_accepts_a_real_gate() {
     let mut cfg = hooks_test_cfg();
@@ -6088,13 +5318,11 @@ fn test_pool_gate_ref_accepts_a_real_gate() {
     }
 }
 
-/// `reasoning_effort_budgets` must be > 0 in EVERY field independently, not only when ALL FOUR are
-/// zero — a mutated `||` -> `&&` in the zero-check would only fire on the all-zero case.
 #[test]
 fn test_reasoning_effort_budgets_rejects_a_single_zero_field() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    // Only `low` is zero; minimal/medium/high are fine. An `&&`-mutated check would miss this.
+
     cfg.limits.reasoning_effort_budgets = config::ReasoningEffortBudgets {
         minimal: 1024,
         low: 0,
@@ -6109,14 +5337,6 @@ fn test_reasoning_effort_budgets_rejects_a_single_zero_field() {
     );
 }
 
-// (1.5.2 scope collapse removed the `max_admin_scope`/`admin_scope` sibling-incomparability
-// cross-check: a two-rung {read-only, full} chain can never be incomparable, so the former
-// `test_admin_scope_incomparability_check_is_the_lattice_not_inequality` was deleted with it.)
-
-// ─── 1.5.2 token exchange: public_url + browser_login + key_ttl validation ───
-
-/// Parse an `auth:` block + its `identity-providers:` definitions from ONE YAML document (the two
-/// are siblings at the config root in 1.5.3) and resolve them into the runtime `AuthCfg`.
 fn parse_auth(yaml: &str) -> config::AuthCfg {
     #[derive(serde::Deserialize)]
     struct Doc {
@@ -6137,7 +5357,6 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
 
 #[test]
 fn test_public_url_requires_https() {
-    // Public host over plaintext http ⇒ error; loopback http ⇒ OK; public https ⇒ OK.
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.public_url = Some("http://api.busbar.example".to_string());
     let errs = validate(&cfg).expect_err("public http host must fail");
@@ -6192,8 +5411,6 @@ fn test_public_url_rejects_path_and_metadata() {
 
 #[test]
 fn test_browser_login_requires_public_url() {
-    // 1.5.3: `browser_login` lives on the `identity-providers:` DEFINITION, not a parallel
-    // `auth.methods:` map.
     let auth = parse_auth(
         "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { env: X }\n",
     );
@@ -6207,7 +5424,6 @@ fn test_browser_login_requires_public_url() {
         "error must name both browser_login and public_url: {errs:?}"
     );
 
-    // With public_url set, that particular error disappears.
     cfg.public_url = Some("https://busbar.example".to_string());
     let res = validate(&cfg);
     assert!(
@@ -6222,8 +5438,6 @@ fn test_browser_login_requires_public_url() {
 
 #[test]
 fn test_role_binding_under_browser_method_active() {
-    // A role_binding under a module that appears ONLY in `auth.methods` (not `chain`) is NOT dead
-    // config: the method resolves an identity, then its role_bindings apply.
     let auth = parse_auth(
         "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { env: X }\nauth:\n  role_bindings:\n    oidc:\n      member: {}\n",
     );
@@ -6277,16 +5491,6 @@ fn test_key_ttl_validates_duration() {
     );
 }
 
-/// THE FAIL-OPEN'S OWN TEST, watched RED before the arm it pins existed (against a contains-only
-/// `validate_provider_protocol_with`, `errors` stayed EMPTY for both providers — every provider
-/// validated against a protocol set that could not match anything, which is the fail-OPEN answer).
-///
-/// The registry's own test asserts `known_protocols()` is non-empty, i.e. that the refusal arm is
-/// unreachable TODAY — which means this arm had never once been seen to fire. Per the standing
-/// rule ("a gate that has never been seen red is not evidence"), this drives the validator against
-/// an EMPTY known-set — the state step 4's protocol extraction makes reachable with a one-line
-/// Cargo.toml edit — and asserts exactly ONE error per provider, naming the BUILD as the cause
-/// rather than scolding each provider for an "unknown" protocol with an empty must-be-one-of tail.
 #[test]
 fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
     let mut errors = Vec::new();
@@ -6311,7 +5515,6 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
         );
     }
 
-    // The populated set still takes the unknown-protocol arm — the two refusals stay distinct.
     let mut errors = Vec::new();
     super::validate_provider_protocol_with(&[proto_a(), proto_b()], "prov-c", "nope", &mut errors);
     assert_eq!(errors.len(), 1);
@@ -6322,19 +5525,6 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
     );
 }
 
-/// **D5 — THE FAIL-OPEN, DRIVEN THROUGH THE PRODUCTION SWEEP.**
-///
-/// [`an_empty_protocol_set_refuses_every_provider_naming_the_build`] above pins the protocol ARM.
-/// What it cannot see is its CALLER: with the arm parameterised but the loop not, someone restoring
-/// `if !known.contains(p)` inline in `validate_with_unset`'s provider loop would restore the
-/// fail-OPEN with the arm's own test still green — the same "the test does not drive the production
-/// path" trap D5 exists to catch, one level up. So the whole sweep now takes the known-set, and
-/// this drives THE SWEEP: the real loop, the real `RootCfg`, the real error collection and its
-/// ordering, against an empty set.
-///
-/// The fail-OPEN answer this refuses: with `known` empty and `contains` the only check, `contains`
-/// is false for NOTHING, so both providers below validate, the config that names protocols this
-/// build cannot speak boots, and the failure surfaces as a `die()` deep in lane construction.
 #[test]
 fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     let mut providers = HashMap::new();
@@ -6351,10 +5541,6 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     let mut errors = Vec::new();
     super::validate_providers_with(&[], &cfg, &[], &mut errors);
 
-    // Every provider is refused, and refused ONCE, and the refusal names the BUILD as the cause —
-    // not the provider for naming an "unknown" protocol against an empty must-be-one-of list. The
-    // named provider that IS shipped today ([`proto_a`]) is refused exactly like the bogus one:
-    // with no codec compiled in, no provider lane can be served, whatever it is called.
     for prov in ["prov-a", "prov-b"] {
         let hits: Vec<&String> = errors.iter().filter(|e| e.contains(prov)).collect();
         assert_eq!(
@@ -6373,10 +5559,6 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
         "the empty set must never render the unknown-protocol arm with an empty tail: {errors:?}"
     );
 
-    // THE CONTROL. The same sweep over the same config with a populated set takes the OTHER arm:
-    // the provider naming a protocol this build ships passes, the one naming a stranger is refused
-    // with the choices named. Without this half, a sweep that refused everything unconditionally
-    // would also satisfy the assertions above.
     let mut errors = Vec::new();
     super::validate_providers_with(&[proto_a(), proto_b()], &cfg, &[], &mut errors);
     assert!(
@@ -6392,19 +5574,6 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     );
 }
 
-/// **D5 — AND THE EMPTY SET IS ONE THE REGISTRY ITSELF PRODUCES.**
-///
-/// The two tests above hand the validator a literal `&[]`. That is only evidence if the registry
-/// can ever hand it the same thing — otherwise the refusal is pinned against an input that cannot
-/// occur, which is the vacuity D5 is about. So this one takes no literal: it builds a registry
-/// through the registry's OWN boot path with every protocol edge removed (see
-/// `registry_tests::a_registry_with_no_declarations_reports_no_protocols_at_all`), reads its
-/// codec-protocol list, and feeds THAT to the production sweep.
-///
-/// HONEST LIMIT, stated so nobody reads more into this than it says: the process-wide
-/// `known_protocols()` is a `OnceLock` over a `BUILTIN_DECLS` that is not empty in this build, so
-/// this drives the registry's empty state, not the process's. The zero-protocol BOOT proof closes
-/// with the last dialect extraction; this is the strongest proof available before it.
 #[test]
 fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
     let empty_registry = crate::ingress::protocols::Registry::new(
@@ -6439,16 +5608,6 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
     );
 }
 
-// ══ 1.6.0 UNIFIED `pools:` — GLOBAL-NAME VALIDATOR ═══════════════════════════════════════════════
-//
-// The three cross-plane collision tests MOVED to `crates/busbar/tests/config_validate_cross_plane.rs` — each
-// builds a REAL `busbar_mcp::mcp::config::ToolsCfg`, which only type-checks against core's own
-// `RootCfg`/`validate_unified_pool_names` (widened to `pub` for the move) with ONE `busbar_kernel`
-// in the graph. See that file's header for the full rationale.
-
-// ── 1.6.0 auth.policy: validation (duration bounds + default≤max + per-role ceiling) ─────────────
-
-/// Build a RootCfg whose resolved `auth:` carries the given policy block, everything else default.
 fn root_with_auth_policy(policy: config::AuthPolicyCfg) -> RootCfg {
     let mut auth = config::AuthCfg::default_none();
     auth.policy = policy;
@@ -6457,8 +5616,6 @@ fn root_with_auth_policy(policy: config::AuthPolicyCfg) -> RootCfg {
     cfg
 }
 
-/// Return the validation errors that mention `auth.policy`, so an assertion is not fooled by other
-/// unrelated errors a bare config may raise.
 fn policy_errors(cfg: &RootCfg) -> Vec<String> {
     validate(cfg)
         .err()
@@ -6468,7 +5625,6 @@ fn policy_errors(cfg: &RootCfg) -> Vec<String> {
         .collect()
 }
 
-/// A garbage `default_ttl` / `max_ttl` duration fails boot (same fail-closed posture as `key_ttl`).
 #[test]
 fn test_auth_policy_bad_duration_is_rejected() {
     let policy = config::AuthPolicyCfg {
@@ -6494,7 +5650,6 @@ fn test_auth_policy_bad_duration_is_rejected() {
     );
 }
 
-/// `default_ttl` must not exceed `max_ttl` — the fallback a mint uses cannot outrun the ceiling.
 #[test]
 fn test_auth_policy_default_exceeding_max_is_rejected() {
     let policy = config::AuthPolicyCfg {
@@ -6510,10 +5665,8 @@ fn test_auth_policy_default_exceeding_max_is_rejected() {
     );
 }
 
-/// A per-role ceiling's `max_ttl` must parse, and cannot exceed the block-level `max_ttl`.
 #[test]
 fn test_auth_policy_ceiling_max_ttl_rules() {
-    // Bad duration on the ceiling.
     let mut ceilings = std::collections::BTreeMap::new();
     ceilings.insert(
         "app-admin".to_string(),
@@ -6535,7 +5688,6 @@ fn test_auth_policy_ceiling_max_ttl_rules() {
         "a bad ceiling max_ttl must fail validation: {errs:?}"
     );
 
-    // Ceiling exceeding the deployment-wide max.
     let mut ceilings = std::collections::BTreeMap::new();
     ceilings.insert(
         "app-admin".to_string(),
@@ -6558,9 +5710,6 @@ fn test_auth_policy_ceiling_max_ttl_rules() {
     );
 }
 
-/// A per-role ceiling's binding modes must sit inside the block-level list: a role cannot be granted
-/// a mode the deployment forbids. RED: validation checked only a role's `max_ttl` against the block,
-/// so this config passed and the role then minted the forbidden mode.
 #[test]
 fn test_auth_policy_role_modes_outside_the_block_modes_fail() {
     let mut ceilings = std::collections::BTreeMap::new();
@@ -6586,7 +5735,6 @@ fn test_auth_policy_role_modes_outside_the_block_modes_fail() {
     );
 }
 
-/// A well-formed policy block adds NO `auth.policy` validation error.
 #[test]
 fn test_auth_policy_valid_block_passes() {
     let mut ceilings = std::collections::BTreeMap::new();
@@ -6612,18 +5760,8 @@ fn test_auth_policy_valid_block_passes() {
     assert!(errs.is_empty(), "a valid policy adds no error: {errs:?}");
 }
 
-/// A CANONICAL empty built-in secret ref (`{ module: env, settings: { key: "" } }` /
-/// `{ module: file, settings: { path: "" } }`) must FAIL `--validate`.
-///
-/// The empty-value rejection historically lived ONLY in the `{ env: "" }` / `{ file: "" }` sugar
-/// deserializer, so the canonical form slipped through: `env_var()` / `file_path()` returned
-/// `Some("")`, `check_secret` only tested `.is_none()`, and the config passed `--validate` as "ok"
-/// then fail-closed at boot (`std::env::var("")` → Err). A clean validate must imply a clean boot,
-/// so the empty canonical form has to be rejected here, mirroring the sugar check.
 #[test]
 fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
-    // The canonical form deserializes fine — the deserializer's non-empty guard is sugar-only, so
-    // this is exactly the shape that used to slip past `--validate`.
     let empty_env: config::SecretRef =
         serde_yaml::from_str("{ module: env, settings: { key: \"\" } }")
             .expect("canonical empty-key env ref deserializes (the guard is sugar-only)");
@@ -6646,7 +5784,6 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         "expected a non-empty settings.key error naming providers.acme.api_key; got: {errs:?}"
     );
 
-    // The `file` module's empty path must fail the same way.
     let empty_file: config::SecretRef =
         serde_yaml::from_str("{ module: file, settings: { path: \"\" } }")
             .expect("canonical empty-path file ref deserializes");
@@ -6663,8 +5800,6 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         "expected a non-empty settings.path error naming providers.acme.api_key; got: {errs:?}"
     );
 
-    // CONTROL: a non-empty canonical key must NOT trip the empty-secret error. (`whitespace-only`
-    // is treated as empty, mirroring the sugar `trim().is_empty()` check.)
     let good: config::SecretRef =
         serde_yaml::from_str("{ module: env, settings: { key: REAL_KEY } }")
             .expect("canonical non-empty env ref deserializes");
@@ -6683,12 +5818,6 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
     );
 }
 
-/// ITEM 147 — the unbounded-numeric sweep. `limits.pool_idle_timeout_secs` at 2^63 used to pass
-/// validation (so the admin settings apply answered 200) and then overflow `Instant + Duration`
-/// under the egress pool mutex, killing the shard's egress until restart. Every duration on the
-/// settings surface is now refused above the 30-year runtime horizon, by name; the boundary value
-/// itself stays clean. (The webhook sink's per-instance `delivery_timeout_secs` is refused the same
-/// way by the sink's own check — `busbar-export-webhook`.)
 #[test]
 fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
     let over_s = MAX_DURATION_SECS + 1;
@@ -6725,7 +5854,6 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
         );
     }
 
-    // The exact boundary is accepted — the ceiling refuses only what overflows.
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.limits.pool_idle_timeout_secs = MAX_DURATION_SECS;
     cfg.limits.upstream_request_timeout_secs = MAX_DURATION_SECS;
@@ -6737,20 +5865,14 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
         "the boundary values must not error: {:?}",
         validate(&cfg)
     );
-    // And the boundary itself is representable where the old overflow happened.
+
     assert!(std::time::Instant::now()
         .checked_add(std::time::Duration::from_millis(MAX_DURATION_MS))
         .is_some());
 }
 
-/// ITEM 147 (sweep 2) — the per-lane duration overrides reach the same clock arithmetic as the
-/// settings-surface defaults (`health.timeout_secs` → the probe deadline `Instant::now() + t`;
-/// `attempt_timeout_ms` → the attempt timer), through the config file and the named maps, both
-/// of which pass `validate`. Each is refused above the 30-year horizon, by name; the boundary is
-/// accepted.
 #[test]
 fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     let mut provider = make_provider(proto_a(), "https://api.example.com", "API_KEY");
@@ -6782,7 +5904,6 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
         );
     }
 
-    // The boundary is accepted.
     let p = cfg.providers.get_mut("myprovider").expect("provider");
     p.health = Some(crate::config::providers::HealthCfg {
         mode: crate::config::providers::HealthMode::Active,
@@ -6798,10 +5919,6 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
     );
 }
 
-// ── OWNER RULING Q29/Q35: A CARD CONFIGURES EVERY CLASS ITS PLANE DECLARES (generic, every plane) ──
-
-/// A neutral plane declaring billable classes. Every hook is a no-op: the only thing under test is
-/// the declaration the kernel reads. Registered under isolation, so no sibling test sees it.
 static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -6825,7 +5942,7 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
             caller_credential_refusal: None,
         },
         wire_format_names: |_| &[],
-        // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
+
         provider_dialects: |_| crate::ingress::protocols::known_protocols(),
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -6853,7 +5970,6 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
         door: None,
     };
 
-/// One declared billable class in `family`.
 const fn bc(
     class: &'static str,
     family: &'static str,
@@ -6861,8 +5977,6 @@ const fn bc(
     crate::plane_driver::registry::BillableClass { class, family }
 }
 
-/// The FALLBACK plane's shape: its card is the flat 1.5.5 `rate_card:` (#47), and it declares the
-/// four reserved tiers plus two open classes.
 static FLAT_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -6886,8 +6000,6 @@ fn card_yaml(y: &str) -> std::collections::BTreeMap<String, config::RateEntryCfg
     serde_yaml::from_str(y).expect("a card parses")
 }
 
-/// A one-entry plane card keyed the way `resolve` composes it (`<plane key>\u{1f}<lane>`); an empty
-/// `lane` is the card's presence key alone.
 fn plane_card(
     plane: &str,
     lane: &str,
@@ -6900,9 +6012,6 @@ fn plane_card(
     [(key, serde_yaml::from_str(entry).expect("an entry parses"))].into()
 }
 
-/// The flat card is the fallback plane's. A card that leaves declared classes unconfigured REFUSES,
-/// and the ONE error names the section and EVERY missing class, in the plane's declared order; the
-/// reserved tiers an entry omits are 0 by the 1.5.5 grammar, so they are configured.
 #[test]
 fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
     let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
@@ -6913,7 +6022,6 @@ fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class()
                 by this plane; add them (0 to make them free)";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 
-    // One class configured, one still missing: the error names only the one left.
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3, units: { images: 7 } }\n"));
     let errs = validate(&cfg).expect_err("search_units is still unconfigured");
     assert!(
@@ -6923,8 +6031,6 @@ fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class()
     );
 }
 
-/// Configuring every declared class passes, and an EXPLICIT 0 counts as configured. Any entry may
-/// carry a class: configuration is a property of the card, a per-lane gap is the run-time #42 one.
 #[test]
 fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
     let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
@@ -6935,8 +6041,6 @@ fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }
 
-/// The SAME rule for a non-fallback plane, whose card is its own section's: missing classes refuse
-/// naming that section; a complete card passes; no card at all is billing off (#42) and passes.
 #[test]
 fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
     let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
@@ -6951,7 +6055,6 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
                 add them (0 to make them free)";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 
-    // A present card with no entry yet configures nothing: both classes are named.
     cfg.rate_card = Some(plane_card("class-plane", "", "{}"));
     let errs = validate(&cfg).expect_err("an empty present card configures nothing");
     assert!(
@@ -6968,8 +6071,6 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
     assert!(validate(&cfg).is_ok(), "no card = billing off, no refusal");
 }
 
-/// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
-/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane_driver::door::fold` builds the row.
 static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -6985,11 +6086,6 @@ static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDecl =
         ..CLASS_PLANE
     };
 
-/// SEAM-L(m), FEE-UNIT VALIDATION PARITY: a door plane's fee unit is no priced class. The card
-/// that priced the plane's lane before it was served through its door (its declared classes, no
-/// fee unit) boots; a class it leaves unpriced still refuses (#42), the fee unit never named among
-/// them; and a card naming the fee unit as a class refuses as it did, a fee unit being no class a
-/// card prices. RED: the fee unit was demanded of every card, so the predev card refused.
 #[test]
 fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
     let _iso =
@@ -7023,9 +6119,6 @@ fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 }
 
-/// A plane the kernel was never compiled with — its declaration built at run time, the way a plane
-/// registered from outside core arrives — has ITS declared classes honoured: the kernel reads the
-/// list off the declaration and names what it says.
 #[test]
 fn a_dropped_in_planes_declared_classes_are_honoured() {
     let names = ["frames".to_string(), "widgets".to_string()];
@@ -7056,10 +6149,6 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }
 
-/// EVERY CONFIGURED CLASS IS DECLARED: a `units:` key naming a class the plane does not declare
-/// refuses, naming the unknown key AND the plane's declared list — for the fallback plane's flat
-/// card and for a plane's own card alike. A card whose keys are all declared (the 1.5.5 pools card
-/// plus `units: { search_units: 0 }`) passes.
 #[test]
 fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
     let _iso = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
@@ -7092,9 +6181,6 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }
 
-/// EVERY CONFIGURED FEE IS COUNTED: a nonzero `<section>.fees` key naming a unit the plane's
-/// declaration does not count refuses, naming the key and the plane's counted list (`none` for a
-/// plane counting no unit); a counted unit, and an uncounted one at 0, pass.
 #[test]
 fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
@@ -7135,10 +6221,6 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }
 
-/// A FEE UNIT IS PRICED BY `fees:`, NEVER BY THE CARD (ARCHITECT Q-L5-FEE (A); Q17-5 (c)): a plane
-/// that declares `per_session` both as its fee unit and as a billable class (so it can report it)
-/// owes no card price for it, and a card that prices it is refused as pricing an undeclared unit:
-/// the fee unit is never ledgered, so a card price for it could only mislead.
 #[test]
 fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     use busbar_kernel_ledger::cost::PER_SESSION;
@@ -7171,10 +6253,6 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 }
 
-/// An EMPTY `error_map` is valid: the HTTP status still classifies every answer. Rehomes
-/// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_empty_error_map_is_valid_but_bad_value_fails
-/// (its bad-value half is `test_error_map_invalid_class_message_lists_full_valid_set`). RED arm:
-/// the same deployment with one unknown class word is refused naming it.
 #[test]
 fn an_empty_error_map_is_valid_and_an_unknown_class_word_is_not() {
     crate::test_support::register_neutral_test_plane();
@@ -7200,9 +6278,6 @@ fn an_empty_error_map_is_valid_and_an_unknown_class_word_is_not() {
     assert!(errs.join(" | ").contains("invalid StatusClass"), "{errs:?}");
 }
 
-/// Q128 audit ruling (a), restating its M4: a `jwt-bearer` credential naming its key file is
-/// read by the HOST, through the secret kind's file source, and the plugin is handed the JSON. One
-/// that is the JSON inline is handed over untouched, with no file opened.
 #[test]
 fn a_service_account_key_file_is_read_through_the_file_source_at_config_time() {
     let json = br#"{"client_email":"a@b","private_key":"k"}"#.to_vec();
@@ -7222,8 +6297,6 @@ fn a_service_account_key_file_is_read_through_the_file_source_at_config_time() {
     assert_eq!(inline, json);
 }
 
-/// RED: a key file that cannot be read refuses in 1.5.5's words, and the credential (the path it
-/// names) is never rendered.
 #[test]
 fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_path() {
     let refused = super::service_account_json(b"/keys/secret-name.json".to_vec(), |_| {
@@ -7237,13 +6310,6 @@ fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_pa
     assert!(!refused.contains("secret-name"), "{refused}");
 }
 
-/// THE 1.5.5 UPGRADE'S PRIVATE PROVIDER (owner ruling 2026-10-27): a provider at a private or
-/// loopback host still VALIDATES (E1 parity, above), and `--validate` now NAMES it, in one warning
-/// line per URL (BUSBAR-3025), while `advanced.block_private_addresses` holds and
-/// `advanced.allow_destinations` does not admit it: the guard refuses every request to it, so it
-/// must never be discovered only at request time. An allowlist entry that admits the host (exact,
-/// IP or CIDR) or the guard turned off says nothing; a public host says nothing. RED: nothing named
-/// it before.
 #[test]
 fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
     use crate::test_support::warn_capture::WarnCapture;
@@ -7322,17 +6388,12 @@ fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
     );
 }
 
-/// Validate one provider's `base_url` as the boot path does.
 fn base_url_verdict(base: &str) -> Result<(), Vec<String>> {
     let mut providers = HashMap::new();
     providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
     validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
 }
 
-/// security.md: plain `http://` is permitted only for a private literal, `localhost` or
-/// `*.localhost`. A single-label name such as a container-network hostname (`ollama`, a compose
-/// service) is not any of those: it is a name resolution decides, so it is refused with the https
-/// diagnostic, never taken for local.
 #[test]
 fn test_http_container_name_base_url_is_rejected() {
     crate::test_support::register_neutral_test_plane();
@@ -7341,7 +6402,7 @@ fn test_http_container_name_base_url_is_rejected() {
         "http://ollama",
         "http://vllm-server:8000/v1",
         "http://host.docker.internal:11434",
-        "http://localhost.example.com:11434", // `localhost` as a label, not the TLD
+        "http://localhost.example.com:11434",
         "http://notlocalhost:11434",
     ] {
         let errs = base_url_verdict(base).expect_err(&format!(
@@ -7353,11 +6414,10 @@ fn test_http_container_name_base_url_is_rejected() {
             "'{base}': expected the https-for-public-host diagnostic; got: {errs:?}"
         );
     }
-    // The same name over https is fine (the rule is the scheme).
+
     assert!(base_url_verdict("https://ollama:11434").is_ok());
 }
 
-/// security.md: `localhost` and every `*.localhost` name is local, so it may use plain `http://`.
 #[test]
 fn test_http_localhost_subdomain_base_url_is_accepted() {
     crate::test_support::register_neutral_test_plane();
@@ -7376,12 +6436,6 @@ fn test_http_localhost_subdomain_base_url_is_accepted() {
     }
 }
 
-/// FINDING (undocumented): a `base_url` that is an unresolved env placeholder skips the scheme check.
-/// A Lenient (`--validate` / admin dry-run) load splices an unset `${VAR}` in as the bare name `VAR`,
-/// and `validate_with_unset` then treats a scheme-less value naming an unset variable as a
-/// placeholder. So under `--validate` the value is exempt from the https rule, where the boot path
-/// (`validate`, no unset list) refuses the same bare value, and a value with a `://` scheme is
-/// checked either way, even when it names the unset variable.
 #[test]
 fn an_env_placeholder_base_url_skips_the_scheme_check_under_validate_only() {
     crate::test_support::register_neutral_test_plane();
@@ -7394,15 +6448,15 @@ fn an_env_placeholder_base_url_skips_the_scheme_check_under_validate_only() {
             &unset,
         )
     };
-    // A bare placeholder (what an unset ${OLLAMA_BASE} leaves) is exempt under --validate...
+
     assert!(
         with_unset("OLLAMA_BASE").is_ok(),
         "an unset-var placeholder skips the scheme check: {:?}",
         with_unset("OLLAMA_BASE")
     );
-    // ...is refused on the boot path, which has no unset list...
+
     assert!(base_url_verdict("OLLAMA_BASE").is_err());
-    // ...and a real http:// URL to a public host is refused even when it names the unset variable.
+
     assert!(with_unset("http://OLLAMA_BASE.example.com").is_err());
     assert!(with_unset("http://api.example.com").is_err());
 }

@@ -74,26 +74,18 @@ use crate::cost::rate::ClassPrice;
 use crate::cost::{NANOS_PER_CENT, NANOS_PER_MICRO};
 
 /// Joins a plane key to its lane: `"<plane>\u{1f}<lane>"` is a lane priced by THAT plane's own card
-/// (#42 "scoped per plane", #47), resolved by [`crate::cost::RateCard::plane_lane`]. An unqualified
-/// lane is the flat card's — the card of the plane that owns the unqualified lanes, where 1.5.5's
-/// top-level `rate_card:` loads. A plane that configured no card reads 0; one that did prices or
-/// refuses by that card alone. U+001F is not a character a configured lane key is written with.
+
 pub const PLANE_LANE_SEP: char = '\u{1f}';
 
 /// The scale every [`Money`] figure is held at: six decimal places, i.e. micro-units (#81).
-///
-/// A PRECISION, not a currency and not a denomination — money in this tree is unitless (#66).
+
 pub const MONEY_SCALE: u32 = 6;
 
 /// `10^MONEY_SCALE`: how many mantissa steps make one whole money unit.
 const MONEY_SCALE_FACTOR: i128 = 1_000_000;
 
 /// The scale the accumulator runs at, before the single projection to [`MONEY_SCALE`].
-///
-/// A count is held at scale 6 and a card's rate is nano-units per WHOLE unit, which is scale 9, so
-/// their product lands at scale 15. Accumulating there and projecting once at the end is what makes
-/// "two lines each worth half a micro-unit make one micro-unit" true, where a per-line projection
-/// would floor both to nothing.
+
 pub const EXACT_SCALE: u32 = MONEY_SCALE + 9;
 
 /// The divisor that takes the exact scale-15 accumulator down to [`MONEY_SCALE`]. Applied ONCE.
@@ -123,10 +115,7 @@ impl Money {
     }
 
     /// The amount in whole MINOR units, truncated toward zero.
-    ///
-    /// The divisor is [`crate::cost::NANOS_PER_CENT`] over [`crate::cost::NANOS_PER_MICRO`] — THE
-    /// ONE SCALE (#66), with no second divisor a reader could pick. This is the projection
-    /// `spend_cents` has always been.
+
     pub fn minor(self) -> i128 {
         let micros_per_minor = i128::try_from(NANOS_PER_CENT / NANOS_PER_MICRO)
             .expect("the one minor scale fits an i128");
@@ -139,12 +128,10 @@ impl Money {
     }
 
     /// The exact decimal spelling, always with [`MONEY_SCALE`] places: `34_510` reads `0.034510`.
-    ///
-    /// Written by integer arithmetic over the mantissa's digits. No float is formatted and none is
-    /// parsed back, so what a reader sees is what the book holds.
+
     pub fn to_decimal_string(self) -> String {
         let negative = self.0 < 0;
-        // `unsigned_abs` rather than `abs`, which panics on the minimum.
+
         let magnitude = self.0.unsigned_abs();
         let whole = magnitude / (MONEY_SCALE_FACTOR as u128);
         let fraction = magnitude % (MONEY_SCALE_FACTOR as u128);
@@ -208,7 +195,7 @@ impl LedgerEntry {
     }
 
     /// Add one class's count. A repeated class REPLACES rather than accumulating, because two
-    /// counts for one class on one row is a caller bug and silently adding them would hide it.
+
     pub fn with_count(mut self, class: impl Into<String>, count: Count) -> LedgerEntry {
         self.counts.insert(class.into(), count);
         self
@@ -300,34 +287,21 @@ impl std::fmt::Display for MoneyError {
 impl std::error::Error for MoneyError {}
 
 /// **THE ONE FUNCTION.** `money = f(ledger_slice, card_history)`.
-///
-/// Prices a whole slice of either book against the history as it currently stands, each entry
-/// against the card in force at its own `arrived_ms` (#79). This is what the admin reads call and
-/// what the budget gate would call.
-///
-/// It reads no clock, no store and no configuration. Hand an auditor the slice and the history and
-/// they re-derive the figure by hand.
+
 pub fn price(ledger: &[LedgerEntry], history: &History) -> Result<Money, MoneyError> {
     price_in_view(ledger, &history.current())
 }
 
 /// [`price`] against a PINNED snapshot of the history.
-///
-/// Pinned rather than re-read per entry: a card appended while a read is in flight must not price
-/// half of one response's rows against one history and half against another. It is also the
-/// reproducibility primitive — an invoice cut at a snapshot re-derives forever from that snapshot.
+
 pub fn price_in_view(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<Money, MoneyError> {
     let exact = price_exact(ledger, view)?;
-    // THE ONE TRUNCATION, and it is the last thing that happens. Toward zero, matching the
-    // projection every 1.5.5 figure was already read through.
+
     Ok(Money(exact / EXACT_PER_MONEY))
 }
 
 /// [`price_in_view`] with the final projection WITHHELD: the exact accumulator at [`EXACT_SCALE`].
-///
-/// For a caller that must know whether the projection dropped anything — a reconciliation, a
-/// property test, an auditor. `price_exact(..) % 1_000_000_000 == 0` is the statement "this figure
-/// is exact at scale six", and it is a statement the truncated form cannot make about itself.
+
 pub fn price_exact(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<i128, MoneyError> {
     let mut tally = Tally::in_view(*view);
     for entry in ledger {
@@ -346,29 +320,24 @@ pub fn price_exact(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<i12
 }
 
 /// A whole-unit count at [`MONEY_SCALE`] — the shape both books hold their counts in today.
-///
-/// `u64::MAX × 10^6` is about `1.8e25`, inside an `i128` by thirteen orders of magnitude, so this
-/// cannot overflow and needs no error arm.
+
 pub fn whole(count: u64) -> Count {
     Count::from_micros(i128::from(count) * MONEY_SCALE_FACTOR)
 }
 
 /// The divisor from the exact scale-15 accumulator to NANO-units (scale 9). Applied once, by
-/// [`nanos_of_exact`].
+
 const EXACT_PER_NANO: i128 = 1_000_000;
 
 /// An exact scale-15 figure in whole NANO-units, truncated toward zero once — the unit the books
-/// and the settlement posting store. `Err(Overflow)` for a figure below zero or past `u128`, which
-/// the one function cannot produce from non-negative rates and counts; the arm exists so the
-/// narrowing is total rather than a cast.
+
 pub fn nanos_of_exact(exact: i128) -> Result<u128, MoneyError> {
     u128::try_from(exact / EXACT_PER_NANO).map_err(|_| MoneyError::Overflow)
 }
 
 impl Money {
     /// The micro-unit mantissa narrowed to the `i64` a served `spend_micros` field carries,
-    /// CHECKED: a figure that does not fit is [`MoneyError::Overflow`], never pinned at
-    /// `i64::MAX` (item 28 — a saturated bill is a wrong bill wearing a right bill's clothes).
+
     pub fn micros_i64(self) -> Result<i64, MoneyError> {
         i64::try_from(self.0).map_err(|_| MoneyError::Overflow)
     }
@@ -379,8 +348,7 @@ impl Money {
     }
 
     /// A NANO-unit total — a ledger row's summed `priced_amount` — as [`Money`]: one truncation,
-    /// toward zero, to scale six, CHECKED. The projection a nano-unit accumulator reads through
-    /// (item 28): `Err(Overflow)` for a figure the type cannot hold, never a pin at a ceiling.
+
     pub fn of_nanos(nanos: u128) -> Result<Money, MoneyError> {
         i128::try_from(nanos / NANOS_PER_MICRO)
             .map(Money)
@@ -428,8 +396,6 @@ enum Source<'a> {
 pub struct Tally<'a> {
     source: Source<'a>,
     /// Pre-tier amount per tier, at the exact scale. One element for every slice this tree
-    /// produces (every production posting is at the standard tier); a `Vec` so the common case is
-    /// one small allocation and a linear scan of length one.
     pre_tier: Vec<(u32, i128)>,
 }
 
@@ -443,7 +409,7 @@ impl<'a> Tally<'a> {
     }
 
     /// A tally pricing every row against ONE card — the reads that hold a current card rather than
-    /// a history. The card answers for every instant as the opening entry would.
+
     pub fn at_card(card: &'a crate::cost::rate::RateCard) -> Tally<'a> {
         Tally::at_card_seq(HistorySeq::OPENING, card)
     }
@@ -474,15 +440,10 @@ impl<'a> Tally<'a> {
         fee_count: Count,
     ) -> Result<(), MoneyError> {
         let (card_seq, node_card) = self.resolve(arrived_ms)?;
-        // THE CARD BY PLANE (#42 "scoped per plane", #47), and the lane on it — ONE resolution,
-        // the same one the settlement lookup takes ([`crate::cost::RateCard::lane_pricing`]): the
-        // row's plane key picks its card, a plane with no card of its own is billing off for that
-        // plane, and a plane's FEE LANE (`"<plane>\u{1f}"`, [`crate::cost::plane_fee_lane`]) prices
-        // its reserved fee classes at the plane's OWN fees (#44, #47), card or no card.
+
         let pricing = node_card.lane_pricing(lane);
         let card = pricing.card;
-        // A present card that names no entry for the lane REFUSES. BILLING OFF (#42, no card): every
-        // class prices at nothing and nothing is "unpriced" — there is no card to be missing from.
+
         if !pricing.lane_named() {
             return Err(MoneyError::LaneUnpriced {
                 card_seq,
@@ -492,12 +453,9 @@ impl<'a> Tally<'a> {
         let mut amount: i128 = 0;
         for (class, count) in counts {
             let unit_nanos = match pricing.class_price(class) {
-                // The fee dimension: never rounded, never divided (#44).
                 ClassPrice::FeeMinor(fee_minor) => minor_nanos(fee_minor)?,
                 ClassPrice::Nanos(nanos) => i128::from(nanos),
-                // #42 STATED AS AN ARM: a present card silent about a class the traffic HIT is a
-                // refusal. A zero count is still a hit — the row reported the class. A fee lane
-                // carries nothing but the fee classes.
+
                 ClassPrice::Unpriced => {
                     return Err(MoneyError::ClassUnpriced {
                         card_seq,
@@ -513,17 +471,13 @@ impl<'a> Tally<'a> {
             amount = amount.checked_add(line).ok_or(MoneyError::Overflow)?;
         }
 
-        // The row's flat fees are ITS PLANE's (#47): the flat card's for an unqualified lane — 1.5.5's
-        // `per_request_fee:` — and a plane's own `fees.per_request` for a qualified one.
         let fee = fee_term(card, fee_count)?;
         let amount = amount.checked_add(fee).ok_or(MoneyError::Overflow)?;
         self.add(tier_bp, amount)
     }
 
     /// Add a row that carries the flat fee and no counts — a bucket's billable-request count, which
-    /// the enforcement books keep per bucket rather than per lane. No lane is consulted, because
-    /// the fee is one plane-agnostic dimension of the card (#44), priced whether the card is
-    /// present or absent.
+
     pub fn fee(
         &mut self,
         arrived_ms: u64,
@@ -536,7 +490,7 @@ impl<'a> Tally<'a> {
     }
 
     /// [`Self::fee`] for one LANE: the flat fees at the fee of the lane's own plane (#47) — for a
-    /// row whose lane a present card does not name, which contributes its fees and nothing else.
+
     pub fn lane_fee(
         &mut self,
         lane: &str,
@@ -566,13 +520,10 @@ impl<'a> Tally<'a> {
     }
 
     /// **THE FIGURE**, at [`EXACT_SCALE`]: each tier's pre-tier sum through the tier once, summed,
-    /// CHECKED. No truncation has happened yet.
+
     pub fn exact(&self) -> Result<i128, MoneyError> {
         let mut total: i128 = 0;
         for (tier_bp, amount) in &self.pre_tier {
-            // THE ONE TIER ARITHMETIC, in its refusing form. The magnitude goes through the shared
-            // function and the sign is re-applied here, because `checked_` is the one function's
-            // overflow policy and the shared arithmetic must not carry a second one.
             let tiered_magnitude =
                 checked_apply_tier(amount.unsigned_abs(), *tier_bp).ok_or(MoneyError::Overflow)?;
             let narrowed = i128::try_from(tiered_magnitude).map_err(|_| MoneyError::Overflow)?;
@@ -593,19 +544,7 @@ impl<'a> Tally<'a> {
 }
 
 /// The flat fee as a term of the accumulator: minor units lifted to nano-units, times the fee
-/// count, at [`EXACT_SCALE`].
-///
-/// NEVER ROUNDED and never divided (#44) — a fee is one pricing dimension. Its unit price is an
-/// exact multiple of one minor unit, which is the property that makes summing it in before the
-/// single projection give the same answer as projecting the usage first and adding the fee after.
-///
-/// **AND NEVER A SILENT NOTHING.** A card carries exactly one fee and every constructor sets it
-/// (#66 removed the per-currency map whose absent key used to read as zero), so a fee of nothing
-/// can only be a fee an operator CONFIGURED at nothing — #77(5)'s explicit zero row.
-///
-/// It is the same term whether the card is present or absent, because an absent card still posts
-/// its flat fee (#42: *"rate_card ABSENT ⇒ NOT billed"* for the CLASSES; the
-/// fee is what such a deployment is actually billed).
+
 fn fee_term(card: &crate::cost::rate::RateCard, fee_count: Count) -> Result<i128, MoneyError> {
     fee_count
         .micros()

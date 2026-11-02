@@ -21,9 +21,7 @@ fn contracts_run_in_slot_order_contiguous_after_the_lifecycle() {
 }
 
 /// A framer pends only on a ticketed auth call: `begin`, `ingest` and `emit` may pend (each may call
-/// the host's auth service), every other framer op never does, `encode` among them; all of them run
-/// on the request path, and every one that frames a stream (from `begin` on) under the stream's
-/// deadline. `locate` reads a target before any stream exists, under the call's.
+
 #[test]
 fn only_the_ticketed_framer_ops_may_pend_and_all_run_on_the_request_path() {
     let ticketed = [slot::BEGIN, slot::INGEST, slot::EMIT];

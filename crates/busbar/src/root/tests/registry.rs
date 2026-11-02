@@ -1,17 +1,11 @@
-//! Tests for `registry.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
-
 use super::*;
 use busbar_contract::grammar::{Claim, Selector};
 use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
 
-/// Every linked plane's claims and the admin surface's route, as the boot seal pairs them.
 fn linked_claims() -> Vec<PlaneClaim> {
     plane_claims(crate::LINKED.claims)
 }
 
-/// The linked transports folded bottom-up, as the boot seal folds them.
 fn linked_fold() -> Vec<Built> {
     compose(
         crate::LINKED.transports,
@@ -21,21 +15,14 @@ fn linked_fold() -> Vec<Built> {
     .expect("the stack composes")
 }
 
-/// Every linked transport as the composition check reads it.
 fn linked_rows() -> Vec<Registered> {
     linked_fold().into_iter().map(|(row, _)| row).collect()
 }
 
-/// The registry the seal fills: the folded transports, then every linked plane.
 fn linked_registry() -> Registry {
     register_all(&linked_rows(), crate::LINKED.claims).expect("nothing collides on a key")
 }
 
-/// Whether this build links a wire that opens at an upgrade (a transport row stating an upgrade
-/// claim, on the `transport` and `connector-door` axes). No plane rides the kernel's SESSION loop:
-/// the session plane is a door plane (`plane-door` axis) whose claims are its snapshot's and are
-/// mounted by the serve fold, not declared in the linked claims table, so the wire is the
-/// transport row's alone. Read off `LINKED`, so this source names no wire.
 fn upgrade_wire_linked() -> bool {
     crate::LINKED
         .transports
@@ -43,17 +30,11 @@ fn upgrade_wire_linked() -> bool {
         .any(|t| !(t.upgrades)().is_empty())
 }
 
-/// Every transport and every plane goes into one registry, and the registry holds exactly what
-/// the linked tables declare. This is the half of the seal that does not depend on the claims.
-// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the request rows compose over the linked transport
-// door; a build that links none (`--no-default-features`) has no stack to fold or seal, so this
-// cell gates on the transport-door axis, read off the linked table.
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn every_linked_transport_and_plane_registers() {
     let registry = linked_registry();
-    // Every folded wire registers under its key, and nothing else does: the keys are the linked
-    // rows' own, so this names none of them.
+
     let rows = linked_rows();
     assert_eq!(registry.count(PluginKind::Transport), rows.len());
     for row in &rows {
@@ -63,16 +44,13 @@ fn every_linked_transport_and_plane_registers() {
             row.key
         );
     }
-    // Every linked plane and nothing else: a plane this build does not link registers nothing,
-    // and the admin surface is a cleanliness crate, never a plugin (THE DESIGN §8: "Exactly three
-    // crates are compiled in and are never plugins"; R6).
+
     assert_eq!(
         registry.count(PluginKind::Plane),
         crate::LINKED.claims.len(),
         "the plane registry holds something no linked plane row declares"
     );
-    // Every linked plane that claims bytes is registered: the claimed keys are read off the
-    // planes' own declarations, so this names none of them.
+
     let linked_keys: Vec<&str> = crate::LINKED
         .claims
         .iter()
@@ -86,8 +64,6 @@ fn every_linked_transport_and_plane_registers() {
         if linked_keys.contains(key) {
             assert!(registered, "plane `{key}` is not registered");
         } else {
-            // A cleanliness crate's route (§6 step 3: "a claimant is a plane, a plugin's inbound
-            // need, or a cleanliness crate's route (admin, oauth2)") claims bytes and is no plugin.
             assert!(
                 !registered,
                 "the claimant `{key}` is no linked plane, yet it is registered as a plane-kind \
@@ -95,8 +71,7 @@ fn every_linked_transport_and_plane_registers() {
             );
         }
     }
-    // A plane and the wire its claims ride are present exactly together: every transport a
-    // linked plane's claim names is registered.
+
     for claim in &linked_claims() {
         assert!(
             registry
@@ -109,11 +84,6 @@ fn every_linked_transport_and_plane_registers() {
     }
 }
 
-/// Every claim belongs to exactly one linked plane row, every linked plane row brings at least one
-/// claim, and the claim total is the sum of the rows'. Stated over the linked table, so a plane
-/// that gains or loses a claim moves the total without a number here to edit; the design's own
-/// table is checked against the planes' declarations, not against a copy of them.
-// Gated on every plane linked: the invariants are stated over the whole linked set.
 #[cfg(linked_every_plane_door)]
 #[test]
 fn every_linked_planes_claims_are_its_declared_claims() {
@@ -138,7 +108,7 @@ fn every_linked_planes_claims_are_its_declared_claims() {
         );
         total += row.claims.len();
     }
-    // The rest is the admin surface's route, which no linked row carries.
+
     assert!(
         total <= claims.len(),
         "more linked claims than the seal holds"
@@ -152,17 +122,6 @@ fn every_linked_planes_claims_are_its_declared_claims() {
     );
 }
 
-/// The measured overlap, split the way the rule splits it, and tied to the seal: every cross-plane
-/// pair that could both match is either same-family or cross-family, and the two together are
-/// exactly the pairs the sealed order resolves.
-///
-/// The two families come apart deliberately. The cross-family pairs are the conservative arm of
-/// the totality rule: a request has both a path and a header, so nothing proves a header claim
-/// and a path claim cannot coincide. The same-family pairs are the substantive half, and they
-/// are the half a tighter grammar moves: reading a suffix and a substring as the segment
-/// constraints they are, rather than as fragments that overlap anything, shrinks it without ever
-/// answering "disjoint" for a pair one arrival satisfies.
-// Gated on every plane linked: the invariants are stated over the whole linked set.
 #[cfg(linked_every_plane_door)]
 #[test]
 fn every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_them_all() {
@@ -191,22 +150,6 @@ fn every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_th
     );
 }
 
-/// What the path-family overlaps that remain actually ARE, one class at a time.
-///
-/// A count alone cannot say whether an overlap is a real shape or a gap in the reasoning, and
-/// that distinction is the whole reason to tighten a grammar rather than to relax a check. So
-/// each remaining pair is put in the class that explains it, and the classes are exhaustive:
-///
-/// * a pattern that ends in a TAIL, against a fragment — the tail can spell whatever the
-///   fragment asks for, so a path satisfying both is written by filling the tail in;
-/// * a pattern with a VARIABLE segment, against a fragment that fits inside one segment — the
-///   variable takes any single segment, and a fragment with no slash of its own is one;
-/// * two FRAGMENT forms — a suffix and a substring — which are satisfied together by writing a
-///   path that ends the one way and contains the other.
-///
-/// A pair that fits none of these would be the interesting one: a conservative answer with no
-/// account of itself. There is none, and the assertion is that there is none.
-// Gated on every plane linked: the invariants are stated over the whole linked set.
 #[cfg(linked_every_plane_door)]
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
@@ -240,10 +183,6 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     }
 }
 
-/// **The finding, answered.** Every cross-plane overlap is settled by the sealed order, and none
-/// of them is a refusal: the refusal list is held empty, which is the whole claim of this file —
-/// the declared set of planes seals.
-// Gated on every plane linked: the invariants are stated over the whole linked set.
 #[cfg(linked_every_plane_door)]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
@@ -256,8 +195,6 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
         sealed.refused
     );
 
-    // The winner of a resolved pair is one of its two sides, and it is the side the order puts
-    // first. Said as a property rather than as one assertion per pair.
     let rank = |i: usize| {
         sealed
             .order
@@ -275,11 +212,6 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// THE SEALED ORDER IS THE PRECEDENCE RULE, NOT A LIST. The walk every arriving connection is
-/// matched against is every linked claim exactly once, most specific first, ties in declaration
-/// order — so it is stable across boots and a change to it is a change to a claim's selector,
-/// never to a table of the shipped composition.
-// Gated on every plane linked: the invariants are stated over the whole linked set.
 #[cfg(linked_every_plane_door)]
 #[test]
 fn the_sealed_order_is_most_specific_first_and_stable() {
@@ -307,8 +239,7 @@ fn the_sealed_order_is_most_specific_first_and_stable() {
             claims[b]
         );
     }
-    // And it is the claims' own order, not the table's: the same claims handed over in reverse
-    // walk the same precedence ranks.
+
     let ranked = |claims: &[PlaneClaim]| -> Vec<(u32, u32)> {
         seal_claims(claims)
             .order
@@ -325,10 +256,6 @@ fn the_sealed_order_is_most_specific_first_and_stable() {
     );
 }
 
-/// The refusal is still the point of the check. Two planes claiming one path at the same
-/// precedence is a composition nobody can resolve — the order has nothing to say about it — and
-/// the node says so at boot with both planes named rather than picking a winner at the first
-/// request.
 #[test]
 fn a_planted_equal_precedence_collision_refuses_at_boot() {
     let admin = linked_claims()
@@ -339,17 +266,13 @@ fn a_planted_equal_precedence_collision_refuses_at_boot() {
         plane: "impostor",
         claim: admin.claim,
     };
-    // A clean two-claim base, so the refusal that comes back is the one that was planted and
-    // not one the declared set already carries.
+
     let sealed = seal_claims(&[admin, impostor]);
     assert!(sealed.resolved.is_empty());
     assert_eq!(sealed.refused.len(), 1);
     assert_eq!(sealed.refused[0].reason, ConflictReason::EqualPrecedence);
 }
 
-/// And the other half of the same rule: the same two planes, one of them naming a tighter
-/// selector, is not a refusal at all. The exact path is more specific than the pattern that
-/// swallows it, so the order decides, the pair is recorded, and the boot goes on.
 #[test]
 fn a_planted_overlap_at_different_precedence_resolves_rather_than_refusing() {
     let admin = linked_claims()
@@ -374,9 +297,6 @@ fn a_planted_overlap_at_different_precedence_resolves_rather_than_refusing() {
     );
 }
 
-/// Two claims whose scheme sets share nothing never overlap, however alike their selectors read:
-/// one request carries one credential, and no credential answers both sets. Planted on the one
-/// selector pair that is otherwise the hardest collision there is — the same exact path.
 #[test]
 fn claims_with_disjoint_scheme_sets_do_not_collide() {
     let one = PlaneClaim {
@@ -405,14 +325,11 @@ fn claims_with_disjoint_scheme_sets_do_not_collide() {
     assert!(sealed.refused.is_empty());
     assert!(sealed.resolved.is_empty());
 
-    // And the moment one alternative is shared, the same pair is the collision it looks like.
     let mut shared = two;
     shared.claim.scheme_alternatives = &["bearer"];
     assert_eq!(seal_claims(&[one, shared]).refused.len(), 1);
 }
 
-/// Every claim is ordered, most specific first, and the order is a permutation of the claims —
-/// no claim is dropped from the walk and none is tried twice.
 #[test]
 fn the_precedence_order_is_a_permutation_of_every_claim() {
     let claims = linked_claims();
@@ -421,8 +338,6 @@ fn the_precedence_order_is_a_permutation_of_every_claim() {
     assert_eq!(seen, (0..claims.len()).collect::<Vec<_>>());
 }
 
-/// And it is an order, not a shuffle: specificity never increases as the walk goes on, so the
-/// first claim that matches is the most specific one that could have.
 #[test]
 fn the_precedence_order_is_most_specific_first() {
     use busbar_kernel::grammar::specificity;
@@ -436,9 +351,6 @@ fn the_precedence_order_is_most_specific_first() {
     }
 }
 
-/// The one-answer form of the same check, over the two claims the planted collision uses: a
-/// caller that only needs to know whether a set seals gets the first refusal, with both planes
-/// named in the message an operator reads.
 #[test]
 fn the_one_answer_form_names_both_planes() {
     let admin = linked_claims()
@@ -456,9 +368,6 @@ fn the_one_answer_form_names_both_planes() {
     assert!(conflict.to_string().contains("equal precedence"));
 }
 
-/// A plane's own claims may overlap: within one plane they are an ordered pattern set with
-/// most-specific-wins precedence, and that is what makes a catch-all tail legal beneath a
-/// specific route. Only the cross-plane case is a refusal.
 #[test]
 fn a_planes_own_claims_may_overlap() {
     let claims = linked_claims();
@@ -471,12 +380,6 @@ fn a_planes_own_claims_may_overlap() {
     assert!(check_claims(&doubled).is_ok());
 }
 
-/// The shipped stack composes: every layer the seven transports declare is registered, and the
-/// three that were actually built over a lower layer were built over one they declare. This is
-/// the composition half of the seal, and it passes today.
-// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the request rows compose over the linked transport
-// door; a build that links none (`--no-default-features`) has no stack to fold or seal, so this
-// cell gates on the transport-door axis, read off the linked table.
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn the_shipped_transport_stack_composes() {
@@ -488,9 +391,7 @@ fn the_shipped_transport_stack_composes() {
             .expect("registered")
             .composed_over
     };
-    // NO TRANSPORT NAMES ANOTHER (ARCHITECT Q128 U7; TRANSPORT-STACK (2), :4721): every row is
-    // built over nothing, the carrier being the connector's choice from the target's scheme, and a
-    // scheme an entry claims past its own is served by its wire, not a layer over it.
+
     for row in &rows {
         assert!(row.composes_over.is_empty(), "`{}` names a layer", row.key);
         assert_eq!(
@@ -502,11 +403,6 @@ fn the_shipped_transport_stack_composes() {
     }
 }
 
-/// The other direction of the composition rule: a transport built over a layer it does not
-/// declare describes a node nobody is running, and the check says so.
-// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the request rows compose over the linked transport
-// door; a build that links none (`--no-default-features`) has no stack to fold or seal, so this
-// cell gates on the transport-door axis, read off the linked table.
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn an_undeclared_composition_refuses_at_boot() {
@@ -527,7 +423,6 @@ fn an_undeclared_composition_refuses_at_boot() {
     );
 }
 
-/// And the first direction: a declared layer that no registered transport provides.
 #[test]
 fn an_unregistered_layer_refuses_at_boot() {
     let rows = vec![Registered {
@@ -545,10 +440,6 @@ fn an_unregistered_layer_refuses_at_boot() {
     );
 }
 
-/// A guard against a claim slice that quietly names a plane the registry never took: the
-/// pairing in `plane_claims` is done by hand, so the one thing worth asserting about it is that
-/// every key it produces is a key the registry actually resolves — except the admin surface's
-/// route, a cleanliness crate's claimant that is no plugin (§6 step 3, §8).
 #[test]
 fn every_claimed_plane_key_is_a_registered_plane() {
     let registry = linked_registry();
@@ -564,21 +455,8 @@ fn every_claimed_plane_key_is_a_registered_plane() {
     }
 }
 
-/// **The second finding, now closed on the declaration side and kept alive on the check side.**
-/// The other side of the pairing above: a claim on a transport no crate provides. The design
-/// lists more transports than exist, and a plane used to claim one of its dialects on one that does
-/// not — which made the seal refuse, so no node built on this root could boot at all.
-///
-/// The claim is gone (the plane's own claim table says why, and what has to land before it comes
-/// back). The CHECK is not: it is the only thing in the tree that reads a claim and a registered
-/// transport at the same time, and a check deleted along with the one claim that tripped it
-/// would leave the next such claim to be discovered as a request that matched nothing. So it is
-/// exercised here against a claim built for the purpose, on a transport deliberately not one of
-/// the seven.
 #[test]
 fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
-    // Planted on a REAL registered plane (the first that claims anything), so the refusal is about
-    // the transport and nothing else.
     let plane = linked_claims()
         .first()
         .expect("the shipped planes claim bytes")
@@ -604,11 +482,6 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
     ));
 }
 
-/// And the whole boot, end to end, now that nothing declares a claim the root cannot place: the
-/// seal answers. This is the assertion the previous shape of the test above could not make —
-/// the claims sealed, and the one transport gap was all that stood between the declared
-/// composition and a node that boots.
-// Gated on every plane linked: the invariants are stated over the whole linked set.
 #[cfg(linked_every_plane_door)]
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
@@ -618,16 +491,6 @@ fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     assert_eq!(sealed.precedence.len(), sealed.claims.len());
 }
 
-/// The operator's request-body cap reaches every linked transport.
-///
-/// A deployment that writes `limits.request_body_max_bytes: 1024` is asking for a node that
-/// buffers a kilobyte, and it has to mean it on every plane at once — the door's inbound limit
-/// and a transport's accumulation ceiling are the same number, so a wire built from a `Default`
-/// would take a body the door refused. The fold hands every row's build the ONE settings value it
-/// was given, and the capped composition still seals.
-// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the request rows compose over the linked transport
-// door; a build that links none (`--no-default-features`) has no stack to fold or seal, so this
-// cell gates on the transport-door axis, read off the linked table.
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
@@ -675,15 +538,6 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
     .expect("the capped composition seals");
 }
 
-/// THE FOLD IS BOTTOM-UP, AND `COMPOSES_OVER` IS THE COMPOSITION ORDER. The linked rows build in
-/// the order they register — every wire after every layer it declares, the table's order where no
-/// layer decides it — and each entry's claims past its own register right after it. No linked wire
-/// declares a layer (no transport names another), so every row is built over nothing. The same
-/// rows handed over in the reverse order build the same stack, because the order is the
-/// declarations' and not the table's.
-// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the request rows compose over the linked transport
-// door; a build that links none (`--no-default-features`) has no stack to fold or seal, so this
-// cell gates on the transport-door axis, read off the linked table.
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn the_fold_builds_bottom_up_in_composes_over_order() {
@@ -698,15 +552,14 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
     let mut last = None;
     for entry in crate::LINKED.transports {
         let key = (entry.key)();
-        // Every linked entry is built, after the entries the table puts before it (no layer
-        // reorders them: no transport names another) …
+
         let at = position(key).unwrap_or_else(|| panic!("`{key}` is not built"));
         assert!(
             last.is_none_or(|l| l < at),
             "`{key}` was built out of the table's order: {built:?}"
         );
         last = Some(at);
-        // … and the schemes it claims past its own register right after it, in its order.
+
         let past: Vec<&str> = (entry.claims)().into_iter().filter(|c| *c != key).collect();
         for (n, claim) in past.iter().enumerate() {
             assert_eq!(
@@ -750,7 +603,6 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
     assert!(check_composition(&refolded).is_ok());
 }
 
-/// Two rows that declare each other as their layer have no bottom: the fold refuses, naming one.
 #[test]
 fn transports_layered_over_each_other_refuse_at_boot() {
     let own = *crate::LINKED
@@ -780,8 +632,6 @@ fn transports_layered_over_each_other_refuse_at_boot() {
     assert!(refusal.to_string().contains("`upper`"));
 }
 
-/// And the same check over every declared claim, every plane included: nothing anywhere names a
-/// transport the root did not register.
 #[test]
 fn every_planes_claims_name_a_registered_transport() {
     let registered = linked_rows();
@@ -793,10 +643,7 @@ fn every_planes_claims_name_a_registered_transport() {
             claim.plane,
             claim.claim.transport
         );
-        // And the same question of the registry itself, which is what a request is served out
-        // of: the rows are the root's own statement about what it built, and a name that
-        // resolves in the statement but not in the registry would be a claim on a transport
-        // nothing can answer with.
+
         assert!(
             registry
                 .resolve(PluginKind::Transport, claim.claim.transport)
@@ -808,20 +655,13 @@ fn every_planes_claims_name_a_registered_transport() {
     }
 }
 
-// ── BOTH DOORS, ONE FOLD ────────────────────────────────────────────────────────────────────────
-
-/// The dropped-in wire these proofs serve: the neutral frame door (the plugin loader's
-/// `neutral_frame_door` example, an identity framer under a neutral claim), served over the host's
-/// sockets as the boot serves a dropped-in door, once for the process. It names no transport, so the
-/// root names none and no transport leaving this repo takes the fixture with it. A missing artifact
-/// is a hard failure in every run, never a silent skip.
 fn dropped_doors() -> &'static [DroppedDoor] {
     use crate::root::test_plugins::{missing, neutral_frame_door, BUILD_LOADER_EXAMPLES};
     static DOORS: std::sync::OnceLock<Vec<DroppedDoor>> = std::sync::OnceLock::new();
     DOORS.get_or_init(|| {
         let (plugin, key) = neutral_frame_door()
             .unwrap_or_else(|| missing("neutral_frame_door", BUILD_LOADER_EXAMPLES));
-        // Read off its Statement as the boot reads a dropped-in door's (`boot::dropped_transports`).
+
         let facts = plugin
             .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
             .expect("the transport facts")
@@ -843,10 +683,6 @@ fn dropped_doors() -> &'static [DroppedDoor] {
     })
 }
 
-/// RED (ARCHITECT ruling (c) on #953: compiled-in = dropped-in, one contract and one path): a
-/// DROPPED-IN transport's offered points reach the guest-list seal as a linked row's do. The fixture
-/// states no record, so its claim offers `{Head, HeadBody}`; the same door stating `{Peer}` gives its
-/// claim `{Peer}`, and a line on that claim whose auth needs `Head` is refused at seal.
 #[test]
 fn a_dropped_in_transports_offered_points_reach_the_guest_list_seal() {
     use busbar_contract::abi::auth::AuthPoints;
@@ -891,12 +727,6 @@ fn a_dropped_in_transports_offered_points_reach_the_guest_list_seal() {
     );
 }
 
-/// RED (Part 2 #2 rule 1: compiled-in = dropped-in, same contract, same path): a DROPPED-IN
-/// transport's upgrade lines reach the guest list exactly as a linked one's do. The same two rows,
-/// a framer stating `{Peer}` and an upgrade claim composing over it that states no record, once
-/// linked and once dropped in: the same upgrade carriers, the same offered sets (the upgrade claim
-/// takes its framer's `{Peer}`), and the same line on the upgrade claim, refused at seal for a
-/// `Head` auth its transport does not offer.
 #[test]
 fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_do() {
     use busbar_contract::abi::auth::AuthPoints;
@@ -1001,9 +831,6 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
     );
 }
 
-/// The linked row the dropped-in wire stands in for: its key, composing over nothing, built in
-/// process as the same served wire. The build's own linked table holds no row for the neutral
-/// claim, so a proof that the dropped-in wire takes a linked row's place adds that row first.
 fn the_wires_linked_row() -> LinkedTransport {
     LinkedTransport {
         key: || dropped_doors()[0].key,
@@ -1016,9 +843,6 @@ fn the_wires_linked_row() -> LinkedTransport {
     }
 }
 
-/// TWO LINKED DOOR ROWS ARE TWO INSTANCES: a linked transport door is bound under its own row name,
-/// so no two linked rows share a label and the host services never take them for one instance
-/// (ARCHITECT ruling 2026-09-30 (B)).
 #[test]
 fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
     let (a, b) = (
@@ -1067,7 +891,6 @@ fn composing_an_owned_inventory_retains_its_dynamic_declaration_without_leaking_
     ));
 }
 
-/// A table of linked rows held for the process, as `Linked::transports` holds its own.
 fn rows_of(
     slot: &'static std::sync::OnceLock<Vec<LinkedTransport>>,
     rows: impl FnOnce() -> Vec<LinkedTransport>,
@@ -1075,13 +898,6 @@ fn rows_of(
     slot.get_or_init(rows)
 }
 
-/// ONE FOLD, BOTH DOORS (#2 rule (1), #3): a build that links every wire but one, with that wire
-/// DROPPED IN, seals to the SAME composition the build that links all of them seals to — the same
-/// rows, each built over the same layer — and the dropped-in wire is registered through the same
-/// registration, answers the registry by its key, and is the wire under the data door.
-// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the request rows compose over the linked transport
-// door; a build that links none (`--no-default-features`) has no stack to fold or seal, so this
-// cell gates on the transport-door axis, read off the linked table.
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
@@ -1114,8 +930,6 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
         .is_some());
 }
 
-/// A DROPPED-IN WIRE CLAIMING A LINKED KEY IS REFUSED EXACTLY AS A SECOND LINKED ROW IS: the same
-/// refusal, from the same registration, naming the same key.
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
     let wire = &dropped_doors()[0];
@@ -1149,10 +963,6 @@ fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
     assert_eq!(dropped.to_string(), linked.to_string());
 }
 
-/// THE UPGRADE LINES ARE THE LINKED CLAIMS THAT OPEN AT AN UPGRADE, read off the door Statements
-/// (ARCHITECT ruling Q128 U7; never a layer list): the session plane's wire, where this build links
-/// it, and nothing else. (RED, at the loader: a claim row stating any other trigger is no line,
-/// `an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade`.)
 #[test]
 fn the_upgrade_lines_are_read_off_the_door_statements() {
     let lines = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
@@ -1170,12 +980,6 @@ fn the_upgrade_lines_are_read_off_the_door_statements() {
     }
 }
 
-/// A LINKED TRANSPORT ROW WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2, "Plugin
-/// logging": "all plugins should log to their plugin's log file ... compiled in or dropped in ...
-/// The HOST writes it to that plugin instance's own log file").
-///
-/// RED before a linked transport row was bound to its instance's log file: every row took the
-/// transport lane's `NoSink`, so a log record the door's call carried went nowhere.
 #[test]
 fn a_linked_transport_row_logs_to_its_own_plugin_log_file() {
     use crate::root::loader::dispatch::Diagnostic;

@@ -1,50 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE WORKERS: where ticketed ops cross, pend, wake, resume, time out and are cancelled.
-//!
-//! * TICKETS. Each worker owns a slab; [`Dispatcher::mint`] hands out `(slot, generation)` with the
-//!   worker in the slot's high bits (`ticket`). [`Dispatcher::recycle`] bumps the generation (at
-//!   once when the ticket is idle, else when its last op ends).
-//! * ONE TICKET, ONE OP AT A TIME. Ops submitted on a ticket run in submission order, never
-//!   overlapping; ops on distinct tickets are independent. `open`/`refresh`/`retire`/`close` never
-//!   overlap on one instance (a second one while one is in flight answers REFUSED without a call);
-//!   `tick` and `drive` run alongside request ops.
-//! * PENDING. The frame stays where it is (boxed, never the worker's scratch). A wake resumes it:
-//!   the SAME op, the SAME ticket, the SAME `in`/`out`, with `FLAG_RESUME`. Wakes are LATCHED (a
-//!   wake that arrives before the op answered PENDING resumes it at once) and SPURIOUS-TOLERANT (a
-//!   resumed op that is still not ready answers PENDING again). A wake for a stale generation is
-//!   dropped and counted. A non-zero `wake_at_ns` is a timer: the op is resumed then without a wake.
-//! * DRIVER TICKETS ([`Dispatcher::driver`]): persistent, owned by the instance, outside
-//!   `max_inflight`. A wake on one calls `drive`; a PENDING drive resumes like any op. The one op
-//!   submitted on a driver ticket is `tick` ([`Dispatcher::tick`]): it holds no `max_inflight`
-//!   unit, a wake during it is owed to `drive` once it ends, and its PENDING answer ends it, since
-//!   what pended inside it goes on through `drive`. Every `drive` that ran is followed by a `tick`
-//!   (R-PUSH), PENDING or not: the new cycle's work runs alongside what is held.
-//! * HELD WORK ON A DRIVER TICKET. A PENDING is honoured: a `tick` that answered PENDING holds what
-//!   pended, and a `drive` that answered PENDING holds what still waits, until a `drive` answers
-//!   anything else. While anything is held, a tick's start keeps what the services kept under the
-//!   ticket (the conn answers and the stored service results the held work redeems by handle, its
-//!   pended services still able to complete and wake it), so each held exchange resumes when its
-//!   wake fires while the next tick starts more. The host sees each held exchange as the one
-//!   handle its last call pended under (`super::held`): it is released when a call on that handle
-//!   answers anything else, one exchange at a time. A tick of a kept cycle that reuses a handle
-//!   the cycle already issued is answered FAULT on that call, never another exchange's kept
-//!   answer. The held exchanges are bounded by the instance's `max_inflight`: a tick that finds
-//!   them full is PARKED, PENDING and not crossed, and crosses once a held exchange ends (its
-//!   caller is answered then, with no poke of its own). With nothing held, a tick's start is its
-//!   cycle's boundary: what the services kept under the ticket since the last tick is forgotten
-//!   then, the most ever kept counted ([`DispatchStats::driver_kept_high`]).
-//! * DEADLINE CLASSES. Call, Stream and Connection: when `deadline_ns` passes with the op pending,
-//!   the host calls `cancel` (ticket-less: it may not pend) and answers the kind's timeout outcome;
-//!   a client drop does the same. WriteBehind is NEVER cancelled — not by its deadline, a client
-//!   drop or a reload: at its deadline the caller stops waiting (the reply answers the timeout
-//!   outcome, `detached`), the ticket stays, and a later wake still completes it. A reload drain
-//!   ([`Dispatcher::drain`]) never waits on WriteBehind ops: they carry over to the new generation.
-//! * THE WATCHDOG (`watchdog`): an op that does not RETURN within its class budget faults its
-//!   instance and replaces its worker; see there for what happens to every ticket. An op submitted
-//!   with its own watch budget ([`Dispatcher::submit_watched`]) is watched for the longer of the two.
-
 use std::collections::VecDeque;
 use std::future::Future;
 use std::mem::size_of;
@@ -128,16 +84,10 @@ pub struct DispatchConfig {
     pub quarantine_after: u32,
 }
 
-/// The default [`DispatchConfig::quarantine_after`]: the first breach quarantines, as before the
-/// count existed.
 pub const DEFAULT_QUARANTINE_AFTER: u32 = 1;
 
-/// The quarantine counter's exposition name (THE DESIGN A.8): [`DispatchStats::quarantined`], the
-/// process's sum over every plugin.
 pub const QUARANTINED_TOTAL: &str = "bb_plugin_quarantined_total";
 
-/// The lost-wake counter's exposition name (THE DESIGN A.4.3):
-/// [`DispatchStats::deadline_without_wake`].
 pub const DEADLINE_WITHOUT_WAKE_TOTAL: &str = "bb_deadline_without_wake_total";
 
 impl Default for DispatchConfig {
@@ -180,14 +130,9 @@ pub struct DispatchStats {
     pub handles_latched: bool,
 }
 
-/// One `bb_*` counter family the dispatcher exposes: its name, its HELP text and its value.
 pub type CounterFamily = (&'static str, &'static str, u64);
 
 impl DispatchStats {
-    /// EVERY `bb_*` COUNTER these stats hold, each with its name and HELP text: the dispatcher's
-    /// own counts, read by whoever holds the dispatcher (the conformance suite). They are NOT on
-    /// the customer `/metrics` scrape: 1.5.5 served no `bb_*` family and the scrape must match it
-    /// (oracle row 86).
     #[must_use]
     pub const fn families(&self) -> [CounterFamily; 2] {
         [
@@ -217,47 +162,30 @@ pub(crate) struct Stats {
     deadline_without_wake: AtomicU64,
 }
 
-/// What a worker thread needs besides its worker.
 pub(crate) struct Env {
     pub(crate) budgets: Budgets,
-    /// [`DispatchConfig::quarantine_after`], at least 1.
+
     pub(crate) quarantine_after: u32,
     pub(crate) stats: Arc<Stats>,
-    /// The host services' stored results.
+
     pub(crate) services: Arc<ServiceStore>,
-    /// What the host services are served from, installed late ([`ServicesSlot`]); serving none,
-    /// every service answers REFUSED.
+
     pub(crate) provider: Arc<ServicesSlot>,
-    /// THE PROCESS'S RUNTIME, the reactor a plugin's connection is registered on: a crossing on a
-    /// worker runs inside it, so a dial the connector makes on the worker (a plugin's `exchange`)
-    /// lands on a reactor that is always driven (THE DESIGN, the connections section). INSTALLED,
-    /// never captured ([`Dispatcher::install_runtime`]): the host installs the process's one
-    /// runtime at boot (busbar: the connector's own I/O thread). A runtime taken from whoever
-    /// submitted first bound every worker to the control runtime, whose thread waits synchronously
-    /// on worker ops at boot, so a socket a plugin opened there was never driven. None installed:
-    /// a worker enters no runtime, and its I/O takes the connector's own refusal.
+
     pub(crate) runtime: std::sync::OnceLock<tokio::runtime::Handle>,
-    /// THE HOST'S I/O (`io.*`) the instances of this dispatcher are served from; unset = none, and
-    /// every `io` slot answers REFUSED.
+
     pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
-    /// THE KERNEL'S SIDE OF THE HOST AUTH HANDLE the instances of this dispatcher are served from
-    /// ([`Dispatcher::install_auth_handle`]); unset = none, and every auth-handle slot answers
-    /// REFUSED past its checks (fail closed).
+
     pub(crate) auth: std::sync::OnceLock<Arc<dyn super::auth_handle::AuthHandleHost>>,
-    /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
+
     pub(crate) inline: Arc<super::inline::InlineTickets>,
-    /// THE HOST'S OBSERVABILITY of every door this dispatcher binds: the observer and the series
-    /// predicate the host installs on it ([`Dispatcher::observing`]), never a process-global seam.
+
     pub(crate) observing: Arc<crate::observe::Observing>,
-    /// The key every worker's ticket generations are permuted under (#74), drawn at the
-    /// dispatcher's boot: no worker exists without it.
+
     pub(crate) ticket_key: super::handle::TicketKey,
-    /// The latch a forged ticket with no supplier counts against: the process's, but in a test
-    /// that names its own ([`Dispatcher::judge_against`]).
+
     latch: std::sync::OnceLock<&'static super::handle::Latch>,
-    /// THE SEAL THE HOST LENT THIS DISPATCHER (Part 2 #54): what a door it binds presents to read
-    /// a resolved `Secret` it hands a plugin ([`Dispatcher::lend_seal`]). None lent: every such
-    /// reveal is refused.
+
     pub(crate) seal:
         std::sync::OnceLock<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>>,
 }
@@ -295,8 +223,6 @@ pub struct Done<I, O> {
     pub cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 
-/// Only an answer still queued for its caller owns this lease. Taking Done disarms this
-/// private custody; the existing raw caller then owns Done.lease exactly as before.
 struct Queued<I, O> {
     done: Done<I, O>,
     lease: UnhandedLease,
@@ -319,12 +245,8 @@ impl<I, O> Queued<I, O> {
     }
 }
 
-/// An unhanded answer returns to its originating instance and captured framing Scope.
-/// Worker-owned destruction uses the existing LET_GO list, never a callback under a lock.
 struct UnhandedLease(Option<LeaseReturn>);
 
-/// The entry and unread completion share release-once custody. Consuming the completion
-/// leaves the entry responsible; abandoning it retires only this reply's storage.
 pub(crate) struct ShortLease {
     id: AtomicU64,
     instance: Arc<Instance>,
@@ -393,20 +315,17 @@ impl Drop for LeaseReturn {
     }
 }
 
-/// One op's completion slot: filled ONCE by the dispatcher, read by a sync waiter (the condvar)
-/// or an async one (the registered [`Waker`]), the same slot for both.
 struct ReplySlot<T> {
     v: Mutex<SlotState<T>>,
     cv: Condvar,
 }
 
 struct SlotState<T> {
-    /// An answer was given (it may already have been taken).
     settled: bool,
-    /// The waiter was dropped or detached; future output must not be stored without an owner.
+
     abandoned: bool,
     value: Option<T>,
-    /// The async waiter to wake when the answer arrives.
+
     waker: Option<Waker>,
 }
 
@@ -427,8 +346,6 @@ impl<T> ReplySlot<T> {
         self.v.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The FIRST answer wins; `false` when one was already given. Wakes the sync waiter and the
-    /// async one; the waker is woken outside the lock.
     fn put(&self, t: T) -> bool {
         let mut value = Some(t);
         let (accepted, waker) = {
@@ -444,7 +361,7 @@ impl<T> ReplySlot<T> {
                 (accepted, g.waker.take())
             }
         };
-        // A rejected queued lease is detached from the slot before its owner is dropped.
+
         drop(value);
         self.cv.notify_all();
         if let Some(waker) = waker {
@@ -454,7 +371,6 @@ impl<T> ReplySlot<T> {
     }
 }
 
-/// Settling a reply without its frame (a fault, a timeout, a detach).
 pub(crate) trait Settle: Send + Sync {
     fn settle(&self, outcome: Outcome, detached: bool) -> bool;
 }
@@ -474,18 +390,9 @@ impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Queued<I, O>> {
     }
 }
 
-/// The caller's end of one op: waited on synchronously ([`Reply::wait`]) or awaited as a
-/// [`Future`] on the caller's runtime, never blocking a runtime thread (the dispatcher's worker
-/// fills the slot and wakes the task). Both read the one slot.
-///
-/// DROP IS A CLIENT DROP. Dropping a `Reply` before its answer arrived reaches the dispatcher's
-/// cancel path for the op's ticket ([`Dispatcher::drop_client`]: Call/Stream/Connection ops are
-/// cancelled, WriteBehind runs on), by a non-blocking message and nothing else, never an await.
-/// [`Reply::detach`] lets an op run on with nobody waiting.
 pub struct Reply<I, O> {
     slot: Arc<ReplySlot<Queued<I, O>>>,
-    /// The op's ticket and dispatcher, for the client drop; `None` once detached or when the
-    /// reply was answered at submission.
+
     owner: Option<(Ticket, Weak<Pool>)>,
 }
 
@@ -496,7 +403,6 @@ impl<I, O> std::fmt::Debug for Reply<I, O> {
 }
 
 impl<I: InFrame, O: OutFrame> Reply<I, O> {
-    /// Wait up to `timeout` for the completion (a sync caller; it blocks this thread).
     pub fn wait(&self, timeout: Duration) -> Option<Done<I, O>> {
         let until = Instant::now() + timeout;
         let mut g = self.slot.lock();
@@ -515,10 +421,6 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         }
     }
 
-    /// Wait for the completion, however long the op takes (a sync caller; it blocks this thread).
-    /// The dispatcher settles every reply: the op's answer, its deadline's `cancel`, a client drop,
-    /// a watchdog fault or the dispatcher's stop. A WriteBehind op submitted with no deadline is
-    /// waited on until it completes.
     pub fn wait_done(&self) -> Done<I, O> {
         let mut g = self.slot.lock();
         loop {
@@ -545,7 +447,6 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         Self { slot, owner: None }
     }
 
-    /// Let the op run on with nobody waiting: dropping the reply then cancels nothing.
     pub fn detach(mut self) {
         self.owner = None;
     }
@@ -555,7 +456,6 @@ impl<I: InFrame, O: OutFrame> Future for Reply<I, O> {
     type Output = Done<I, O>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Done<I, O>> {
-        // A user waker's clone/drop may run code; neither happens under the reply-slot lock.
         let mut waker = Some(cx.waker().clone());
         let mut g = self.slot.lock();
         if let Some(d) = g.value.take() {
@@ -586,42 +486,29 @@ impl<I, O> Drop for Reply<I, O> {
         }
         if let Some((ticket, pool)) = self.owner.take() {
             if let Some(pool) = pool.upgrade() {
-                // A message, never an await: the worker cancels the op in its own loop.
                 pool.send(ticket, Msg::DropClient(ticket));
             }
         }
     }
 }
 
-/// A submitted op's frame and reply, kind-erased.
 pub(crate) trait Job: Send {
     fn heads(&mut self) -> (*mut InHead, *mut OutHead, u32);
     fn keep_lent(&self) -> Option<Lent>;
     fn closes_unit(&self, slot: u32, final_answer: bool) -> bool;
-    /// Deliver the answer with the frame; `false` when the caller already had one (detached).
+
     fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool;
 }
 
-/// Boxed once at submit, the frame inline: its address is stable from the first crossing to the
-/// last (a PENDING op's `in`/`out` stay where the plugin saw them).
 struct JobOf<I, O> {
     frame: Frame<I, O>,
     reply: Arc<ReplySlot<Queued<I, O>>>,
     instance: Arc<Instance>,
     framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
-    /// The memory the frame's pointers lend the plugin ([`Lent`]): held with the frame, so it is
-    /// dropped only when the job is — after the op's last crossing returned (an answer, a `cancel`
-    /// or a hung crossing that finally returns), never when the caller drops its [`Reply`].
+
     lent: Option<Lent>,
 }
 
-/// HOST-LENT MEMORY, kept alive until the op completes (ARCHITECT ruling 2026-09-29, every kind): an
-/// `in` names host buffers by raw pointer (strings, lists, result buffers), so whatever owns them
-/// must outlive every crossing of the op. The caller hands its owner to
-/// [`Dispatcher::submit_lent`]; the dispatcher holds it with the frame. A caller that stops waiting
-/// (its [`Reply`] dropped, its deadline passed, its task cancelled) can therefore never free memory
-/// a plugin is still reading on a worker. The caller keeps its own clone to read what the plugin
-/// wrote.
 pub type Lent = Arc<dyn std::any::Any + Send + Sync>;
 
 impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
@@ -658,8 +545,6 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
 
 impl<I, O> Drop for JobOf<I, O> {
     fn drop(&mut self) {
-        // A canceled queued job can be removed under the worker lock too. Its arbitrary Lent
-        // destructor and captured Scope belong after the lock, just like the instance owner.
         if self.lent.is_some() || self.framing.is_some() {
             drop_after_lock(Box::new((self.lent.take(), self.framing.take())));
         }
@@ -667,8 +552,6 @@ impl<I, O> Drop for JobOf<I, O> {
     }
 }
 
-/// What an op holds while it is in flight; dropping it gives everything back — the `max_inflight`
-/// unit, the drain count, the lifecycle exclusion — and settles an unanswered reply as FAULT.
 pub(crate) struct Meta {
     pub(crate) instance: Arc<Instance>,
     framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
@@ -676,21 +559,20 @@ pub(crate) struct Meta {
     class: DeadlineClass,
     deadline_ns: u64,
     in_size: u32,
-    /// The op's own watch budget ([`Dispatcher::submit_watched`]): its crossings are watched for
-    /// the longer of this and its class budget. ZERO = the class budget alone.
+
     watch: Duration,
-    /// The `max_inflight` units it holds: one, or all of them for `close`.
+
     units: u32,
-    /// Whether it still holds them (see [`Meta::give_back`]).
+
     units_held: bool,
     lifecycle: bool,
     drainable: bool,
-    /// An admitted unit's op ([`Dispatcher::submit_unit`]): counted in [`Instance::unit_ops`].
+
     unit: bool,
-    /// An exact nonzero plane unit, captured from this host-owned input before submission.
+
     unit_key: Option<u64>,
     unit_final: bool,
-    /// PlaneCalls reads only TickOut's scalar schedule; no answer lease is handed to it.
+
     tick_copy: bool,
     pub(crate) reply: Arc<dyn Settle>,
 }
@@ -709,9 +591,6 @@ enum Admit {
 }
 
 impl Meta {
-    /// Give back what the op held — its `max_inflight` units, its drain count, the lifecycle
-    /// exclusion — once. Done BEFORE the answer is delivered, so a caller woken by it finds the
-    /// units free.
     fn give_back(&mut self) {
         if std::mem::take(&mut self.units_held) {
             self.instance.release(self.units);
@@ -752,12 +631,8 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// What a worker loop lets go once its lock is released ([`LET_GO`]): an instance, or the dials
-/// a ticket left in flight. Only ever dropped.
 type Late = Box<dyn std::any::Any>;
 
-/// Add one owned cleanup to the existing worker-local list. Off a worker it drops now;
-/// callers detach it from their own mutex first. Never hold the TLS borrow across destruction.
 fn drop_after_lock(value: Late) {
     let mut value = Some(value);
     let _ = LET_GO.try_with(|list| {
@@ -777,7 +652,6 @@ impl Drop for WakeAfterLock {
     }
 }
 
-/// Dev-only acknowledgement owning the cleanup queued before its message was applied.
 #[cfg(any(test, feature = "test-support"))]
 struct RetirementAck {
     prior: Vec<Late>,
@@ -787,8 +661,6 @@ struct RetirementAck {
 #[cfg(any(test, feature = "test-support"))]
 impl Drop for RetirementAck {
     fn drop(&mut self) {
-        // Explicit iteration establishes callback order independently of Vec destruction order.
-        // These owners were detached under the worker lock; this destructor runs after unlock.
         for owner in std::mem::take(&mut self.prior) {
             drop(owner);
         }
@@ -796,10 +668,7 @@ impl Drop for RetirementAck {
     }
 }
 
-/// Keep `instance` past a drop made under the worker's lock: on a worker loop's own thread the loop
-/// takes it by [`let_go`] and drops it with the lock released; on any other thread nothing is kept.
 fn hold_past_lock(instance: &Arc<Instance>) {
-    // `try_with`: a drop made while the thread itself is ending keeps nothing.
     let _ = LET_GO.try_with(|l| {
         if let Some(held) = l.borrow_mut().as_mut() {
             held.push(Box::new(Arc::clone(instance)));
@@ -807,9 +676,6 @@ fn hold_past_lock(instance: &Arc<Instance>) {
     });
 }
 
-/// Forget what instance `id` kept on the connector under `ticket` while the worker's lock is held:
-/// how many answers it kept. The dials it left in flight are closed once the loop lets the lock go
-/// ([`let_go`]); off a worker loop's thread they close at once.
 fn forget_conns(id: InstanceId, ticket: Ticket) -> usize {
     let (kept, closes) = super::conn_services::forget(id, ticket);
     let mut closes = Some(closes);
@@ -822,8 +688,6 @@ fn forget_conns(id: InstanceId, ticket: Ticket) -> usize {
     kept
 }
 
-/// What was held past the worker's lock so far, to be dropped by the caller once it has let the
-/// lock go.
 fn let_go() -> Vec<Late> {
     LET_GO.with(|l| {
         l.borrow_mut()
@@ -833,8 +697,6 @@ fn let_go() -> Vec<Late> {
     })
 }
 
-/// A worker loop's [`LET_GO`] list for its life: armed when made, and on the way out (every
-/// return of [`run`], after its lock guard is gone) what is left is let go and the list disarmed.
 struct LetGo;
 
 impl LetGo {
@@ -853,13 +715,12 @@ impl Drop for LetGo {
 
 pub(crate) struct Current {
     pub(crate) meta: Meta,
-    /// `None` while the frame is out on a crossing.
+
     job: Option<Box<dyn Job>>,
     pending: bool,
     wake_at_ns: u64,
     detached: bool,
-    /// A `tick` on a driver ticket whose held set is full, not yet crossed: it waits, PENDING, for
-    /// a held exchange to end ([`Worker::unpark`]), and then crosses.
+
     parked: bool,
 }
 
@@ -867,7 +728,7 @@ pub(crate) struct Current {
 /// host until it collects them ([`Driven::take`]): each once, at most [`Driven::HELD`] at a time
 /// (a plane that names more before the host collects is told nothing new until it wakes again).
 #[derive(Debug, Default)]
-#[doc(hidden)] // TEST SEAM: busbar-test-kit
+#[doc(hidden)]
 pub struct Driven {
     names: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
@@ -881,7 +742,6 @@ pub struct Driven {
 }
 
 impl Driven {
-    /// The most names held uncollected.
     const HELD: usize = 1024;
 
     fn name(&self, names: &[u64]) {
@@ -897,7 +757,6 @@ impl Driven {
         }
     }
 
-    /// A `drive` crossing answered `outcome`.
     fn answer(&self, outcome: Outcome) {
         let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
         *a = (a.0 + 1, Some(outcome));
@@ -905,13 +764,10 @@ impl Driven {
         self.answered.notify_all();
     }
 
-    /// How many `drive` crossings have answered so far.
     pub fn answers(&self) -> u64 {
         self.answers.lock().unwrap_or_else(|e| e.into_inner()).0
     }
 
-    /// The first outcome other than PENDING a `drive` answered after the `seen`th answer, waited
-    /// for up to `timeout` (a synchronous caller; it blocks this thread). `None` past it.
     pub fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
         let until = Instant::now() + timeout;
         let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
@@ -928,22 +784,18 @@ impl Driven {
         }
     }
 
-    /// Every name held now, taken (none when none is); never waits.
     pub fn drain(&self) -> Vec<u64> {
         std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// A wake of the driver ticket has run its `drive`.
     fn drove(&self) {
         self.woke.notify_one();
     }
 
-    /// Waits until a wake's `drive` has run, once per run; never parks a thread.
     pub(crate) async fn woken(&self) {
         self.woke.notified().await;
     }
 
-    /// Every name held, once one is; never parks a thread.
     pub(crate) async fn take(&self) -> Vec<u64> {
         loop {
             let names = std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()));
@@ -957,18 +809,15 @@ impl Driven {
 
 pub(crate) struct Driver {
     instance: Arc<Instance>,
-    /// The kind's own `drive` frame ([`Kind::drive_frame`]); `None` while out on a crossing.
+
     frame: Option<Box<dyn DriveFrame>>,
     pending: bool,
     wake_at_ns: u64,
-    /// The ticks that answered PENDING since the last `drive` that answered anything else. While it
-    /// is not zero, or the last `drive` answered PENDING (`pending`), or an exchange is held under
-    /// a handle (`super::held`), a tick's start keeps the services' answers under the ticket.
+
     ticks_held: u32,
 }
 
 impl Drop for Driver {
-    /// A driver ticket is let go under the worker's lock (a recycle): its instance is held past it.
     fn drop(&mut self) {
         hold_past_lock(&self.instance);
     }
@@ -1008,7 +857,6 @@ pub(crate) struct Entry {
 }
 
 impl Entry {
-    /// Note that an op of the instance `id` runs on this ticket.
     fn note(&mut self, id: InstanceId) {
         if !self.conns.contains(&id) {
             self.conns.push(id);
@@ -1037,7 +885,7 @@ pub(crate) enum Msg {
         meta: Meta,
         job: Box<dyn Job>,
     },
-    /// A wake for `.0`, supplied by the instance whose handle `.1` is (`None`: the host's own).
+
     Wake(Ticket, Option<&'static super::ticket::InstanceWake>),
     DropClient(Ticket),
     Recycle(Ticket),
@@ -1057,18 +905,15 @@ pub(crate) enum Msg {
     Stop,
 }
 
-/// One worker incarnation. The watchdog replaces a wedged one with a fresh incarnation at the same
-/// index.
 pub(crate) struct Worker {
     pub(crate) index: u32,
-    /// The dispatcher's ticket key ([`Env::ticket_key`]).
+
     key: super::handle::TicketKey,
     tx: Sender<Msg>,
     pub(crate) state: Mutex<WorkerState>,
-    /// When the crossing this worker is inside began ([`now_ns`], never 0); 0 = none. Read by the
-    /// watchdog without a lock; its instance is [`WorkerState::crossing`].
+
     pub(crate) crossing_since: AtomicU64,
-    /// That crossing's watch budget, in nanoseconds.
+
     pub(crate) crossing_budget: AtomicU64,
 }
 
@@ -1085,22 +930,17 @@ impl WorkerSlot {
     }
 }
 
-/// The dispatcher's shared state. Worker threads never hold it (no cycle); instances reach it by a
-/// `Weak` for `wake`, the watchdog by a `Weak`.
 pub(crate) struct Pool {
     pub(crate) slots: Box<[WorkerSlot]>,
     pub(crate) env: Arc<Env>,
     pub(crate) stop: AtomicBool,
-    /// Every instance this dispatcher adopted, for the watchdog's ticket-less scan.
+
     pub(crate) adopted: Mutex<Vec<Weak<Instance>>>,
 }
 
 impl WakeRoute for Pool {
-    /// Route a wake to the worker its slot names. Never blocks on the plugin: a channel push.
     fn wake(&self, t: Ticket, supplier: Option<&'static super::ticket::InstanceWake>) {
         if super::inline::is_inline(t) {
-            // Judged with the inline table's lock let go (#74): a generation it never minted is
-            // the supplier's forgery.
             if self.env.inline.wake(t) == super::inline::Judged::Forged {
                 super::handle::forged_ticket(supplier, self.env.latch());
             }
@@ -1109,13 +949,9 @@ impl WakeRoute for Pool {
         let (w, _) = decode(t.slot);
         match self.slots.get(w as usize) {
             Some(slot) => {
-                // The supplier the caller carried, never the thread's crossing (#74): a wake fires
-                // on whatever thread completes it, inside whichever instance's crossing that is.
                 let _ = slot.get().tx.send(Msg::Wake(t, supplier));
             }
             None => {
-                // A worker this dispatcher does not run minted nothing: a forgery (#74), judged
-                // here, under no lock.
                 self.env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
                 super::handle::forged_ticket(supplier, self.env.latch());
             }
@@ -1162,22 +998,19 @@ impl Pool {
     fn send(&self, t: Ticket, m: Msg) {
         let (w, _) = decode(t.slot);
         if let Some(slot) = self.slots.get(w as usize) {
-            // A worker whose thread is gone drops the message; a `Submit`'s `Meta` then settles FAULT.
             let _ = slot.get().tx.send(m);
         }
     }
 }
 
 impl Worker {
-    /// A fresh incarnation at `index`, its slab's next mint counters `counts`: every slot free
-    /// but a RETIRED one (`None`, [`next_count`]), which is never handed out again.
     pub(crate) fn new(
         index: u32,
         counts: Vec<Option<u32>>,
         key: super::handle::TicketKey,
     ) -> (Arc<Self>, Receiver<Msg>) {
         let (tx, rx) = channel();
-        // Lowest index last, so `pop` hands the lowest free slot out first.
+
         let mut free: Vec<u32> = counts
             .iter()
             .zip(0u32..)
@@ -1253,8 +1086,6 @@ impl Worker {
         Some(self.ticket(idx, generation))
     }
 
-    /// Whether `t` is a ticket this worker's slab ever handed out: its slot exists and its generation
-    /// is the image of a count the slot has reached (`NONE`, generation 0, is a stale wake by rule).
     fn ever_minted(&self, st: &WorkerState, t: Ticket) -> bool {
         if t.generation == 0 {
             return true;
@@ -1266,7 +1097,6 @@ impl Worker {
         })
     }
 
-    /// The live entry `t` names on this worker, if its generation is current.
     fn entry<'a>(&self, st: &'a mut WorkerState, t: Ticket) -> Option<(u32, &'a mut Entry)> {
         let (w, idx) = decode(t.slot);
         let e = st.entries.get_mut(idx as usize)?;
@@ -1285,8 +1115,6 @@ impl Worker {
         }
     }
 
-    /// A wake on driver `idx`: `drive` next, or, when another op on it is scheduled first, owed
-    /// (latched) until that op ends ([`Worker::end`]), so no wake is lost behind a `tick`.
     fn owe_drive(st: &mut WorkerState, idx: u32) {
         match st.entries[idx as usize].next {
             None | Some(Action::Drive) => Self::schedule(st, idx, Action::Drive),
@@ -1294,7 +1122,6 @@ impl Worker {
         }
     }
 
-    /// Apply one message; `false` on Stop.
     fn apply(&self, st: &mut WorkerState, m: Msg, env: &Env) -> bool {
         match m {
             Msg::Submit {
@@ -1302,8 +1129,6 @@ impl Worker {
                 mut meta,
                 job,
             } => {
-                // A stale generation is a host routing fault, including when the frame names
-                // a plane unit. Preserve the ordinary submission result before unit admission.
                 if self.entry(st, ticket).is_none() {
                     drop(meta);
                     drop_after_lock(Box::new(job));
@@ -1329,16 +1154,14 @@ impl Worker {
                         meta.give_back();
                         meta.reply.settle(Outcome::Refused, false);
                     }
-                    // A stale or foreign ticket: `meta` drops and settles FAULT.
+
                     _ => drop(meta),
                 }
             }
             Msg::Wake(t, supplier) => match self.entry(st, t) {
                 None => {
                     env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
-                    // A generation this slot really minted is a late wake (H2: dropped, never an
-                    // error). One it never minted is a forgery (#74): the generation is a keyed
-                    // permutation of the slot's counter, so its inverse names the mint it would be.
+
                     if !self.ever_minted(st, t) {
                         st.forged.push(supplier);
                     }
@@ -1354,7 +1177,6 @@ impl Worker {
                     } else if e.current.is_none() && !e.queue.is_empty() {
                         Self::schedule(st, idx, Action::Start);
                     } else {
-                        // LATCHED: the op has not answered PENDING yet (or none is running).
                         e.latched = true;
                     }
                 }
@@ -1392,8 +1214,7 @@ impl Worker {
                         self.recycle_now(st, idx, env);
                     } else {
                         e.recycle_when_idle = true;
-                        // A tick parked for a slot of a driver ticket that is going: it is
-                        // answered REFUSED, never crossed.
+
                         if e.current.as_ref().is_some_and(|c| c.parked) {
                             self.end(st, idx, Crossed::host(Outcome::Refused), env);
                         }
@@ -1402,8 +1223,6 @@ impl Worker {
             }
             #[cfg(any(test, feature = "test-support"))]
             Msg::RetirementBarrier(ack) => {
-                // Own the preceding retirement list, including actual queued LeaseReturns.
-                // The ack retires that list explicitly before signalling, with the lock released.
                 let prior = let_go();
                 drop_after_lock(Box::new(RetirementAck { prior, ack }));
             }
@@ -1452,15 +1271,12 @@ impl Worker {
         e.driver = None;
         e.unit_binding = None;
         e.unit_waiters.clear();
-        // A slot whose counter is spent is RETIRED: never handed out again, so no generation of
-        // it is ever re-minted; the next mint takes a fresh slot.
+
         if next.is_some() {
             st.free.push(idx);
         }
     }
 
-    /// Judge the forged ticket generations [`Worker::apply`] found, with the worker's lock let go
-    /// (#74): each supplier quarantined, a wake with none counted against the process's latch.
     fn judge_forgeries<'a>(
         &'a self,
         mut st: MutexGuard<'a, WorkerState>,
@@ -1477,17 +1293,15 @@ impl Worker {
         self.lock()
     }
 
-    /// The op on `idx` is over: answer it, give back what it held, start the next.
     fn end(&self, st: &mut WorkerState, idx: u32, mut c: Crossed, env: &Env) {
         let e = &mut st.entries[idx as usize];
         let Some(cur) = e.current.take() else {
             return;
         };
-        // A wake latched behind this op on a driver ticket is owed a `drive`; on any other ticket
-        // it was this op's and goes with it.
+
         let owed = e.driver.is_some() && std::mem::take(&mut e.latched);
         e.latched = false;
-        // THE ONE RE-CALL: a short answer may be re-asked once on this ticket; short twice is FAULT.
+
         let recall = e.short_slot.take() == Some(cur.meta.slot);
         e.short_reply = None;
         if c.short && recall {
@@ -1529,19 +1343,16 @@ impl Worker {
         }
     }
 
-    /// Due deadlines and timers; the wait until the next one.
     fn timers(&self, st: &mut WorkerState, now: u64, env: &Env) -> Duration {
         let mut without_wake = 0_u64;
         let mut next = u64::MAX;
         let mut due = Vec::new();
         for (idx, e) in st.entries.iter_mut().enumerate() {
-            // A wake that came is scheduled as the op's resume: it is not owed any more.
             let owed = !matches!(e.next, Some(Action::Resume));
             if let Some(c) = e.current.as_mut().filter(|c| c.pending) {
                 let (class, deadline) = (c.meta.class, c.meta.deadline_ns);
                 if deadline != 0 && class != DeadlineClass::WriteBehind {
                     if now >= deadline {
-                        // Pending, its wake still owed: the deadline, not a wake, ends it.
                         without_wake += u64::from(owed);
                         due.push((idx as u32, Action::Cancel));
                         continue;
@@ -1550,8 +1361,6 @@ impl Worker {
                 }
                 if deadline != 0 && class == DeadlineClass::WriteBehind && !c.detached {
                     if now >= deadline {
-                        // The caller stops WAITING; the op keeps its ticket and runs on. Pending,
-                        // its wake still owed: the deadline, not a wake, settled its caller.
                         without_wake += u64::from(owed);
                         c.detached = c.meta.reply.settle(c.meta.instance.timeout, true);
                     } else {
@@ -1587,10 +1396,6 @@ impl Worker {
         Duration::from_nanos(next.saturating_sub(now)).min(Duration::from_millis(100))
     }
 
-    /// One crossing with the state unlocked; `None` when the watchdog replaced this worker
-    /// meanwhile (the caller exits). The crossing is recorded for the watchdog with no lock of its
-    /// own: its instance under the state lock this already holds, its start and budget in atomics
-    /// (the start cleared before the state lock is taken back, as the watchdog's re-check expects).
     fn cross<'a>(
         &'a self,
         mut st: MutexGuard<'a, WorkerState>,
@@ -1626,9 +1431,6 @@ impl Worker {
         if tick_copy || (crossed.outcome == Outcome::Pending && !pending_is_handed) {
             let lease = std::mem::take(&mut crossed.lease);
             if lease != 0 {
-                // No worker or custody lock is held while release enters plugin code. For
-                // the scalar-only plane TICK this happens before ReplySlot publication, so
-                // dropping an unpolled future cannot orphan a queued answer lease.
                 let _scope = super::framing_context::enter(framing.clone());
                 instance.release_unread(lease);
             }
@@ -1651,7 +1453,6 @@ impl Worker {
         }
     }
 
-    /// Run the action scheduled for `idx`. `None` when this worker was replaced mid-crossing.
     fn run_one<'a>(
         &'a self,
         mut st: MutexGuard<'a, WorkerState>,
@@ -1677,8 +1478,6 @@ impl Worker {
                     return Some(st);
                 };
                 if let Some(admission) = admission {
-                    // Keep the entry barrier through this crossing, then let its wake callbacks
-                    // run with the worker state lock released.
                     drop_after_lock(Box::new(admission));
                 }
                 let Some((meta, mut job)) = e.queue.pop_front() else {
@@ -1696,14 +1495,11 @@ impl Worker {
                     e.short_reply = None;
                     e.short_slot = None;
                 }
-                // A tick on a driver ticket whose held set is full waits for a slot (parked); one
-                // of a kept cycle may not reuse a handle the cycle issued (`super::held`).
+
                 let (mut full, mut kept_cycle) = (false, false);
                 if let Some(d) = e.driver.as_ref() {
                     let held = env.services.held.held(ticket);
                     if d.ticks_held == 0 && !d.pending && held == 0 {
-                        // Nothing is held: the tick starts the driver ticket's next cycle, and the
-                        // last cycle's kept answers (and their epoch) go.
                         let kept = env.services.forget(ticket)
                             + forget_conns(meta.instance.instance, ticket);
                         env.services.held.forget(ticket);
@@ -1711,20 +1507,10 @@ impl Worker {
                             .driver_kept_high
                             .fetch_max(kept as u64, Ordering::Relaxed);
                     } else {
-                        // A PENDING is honoured: what is held keeps its answers and its epoch,
-                        // and resumes through `drive` when its wake fires. The held exchanges are
-                        // bounded by the instance's `max_inflight`.
                         kept_cycle = true;
                         full = held >= meta.instance.cap;
                     }
                 } else if e.short_slot != Some(meta.slot) {
-                    // A NEW op starts on the ticket (not the one re-call a short answer earns):
-                    // its handles count from 0 again (the replay rule, `abi::sdk::conn`), and a
-                    // stored result is redeemed only by the op that issued it, on its resume (THE
-                    // DESIGN §11.12) — so the last op's kept answers go. Kept, the next op's
-                    // `ESTABLISH` (handle 0) would answer the last op's stream without a dial.
-                    // The forget ends the last op's epoch too: a service of its still running
-                    // completes into nothing, never into this op's same-numbered handle.
                     env.services.forget(ticket);
                     forget_conns(meta.instance.instance, ticket);
                 }
@@ -1767,8 +1553,6 @@ impl Worker {
                     return Some(st);
                 }
                 if full {
-                    // PENDING, not crossed: its wake is a held exchange's end ([`Worker::unpark`]),
-                    // so whoever awaits the tick is answered then, with no poke of its own.
                     return Some(st);
                 }
                 if !driven {
@@ -1818,9 +1602,7 @@ impl Worker {
                     self.end(&mut st, idx, Crossed::host(Outcome::Fault), env);
                     return Some(st);
                 }
-                // THE UNIT THE CANCELLED OP SERVES, read off the op's own `in` (`Kind::unit_of`): a
-                // plane keys its units from `arrive` and frees the one its `cancel` names
-                // (`PlaneCancelIn::unit`), so the client-drop path names it too, never `0`.
+
                 let unit = match cur.job.as_mut() {
                     Some(job) => {
                         let (input, _, _) = job.heads();
@@ -1828,8 +1610,7 @@ impl Worker {
                     }
                     None => None,
                 };
-                // `cancel` may not pend: its head carries NONE; the cancelled ticket is its field.
-                // The kind's own frame (a plane's lends record buffers, SEAM-L(r)).
+
                 let mut frame = (inst.cancel_frame)();
                 frame.name_unit(unit.unwrap_or(0));
                 let heads = frame.prepare(ticket, class as u8);
@@ -1837,10 +1618,7 @@ impl Worker {
                 let (mut st, c) =
                     self.cross(st, &inst, slot::CANCEL, heads, budget, framing.clone())?;
                 let _cancel_lease = UnhandedLease::new(&inst, framing.clone(), c.lease);
-                // A cancelled `open` that pended will never answer: the plugin still holds its
-                // half-open box, and no caller will close an instance that never opened. The host
-                // closes it here, once, inside the open's own lifecycle exclusion (given back by
-                // `end` below); a later caller's `close` finds nothing and is refused.
+
                 if op_slot == slot::OPEN
                     && inst.half_open()
                     && !inst.faulted.load(Ordering::Acquire)
@@ -1859,8 +1637,7 @@ impl Worker {
                         );
                     }
                 }
-                // The op answers the kind's timeout with `cancel`'s disposition and the writes it
-                // carried; a `cancel` that FAULTed makes the op FAULT.
+
                 let ended = if c.outcome == Outcome::Fault {
                     Crossed::host(Outcome::Fault)
                 } else {
@@ -1884,7 +1661,6 @@ impl Worker {
                 };
                 let inst = d.instance.clone();
                 if inst.faulted.load(Ordering::Acquire) || !inst.is_open() {
-                    // A parked tick is answered (the instance's fault) rather than left waiting.
                     self.unpark(&mut st, idx, env);
                     return Some(st);
                 }
@@ -1910,8 +1686,7 @@ impl Worker {
                         d.frame = Some(frame);
                         d.pending = c.outcome == Outcome::Pending;
                         d.wake_at_ns = c.wake_at_ns;
-                        // `drive` carries every held exchange on: PENDING while one still waits,
-                        // anything else once none does.
+
                         if !d.pending {
                             d.ticks_held = 0;
                             env.services.held.drained(ticket);
@@ -1921,21 +1696,17 @@ impl Worker {
                         }
                     }
                 }
-                // A held exchange that ended freed a slot: a parked tick crosses now.
+
                 if st.entries[idx as usize].generation == generation {
                     self.unpark(&mut st, idx, env);
                 }
-                // A wake's `drive` ran: the host re-polls `tick` (R-PUSH), PENDING or not, so the
-                // new cycle's work runs alongside what is still held.
+
                 inst.driven.drove();
                 Some(st)
             }
         }
     }
 
-    /// A tick parked on driver `idx` (its held set was full) goes back to the head of the queue
-    /// once a held exchange has ended (a slot is free) or its instance can no longer cross, and the
-    /// queue's head is started.
     fn unpark(&self, st: &mut WorkerState, idx: u32, env: &Env) {
         let e = &mut st.entries[idx as usize];
         let ticket = self.ticket(idx, e.generation);
@@ -2005,8 +1776,6 @@ impl Worker {
                 Self::schedule(&mut st, idx, Action::Resume);
             }
         } else {
-            // A tick on a driver ticket that answered PENDING ends; what pended inside it is held
-            // and goes on through `drive`.
             if let Some(d) = e.driver.as_mut().filter(|_| c.outcome == Outcome::Pending) {
                 d.ticks_held = d.ticks_held.saturating_add(1);
             }
@@ -2016,18 +1785,12 @@ impl Worker {
         Some(st)
     }
 
-    /// Settle everything this worker holds as FAULT (shutdown, or the watchdog replaced it).
     pub(crate) fn fault_all(st: &mut WorkerState) -> Vec<Entry> {
         st.runnable.clear();
         st.free.clear();
         std::mem::take(&mut st.entries)
     }
 
-    /// Of `gone`, the entries this worker held when it was replaced, the ORPHANS: an op of a
-    /// healthy instance (not `wedged`, the one whose crossing hung, and not faulted) that answered
-    /// PENDING and was waiting to be resumed, on a request ticket. Its plugin still holds the op's
-    /// state and may still read the memory it was lent, so it is sent `cancel` before its frame and
-    /// lent memory go ([`Orphan::cancel`]). The rest go with their `Meta`s' FAULT as before.
     pub(crate) fn orphans(
         &self,
         gone: Vec<Entry>,
@@ -2037,7 +1800,6 @@ impl Worker {
     }
 }
 
-/// A healthy instance's PENDING op on a worker that was replaced ([`Worker::orphans`]).
 pub(crate) struct Orphan {
     entries: Vec<(Ticket, Entry)>,
 }
@@ -2057,30 +1819,21 @@ impl Orphan {
         unit_cancel::fault_orphan_replies(self);
     }
 
-    /// A logical unit is canceled once; all its sibling frames and loans stay here until that
-    /// actual crossing returns, even when the ticketless watchdog has already faulted it.
     pub(crate) fn cancel(self) {
         unit_cancel::cancel_orphan(self);
     }
 }
 
-/// A slot's mint counter after `count`; `None` once it is spent (#74): the generation is a
-/// permutation of the counter, so a counter that wrapped would re-mint a generation the slot
-/// already handed out. A spent slot is RETIRED instead, never handed out again.
 pub(crate) fn next_count(count: u32) -> Option<u32> {
     count.checked_add(1)
 }
 
-/// THE WORKER LOOP: messages, then timers, then one runnable action; sleep until the next timer
-/// or message.
 pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
-    // Made before the lock guard, so every return lets the guard go first and this second.
     let _let_go = LetGo::arm();
-    // Inside the process's runtime once it is known, for the rest of this worker's life.
+
     let mut entered = None;
     let mut st = w.lock();
     loop {
-        // What the last turn let go under the lock is dropped with it released (§11.13 M1).
         let late = let_go();
         if !late.is_empty() {
             drop(st);
@@ -2143,21 +1896,14 @@ std::thread_local! {
     static ON_WORKER: std::cell::Cell<Option<(usize, u32)>> = const { std::cell::Cell::new(None) };
 }
 
-/// The dispatcher worker the calling thread is, or acts for ([`acting_for`]); `None` on any other
-/// thread.
 pub(crate) fn worker_mark() -> Option<(usize, u32)> {
     ON_WORKER.with(std::cell::Cell::get)
 }
 
-/// A crossing handed from a dispatcher worker to a permanent FFI worker acts for that dispatcher
-/// worker until the returned guard drops: a host service the plugin calls on the FFI worker then
-/// sees the worker it serves ([`Dispatcher::current_worker`]), so a synchronous waiter never
-/// submits to the worker blocked on this very crossing.
 pub(crate) fn acting_for(mark: Option<(usize, u32)>) -> ActingFor {
     ActingFor(ON_WORKER.with(|c| c.replace(mark)))
 }
 
-/// [`acting_for`]'s guard: restores the thread's own mark.
 pub(crate) struct ActingFor(Option<(usize, u32)>);
 
 impl Drop for ActingFor {
@@ -2191,23 +1937,17 @@ impl std::fmt::Debug for Adopter {
 }
 
 impl Adopter {
-    /// TEST ONLY: an adopter of no dispatcher; the instance is adopted by the first dispatcher
-    /// that submits to it.
     #[cfg(test)]
     pub(crate) fn unwatched() -> Self {
         Self { pool: Weak::new() }
     }
 
-    /// The host's observability of the dispatcher this adopter belongs to; `None` when it adopts
-    /// for no dispatcher (or that one is gone), and the door's back-channel is then dropped.
     pub(crate) fn observing(&self) -> Option<Arc<crate::observe::Observing>> {
         self.pool
             .upgrade()
             .map(|pool| Arc::clone(&pool.env.observing))
     }
 
-    /// Route `inst`'s wakes to the dispatcher and put it under its watchdog; `false` when the
-    /// instance already belongs to another dispatcher (or this one is gone).
     pub(crate) fn adopt(&self, inst: &Arc<Instance>) -> bool {
         let Some(pool) = self.pool.upgrade() else {
             return false;
@@ -2225,7 +1965,6 @@ impl Adopter {
     }
 }
 
-/// THE DISPATCHER: its workers and its watchdog.
 pub struct Dispatcher {
     pool: Arc<Pool>,
 }
@@ -2239,31 +1978,15 @@ impl std::fmt::Debug for Dispatcher {
 }
 
 impl Dispatcher {
-    /// Workers and a watchdog, per `config`, with no host services bound: every service answers
-    /// REFUSED.
-    ///
-    /// # Panics
-    ///
-    /// When the OS random source cannot answer the handle key (#74): a boot with no key is refused,
-    /// never run under a weaker one. [`Dispatcher::try_new`] answers the refusal instead.
     pub fn new(config: DispatchConfig) -> Self {
         Self::try_new(config).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// THE LOADER'S BOOT (#74): the handle key drawn first, then the dispatcher.
-    ///
-    /// # Errors
-    ///
-    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
     pub fn try_new(config: DispatchConfig) -> Result<Self, super::LoadError> {
         let key = super::handle::ticket_key()?;
         Ok(Self::build(config, None, key))
     }
 
-    /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
-    /// the worker whose ticket it names, with the caller the table registered it for as the
-    /// ticket's supplier (#74: a forged generation quarantines that instance; the root's own
-    /// identity names none). The root hands it to its one connector.
     #[must_use]
     pub fn conn_waker(&self) -> busbar_contract::conn::ConnWake {
         let pool = Arc::downgrade(&self.pool);
@@ -2277,21 +2000,11 @@ impl Dispatcher {
         })
     }
 
-    /// THE HOST'S OBSERVABILITY of the doors this dispatcher binds: the composition root installs
-    /// its plugin observer ([`crate::observe::Observing::install_observer`]) and its own series
-    /// predicate ([`crate::observe::Observing::install_host_series`]) here, before the first door
-    /// binds, and every door's envelope folds through it.
     #[must_use]
     pub fn observing(&self) -> &crate::observe::Observing {
         &self.pool.env.observing
     }
 
-    /// LEND THIS DISPATCHER THE HOST'S SEAL (Part 2 #54): a kernel-minted `Pass` or `Grant`, what
-    /// a door it binds presents to read a resolved `Secret` it hands a plugin (a verify's
-    /// credential, a login's submitted fields, an outbound caller credential, a secret source's
-    /// material). The composition root lends `busbar_kernel::seal::lend()` on the process's one
-    /// dispatcher at boot. The first lend holds; a later one answers `false`. A dispatcher lent no
-    /// seal REFUSES every such reveal (fail closed).
     pub fn lend_seal(
         &self,
         seal: impl busbar_contract::plugin::KernelSeal + Send + Sync + 'static,
@@ -2299,48 +2012,27 @@ impl Dispatcher {
         self.pool.env.seal.set(Arc::new(seal)).is_ok()
     }
 
-    /// The seal this dispatcher was lent, if any ([`Self::lend_seal`]).
     pub(crate) fn seal(&self) -> Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)> {
         self.pool.env.seal.get().map(|seal| &**seal)
     }
 
-    /// INSTALL THE PROCESS'S RUNTIME every worker runs its crossings inside (see `Env::runtime`):
-    /// the one the host drives on a thread of its own. The first install holds; a later one is
-    /// ignored and answers `false`. Never taken from a submitter.
     pub fn install_runtime(&self, handle: tokio::runtime::Handle) -> bool {
-        // A worker enters it at the top of its next turn, before it runs anything.
         self.pool.env.runtime.set(handle).is_ok()
     }
 
-    /// The runtime the workers run inside, when one is installed.
     #[cfg(test)]
     pub(crate) fn installed_runtime(&self) -> Option<&tokio::runtime::Handle> {
         self.pool.env.runtime.get()
     }
 
-    /// Workers and a watchdog, per `config`, serving the host services the kernel implements.
-    ///
-    /// # Panics
-    ///
-    /// As [`Dispatcher::new`].
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
         Self::with_slot(config, ServicesSlot::of(provider))
     }
 
-    /// Workers and a watchdog, per `config`, serving whatever the host installs into `slot`.
-    ///
-    /// # Panics
-    ///
-    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_slot`] answers the refusal instead.
     pub fn with_slot(config: DispatchConfig, slot: Arc<ServicesSlot>) -> Self {
         Self::try_with_slot(config, slot).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// [`Dispatcher::try_new`], serving `slot`.
-    ///
-    /// # Errors
-    ///
-    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
     pub fn try_with_slot(
         config: DispatchConfig,
         slot: Arc<ServicesSlot>,
@@ -2355,14 +2047,12 @@ impl Dispatcher {
         ticket_key: super::handle::TicketKey,
     ) -> Self {
         let built = Self::build_unlent(config, provider, ticket_key);
-        // This crate's own tests lend the dev-only test seal to every dispatcher they build.
+
         #[cfg(test)]
         let _ = built.lend_seal(busbar_contract::plugin::TestKernelSeal);
         built
     }
 
-    /// TEST ONLY: a dispatcher lent NO seal, so every reveal its doors would make is refused (the
-    /// fail-closed arm of [`Self::lend_seal`]).
     #[cfg(test)]
     pub(crate) fn new_unlent(config: DispatchConfig) -> Self {
         let key = super::handle::ticket_key().unwrap_or_else(|e| panic!("{e}"));
@@ -2374,7 +2064,6 @@ impl Dispatcher {
         provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
     ) -> Self {
-        // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let services: Arc<ServiceStore> = Arc::default();
         let env = Arc::new(Env {
@@ -2415,18 +2104,15 @@ impl Dispatcher {
         Self { pool }
     }
 
-    /// How many workers.
     pub fn workers(&self) -> u32 {
         self.pool.slots.len() as u32
     }
 
-    /// The watchdog's budgets this dispatcher runs on.
     #[must_use]
     pub fn budgets(&self) -> Budgets {
         self.pool.env.budgets
     }
 
-    /// What the dispatcher counted.
     pub fn stats(&self) -> DispatchStats {
         let s = &self.pool.env.stats;
         DispatchStats {
@@ -2442,13 +2128,10 @@ impl Dispatcher {
         }
     }
 
-    /// The host services' stored results.
     pub fn services(&self) -> &ServiceStore {
         &self.pool.env.services
     }
 
-    /// The host services this dispatcher serves now; `None` when it serves none, and then every
-    /// service answers REFUSED.
     pub fn host_services(&self) -> Option<&Arc<dyn HostServices>> {
         self.pool.env.provider.get()
     }
@@ -2457,29 +2140,18 @@ impl Dispatcher {
         self.pool.slots.get(worker as usize).map(WorkerSlot::get)
     }
 
-    /// Bind `inst`'s wakes to this dispatcher; `false` when it is bound to another.
     fn adopt(&self, inst: &Arc<Instance>) -> bool {
         self.adopter().adopt(inst)
     }
 
-    /// Serve every instance of this dispatcher the HOST'S I/O (`io.*`) from `io`; the first install
-    /// stands. `false` when one was installed already.
     pub fn install_io(&self, io: Arc<dyn busbar_contract::io_host::IoHost>) -> bool {
         self.pool.env.io.set(io).is_ok()
     }
 
-    /// Serve every instance of this dispatcher the KERNEL'S SIDE OF THE HOST AUTH HANDLE
-    /// (`auth.call`, `unit.hand_in`, `unit.refuse`; THE DESIGN §6, "Auth points and guest lists",
-    /// step 4) from `host`; the first install stands. `false` when one was installed already. With
-    /// none installed each of the three answers REFUSED past its checks.
     pub fn install_auth_handle(&self, host: Arc<dyn super::auth_handle::AuthHandleHost>) -> bool {
         self.pool.env.auth.set(host).is_ok()
     }
 
-    /// Create a host framing leg for a loaded transport owner and listener registration.
-    ///
-    /// # Errors
-    /// A missing owner or an exhausted host identity space.
     pub fn framing_context(
         &self,
         owner: u64,
@@ -2494,10 +2166,6 @@ impl Dispatcher {
         )
     }
 
-    /// Create a destination leg from the trusted custody of a detached source.
-    ///
-    /// # Errors
-    /// The source cannot be inherited by this loaded owner.
     pub fn adopting_context(
         &self,
         owner: u64,
@@ -2510,28 +2178,22 @@ impl Dispatcher {
         )
     }
 
-    /// A ticket for ops driven INLINE on the calling thread ([`super::inline`]): one per side of a
-    /// carrier's connection. `None` when every inline slot is held.
     #[must_use]
     pub fn inline_ticket(&self) -> Option<super::inline::InlineTicket> {
         self.pool.env.inline.mint()
     }
 
-    /// The handle a [`super::Bind`] carries to be adopted by this dispatcher at bind.
     pub fn adopter(&self) -> Adopter {
         Adopter {
             pool: Arc::downgrade(&self.pool),
         }
     }
 
-    /// The host services' store itself (test witness: a test serves into it as an instance's
-    /// service call would).
     #[cfg(test)]
     pub(crate) fn service_store(&self) -> Arc<ServiceStore> {
         Arc::clone(&self.pool.env.services)
     }
 
-    /// TEST ONLY: a forged ticket with no supplier counts against `latch`, not the process's.
     #[cfg(test)]
     pub(crate) fn judge_against(&self, latch: &'static super::handle::Latch) {
         assert!(
@@ -2540,7 +2202,6 @@ impl Dispatcher {
         );
     }
 
-    /// TEST ONLY: live ticket `t`'s slot as if handed out `count` times; its ticket at that count.
     #[cfg(test)]
     pub(crate) fn seed_count(&self, t: Ticket, count: u32) -> Ticket {
         let (wi, idx) = decode(t.slot);
@@ -2553,7 +2214,6 @@ impl Dispatcher {
         w.ticket(idx, e.generation)
     }
 
-    /// TEST ONLY: `t`'s slot as `(live, free, count)` (test witness of a recycle and a retirement).
     #[cfg(test)]
     pub(crate) fn slot_state(&self, t: Ticket) -> (bool, bool, u32) {
         let (wi, idx) = decode(t.slot);
@@ -2563,25 +2223,21 @@ impl Dispatcher {
         (e.live, st.free.contains(&idx), e.count)
     }
 
-    /// TEST ONLY: the inline tickets, shared, for a test that mints from inside a hook.
     #[cfg(test)]
     pub(crate) fn inline_tickets_arc(&self) -> Arc<super::inline::InlineTickets> {
         Arc::clone(&self.pool.env.inline)
     }
 
-    /// TEST ONLY: the inline tickets, for a test that seeds a slot's counter.
     #[cfg(test)]
     pub(crate) fn inline_tickets(&self) -> &super::inline::InlineTickets {
         &self.pool.env.inline
     }
 
-    /// TEST ONLY: the dispatcher's ticket key.
     #[cfg(test)]
     pub(crate) fn ticket_key(&self) -> super::handle::TicketKey {
         self.pool.env.ticket_key
     }
 
-    /// Whether an op on `t` is pending (test witness: it has crossed and answered PENDING).
     #[cfg(test)]
     pub(crate) fn is_pending(&self, t: Ticket) -> bool {
         let Some(w) = self.worker(decode(t.slot).0) else {
@@ -2592,9 +2248,6 @@ impl Dispatcher {
             .is_some_and(|(_, e)| e.current.as_ref().is_some_and(|c| c.pending))
     }
 
-    /// The index of this dispatcher's worker the calling thread IS; `None` on any other thread. A
-    /// synchronous caller that waits on a reply never submits to its own worker: that worker cannot
-    /// run the op while its thread waits.
     #[must_use]
     pub fn current_worker(&self) -> Option<u32> {
         let mine = Arc::as_ptr(&self.pool.env) as usize;
@@ -2604,25 +2257,14 @@ impl Dispatcher {
             .map(|(_, index)| index)
     }
 
-    /// Mint a request ticket on `worker`.
     pub fn mint(&self, worker: u32) -> Option<Ticket> {
         self.worker(worker)?.mint(None)
     }
 
-    /// Recycle `t`: its generation is bumped at once when idle, else when its last op ends. Late
-    /// wakes for it are dropped from then on.
     pub fn recycle(&self, t: Ticket) {
         self.pool.send(t, Msg::Recycle(t));
     }
 
-    /// DEV ONLY: wait until this ticket's worker retires cleanup queued before this barrier.
-    /// This adds no plugin crossing. It fences previously queued cleanup; pending operations
-    /// may remain pending.
-    /// A completed call's caller can recycle its ticket, then use this to observe its actual
-    /// deferred lease release before reading conformance counters.
-    ///
-    /// Returns false for no ticket, a same-worker synchronous wait, an unavailable worker, or
-    /// timeout/disconnection. It does not judge success from a crossing count.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn retirement_barrier(&self, ticket: Ticket, timeout: Duration) -> bool {
@@ -2631,19 +2273,15 @@ impl Dispatcher {
             return false;
         }
         let (ack, retired) = channel();
-        // An unprocessed message only drops its Sender; it must not acknowledge retirement.
+
         self.pool.send(ticket, Msg::RetirementBarrier(ack));
         retired.recv_timeout(timeout).is_ok()
     }
 
-    /// The client of `t` went away: its Call/Stream/Connection ops are cancelled (`cancel`, then
-    /// the kind's timeout outcome); its WriteBehind ops run on.
     pub fn drop_client(&self, t: Ticket) {
         self.pool.send(t, Msg::DropClient(t));
     }
 
-    /// A DRIVER TICKET for `plugin` on `worker`: persistent until recycled, owned by the instance,
-    /// outside `max_inflight`. Every wake on it calls `drive`.
     pub fn driver<K: Kind>(&self, plugin: &Plugin<K>, worker: u32) -> Option<Ticket> {
         let inst = &plugin.inner;
         if !self.adopt(inst) || !inst.is_open() || inst.faulted.load(Ordering::Acquire) {
@@ -2660,10 +2298,6 @@ impl Dispatcher {
         Some(driver)
     }
 
-    /// Submit op `s` on `ticket`. Answers at once, WITHOUT calling the plugin, when: the ticket is
-    /// NONE (use [`Plugin::call`]) → FAULT; the instance is faulted → FAULT; the slot is refused
-    /// ([`Instance::refuse`]); a lifecycle op is already in flight → REFUSED; `max_inflight` is full
-    /// → REFUSED.
     pub fn submit<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -2686,10 +2320,7 @@ impl Dispatcher {
         )
     }
 
-    /// [`Dispatcher::submit`], with the owner of the memory `frame`'s pointers lend the plugin:
-    /// the dispatcher keeps `lent` alive until the op completes (its answer, its `cancel`, or a hung
-    /// crossing's return), even when the caller drops the [`Reply`] first ([`Lent`]).
-    #[allow(clippy::too_many_arguments)] // `submit`'s six, plus the lent memory
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_lent<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -2713,11 +2344,7 @@ impl Dispatcher {
         )
     }
 
-    /// [`Dispatcher::submit_lent`], with the op's own WATCH BUDGET: the watchdog faults one of its
-    /// crossings only past the longer of `watch` and its class budget, never sooner. The caller
-    /// states the budget its row carries (a hook's `timeout_ms`, `BUSBAR-1.6.0.md` §11.7: "The
-    /// watchdog's budget is the hook's `timeout_ms`"); every other op keeps its class budget.
-    #[allow(clippy::too_many_arguments)] // `submit_lent`'s seven, plus the watch budget
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_watched<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -2742,15 +2369,7 @@ impl Dispatcher {
         )
     }
 
-    /// [`Dispatcher::submit_lent`] for an op of an ADMITTED UNIT, on the request ticket the unit
-    /// minted and reuses for all its ops (`BUSBAR-1.6.0.md` A.4.1: "A request or stream mints one
-    /// ticket and reuses it for all its ops"): a plane unit's `on_piece` and `serve`. Like an op on
-    /// a driver ticket it holds no `max_inflight` unit, so it is never REFUSED for the instance's
-    /// cap: the unit was admitted when it arrived, it has at most one op in flight (its pump awaits
-    /// each), and a piece refused mid-answer would cut a stream already answered to its caller.
-    /// Everything else is [`Dispatcher::submit_lent`]'s: the instance's own refusals, the drain
-    /// count, the lent memory and the watchdog.
-    #[allow(clippy::too_many_arguments)] // `submit_lent`'s seven
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn submit_unit<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -2774,10 +2393,6 @@ impl Dispatcher {
         )
     }
 
-    /// `tick` at `now_ns` on `driver`, the instance's driver ticket ([`Dispatcher::driver`]). The
-    /// head carries `driver`, so a service that pends inside `tick` registers on it and its wake
-    /// calls `drive`. Outside `max_inflight`, as every op on a driver ticket: it never holds a
-    /// slot. The caller owns the schedule (`TickOut::next_tick_ns`); this is one crossing of it.
     pub fn tick<K: Kind>(
         &self,
         plugin: &Plugin<K>,
@@ -2787,8 +2402,6 @@ impl Dispatcher {
         self.tick_with(plugin, driver, now_ns, Admit::Driver)
     }
 
-    /// The plane driver copies only the scalar schedule. Its answer lease is released by the
-    /// worker before completing the reply, including when nobody ever polls that reply.
     pub(crate) fn tick_copy<K: Kind>(
         &self,
         plugin: &Plugin<K>,
@@ -2826,7 +2439,7 @@ impl Dispatcher {
             Duration::ZERO,
             admit,
         );
-        // Dropping it cancels nothing: a client drop would end the instance's driver ticket.
+
         reply.owner = None;
         reply
     }
@@ -2854,7 +2467,7 @@ impl Dispatcher {
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
             return Reply::settled(o, frame);
         }
-        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance).
+
         let owner = super::handle::instance_id(inst.ctx()).0;
         if let Some(o) = K::admit(
             s,
@@ -2868,14 +2481,12 @@ impl Dispatcher {
         if lifecycle && !inst.enter_lifecycle() {
             return Reply::settled(Outcome::Refused, frame);
         }
-        // An op on a driver ticket, or of an admitted unit ([`Dispatcher::submit_unit`]), holds no
-        // `max_inflight` unit.
+
         let Some(units) = (if admit == Admit::Cap {
             inst.acquire(s)
         } else {
             Some(0)
         }) else {
-            // Over the cap, or `close` while other ops are in flight: REFUSED, never called.
             if lifecycle {
                 inst.leave_lifecycle();
             }
@@ -2885,7 +2496,7 @@ impl Dispatcher {
         if drainable {
             inst.drainable.fetch_add(1, Ordering::AcqRel);
         }
-        // An admitted unit's op is IN FLIGHT until it ends: `close` is refused while one is.
+
         let unit = admit == Admit::Unit;
         if unit {
             inst.unit_ops.fetch_add(1, Ordering::SeqCst);
@@ -2923,8 +2534,6 @@ impl Dispatcher {
         }
     }
 
-    /// A reload DRAIN: wait up to `timeout` until no Call/Stream/Connection op of `plugin` is in
-    /// flight. WriteBehind ops are never waited on: they carry over to the next generation.
     pub fn drain<K: Kind>(&self, plugin: &Plugin<K>, timeout: Duration) -> bool {
         let until = Instant::now() + timeout;
         loop {

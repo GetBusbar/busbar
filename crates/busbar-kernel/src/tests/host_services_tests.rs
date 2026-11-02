@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel's host services: `clock.now`, and `dest.judge` over the destination judge the root
-//! installs (the connector's guard; its rules are tested there, `busbar-core-connector`
-//! `dest_judge_tests`).
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
@@ -16,7 +12,6 @@ pub(crate) fn verdict_now(r: Ran) -> Stored {
     }
 }
 
-/// A later that records what it was answered.
 fn recorder() -> (Arc<Mutex<Option<Stored>>>, Later) {
     let slot = Arc::new(Mutex::new(None));
     let mine = Arc::clone(&slot);
@@ -56,8 +51,6 @@ fn random_fill_draws_fresh_bytes_every_call_and_refuses_outside_its_cap() {
     }
 }
 
-// ── records, sign, trust ─────────────────────────────────────────────────────────────────────
-
 use std::sync::atomic::AtomicU64;
 
 use busbar_contract::abi::mechanism::KindCode;
@@ -68,7 +61,6 @@ use crate::host_records::{WRITE_DROPPED, WRITE_FAILED};
 use crate::trust::reverify::Policy;
 use crate::trust::section::{DeclaredPin, TrustEntry};
 
-/// The memory store's typed record reads.
 pub(crate) struct Mem(pub(crate) Arc<MemoryStore>);
 
 impl RecordRows for Mem {
@@ -111,7 +103,6 @@ impl RecordRows for Mem {
     }
 }
 
-/// Runs every job at once, on the caller's thread.
 struct Inline;
 
 impl Offload for Inline {
@@ -120,7 +111,6 @@ impl Offload for Inline {
     }
 }
 
-/// A signer with a fixed key id that "signs" by prefixing the domain.
 struct FixedKey;
 
 impl SignKey for FixedKey {
@@ -131,11 +121,8 @@ impl SignKey for FixedKey {
 
 const KIND: RecordSchemaId = RecordSchemaId::new("approval");
 
-/// The plane's declared section key: the label of its implicit first instance, the one a
-/// single-instance configuration describes.
 const SECTION_KEY: &str = "tools";
 
-/// An instance of the one test plugin, by its label.
 pub(crate) fn caller(instance: &str) -> Caller {
     Caller {
         instance: Arc::from(instance),
@@ -197,7 +184,6 @@ fn rig() -> Rig {
     Rig { s, store, clock }
 }
 
-/// A durable demotion record over `store`.
 fn demotions(store: &Arc<MemoryStore>) -> Arc<DemotionRecord> {
     let d = DemotionRecord::default();
     d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
@@ -206,7 +192,6 @@ fn demotions(store: &Arc<MemoryStore>) -> Arc<DemotionRecord> {
     Arc::new(d)
 }
 
-/// Run a may-pend service and take what it answered, now or through its `Later`.
 fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
     let (slot, later) = recorder();
     match f(later) {
@@ -215,7 +200,6 @@ fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
     }
 }
 
-/// Store `value` under `key` as the instance labelled "inst" keeps it.
 fn put(into: &MemoryStore, key: &str, value: &str) {
     into.record_put(
         KIND,
@@ -342,7 +326,7 @@ fn a_claim_is_won_once_and_taken_after_until_it_lapses() {
     let claim = |who: &Caller| run(|l| r.s.records_claim(who, "approval", b"nonce", 2_000, l));
     assert_eq!(claim(&me).value, svc::CLAIM_WON);
     assert_eq!(claim(&me).value, svc::CLAIM_TAKEN);
-    // Another instance's key of the same name is its own.
+
     r.s.admit(
         "other",
         InstanceFacts {
@@ -430,10 +414,7 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let r = rig();
     let me = caller("inst");
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
-    // Before any approval every sighting reports pending, the declared fingerprint (coordinator
-    // 2026-10-07, #555 point ii) or another hash, which drifts nothing and writes no demotion
-    // (#555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending;
-    // the retired agent engine's registry lowers every registration unpinned).
+
     assert_eq!(sight("moved").value, svc::TRUST_NEW);
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
     assert_eq!(sight("fp").value, svc::TRUST_NEW);
@@ -451,21 +432,14 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 }
 
-/// THE OPERATOR'S TRUST DECISIONS (`/api/v1/admin/trust`) ARE KEPT: approving a drifted
-/// counterparty re-pins it at what it now reports and clears its durable demotion, a restart
-/// replays the approval over the declared pin, and an unreachable sighting answers the last
-/// verdict without changing it. An unknown key is no key.
 #[test]
 fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     use crate::trust::book::Ruling;
     let r = rig();
     let me = caller("inst");
-    // Unreached before any approval, a declared fingerprint is pending (coordinator 2026-10-07,
-    // #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
+
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+
     r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
@@ -494,12 +468,6 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
 }
 
-/// AN APPROVAL OUTLIVES A RESTART, AND A COUNTERPARTY THAT MOVED WHILE THE NODE WAS DOWN IS DRIFT,
-/// never a first sighting (predev 1d23fca5e6 / c9e5d13f2c, the agent plane's card: approved,
-/// restarted over the same store, the card moved under the same root). The first sighting after the
-/// restart is judged against the approval that was kept: DRIFTED, and the counterparty is
-/// quarantined until the operator rules again. RED arm: an approval held in memory alone would meet
-/// the moved document as NEW, one approval away from serving.
 #[test]
 fn an_approval_outlives_a_restart_and_a_moved_counterparty_is_drift_not_a_first_sighting() {
     use crate::trust::book::Ruling;
@@ -526,10 +494,6 @@ fn an_approval_outlives_a_restart_and_a_moved_counterparty_is_drift_not_a_first_
     );
 }
 
-/// `trust.decide` (a plane's own administrative verb, ARCHITECT 2026-10-06): the ONE decide path
-/// the core-admin trust verbs take. Approving what the caller saw serves; revoking refuses; a stale
-/// fingerprint and a key never sighted are refused; an undeclared key is unknown; and a changed
-/// sighting after the approval quarantines.
 #[test]
 fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     use busbar_contract::services::TrustKeyRef;
@@ -555,9 +519,7 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         svc::UNDECIDED_STALE,
         "approve what you saw"
     );
-    // An item at a counterparty whose declared fingerprint was never approved waits on that
-    // approval (coordinator 2026-10-07, #555 point iii; predev
-    // crates/busbar-kernel/src/trust/mod.rs:336-337, `serves` is false while nothing is pinned).
+
     assert_eq!(
         r.s.trust_decide(&me, tool, Some("d1"), true).value,
         svc::TRUST_DECIDED_PENDING
@@ -600,7 +562,7 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         svc::DISTRUST_NOT_APPROVED,
         "revoked, it is refused"
     );
-    // The counterparty: a changed catalogue quarantines it; its own verb sees it.
+
     run(|l| r.s.trust_sight(&me, "cp", "moved", l));
     assert_eq!(
         r.s.trust_decide(&me, tool, None, false).value,
@@ -622,16 +584,12 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
 }
 
-/// `trust.state` (the plane's administrative views): the counterparty's `KEY_*` state and one
-/// span per item, `<word>\0<approved>\0<seen>`, as `GET /api/v1/admin/trust` lists them; an
-/// undeclared counterparty is refused, as is an instance never admitted.
 #[test]
 fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
     use crate::trust::book::Ruling;
     let r = rig();
     let me = caller("inst");
-    // A declared fingerprint is pending, and listed NEW, until the operator approves it
-    // (coordinator 2026-10-07, #555).
+
     assert_eq!(
         r.s.trust_state(&me, "cp").value,
         svc::KEY_NEW,
@@ -681,16 +639,14 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
     let me = caller("inst");
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+
     r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
     );
-    // A re-admit (a restart re-registering the instance) keeps the demotion from the record.
+
     let fresh = restarted(&r);
     fresh
         .admit(
@@ -717,8 +673,6 @@ fn a_durable_demotion_is_replayed_at_admit() {
     );
 }
 
-/// `trust.due` answers no counterparty, however far the clock moves past the declared cadence: no
-/// background timer re-fetches an upstream nobody called (tool-and-agent-trust.md:61-62).
 #[test]
 fn trust_due_answers_no_counterparty_as_the_clock_moves() {
     let r = rig();
@@ -733,7 +687,7 @@ fn trust_due_answers_no_counterparty_as_the_clock_moves() {
 #[test]
 fn two_instances_of_one_plugin_have_distinct_registries() {
     let r = rig();
-    // A second instance of the same plugin, declaring another record kind and another domain.
+
     r.s.admit(
         "second",
         InstanceFacts {
@@ -756,13 +710,13 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
     let s = run(|l| r.s.records_get(&second, "approval", b"k", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_KIND));
     assert_eq!(r.s.sign(&second, b"x").bytes, b"q-K1dom2:x");
-    // The first instance keeps its own.
+
     assert_eq!(r.s.sign(&first, b"x").bytes, b"p-K1dom:x");
     let s = run(|l| r.s.records_get(&first, "approval", b"k", l));
     assert_eq!((s.outcome, s.value), (Outcome::Ready, svc::ABSENT));
     let s = run(|l| r.s.trust_sight(&second, "cp", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
-    // One instance's queued write is not the other's.
+
     r.s.admit(
         "third",
         InstanceFacts {
@@ -777,10 +731,6 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
     assert_eq!(s.value, svc::ABSENT);
 }
 
-/// AN ITEM'S DRIFT DEMOTION IS DURABLE: an item approved and then sighted at another digest is
-/// refused, and after a restart over the same store it is still refused, sighted back at its
-/// approved digest, until the operator approves it again. RED before: nothing was kept and the
-/// revert served.
 #[test]
 fn an_items_drift_demotion_outlives_a_restart() {
     use crate::trust::book::Ruling;
@@ -807,7 +757,6 @@ fn an_items_drift_demotion_outlives_a_restart() {
     assert_eq!(serves(&fresh), svc::DISTRUST_NONE, "re-approved");
 }
 
-/// The rig's kernel after a restart: the same durable demotion record, nothing else.
 fn restarted(r: &Rig) -> KernelServices {
     let d = r.s.demotions.get().unwrap();
     KernelServices::new()
@@ -815,7 +764,6 @@ fn restarted(r: &Rig) -> KernelServices {
         .with_pool(Arc::new(Inline))
 }
 
-/// One trust entry for `cp`, pinned to `fp` or unpinned.
 fn trusting(pin: Option<&str>) -> InstanceFacts {
     InstanceFacts {
         trust: vec![(
@@ -842,9 +790,7 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
 #[test]
 fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_counterparty() {
     let r = rig();
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+
     r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     assert_eq!(
@@ -867,7 +813,7 @@ fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_count
 #[test]
 fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     let r = rig();
-    // A row a single-instance deployment wrote: keyed by the counterparty alone.
+
     r.s.demotions
         .get()
         .unwrap()
@@ -884,12 +830,10 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
         run(|l| fresh.trust_sight(&caller("inst"), "cp", "x", l)).value,
         svc::TRUST_NEW
     );
-    // Re-admitted with a pin, the default instance's clean sighting clears the unprefixed row.
+
     let pinned = restarted(&r);
     pinned.admit(SECTION_KEY, trusting(Some("fp"))).unwrap();
-    // A sighting of the declared fingerprint before any approval reports pending (coordinator
-    // 2026-10-07, #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending; the retired agent engine's registry lowers every registration unpinned).
+
     assert_eq!(
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
         svc::TRUST_NEW
@@ -907,7 +851,7 @@ fn another_instance_declaring_the_same_kind_never_reaches_the_records_of_this_on
     };
     r.s.admit("other", declares()).unwrap();
     r.s.admit("elsewhere", declares()).unwrap();
-    // "other" is another instance of the same plugin; "elsewhere" is an instance of another.
+
     let elsewhere = Caller {
         plugin: Arc::from("another-plugin"),
         ..caller("elsewhere")
@@ -927,7 +871,7 @@ fn another_instance_declaring_the_same_kind_never_reaches_the_records_of_this_on
         let won = run(|l| r.s.records_claim(&who, "approval", b"k", 1_000, l));
         assert_eq!(won.value, svc::CLAIM_WON);
     }
-    // Their claims spent nothing of "inst"'s, and its record is its own.
+
     let me = caller("inst");
     let won = run(|l| r.s.records_claim(&me, "approval", b"k", 1_000, l));
     assert_eq!(won.value, svc::CLAIM_WON);
@@ -949,7 +893,6 @@ struct Gauge {
 }
 
 impl RecordRows for Gauge {
-    /// One writer in this test: every claim is the first.
     fn claim(
         &self,
         _kind: &str,
@@ -990,12 +933,10 @@ impl RecordRows for Gauge {
     }
 }
 
-/// A write's answer nobody waits for.
 fn noop() -> Acked {
     Box::new(|_| {})
 }
 
-/// Kernel services over `reads`, on the blocking pool of `rt`, with "inst" admitted.
 fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordRows>) -> KernelServices {
     let s = KernelServices::new()
         .with_records(reads)
@@ -1077,14 +1018,12 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let held = Arc::new(Held::default());
     let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
     s.admit("inst", trusting(Some("fp"))).unwrap();
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+
     s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     let (slot, later) = recorder();
     let ran = s.trust_sight(&caller("inst"), "cp", "moved", later);
-    // Nothing is written, nor answered, on the calling thread.
+
     assert!(matches!(ran, Ran::Later));
     assert!(slot.lock().unwrap().is_none());
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
@@ -1094,7 +1033,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
         svc::TRUST_DRIFTED
     );
     assert_eq!(r.s.demotions.get().unwrap().record.list().len(), 1);
-    // A sighting with nothing to write answers at once.
+
     let s2 = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!(s2.value, svc::TRUST_QUARANTINED);
     assert_eq!(held.drain(), 0);
@@ -1131,10 +1070,10 @@ fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
     );
     let said = refused.to_string();
     assert!(said.contains("`inst`") && said.contains("`taker`"));
-    // Nothing was registered: the taker is not admitted and cannot sign.
+
     let s = r.s.sign(&caller("taker"), b"x");
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
-    // The holder re-admitting its own domain is not a collision.
+
     r.s.admit(
         "inst",
         InstanceFacts {
@@ -1171,7 +1110,7 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
         )
         .unwrap();
     }
-    // The writer reads its writes before the store has any of them.
+
     assert_eq!(
         run(|l| s.records_get(&me, "approval", b"k07", l)).bytes,
         b"v7"
@@ -1183,7 +1122,7 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
             .map(|v| v.as_slice().to_vec())
     };
     assert_eq!(stored("inst", b"k07"), None);
-    // Another instance writing the same key writes its own record.
+
     s.record_write(
         &caller("other"),
         "approval",
@@ -1192,13 +1131,13 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
         noop(),
     )
     .unwrap();
-    // One flush carried the whole burst.
+
     assert_eq!(held.drain(), 1);
     assert_eq!(s.pending().queued(), 0);
     assert_eq!(stored("inst", b"k07"), Some(b"v7".to_vec()));
     assert_eq!(stored("inst", b"k49"), Some(b"v49".to_vec()));
     assert_eq!(stored("other", b"k07"), Some(b"theirs".to_vec()));
-    // The next write starts the next flush.
+
     s.record_write(&me, "approval", b"k50", bytes("v50".into()), noop())
         .unwrap();
     assert_eq!(held.drain(), 1);
@@ -1229,7 +1168,7 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
     s.record_write(&me, "approval", b"k", v.clone(), noop())
         .unwrap();
     assert_eq!(run(|l| s.records_get(&me, "approval", b"k", l)).bytes, b"v");
-    // The refused flush was abandoned: the next write starts one again (refused too, here).
+
     s.record_write(&me, "approval", b"k2", v, noop()).unwrap();
     assert_eq!(s.pending().queued(), 2);
 }
@@ -1237,7 +1176,7 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
 #[test]
 fn a_row_without_a_label_is_read_back_under_the_section_key_instance_and_no_other() {
     let r = rig();
-    // A row as a single-instance deployment wrote it: the counterparty's name alone.
+
     let d = r.s.demotions.get().unwrap();
     d.record.record("cp", "quarantined", 1);
     let fresh = restarted(&r);
@@ -1282,7 +1221,6 @@ impl Gate {
 }
 
 impl RecordRows for Gate {
-    /// One writer in this test: every claim is the first.
     fn claim(
         &self,
         _kind: &str,
@@ -1350,7 +1288,7 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
         );
         assert!(matches!(ran, Ran::Later));
     }
-    // The three past the bound answered FAILED before any store call ended.
+
     for _ in 0..3 {
         let a = rx.recv_timeout(std::time::Duration::from_secs(10));
         assert_eq!(a, Ok((Outcome::Failed, POOL_REFUSED)));
@@ -1362,11 +1300,9 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
     }
 }
 
-/// Record rows that refuse every put.
 struct Refusing(Mem);
 
 impl RecordRows for Refusing {
-    /// One writer in this test: every claim is the first.
     fn claim(
         &self,
         _kind: &str,
@@ -1403,10 +1339,8 @@ impl RecordRows for Refusing {
     }
 }
 
-/// The answers writes got, in order.
 type Answers = Arc<Mutex<Vec<Result<(), &'static str>>>>;
 
-/// The answers of writes, in the order they came.
 fn answers() -> (Answers, impl Fn() -> Acked) {
     let got = Arc::new(Mutex::new(Vec::new()));
     let g = Arc::clone(&got);
@@ -1435,7 +1369,7 @@ fn a_write_is_answered_only_once_the_store_took_it() {
     let v = RecordBytes::new(b"v".to_vec()).unwrap();
     s.record_write(&caller("inst"), "approval", b"k", v, acked())
         .unwrap();
-    // Queued, readable, and NOT answered: the store has not taken it.
+
     assert!(got.lock().unwrap().is_empty());
     assert_eq!(held.drain(), 1);
     assert_eq!(*got.lock().unwrap(), vec![Ok(())]);
@@ -1474,7 +1408,6 @@ fn a_write_dropped_before_any_flush_answers_dropped() {
     assert_eq!(*got.lock().unwrap(), vec![Err(WRITE_DROPPED)]);
 }
 
-/// Kernel services over `store`, on `pool`, with "inst" declaring the one kind.
 fn writer(store: &Arc<MemoryStore>, pool: Arc<dyn Offload>) -> KernelServices {
     let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(store))))
@@ -1518,7 +1451,7 @@ fn every_answered_write_is_durable_once_across_a_graceful_restart() {
     assert_eq!(got.lock().unwrap().len(), 200);
     assert!(got.lock().unwrap().iter().all(Result::is_ok));
     drop(s);
-    // After the restart: nothing queued, every key once, with its last value.
+
     let fresh = writer(&backing, pool());
     let everything = RecordsList {
         kind: "approval".into(),
@@ -1560,12 +1493,12 @@ fn a_write_past_the_queue_bound_is_refused_and_leaves_the_queued_value() {
     }
     let refused = s.record_write(&me, "approval", b"k", record("v2"), noop());
     assert_eq!(refused, Err(QUEUE_FULL));
-    // The refused write never touched the overlay: the queued v1 still reads.
+
     assert_eq!(
         run(|l| s.records_get(&me, "approval", b"k", l)).bytes,
         b"v1"
     );
-    // One flush, in batches of at most the cap, carries the whole queue, v1 included.
+
     assert_eq!(held.drain(), 1);
     assert_eq!(s.pending().queued(), 0);
     let stored = backing.record_get(KIND, &record_key("inst", b"k")).unwrap();
@@ -1580,7 +1513,7 @@ fn the_tick_restarts_a_flush_the_pool_did_not_run() {
     let (got, acked) = answers();
     s.record_write(&caller("inst"), "approval", b"k", record("v"), acked())
         .unwrap();
-    // The pool drops the flush unrun: the write stays queued and unanswered.
+
     drop(std::mem::take(&mut *held.0.lock().unwrap()));
     assert!(got.lock().unwrap().is_empty());
     assert_eq!(s.pending().queued(), 1);
@@ -1595,7 +1528,7 @@ fn a_claim_is_durable_when_it_answers_whatever_happens_to_the_overlay() {
     let me = caller("inst");
     let claim = |s: &KernelServices| run(|l| s.records_claim(&me, "approval", b"nonce", 60_000, l));
     assert_eq!(claim(&r.s).value, svc::CLAIM_WON);
-    // A crash: every in-memory structure gone, only the store survives.
+
     let c = Arc::clone(&r.clock);
     let fresh = writer(&r.store, Arc::new(Inline))
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
@@ -1606,7 +1539,6 @@ fn a_claim_is_durable_when_it_answers_whatever_happens_to_the_overlay() {
 use crate::host_units::UnitRecord;
 use busbar_contract::records::{ScopeRef, VirtualKey};
 
-/// A live key granted `grants`, each `(kind, name)`.
 fn key_granting(grants: &[(&str, &str)]) -> Arc<VirtualKey> {
     Arc::new(VirtualKey {
         id: "k".into(),
@@ -1625,7 +1557,6 @@ fn key_granting(grants: &[(&str, &str)]) -> Arc<VirtualKey> {
     })
 }
 
-/// Admit `unit` with `principal` and ask whether it is entitled to `target`.
 fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str) -> u64 {
     r.s.units().admitted(
         unit,
@@ -1638,7 +1569,6 @@ fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str
         .value
 }
 
-/// The items of a two-item catalogue the principal sees.
 fn sees(r: &Rig, unit: u64, principal: &Arc<VirtualKey>) -> Vec<&'static str> {
     ["one", "two"]
         .into_iter()
@@ -1695,11 +1625,6 @@ fn a_dead_or_expired_key_sees_nothing() {
     }
 }
 
-/// THE PRINCIPAL AS IT STANDS (ARCHITECT round 4 Q-L3B-SURFACES (a)): with the root's live
-/// re-resolution attached, every entitlement is judged against the principal re-resolved per ask:
-/// a principal revoked after admission is entitled to nothing and no longer stands
-/// (`ENTITLEMENT_STANDING`), and one whose grant narrowed sees the narrowed grant. Unattached, an
-/// admitted principal stands as admitted.
 #[test]
 fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
     let r = rig();
@@ -1755,7 +1680,7 @@ fn entitlement_is_judged_against_the_principal_as_it_stands_now() {
 #[test]
 fn an_undeclared_scope_kind_is_not_entitled() {
     let r = rig();
-    // Even an ungoverned unit is entitled to nothing of a kind its plane does not declare.
+
     assert_eq!(entitled(&r, 1, None, "other:one"), svc::NOT_ENTITLED);
     assert_eq!(entitled(&r, 1, None, "no-kind-at-all"), svc::NOT_ENTITLED);
     assert_eq!(entitled(&r, 1, None, "item:one"), svc::ENTITLED);
@@ -1783,9 +1708,6 @@ fn a_unit_not_in_flight_or_no_unit_is_not_entitled_and_ungoverned_is() {
         r.s.entitlement_check(&caller("stranger"), Some(9), "item:one");
     assert_eq!(stranger.value, svc::NOT_ENTITLED);
 }
-
-// ── THE DESTINATION GUARD AS THE KERNEL'S JUDGE (OWNER DESTINATION GUARD): the kernel asks the
-// judge the root installed; its rules are the connector's, never the kernel's ──
 
 /// A judge that refuses `10.0.0.5` as internal and admits every other literal, recording what it
 /// was asked.
@@ -1825,8 +1747,6 @@ impl DestJudge for FakeGuard {
     }
 }
 
-/// RED: with a judge installed, `dest.judge` answers the judge's refusal; the kernel's own
-/// (permissive) class rules are never consulted, under any class.
 #[test]
 fn dest_judge_answers_the_installed_guard_refusal() {
     let guard = Arc::new(FakeGuard::default());
@@ -1843,7 +1763,6 @@ fn dest_judge_answers_the_installed_guard_refusal() {
     assert!(guard.0.lock().unwrap().len() >= 3);
 }
 
-/// RED: the judge's admission is `dest.judge`'s answer too, with the addresses it judged.
 #[test]
 fn dest_judge_answers_the_installed_guard_admission() {
     let s = KernelServices::new().with_dest_judge(Arc::new(FakeGuard::default()));
@@ -1862,9 +1781,6 @@ fn dest_judge_answers_the_installed_guard_admission() {
     );
 }
 
-/// SEAM-S1, `session.emit`: an instance writes unsolicited output on ITS open carrier session; an
-/// emit on a session that is not open (never opened, closed, or gone from its carrier) or that is
-/// another instance's is REFUSED and writes nothing.
 #[test]
 fn an_emit_reaches_only_its_own_open_session() {
     let services = KernelServices::new();
@@ -1883,21 +1799,21 @@ fn an_emit_reaches_only_its_own_open_session() {
             .outcome,
         Outcome::Ready
     );
-    // RED: another instance's emit on it.
+
     assert_eq!(
         services
             .session_emit(&caller("elsewhere"), session, b"x")
             .outcome,
         Outcome::Refused
     );
-    // RED: a session never opened.
+
     assert_eq!(
         services
             .session_emit(&caller("door"), session + 1000, b"x")
             .outcome,
         Outcome::Refused
     );
-    // RED: a closed session.
+
     services.close_carrier_session(session);
     assert_eq!(
         services
@@ -1906,7 +1822,7 @@ fn an_emit_reaches_only_its_own_open_session() {
         Outcome::Refused
     );
     assert_eq!(*written.lock().unwrap(), vec![b"{\"ping\":1}\n".to_vec()]);
-    // RED: a carrier that can take nothing more closes its session.
+
     let gone = services.open_carrier_session("door", "key-1", Arc::new(|_: &[u8]| false));
     assert_eq!(
         services.session_emit(&caller("door"), gone, b"x").outcome,
@@ -1918,9 +1834,6 @@ fn an_emit_reaches_only_its_own_open_session() {
     );
 }
 
-/// A DECLARED CHAIN THE HOST CANNOT KEEP REFUSES THE ADMIT (audit contract-C2 #4): a chained record
-/// kind with a framing word this host does not know, or naming no record kind, is never admitted as
-/// plain records. Nothing is registered for the instance.
 #[test]
 fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
     let r = rig();
@@ -1949,15 +1862,6 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
     }
 }
 
-/// **A RECORD KIND THE KERNEL KEEPS ITS OWN RECORDS UNDER IS NEVER AN INSTANCE'S.** The kernel keeps
-/// a minted ticket's record under the kind `ticket` ([`crate::governance::TICKET_RECORD_KIND`]); a
-/// plane that declares that kind would have the admin `plane_record_write` verb upsert rows beside
-/// the kernel's tickets and its own retention rule govern every purge of them. Such an instance is
-/// refused at its admit, with the refusal naming the instance and the kind, and nothing is
-/// registered for it.
-///
-/// RED while the admit took any declared kind: the instance was admitted and its rule for the
-/// kernel's `ticket` kind was in force.
 #[test]
 fn an_instance_declaring_a_kernel_record_kind_is_refused_at_admit() {
     let r = rig();
@@ -2008,8 +1912,6 @@ fn an_instance_declaring_a_kernel_record_kind_is_refused_at_admit() {
     }
 }
 
-/// A plane store whose read of the operator's kept trust rulings parks, once armed, until the test releases it: the
-/// store-plugin crossing an admit makes (audit K4 #6).
 struct ParkingStore {
     armed: std::sync::atomic::AtomicBool,
     entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
@@ -2092,9 +1994,6 @@ impl crate::store::plane_view::PlaneStore for ParkingStore {
     }
 }
 
-/// NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): while an instance's first admit
-/// is parked in the store plugin reading the operator's kept trust rulings, a caller-scoped host
-/// service of another instance, on another thread, still answers.
 #[test]
 fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
     use std::sync::mpsc::channel;
@@ -2149,10 +2048,6 @@ fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
     );
 }
 
-/// RED/GREEN, THE DECLARED RETENTION RULE: a purge of a record kind the instance declared
-/// terminal-only keeps its active rows past the cutoff and drops its terminal ones; a kind it
-/// declared no rule for is purged by age, every older row gone. The kinds' names carry nothing: the
-/// rule is the declaration's.
 #[test]
 fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     use busbar_contract::abi::plane::RecordRetention;
@@ -2220,9 +2115,6 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     assert!(held("aged", "new-terminal"));
 }
 
-/// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval
-/// redemption). The approval's nonce is claimed when it is redeemed; presenting the same approval
-/// again inside its window finds the claim taken, so the second redemption is refused.
 #[test]
 fn a_replayed_approval_is_refused_through_records_claim() {
     let r = rig();
@@ -2367,7 +2259,6 @@ impl crate::store::plane_view::PlaneStore for Probe {
     }
 }
 
-/// A kernel whose durable record keeps through `probe`.
 fn probed(probe: &Arc<Probe>) -> Arc<KernelServices> {
     let d = DemotionRecord::default();
     d.set_sink(Arc::clone(probe) as Arc<dyn crate::store::plane_view::PlaneStore>);
@@ -2380,10 +2271,6 @@ fn probed(probe: &Arc<Probe>) -> Arc<KernelServices> {
     k
 }
 
-/// A DECISION THE STORE REFUSED IS NOT IN FORCE (Q128 p5#2; THE DESIGN §11.12 l.1617-1619). The
-/// operator is told the approval failed, and the counterparty stays unapproved in this process as
-/// it will after a restart. RED arm: the book took the approval before the store was asked, so
-/// `trust_judge` answered `Ok` after the refused keep.
 #[test]
 fn a_trust_decision_the_store_refused_never_takes_effect() {
     use crate::trust::book::{Ruling, TrustFacts};
@@ -2430,7 +2317,6 @@ fn a_trust_decision_the_store_refused_never_takes_effect() {
     );
 }
 
-/// What one mint was handed: the key id, the prefix, the lifetime and the record.
 type Minted = (String, String, u64, Vec<u8>);
 
 /// A press that mints `<prefix><key>:<ttl>` and expires at `now + ttl`, keeping what it was handed.
@@ -2456,8 +2342,6 @@ impl TicketPress for Press {
     }
 }
 
-/// THE TICKET SERVICES (row 132): a mint is for the unit's principal, under the instance's declared
-/// prefix, through the attached press; a take hands back what admitted the unit, once.
 #[test]
 fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
     let r = rig();
@@ -2480,7 +2364,7 @@ fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
             depth: 0,
         },
     );
-    // RED: no press attached.
+
     let no_press = r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{}");
     assert_eq!(
         (no_press.outcome, no_press.error),
@@ -2508,7 +2392,7 @@ fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
             b"{\"m\":1}".to_vec()
         )]
     );
-    // RED: no unit, a unit with no principal, an instance that declares no prefix.
+
     let none = r.s.ticket_mint(&caller("minter"), None, 600, b"{}");
     assert_eq!(none.error, TICKET_NO_PRINCIPAL);
     r.s.units().admitted(
@@ -2557,7 +2441,7 @@ fn a_take_hands_back_what_admitted_the_unit_once() {
         (keyed.outcome, keyed.value, keyed.bytes.len()),
         (Outcome::Ready, svc::TICKET_NONE, 0)
     );
-    // RED: a second take, a unit not in flight, and no unit.
+
     for unit in [Some(7), Some(8), Some(9), None] {
         let again = r.s.ticket_take(&caller("inst"), unit);
         assert_eq!(
@@ -2566,7 +2450,7 @@ fn a_take_hands_back_what_admitted_the_unit_once() {
             "unit {unit:?}"
         );
     }
-    // RED: a unit not in flight holds no ticket; its end drops what it held.
+
     assert!(!r.s.units().ticketed(9, Some(b"x".to_vec())));
     admit(10);
     assert!(r.s.units().ticketed(10, Some(b"x".to_vec())));
@@ -2577,12 +2461,6 @@ fn a_take_hands_back_what_admitted_the_unit_once() {
     );
 }
 
-/// **AN OPERATOR'S TRUST DECISION MADE THROUGH ANOTHER NODE TAKES EFFECT HERE WITHIN ONE WINDOW.** Two
-/// nodes over one store, both admitting the same instance: the operator approves a counterparty
-/// through node `a`, and node `b`'s re-sync tick applies the kept approval.
-///
-/// RED while the kept decisions were read only at an instance's first admit: node `b` kept the
-/// counterparty pending (and a revoke made through `a` stayed unenforced on `b`) until `b` restarted.
 #[test]
 fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
     use crate::trust::book::Ruling;
@@ -2615,7 +2493,6 @@ mod trust_resync_tests;
 #[path = "trust_ordering_tests.rs"]
 mod trust_ordering_tests;
 
-/// A store that is down: every plane-record call fails.
 struct DownStore;
 
 impl crate::store::plane_view::PlaneStore for DownStore {
@@ -2690,12 +2567,6 @@ fn down() -> busbar_contract::records::RecordStoreError {
     busbar_contract::records::RecordStoreError("store down (test)".to_string())
 }
 
-/// **AN INSTANCE WHOSE TRUST RECORDS CANNOT BE READ IS NOT ADMITTED.** The demotions and the
-/// operator's trust decisions are kept in the store; a restart whose store will not hand them back
-/// must refuse the instance, not admit it with the configured trust standing over a revoke or a
-/// quarantine it cannot see.
-///
-/// RED while an unreadable read was taken for "none kept": the instance was admitted.
 #[test]
 fn an_instance_whose_trust_records_cannot_be_read_is_not_admitted() {
     let record = DemotionRecord::default();
@@ -2723,10 +2594,10 @@ fn record_claim_replay_uses_store_time_when_the_host_clock_runs_ahead() {
         })
     };
     assert_eq!(claim().value, svc::CLAIM_WON);
-    // The node moves ahead independently; the shared store has not expired the winner.
+
     r.clock.fetch_add(HOST_SKEW_MS, Ordering::SeqCst);
     assert_eq!(claim().value, svc::CLAIM_TAKEN);
-    // Only store expiry makes a future absolute deadline eligible for a new claim.
+
     r.store
         .pin_token_clock(r.clock.load(Ordering::SeqCst) / 1_000);
     assert_eq!(claim().value, svc::CLAIM_WON);

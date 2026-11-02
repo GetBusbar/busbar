@@ -14,7 +14,7 @@ fn at(p: &[&str]) -> Vec<String> {
 }
 
 /// The lend every host runs with a resolver standing in: a reference lends `R:<env>`, a string
-/// lends its bytes.
+
 fn lent(block: &mut Value, declared: &[&str]) -> Vec<Vec<u8>> {
     let resolve = |v: Value| -> Result<Vec<u8>, String> {
         match v {
@@ -372,8 +372,7 @@ fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest()
 }
 
 /// As the kernel resolves (lead ruling item 7b): a literal at a declared path is refused, at an
-/// EXACT path and at a WILDCARD path alike, naming the position and the plugin and never the value.
-/// An unset (`null`) declared position is not a literal.
+
 #[test]
 fn resolve_declared_refuses_a_literal_at_an_exact_or_a_wildcard_declared_path() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
@@ -420,9 +419,7 @@ fn resolve_declared_refuses_a_literal_at_an_exact_or_a_wildcard_declared_path() 
 }
 
 /// REFERENCE-CAPABLE, NOT-SECRET FIELDS (lead ruling item 7a): at a path the plugin names in its
-/// Statement's reference-capable list, a reference resolves IN PLACE to its string (a 1.5.5 store,
-/// exporter or hook `url: {env: VAR}`), a literal passes as written (the 1.5.5 literal url), and a
-/// reference anywhere else is still refused. Exact and `*` paths alike.
+
 #[test]
 fn a_reference_capable_field_resolves_a_reference_and_passes_a_literal() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
@@ -471,7 +468,7 @@ fn a_reference_capable_field_resolves_a_reference_and_passes_a_literal() {
 }
 
 /// A reference-capable field is NEVER a secret: it is never lent (no `{"$secret": …}` marker, no
-/// secret blob) and a declared SECRET path beside it still refuses its literal.
+
 #[test]
 fn a_reference_capable_field_is_never_lent_and_a_secret_beside_it_still_refuses_a_literal() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
@@ -487,7 +484,6 @@ fn a_reference_capable_field_is_never_lent_and_a_secret_beside_it_still_refuses_
     assert!(e.starts_with("settings.auth_header.value: "), "{e}");
     assert!(!e.contains("pasted-7a"), "{e}");
 
-    // The lend reads the SECRET list only: a reference-capable path's value stays in the settings.
     let mut block = json!({"url": "https://x", "auth_header": {"value": "s"}});
     let lent = lent(&mut block, &["auth_header.value"]);
     assert_eq!(lent, vec![b"s".to_vec()]);

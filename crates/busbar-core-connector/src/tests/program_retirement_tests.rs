@@ -62,7 +62,7 @@ impl crate::framer::FramerDoor for RetirementDoor {
         match &call {
             Carry::Read(..) => self.read.cross(),
             Carry::Shut(..) => self.shut.cross(),
-            // Only the first dial is gated; the retirement notification comes later.
+
             Carry::Dial(..) => self.dial.cross(),
             _ => {}
         }
@@ -135,7 +135,7 @@ async fn retirement_waits_for_crossing_and_close(during_spawn: bool) {
     });
     let answered = done.recv_timeout(Duration::from_secs(5));
     let before_crossing_return = door.inner.retired_keys.lock().unwrap().clone();
-    // Release every gate and join both threads before asserting, including on the old red code.
+
     let _ = release.send(());
     let close_reached = shutting.recv_timeout(Duration::from_secs(10));
     let before_close_return = door.inner.retired_keys.lock().unwrap().clone();

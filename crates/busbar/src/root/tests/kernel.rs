@@ -1,18 +1,5 @@
-//! Tests for `kernel.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
-
 use super::*;
 
-/// The fee an apply carries reaches the head, and the snapshot a reader already pinned is
-/// unmoved.
-///
-/// The two halves of the append, asserted together because either alone is a half-truth. A
-/// holder that took the new fee but let its existing readers see it would bill a request on
-/// rates it was never admitted under; a holder that left its readers alone by never taking the
-/// new fee at all would pass the second assertion and be the boot-bound card this replaced. The
-/// fee is read as the card's own unit price for its flat line, which is where a configured fee
-/// ends up.
 #[test]
 fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() {
     let holder = RootHistory::default();
@@ -29,7 +16,6 @@ fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() 
         "the first apply's fee did not reach the entry a reader resolves to"
     );
 
-    // The apply a request in flight must not feel.
     holder.apply(busbar_kernel_ledger::cost::RateCard::absent(11), 2_000);
     assert_eq!(
         fee_at(&admitted, 5_000),
@@ -46,8 +32,6 @@ fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() 
     );
 }
 
-/// The flat fee the entry in force at `at` names. The one reading the tests below compare cards
-/// by, so that a comparison is a lookup rather than a field peek.
 fn fee_at(pinned: &PinnedHistory, at: u64) -> u128 {
     pinned
         .view()
@@ -57,15 +41,6 @@ fn fee_at(pinned: &PinnedHistory, at: u64) -> u128 {
         .fee_unit_price_nanos()
 }
 
-/// **APPEND, NEVER REWRITE.** A reload puts a SECOND entry on the history and leaves the first
-/// exactly as it was written.
-///
-/// This is the invariant the whole design rests on and it is the one the previous holder broke
-/// by construction: it stored one card and a second apply overwrote it, so every posting the
-/// node had ever taken silently re-priced at the new figure on the next read. Three assertions,
-/// because two of them alone would pass on a holder that replaced: the count MOVES, the first
-/// entry's card is UNCHANGED, and the first entry's number is unchanged too — a history that
-/// renumbered would break every invoice that named a snapshot.
 #[test]
 fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     let holder = RootHistory::default();
@@ -96,13 +71,6 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     assert_eq!(entries[2].card().fee_unit_price_nanos(), 290_000_000);
 }
 
-/// **AN ENTRY PRICES WHAT HAPPENS AFTER IT.** An instant before a reload resolves to the entry
-/// that was in force then, and an instant after it resolves to the new one — on the same
-/// snapshot, read at the same moment.
-///
-/// The heart of the model stated as one lookup: the answer depends on WHEN the unit arrived and
-/// not on when the question is asked. A holder that replaced its card answers the same figure
-/// for both instants, which is exactly the recorded 1.5.5 behaviour this replaces.
 #[test]
 fn an_instant_before_a_reload_resolves_to_the_entry_that_was_in_force_then() {
     let holder = RootHistory::default();
@@ -122,12 +90,6 @@ fn an_instant_before_a_reload_resolves_to_the_entry_that_was_in_force_then() {
     );
 }
 
-/// **THE FIRST ENTRY COVERS EVERY INSTANT BEFORE IT**, because a hole is a refusal and a request
-/// the node dated a millisecond before its own boot is not a free request.
-///
-/// A first entry effective from the boot instant would leave instant zero — and every legacy row
-/// carrying nothing finer than a UTC day — resolving to nothing, which the lookup reports as
-/// unpriceable and the settlement posts as no row at all.
 #[test]
 fn the_first_entry_covers_every_instant_before_the_boot_that_wrote_it() {
     let holder = RootHistory::default();
@@ -141,8 +103,6 @@ fn the_first_entry_covers_every_instant_before_the_boot_that_wrote_it() {
     assert_eq!(fee_at(&head, 8_999_999), 30_000_000);
 }
 
-/// Every entry a config apply writes says so, and says which generation of the configuration
-/// wrote it. The boot resolution is epoch 0 and each apply after it is the next.
 #[test]
 fn every_config_apply_records_the_generation_that_wrote_it() {
     let holder = RootHistory::default();
@@ -161,14 +121,6 @@ fn every_config_apply_records_the_generation_that_wrote_it() {
     );
 }
 
-/// **THE CARD A CONFIG APPLY BUILDS CARRIES THE FEE IT WAS CONFIGURED WITH, AT THE ONE SCALE.**
-///
-/// This stands where `the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in` stood.
-/// That case caught a card built in one denomination and read in another — the lookup would report
-/// `CurrencyNotPriced`, which a caller that mapped errors to zero would post as a free request.
-/// #66 (`BUSBAR-1.6.0.md:528`) removes the denomination, so the mismatch cannot be CONSTRUCTED
-/// rather than merely refused; what is left to assert is that the configured figure reaches the
-/// card unmoved and at the one scale.
 #[test]
 fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
     let holder = RootHistory::default();
@@ -191,14 +143,6 @@ fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
     );
 }
 
-/// **EVERY DATED CARD PRICES THE OPEN CLASSES THE LIVE ONE DOES** (item 123 × Q14, P2-rootfollow).
-///
-/// A rerank lane prices `search_units` at 5 µ/unit, then an edit mid-window moves it to 3 µ/unit.
-/// 1,000,000 units were earned under the first card and 2,000,000 under the second. The history
-/// entry each era resolves to is built by the SAME builder a rate apply uses, so the older era's
-/// card carries the open-class cell: 5,000,000 + 6,000,000 = 11,000,000 micro (1,100 minor), and
-/// nothing refuses. Before the builder carried `units`, the older era's card had no
-/// `search_units` cell and the whole read REFUSED with `ClassUnpriced`.
 #[test]
 fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither() {
     let zero = busbar_contract::billing::RawTierRates {
@@ -247,10 +191,6 @@ fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither(
     );
 }
 
-/// **A PLANE'S FEES ARE DATED WITH THE CARD** (#47 × Q14, OWNER RULING Q32). Plane `tp` charges 3
-/// minor units a request, then an edit mid-window moves it to 7. 2 requests were earned under the
-/// first card and 1 under the second: 2 × 3 + 1 × 7 = 13 minor units — each era at the fees in force
-/// when it was earned, because every dated entry is built with the plane fees its apply carried.
 #[test]
 fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
     use busbar_kernel_ledger::cost::{plane_fee_lane, PlaneFees, PER_REQUEST};
@@ -290,8 +230,6 @@ fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
     assert_eq!(priced.minor(), 13, "each era at the plane fee in force");
 }
 
-/// The arrival door is the admission unit's, and the hold it opens is the caller's — the point of
-/// the arrival hold is that even a refusal is an event with a cell of its own to settle.
 #[test]
 fn the_arrival_door_opens_the_callers_hold() {
     let kernel = new_kernel();
@@ -305,13 +243,6 @@ fn the_arrival_door_opens_the_callers_hold() {
     assert_eq!(hold.principal(), &PrincipalId::new("k-7"));
 }
 
-/// The whole assembly, end to end: a kernel, a durability stack that opened nothing, the
-/// configured breaker ladders and a scope policy that permits only what it was told about —
-/// composed into the one type the loop reaches a unit through.
-///
-/// Every argument is a value configuration decided. That is the shape that makes it impossible
-/// to build these units and forget one: there is no constructor that fills a policy in from a
-/// default.
 #[test]
 fn the_units_assemble_from_values_configuration_decided() {
     let durability = crate::root::durability::build(
@@ -332,8 +263,6 @@ fn the_units_assemble_from_values_configuration_decided() {
         None,
     );
 
-    // The journal opened nothing: the safe end of a choice that had an unsafe end, checkable here
-    // rather than at the first request.
     let durability = units.durability.lock().expect("durability lock");
     assert!(!durability.on_disk());
 }
@@ -375,15 +304,6 @@ impl busbar_kernel_seams::verb_store::Store for ReachedStore {
     }
 }
 
-/// ROW 113: THE ADMIN UNITS OVER A BOOK REACH THAT BOOK'S STORE, for every recovery primitive.
-///
-/// `ProductionUnits::admin_over_book` is the one composition `main` serves the admin listener
-/// through, and the `route` step hands `units.store` to the verbs unit. So the store the units hold
-/// IS the store every disaster-recovery verb lands on. The book here carries a store that writes
-/// down what reached it; each primitive is driven through the units' handle and must appear on that
-/// store, in order, with the backup the operator named. RED: units that hold no store (the refusing
-/// stand-in this row deleted) fail the `expect`; units that hold any other store leave this one's
-/// log empty.
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() {
@@ -417,8 +337,6 @@ fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() 
     );
 }
 
-/// The interner is idempotent, which is what makes "leaked exactly once" a property of the
-/// type rather than of the caller's discipline.
 #[test]
 fn the_interner_leaks_a_repeated_key_once() {
     let mut registration = new_registration();
@@ -432,18 +350,6 @@ fn the_interner_leaks_a_repeated_key_once() {
     assert_eq!(registration.len(), 1);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE USAGE READ'S DATED-HISTORY SEAM (DECISION #79)
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// The holder hands a reader the WHOLE history, and hands a node that has resolved nothing
-/// NOTHING.
-///
-/// [`RootHistory::pin`] fixes the head for a request's whole life; a ledger READ wants the
-/// entries and its own choice of snapshot, so it takes the `Arc` instead. The absent arm is the
-/// half worth asserting: a node that has read no configuration must answer "no history" rather
-/// than an empty one, because an empty history prices every instant at nothing and nothing is a
-/// price.
 #[test]
 fn the_holder_hands_a_reader_the_whole_history_and_an_unresolved_node_none() {
     let holder = RootHistory::default();
@@ -467,12 +373,6 @@ fn the_holder_hands_a_reader_the_whole_history_and_an_unresolved_node_none() {
     );
 }
 
-/// The read the usage view asks through answers with the PROCESS history and nothing of its own:
-/// the date half's `history` (what `busbar_kernel::rate_apply::dated_history` hands the admin
-/// usage read and the budget book) is the holder's.
-///
-/// Run the populated process-history witness in its own test process so publishing its cards cannot
-/// change a concurrently running test's prices. The parent always kills and reaps an overdue child.
 #[test]
 fn the_usage_read_answers_with_the_process_history() {
     use busbar_kernel::rate_apply::RateEpoch as _;
@@ -563,7 +463,6 @@ fn the_usage_read_answers_with_the_process_history() {
     println!("{WITNESS}");
 }
 
-/// The real root, card Store, App builder and generation publication seam in one isolated process.
 #[test]
 fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     use busbar_kernel::rate_apply::{RateApply, RateEpoch};
@@ -725,7 +624,6 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     println!("{WITNESS}");
 }
 
-/// The module names `[package.metadata.busbar.root-units]` lists, in manifest order.
 fn root_unit_modules(manifest: &str) -> Vec<String> {
     let mut in_table = false;
     let mut modules = Vec::new();
@@ -743,19 +641,12 @@ fn root_unit_modules(manifest: &str) -> Vec<String> {
     modules
 }
 
-// ---------------------------------------------------------------------------------------------
-// The dated history, journalled (#79, OWNER RULING Q14 "date everything")
-// ---------------------------------------------------------------------------------------------
-
-/// The flat lane the history tests price.
 const FLAT_LANE: &str = "gpt";
-/// The plane whose own card (#47) the history tests price. Any plane key reads the same: the card,
-/// its presence key and its fee lane are keyed on the string, never on which plane it is.
+
 const PLANE: &str = "planex";
-/// That plane's own lane (#47): its card prices it, at twice the flat card's rate.
+
 const PLANE_LANE: &str = "planex\u{1f}search";
 
-/// When the history tests' events land, in wall-clock milliseconds.
 const BOOT_A: u64 = 1_000;
 const EARNED_A: u64 = 10_000;
 const APPLIED_B: u64 = 20_000;
@@ -772,8 +663,6 @@ fn tiers(input: f64) -> busbar_contract::billing::RawTierRates {
     }
 }
 
-/// The deployment's lanes at one price: [`FLAT_LANE`] at `price` micro-units an input token, and
-/// the [`PLANE`] plane's card (its presence key and [`PLANE_LANE`]) at twice that.
 fn lanes_at(price: f64) -> Vec<(String, busbar_contract::billing::RawTierRates)> {
     vec![
         (FLAT_LANE.to_string(), tiers(price)),
@@ -792,8 +681,6 @@ fn plane_fees() -> busbar_kernel::config::PlaneFeesMap {
     )])
 }
 
-/// The engine resolving the deployment at `price`, heard by `holder` at `at`. Whether the holder
-/// took the card is read off the history (`holder.len()`), never off the answer.
 fn apply_at(holder: &RootHistory, price: f64, at: u64) {
     let _ = try_apply_at(holder, price, at);
     let book = match &*holder.journal.lock().unwrap() {
@@ -805,7 +692,6 @@ fn apply_at(holder: &RootHistory, price: f64, at: u64) {
     }
 }
 
-/// [`apply_at`], answering the holder's verdict.
 fn try_apply_at(
     holder: &RootHistory,
     price: f64,
@@ -825,8 +711,6 @@ fn try_apply_at(
     )
 }
 
-/// The card the engine resolves at `price` (as [`try_apply_at`] builds it), published on `holder`'s
-/// history at `at` with NO record on any journal: the raw [`RootHistory::apply`].
 #[cfg(feature = "root-admin")]
 fn publish_unjournalled_at(holder: &RootHistory, price: f64, at: u64) {
     let lanes = lanes_at(price);
@@ -843,15 +727,12 @@ fn publish_unjournalled_at(holder: &RootHistory, price: f64, at: u64) {
     );
 }
 
-/// A PROCESS'S holder: fresh, armed as the production boot arms `ROOT_CARD`, and `'static` as the
-/// process holder is.
 fn process_holder() -> &'static RootHistory {
     let holder: &'static RootHistory = Box::leak(Box::default());
     holder.arm_journal();
     holder
 }
 
-/// A book over one configured Store; fresh holders over this same fixture are restarts.
 fn boot_book(
     holder: &'static RootHistory,
     store: &crate::root::store_double::RecordSlots,
@@ -861,7 +742,6 @@ fn boot_book(
     book
 }
 
-/// Rebuild before binding, to exercise the explicit unbound apply boundary.
 fn open_book(
     holder: &'static RootHistory,
     store: &crate::root::store_double::RecordSlots,
@@ -890,8 +770,6 @@ fn drain_book(book: &Arc<Mutex<crate::root::durability::Durability>>) {
     }
 }
 
-/// What a million `input` tokens earned on `lane` at `at` cost, in nano-units: the counts priced by
-/// the card `holder`'s history holds in force at `at` (money is counts x the card, MONEY-DESIGN §3).
 fn earned(holder: &RootHistory, lane: &str, at: u64) -> u64 {
     let price = holder
         .history()
@@ -903,7 +781,6 @@ fn earned(holder: &RootHistory, lane: &str, at: u64) -> u64 {
     1_000_000 * price
 }
 
-/// What a million tokens earned at A and a million at B come to on each lane, at `holder`'s history.
 fn figures(holder: &RootHistory) -> (u64, u64) {
     (
         earned(holder, FLAT_LANE, EARNED_A) + earned(holder, FLAT_LANE, EARNED_B),
@@ -911,7 +788,6 @@ fn figures(holder: &RootHistory) -> (u64, u64) {
     )
 }
 
-/// How many applied cards the chain holds.
 fn cards_on_chain(book: &Arc<Mutex<crate::root::durability::Durability>>) -> usize {
     drain_book(book);
     book.lock()
@@ -926,9 +802,6 @@ fn cards_on_chain(book: &Arc<Mutex<crate::root::durability::Durability>>) -> usi
         .count()
 }
 
-/// `GET /admin/usage`'s dated derivation of one metering row of `input` tokens on [`FLAT_LANE`]
-/// dated `priced_from_ms`, through `holder`'s history — the history the read is handed
-/// (the rate dater hands the process holder's).
 fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i64 {
     let history = holder.history().expect("a resolved history");
     let live = history
@@ -967,27 +840,10 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
     .expect("the row prices")
 }
 
-/// **A RESTART NEVER REPRICES WHAT ALREADY HAPPENED** (#79, OWNER RULING Q14).
-///
-/// Card A prices [`FLAT_LANE`] at 3 micro-units an input token (a plane's lane, [`PLANE_LANE`],
-/// at 6); a million tokens are earned on each. Card B is applied live — 5 (plane 10) — and another
-/// million is earned on each. The node restarts. Every count is priced, through the history the
-/// restart rebuilt from the chain, at the card in force when it ARRIVED: flat 3,000,000,000 + 5,000,000,000 = 8,000,000,000 nano-units, plane
-/// 6,000,000,000 + 10,000,000,000 = 16,000,000,000 — the figures the node served before the
-/// restart. Before the applied cards were journalled, the rebuilt history was the boot card B from
-/// instant zero and the same chain replayed as 10,000,000,000 and 20,000,000,000.
-///
-/// The usage read resolves through the same rebuilt history: the A-era row (dated 0, the opening
-/// entry) at 3,000,000 micro-units and the B-era row (dated at B's apply) at 5,000,000 —
-/// 8,000,000 in all, where the restart used to read 10,000,000.
-///
-/// A second restart with no price change appends nothing and moves nothing; a third that changes
-/// the price to C prices from its boot forward and leaves every earlier figure where it was.
 #[test]
 fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     let store = crate::root::store_double::RecordSlots::new();
 
-    // THE FIRST PROCESS: boots at A, earns, applies B live, earns again.
     let figures_before = {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
@@ -998,7 +854,6 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     };
     assert_eq!(figures_before, (8_000_000_000, 16_000_000_000));
 
-    // THE RESTART, at the price B already set.
     let holder = process_holder();
     apply_at(holder, 5.0, REBOOT);
     let book = boot_book(holder, &store);
@@ -1024,7 +879,6 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     );
     drop(book);
 
-    // A RESTART THAT CHANGES THE PRICE prices from its boot forward, and nothing before it.
     let holder = process_holder();
     apply_at(holder, 7.0, REBOOT_CHANGED);
     let book = boot_book(holder, &store);
@@ -1050,9 +904,6 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     drop(book);
 }
 
-/// The Store's chunked chain must restore the whole history, including cards preceding a
-/// multi-record payload. This replaces the host directory-segment fixture: physical segment
-/// management now belongs to the configured Store.
 #[test]
 fn a_restart_after_store_chunks_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     let store = crate::root::store_double::RecordSlots::new();
@@ -1088,7 +939,6 @@ fn a_restart_after_store_chunks_prices_every_posting_at_the_card_in_force_when_i
     assert!(restarted_book.lock().unwrap().restart_findings.is_empty());
 }
 
-/// A store that takes nothing: a memory-buffered journal over it refuses every append.
 struct RefusingShipper;
 
 impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for RefusingShipper {
@@ -1102,7 +952,6 @@ impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for RefusingShipper {
     }
 }
 
-/// The flat lane's input price in force at `at` on `holder`'s history.
 fn flat_price_at(holder: &RootHistory, at: u64) -> Option<u64> {
     holder
         .history()
@@ -1115,10 +964,6 @@ fn flat_price_at(holder: &RootHistory, at: u64) -> Option<u64> {
         })
 }
 
-/// **JOURNAL FIRST, PUBLISH SECOND** (MONEY-AUDIT D-6): a config rate apply whose journal append
-/// fails is REFUSED and the card in force is unchanged. RED arm: the card was published first and
-/// the journal failure only logged, so the node priced an era its restart could not reproduce —
-/// every row earned under it repriced at the card before.
 #[test]
 fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
     let store = crate::root::store_double::RecordSlots::new();
@@ -1145,8 +990,6 @@ fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
     drop(book);
 }
 
-/// A store whose answer the test flips: refusing, a memory-buffered journal over it retains every
-/// batch and re-offers it on the next append; answering, the retained batch lands.
 struct SwitchShipper(Arc<std::sync::atomic::AtomicBool>);
 
 impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
@@ -1163,7 +1006,6 @@ impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
     }
 }
 
-/// Every record the book's chain holds.
 fn chain_records(
     book: &Arc<Mutex<crate::root::durability::Durability>>,
 ) -> Vec<busbar_kernel_wal::JournalRecord> {
@@ -1176,14 +1018,12 @@ fn chain_records(
         .expect("verifies")
 }
 
-/// The dated history a restart rebuilds from `records`, and nothing else: no boot card is held.
 fn rebuilt_from(
     records: &[busbar_kernel_wal::JournalRecord],
 ) -> busbar_kernel_ledger::cost::History {
     RootHistory::restore(super::journalled_cards(records), Vec::new()).history
 }
 
-/// The flat lane's input price in force at `at` on `history`.
 fn flat_price_on(history: &busbar_kernel_ledger::cost::History, at: u64) -> Option<u64> {
     history.current().card_at(at).and_then(|(_, card)| {
         card.lane_rates(FLAT_LANE)
@@ -1191,7 +1031,6 @@ fn flat_price_on(history: &busbar_kernel_ledger::cost::History, at: u64) -> Opti
     })
 }
 
-/// The policy epochs of the config cards on `records`, in chain order.
 fn config_epochs(records: &[busbar_kernel_wal::JournalRecord]) -> Vec<u64> {
     super::journalled_cards(records)
         .into_iter()
@@ -1202,8 +1041,6 @@ fn config_epochs(records: &[busbar_kernel_wal::JournalRecord]) -> Vec<u64> {
         .collect()
 }
 
-/// A disk the test can break: while `failing`, every write, sync and resize on a segment fails (the
-/// segment poisons) and no fresh segment opens, so a poisoned log cannot roll.
 struct BreakableDisk {
     failing: Arc<std::sync::atomic::AtomicBool>,
     highest: Option<u64>,
@@ -1258,9 +1095,7 @@ impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
     fn highest_index(&self) -> std::io::Result<Option<u64>> {
         Ok(self.highest)
     }
-    // This disk keeps no segment once it has handed it to the log (every `open` is a fresh
-    // memory segment), so it holds nothing earlier a reader could reach — and the test never
-    // replays it.
+
     fn existing(
         &self,
         _index: u64,
@@ -1284,13 +1119,6 @@ impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
     }
 }
 
-/// **A CARD THE LOG COULD NOT ROLL FOR IS OWED, UNCONFIRMED, AND NEVER PUBLISHED WHILE IT IS**
-/// (REV-293 #1, REV-309 #1; ARCHITECT 2026-10-07 ruling on kernel-wal finding 4). A poisoned
-/// segment that no fresh one can replace keeps the batch it was handed (`Wal::append_batch`), as
-/// every other arm of the log does, so the chain has no hole once the volume recovers: the card is
-/// OWED. The root answers the apply as in doubt (`Lost`): the card is not confirmed, so it is never
-/// put in force — the card in force prices every instant, the refused card's era included, and the
-/// log owes the card for its retry.
 #[test]
 fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirmed() {
     use busbar_contract::caps::DurableWrite;
@@ -1312,8 +1140,7 @@ fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirm
     .expect("the log opens");
     book.lock().expect("the book").journal = busbar_kernel_wal::Journal::over(log, 7);
     failing.store(true, std::sync::atomic::Ordering::SeqCst);
-    // The disk goes: the write in flight poisons the segment (retained, owed), and from here no
-    // fresh segment opens; the log keeps every batch it is handed.
+
     let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     assert!(book
         .lock()
@@ -1363,8 +1190,6 @@ fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirm
     drop(book);
 }
 
-/// An apply between the boot's rebuild and the book's bind has no journal to go on: it is refused,
-/// and the first apply after the bind is journalled and published.
 #[test]
 fn a_rate_apply_before_the_book_is_bound_is_refused() {
     let store = crate::root::store_double::RecordSlots::new();
@@ -1386,8 +1211,6 @@ fn a_rate_apply_before_the_book_is_bound_is_refused() {
     drop(book);
 }
 
-/// The book's chain swapped for a memory-buffered one over a store the test flips (refusing at
-/// first, as `refusing` says), answering the flag.
 fn swap_to_switchable_store(
     book: &Arc<Mutex<crate::root::durability::Durability>>,
     refusing: bool,
@@ -1401,9 +1224,6 @@ fn swap_to_switchable_store(
     flag
 }
 
-/// A holder that was not armed — every test holder, and a build with no root ledger — rebuilds
-/// nothing and journals nothing; a node with NO data directory keeps the boot card from instant
-/// zero exactly as the previous release did, and writes no card anywhere.
 #[test]
 fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
     let holder = process_holder();
@@ -1449,9 +1269,6 @@ fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
     drop(book);
 }
 
-/// **AN APPLIED CARD ROUND-TRIPS THE JOURNAL AS THE SAME CARD, EVERY PLANE INCLUDED** (#47): the
-/// flat lane's four classes and its open class, the plane's own lane, an unconfigured lane on each
-/// (refused, #42), and each plane's fees read back identically off the rebuilt card.
 #[test]
 fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
     let lanes = lanes_at(3.0);
@@ -1515,7 +1332,6 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
         "another Policy record is not read as a card"
     );
 
-    // An ABSENT card round-trips absent, fee and plane fees included.
     let absent = busbar_kernel::rate_apply::RawRates {
         lanes: &[],
         units: &[],
@@ -1533,20 +1349,12 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
     );
 }
 
-/// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART** (#79). `amend_rate_history` journals its
-/// record ahead of its append (item 30), and the boot's rebuild reads it back as the entry it
-/// appended. Card A prices [`FLAT_LANE`] at 3; a million tokens arrive at 10,000 ms; a correction
-/// signed at 20,000 ms reprices `[0, 86,400,000)` (one whole UTC day, #32) at 4. After a restart
-/// the rebuilt history prices that unit's counts at the correction, 4,000,000,000 nano-units, and a
-/// unit the next day, outside the window, stays at A.
-/// Before the rebuild read corrections, a restart dropped it: the history was the boot card alone
-/// and the same unit replayed at 3,000,000,000.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_back_dated_correction_survives_a_restart() {
     use busbar_contract::caps::DurableWrite;
     const CORRECTED: (u64, u64) = (0, 86_400_000);
-    /// A unit the day after the corrected window.
+
     const OUTSIDE: u64 = 86_400_000 + EARNED_B;
     const SIGNED_AT: u64 = 20_000;
     let store = crate::root::store_double::RecordSlots::new();
@@ -1554,8 +1362,7 @@ fn a_back_dated_correction_survives_a_restart() {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
         let book = boot_book(holder, &store);
-        // The effect half of the verb, as `amend_rate_history_effect` runs it: the record first
-        // (sealing the corrected card), then the append.
+
         let journal = crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&book),
             busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
@@ -1627,10 +1434,6 @@ fn a_back_dated_correction_survives_a_restart() {
     drop(book);
 }
 
-/// The effect half of `amend_rate_history`, as `amend_rate_history_effect` runs it: [`FLAT_LANE`]
-/// `input` corrected to `nanos` over `window`, signed at `signed_at`, its `v3` record sealed onto
-/// `book` (ahead of the append) with the base `rebase` makes of the one the append resolved. Every
-/// honest record is `rebase` = the identity.
 #[cfg(feature = "root-admin")]
 fn seal_correction(
     holder: &RootHistory,
@@ -1685,13 +1488,11 @@ fn seal_correction(
     seq
 }
 
-/// Every journalled correction `book`'s restart refused, as its restart findings name them.
 #[cfg(feature = "root-admin")]
 fn refused_corrections(book: &Arc<Mutex<crate::root::durability::Durability>>) -> Vec<String> {
     book.lock().expect("the book").restart_findings.clone()
 }
 
-/// Whether any entry on `holder`'s history is a signed correction.
 #[cfg(feature = "root-admin")]
 fn holds_a_correction(holder: &RootHistory) -> bool {
     holder
@@ -1702,20 +1503,6 @@ fn holds_a_correction(holder: &RootHistory) -> bool {
         .any(|e| matches!(e.author(), busbar_kernel_ledger::cost::Author::Amend { .. }))
 }
 
-/// **A RESTORE WHOSE REBUILT PREFIX LACKS THE CORRECTION'S BASE REFUSES IT, LOUDLY** (#79: a
-/// correction reprices exactly its window, at the card it was signed over).
-///
-/// Card A is the boot card; card B is published on the live history with NO record on the chain
-/// (the raw [`RootHistory::apply`], which journals nothing), so B is entry 1 live and absent from
-/// the chain. A correction of B's era is sealed over entry 1, so the chain reads A, the
-/// correction. The restart reaches the correction with only A rebuilt. Rebuilding it over A would
-/// reprice its window at a card nobody signed, and dropping it with a log line would silently
-/// reprice the window back. It is refused, and the refusal is a named restart finding.
-///
-/// (An apply between the rebuild and the bind, which first built this divergence, is now refused
-/// as `CardRefused::Unbound` and publishes nothing (#293), so the live-only entry is placed
-/// directly. The same divergence still follows from a journal that loses an in-doubt record
-/// while keeping the record put back behind it: REV-293-r2 note 3, `make_room`.)
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
@@ -1764,10 +1551,6 @@ fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
     drop(book);
 }
 
-/// **A RESTORE WHOSE BASE CARD DIFFERS REFUSES THE CORRECTION** (#79). The record names entry 0, the
-/// card its window resolves to on the rebuilt history too, but a digest that is not that card's: the
-/// card it was sealed over is not the card the restart rebuilt. It is refused as a named finding,
-/// never rebuilt over the card that is there now.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_base_digest_differs_refuses_the_correction() {
@@ -1807,10 +1590,6 @@ fn a_restore_whose_base_digest_differs_refuses_the_correction() {
     drop(book);
 }
 
-/// **A RESTORE OVER THE SEALED BASE REBUILDS THE IDENTICAL CARD** (#79, #42, #44). The correction is
-/// sealed over entry 0 with that card's digest; the restart rebuilds entry 0 as the same card, so
-/// it rebuilds the correction as the very card the live node priced: every plane's card, the
-/// fees, the open class and the corrected cell, byte for byte. Nothing is refused.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
@@ -1865,9 +1644,6 @@ fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
     drop(book);
 }
 
-/// APPLYING A CONFIGURATION REGISTERS EVERY CLASS A UNIT MAY REPORT: the reserved four and each
-/// open class a lane's `units:` names resolve afterwards by lookup, and a class nobody configured or
-/// declared does not.
 #[test]
 fn applying_rates_registers_the_classes_a_unit_may_report() {
     let fees = plane_fees();
@@ -1899,8 +1675,6 @@ fn applying_rates_registers_the_classes_a_unit_may_report() {
     );
 }
 
-/// [`boot_book`] with NO data directory, its journal kept by `slots` — the production boot over the
-/// configured store (ARCHITECT 2026-10-07 H3 ruling).
 fn boot_book_on_store(
     holder: &'static RootHistory,
     slots: &crate::root::store_double::RecordSlots,
@@ -1920,13 +1694,6 @@ fn boot_book_on_store(
     book
 }
 
-/// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART ON A NODE WITH NO DATA DIRECTORY**
-/// (ARCHITECT 2026-10-07 H3 ruling (b)): the dated history is rebuilt from the chain the store kept,
-/// so the rebuilt book prices the corrected window at the correction — the same proof as
-/// [`a_back_dated_correction_survives_a_restart`], over the store instead of a disk.
-///
-/// RED before the fix: the rebuild ran only over a disk; the restarted book's history was the boot
-/// card alone and its book was empty.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_back_dated_correction_survives_a_restart_over_the_store() {
@@ -1999,15 +1766,6 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
     assert_eq!(holder.len(), 2, "the opening card and the correction");
 }
 
-/// **A CHAIN THAT DOES NOT VERIFY NEVER DISARMS THE CARD JOURNAL** (audit root r4 A-5; MONEY-AUDIT
-/// D-6, "JOURNAL FIRST, PUBLISH SECOND"; #79 DATE EVERYTHING, BUSBAR-1.6.0.md l.3941). A node with
-/// no data directory keeps its chain in the store; a record of it is edited there behind the node.
-/// The boot handed the rebuild no records for that chain, the same `None` a node with no chain at
-/// all hands it, so the holder was disarmed: every later card apply was published and never
-/// journalled, and after the next restart those eras were missing from the rebuilt history. The
-/// boot refuses instead, naming the break, and the holder is left as the boot armed it.
-///
-/// RED before the fix: the build answered `Ok` and left the holder `CardJournal::Off`.
 #[test]
 fn a_stored_chain_that_does_not_verify_never_disarms_the_card_journal() {
     let slots = crate::root::store_double::RecordSlots::new();

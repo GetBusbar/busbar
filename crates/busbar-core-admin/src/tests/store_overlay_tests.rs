@@ -7,8 +7,6 @@ use axum::http::HeaderMap;
 use busbar_kernel::auth::AuthPrincipal;
 use busbar_kernel::state::AppHandle;
 
-/// Full-config apply cannot silently erase security hooks or groups when Store recovery fails.
-/// Exercise transport failure, corrupt JSON and a newer document through the actual handler.
 #[tokio::test]
 async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_state() {
     for failure in ["read", "corrupt", "newer"] {
@@ -56,8 +54,6 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
     }
 }
 
-/// Every semantic rebuild receives the live Store anchor; a failed read must refuse before
-/// resolving a base-only candidate that would drop persisted hooks/groups.
 #[tokio::test]
 async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generation() {
     let (dir, config_path, providers_path) = write_reset_fixture("store-reload-failure");
@@ -83,8 +79,6 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Drive the actual group caller through Store refusal and an applied write with a lost reply.
-/// Both refuse the request without changing the live generation or exposing the candidate group.
 #[tokio::test]
 async fn group_creation_refuses_store_failure_and_unknown_commit() {
     for unknown in [false, true] {
@@ -127,8 +121,6 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
     }
 }
 
-/// The full Store document can exceed one record: a settings update preserves a large sibling
-/// section, and a fresh Store-aware load recovers it without a file overlay or manual merge.
 #[tokio::test]
 async fn settings_preserves_a_large_store_overlay_across_reload() {
     let (dir, overlay, addr, server, _limits_lock) = settings_test_app("large-store-overlay").await;
@@ -176,9 +168,6 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// An unconfirmed settings commit belongs to the published carrier. Mutation rebuilds cannot
-/// bypass its quarantine, and a failed reload cannot publish the loader's writable candidate.
-/// Only a successful explicit reload publishes recovered state and enables a subsequent write.
 #[tokio::test]
 async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation() {
     let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
@@ -224,8 +213,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
         Some(17),
         "the Store applied the candidate before its reply was lost"
     );
-    // This rebuild reconciles the exact prior receipt and gets a fresh carrier. Its own write
-    // must still use the original carrier, which now requires explicit reload publication.
+
     assert_eq!(put(29).await.status().as_u16(), 400);
     assert!(Arc::ptr_eq(&handle.load(), &before));
     let candidates = overlay.candidates();
@@ -233,7 +221,6 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     assert_eq!(candidates[0].op_id, candidates[1].op_id);
     assert_eq!(candidates[0].fingerprint(), candidates[1].fingerprint());
 
-    // Typed operator input that fails semantic group validation AFTER Store recovery.
     std::fs::write(
         &config_path,
         "store: {module: memory}\nproviders: {}\nmodels: {}\ngroups:\n  broken:\n    parent: missing\n",

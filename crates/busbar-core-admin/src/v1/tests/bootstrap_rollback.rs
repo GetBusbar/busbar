@@ -26,8 +26,7 @@ fn service(
     let mut live = strict_posture();
     live.enabled = true;
     live.dir = plugins.to_string_lossy().into_owned();
-    // The running generation already carries the explicit lower pin. The operator's base policy
-    // remains distinct and must be the policy used to judge bootstrap availability.
+
     live.min_versions.insert(target.into(), "1.4.0".into());
     let mut rows = vec![busbar_kernel_testkit::test_support::rows::row(
         "acme-anchor",
@@ -50,8 +49,7 @@ fn service(
     }
     let archive_pin = busbar_contract::redacted::sha256_hex(&bytes);
     std::fs::write(plugins.join("target.tar.gz"), &bytes).unwrap();
-    // Authorize these exact candidate bytes in the operator's base config independently of its
-    // trust/version floor. The running generation's lower version pin cannot supply this proof.
+
     std::fs::write(
         &config,
         serde_json::to_vec(&serde_json::json!({

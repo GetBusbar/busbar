@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE REGISTERED DURABLE STREAMS — core's store-backed hash chains, addressed by a `kind_id`.
-//!
-//! A stream REGISTERS once (its neutral `kind`, its framing, whether the scope is digested, and how
-//! one stored body decodes back into its record) and is then addressed by the integer `kind_id`.
-//! Each stream owns ONE store-backed [`Journal<StreamRecord>`]: the same seq-authority,
-//! position-cache and write-ordering machinery every chain in [`crate::audit`] uses. The chain mints
-//! `seq`/`prev_hash`/`hash`, frames the prelude in the stream's framing, joins the record's opaque
-//! pre-framed content suffix, and persists the neutral `{seq, prev_hash, hash, content}` body.
-//!
-//! Core's own stream (the admin audit log, [`crate::audit::auditlog`]) registers with an in-core
-//! decode ([`Decode::Native`]) and drives its chain through [`register`], [`append_full`] and
-//! [`seed`] directly, with no host handle.
-//!
-//! ## The digest, and the PipeSeparated landmine
-//!
-//! `digest_input = frame_prelude(prev_hash, [scope if digests_scope], seq, framing) ⧺ content`.
-//! For [`Framing::PipeSeparated`] the prelude always writes `prev_hash` first, so the content must
-//! arrive pre-framed WITH its leading `|`, and the record appends it RAW. For
-//! [`Framing::LengthPrefixed`] every field self-delimits, so concatenation is exact.
-
 use crate::audit::journal::{Journal, JournalError, NeutralRecord, Reframe};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::store::plane_view::PlaneStore;
@@ -45,8 +25,6 @@ pub(crate) struct StreamRecord {
     pub(crate) digests_scope: bool,
 }
 
-/// The caller payload for one append. Carries NO `seq`/`prev_hash`/`hash`: those are the chain's
-/// authority, assigned by [`crate::audit::Chain::append`].
 pub(crate) struct StreamInput {
     content: Vec<u8>,
     framing: Framing,
@@ -54,8 +32,6 @@ pub(crate) struct StreamInput {
 }
 
 impl StreamInput {
-    /// One append's payload: the pre-framed `content` suffix under the stream's `framing`, the scope
-    /// digested iff `digests_scope`.
     pub(crate) fn new(content: Vec<u8>, framing: Framing, digests_scope: bool) -> Self {
         StreamInput {
             content,
@@ -66,9 +42,6 @@ impl StreamInput {
 }
 
 impl StreamRecord {
-    /// Assemble a record from decoded parts: the constructor a stream's decode uses to turn a stored
-    /// body + its scope back into a chain record. `scope` is the store parent, never read from the
-    /// body; `content` is the opaque pre-framed suffix carried verbatim.
     #[allow(dead_code)]
     pub(crate) fn from_parts(
         scope: String,
@@ -98,9 +71,7 @@ impl ChainedRecord for StreamRecord {
         chain: "the plane journal chain",
         scope: "scope",
     };
-    // Unused for framing: `digest_fields` feeds the prelude framed in the RECORD's per-instance
-    // `framing` and then the pre-framed suffix RAW, so this const never governs any byte. It only
-    // satisfies the trait; the real framing travels on the record.
+
     const FRAMING: Framing = Framing::LengthPrefixed;
 
     fn scope_of(&self) -> &str {
@@ -133,9 +104,6 @@ impl ChainedRecord for StreamRecord {
     }
 
     fn digest_fields(&self, d: &mut Digest) {
-        // The prelude is framed here; the record's suffix is appended RAW. The two Digest::raw calls
-        // are a pure byte concat, so `sha256_hex(prelude ⧺ suffix)` matches the legacy single buffer
-        // for BOTH framings (the PipeSeparated join `|` lives inside `content`).
         let scope = self.digests_scope.then_some(self.scope.as_str());
         d.raw(&frame_prelude(
             self.framing,
@@ -153,8 +121,6 @@ impl NeutralRecord for StreamRecord {
     }
 }
 
-/// An in-core decode: one stored body back into its chain record. The scope it is handed is inert
-/// (the registry re-scopes the record with the store parent it knows).
 pub(crate) type NativeDecode = fn(&str, &[u8]) -> RecordStoreResult<StreamRecord>;
 
 /// How a registered stream's stored body decodes back into its record.
@@ -164,12 +130,8 @@ pub(crate) enum Decode {
     Native(NativeDecode),
 }
 
-/// The text a failed decode reports, unchanged from the bridge it replaces (a decode fault read
-/// back through the seam's status class).
 const DECODE_FAILED: &str = "journal reframe failed: Fault";
 
-/// One registered durable stream. The `journal` is an [`Arc`] so an op clones it out from under the
-/// registry lock and does its store I/O and decode WITHOUT holding the registry.
 struct DurableStream {
     kind: String,
     framing: Framing,
@@ -178,19 +140,15 @@ struct DurableStream {
     journal: Arc<Journal<StreamRecord>>,
 }
 
-/// The process-local registry of durable streams, keyed by the registered `kind_id`.
 fn registry() -> &'static Mutex<HashMap<u32, DurableStream>> {
     static S: OnceLock<Mutex<HashMap<u32, DurableStream>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Poison-recovering lock: a panic mid-op must not wedge the registry.
 fn registry_lock() -> MutexGuard<'static, HashMap<u32, DurableStream>> {
     registry().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The addressable parts of one registered stream, snapshotted so the registry lock is released
-/// before any store I/O or decode runs.
 pub(crate) struct StreamHandle {
     pub(crate) kind: String,
     pub(crate) framing: Framing,
@@ -199,10 +157,6 @@ pub(crate) struct StreamHandle {
     pub(crate) journal: Arc<Journal<StreamRecord>>,
 }
 
-/// REGISTER a durable stream under `kind_id`: record its neutral facts and decode, give its position
-/// cache an LRU `cap` (`usize::MAX` opts out of eviction), and attach `sink` as its durable store (no
-/// sink ⇒ the positions live in RAM only). Re-registering an id replaces the stream and resets every
-/// position.
 pub(crate) fn register(
     kind_id: u32,
     kind: String,
@@ -226,7 +180,6 @@ pub(crate) fn register(
     registry_lock().insert(kind_id, stream);
 }
 
-/// The registered stream `kind_id`, or `None` for an id nothing registered.
 pub(crate) fn handle(kind_id: u32) -> Option<StreamHandle> {
     let map = registry_lock();
     map.get(&kind_id).map(|s| StreamHandle {
@@ -239,8 +192,6 @@ pub(crate) fn handle(kind_id: u32) -> Option<StreamHandle> {
 }
 
 impl StreamHandle {
-    /// Decode one stored body with the stream's in-core decode and re-scope it with the store parent
-    /// `scope` under the stream's framing.
     pub(crate) fn decode_native(
         &self,
         scope: &str,
@@ -255,9 +206,6 @@ impl StreamHandle {
         })
     }
 
-    /// APPEND one record to `scope`: mint the chain fields through the ONE core chain, persist the
-    /// neutral body, and report any chain break the resume of an evicted scope found. `decode` turns
-    /// a stored body back into a record on that resume.
     pub(crate) fn append(
         &self,
         scope: &str,
@@ -270,11 +218,6 @@ impl StreamHandle {
         appended
     }
 
-    /// REPORT THE CHAIN BREAKS A RESUME FOUND, once each. A scope evicted from the journal's cache is
-    /// read back from the store to take its next record; a persisted tail that does not verify is
-    /// tamper evidence the journal records and resumes past (it never refuses the write). This drains
-    /// those records and names each on the diagnostics envelope, so runtime tamper evidence is as
-    /// visible as the boot restore's.
     fn report_resume_breaks(&self) {
         for brk in self.journal.take_resume_breaks() {
             crate::diagnostics::diag_error!(
@@ -289,10 +232,6 @@ impl StreamHandle {
     }
 }
 
-/// APPEND one record to the registered stream `kind_id` and return its MINTED chain fields
-/// `(seq, prev_hash, hash)`, with no host handle: the append reads no host state, and a resume
-/// decodes through the stream's in-core decode. `Err` carries the STORE's own error verbatim (a
-/// durable-write failure the caller decides on), or names an unregistered stream or an empty scope.
 pub(crate) fn append_full(
     kind_id: u32,
     scope: &str,
@@ -319,9 +258,6 @@ pub(crate) fn append_full(
     }
 }
 
-/// SEED one scope's position from its already-read stored bodies, decoded through the stream's
-/// in-core decode. `Ok(true)` when the stored chain does not verify (it still resumes from the
-/// tail); `Err(())` for an unregistered stream, an empty scope, or a body that would not decode.
 pub(crate) fn seed(kind_id: u32, scope: &str, bodies: &[Vec<u8>]) -> Result<bool, ()> {
     let h = handle(kind_id).ok_or(())?;
     if scope.is_empty() {

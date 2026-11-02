@@ -1,24 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLOW ITSELF: `/authorize` → consent → code → token, driven over a real socket through a
-//! cookie jar that enforces RFC 6265 path scoping.
-//!
-//! ## Why a jar, and why this jar
-//!
-//! The consent session is carried in a cookie, and a cookie is only useful at the paths the
-//! browser will send it to. Every test that drives this flow by copying a `Set-Cookie` value into
-//! the next request's `Cookie` header is testing a browser that does not exist: such a test passes
-//! against a session cookie scoped to a path the reader will never be reached at, which is exactly
-//! the defect this file exists to keep out. So the flow below goes through [`Jar`], which
-//! implements RFC 6265 §5.1.4 default-path and path-match and NOTHING else, and which has its own
-//! proof ([`the_jar_refuses_to_send_a_cookie_to_a_sibling_path`]) that it would have failed the
-//! broken code — a jar that ignored `Path` would make this whole file worthless.
-//!
-//! The issuer is `http://127.0.0.1:{port}` of the listener the router is actually served on, so
-//! every absolute URL the server hands back (the consent redirect, the metadata document) points
-//! at the socket under test and can be followed literally rather than rewritten by the test.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -36,15 +18,11 @@ use busbar_kernel_testkit::test_support::TestApp;
 
 use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 
-/// The client's redirect URI. Never fetched — the flow ends at the 302 that carries the code.
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
-/// RFC 7636 appendix B's verifier and the challenge it hashes to, so PKCE is exercised against a
-/// published vector rather than against a challenge this test computed with the same code the
-/// server verifies it with.
+
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-/// The one scope this deployment's ceiling allows, so the approval is staked and spent for a
-/// NON-EMPTY scope set: an empty one would let a key-building bug on either side pass unnoticed.
+
 const SCOPE: &str = "read";
 const CLIENT_ID: &str = "flow-test-client";
 
@@ -79,10 +57,6 @@ impl Jar {
         }
     }
 
-    /// Store one `Set-Cookie`, as received on a request to `request_path`.
-    ///
-    /// `Max-Age=0` deletes, which is how a clearing header is honoured rather than stored as a
-    /// cookie with an empty value.
     pub(crate) fn store(&mut self, set_cookie: &str, request_path: &str) {
         let mut parts = set_cookie.split(';');
         let (name, value) = parts
@@ -105,8 +79,7 @@ impl Jar {
                 _ => {}
             }
         }
-        // RFC 6265 §5.1.4: an absent or non-`/`-prefixed Path defaults to the request path with its
-        // last segment removed.
+
         let path = match path {
             Some(p) if p.starts_with('/') => p,
             _ => default_path(request_path),
@@ -126,8 +99,6 @@ impl Jar {
         });
     }
 
-    /// The `Cookie` header to send to `request_path`, or `None` when nothing matches — which is the
-    /// answer this whole file is about.
     pub(crate) fn header_for(&self, request_path: &str) -> Option<String> {
         let sent: Vec<String> = self
             .cookies
@@ -140,7 +111,6 @@ impl Jar {
     }
 }
 
-/// RFC 6265 §5.1.4 default-path.
 fn default_path(request_path: &str) -> String {
     if !request_path.starts_with('/') {
         return "/".to_string();
@@ -151,8 +121,6 @@ fn default_path(request_path: &str) -> String {
     }
 }
 
-/// RFC 6265 §5.1.4 path-match. Prefix matching only at a `/` boundary, which is what makes
-/// `/authorize` and `/consent` disjoint and `/consent` a match for `/consent/anything`.
 fn path_matches(request_path: &str, cookie_path: &str) -> bool {
     if request_path == cookie_path {
         return true;
@@ -163,10 +131,6 @@ fn path_matches(request_path: &str, cookie_path: &str) -> bool {
     cookie_path.ends_with('/') || request_path[cookie_path.len()..].starts_with('/')
 }
 
-/// One request through the jar: cookies in, `Set-Cookie`s out, redirects NOT followed.
-///
-/// Redirects are followed by hand below so every hop's status, `Location` and cookie header can be
-/// asserted on — a client that followed them would hide the exact hop this file is about.
 pub(crate) async fn send(
     client: &reqwest::Client,
     jar: &mut Jar,
@@ -192,7 +156,6 @@ pub(crate) async fn send(
     (status, headers, body)
 }
 
-/// The path component of an absolute URL, or of a path that is already one.
 pub(crate) fn path_of(url: &str) -> String {
     let rest = url
         .strip_prefix("http://")
@@ -210,7 +173,6 @@ pub(crate) fn path_of(url: &str) -> String {
         .to_string()
 }
 
-/// One query parameter of a URL, percent-decoded exactly as far as this test needs.
 pub(crate) fn query_param(url: &str, name: &str) -> Option<String> {
     url.split(['?', '&'])
         .skip(1)
@@ -219,7 +181,6 @@ pub(crate) fn query_param(url: &str, name: &str) -> Option<String> {
         .map(|(_, v)| v.to_string())
 }
 
-/// The `Location` of a redirect, as an absolute URL against `origin`.
 pub(crate) fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> String {
     let raw = headers
         .get(reqwest::header::LOCATION)
@@ -234,22 +195,10 @@ pub(crate) fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> St
     }
 }
 
-/// A served deployment: an authorization server on a real socket, with one registered client and an
-/// OPEN admin posture so the consent screen is reachable without a credential.
-///
-/// The admin chain is what the consent route's `RouteAuth::Admin` consults, and it is emptied here
-/// deliberately: the property under test is the cookie's reach, and an operator credential in the
-/// middle of it would only add a second way for the test to fail.
 async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
     serve_with_admin_chain(Vec::new()).await
 }
 
-/// The same deployment with the admin chain named rather than assumed.
-///
-/// Split out for the one test whose property IS the credential: `RouteAuth::Admin` on the consent
-/// route only refuses when there is something to refuse, so a test of that refusal needs a chain
-/// that actually demands one. Every other test here passes an empty chain and gets the open posture
-/// described above.
 pub(crate) async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
@@ -319,11 +268,6 @@ async fn serve_with_store(
     (origin, app)
 }
 
-/// THE JAR'S OWN PROOF, and the reason the test below means anything.
-///
-/// A jar that ignored `Path` would have passed against the broken code — the session cookie was
-/// scoped to `/consent` and read at `/authorize`, and a jar that replayed every cookie everywhere
-/// would have papered over exactly that. This test is what stops that from happening silently.
 #[test]
 fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
     let mut jar = Jar::new(false);
@@ -345,8 +289,6 @@ fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
         "a prefix that does not end at a `/` boundary is not a path-match"
     );
 
-    // Two cookies of the same name at two disjoint paths are two cookies, and each is sent to its
-    // own path only. This is the shape the fix relies on.
     let mut jar = Jar::new(false);
     jar.store("s=one; Path=/authorize", "/authorize");
     jar.store("s=two; Path=/consent", "/consent");
@@ -355,8 +297,6 @@ fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
     assert_eq!(jar.header_for("/token"), None);
     assert_eq!(jar.header_for("/"), None);
 
-    // A `Secure` cookie is not stored over a plain connection, so a `Secure` attribute that a
-    // deployment cannot honour reads here as an absent cookie.
     let mut jar = Jar::new(false);
     jar.store("s=abc; Path=/consent; Secure", "/consent");
     assert_eq!(jar.header_for("/consent"), None);
@@ -364,19 +304,12 @@ fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
     jar.store("s=abc; Path=/consent; Secure", "/consent");
     assert_eq!(jar.header_for("/consent").as_deref(), Some("s=abc"));
 
-    // Max-Age=0 is a deletion, not a cookie with an empty value.
     let mut jar = Jar::new(false);
     jar.store("s=abc; Path=/consent", "/consent");
     jar.store("s=; Path=/consent; Max-Age=0", "/consent");
     assert_eq!(jar.header_for("/consent"), None);
 }
 
-/// EVERY ATTRIBUTE of the session cookie, pinned where it is written rather than inferred from a
-/// response — so a change to any one of them is a change somebody has to make here too.
-///
-/// The scope is asserted as a SET of exact paths: the point of the fix is that this cookie reaches
-/// the two endpoints that read it and NOT the token endpoint, and a test that only checked
-/// "`/authorize` gets it" would pass just as happily against `Path=/`.
 #[test]
 fn the_session_cookie_carries_exactly_the_attributes_it_should() {
     use crate::config::AsIdentity;
@@ -384,10 +317,7 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
 
     for (issuer, secure_expected) in [
         ("https://as.example.com", true),
-        // A loopback developer deployment. `Secure` here would be a cookie the browser discards.
         ("http://127.0.0.1:8080", false),
-        // A tenant-prefixed issuer: the two paths carry the prefix, and neither one is the bare
-        // `/authorize` or `/consent` of the origin.
         ("https://gw.example.com/tenant-a", true),
     ] {
         let cfg = OauthAsCfg {
@@ -403,7 +333,6 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
         let id = AsIdentity::from_cfg(&cfg).expect("valid issuer");
         let cookies = session_cookies(&id, "deadbeef");
 
-        // The jar decides reachability, exactly as the browser does.
         let mut jar = Jar::new(secure_expected);
         for c in &cookies {
             jar.store(c, id.consent_path());
@@ -418,9 +347,7 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
             "the consent POST reads this cookie at {}: {cookies:?}",
             id.consent_path()
         );
-        // AND NOWHERE ELSE. The token endpoint is the one that matters — it is spoken to by the
-        // CLIENT, so an operator session cookie arriving there is a credential handed to the party
-        // the consent step exists to keep it from.
+
         assert_eq!(
             jar.header_for(id.token_path()),
             None,
@@ -462,12 +389,6 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
     }
 }
 
-/// THE FLOW, end to end: an authorization request that has never been seen mints a code, and that
-/// code is exchanged for a usable access token.
-///
-/// Every hop is asserted, because the failure this test was written for delivered a cookie and
-/// still could not mint a code — the browser bounced between `/authorize` and `/consent` forever,
-/// with each hop individually looking correct.
 #[tokio::test]
 async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     let (origin, app) = serve().await;
@@ -475,9 +396,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
-    // The issuer is `http://`, so the jar is a plain-connection one: a `Secure` cookie would be
-    // DROPPED here, which is what makes the attribute's derivation from the issuer scheme a thing
-    // this test can see rather than a comment.
+
     let mut jar = Jar::new(false);
 
     let authorize = format!(
@@ -486,7 +405,6 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
          &code_challenge={CHALLENGE}&code_challenge_method=S256"
     );
 
-    // 1. The unauthenticated authorization request is sent to the consent screen.
     let (status, headers, body) =
         send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
     assert_eq!(status, 302, "authorize must redirect to consent: {body}");
@@ -496,7 +414,6 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         "the redirect must name this deployment's consent screen: {consent}"
     );
 
-    // 2. The consent screen opens the session and sets the cookie.
     let (status, headers, body) =
         send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
     assert_eq!(status, 200, "the consent screen must render: {body}");
@@ -510,9 +427,6 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         "the consent screen must open a session"
     );
 
-    // THE CLAIM THE DEFECT BROKE: the session cookie is sent BOTH to the screen that submits the
-    // approval and to the endpoint that spends it. Asserted before the flow continues, so a
-    // regression names the cookie rather than showing up as a redirect loop twenty lines later.
     assert!(
         jar.header_for("/consent").is_some(),
         "the consent POST reads the session cookie; Set-Cookie was {set_cookie:?}"
@@ -524,8 +438,6 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
          Set-Cookie was {set_cookie:?}"
     );
 
-    // 3. The operator approves. The form carries only the return URL; the session comes from the
-    //    cookie the jar decided to send.
     let return_to =
         query_param(&consent, "return").expect("the screen carries the pending request");
     let return_to = percent_decode(&return_to);
@@ -544,7 +456,6 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         "the approval hands the browser back to the authorization endpoint: {back}"
     );
 
-    // 4. The authorization request is replayed, the staked approval is spent, and a code is minted.
     let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
     assert_eq!(status, 302, "the approved request must redirect: {body}");
     let redirect = location(&headers, &origin);
@@ -563,7 +474,6 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         "RFC 6749 §4.1.2: the client's `state` is returned verbatim"
     );
 
-    // 5. The code is exchanged at the token endpoint.
     let (status, _headers, body) = send(
         &client,
         &mut jar,
@@ -585,8 +495,6 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         .unwrap_or_else(|| panic!("no access_token: {body}"))
         .to_string();
 
-    // 6. The token is USABLE: the server that minted it knows it, for the client and the subject
-    //    and the scope the operator actually approved. A token the AS cannot introspect is a string.
     let record = oauth_as_plane(&app)
         .expect("configured")
         .server()
@@ -602,16 +510,12 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     );
     assert_eq!(record.scope.to_string(), SCOPE);
 
-    // And the audience binding busbar's own resource half reads off a bearer holds, which is what
-    // makes the token usable at a busbar plane rather than merely well-formed.
     assert_eq!(
         busbar_kernel::auth::audience::inspect_bearer(&access, &origin),
         busbar_kernel::auth::audience::Binding::Bound,
         "the access token must carry this deployment's audience"
     );
 
-    // 7. The approval was ONE-SHOT: replaying the same authorization request goes back to the
-    //    consent screen rather than minting a second code from an approval given once.
     let (status, headers, body) =
         send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
     assert_eq!(status, 302, "{body}");
@@ -622,11 +526,6 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     );
 }
 
-/// THE APPROVAL IS SPENT UNDER THE REQUEST IT WAS GIVEN FOR, whatever the scope text says.
-/// The screen used to stake the raw `scope` text while `/authorize` spent under
-/// `oauth-as`'s normalised set (sorted, deduplicated, the registered default when absent), so a
-/// request naming two scopes out of order, a scope twice, or no scope at all was sent back to the
-/// consent screen forever. Each request here must reach a code on its first approval.
 #[tokio::test]
 async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent() {
     const MULTI: &str = "flow-test-multi-scope";
@@ -651,7 +550,7 @@ async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
-    // Out of order; repeated; absent (the registered default, `read write`).
+
     for scope in ["&scope=write%20read", "&scope=read%20read%20write", ""] {
         let mut jar = Jar::new(false);
         let authorize = format!(
@@ -704,10 +603,6 @@ async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent
     }
 }
 
-// A request that names no scope is granted the client's registered default (RFC 6749 §3.3). The
-// screen is where the operator decides, so it must name THAT scope: the one the token will carry.
-
-/// What the consent screen's `Requesting:` line names.
 fn requesting(page: &str) -> String {
     page.split_once("<p>Requesting: <code>")
         .and_then(|(_, rest)| rest.split_once("</code>"))
@@ -715,9 +610,6 @@ fn requesting(page: &str) -> String {
         .unwrap_or_else(|| panic!("the screen names what it is asking for: {page}"))
 }
 
-/// Drive one authorization request for `client_id` (`scope_param` is `&scope=…`, or empty for a
-/// request naming no scope) through the consent screen, an approval, the code and the token, and
-/// answer what the screen said it was asking for and what the minted token carries.
 async fn shown_and_granted(
     origin: &str,
     app: &busbar_kernel::state::App,
@@ -815,7 +707,6 @@ async fn shown_and_granted_after_lookup_failure(
     (shown, record.scope.to_string())
 }
 
-/// Register a public client whose registration allows and defaults to `default`.
 async fn register_defaulting_to(
     app: &busbar_kernel::state::App,
     client_id: &str,
@@ -839,8 +730,6 @@ async fn register_defaulting_to(
         .expect("register client");
 }
 
-/// RED: a request naming no scope is shown the client's default, which is what its token carries.
-/// Before the fix the screen said `no scopes` while the approval minted a token for `read write`.
 #[tokio::test]
 async fn a_request_naming_no_scope_is_shown_the_default_it_is_granted() {
     const DEFAULTED: &str = "flow-test-defaulted";
@@ -854,9 +743,6 @@ async fn a_request_naming_no_scope_is_shown_the_default_it_is_granted() {
     );
 }
 
-/// RED: a metadata-document client whose document names no scope is granted the operator's whole
-/// `default_grant`, and a request of its naming no scope is shown exactly that. Before the fix the
-/// screen said `no scopes`.
 #[tokio::test]
 async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_granted() {
     let (origin, app) = serve().await;
@@ -878,8 +764,6 @@ async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_g
     );
 }
 
-/// GREEN twin: a request that names its scope is shown that scope, and a client whose default is
-/// empty is shown `no scopes` for a request naming none, which is then exactly what it is granted.
 #[tokio::test]
 async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
     const EMPTY: &str = "flow-test-empty-default";
@@ -893,8 +777,6 @@ async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
     assert_eq!(shown, "no scopes", "and the screen says so");
 }
 
-/// A failed client lookup cannot turn a nonempty default grant into a consent for "no scopes".
-/// Retry the same screen after the store recovers, then approve and inspect the actual token.
 #[tokio::test]
 async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
     let calls = busbar_kernel_testkit::test_support::store_axis_stand_in()
@@ -929,7 +811,6 @@ async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
     assert_eq!(shown, "no scopes");
 }
 
-/// Keep normal store behavior except for one client-record read selected by the browser flow.
 struct FailClientRead {
     inner: Arc<dyn StoreCalls>,
     fail_next: AtomicBool,
@@ -1060,20 +941,6 @@ impl StoreCalls for FailClientRead {
     }
 }
 
-// This plane ships with ALL THREE ON, NO TOGGLES, and a mounted endpoint is not an
-// admitted client. So each mechanism is driven over the same real socket to the same end state — an
-// access token the server introspects for that client — with the flow itself shared, because three
-// hand-rolled copies of the hops would let one mechanism's proof drift from another's.
-//
-// * pre-registered: `the_authorization_code_flow_mints_and_exchanges_a_code` above (the fixture's
-//   client is provisioned by `register_client`, which IS pre-registration).
-// * DCR:  `dynamic_client_registration_admits_a_client_end_to_end`.
-// * CIMD: `a_client_id_metadata_document_admits_a_client_end_to_end`, over a stub document host —
-//   the fetch seam exists so the SSRF guard's loopback refusal does not sit between this test and
-//   the property under test. The guard has its own suites; the document VALIDATION has `cimd_tests`.
-
-/// Drive authorize → consent → approval → code → token for `client_id`, asserting every hop, and
-/// hand back the access token.
 async fn mint_access_token(origin: &str, client_id: &str) -> String {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -1143,8 +1010,6 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
         .to_string()
 }
 
-/// RFC 3986 percent-encoding for one query VALUE, so a `client_id` that is itself a URL survives
-/// the trip through the authorization request's query string byte-for-byte.
 pub(crate) fn encode_component(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -1156,8 +1021,6 @@ pub(crate) fn encode_component(s: &str) -> String {
         .collect()
 }
 
-/// DCR, END TO END: an anonymous POST to the always-mounted `/register` mints a `client_id`, and
-/// that client completes the whole flow to a token the server knows.
 #[tokio::test]
 async fn dynamic_client_registration_admits_a_client_end_to_end() {
     let (origin, app) = serve().await;
@@ -1199,7 +1062,6 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
     assert_eq!(record.scope.to_string(), SCOPE);
 }
 
-/// POST one RFC 7591 registration body to `/register`, answering its status.
 async fn register(origin: &str, body: &str) -> u16 {
     reqwest::Client::new()
         .post(format!("{origin}/register"))
@@ -1212,7 +1074,6 @@ async fn register(origin: &str, body: &str) -> u16 {
         .as_u16()
 }
 
-/// A registration the policy admits, under `name`.
 fn registration(name: &str) -> String {
     serde_json::json!({
         "redirect_uris": [REDIRECT_URI],
@@ -1225,11 +1086,6 @@ fn registration(name: &str) -> String {
     .to_string()
 }
 
-/// RED: registrations this server refuses do not close registration for everyone else. One caller
-/// sends registrations the policy refuses (a name impersonating the deployment) and bodies that do
-/// not parse; a legitimate registration on the same node still succeeds. Before the fix six refused
-/// registrations spent the whole per-minute budget, and every registration on the node was refused
-/// for the rest of the minute.
 #[tokio::test]
 async fn refused_registrations_do_not_close_registration_for_everyone() {
     let (origin, _app) = serve().await;
@@ -1251,8 +1107,6 @@ async fn refused_registrations_do_not_close_registration_for_everyone() {
     );
 }
 
-/// GREEN twin: the node keeps its ceiling. Sixty registrations a minute are admitted and the next
-/// is refused, whoever sends it.
 #[tokio::test]
 async fn admitted_registrations_keep_the_ceiling() {
     let (origin, _app) = serve().await;
@@ -1270,12 +1124,8 @@ async fn admitted_registrations_keep_the_ceiling() {
     );
 }
 
-/// The metadata document URL that IS the client id on the CIMD path.
 const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
 
-/// The stub document host behind the fetch seam: answers the one URL with the document, and
-/// anything else with a refusal — so the test also shows the fallback is keyed to the exact
-/// `client_id` and not to "any HTTPS URL fetches something".
 struct StubDocumentHost(serde_json::Value);
 
 impl crate::cimd::CimdFetch for StubDocumentHost {
@@ -1294,9 +1144,6 @@ impl crate::cimd::CimdFetch for StubDocumentHost {
     }
 }
 
-/// CIMD, END TO END: a `client_id` that is an HTTPS URL, never registered anywhere, completes the
-/// whole flow to a token the server introspects FOR THAT URL. The client exists only as its
-/// document — nothing was written to the store before, during or after.
 #[tokio::test]
 async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
     let (origin, app) = serve().await;
@@ -1328,7 +1175,6 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
     assert_eq!(record.scope.to_string(), SCOPE);
 }
 
-/// Percent-decoding for the one value this file reads back out of a URL it was handed.
 pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -1354,25 +1200,9 @@ pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8(out).expect("the server produced UTF-8")
 }
 
-// The flow tests above prove the screen is REACHABLE and that approving it mints a code. These two
-// prove what it SAYS and who it says it to, which is a different claim and the one the screen exists
-// for: it is this plane's only anti-phishing control, and a screen that renders for anyone or that
-// omits where the credential goes is a control in name only.
-
-/// A client whose callback is OFF this origin, so "the screen names the redirect host" is a claim
-/// about the redirect URI and not about the socket the test is talking to. `127.0.0.1` — the
-/// fixture client's host — is also the ORIGIN's host, so asserting on it would pass against a page
-/// that merely echoed its own address back.
 const OFFSITE_CLIENT_ID: &str = "offsite-callback-client";
 const OFFSITE_REDIRECT_URI: &str = "https://client.example/cb";
 
-/// THE SCREEN MUST NAME WHO IS ASKING AND WHERE THE CREDENTIAL GOES.
-///
-/// A consent screen that does not name the redirect host cannot tell an operator that approving
-/// hands a credential to `client.example` rather than to the client they think they are authorizing.
-/// That substitution — a registered client, an attacker's callback — is the exact attack the screen
-/// is the only control against, and until this test landed nothing in the tree asserted the screen's
-/// CONTENT at all.
 #[tokio::test]
 async fn the_consent_screen_names_the_client_and_the_redirect_host() {
     let (origin, app) = serve().await;
@@ -1421,11 +1251,6 @@ async fn the_consent_screen_names_the_client_and_the_redirect_host() {
         "the screen must name the scopes being requested: {page}"
     );
 
-    // The host must be in what a HUMAN READS, not merely somewhere in the markup. The pending
-    // request is round-tripped through a hidden `<input name=return value="...">` whose value is the
-    // whole authorization request, `redirect_uri` included — so a bare `page.contains(...)` is
-    // satisfied by a field the operator never sees. That is the false green this assertion is shaped
-    // to avoid, so the hidden value is removed first.
     let visible = strip_hidden_return(&page);
     assert!(
         visible.contains("client.example"),
@@ -1437,8 +1262,6 @@ async fn the_consent_screen_names_the_client_and_the_redirect_host() {
     );
 }
 
-/// The consent page with the hidden `return` field's VALUE blanked — what is left is what the
-/// operator actually reads.
 fn strip_hidden_return(page: &str) -> String {
     let marker = "name=return value=\"";
     let Some(start) = page.find(marker) else {
@@ -1451,14 +1274,6 @@ fn strip_hidden_return(page: &str) -> String {
     format!("{}{}", &page[..after], &page[after + end..])
 }
 
-/// AN UNAUTHENTICATED VISITOR IS NEVER SHOWN WHAT THEY WOULD APPROVE.
-///
-/// An ORDERING property, not a cosmetic one. A consent screen that renders for an anonymous visitor
-/// is a phishing page this deployment hosts: an attacker links straight to it, the page names a
-/// client and a scope on busbar's own origin, and the visitor has no way to tell it from a screen
-/// they reached legitimately. Every other test in this file runs with an OPEN admin posture, so
-/// without this one the consent route's `RouteAuth::Admin` is never exercised against a chain that
-/// can actually refuse.
 #[tokio::test]
 async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
     let (origin, _app) = serve_with_admin_chain(vec!["test-scope-module".to_string()]).await;
@@ -1500,21 +1315,6 @@ async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
     );
 }
 
-/// AN UNENCODABLE LOGIN REDIRECT FAILS CLOSED, RATHER THAN QUIETLY DENYING ON THE OPERATOR'S BEHALF.
-///
-/// `consent::redirect` builds the `Location` an unauthenticated `/authorize` visitor is sent to —
-/// `{login_url}?return=...` where `login_url` is `AsIdentity::consent_url()` (`origin() +
-/// consent_path`). `AsIdentity::from_cfg` never character-checks the issuer (only its shape: no
-/// `?`/`#`, absolute, no trailing slash — see `busbar_kernel::oauth_as::config`), so an operator
-/// typo can leave a byte in the issuer's AUTHORITY that `HeaderValue` refuses (here, a raw `\r`).
-/// The PATH after it stays plain ASCII, so the mounted `/authorize` route is perfectly ordinary and
-/// reachable — only the Location this plane builds for ITS OWN login redirect is broken.
-///
-/// Before the fix, `redirect`'s `Err` arm answered `Deny` to the library, which `oauth-as` turns
-/// into an ordinary `access_denied` redirect to the CLIENT's `redirect_uri` (RFC 6749 §4.1.2.1) —
-/// the broken server silently completing the flow as though the resource owner had refused, having
-/// never actually sent anyone to log in. That is "proceeding" rather than refusing. The fix answers
-/// with a fail-closed 502 instead.
 #[tokio::test]
 async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1523,8 +1323,6 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
     let addr = listener.local_addr().expect("addr");
     let real_origin = format!("http://{addr}");
 
-    // The AUTHORITY carries a raw CR — a byte `HeaderValue` refuses — while everything from the
-    // next `/` on (`issuer_path`, and so `authorize_path`/`consent_path`) is ordinary ASCII.
     let bad_issuer = "http://bad\rhost/defect2".to_string();
     let cfg = OauthAsCfg {
         issuer: bad_issuer,
@@ -1580,10 +1378,6 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
     );
 }
 
-/// THE OPEN REDIRECT, on the wire. An operator who opened a real consent screen (so the session
-/// cookie is live) and then submitted a form whose `return` is `/<TAB>/evil.example` must not be
-/// sent anywhere: a browser drops the tab and follows `//evil.example` off-site. Both buttons, since
-/// Deny redirects exactly as Approve does. Before the fix both answered 302 to that `Location`.
 #[tokio::test]
 async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_deny() {
     let (origin, _app) = serve().await;
@@ -1629,7 +1423,7 @@ async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_d
             );
         }
     }
-    // And the screen itself refuses to render for one.
+
     let (status, _, _) = send(
         &client,
         &mut jar,

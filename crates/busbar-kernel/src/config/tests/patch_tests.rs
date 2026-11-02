@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/config/patch.rs`.
-
 use super::*;
 
-/// DRIFT GUARD: destructuring the source struct exhaustively means adding a field there fails
-/// to compile until the patch carries it. Without this the mirror silently loses a field and
-/// reintroduces the exact silent-revert bug it exists to fix.
 #[test]
 fn every_patch_mirrors_every_field_of_its_section() {
     let crate::config::LimitsCfg {
@@ -62,15 +57,11 @@ fn every_patch_mirrors_every_field_of_its_section() {
         rate_sweep_interval,
         usage_flush_interval_ms,
         response_headers,
-        // 1.5.3: BOOT-TIME knobs (read once at process/client construction) — deliberately NOT in
-        // the runtime-mutable `AdvancedPatch`, because a runtime PUT could not take effect without a
-        // restart / client rebuild. Bound-and-ignored here so this exhaustiveness check still forces
-        // a decision when a NEW advanced field is added.
+
         worker_threads: _,
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
-        // The destination guard's inputs: BOOT-TIME too (the connector and its guard are built
-        // once), so not runtime-patchable.
+
         block_private_addresses: _,
         allow_destinations: _,
     } = crate::config::AdvancedCfg::default();
@@ -97,9 +88,6 @@ fn every_patch_mirrors_every_field_of_its_section() {
     };
 }
 
-/// THE DEFECT. A partial patch must leave every unnamed field alone. Before this, a partial
-/// body deserialized into a whole section, so omitted fields carried compiled defaults and
-/// silently overwrote `config.yaml` — with no way to read the old values back.
 #[test]
 fn a_partial_patch_leaves_unnamed_fields_untouched() {
     let mut base = crate::config::LimitsCfg {
@@ -123,7 +111,6 @@ fn a_partial_patch_leaves_unnamed_fields_untouched() {
     );
 }
 
-/// Successive PUTs to DIFFERENT fields of one section accumulate in the overlay.
 #[test]
 fn merge_accumulates_across_puts() {
     let merged = LimitsPatch {
@@ -138,7 +125,6 @@ fn merge_accumulates_across_puts() {
     assert_eq!(merged.max_inbound_concurrent, Some(512));
 }
 
-/// A typo is still a 400 at body-parse time — the failure does not move to boot.
 #[test]
 fn an_unknown_field_is_refused() {
     assert!(serde_json::from_str::<LimitsPatch>(r#"{"max_inbound_concurent": 5}"#).is_err());

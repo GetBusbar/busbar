@@ -2,24 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE REQUEST, ONE REPLY, over a framed host connection. [`exchange`]
-//! opens a framed need, sends one [`Request`] through the
-//! framer ([`Connector::write_request`]: head, body, end — the framer writes its own wire head, one
-//! library per protocol) and reads the reply to its terminal piece into an [`ExchangeResponse`].
-//! [`send_and_ack`] is its form for any transport: it writes bytes and answers the transport's
-//! [`Ack`] (OWNER ruling: a plugin that sends sees what became of it).
-//!
-//! Both answer PENDING until they complete. The caller parks the [`Exchange`] on its ticket across
-//! PENDING entries (`abi::sdk::safe::Instance::park`) and passes it back each time, making the same
-//! services in the same order (the replay rule, `abi::sdk::conn`): no service runs twice.
-//!
-//! WHAT CROSSES IS WIPED. A request's fields carry what a plugin authenticates with (a vault token,
-//! an `authorization` value, a client secret) and a reply carries what the far end answered. Every
-//! buffer the SDK holds either in is wiped when it goes: the [`Request`] [`Exchange::request`]
-//! consumes, the head it frames, the body it sends, the read buffer (after each piece is applied as
-//! well), and the reply it gathers (a body that outgrows its allocation wipes the one it leaves).
-//! [`Request`] wipes its owned bytes on drop. [`ExchangeResponse`] and [`Ack`] are [`Zeroize`]: a
-//! plugin wipes the ones it holds (`zeroize::Zeroizing::new(reply)`). The bytes on the wire are
-//! unchanged.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -44,11 +26,11 @@ pub const READ_CHUNK: usize = 16 * 1024;
 pub const REPLY_MAX: usize = 16 * 1024 * 1024;
 
 /// The failure text of a reply whose body passed [`REPLY_MAX`]: a driver that words that case its
-/// own way matches on it.
+
 pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
 
 /// A sealed request field: before which of the request's fields it goes (their count: last), its
-/// name, and its sealed value ([`Exchange::request_sealed`]).
+
 pub type SealedField = (usize, Vec<u8>, crate::abi::sdk::cred::Seal);
 
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
@@ -158,7 +140,7 @@ impl Zeroize for Ack {
 }
 
 /// What is sent: a framed request's head bytes and descriptors, or raw bytes. The bytes wipe on
-/// drop; the descriptors (`repr(C)`) hold spans and a timeout, never a byte of the request.
+
 enum Sending {
     Framed {
         /// The head's method, target and field block, one after another.
@@ -209,9 +191,7 @@ impl std::fmt::Debug for Exchange {
 }
 
 /// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
-/// (a pending write reads it), the read buffer and the descriptor slot (a pending read writes
-/// them) and the reply so far. Parked on the ticket. Every byte it holds of the request or the
-/// reply wipes on drop.
+
 pub struct Exchange {
     sending: Sending,
     /// The read buffer: each piece's bytes are wiped once applied, the whole of it on drop.
@@ -220,15 +200,12 @@ pub struct Exchange {
     reply: Zeroizing<ExchangeResponse>,
     code: u32,
     /// The reply's head (or the transport's ack) was received: `code` is its status
-    /// ([`Exchange::head_status`]).
     head_seen: bool,
     /// How many of this op's services' results are already applied to `reply`.
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
     ended: Option<u32>,
     /// The handle of the read whose piece the exchange refused, and why: a replay of that read
-    /// refuses again, so the entry that re-issues the close a failure pended on answers the same
-    /// failure (a replayed piece is not applied again, so it cannot refuse on its own).
     refused_at: Option<(u32, &'static str)>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
@@ -241,31 +218,20 @@ pub struct Exchange {
     /// The reply's head ends the reads; its body is never read ([`Exchange::head_only`]).
     head_only: bool,
     /// The stream the exchange established, once it has: what a caller that gives the exchange up
-    /// closes on the host ([`Exchange::stream`]).
     stream: Option<u64>,
     /// The most this exchange's reply body may reach ([`Exchange::reply_limit`]); never above
-    /// [`REPLY_MAX`].
     reply_ceiling: usize,
     /// The read whose piece the exchange refused (its handle) and why, once one was: kept across
-    /// replays, which do not apply a piece again, so the replayed read fails the exchange again
-    /// and its close is issued on the same handle.
     refused_read: Option<(u32, &'static str)>,
     /// The field lines ([`Exchange::framed_fields`]'s indices) whose values are sealed.
     sealed_lines: Vec<usize>,
     /// A sealed value goes out only secured ([`Cred::secure_required`]): the stream is confirmed
-    /// secured before the request is written.
-    ///
-    /// [`Cred::secure_required`]: crate::abi::sdk::cred::Cred::secure_required
     secure_required: bool,
     /// The stream was found in the clear: every re-entry answers the refusal (a replayed `FACTS`
-    /// writes nothing, so only this remembers it).
     insecure: bool,
     /// What closes `stream` should the exchange be dropped before it closed it: set whenever the
-    /// exchange answers PENDING ([`exchange`], [`send_and_ack`], [`Op::exchange`]), so a pending
-    /// exchange its op gives up does not leave its host connection open.
     closer: Option<Closer>,
     /// Opt-in wall-clock bound for the complete exchange, including collection. The absolute
-    /// expiry is anchored once with the host clock before establishing, never on a resumed read.
     timeout_ms: Option<u64>,
     deadline_ns: Option<u64>,
     expires_at_ns: Option<u64>,
@@ -274,8 +240,7 @@ pub struct Exchange {
 
 impl Drop for Exchange {
     /// A parked exchange dropped before it closed its stream (its op cancelled, a fresh op on its
-    /// ticket, the instance closed) closes it here: the host reclaims a connection only on its
-    /// CLOSE. An exchange that answered READY closed its stream already and closes nothing.
+
     fn drop(&mut self) {
         if let (Some(closer), Some(stream)) = (self.closer, self.stream.take()) {
             closer.close(stream);
@@ -329,13 +294,7 @@ impl Exchange {
     }
 
     /// Bound this complete exchange, from before establishment through its final reply piece.
-    /// Zero leaves it unbounded here. The host's monotonic clock anchors the budget once on its
-    /// first drive; pending re-entries retain that absolute expiry. Missing clock support or an
-    /// unrepresentable expiry fails closed. This does not change the connector's streaming bound.
-    ///
-    /// A direct caller must publish [`Exchange::wake_at_ns`] with `Out::wake_at` whenever this
-    /// exchange returns Pending, so a silent peer cannot outwait the bound without another wake.
-    /// Calling this builder after the exchange has begun cannot renew or replace its bound.
+
     #[must_use]
     pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         if !self.begun {
@@ -345,9 +304,7 @@ impl Exchange {
     }
 
     /// Clamp the complete exchange to a known absolute caller deadline on the host clock.
-    /// Zero means no known cap. When both are configured, the earlier of this deadline and
-    /// [`Exchange::with_timeout_ms`] wins. An overflowing relative span may use this known cap;
-    /// without one it fails closed. A drive already begun retains its original expiry.
+
     #[must_use]
     pub fn with_deadline_ns(mut self, deadline_ns: u64) -> Self {
         if !self.begun {
@@ -357,7 +314,7 @@ impl Exchange {
     }
 
     /// The original absolute expiry for a pending exchange. Propagate the earliest nonzero wake
-    /// to the operation's `Out::wake_at`, then retain this exchange until resume or cancellation.
+
     #[must_use]
     pub const fn wake_at_ns(&self) -> Option<u64> {
         self.expires_at_ns
@@ -375,8 +332,6 @@ impl Exchange {
         let expiry = match self.expires_at_ns {
             Some(expiry) => expiry,
             None => {
-                // A connector's explicit remaining budget and the operation's absolute deadline
-                // are caps, never sources of a renewed timeout on a later entry.
                 let relative = self.timeout_ms.and_then(|ms| {
                     let ms = c.budget_ms().map_or(ms, |budget| ms.min(budget));
                     ms.checked_mul(1_000_000)
@@ -409,9 +364,6 @@ impl Exchange {
     }
 
     fn timeout_failed(&mut self, c: &Connector<'_>, error: ConnFailure) -> Result<(), ConnFailure> {
-        // Expiry can skip an entry's replayed services. Close without a replay handle rather than
-        // issuing CLOSE where that ticket previously issued ESTABLISH or READ. Take ownership
-        // before calling the host: a reentrant cancellation/drop cannot close this stream twice.
         if let Some(stream) = self.stream.take() {
             c.closer().close(stream);
         }
@@ -419,8 +371,7 @@ impl Exchange {
     }
 
     /// Lower the most this exchange's reply body may reach to `bytes`. A value above [`REPLY_MAX`]
-    /// clamps to it: the ceiling is lowered, never raised. A reply past it is refused as one past
-    /// [`REPLY_MAX`] is ([`REPLY_OVER_BOUND`]).
+
     #[must_use]
     pub fn reply_limit(mut self, bytes: usize) -> Self {
         self.reply_ceiling = bytes.min(REPLY_MAX);
@@ -428,18 +379,14 @@ impl Exchange {
     }
 
     /// The stream this exchange established, once it has and until the exchange closed it: a
-    /// caller that abandons the exchange closes it (`Connector::close`), so the host's connection
-    /// does not outlive the attempt. An exchange that answered READY, its reply or its failure,
-    /// closed its stream and answers `None`; one [`Op::exchange`] parked closes it when dropped.
+
     #[must_use]
     pub const fn stream(&self) -> Option<u64> {
         self.stream
     }
 
     /// Read the stream's facts ([`Connector::facts`]) once its reply has ended — or once the reply
-    /// failed, a connection the connector refused for its trust anchors included — before it is
-    /// closed: [`Exchange::observed`] answers them. One more service on the op's count, made only
-    /// by an exchange that asks.
+
     #[must_use]
     pub fn observing(mut self) -> Self {
         self.observe = true;
@@ -447,10 +394,7 @@ impl Exchange {
     }
 
     /// Judge the reply on its HEAD alone: the first head (or ack) piece ends the reads and the
-    /// stream is closed, its facts read first where [`Exchange::observing`] asks. The body is never
-    /// read or buffered, so a slow or huge body after the head neither runs the op into its
-    /// deadline nor passes [`REPLY_MAX`]; the reply answers an empty body. 1.5.5 judged a webhook
-    /// delivery on the response head and dropped the body unread.
+
     #[must_use]
     pub fn head_only(mut self) -> Self {
         self.head_only = true;
@@ -458,26 +402,21 @@ impl Exchange {
     }
 
     /// What the stream's facts said ([`Exchange::observing`]); `None` before they were read, for
-    /// an exchange that did not ask, or a host that offers no facts.
+
     #[must_use]
     pub fn observed(&self) -> Option<&Observed> {
         self.observed.as_ref()
     }
 
     /// WHETHER THE REPLY'S HEAD WAS RECEIVED: `true` once a head (or a pure-send transport's ack)
-    /// was read, whatever the exchange answered after it. When a failed exchange answers `true`,
-    /// it failed while reading the body (a reset, a stalled body, [`REPLY_OVER_BOUND`]). When it
-    /// answers `false`, it failed before any reply arrived (the dial, the send, the far end's
-    /// silence).
+
     #[must_use]
     pub const fn head_seen(&self) -> bool {
         self.head_seen
     }
 
     /// The status the reply's head carried ([`ExchangeResponse::status`], read as [`exchange`]
-    /// reads it), once [`Exchange::head_seen`]; `None` before. Answered on a failed exchange too,
-    /// so a driver judges the status before the body as an HTTP client does: a reply past
-    /// [`REPLY_OVER_BOUND`] still says what status it came with.
+
     #[must_use]
     pub fn head_status(&self) -> Option<u16> {
         self.head_seen
@@ -485,18 +424,14 @@ impl Exchange {
     }
 
     /// The response fields still owned by this exchange after its reply head was read; `None`
-    /// before a head. They remain available after a later body read fails, including a reply
-    /// past [`REPLY_OVER_BOUND`]. The borrow cannot outlive the exchange, which wipes its fields
-    /// on drop. A successful [`exchange`] transfers them into its returned [`ExchangeResponse`],
-    /// leaving this slice empty.
+
     #[must_use]
     pub fn reply_fields(&self) -> Option<&[(Vec<u8>, Vec<u8>)]> {
         self.head_seen.then_some(self.reply.fields.as_slice())
     }
 
     /// Land this exchange's dial only on an address of `within`, the set the plugin's
-    /// `dest.judge` judged (`Judged::within`): a name that resolves elsewhere at dial time is
-    /// refused before the request leaves.
+
     #[must_use]
     pub fn landing_within(mut self, within: String) -> Self {
         self.within = within;
@@ -504,8 +439,7 @@ impl Exchange {
     }
 
     /// This exchange reaches the REGISTRATION `name` (its name in the plugin's declaring section):
-    /// what the host sealed for that registration alone (its private reach) applies to its dial;
-    /// an exchange that names none dials under its need's class alone (SEAM-4p).
+
     #[must_use]
     pub fn as_member(mut self, name: impl Into<String>) -> Self {
         self.member = Some(name.into());
@@ -513,34 +447,19 @@ impl Exchange {
     }
 
     /// An exchange sending `request` through a framed need.
-    ///
-    /// # Errors
-    /// A field is a pseudo-field (its name starts with `:`), or a name or value carries a line
-    /// break: REFUSED, nothing sent.
-    ///
-    /// `request` is the SDK's from here: what it carried is wiped when it goes, framed or refused.
-    /// The head is allocated once at its exact length, so no outgrown copy of a field is left.
+
     pub fn request(request: Request) -> Result<Self, ConnFailure> {
         Self::request_sealed(request, Vec::new())
     }
 
     /// [`Exchange::request`] with SEALED fields (`abi::sdk::chip`: an `authorization` value, an API
-    /// key header): each `(at, name, seal)` goes in before the request's field `at` (its length:
-    /// last), so the field order is the caller's. Their values reach only the head the SDK frames
-    /// and wipes; [`Exchange::framed_fields`] shows them as `<sealed>`.
-    ///
-    /// # Errors
-    /// As [`Exchange::request`].
+
     pub fn request_sealed(request: Request, sealed: Vec<SealedField>) -> Result<Self, ConnFailure> {
         Self::request_with(request, sealed, None)
     }
 
     /// [`Exchange::request_sealed`] whose body is `body` (a form with sealed values,
-    /// [`FormBody::encoded`](crate::abi::sdk::cred::FormBody::encoded)) in place of the request's
-    /// own.
-    ///
-    /// # Errors
-    /// As [`Exchange::request`].
+
     pub fn request_with(
         request: Request,
         sealed: Vec<SealedField>,
@@ -641,8 +560,7 @@ impl Exchange {
     }
 
     /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
-    /// order, exactly what the far end is handed rather than what the caller meant to hand it.
-    /// Empty for an exchange that sends raw bytes ([`Exchange::send`]).
+
     #[must_use]
     pub fn framed_fields(&self) -> Vec<(&[u8], &[u8])> {
         match &self.sending {
@@ -706,9 +624,7 @@ fn write_all(mut write: impl FnMut(&[u8]) -> Answer<usize>, bytes: &[u8]) -> Ans
 }
 
 /// Append `bytes` to `body`, growing it as `Vec` grows it (to twice its capacity, at least what
-/// it needs, never under 8), but into a fresh allocation, wiping the one it outgrew before that is
-/// freed: a reallocation leaves no copy of what the reply carried. The same allocations as
-/// `extend_from_slice`, one per growth.
+
 fn extend_wiping(body: &mut Vec<u8>, bytes: &[u8]) {
     let need = body.len().saturating_add(bytes.len());
     if need > body.capacity() {
@@ -721,7 +637,7 @@ fn extend_wiping(body: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 /// Check an already anchored absolute bound around one service step. Clock reads never draw a
-/// replay handle. In particular a Pending service that reaches the bound answers timeout now.
+
 fn bounded_step<T>(
     c: &mut Connector<'_>,
     expires_at_ns: Option<u64>,
@@ -767,7 +683,6 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
             end_piece,
             timeout_ms,
         } => {
-            // The op's remaining budget bounds the request's own timeout (0 = the budget).
             head_piece.timeout_ms = match (*timeout_ms, budget) {
                 (0, Some(b)) => b,
                 (t, Some(b)) => t.min(b),
@@ -798,18 +713,13 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
 }
 
 /// Send, then read the reply to its terminal piece into `state`, then close the stream: on a
-/// failure after the stream is established as on a reply (the host reclaims a connection only on
-/// its CLOSE, so an exchange that failed without one would leave it open for the instance's
-/// life). The close's own answer never replaces the exchange's.
+
 fn send_and_read(
     c: &mut Connector<'_>,
     state: &mut Exchange,
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
-    // A FAILED EXCHANGE CLOSES ITS STREAM before it answers, as a whole one does: a caller that
-    // sends once and moves on never leaves a held stream (and its connection) behind per failure.
-    // A PENDING one keeps what closes it, so the caller that gives it up closes it by dropping it.
     let answer = match exchange_once(c, state, need, target) {
         Poll::Ready(Err(e)) => match state.stream {
             Some(stream) => match c.close(stream) {
@@ -844,9 +754,7 @@ fn exchange_once(
     if let Err(error) = state.within_timeout(c) {
         return Poll::Ready(Err(error));
     }
-    // A framed request is made whole when its stream opens, so its security is its target's: a
-    // sealed value that must go out secured is refused before the open when the target names a
-    // scheme that is not secure. A need's own target (`None`) is the operator's, as written.
+
     if state.secure_required
         && (state.insecure || target.is_some_and(|t| !crate::abi::sdk::cred::secure_target(t)))
     {
@@ -861,21 +769,17 @@ fn exchange_once(
         Poll::Ready(ended) => ended,
         Poll::Pending => return Poll::Pending,
     };
-    // Observation can finish (or decline facts) after the original expiry. Check before CLOSE
-    // so a skipped pending FACTS replay never lends its handle to a different service.
+
     if let Err(error) = state.within_timeout(c) {
         return Poll::Ready(Err(error));
     }
     if state.expires_at_ns.is_some() && ended.is_err() {
-        // A bounded service can stop between replay handles. All terminal failures on this
-        // opted-in path close without claiming a handle formerly used by a pending write/read.
         if let Some(stream) = state.stream.take() {
             c.closer().close(stream);
         }
         return Poll::Ready(ended);
     }
     if state.stream.is_none() {
-        // A complete-exchange timeout already took and closed this stream without replay.
         return Poll::Ready(ended);
     }
     match c.close(stream) {
@@ -888,8 +792,7 @@ fn exchange_once(
 }
 
 /// Send on `stream`, then read the reply to its terminal piece (for a head-only exchange, its head
-/// or ack) into `state`; the stream's facts are read where the caller asks, once the reply ended or
-/// failed.
+
 fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
     ready!(send(c, state, stream));
     loop {
@@ -902,7 +805,6 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
         }) {
             Poll::Ready(Ok(got)) => got,
             Poll::Ready(Err(e)) => {
-                // A failed reply: what the stream observed says why, where the caller asks.
                 if observe(c, state, stream).is_pending() {
                     return Poll::Pending;
                 }
@@ -913,8 +815,7 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
         if let Err(error) = state.within_timeout(c) {
             return Poll::Ready(Err(error));
         }
-        // A replayed read answers its stored result (its piece and bytes written again); it was
-        // applied on the entry that first saw it, unless this exchange is that op's fresh re-call.
+
         let fresh = this >= state.applied;
         if fresh {
             state.applied = this + 1;
@@ -924,9 +825,7 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
             Some((at, text)) if at == this => Err(text),
             _ => apply(state, p, got.len, fresh),
         };
-        // A fresh piece's bytes are in the reply now: the read buffer keeps no copy of them into
-        // the next read. A replayed read's are not touched: the buffer may still hold the bytes of
-        // the read this entry has yet to apply (the one that pended on the last entry).
+
         if fresh {
             if let Some(used) = state.buf.get_mut(..got.len) {
                 used.zeroize();
@@ -935,17 +834,13 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
         if let (true, Err(text)) = (fresh, applied) {
             state.refused_read = Some((this, text));
         }
-        // A refused piece fails the exchange on the entry that refused it and on every replay of
-        // that read (a replay applies nothing, so only `refused_read` remembers it).
+
         match (state.refused_read, applied) {
             (Some((at, text)), _) if at == this => return failed(text),
             (_, Err(text)) => return failed(text),
             _ => {}
         }
-        // The terminal piece ends the reads, on the entry that first saw it and on every replay
-        // of that read. A replayed earlier read never does: the piece descriptor is the op's one
-        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one. A
-        // head-only exchange's head is its terminal piece, by the same bookkeeping.
+
         let terminal = match p.kind {
             REPLY_ACK | REPLY_END => true,
             REPLY_HEAD => state.head_only,
@@ -965,8 +860,7 @@ fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answ
 }
 
 /// Apply one reply piece, `p` and its first `len` bytes of the read buffer, to the reply `state`
-/// gathers (a `fresh` read only: a replayed one was applied on the entry that first saw it). What a
-/// head replaces is wiped first.
+
 fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result<(), &'static str> {
     match p.kind {
         REPLY_HEAD | REPLY_ACK if fresh => {
@@ -1000,7 +894,7 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
 }
 
 /// Read `stream`'s facts into `state` where it asks ([`Exchange::observing`]): a facts answer the
-/// host replays leaves what the first entry read; a host that offers none leaves none.
+
 fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()> {
     if !state.observe {
         return Poll::Ready(());
@@ -1016,10 +910,7 @@ fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()>
 }
 
 /// ONE REQUEST, ONE REPLY over the declared framed need `need` to `target` (`None` = the need's
-/// `target_from`): establish, send the [`Exchange::request`] (head, body, end), read the reply to
-/// its terminal piece, close. PENDING until it completes; READY with the reply's code, reason,
-/// fields and body, or why it failed. Bounded by the op's deadline and by [`REPLY_MAX`]. A
-/// [`Exchange::head_only`] exchange ends at the head and answers an empty body.
+
 pub fn exchange(
     c: &mut Connector<'_>,
     state: &mut Exchange,
@@ -1036,9 +927,7 @@ pub fn exchange(
 }
 
 /// SEND and learn what became of it, over any transport (a pure-send one answers a single ack):
-/// establish, write the [`Exchange::send`] bytes, read to the terminal piece, close. READY with the
-/// transport's code and the peer's text, verbatim — a failure the transport acked is an [`Ack`]
-/// too, never a lost request.
+
 pub fn send_and_ack(
     c: &mut Connector<'_>,
     state: &mut Exchange,
@@ -1120,7 +1009,7 @@ pub struct Inspection {
 }
 
 /// An operation failure with the reply head received before the failure, when one arrived.
-/// The head's reason and fields are wiped when this owner drops; no partial body is exposed.
+
 pub struct ExchangeFailure {
     cause: OpFailure,
     head: Option<Zeroizing<ExchangeResponse>>,
@@ -1138,7 +1027,7 @@ impl ExchangeFailure {
     }
 
     /// The earlier status, reason and fields. The body is always empty. A caller can judge this
-    /// status before reporting a later read failure or body-limit refusal.
+
     #[must_use]
     pub fn head(&self) -> Option<&ExchangeResponse> {
         self.head.as_deref()
@@ -1173,10 +1062,7 @@ impl std::error::Error for ExchangeFailure {
 }
 
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
-/// Pending(wake); the replay rule of `abi::sdk::conn`), for a kind SDK whose author answers
-/// [`Poll`]: [`Op::exchange`] resumes the exchange the op's last PENDING entry parked, or starts
-/// the one its `request` builds, and parks it again while it pends. The op then answers PENDING
-/// and is re-entered from the top when its wake fires. One exchange per op.
+
 pub struct Op<'a> {
     on: &'a dyn Parks,
     host: Option<&'a Host>,
@@ -1196,7 +1082,7 @@ impl std::fmt::Debug for Op<'_> {
 
 impl<'a> Op<'a> {
     /// The op `instance` runs, over the host tables `open` handed it (`None`: every exchange
-    /// answers [`ConnFailure::Unarmed`]).
+
     #[must_use]
     pub fn new<'b: 'a, T: Send + Sync + 'static>(
         instance: &'a Instance<'b, T>,
@@ -1217,8 +1103,7 @@ impl<'a> Op<'a> {
     }
 
     /// Opt newly built exchanges into a complete wall-clock bound. A resumed exchange keeps its
-    /// original bound. After a Pending answer propagate [`Op::wake_at_ns`] to `Out::wake_at`;
-    /// the hook SDK does this for hook operations.
+
     #[must_use]
     pub fn with_timeout_ms(self, timeout_ms: u64) -> Self {
         self.set_timeout_ms(timeout_ms);
@@ -1231,8 +1116,7 @@ impl<'a> Op<'a> {
     }
 
     /// Clamp new explicitly timed exchanges to the operation's known absolute deadline on the
-    /// host clock. The hook SDK carries its input deadline here. Zero means no known cap;
-    /// this cap alone leaves an operation's existing untimed exchange behavior unchanged.
+
     #[must_use]
     pub fn with_deadline_ns(self, deadline_ns: u64) -> Self {
         self.set_deadline_ns(deadline_ns);
@@ -1246,14 +1130,14 @@ impl<'a> Op<'a> {
     }
 
     /// The earliest absolute timer requested by this entry's pending exchange. A kind's caller
-    /// must publish it with `Out::wake_at`; losing the timer would lose a silent peer's timeout.
+
     #[must_use]
     pub fn wake_at_ns(&self) -> Option<u64> {
         self.wake_at_ns.get()
     }
 
     /// The host tables the op runs over (`None`: the instance was handed none): what an op that
-    /// waits on another ticket's work wakes that ticket with ([`Host::wake`]).
+
     #[must_use]
     pub fn host(&self) -> Option<&'a Host> {
         self.host
@@ -1266,22 +1150,14 @@ impl<'a> Op<'a> {
     }
 
     /// Whether the kind SDK restored its parked continuation for this entry. This reports actual
-    /// continuation state, rather than trusting a resume flag left on an entry after cancellation.
+
     #[must_use]
     pub fn resuming(&self) -> bool {
         self.on.resuming()
     }
 
     /// Retain this operation's typed state with its continuation. Hook operations support this;
-    /// other kind SDKs may refuse it. The first call initializes the state, and subsequent calls
-    /// and pending re-entries return that same value, even across configuration changes.
-    ///
-    /// The SDK releases its reference on cancellation, replacement, or a terminal answer. A
-    /// caller that clones the returned reference is responsible for its own clones. Use one state
-    /// type per operation; a different type is refused without replacing the original state.
-    ///
-    /// # Errors
-    /// The kind does not support operation context, or this operation already holds another type.
+
     pub fn context<T: Send + Sync + 'static>(
         &self,
         initialize: impl FnOnce() -> Arc<T>,
@@ -1294,14 +1170,12 @@ impl<'a> Op<'a> {
         let value = if let Some(existing) = existing {
             existing
         } else {
-            // Initialize without borrowing the slot, so an initializer may re-enter safely.
             let created: Context = initialize();
             let selected = {
                 let mut held = slot.borrow_mut();
                 Arc::clone(held.get_or_insert_with(|| Arc::clone(&created)))
             };
-            // A nested initializer may have filled the slot. Drop the unused state only after
-            // releasing the borrow, since user state may perform cleanup when it drops.
+
             selected
         };
         value
@@ -1310,10 +1184,7 @@ impl<'a> Op<'a> {
     }
 
     /// Read one negotiated generic host observation. The first supported entry appends a leased
-    /// request and returns Pending. Retain `state` and re-enter on the same op's RESUME or the
-    /// driver's DRIVE. An older host without the capability returns Unsupported immediately.
-    /// The host enforces the copied receipt's epoch, caller and unit; this helper verifies its
-    /// complete ticket, epoch, ID and query before returning owned values.
+
     pub fn inspect<I: super::door::AbiIn, O: super::door::AbiOut>(
         &self,
         input: super::Lent<'_, I>,
@@ -1413,8 +1284,7 @@ impl<'a> Op<'a> {
     }
 
     /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on
-    /// the op's first entry; when it cannot be built, its text answers at once
-    /// ([`OpFailure::Unbuilt`]), nothing sent. PENDING until it completes.
+
     pub fn exchange(
         &self,
         need: u32,
@@ -1435,10 +1305,7 @@ impl<'a> Op<'a> {
     }
 
     /// [`Op::exchange`] whose reply body may reach at most `reply_limit` bytes
-    /// ([`Exchange::reply_limit`]; above [`REPLY_MAX`] it is [`REPLY_MAX`]): a reply past it is
-    /// refused ([`REPLY_OVER_BOUND`]) as it is read, never buffered whole first. The limit is set
-    /// on the exchange the op's first entry builds; a resumed exchange keeps the one it was built
-    /// with.
+
     pub fn exchange_bounded(
         &self,
         need: u32,
@@ -1464,10 +1331,7 @@ impl<'a> Op<'a> {
     }
 
     /// A bounded exchange that retains an earlier reply head when the exchange later fails.
-    /// `head_only` ends the exchange at its reply head, without reading or collecting a body
-    /// ([`Exchange::head_only`]). The limit and this choice are fixed by the first entry's builder;
-    /// a resumed exchange keeps both. Request builders and sealed fields follow
-    /// [`Op::exchange_sealed_bounded`].
+
     pub fn exchange_sealed_bounded_with_head(
         &self,
         need: u32,
@@ -1497,8 +1361,7 @@ impl<'a> Op<'a> {
                                     None => s,
                                 }
                             }
-                            // A caller cap alone does not opt an existing Op into the new clock
-                            // service requirement. The dispatcher already enforces that cap.
+
                             None => s,
                         };
                         let s = s.reply_limit(reply_limit);
@@ -1515,8 +1378,6 @@ impl<'a> Op<'a> {
         let mut c = host.connector(self.on.ticket());
         match exchange(&mut c, &mut state, need, target) {
             Poll::Pending => {
-                // The same continuation, including any earlier reply head, owns pending buffers
-                // and its closer until the next entry or cancellation.
                 if let Some(expiry) = state.wake_at_ns() {
                     self.wake_at_ns.set(Some(
                         self.wake_at_ns.get().map_or(expiry, |old| old.min(expiry)),

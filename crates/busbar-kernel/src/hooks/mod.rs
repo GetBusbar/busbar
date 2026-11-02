@@ -1,34 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Pluggable routing policies.
-//!
-//! A pool may declare a routing **policy** that, given a cheap projection of the request, returns an
-//! ordered **preference** of members — not a single pick. The ordered list feeds the failover loop
-//! Busbar already has (`proxy::pick_among`): if the policy's #1 is tripped / excluded / at
-//! capacity, Busbar walks to #2 using the existing breaker machinery. One transport-agnostic trait
-//! (`RoutingPolicy`); a `kind: hook` PLUGIN (opened through the root's hook axis on the one
-//! dispatcher, called as a [`plugin::HookPolicy`])
-//! is the general out-of-core implementation, and the built-in ranking hooks (the `hooks/ranking/`
-//! workspace crate) are the compiled-in ones. (1.5.0 retired the out-of-process socket/webhook
-//! transports — a hook is now a signed, trusted, in-process plugin.)
-//!
-//! ZERO-COST DEFAULT: a `route: weighted` (default / absent) pool resolves to `ResolvedPolicy::None`
-//! at config load and NEVER constructs any of the projection types or enters this module's async
-//! path. The hot path stays today's inline SWRR.
-//!
-//! This surface is PRODUCTION-WIRED: `proxy::decide_policy_order` builds the `RoutingRequest` +
-//! `Candidate` projections from the live store signals and invokes the resolved policy on every
-//! non-default request; `proxy::pick_among` walks the ranked order through the existing failover
-//! loop. `resolve_policy` (below) constructs the ranking-hook / dlopen-plugin transports once at
-//! config load.
-
 use std::sync::Arc;
 
-/// Resolve a configured `timeout_ms` into a `Duration`, treating `0` as "use the default". A code-built
-/// `PolicyCfg` (e.g. a native shorthand) can carry `timeout_ms == 0` because serde's field default only
-/// fires on the deserialize path; a literal `0ms` deadline would make every policy decision instantly
-/// time out. This belt-and-suspenders guard pairs with the desugar-site stamp in `config.rs`.
 fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
     let ms = if timeout_ms == 0 {
         crate::limits::default_policy_timeout_ms()
@@ -38,54 +12,18 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
-/// THE PROTOCOL-BLIND REQUEST GATE — the seam that fires a hook for a request the pipeline knows
-/// only as an [`busbar_contract::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
-/// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub mod gate;
 pub mod taps;
 
-// The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
-// (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — lives in the
-// `busbar-api` crate (the one crate both the engine and every plugin build against). Re-exported
-// here so engine-internal paths are unchanged.
-// `PolicyError`/`PolicyResult` are re-exported for the `#[cfg(test)]` hook-seam tests (which
-// implement `RoutingPolicy` against the engine's types); allow the unused-in-non-test warning.
 #[allow(unused_imports)]
 pub use busbar_contract::hooks::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
-// The "decision observability" signal catalog — `Signal`/`SignalValue`/
-// `SignalBag` are re-exported here for the same reason the hook contract types above are: engine-
-// internal paths reference them as `crate::hooks::Signal` etc.
+
 #[allow(unused_imports)]
 pub use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
-// The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
-// bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
-// with a single `AND`+compare BEFORE any compute fn runs (`RequestedSignals::wants`), never
-// call-then-discard. Mirrors the 846e4931 `usage_sink.is_some()` precedent generalized from one
-// boolean to one bit per catalog entry.
-//
-// SCOPE (deliberate, documented simplification for this additive pass): the bitmask is built ONCE
-// per config generation as the union across EVERY configured hook, not per-pool. A pool with zero
-// signal-declaring hooks still consults the same (possibly non-zero) global mask, so it may
-// compute a signal only some OTHER pool's hook actually reads — strictly cheaper than a
-// per-consumer mask (no per-request allocation to narrow it) at the cost of that coarser sharing,
-// an accepted trade-off. A per-pool mask is a natural, purely-internal follow-up; the WIRE
-// contract here does not change either way.
-// The `RequestedSignals` bitmask itself is the NEUTRAL plain-data layer — relocated to
-// `busbar_kernel::hooks` (App-retype WEDGE 2d) so the engine's `EngineHost::requested_signals`
-// seam returns it without naming core. Re-exported by identity here so `crate::hooks::RequestedSignals`
-// (and `App::requested_signals`) are unchanged; only the config-time builder below stays in core.
-
-/// Build the config generation's [`RequestedSignals`] from the UNION of every registered hook's
-/// `signals:` declaration (`HookCfg::signals`, see `config::HookCfg`'s own doc comment for the
-/// declaration surface). Called ONCE per config apply (alongside `hook_registry: cfg.hooks.clone()`
-/// in `main.rs`'s `App` construction, and again from `admin::v1::service::rebuild_hook_derived` on
-/// every admin snapshot that rewrites that registry) — never per request. A config with no hook declaring any
-/// `signals:` (the overwhelming default, and every config that predates the catalog) yields the
-/// all-zero mask, so every `requested.wants(_)` check downstream is `false` for that generation.
 pub fn requested_signals(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
 ) -> RequestedSignals {
@@ -98,24 +36,6 @@ pub fn requested_signals(
     mask
 }
 
-/// Does ANY registered hook hold a prompt-CONTENT grant (`prompt: ro` or `prompt: rw`)?
-///
-/// THE COMPUTE GATE for the request IR, and deliberately the SAME mechanism as
-/// [`requested_signals`] directly above: one boolean resolved ONCE per config apply and read on the
-/// request path as a single load, never recomputed. A deployment that grants no hook access to
-/// prompt content — the overwhelming default — never builds the IR for the hook seam at all.
-///
-/// THE PROPERTY THIS KEYS ON IS THE DEPLOYMENT'S, NOT THE REQUEST'S. "Same protocol in and out" is
-/// the tempting alternative and it is the wrong question: the same-protocol short-circuit compares
-/// the ingress protocol against the RESOLVED EGRESS OF THE HOP, which is not known until a lane has
-/// been chosen — and a content hook may reroute the request across protocols before that point. The
-/// IR must therefore exist before egress is chosen, so the gate can only ask something answerable at
-/// boot.
-///
-/// Read from the DEFINITION registry (`App::hook_registry`), so the answer is a SUPERSET of the
-/// hooks that actually fire: a granted hook that no pool wires still reads `true`. The one-sided
-/// direction is deliberate — over-reporting costs an unused IR build, under-reporting would hand a
-/// content-granted hook a view the request was never parsed into.
 pub fn any_content_hook(hooks: &std::collections::HashMap<String, crate::config::HookCfg>) -> bool {
     hooks.values().any(|h| h.prompt.sends_prompt())
 }
@@ -156,12 +76,6 @@ pub struct HookEnv {
 }
 
 impl HookEnv {
-    /// Bundle a registry, the hook axis the root builds over it and the secret resolver into the
-    /// resolution environment.
-    ///
-    /// # Errors
-    /// The root's axis refuses the registry (a hook row that will not state itself — a 1.5.5 JSON
-    /// hook plugin is refused here, naming the rebuild).
     pub fn new(
         registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
@@ -183,8 +97,6 @@ impl HookEnv {
         })
     }
 
-    /// A test build's environment over a hook axis it was handed (the kernel's hook port answered
-    /// by `test_support::hook_double`) rather than the one the root builds over `registry`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_axis(
         registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
@@ -204,15 +116,11 @@ impl HookEnv {
         }
     }
 
-    /// Whether a `kind: hook` row answers to `module` here (the axis names it, or the registry
-    /// resolves it): a module neither knows is GENUINELY ABSENT.
     fn knows(&self, module: &str) -> bool {
         self.registry.resolve(module).is_some()
             || self.axis.as_ref().is_some_and(|a| a.linked(module))
     }
 
-    /// OPEN the hook `name` over the `kind: hook` row `module` with its resolved `settings`, through
-    /// the root's axis, as the routing seam calls it; every call bounded by `timeout_ms`.
     fn open(
         &self,
         module: &str,
@@ -245,11 +153,6 @@ impl HookEnv {
         ))
     }
 
-    /// Open route-bearing configured hooks once for this candidate generation. The same calls
-    /// back its policy and its HTTP dispatcher; the old App retains its own calls across reload.
-    ///
-    /// # Errors
-    /// A declared route, settings resolution, or instance open is refused.
     pub fn route_decls(
         &mut self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -314,9 +217,6 @@ impl HookEnv {
         Ok(declarations)
     }
 
-    /// Resolve a hook's opaque `settings:` map — substituting any SecretRef-typed value (e.g. a
-    /// `licenseKey`) with its resolved secret — before the JSON crosses the ABI at open/configure.
-    /// FAIL-CLOSED: an unresolvable ref is an `Err`, never a dangling reference handed to the plugin.
     fn resolve_hook_settings(
         &self,
         module: &str,
@@ -332,18 +232,6 @@ impl HookEnv {
         )
     }
 
-    /// PRE-BUILD FAIL-CLOSED PASS: resolve every configured hook's SecretRef settings ONCE, up
-    /// front, so that an unresolvable secret aborts boot/reload the SAME way the store path
-    /// (`build_app_from_config`) and the auth chain (`AuthMiddleware::new`) do. Without this pass a
-    /// gate whose SecretRef fails to resolve would be silently `filter_map`-dropped from the routing
-    /// chain by `resolve_pool_gates`/`resolve_on_error_chain` (fail-OPEN), so traffic the gate was
-    /// configured to restrict/reject would flow unfiltered. This is the CRITICAL DISTINCTION: a
-    /// *genuinely absent / unloadable* plugin still degrades to "gate absent" (the legitimate
-    /// safety-net `None`, already gated loud by `plugins_preflight`), but a *secret that failed to
-    /// resolve* must fail the boot/reload CLOSED — never quietly disable the gate.
-    ///
-    /// Returns `Err` naming the offending hook on the first unresolvable secret. Called once from
-    /// `build_app_from_config` before any `resolve_*` consumes the hooks.
     pub fn preresolve_hook_secrets(
         &self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -355,48 +243,19 @@ impl HookEnv {
         Ok(())
     }
 
-    /// PRE-BUILD FAIL-CLOSED PASS for gate/rewrite OPEN() failures (the open-time variant):
-    /// actually `open()` every referenced DECISION or REWRITE gate up front so an `open()`-time
-    /// failure (the plugin constructor rejecting its cfg_json, a staging/mmap failure, an
-    /// ABI/transport-version or exported-kind mismatch observable only on load) ABORTS boot/reload —
-    /// the SAME fail-closed discipline the store (`open_store`) and auth (`AuthMiddleware::new`)
-    /// paths use. Without this pass, `resolve_pool_gates`/`resolve_pool_rewrites`/
-    /// `resolve_rewrite_hooks`/`resolve_gate_hooks` all `filter_map`/`if let Some`-DROP a gate whose
-    /// plugin failed to `open()`, so a Reject/restrict/rewrite gate the operator configured would
-    /// silently vanish while boot/reload reports success — a fail-OPEN of an admission control.
-    /// `plugins_preflight` is manifest-only (no dlopen) and `preresolve_hook_secrets` only resolves
-    /// SecretRefs, so neither catches an `open()` failure.
-    ///
-    /// CRITICAL DISTINCTION (matching `preresolve_hook_secrets`): a plugin that is GENUINELY ABSENT
-    /// (`registry.resolve` = `None`) is the legitimate safety-net skip and stays fail-open (already
-    /// surfaced loudly by `plugins_preflight` for a *referenced* plugin) — we do NOT abort for it
-    /// here. But a plugin that IS present and resolvable yet fails `open()` MUST abort. Taps
-    /// (observation-only) legitimately fail-open and are excluded — only decision and rewrite gates,
-    /// whose absence changes an admission/redaction decision, are pre-opened.
-    ///
-    /// Opening here is consistent with the transport model (every `gate_transport_named` opens a
-    /// fresh instance; `fetch_status`/`push_configure` open per call), so this pre-open does not
-    /// leak a live instance — the constructed policy is dropped at the end of the iteration.
     pub fn preopen_gate_hooks(
         &self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     ) -> Result<(), String> {
         for (name, hook) in hooks {
-            // Only decision + rewrite GATES fail closed. Taps observe (fail-open by design); a
-            // non-gate kind never enforces an admission/redaction decision.
             if hook.kind != crate::config::HookKind::Gate {
                 continue;
             }
-            // Genuinely-absent plugin: the legitimate safety-net skip (fail-open). We only pre-open
-            // a plugin that actually resolves — `plugins_preflight` already loudly flags a
-            // referenced-but-unloadable plugin, and a truly missing plugin degrades to "gate absent"
-            // exactly as before. This is the DISTINCTION between absent (ok) and open()-failed (abort).
+
             if !self.knows(&hook.plugin) {
                 continue;
             }
-            // The plugin IS present: resolve its (already-secret-substituted) settings and OPEN it.
-            // An open failure here is a hard boot/reload error — the gate would otherwise be silently
-            // dropped and its admission/rewrite decision lost.
+
             let resolved = self
                 .resolve_hook_settings(&hook.plugin, &hook.settings)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
@@ -431,7 +290,6 @@ impl crate::plugin_routes::PluginHttpDispatch for HookHttp {
         &self,
         request: &busbar_contract::abi::mechanism::endpoint::EndpointRequest,
     ) -> busbar_contract::abi::mechanism::endpoint::EndpointResponse {
-        // Plugin route dispatch invokes this arm on a Tokio blocking thread.
         match tokio::runtime::Handle::current()
             .block_on(self.calls.serve(request.clone(), self.budget))
         {
@@ -448,32 +306,9 @@ impl crate::plugin_routes::PluginHttpDispatch for HookHttp {
     }
 }
 
-// The per-pool routing-policy carriers [`ResolvedPolicy`] / [`FallbackHook`] — the plain-data layer
-// resolved ONCE at config load — live in the NEUTRAL substrate (`busbar_kernel::hooks`) so the LLM
-// model plane names them without reaching back into core (BUSBAR-1.6.0.md decision #1).
-// Every field is already-neutral (`Arc<dyn RoutingPolicy>` (api), `PolicyOnError` (substrate),
-// `Duration`, `bool`) and no trait object crosses the plugin C-ABI here — the plane invokes
-// `policy.decide(..)` in-process on the api trait. Re-exported by-identity so core-internal
-// `crate::hooks::{ResolvedPolicy, FallbackHook}` paths (and the `App` gate maps) are unchanged.
-
-/// Resolve a pool's routing config into a runtime policy ONCE at config load. Returns `None` for the
-/// ZERO-COST default path: `route: weighted` (the default / absent case) AND the explicit
-/// `route: native, policy.name: weighted` form both resolve to `None`, because `weighted` Abstains
-/// and thus converges with today's inline SWRR — so the hot path constructs no policy object, builds
-/// no projections, and takes the weighted floor.
-///
-/// This resolves the BASE only. A pool's GATES are resolved separately (`resolve_pool_gates`) and
-/// fire in the phase-2 decision reconcile — a gate's `order` overrides the base; its abstain falls
-/// through to the base. The resolved base is stored on `PoolRuntime::policy` and consumed
-/// per-request by `proxy::decide_policy_order`.
 pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
-    // `weighted` ⇒ the zero-cost default path (no policy object, inline SWRR) — byte-identical to
-    // 1.2.1's `route: weighted` — so `native_name()` returns `None` here and we take the `?`
-    // short-circuit BELOW regardless of the ranking feature.
     let name = cfg.policy.native_name()?;
-    // The non-weighted ranking strategies are hook words of the linked `hooks-ranking` door on the
-    // hook axis. Compiled OUT, no door claims them (a config_validate BOOT ERROR, so unreachable in a
-    // running server); degrade to None (SWRR) as belt-and-suspenders.
+
     let (policy, timeout) = crate::preflight::builtin_ranking(name)?;
     Some(ranked_policy(policy, timeout))
 }
@@ -484,16 +319,14 @@ fn ranked_policy(policy: Arc<dyn RoutingPolicy>, timeout: std::time::Duration) -
         on_error: crate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout,
-        // Native policies rank on live signals and have no reader for prompt/identity.
+
         send_prompt: false,
         send_user: false,
-        // A native ordering policy never restricts, so on_empty is inert; keep the fail-closed default.
+
         on_empty: crate::config::PolicyOnError::Reject,
     }
 }
 
-/// The name of the registered `default: true` hook, if any — the base ordering that pools which named
-/// none inherit. At most one exists (config_validate enforces it), so `find` is unambiguous.
 pub fn default_hook_name(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
 ) -> Option<&str> {
@@ -503,13 +336,6 @@ pub fn default_hook_name(
         .map(|(name, _)| name.as_str())
 }
 
-/// Resolve a pool's base ordering, honoring the `default:` hook. A pool that named NO base ordering
-/// (`base_named == false`) INHERITS the `default:` hook as its base (the default gate orders it) —
-/// the REPLACEMENT of the compiled-in `weighted` backstop, per the everything-is-a-hook model. A pool
-/// that explicitly named a base keeps its choice (the default does NOT override it); a pool's own
-/// GATES are orthogonal — they fire in the phase-2 reconcile ON TOP of whatever base resolves here.
-/// When no `default:` hook is registered, this is exactly `resolve_policy` (the compiled-in
-/// backstop). Called once per pool at startup.
 pub fn resolve_pool_ordering(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -522,7 +348,6 @@ pub fn resolve_pool_ordering(
         .flatten()
 }
 
-/// Boot/reload must retain an opening failure instead of replacing the selected strategy with SWRR.
 pub fn try_resolve_pool_ordering(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -533,13 +358,7 @@ pub fn try_resolve_pool_ordering(
     if !cfg.base_named {
         if let Some(name) = default_hook {
             if let Some(hook) = hooks.get(name) {
-                // Same exclusion both sibling resolvers apply (`resolve_pool_gates`,
-                // `resolve_gate_hooks`): only a non-rewriting `kind: gate` can return an `order`.
-                // A rw/tap/auth hook here would fire per request for a decision it structurally
-                // cannot produce, paying its deadline for nothing. Keyed on the OPERATOR grant
-                // (`can_rewrite`), not `admits_rewrite`, to match the siblings exactly.
                 if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
-                    // The default gate becomes this pool's base ordering.
                     return Ok(resolve_gate_transport(
                         name,
                         hook,
@@ -567,14 +386,6 @@ pub fn try_resolve_pool_ordering(
     Ok(Some(ranked_policy(policy, timeout)))
 }
 
-/// Resolve a pool's GATES (`hook:` / the non-strategy names in `hooks: [...]`) into their transports,
-/// preserving CONFIG ORDER and carrying each hook's `priority` — the firing site merges these with
-/// the global decision gates into one priority-sorted phase-2 chain (stable: ties keep globals-first,
-/// then config order). Wrong-kind / genuinely-absent-plugin refs are skipped here — a skip degrades
-/// to "gate absent", never a stranded request. An `open()`-time FAILURE of a present plugin does NOT
-/// silently vanish: `HookEnv::preopen_gate_hooks` (a fail-closed pre-build pass in
-/// `build_app_from_config`) opens every referenced gate and ABORTS boot/reload on failure, so by the
-/// time this runs a present gate either opens or the boot already failed.
 pub fn resolve_pool_gates(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -589,11 +400,7 @@ pub fn resolve_pool_gates(
             if hook.kind != crate::config::HookKind::Gate {
                 return None;
             }
-            // A `prompt: rw` gate is a phase-1 REWRITE (resolved by `resolve_pool_rewrites`), not
-            // a phase-2 decision gate — including it here would fire it for a decision it never
-            // returns (its rewrite reply normalizes to Abstain), paying its deadline for nothing.
-            // Keyed on the OPERATOR grant, not `admits_rewrite`: a manifest-denied `rw` hook goes
-            // inert with a warn rather than being promoted into a decision gate it never asked for.
+
             if hook.prompt.can_rewrite() {
                 return None;
             }
@@ -601,20 +408,11 @@ pub fn resolve_pool_gates(
                 .map(|rp| (hook.priority, rp))
         })
         .collect();
-    // Sorted HERE, at config-resolve time, exactly as `resolve_gate_hooks` sorts the globals —
-    // STABLE, so config order still breaks priority ties. The phase-2 seam then merges two
-    // already-sorted runs per request instead of re-collecting and re-sorting the whole chain on
-    // every request that reaches it. Same resulting order, no hot-path allocation.
+
     ranked.sort_by_key(|(p, _)| *p);
     ranked
 }
 
-/// Resolve a pool's REWRITE gates — the `prompt: rw` gates in its `hooks: [...]` list — into the
-/// pool's phase-1 transform chain, sorted by ascending `priority` (stable: config order breaks
-/// ties). Fired AFTER the global rewrite chain for requests routed to this pool (each chain is
-/// internally priority-ordered; globals always precede pool rewrites). The EFFECTIVE rw access —
-/// operator grant MEET signed-manifest `needs.prompt` ([`admits_rewrite`]) — is the admission
-/// ticket, enforced here at resolution exactly as in `resolve_rewrite_hooks`.
 pub fn resolve_pool_rewrites(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -626,8 +424,7 @@ pub fn resolve_pool_rewrites(
         let Some(hook) = hooks.get(name) else {
             continue;
         };
-        // EFFECTIVE rw, not the operator grant alone: `admits_rewrite` is the same
-        // belt-and-suspenders meet the read projections go through.
+
         if hook.kind != crate::config::HookKind::Gate || !admits_rewrite(name, hook, env) {
             continue;
         }
@@ -638,9 +435,6 @@ pub fn resolve_pool_rewrites(
             ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
-            // The hook's `on_error` rides with the transport into the rewrite chain: a failed call
-            // to a hook the operator declared load-bearing refuses the request instead of being
-            // silently skipped.
             ranked.push((
                 hook.priority,
                 timeout,
@@ -652,28 +446,6 @@ pub fn resolve_pool_rewrites(
     ranked.into_iter().map(|(_, t, p)| (t, p)).collect()
 }
 
-/// THE `on_error` DECORATOR for the READ-WRITE (transform) seat: wraps a resolved `prompt: rw`
-/// transport with the hook's configured `on_error` and maps a call that FAILED
-/// ([`TransformOutcome::Failed`](busbar_contract::hooks::TransformOutcome::Failed)) to that disposition —
-/// `reject` refuses the unit, anything else proceeds with the ORIGINAL body.
-///
-/// A DECORATOR rather than a branch at each firing site: the rewrite chain fires from four places
-/// (the model plane's global + per-pool passes and the plane driver's per-entry rewrite chain every
-/// door plane shares), and a per-site branch would have to be written — and kept correct —
-/// four times. Wrapping at RESOLUTION means every firing site, present and future, gets the
-/// operator's disposition for free, and the sites keep their fail-safe shape.
-///
-/// The refusal is minted as the transform path's own `Reject` verb ([`
-/// REQUIRED_HOOK_UNAVAILABLE_STATUS`](busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS) +
-/// message) so it travels the reject route every firing site already implements — byte-identical to
-/// what the read-only decide seat renders for the same condition.
-///
-/// `decide` is NOT intercepted: the read-only seat resolves `on_error` itself, and richer — it
-/// walks the configured FALLBACK CHAIN before it reaches a terminal. Both seats bottom out on the
-/// SAME rule (`busbar_kernel::hooks::failed_call_refuses`), which is what keeps them from
-/// drifting. `refuses_failed_rewrite` answers the same rule for a rewrite the plane then refuses to
-/// apply, which every firing site that hands a rewrite back to a plane consults. Every other trait
-/// method is a transparent delegate.
 struct RewriteOnError {
     inner: Arc<dyn RoutingPolicy>,
     on_error: crate::config::PolicyOnError,
@@ -713,18 +485,13 @@ impl RoutingPolicy for RewriteOnError {
                         "rewrite hook call failed and the hook is declared load-bearing \
                          (on_error: reject); refusing the request"
                     );
-                    // The hook's own words go to the OPERATOR's log, never into the refusal: what
-                    // reaches the client is the shared, content-free body, the same one the
-                    // read-only seat renders for the same condition.
+
                     busbar_contract::hooks::TransformOutcome::Reject {
                         status: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
                         message: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
                             .to_string(),
                     }
                 } else {
-                    // Not load-bearing: the request proceeds with the ORIGINAL body. The failure is
-                    // carried on rather than swallowed, so the firing site still logs it as the
-                    // failure it is — this decorator decides the DISPOSITION, not the diagnostics.
                     busbar_contract::hooks::TransformOutcome::Failed { message }
                 }
             }
@@ -770,9 +537,6 @@ impl RoutingPolicy for RewriteOnError {
     }
 }
 
-/// Wrap a resolved rewrite transport in the [`RewriteOnError`] decorator. The ONE construction site
-/// for the decorator, shared by the global and per-pool rewrite resolvers so the two chains cannot
-/// resolve the same hook to different dispositions.
 fn with_rewrite_on_error(
     policy: Arc<dyn RoutingPolicy>,
     on_error: crate::config::PolicyOnError,
@@ -783,12 +547,6 @@ fn with_rewrite_on_error(
     })
 }
 
-/// Resolve a GATE hook into a [`ResolvedPolicy`]. The prompt/identity projections are gated by BOTH
-/// the operator's `prompt:`/`user:` grant AND the plugin's signed-manifest declared intent (`needs:`)
-/// — the belt-and-suspenders projection rule: the core sends content ONLY when both agree
-/// ([`projection_grants`]). A GENUINELY-ABSENT plugin degrades to `None` (fail-open safety net); an
-/// `open()`-time FAILURE of a present plugin is caught earlier by `HookEnv::preopen_gate_hooks`,
-/// which aborts boot/reload — so a present gate never reaches here having silently failed to open.
 fn resolve_gate_transport(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -810,27 +568,6 @@ fn resolve_gate_transport(
     })
 }
 
-/// Return the loud INERT-GATE banner for a hook whose operator `prompt: rw` grant exceeds what its
-/// signed manifest declares (the caller has already confirmed `grant.can_rewrite() &&
-/// !needs_prompt.wants_rewrite()`), or `None` when the hook can't actually fall out of both admission
-/// chains this way. Only a `kind: gate` hook can: `resolve_pool_gates`/`resolve_gate_hooks` exclude a
-/// `prompt: rw` hook from the phase-2 DECISION chain unconditionally on the raw operator grant
-/// (deliberate — a manifest-denied `rw` hook is never promoted into a decision gate it never asked
-/// for), and `resolve_pool_rewrites`/`resolve_rewrite_hooks` exclude it from the phase-1 REWRITE chain
-/// on the effective grant (this same mismatch). Together that's every chain a gate can join. A
-/// `kind: tap` hook was never in either chain to begin with (a tap can't decide or rewrite), so the
-/// same mismatch on a tap is just a fat-fingered grant, not a silent outage — it keeps the plain warn.
-///
-/// Mirrors `open_relay_banner`/`inert_durable_keys_banner` in `main.rs`: same wording register (names
-/// the offender, states the mechanism, states the fix), same severity discipline (the caller logs
-/// this at `error!` AND unconditionally on stderr — never only `warn!`, which is suppressed under
-/// `RUST_LOG=error`, the very level a production operator is most likely to run).
-///
-/// Deliberately does NOT claim the hook "never fires under any circumstance": `resolve_on_error_chain`
-/// pushes ANY `kind: gate` hook named as another hook's `on_error` target (no `can_rewrite` filter
-/// there), so a hook in this exact state can still be reached as a fallback link, contributing its
-/// decision verdict there (never its rewrite arm — that still normalizes to abstain). The banner
-/// therefore names the two chains it is excluded from precisely, rather than asserting total silence.
 fn hook_inert_gate_banner(
     name: &str,
     plugin: &str,
@@ -853,26 +590,17 @@ fn hook_inert_gate_banner(
     ))
 }
 
-/// A hook row's declared needs, as its signed manifest states them.
 struct Needs {
     prompt: busbar_contract::plugin_rows::NeedLevel,
     user: busbar_contract::plugin_rows::NeedLevel,
 }
 
 impl Needs {
-    /// Whether the manifest declares any need at all.
     fn declares_any(&self) -> bool {
         self.prompt.wants_read() || self.user.wants_read()
     }
 }
 
-/// THE choke point for the belt-and-suspenders rule: effective access is the operator's grant MEET
-/// the plugin's signed-manifest `needs:`, on the ladder `no ⊂ ro ⊂ rw`. Read, rewrite and identity
-/// admission must all derive from here — a consumer that re-derives from `hook.prompt` bypasses the
-/// manifest gate.
-///
-/// An unresolvable manifest falls back to the operator grant alone; pre-flight already fails boot
-/// on an unresolvable ref, so that branch is a safety net, never the live path.
 fn effective_access(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -890,7 +618,7 @@ fn effective_access(
         prompt: p.needs_prompt,
         user: p.needs_user,
     };
-    // MEET on the ladder: the effective rung is the lower of the two declarations.
+
     let eff_prompt = match (grant_prompt, needs.prompt) {
         (PromptAccess::No, _) | (_, NeedLevel::No) => PromptAccess::No,
         (PromptAccess::Rw, NeedLevel::Rw) => PromptAccess::Rw,
@@ -900,8 +628,7 @@ fn effective_access(
         (UserAccess::No, _) | (_, NeedLevel::No) => UserAccess::No,
         _ => UserAccess::Ro,
     };
-    // Surface a fat-fingered grant that the manifest never declared: the projection is a no-op, but
-    // the operator should know the grant is inert (they may have the wrong plugin).
+
     if grant_prompt.sends_prompt() && !needs.prompt.wants_read() {
         tracing::warn!(
             hook = %name, plugin = %hook.plugin,
@@ -909,14 +636,9 @@ fn effective_access(
              content will be sent (grant is inert)"
         );
     }
-    // The WRITE half: a manifest declaring at most `ro` must not be admitted to a rewrite chain —
-    // it attested it does not rewrite. See `hook_inert_gate_banner` for why a `kind: gate` hook here
-    // is not merely "no rewrite chain" but silently inert on EVERY chain, and why the severity jumps
-    // to a loud banner for a gate but stays a plain warn for a tap.
+
     if grant_prompt.can_rewrite() && !needs.prompt.wants_rewrite() {
         match hook_inert_gate_banner(name, &hook.plugin, hook.kind, needs.prompt) {
-            // ONE print per hook per build (see `banner_seen`'s doc): a hook named in several pools'
-            // `hooks:` lists resolves — and would otherwise re-banner — once per reference.
             Some(banner)
                 if env
                     .banner_seen
@@ -945,7 +667,7 @@ fn effective_access(
              be sent (grant is inert)"
         );
     }
-    // Surface the declared intent at resolution (register/load visibility).
+
     if needs.declares_any() {
         tracing::info!(
             hook = %name, plugin = %hook.plugin,
@@ -957,34 +679,15 @@ fn effective_access(
     (eff_prompt, eff_user)
 }
 
-/// The READ half of [`effective_access`], as the `(send_prompt, send_user)` pair the wire
-/// projections take.
 fn projection_grants(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> (bool, bool) {
     let (prompt, user) = effective_access(name, hook, env);
     (prompt.sends_prompt(), user.sends_user())
 }
 
-/// The WRITE half of [`effective_access`]: may this hook join a REWRITE chain? Both rewrite
-/// resolvers ask THIS, never `hook.prompt.can_rewrite()` — the operator grant alone is not enough.
 fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> bool {
     effective_access(name, hook, env).0.can_rewrite()
 }
 
-/// Open the `kind: hook` PLUGIN backing this hook through the root's hook axis, as a
-/// [`plugin::HookPolicy`]. The plugin's opaque `settings:` map is its `open` config (verbatim JSON). `name` + `settings_version` are carried for diagnostics
-/// and the configure ack. `None` when the reference doesn't resolve to a loadable `kind: hook`
-/// plugin (the plugin pre-flight already fails boot on that, so a `None` here is a safety net that
-/// degrades to "gate absent", never a stranded request). A SecretRef in `settings` that fails to
-/// resolve is a DIFFERENT case: it is caught up front by `HookEnv::preresolve_hook_secrets` (which
-/// aborts boot/reload CLOSED), so it never reaches this `None`-on-error path in practice.
-///
-/// Returns the transport TOGETHER WITH the resolved settings map it was opened against. The pairing
-/// is the point: `push_configure` needs that same resolved bag to send in its `configure` call, and
-/// when it resolved its own copy it did so INLINE on an `async fn`, one line above this function's
-/// offloaded call — blocking FFI into a `kind: secret` plugin on a Tokio worker, and untimed
-/// (`CONFIGURE_TIMEOUT_MS` bounds only the `configure` that follows). Handing the bag back from the
-/// one place that already computes it means there is no second resolution for a caller to place on
-/// the reactor.
 fn gate_transport_named(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -1001,10 +704,7 @@ fn gate_transport_named(
             opened.resolved.clone(),
         ));
     }
-    // ONE load per distinct resolution, and that load is SINGLE-FLIGHT. See [`resolution`] for why
-    // this is a correctness fix and not a cache for speed's sake. A hook carrying a `SecretRef` is
-    // deliberately NOT eligible (`key` returns `None`) and re-resolves on every call, exactly as
-    // before, because its resolved value can change under us without any of the key's inputs moving.
+
     let Some(key) = resolution::key(name, hook, env) else {
         return gate_transport_uncached(name, hook, env);
     };
@@ -1019,22 +719,11 @@ fn gate_transport_named(
     out
 }
 
-/// [`gate_transport_named`] with the resolution cache taken out of the picture — the actual secret
-/// resolution + `dlopen` + plugin `open`. Split out so the cache is a single wrapper rather than a
-/// pair of early returns threaded through the body.
 fn gate_transport_uncached(
     name: &str,
     hook: &crate::config::HookCfg,
     env: &HookEnv,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
-    // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE the
-    // settings cross the ABI (ADR-0010). The FAIL-CLOSED guarantee lives in
-    // `HookEnv::preresolve_hook_secrets`, called once from `build_app_from_config` BEFORE any gate is
-    // resolved: an unresolvable hook secret aborts boot/reload there (matching the store/auth paths),
-    // so this path is never reached with a dangling secret. This site therefore cannot silently drop
-    // a gate whose secret failed to resolve — by the time we get here the secret has ALREADY resolved.
-    // A residual `Err` here (e.g. a race where the secret was rotated away after the pre-resolve pass)
-    // is still treated conservatively as absent, but the pre-resolve pass is the real gate.
     let resolved = match env.resolve_hook_settings(&hook.plugin, &hook.settings) {
         Ok(r) => r,
         Err(e) => {
@@ -1058,79 +747,17 @@ fn gate_transport_uncached(
     }
 }
 
-/// A hook's `settings:` map with every `SecretRef` already substituted for its resolved value —
-/// i.e. the bag that crosses the ABI. Produced ONLY by [`gate_transport_named`] (and its offloaded
-/// wrapper), so a caller cannot obtain one without having gone through the offload. Kept beside the
-/// transport for its `configure` re-pushes, in the holder that wipes it when the last copy drops.
 type ResolvedSettings = crate::config::secret::ResolvedSettings;
 
-/// A resolved hook transport together with the settings bag it was opened against.
 type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
 
-/// SINGLE-FLIGHT ADMISSION AND PUBLICATION FOR HOOK TRANSPORT RESOLUTION.
-///
-/// **This is not a cache for speed. It closes a real defect, and the defect is measurable.**
-///
-/// Resolving a hook transport stages the plugin's verified bytes and `dlopen`s them as a BRAND NEW
-/// image. `dlopen` is serialised process-globally — the dynamic linker's own lock, plus per-inode
-/// code-signature validation on macOS — so the cost of one load is O(number of loads in flight),
-/// not O(size of the library). And this engine calls it on EVERY control-plane touch: per
-/// `push_configure`, per `fetch_status` (i.e. per `/metrics/hooks` scrape refresh, which a
-/// monitoring system performs on a fixed interval forever), per `fetch_schema`, per
-/// `resolve_on_error_chain`, per reload. the loader's own `intern_name` doc already
-/// names that list as the reason a per-open allocation had to be interned; the load itself was left
-/// alone.
-///
-/// Measured on a 2.1 MB hook cdylib (the since-deleted test hook; macOS, 18 cores), timing
-/// the `Library::new` call alone:
-///
-/// | how it was run | p50 | p90 | max |
-/// |---|---|---|---|
-/// | one at a time | 250 ms | — | 3.8 s (first in the process) |
-/// | 30 of them, otherwise idle machine | 1.9 s | — | 4.5 s |
-/// | 137 of them, full `cargo test` workspace run | **5.9 s** | **30 s** | **88 s** |
-///
-/// The control plane's 5 s deadline is not a bound on the plugin's behaviour under those numbers —
-/// it is a bet against a globally serialised queue that the engine itself is filling. Raising it
-/// does not help: 88 s is past 60 s too, which is why the previous `cfg(test)` 60 s fork made the
-/// symptom rarer and never removed it. The fix is to stop filling the queue.
-///
-/// **What is admitted.** A resolution is keyed by everything that decides what it IS: the plugin
-/// registry it comes out of (by identity — a `plugins refresh` or a config reload builds a new one),
-/// the plugin name, the hook name (it is the plugin's metrics id and crosses `open`) and the
-/// verbatim settings bag. Same key ⇒ same `dlopen` of the same verified bytes with the same
-/// `cfg_json` ⇒ the same transport, so reuse is not an approximation of the fresh load, it is the
-/// fresh load.
-///
-/// **What is NOT admitted, and this is the part that must not be softened.** A hook whose settings
-/// carry a `SecretRef` gets `None` from [`key`] and is resolved from scratch every single time. Its
-/// resolved value can change (rotation) without any input to the key moving, so a reused transport
-/// would be running last hour's credential while `settings_drift_keys` reported no drift. Freshness
-/// there is the whole point of the secret indirection and it is not traded for a load.
-///
-/// **Single flight.** The claim is held ACROSS the load, so a second resolution of the same key
-/// waits for the first instead of queueing its own `dlopen` behind it. That is what makes an
-/// abandoned resolution harmless: `spawn_blocking` cannot be cancelled, so when
-/// [`offload_bounded`]'s deadline elapses the load runs to completion anyway — and now it publishes,
-/// so the caller that retries adopts it rather than starting the whole thing again.
-///
-/// **Bounded.** At most [`CAP`] published entries, oldest first, and an in-flight claim is never
-/// evicted. Each entry holds one mapped plugin image, which is the same resource a configured hook
-/// holds anyway — plus a `Weak` to the registry it came out of, which is what makes "which
-/// registry" an identity rather than an address that can be reissued (see [`Entry::registry`]).
-/// Entries whose registry is gone are dropped on the next eviction pass, ahead of the cap.
 mod resolution {
     use super::Resolved;
     use std::collections::HashMap;
     use std::sync::{Condvar, Mutex, OnceLock};
 
-    /// Published entries kept at once. Sized for "every hook a deployment configures, across a
-    /// couple of settings generations", not for a working set — the eviction is a leak stop, not a
-    /// hit-rate tuning knob.
     const CAP: usize = 128;
 
-    /// Only reference paths, never resolved values. The weak identity also detects replacement
-    /// of the environment's public registry field; an unmatched snapshot cannot authorize reuse.
     pub(super) struct Paths {
         registry: std::sync::Weak<dyn busbar_contract::plugin_rows::PluginRows>,
         modules: HashMap<String, Vec<String>>,
@@ -1159,28 +786,11 @@ mod resolution {
     }
 
     struct Entry {
-        /// Insertion order, for the oldest-first eviction.
         seq: u64,
-        /// A resolution is in progress for this key: waiters block instead of starting their own.
+
         in_flight: bool,
         value: Option<Resolved>,
-        /// THE REGISTRY THIS ENTRY IS KEYED ON, HELD WEAKLY — and the weak handle is what makes the
-        /// key's registry half an identity rather than a coincidence. See [`key`].
-        ///
-        /// A `Weak` keeps the `Arc`'s ALLOCATION alive (the strong count reaching zero drops the
-        /// registry's contents — every plugin image it owned is released on schedule — but the
-        /// allocation itself is only returned once the weak count goes too). So for as long as an
-        /// entry keyed on a registry exists, that registry's address CANNOT be handed back out by
-        /// the allocator, and no future registry can collide with this key.
-        ///
-        /// Without it the cache had a live ABA defect: a published entry outlives the registry it
-        /// was resolved against, the freed allocation is claimed by the very next
-        /// `Arc<PluginRegistry>` (measured: the immediately following one, every time), and a
-        /// resolution against a registry that never carried the plugin was served the DEAD
-        /// registry's transport. That is not a stale cache entry, it is a gate resolving out of a
-        /// plugin set the operator has already replaced — the exact thing a `plugins refresh` or a
-        /// config reload does to the old registry. Pinned by
-        /// `a_reused_registry_address_never_inherits_a_dead_registrys_resolution`.
+
         registry: std::sync::Weak<dyn busbar_contract::plugin_rows::PluginRows>,
     }
 
@@ -1195,8 +805,6 @@ mod resolution {
         STATE.get_or_init(|| (Mutex::new(Inner::default()), Condvar::new()))
     }
 
-    /// The identity of a resolution, or `None` when this hook is not eligible for reuse (any
-    /// `SecretRef` in its settings — see the module doc).
     pub(super) fn key(
         name: &str,
         hook: &crate::config::HookCfg,
@@ -1211,15 +819,10 @@ mod resolution {
         ) {
             return None;
         }
-        // An unlisted name (e.g. a former alias absent from the row projection) has no path
-        // snapshot, so conservatively resolve it fresh without asking a plugin from this path.
+
         let paths = env.resolution_paths.modules.get(&hook.plugin)?;
         let settings = serde_json::Value::Object(hook.settings.clone());
-        // With no declared paths, the resolver's policing walk finds ANY reference, including
-        // nested objects/arrays, while leaving opaque `{ literal: ... }` data alone. Inspect the
-        // declared positions too: the resolver's path walker can reach references below a literal
-        // wrapper when the Statement explicitly names that position. Neither walk resolves a
-        // source or calls a plugin; the environment holds the already-read Statement paths.
+
         if secret_fields::undeclared_reference(&settings, &[]).is_some()
             || paths
                 .iter()
@@ -1228,15 +831,7 @@ mod resolution {
             return None;
         }
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        // Registry IDENTITY, not contents: a `plugins refresh` or a config reload installs a NEW
-        // `Arc<PluginRegistry>`, so every entry keyed on the old one is unreachable from that moment
-        // and its plugin bytes can never be served again.
-        //
-        // The address is only an IDENTITY because every entry keyed on it holds a `Weak` to it
-        // (see `Entry::registry`), which pins the allocation and so keeps the allocator from
-        // reissuing that address to a different registry. This comment used to claim the resolving
-        // closure's own `Arc` clone was enough; it is not — the closure's clone is gone the moment
-        // the resolution returns, while the entry it published lives on.
+
         (std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize).hash(&mut h);
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
@@ -1245,25 +840,17 @@ mod resolution {
         Some(h.finish())
     }
 
-    /// What a would-be resolver is told: someone already published this exact resolution, or you
-    /// now hold the claim and must do the load.
     pub(super) enum Admission {
         Published(Resolved),
         Claim(Claim),
     }
 
-    /// The right (and the duty) to perform ONE resolution for a key. `Drop` releases it and wakes
-    /// every waiter, including on panic — a plugin constructor that blows up cannot wedge a key out
-    /// of ever resolving again.
     pub(super) struct Claim {
         key: u64,
         published: bool,
     }
 
     impl Claim {
-        /// Publish the resolution this claim was taken out for. Callers that resolved to `None`
-        /// simply drop the claim instead: a failed load is not published, so the next caller retries
-        /// it rather than inheriting a permanent "absent".
         pub(super) fn publish(mut self, value: Resolved) {
             let (lock, cv) = state();
             {
@@ -1274,7 +861,6 @@ mod resolution {
             }
             self.published = true;
             cv.notify_all();
-            // `self` drops here, releasing the claim (and running the eviction pass).
         }
     }
 
@@ -1296,17 +882,9 @@ mod resolution {
                 evict_over_cap(&mut inner)
             };
             cv.notify_all();
-            // `_evicted` drops HERE, with the lock released — see `evict_over_cap`.
         }
     }
 
-    /// Take the claim for `key`, or hand back what a previous resolution published. BLOCKS while
-    /// another resolution of the same key is in flight — that block IS the fix: it is one thread
-    /// waiting on one `dlopen` instead of two threads making each other's `dlopen` slower.
-    ///
-    /// Takes the registry the key was computed over so the entry can hold it WEAKLY — see
-    /// [`Entry::registry`]: that handle is what stops a dead registry's address being reissued to a
-    /// different registry, which is what makes the key's registry half mean "this registry".
     pub(super) fn admit(
         key: u64,
         registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
@@ -1343,8 +921,6 @@ mod resolution {
         }
     }
 
-    /// Is a resolution for `key` PUBLISHED right now? The observable readiness signal a caller can
-    /// poll on, rather than betting a wall clock on the dynamic linker.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn published(key: u64) -> bool {
         let (lock, _) = state();
@@ -1352,8 +928,6 @@ mod resolution {
         inner.entries.get(&key).is_some_and(|e| e.value.is_some())
     }
 
-    /// Is a resolution for `key` STILL RUNNING? Tells a caller whose deadline elapsed apart from one
-    /// whose hook genuinely does not resolve — the same `None` reaches both.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn in_flight(key: u64) -> bool {
         let (lock, _) = state();
@@ -1361,15 +935,6 @@ mod resolution {
         inner.entries.get(&key).is_some_and(|e| e.in_flight)
     }
 
-    /// Drop published entries oldest-first until at most [`CAP`] remain. An in-flight claim is never
-    /// evicted (its `Entry` is the claim's own bookkeeping).
-    ///
-    /// Entries whose REGISTRY IS GONE go first, and unconditionally — not just when over cap. Such
-    /// an entry can never be hit again (the key names a registry nothing can hold any more), and it
-    /// is pinning both a plugin image and the dead registry's `Arc` allocation for nothing. This is
-    /// the reclaim half of the `Weak` in [`Entry::registry`]: the pin makes the address unreusable,
-    /// and this makes the pin end at the first eviction pass after a `plugins refresh` rather than
-    /// at [`CAP`] resolutions later.
     fn evict_over_cap(inner: &mut Inner) -> Vec<Entry> {
         let mut evicted = Vec::new();
         let dead: Vec<u64> = inner
@@ -1389,39 +954,23 @@ mod resolution {
                 .min_by_key(|(_, e)| e.seq)
                 .map(|(k, _)| *k)
             else {
-                break; // everything left is in flight; nothing is evictable
+                break;
             };
             evicted.extend(inner.entries.remove(&oldest));
         }
-        // Handed back rather than dropped here ON PURPOSE: dropping the last `Arc` to a transport
-        // UNLOADS the plugin library, and doing that while holding the admission lock would stall
-        // every other hook's resolution behind a `dlclose`.
+
         evicted
     }
 }
 
-/// The configure-push deadline (spec `configure_timeout_ms` default): distinct from the
-/// per-request gate deadline — configure may do real work (reload a model, open files).
 const CONFIGURE_TIMEOUT_MS: u64 = 5000;
 
-/// PUSH a settings map to a hook over its transport and wait for the ack (the
-/// `PATCH /api/v1/admin/hooks/{name}/settings` core). `Ok` = acked (commit); `Err` = NOT committed.
 pub async fn push_configure(
     hook: &crate::config::HookCfg,
     name: &str,
     settings_version: u64,
     env: &HookEnv,
 ) -> Result<(), String> {
-    // ONE offloaded step resolves the SecretRefs AND opens the transport (ADR-0010: an unresolvable
-    // ref is FAIL-CLOSED, so the plugin never receives a dangling reference on a settings push).
-    //
-    // The resolution used to happen HERE, inline, one line above this call — a synchronous FFI call
-    // into a `kind: secret` plugin (a Vault/AWS-SM round trip) on a Tokio worker inside an `async
-    // fn`, with no `spawn_blocking`, no in-flight bound, and NO DEADLINE (`CONFIGURE_TIMEOUT_MS`
-    // applies only to the `configure` below). Concurrent admin pushes against a slow secret store
-    // parked one worker each until the runtime polled nothing. `gate_transport_named` already
-    // resolves the bag to build its `cfg_json`, so taking it from there removes the second
-    // resolution rather than offloading it twice.
     let Some((transport, resolved)) =
         gate_transport_offloaded(name, hook, env, settings_version).await
     else {
@@ -1438,39 +987,12 @@ pub async fn push_configure(
         .map_err(|e| e.to_string())
 }
 
-/// The deadline for RESOLVING a hook transport. `gate_transport_named` stages a copy of the plugin
-/// to disk, `dlopen`s it and runs its constructor; none of that is cancellable, so this bounds the
-/// CALLER, not the work — the alternative is a control-plane request that never returns and a
-/// `/metrics/hooks` slot that is never freed for the life of the process.
-///
-/// A timed-out `spawn_blocking` thread is still abandoned, but abandoning it no longer WASTES it:
-/// it holds the [`resolution`] claim for its key, so nothing queues a second `dlopen` behind it, and
-/// it publishes when it lands, so the next caller adopts the result instead of starting over.
 const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = CONFIGURE_TIMEOUT_MS;
 
-/// EVERY control-plane deadline in this module goes through here, and it applies the caller's
-/// number VERBATIM — in every build, test binaries included. The funnel is kept because
-/// `push_configure` awaits two deadlines in sequence and a change that reached one and not the other
-/// would read exactly like a change that reached both; it is no longer a place where the value can
-/// fork.
-///
-/// **This used to return 60 s under `cfg(test)` and that fork is deleted, not relocated.** It was a
-/// mitigation for `dlopen_configure_acks_exact_version` and `dlopen_status_and_schema_reads` failing
-/// about one run in three under `--workspace`, and it did not work, because the premise was wrong:
-/// the resolve was not "milliseconds on a machine doing normal work" that occasional load pushed
-/// past 5 s. Timed, it was a median of **5.9 s and a worst case of 88 s** across a full workspace
-/// run — past 60 s as comfortably as past 5 s. The cause was the engine opening a fresh `dlopen`ed
-/// image on every control-plane touch against a process-globally serialised linker (see
-/// [`resolution`]); with that closed, the production 5 s is a real bound again and the tests hold it.
 fn applied_deadline(ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
-/// Run a blocking closure with a deadline, collapsing "ran out of time" and "panicked" into the same
-/// `None` the caller already treats as "unresolvable" — but LOGGING each distinctly first, so a
-/// panicking plugin constructor (a security gate silently disarmed) is no longer indistinguishable
-/// from an ordinary absent-transport `None`. Pure so the bound is unit-testable without a live
-/// plugin (the same justification `response_len_ok` gives for its own shape).
 async fn offload_bounded<T: Send + 'static>(
     what: &str,
     f: impl FnOnce() -> Option<T> + Send + 'static,
@@ -1478,12 +1000,6 @@ async fn offload_bounded<T: Send + 'static>(
     offload_bounded_with_deadline(what, applied_deadline(TRANSPORT_RESOLVE_TIMEOUT_MS), f).await
 }
 
-/// The testable core of [`offload_bounded`]: `spawn_blocking` runs the closure on a REAL OS thread,
-/// so a paused-clock test runtime cannot make a genuinely-sleeping closure return early (auto-advance
-/// only fires while the runtime is idle, and a live blocking thread never reports idle). Taking the
-/// deadline as a parameter lets a test use a real but SHORT deadline instead, so the timeout arm is
-/// exercised deterministically in well under a second rather than needing paused time to work around
-/// real blocking-thread sleep.
 async fn offload_bounded_with_deadline<T: Send + 'static>(
     what: &str,
     deadline: std::time::Duration,
@@ -1492,9 +1008,7 @@ async fn offload_bounded_with_deadline<T: Send + 'static>(
     let task = tokio::task::spawn_blocking(f);
     match tokio::time::timeout(deadline, task).await {
         Ok(Ok(v)) => v,
-        // The blocking task PANICKED. Distinct from "no resolvable transport", which is what the
-        // swallowed JoinError used to look like: a panicking plugin constructor silently disarmed a
-        // gate. The two EXPECTED failures already warn inside `gate_transport_named`.
+
         Ok(Err(e)) => {
             tracing::warn!(
                 hook = %what, error = %e,
@@ -1513,16 +1027,6 @@ async fn offload_bounded_with_deadline<T: Send + 'static>(
     }
 }
 
-/// Resolve a hook's control-plane transport WITHOUT parking a Tokio worker.
-///
-/// [`gate_transport_named`] is not cheap and it is not async: it resolves secrets, WRITES A STAGING
-/// COPY of the plugin to disk, `dlopen`s it, and runs the plugin's constructor. Every one of those
-/// is synchronous filesystem / dynamic-linker work, and every control-plane read below used to do it
-/// inline on the reactor -- so a slow disk or a slow plugin constructor stalled request serving, on
-/// a path (`GET /metrics/hooks`) that a monitoring system hits on a fixed interval forever.
-///
-/// One offload site for all three readers, so a fourth cannot reintroduce the inline form by
-/// calling `gate_transport_named` from an `async fn`.
 async fn gate_transport_offloaded(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -1536,8 +1040,6 @@ async fn gate_transport_offloaded(
     .await
 }
 
-/// Read publication and in-flight state for this exact hook's real control-plane resolution.
-/// `None` means its settings are ineligible for cached publication (for example a secret loan).
 #[cfg(any(test, feature = "test-support"))]
 pub fn transport_publication_for_test(
     name: &str,
@@ -1548,7 +1050,6 @@ pub fn transport_publication_for_test(
     Some((resolution::published(key), resolution::in_flight(key)))
 }
 
-/// Exercise one normal offloaded resolution, with its unchanged production deadline.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn resolve_transport_for_test(
     name: &str,
@@ -1561,7 +1062,6 @@ pub async fn resolve_transport_for_test(
         .is_some()
 }
 
-// Unit tests keep their local path; all waiting policy lives in the shared external kit source.
 #[cfg(test)]
 pub async fn await_transport_published(
     name: &str,
@@ -1571,13 +1071,6 @@ pub async fn await_transport_published(
     crate::test_support::hooks::await_transport_published(name, hook, env).await
 }
 
-/// Fetch a hook's self-reported STATUS (observed settings + metrics) over its transport — the
-/// control-plane read behind `GET /api/v1/admin/hooks/{name}/status`. Its own transport, never the
-/// hot request path's (that one is resolved at boot and lives in the routing chain); `None` =
-/// unsupported/unreachable (fail-open). The transport is shared with the other control-plane
-/// readers of the SAME hook+settings+registry and no further — see [`resolution`], and note in
-/// particular that a hook carrying a `SecretRef` is still resolved fresh on every one of these
-/// reads, so a rotated credential is picked up on the next scrape exactly as before.
 pub async fn fetch_status(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -1591,41 +1084,6 @@ pub async fn fetch_status(
         .await
 }
 
-/// The DESIRED settings KEY NAMES whose value the hook is not actually running — the whole of what
-/// `GET /api/v1/admin/hooks/{name}/status` reports about settings drift, and the only thing about it
-/// that may leave this function.
-///
-/// TWO PROBLEMS ARE CLOSED HERE, and they are the same problem seen from two sides.
-///
-/// 1. Neither settings bag may cross the wire. `configure_hook` supplies secret-resolved settings, so `reported.settings` can echo plaintext credentials. Compare them inside this function and expose only key names and a boolean to the endpoint.
-/// 2. Do not report reference fields as drift on every poll. Desired settings hold a reference while observed settings hold its resolved plaintext, so they cannot be compared without resolution. Skip those fields and report them as not drifted, preserving this function's fail-open comparison posture.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-/// NO SECRET RESOLUTION HAPPENS HERE, DELIBERATELY. This runs on an async admin GET that a
-/// dashboard polls (5s is typical). Resolving the desired bag — the first shape of this fix — made
-/// that GET call `SecretResolver::resolve`, whose non-built-in arm is a SYNCHRONOUS FFI call into a
-/// `kind: secret` plugin, inline on a Tokio worker with no `spawn_blocking` and no cache: a Vault
-/// round-trip per poll, a worker parked for the plugin's full timeout whenever Vault is slow, and a
-/// `tracing::info!` naming the setting and its reference on every single call.
-/// The auth chain's request path awaits its doors for exactly this hazard. So the
-/// classification is done by SHAPE instead (`config::secret::classify_setting` — the same
-/// classifier `resolve_settings` uses, so the two cannot drift about what a reference is), which
-/// reads nothing and calls nothing.
-///
-/// Semantics are otherwise unchanged: ordinary fields (including a `{ literal: … }` escape hatch,
-/// unwrapped exactly as the configure push unwraps it) are compared value-for-value, only DESIRED
-/// keys are compared (extra self-managed keys the hook reports are not drift), and a hook that
-/// reports no settings at all is not drift (it may simply not implement the echo).
 pub fn settings_drift_keys(
     hook: &crate::config::HookCfg,
     reported: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -1637,7 +1095,6 @@ pub fn settings_drift_keys(
         .settings
         .iter()
         .filter(|(k, v)| match crate::config::secret::classify_setting(v) {
-            // A reference's desired value is unknowable without I/O, so it is never drift.
             crate::config::secret::SettingShape::Reference(_) => false,
             crate::config::secret::SettingShape::Verbatim(want) => observed.get(*k) != Some(want),
         })
@@ -1647,8 +1104,6 @@ pub fn settings_drift_keys(
     keys
 }
 
-/// Fetch a hook's self-described settings schema over its transport
-/// (`GET /api/v1/admin/hooks/{name}/schema`). `None` = the hook/transport doesn't answer describe.
 pub async fn fetch_schema(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -1657,21 +1112,12 @@ pub async fn fetch_schema(
 ) -> Option<serde_json::Value> {
     let (transport, _resolved) =
         gate_transport_offloaded(name, hook, env, settings_version).await?;
-    // `HookPolicy::describe` returns the schema member ALREADY EXTRACTED from the plugin's
-    // self-description envelope, so the /schema read serves a
-    // SINGLE nest (the endpoint adds its own {name, schema} wrapper). No schema member (incl. the
-    // `{}` unsupported reply) = no schema (the endpoint reports null).
+
     transport
         .describe(applied_deadline(CONFIGURE_TIMEOUT_MS))
         .await
 }
 
-/// Resolve a hook's `on_error` NAME into its runtime fallback chain + terminal, following the
-/// registry: a reserved terminal stops immediately (the common, zero-cost case); a built-in ranking
-/// strategy appends one infallible link and terminates (its abstain converges with weighted);
-/// another GATE appends its transport and the walk continues through ITS `on_error`. Boot
-/// validation is the loud gate for unknown names / taps / cycles — here they degrade safely to the
-/// weighted terminal (never a stranded request), with a visited guard so a cycle cannot loop.
 fn resolve_on_error_chain<'a>(
     hook: &'a crate::config::HookCfg,
     hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
@@ -1685,8 +1131,7 @@ fn resolve_on_error_chain<'a>(
         if let Some(terminal) = crate::config::on_error_terminal(current) {
             return (chain, terminal);
         }
-        // A built-in ranking strategy: sync, no I/O, cannot fail — one link, then done. Compiled
-        // out, the name falls through to the registry lookup below (and validation errored at boot).
+
         if let Some((policy, timeout)) = crate::preflight::builtin_ranking(current) {
             chain.push(FallbackHook {
                 policy,
@@ -1721,23 +1166,12 @@ fn resolve_on_error_chain<'a>(
     }
 }
 
-/// A gate's `on_empty` behavior (empty restrict intersection): the configured value, or the
-/// FAIL-CLOSED default `Reject` — the spec default for a compliance restrict, never allow-all.
 fn gate_on_empty(hook: &crate::config::HookCfg) -> crate::config::PolicyOnError {
     hook.on_empty
         .clone()
         .unwrap_or(crate::config::PolicyOnError::Reject)
 }
 
-/// Resolve the GLOBAL rewrite hooks — the `global_hooks` names whose registry entry is a `kind: gate`
-/// with a `prompt: rw` grant — into their transports, sorted by ASCENDING `priority` (the transform
-/// chain order; `weighted`-tie-break by config order is preserved by the stable sort). Returns
-/// `(per-hook transform deadline, transport)` pairs. The `rw` GRANT IS ENFORCED HERE: a `ro`/`no`
-/// gate (or a tap, or a non-rewrite gate) is skipped, so it can never rewrite — the bidirectional
-/// grant holds by construction, independent of what a hook tries to return. A genuinely-absent
-/// plugin is skipped (fail-open safety net); an `open()`-time FAILURE of a present rewrite gate is
-/// caught by `HookEnv::preopen_gate_hooks`, which aborts boot/reload (so a redaction/rewrite gate
-/// can never silently vanish while boot succeeds).
 pub fn resolve_rewrite_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],
@@ -1749,8 +1183,7 @@ pub fn resolve_rewrite_hooks(
         let Some(hook) = hooks.get(name) else {
             continue;
         };
-        // EFFECTIVE rw, not the operator grant: the grant alone would admit a plugin whose manifest
-        // declared `needs: { prompt: no }` to both read the prompt and rewrite the body.
+
         if hook.kind != crate::config::HookKind::Gate || !admits_rewrite(name, hook, env) {
             continue;
         }
@@ -1761,9 +1194,6 @@ pub fn resolve_rewrite_hooks(
             ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
-            // The hook's `on_error` rides with the transport into the rewrite chain: a failed call
-            // to a hook the operator declared load-bearing refuses the request instead of being
-            // silently skipped.
             ranked.push((
                 hook.priority,
                 timeout,
@@ -1775,20 +1205,6 @@ pub fn resolve_rewrite_hooks(
     ranked.into_iter().map(|(_, t, p)| (t, p)).collect()
 }
 
-// A resolved GLOBAL (all-pools) tap: `(per-hook deadline, prompt-grant, transport, caller-group
-// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
-// the tap only for a caller in that scope (empty = every caller); see [`TapEntry`] consumers in
-// `proxy::engine` / `proxy::hooks`.
-// Relocated to `busbar_kernel::hooks::TapEntry` (App-retype WEDGE 2d) so the engine's tap-facet
-// host seams (`EngineHost::tap_hooks*`) can name it neutrally; re-exported by identity (a transparent
-// alias) so `crate::hooks::TapEntry` and every consumer are unchanged.
-
-/// Resolve the GLOBAL TAP hooks observing at ONE stage — the all-pools (`global_hooks`) names whose
-/// registry entry is a `kind: tap` firing at `stage` (per its `phase:` list / legacy `at:`) — into
-/// their transports. Returns [`TapEntry`] tuples carrying each tap's `groups:` scope for the
-/// request-time caller filter. Taps are fire-and-forget so order is irrelevant, but a stable priority
-/// sort keeps startup deterministic. Unresolvable transports are skipped (config_validate surfaces
-/// them at boot).
 pub fn resolve_tap_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],
@@ -1804,13 +1220,11 @@ pub fn resolve_tap_hooks(
         if hook.kind != crate::config::HookKind::Tap {
             continue;
         }
-        // 1.5.3: the `phase:` LIST is authoritative when set; otherwise the legacy single `at:`
-        // (defaulting to the request stage). A tap fires at this stage iff its phase set includes it.
+
         if !hook.fires_at_stage(stage) {
             continue;
         }
-        // `send_prompt` carries the tap's `prompt: ro` grant through to the firing site, so a granted
-        // tap gets the prompt content projection and a `prompt: no` (default) tap gets shape-only.
+
         if let Some(ResolvedPolicy::Policy {
             policy,
             timeout,
@@ -1828,17 +1242,6 @@ pub fn resolve_tap_hooks(
     ranked.into_iter().map(|(_, entry)| entry).collect()
 }
 
-/// Resolve the GLOBAL DECISION gates — the `global_hooks` names whose registry entry is a `kind: gate`
-/// that is NOT a rewrite gate (`prompt: rw` gates fire in the phase-1 transform pass via
-/// `resolve_rewrite_hooks`; taps observe, they don't decide). These fire on EVERY request to reach a
-/// verdict (reject / restrict / order) alongside a pool's own `hook:` gate. Returns the full
-/// `ResolvedPolicy` for each (carrying `on_error`/`on_empty`/grants) so the firing site can run it
-/// through the same `decide_policy_order` machinery as a pool gate, PLUS the hook's `priority` so
-/// the firing site can merge globals with a pool's own gates into one phase-2 chain. Sorted by
-/// ascending `priority` (the chain tie-break, e.g. which reject message surfaces). A genuinely-absent
-/// plugin is skipped (fail-open safety net); an `open()`-time FAILURE of a present decision gate is
-/// caught by `HookEnv::preopen_gate_hooks`, which aborts boot/reload (so a Reject/restrict gate can
-/// never silently vanish while boot reports success).
 pub fn resolve_gate_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],
@@ -1850,8 +1253,7 @@ pub fn resolve_gate_hooks(
         let Some(hook) = hooks.get(name) else {
             continue;
         };
-        // Decision gates only: a gate that does not rewrite. `rw` gates are phase-1 rewrites; taps
-        // never decide. (A gate may still return nothing/reject/restrict/order.)
+
         if hook.kind != crate::config::HookKind::Gate || hook.prompt.can_rewrite() {
             continue;
         }
@@ -1863,37 +1265,11 @@ pub fn resolve_gate_hooks(
     ranked
 }
 
-/// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_kernel::config::plane_sections`)
-/// beside the [`ContainerGateInputs`](busbar_kernel::config::plane_sections::ContainerGateInputs) it folds,
-/// so an extracted plane crate reaches it without naming `busbar_kernel::hooks`. Re-exported here so
-/// `crate::hooks::attach_list` (this module's [`resolve_container_gates`], and the A2A twin) is
-/// unchanged.
-// Referenced only from the protocol planes' container-gate resolution; with none installed
-// [`resolve_container_gates`] has no caller, so the re-export reads unused. Unconditional allow —
-// the neutral seam names no plane feature; it is a public re-export whichever planes are compiled in.
 #[allow(unused_imports)]
 pub use busbar_kernel::config::plane_sections::attach_list;
 
-/// THE SECTION'S OWN SCOPE in a plane's per-container hook maps: the section-level attach
-/// (`<section>.hooks:`) resolved alone, keyed by the reserved word itself, which no registration
-/// can be named (`busbar_contract::section::RESERVED_SECTION_KEYS`). A ROUTED-order plane binds it to
-/// every unit beside the deployment's global hooks (`plane_driver::HostHooks`), so a
-/// section's own attach fires on a plane whose units name no container; a GATE-FIRST plane reads
-/// its entries, each of which already carries the section's list ([`attach_list`]).
 pub const SECTION_SCOPE: &str = busbar_contract::section::RESERVED_SECTION_KEYS[0];
 
-/// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
-/// container's own hook list)`, the effective attach ([`attach_list`]) resolved through
-/// [`resolve_gate_hooks`], keyed by container; and the section's own attach alone, under
-/// [`SECTION_SCOPE`].
-///
-/// A container whose effective chain is EMPTY gets NO ENTRY, deliberately: the firing site's lookup
-/// then answers `None` on every deployment that attached nothing, which is the zero-cost default,
-/// and an empty vector in the map would make "attached nothing" and "attached something that did not
-/// resolve" indistinguishable at a glance.
-///
-/// Called ONCE per config generation, from the App build. Resolution `dlopen`s the plugin; doing it
-/// per request would put a library load on a dispatch path.
 pub fn resolve_container_gates<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
     section: &[String],
@@ -1915,18 +1291,6 @@ pub fn resolve_container_gates<'a>(
     out
 }
 
-/// Resolve the per-CONTAINER REWRITE (`prompt: rw`) chains for one plane's registry — the
-/// tap/transform twin of [`resolve_container_gates`]. For each `(container name, own hook list)`, the
-/// effective attach ([`attach_list`]) resolved through [`resolve_rewrite_hooks`] (which enforces the
-/// EFFECTIVE `rw` grant), keyed by container; and the section's own attach alone, under
-/// [`SECTION_SCOPE`].
-///
-/// A container whose effective chain is EMPTY gets NO ENTRY, exactly like the gate twin: the tap
-/// firing site's presence lookup then answers `None` on every deployment that attached no rewrite
-/// hook, which is the zero-cost / byte-identical default.
-///
-/// Called ONCE per config generation. Resolution `dlopen`s the plugin; doing it per request would put
-/// a library load on the dispatch path.
 #[allow(clippy::type_complexity)]
 pub fn resolve_container_rewrites<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
@@ -1953,17 +1317,6 @@ pub fn resolve_container_rewrites<'a>(
 #[path = "tests/tests.rs"]
 mod tests;
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-
-/// A resolved GLOBAL (all-pools) tap: `(per-hook deadline, prompt-grant, transport, caller-group
-/// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
-/// the tap only for a caller in that scope (empty = every caller).
-///
-/// Relocated here off `busbar_kernel::hooks::TapEntry` (App-retype WEDGE 2d): a purely-neutral tuple —
-/// [`Duration`](std::time::Duration), `bool`, the [`RoutingPolicy`](busbar_contract::hooks::RoutingPolicy) trait
-/// object (busbar-api), `Vec<String>` — so the engine's tap-facet host seams
-/// (`EngineHost::tap_hooks*`) can name it without reaching back into core. Core re-exports this alias
-/// so `busbar_kernel::hooks::TapEntry` is unchanged (a transparent alias, identical by structure).
 pub type TapEntry = (
     std::time::Duration,
     bool,
@@ -1984,8 +1337,6 @@ pub type TapEntry = (
 pub struct RequestedSignals(u64);
 
 impl RequestedSignals {
-    /// A single `u64` AND + compare — the same order of magnitude as the pre-existing
-    /// `app.tap_hooks_response.is_empty()` early-out this design generalizes.
     #[inline]
     pub fn wants(self, s: Signal) -> bool {
         debug_assert!(
@@ -1995,15 +1346,11 @@ impl RequestedSignals {
         self.0 & (1u64 << s.bit()) != 0
     }
 
-    /// True iff NOTHING is declared anywhere — the zero-cost default generation.
     #[inline]
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
 
-    /// Set the bit for `s`. `pub` (rather than the former core-private visibility) only because the
-    /// config-time builder that calls it — `busbar_kernel::hooks::requested_signals` — now lives across
-    /// the crate boundary from the type; it is otherwise the same one-line bit-OR.
     #[inline]
     pub fn insert(&mut self, s: Signal) {
         self.0 |= 1u64 << s.bit();
@@ -2044,28 +1391,19 @@ pub enum ResolvedPolicy {
     },
 }
 
-/// The default hook content ceiling, in bytes. `0` = unlimited; a non-zero ceiling is the
-/// operator's `limits.hook_content_max_bytes`.
 pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
 
 static HOOK_CONTENT_MAX_BYTES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
 
-/// Install the generation's hook content ceiling (boot and every config apply).
 pub fn set_hook_content_max_bytes(bytes: usize) {
     HOOK_CONTENT_MAX_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The generation's hook content ceiling. `0` = unlimited.
 pub fn hook_content_max_bytes() -> usize {
     HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// THE HOOK CONTENT CEILING, on a built prompt projection: measured on its bytes BEFORE any call,
-/// and over the ceiling the content is OMITTED WHOLE (the hook is shown an empty projection, its
-/// grant still honoured), never truncated mid-value; `busbar_hook_content_truncated_total` counts
-/// it. A `0` ceiling is the operator turning it off. The one rule every seat that hands a hook the
-/// prompt applies.
 #[must_use]
 pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
     let cap = hook_content_max_bytes();
@@ -2087,16 +1425,6 @@ pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
     }
 }
 
-/// THE disposition rule for a hook call that FAILED — one rule, one place, for every seat that
-/// calls a hook. `on_error: reject` was the operator declaring that hook LOAD-BEARING: without its
-/// answer the unit is refused. Every other disposition (`weighted`, `first`) lets the unit proceed;
-/// the seat then applies its own degraded behavior (the read-only decide seat picks a degraded
-/// route — SWRR or the config order; the read-write transform seat simply skips that hook's
-/// rewrite). Both seats ask THIS function, so a change to the rule cannot land on one path and
-/// miss the other.
-///
-/// A hook's own `reject` REPLY is not a failure and never reaches here — that is a decision the
-/// hook made, carried with its own status and message.
 #[inline]
 #[must_use]
 pub fn failed_call_refuses(on_error: &crate::config::PolicyOnError) -> bool {
@@ -2106,13 +1434,8 @@ pub fn failed_call_refuses(on_error: &crate::config::PolicyOnError) -> bool {
     }
 }
 
-/// The client-facing refusal a load-bearing hook's FAILED call produces. Deliberately content-free
-/// and identical on both seats: it names the failure, never the hook, the transport, or the reason
-/// (a client learns nothing about the operator's hook topology from a hook being down). `503` +
-/// the overloaded error kind — the condition is transient by nature, so an SDK caller sees a
-/// retryable error rather than a request-shaped one.
 pub const REQUIRED_HOOK_UNAVAILABLE_STATUS: u16 = 503;
-/// The message paired with [`REQUIRED_HOOK_UNAVAILABLE_STATUS`].
+
 pub const REQUIRED_HOOK_UNAVAILABLE_MESSAGE: &str =
     "A required gate could not complete. Please retry shortly.";
 

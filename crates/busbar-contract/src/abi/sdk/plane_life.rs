@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE LIFECYCLE, ONCE FOR EVERY PLANE: the nine lifecycle slots of a plane's door over the
-//! plane's widened shapes (`abi::plane::PlaneLifecycle`: `open` and `refresh` publish a
-//! generation's snapshot, `drive` and `cancel` carry the plane's session and record buffers), as
-//! [`SafeSlot`]s over the plane's own state `P:` [`PlaneLife`]. A plane states what is its own:
-//! how its settings read, what a generation publishes, and its `tick`/`drive`/`cancel`.
-//! [`plugin_door!`](crate::plugin_door) names the nine at once: `lifecycle: plane_life(P)`.
-//!
-//! What every plane shares, here once:
-//!
-//! * `open` publishes the first generation's snapshot and holds the state; `refresh` publishes the
-//!   next one over the same state; `retire` drops a generation's snapshot ([`Generations`]);
-//! * a FAILED or REFUSED `validate`/`open`/`refresh` answers its [`Refusal`]'s text;
-//! * `release` forwards optional plane-owned leases; planes naming none retain READY. `close`
-//!   drops the state, outstanding leases and every snapshot it still holds.
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -57,7 +44,7 @@ impl<P: PlaneLife> std::fmt::Debug for Opened<P> {
 }
 
 /// A PLANE'S LIFECYCLE: implement it for the plane's door state and name the door's lifecycle
-/// `plane_life(P)`. Every slot without a plane-specific answer has its default here.
+
 pub trait PlaneLife: Send + Sync + Sized + 'static {
     /// What each generation holds beside its snapshot.
     type Held: Send + Sync + 'static;
@@ -66,40 +53,27 @@ pub trait PlaneLife: Send + Sync + Sized + 'static {
     fn generations(&self) -> &Generations<PlaneSnapshot, Self::Held>;
 
     /// Optional owned answer leases, released by the existing generic RELEASE slot. A plane
-    /// using leased main-call extensions exposes the same owner it passes to the output writer.
-    /// None retains the existing lease-free lifecycle.
+
     fn leases(&self) -> Option<&crate::abi::sdk::life::Leases> {
         None
     }
 
     /// `validate`: whether `settings` open an instance. The default is the SDK's object check.
-    ///
-    /// # Errors
-    /// Why not.
+
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         settings_object(settings).map(|_| ())
     }
 
     /// `open`: the state, and the first generation's snapshot, from the plane's `open` `in`.
-    ///
-    /// # Errors
-    /// Why it will not open.
+
     fn open(input: &Lent<'_, PlaneOpenIn>) -> Result<Opened<Self>, Refusal>;
 
     /// `refresh` to `generation` with `settings`: that generation's snapshot.
-    ///
-    /// # Errors
-    /// Why the refresh did not apply.
+
     fn refresh(&self, settings: &[u8], generation: u64) -> Result<Published<Self::Held>, Refusal>;
 
     /// `refresh` from the whole lent `in`: what the slot calls. By default [`PlaneLife::refresh`]
-    /// with the settings and the generation alone. A plane that judges the applied owned sections
-    /// (`abi::plane::EXT_OWNED` on the head's extensions, the refresh-time twin of
-    /// `PlaneOpenIn::owned`) or the re-resolved secrets overrides this, as `open` reads the whole
-    /// `PlaneOpenIn`.
-    ///
-    /// # Errors
-    /// Why the refresh did not apply.
+
     fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Self::Held>, Refusal> {
         self.refresh(input.settings().bytes(), input.generation())
     }

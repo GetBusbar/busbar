@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A composed connection against a REAL far end on a real socket: bytes in and out through the
-//! framer, TLS with the protocol offer, the endpoint check before any dial, a silent far end held to
-//! the framer's deadline and the open held to its own, and no thread per connection.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -131,7 +129,7 @@ fn the_far_ends_close_ends_the_connection() {
 }
 
 /// RED: the cloud metadata refusal still fires before any dial — on the target, and on the
-/// authority the entry's `locate` names for it.
+
 #[test]
 fn a_metadata_host_is_refused_before_any_socket_exists() {
     worker().block_on(async {
@@ -166,7 +164,7 @@ fn a_metadata_host_is_refused_before_any_socket_exists() {
 }
 
 /// RED: a far end that accepts and then says nothing is held to the deadline the framer states:
-/// the connector calls `timer` at it, and the connection fails there — not before, not never.
+
 #[test]
 fn a_silent_far_end_is_held_to_the_framers_deadline() {
     worker().block_on(async {
@@ -239,7 +237,7 @@ fn localhost_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 /// TLS is the connector's, with the protocol offer the registration states: the framer is told
-/// what the handshake agreed, and the bytes cross encrypted.
+
 #[test]
 fn tls_and_the_protocol_offer_are_the_connectors() {
     crate::tls::install_crypto_provider();
@@ -291,15 +289,12 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
 }
 
 /// THE OFFER IS THE FRAMER'S (THE DESIGN, connections): the protocols the handshake offers are
-/// what the entry's `locate` answered, most preferred first, and the registration's offer stands
-/// only for an entry that answers none. A far end agreeing `h2` or `http/1.1` agrees what the
-/// framer offered, whatever the registration says.
+
 #[test]
 fn the_handshake_offers_what_the_framer_located() {
     crate::tls::install_crypto_provider();
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        // (the framer's offer, the registration's, what a far end serving h2 and http/1.1 agrees)
         type Case = (Option<&'static [u8]>, Vec<Vec<u8>>, Option<&'static [u8]>);
         let cases: [Case; 4] = [
             (Some(b"\x02h2\x08http/1.1"), Vec::new(), Some(b"h2")),
@@ -385,8 +380,7 @@ fn a_malformed_protocol_offer_refuses_the_dial() {
 }
 
 /// RED: a far end that never reads cannot grow the host's memory. Writes are taken while the
-/// connection's buffer has room; once the socket stops taking bytes the buffer fills to
-/// [`WRITE_BUFFER_BYTES`] and a write is taken not at all (`Ok(0)`), and stays so.
+
 #[test]
 fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
     worker().block_on(async {
@@ -436,7 +430,7 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
 }
 
 /// An EMPTY message, binary or text, is relayed as a message, its text bit kept; the stream ends
-/// only on the framer's `PIECE_END`, never on an empty piece.
+
 #[test]
 fn empty_messages_relay_and_the_stream_ends_only_on_its_flag() {
     worker().block_on(async {
@@ -480,10 +474,7 @@ fn empty_messages_relay_and_the_stream_ends_only_on_its_flag() {
 }
 
 /// RED (Autobahn 3.2, 3.3, 4.1.3, 4.1.4, 4.2.3, 4.2.4, 5.15 NON-STRICT): the far side's frames
-/// ENDED in the same answer that handed up its last message (a ws peer breaking the protocol right
-/// after a message, here a peer that sent a message and half-closed), and the host still answers
-/// that message: `YIELD_ENDED` says no frame follows, not that this side may no longer write. On
-/// the parent the answer was refused as `Closed`, so the peer heard the close and no answer.
+
 #[test]
 fn a_message_handed_up_with_the_frames_end_is_still_answered() {
     worker().block_on(async {
@@ -520,9 +511,7 @@ fn a_message_handed_up_with_the_frames_end_is_still_answered() {
 }
 
 /// WHY A CONNECTION FAILED, named by stage and the underlying error's own words: a closed port
-/// fails the socket's open with the socket's own error (the one this host's own connect to it
-/// answers); a far end whose certificate no anchor signs fails connection security with the TLS
-/// stack's own error; a handshake that never finishes is a deadline.
+
 #[test]
 fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     use busbar_contract::abi::host::conn::connector::{
@@ -531,7 +520,6 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     crate::tls::install_crypto_provider();
     let (_, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        // The socket's open.
         let closed = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -550,7 +538,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
                 text: here
             })
         );
-        // Connection security.
+
         let server = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
@@ -593,7 +581,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
                 text: unknown.to_string()
             })
         );
-        // A handshake that never finishes.
+
         let mut d = secure(&silent().await);
         d.open_timeout = Duration::from_millis(200);
         let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
@@ -609,9 +597,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
 }
 
 /// The connection's own layer, STARTTLS response injection: a raw
-/// stream whose far end answered `OK\n` with forged bytes behind it, the piece taken off the socket
-/// into the connection's inbox and not read. The upgrade is refused and the connection fails: the
-/// forged bytes are never read, least of all as a verified far end's.
+
 #[test]
 fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fails() {
     worker().block_on(async {
@@ -653,8 +639,7 @@ fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fail
 }
 
 /// A far end that sends far more than its holder reads (64 MiB, the
-/// holder only waiting on readiness) is held back by the receive cap: the line stops reading, so
-/// the far end's own flow control stops it, short of what it meant to send.
+
 #[test]
 fn a_holder_that_does_not_read_holds_the_far_end_back() {
     const SENT: usize = 64 * 1024 * 1024;
@@ -693,10 +678,7 @@ fn a_holder_that_does_not_read_holds_the_far_end_back() {
 }
 
 /// RED (THE DESIGN §5 "Writes are back-pressured (a full buffer answers not-ready)"; resource
-/// bounds): what the framer answers to what it read on its own (an h2 PING's ack, a ws pong) is
-/// bounded too. A far end that sends and never reads stops being read once those answers fill the
-/// write side; queued with no cap while the socket kept being read, they grew host memory at the
-/// far end's line rate.
+
 #[test]
 fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
     const SENT: usize = 64 * 1024 * 1024;
@@ -711,7 +693,7 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
                     return;
                 }
             }
-            // Held open, never read.
+
             let _keep = s;
             std::future::pending::<()>().await;
         });
@@ -729,7 +711,6 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
         let started = Instant::now();
         let mut most = 0;
         while started.elapsed() < Duration::from_secs(3) {
-            // The holder takes every piece it is handed: only the owed answers can pile up.
             while let std::task::Poll::Ready(Ok(Some(_))) =
                 c.poll_piece(&mut std::task::Context::from_waker(waker))
             {}
@@ -744,10 +725,7 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
 }
 
 /// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, on one connection): two streams on one
-/// dialled connection. The first stream's head emit calls the auth, which pends; the second
-/// stream's request goes out and its answer comes back while the first waits; then the auth
-/// answers, the first stream's request goes out, and its answer comes back, with exactly one auth
-/// call. Each head emit states the length of the body it opens with.
+
 #[test]
 fn one_stream_pending_auth_holds_only_that_stream_on_the_connection() {
     worker().block_on(async {
@@ -826,9 +804,7 @@ fn a_parked_streams_empty_write_backpressures_only_that_stream() {
 }
 
 /// RED (THE DESIGN §5: TLS is the connector's, "today's code moved byte-identically"; a write is
-/// taken up to `WRITE_BUFFER_BYTES`): one write larger than the TLS library's default send buffer
-/// (64 KiB) crosses whole, encrypted, in order. Handed to the TLS writer in one piece past that
-/// buffer, the write failed the connection ("failed to write whole buffer").
+
 #[test]
 fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
     const SENT: usize = 200_000;
@@ -891,8 +867,7 @@ fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
 }
 
 /// The agreed protocol is judged against the offer the handshake made (`check_agreed`) before the
-/// framer is handed it: none agreed or an offered id passes, an id never offered fails the
-/// connection, and an id the encoding cannot carry is never offered.
+
 #[test]
 fn the_agreed_protocol_is_one_the_handshake_offered() {
     let offer = protocol_name_list(&[b"pa".to_vec(), Vec::new(), b"proto-b/1".to_vec()]);
@@ -912,12 +887,7 @@ fn the_agreed_protocol_is_one_the_handshake_offered() {
 }
 
 /// The contract ( `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE":
-/// "the host emits nothing more on that stream, holding whatever feeds it (not-ready, with a
-/// wake), until the framer hands a `PIECE_WRITABLE` piece"): once the framer answers an emit
-/// `YIELD_STREAM_FULL`, the connection takes nothing more on that stream (`Ok(0)`, the writer's
-/// waker parked on the socket) until the far end's bytes bring the framer's writable piece; then
-/// the held write goes out, and the writable piece itself never reaches the reader. The host kept
-/// emitting past the mark, which a framer is entitled to fail the stream for.
+
 #[test]
 fn a_full_stream_takes_nothing_more_until_the_framer_says_it_is_writable() {
     worker().block_on(async {
@@ -930,7 +900,7 @@ fn a_full_stream_takes_nothing_more_until_the_framer_says_it_is_writable() {
             let mut first = [0_u8; 1];
             s.read_exact(&mut first).await.unwrap();
             let _ = went.await;
-            // The window opens: the framer's writable piece, then one message.
+
             s.write_all(b"wz").await.unwrap();
             let mut second = [0_u8; 1];
             s.read_exact(&mut second).await.unwrap();
@@ -1018,15 +988,7 @@ async fn opened(c: &mut Connection) {
 type Asked<'a> = (Vec<(&'a str, &'a [u8])>, &'a [u8]);
 
 /// RED: A LOCATED OPENING CARRIES THE HEAD THE FRAMER SAID IT WOULD NOT ADD (THE DESIGN section 6,
-/// step 5). A framer that states its own head lines at `locate` and leaves the body's length to the
-/// host (`LocateOut::states_length`, transport-http #45) renders exactly the head it is handed and
-/// refuses a body no `content-length` frames. So the dial's opening is completed where it is
-/// located: each of the framer's lines the head does not carry, after the caller's fields, then
-/// `content-length: <body length>` last (1.5.5's order: `content-type, accept, host,
-/// content-length`). A line the caller carries is the caller's, never doubled; an empty body states
-/// no length; a framer that states neither gets its opening as written; nothing to send stays
-/// nothing. RED before: the opening went to `encode` as written, and the http door refused every
-/// bodied request ("the envelope cannot be expressed on this wire").
+
 #[test]
 fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
     let stating = Arc::new(TestDoor::new(
@@ -1074,7 +1036,6 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
             .collect()
     };
 
-    // A bodied request: the framer's lines after the caller's, the length last.
     assert_eq!(
         located(
             &stating,
@@ -1090,7 +1051,7 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
             b"{}".to_vec()
         ))
     );
-    // A line the caller carries stays the caller's; an empty body states no length.
+
     assert_eq!(
         located(&stating, Some((vec![("Accept", b"text/plain")], b""))),
         Some((
@@ -1098,7 +1059,7 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
             Vec::new()
         ))
     );
-    // A framer that states neither: the opening as written.
+
     assert_eq!(
         located(
             &silent,
@@ -1109,7 +1070,7 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
             b"{}".to_vec()
         ))
     );
-    // Nothing to send stays nothing.
+
     assert_eq!(
         located(&stating, Some((Vec::new(), b""))),
         Some((Vec::new(), Vec::new()))
@@ -1118,11 +1079,7 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
 }
 
 /// RED (TSEAL; "the plane never sees credential bytes"): OVER A FRAMER THAT RENDERS SEALED VALUES
-/// (`abi::transport::EXT_SEALED_VALUES`), THE CREDENTIAL NEVER CROSSES TO IT. An opening naming its
-/// credential field sealed (`conn::SEALED_FIELDS_FIELD`, the host's own field) hands the framer
-/// filler of the value's length; the far end, over the host's TLS, reads the real credential where
-/// the framer rendered the filler, and never the host's field. Over a connection the host does not
-/// secure, the open fails and the far end reads no credential byte.
+
 #[test]
 fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
     use busbar_contract::conn::SEALED_FIELDS_FIELD;
@@ -1207,7 +1164,6 @@ fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
             String::from_utf8_lossy(&handed)
         );
 
-        // In the clear: refused, and the far end reads no credential byte.
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let far = l.local_addr().unwrap().to_string();
         let read = tokio::spawn(async move {

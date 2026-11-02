@@ -74,8 +74,6 @@ use crate::abi::sdk::lent::{Lent, LentList};
 use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
 
-// ── the failure text ────────────────────────────────────────────────────────────────────────
-
 /// Why a lifecycle or op answered without its result: FAILED or REFUSED, with the text the host
 /// renders (none = the outcome alone).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,9 +139,7 @@ impl std::fmt::Display for Refusal {
 }
 
 /// A settings blob's bytes as the JSON object they must be; empty is `{}`.
-///
-/// # Errors
-/// The bytes are not a JSON object: FAILED, saying so under `settings`.
+
 pub fn settings_object(
     bytes: &[u8],
 ) -> Result<serde_json::Map<String, serde_json::Value>, Refusal> {
@@ -157,25 +153,18 @@ pub fn settings_object(
 }
 
 /// A settings blob's bytes as the JSON value they hold; empty is `{}`.
-///
-/// # Errors
-/// The bytes are not JSON: FAILED, `settings: <serde's words>`.
+
 pub fn settings_value(bytes: &[u8]) -> Result<serde_json::Value, Refusal> {
     let bytes = if bytes.is_empty() { b"{}" } else { bytes };
     serde_json::from_slice(bytes).map_err(|e| Refusal::failed(format!("settings: {e}")))
 }
 
 /// A settings blob's bytes as the plugin's settings type `T`, read from their JSON value (as the
-/// configuration grammar reads them, so serde's words name no line or column); empty is `{}`.
-///
-/// # Errors
-/// The bytes are not JSON, or not `T`: FAILED, `settings: <serde's words>`.
+
 pub fn settings_as<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Refusal> {
     serde_json::from_value(settings_value(bytes)?)
         .map_err(|e| Refusal::failed(format!("settings: {e}")))
 }
-
-// ── leases ─────────────────────────────────────────────────────────────────────────────────
 
 /// What one lease holds: bytes, zeroized on drop when secret.
 enum Lease {
@@ -213,7 +202,7 @@ impl Leases {
     }
 
     /// Hold `lease` for the answer `head` belongs to: chained as the next part of the lease
-    /// `head.lease` already names when this answer leased before, else under a new lease.
+
     fn hold(&self, head: &mut OutHead, lease: Lease) -> u64 {
         let mut held = self.lock();
         let id = head.lease;
@@ -241,7 +230,7 @@ impl Leases {
     }
 
     /// Hold `bytes` under a new lease named in `head.lease`; the blob of `fmt` naming them. Empty
-    /// bytes lease nothing and answer an absent blob.
+
     pub fn blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
         if bytes.is_empty() {
             return absent();
@@ -258,7 +247,7 @@ impl Leases {
     }
 
     /// As [`Leases::blob`], for secret material: the blob is flagged secret and the bytes are
-    /// zeroized when the lease is released (or the instance closes).
+
     pub fn secret_blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
         if bytes.is_empty() {
             return absent();
@@ -270,13 +259,13 @@ impl Leases {
             fmt,
             flags: BLOB_SECRET,
         };
-        // The Vec's heap buffer does not move when the map takes the Vec.
+
         self.hold(head, Lease::Secret(held));
         blob
     }
 
     /// Hold `text` under a new lease named in `head.lease`; the string naming it. Empty text
-    /// leases nothing and answers the empty string.
+
     pub fn str(&self, head: &mut OutHead, text: String) -> AbiStr {
         if text.is_empty() {
             return AbiStr::ZERO;
@@ -291,15 +280,13 @@ impl Leases {
     }
 
     /// Hold `owned` — an answer's storage of any shape (several buffers, the arrays naming them) —
-    /// under a new lease named in `head.lease`, until `release`. The caller names memory INSIDE
-    /// `owned` in its `out`: heap contents do not move when `owned` moves here. Its `Drop` runs at
-    /// release (zeroize there what is secret).
+
     pub fn keep<T: Send + Sync + 'static>(&self, head: &mut OutHead, owned: T) -> u64 {
         self.hold(head, Lease::Kept(Box::new(owned)))
     }
 
     /// As [`Leases::keep`], always under a new lease, for a kind door that writes the number into
-    /// its answer's head itself (the store door's typed answers).
+
     pub(crate) fn keep_new<T: Send + Sync + 'static>(&self, owned: T) -> u64 {
         self.fresh(Lease::Kept(Box::new(owned)))
     }
@@ -315,8 +302,7 @@ impl Leases {
     }
 
     /// Release `lease` and every part chained under it: READY when it was held, REFUSED when it
-    /// was not (a host bug). Only the SDK's `release` slot calls it: a body that released a lease
-    /// the host is still copying would free memory under it.
+
     pub(crate) fn release(&self, lease: u64) -> Outcome {
         let mut retired = Vec::new();
         let mut held = self.lock();
@@ -325,7 +311,6 @@ impl Leases {
             .next()
             .map(|(k, _)| *k)
         {
-            // Reserve before detaching: unwinding must unlock before dropping any kept storage.
             retired.reserve(1);
             if let Some(part) = held.remove(&key) {
                 retired.push(part);
@@ -354,8 +339,6 @@ fn absent() -> Blob {
         ..Blob::ZERO
     }
 }
-
-// ── the kind's part ────────────────────────────────────────────────────────────────────────
 
 /// One metric a `refresh` reports in its envelope (an unlabelled counter add).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -406,45 +389,34 @@ pub struct Flagged {
 }
 
 /// ONE KIND'S LIFECYCLE, as its SDK states it: the instance state the nine generic slots serve,
-/// and each per-kind value. A kind's SDK implements it over its author trait; a plugin names it
-/// through its kind's door macro.
+
 pub trait Life: Send + Sync + Sized + 'static {
     /// The kind's default `cancel` disposition (its own vocabulary, `abi/<kind>/`).
-    /// [`Life::cancel`] may override it while releasing state owned by the lifecycle.
+
     const CANCEL: u32;
 
     /// The kind's `drive` answer: the SDK holds no driver ticket. READY unless the kind states
-    /// otherwise.
+
     const DRIVE: Outcome = Outcome::Ready;
 
     /// `validate`: whether `settings` open an instance. The default is the SDK's object check
-    /// ([`settings_object`]: "settings: must be a JSON object"); a kind's SDK forwards it to its
-    /// author trait's `validate`, so a plugin answers with its own refusal text (its 1.5.5 words).
-    ///
-    /// # Errors
-    /// Why not.
+
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         settings_object(settings).map(|_| ())
     }
 
     /// `open`: the instance over `settings` and its resolved `secrets`, at `generation`.
-    ///
-    /// # Errors
-    /// Why it will not open.
+
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
     /// Instance metadata carried in successful OPEN and REFRESH reply extensions. The SDK leases
-    /// these bytes until the host has copied and released the reply; an empty blob states none.
+
     fn extensions(&self) -> Vec<u8> {
         Vec::new()
     }
 
     /// `open` over the host tables the call hands it (`OpenIn.host`; `None` when none): what the
-    /// `open` slot calls. The default is [`Life::open`]; a kind whose instance keeps the tables
-    /// from its first moment (the store's) states it.
-    ///
-    /// # Errors
-    /// Why it will not open.
+
     fn open_on(
         settings: &[u8],
         secrets: &[&[u8]],
@@ -456,11 +428,7 @@ pub trait Life: Send + Sync + Sized + 'static {
     }
 
     /// THE OPEN'S SECOND STEP: what the opened instance reaches before the host counts it opened
-    /// (a store's connect step), on `open`'s ticket with the instance's host tables. It may PEND
-    /// ([`Opening::Pending`], with what it parks): the host re-enters `open` on the wake, and the
-    /// SDK hands the same instance what it parked (`parked`; `None` on the first entry), never
-    /// opening it again. An [`Opening::Failed`] fails the load with its text, as an `open` refusal
-    /// does. The default reaches nothing.
+
     fn opening(
         &self,
         host: Option<&Host>,
@@ -472,12 +440,7 @@ pub trait Life: Send + Sync + Sized + 'static {
     }
 
     /// `refresh` to `generation` with `settings` and `secrets`. Only a kind the host refreshes
-    /// (`abi::mechanism::lifecycle`, WHICH KINDS THE HOST REFRESHES) states its own; for every
-    /// other kind the default answers, REFUSED in [`NOT_REFRESHED`]'s words: a changed
-    /// configuration reaches such an instance only through a fresh `open`.
-    ///
-    /// # Errors
-    /// Why the refresh did not apply.
+
     fn refresh(
         &self,
         settings: &[u8],
@@ -494,9 +457,7 @@ pub trait Life: Send + Sync + Sized + 'static {
     }
 
     /// Release state this lifecycle keeps outside the SDK's parked continuation for `ticket`.
-    /// The ticket is the canceled operation's full identity, not the CANCEL crossing's head.
-    /// Extract owned state under its lock and drop it after unlocking; cleanup may call the host.
-    /// The SDK drops the ticket's parked continuation after this callback returns.
+
     fn cancel(&self, ticket: Ticket) -> u32 {
         let _ = ticket;
         Self::CANCEL
@@ -509,39 +470,27 @@ pub trait Life: Send + Sync + Sized + 'static {
     }
 
     /// `ready` (`abi::mechanism::lifecycle`, READY): what the instance must do on the network
-    /// before it serves (a discovery exchange through its declared need), on `ticket` with the
-    /// instance's `host` tables — `host.connector(ticket)` reaches its needs. The host calls it
-    /// after `open`, before any listener binds, and boot awaits it: `Poll::Pending` after
-    /// registering interest (a pending connector service, or [`Host::wake`] on `ticket` later) is
-    /// re-entered with the same ticket after the wake; `Ready(Err)` refuses the boot with the
-    /// refusal's text. Called only when the door states it: `lifecycle: life(L, ready)` in
-    /// [`plugin_door!`](crate::plugin_door). The default answers at once.
-    ///
-    /// # Errors
-    /// Why the instance cannot serve.
+
     fn ready(&self, host: &Host, ticket: Ticket) -> Poll<Result<(), Refusal>> {
         let _ = (host, ticket);
         Poll::Ready(Ok(()))
     }
 
     /// `close`: what the instance lets go before the SDK drops it, over the host tables `open`
-    /// handed it (`None` when it was handed none): a carrier closes the host I/O handles it still
-    /// holds. The default lets go of nothing.
+
     fn close(&self, host: Option<&Host>) {
         let _ = host;
     }
 
     /// What the instance an `open` or `refresh` just built raises on that answer
-    /// ([`Flagged`]): asked after each READY `open` and `refresh`. `None` (the default) raises
-    /// nothing.
+
     fn flagged(&self) -> Option<Flagged> {
         None
     }
 }
 
 /// The diagnostic an `open` or `refresh` raised ([`Life::flagged`]), held by the instance until
-/// the host has copied the reply, as [`Reported`] is. BOXED: an `open` raises it before its state
-/// moves into the instance box, so the entry the envelope points to must not move with it.
+
 struct Raised(Mutex<Option<Box<(Flagged, Diag)>>>);
 
 // SAFETY: the entry's one pointer (`text`) points into the `Flagged` text held beside it.
@@ -550,7 +499,7 @@ unsafe impl Send for Raised {}
 unsafe impl Sync for Raised {}
 
 /// The metric entry a `refresh` reports, held by the instance until the host has copied the reply
-/// (lifecycle ops never overlap on one instance, and the host copies a reply as it returns).
+
 struct Reported(Mutex<MetricEntry>);
 
 // SAFETY: the entry's one pointer (`label_vals`) is always NULL here.
@@ -559,7 +508,7 @@ unsafe impl Send for Reported {}
 unsafe impl Sync for Reported {}
 
 /// THE INSTANCE STATE every generic lifecycle slot serves: the kind's [`Life`] and the leases its
-/// answers hold. A kind's op slots read it as `Instance<'_, Held<L>>`.
+
 pub struct Held<L> {
     life: L,
     leases: Leases,
@@ -599,7 +548,7 @@ impl<L: Life> Held<L> {
     }
 
     /// The host tables `open` handed this instance (`OpenIn.host`); `None` when it was handed
-    /// none. Its connector is `host().map(|h| h.connector(ticket))` (`abi::sdk::conn`).
+
     pub const fn host(&self) -> Option<&Host> {
         self.host.as_ref()
     }
@@ -649,23 +598,20 @@ fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
     list.iter().map(Lent::<Blob>::bytes).collect()
 }
 
-// ── the nine slots ──────────────────────────────────────────────────────────────────────────
-
 /// What `release` answers for a lease this instance does not hold.
 pub const NO_SUCH_LEASE: &str = "release: no such lease";
 
 /// What the default [`Life::refresh`] answers: the instance takes a changed configuration only
-/// through a fresh `open`.
+
 pub const NOT_REFRESHED: &str =
     "refresh: this instance is not refreshed; a changed configuration applies when it is opened again";
 
 /// What an [`Opened`] op answers when the host calls it with no open instance (never, under the
-/// call contract: the host crosses a kind op only on an instance whose `open` answered READY).
+
 pub const NO_INSTANCE: &str = "this op runs only on an open instance, and none is open";
 
 /// A KIND OP OVER AN OPEN INSTANCE: [`SafeSlot`] with the no-instance answer stated once, by the
-/// SDK. The body is handed the instance's [`Held<L>`] (and the call's [`Instance`], for its ticket
-/// and what it parks); named in [`plugin_door!`](crate::plugin_door) as `Safe<Opened<S>>`.
+
 pub trait HeldSlot {
     /// The slot's `in`.
     type In: crate::abi::sdk::door::AbiIn;

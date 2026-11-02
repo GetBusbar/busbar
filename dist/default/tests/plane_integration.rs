@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CROSS-PLANE INTEGRATION TESTS for busbar-kernel: a REAL `build_app_from_config`-built (or
-//! `TestApp`-built) `App` serving the REAL linked planes. That only type-checks when there is ONE
-//! `busbar_kernel` in the graph, which is exactly what an integration-test target gives.
-//!
-//! The planes come from the test-linked table (`tests/linked/mod.rs`, architect ruling N02 MOVE
-//! rows); this file names none of them. A plane is addressed by what it declares — the config section
-//! it owns, its endpoint door — read back from the registry, and it is CONFIGURED the way an operator
-//! configures it: a deploy document run through the kernel's own `resolve`, and the plane's runtime
-//! object built through its own declared `build`, `claims` and `admission` hooks.
-//!
-//! The `agents:` section's owner is a DOOR row (a `door:` row of the test-linked list, its registry
-//! row folded from the plane door's Statement). The test that read the
-//! `agents:` plane's carried verify-on-call gate off its runtime object through its test seam is
-//! gone with the linked engine crate that installed that seam: a door row carries no kernel verify
-//! gate on its slot (its `retain_verify_gates` hook is `None`; the door judges its own
-//! registrations), and no remaining plane installs `TestPlaneSeam::verify_gate`.
-
 mod linked;
 
 use busbar_kernel::config::RootCfg;
@@ -25,20 +8,14 @@ use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
 use busbar_kernel_testkit::test_support::*;
 use std::sync::Arc;
 
-/// The linked plane that owns the `tools:` section and serves the endpoint door.
 fn door_plane() -> &'static PlaneDecl {
     linked::owning("tools")
 }
 
-/// The plane that owns the `agents:` section: a DOOR row (a `door:` row of the test-linked list,
-/// the plane's own door folded from its Statement by the kernel's door fold, as the composition
-/// root folds it in a shipped build).
 fn agents_plane() -> &'static PlaneDecl {
     linked::owning("agents")
 }
 
-/// The door plane's endpoint block, as an operator writes it, with its canonical URI at
-/// `https://<host>/<plane key>` — so the mount path is the key the plane declared, read back.
 fn door_section_yaml(host: &str) -> String {
     let door = door_plane();
     format!(
@@ -49,12 +26,9 @@ fn door_section_yaml(host: &str) -> String {
     )
 }
 
-/// One receiving `agents:` entry, `planner`.
 const AGENTS_YAML: &str =
     "agents:\n  planner: { url: \"https://agent.example/planner\", pin: { mechanism: unpinned } }\n";
 
-/// Parse and RESOLVE a deploy document carrying `sections`, the way boot and `--validate` do — the
-/// plane sections are lowered by the planes' own hooks, never by a plane type named here.
 fn resolved(sections: &str) -> RootCfg {
     linked::install();
     let yaml = format!(
@@ -77,8 +51,6 @@ fn resolved(sections: &str) -> RootCfg {
         .unwrap_or_else(|e| panic!("the document resolves: {e:?}"))
 }
 
-/// A resolved config ready for `build_once`: the given sections, a public URL, and the closed
-/// data-plane chain a configured endpoint door requires.
 fn bootable(sections: &str) -> RootCfg {
     let mut cfg = resolved(sections);
     cfg.public_url = Some("https://busbar.example".to_string());
@@ -86,8 +58,6 @@ fn bootable(sections: &str) -> RootCfg {
     cfg
 }
 
-/// Every linked plane the resolved config configures, with the runtime object its OWN `build` hook
-/// constructs from that config — the same `BuildCtx` `build_app_from_config` hands it.
 fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any + Send + Sync>)> {
     linked::planes()
         .iter()
@@ -106,9 +76,6 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
         .collect()
 }
 
-/// Configure a `TestApp` with every plane `sections` configures: install each plane's runtime
-/// object, mount every path it CLAIMS off that object, and bind the admission it DECLARES — the
-/// kernel's own `build_dispatch` contract, driven through the neutral fixture seams.
 fn configured(mut app: TestApp, sections: &str, public_url: Option<&str>) -> TestApp {
     let mut cfg = resolved(sections);
     cfg.public_url = public_url.map(str::to_string);
@@ -126,10 +93,6 @@ fn configured(mut app: TestApp, sections: &str, public_url: Option<&str>) -> Tes
     app
 }
 
-/// The path `decl` claims for its JSON-RPC front door, read off the object its `build` constructs
-/// from `sections`: the JSON-RPC claim at the path of the resource its admission binds (a plane
-/// that refuses in one dialect states that dialect on every claim, its RFC 9728 metadata document
-/// included, so the front door is the claim its audience names), else its first JSON-RPC claim.
 fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
     let mut cfg = resolved(sections);
     cfg.public_url = Some("https://busbar.example".to_string());
@@ -153,16 +116,11 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
         .unwrap_or_else(|| panic!("the `{}` plane claims a JSON-RPC front door", decl.key))
 }
 
-/// Whether `slot` is a plane served through its memory-ABI door: its claims are mounted, and its
-/// door arm judged, by the composition root at the data router's construction (ARCHITECT
-/// Q-L3B-KHARNESS), so the kernel's router mounts none of them.
 fn served_by_root(slot: &Arc<dyn std::any::Any + Send + Sync>) -> bool {
     slot.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>()
         .is_some()
 }
 
-/// Whether `decl`, configured by `sections`, is a plane served through its memory-ABI door
-/// ([`served_by_root`]), read off the object its `build` constructs.
 fn door_served_by_root(decl: &'static PlaneDecl, sections: &str) -> bool {
     let mut cfg = resolved(sections);
     cfg.public_url = Some("https://busbar.example".to_string());
@@ -172,13 +130,6 @@ fn door_served_by_root(decl: &'static PlaneDecl, sections: &str) -> bool {
         .is_some_and(|(_, obj)| served_by_root(&obj))
 }
 
-/// THE SHIPPED DEFECT: an oversized POST to a MOUNTED endpoint-door plane was answered with an
-/// **OpenAI** error envelope — `{"error":{"message","type","code"}}` — because the error-shaping
-/// classifier read the PATH SHAPE only, knew nothing of the mount table, and fell through its
-/// unknown-ingress arm to OpenAI. The door plane's clients speak JSON-RPC 2.0 and cannot decode that
-/// body; worse, the answer contradicted the mount the operator configured.
-///
-/// RED before the merge: the body carried `error.type` and no `jsonrpc` member.
 #[tokio::test]
 async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -204,9 +155,6 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     );
 }
 
-/// THE SEGMENT BOUNDARY, IN BOTH DIRECTIONS. A mount claims its path and everything beneath it at a
-/// segment boundary, and claims `<mount>x` not at all. A sibling path must inherit neither the
-/// plane's grants nor its refusals, so `<mount>x` keeps the residual plane's answer.
 #[tokio::test]
 async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -214,7 +162,6 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     let mount = jsonrpc_mount(door_plane(), &sections);
     let app = configured(TestApp::new(), &sections, None).build();
 
-    // UNDER the mount, at a segment boundary: claimed.
     let under = oversized_413_body(app.clone(), &format!("{mount}/anything")).await;
     assert_eq!(
         under.get("jsonrpc").and_then(|j| j.as_str()),
@@ -222,7 +169,6 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
         "`{mount}/anything` lies beneath the `{mount}` mount at a segment boundary; got {under}"
     );
 
-    // The SIBLING: a bare-prefix match would claim it. It must fall through to the residual.
     let sibling = oversized_413_body(app, &format!("{mount}x")).await;
     assert!(
         sibling.get("jsonrpc").is_none(),
@@ -235,16 +181,6 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     );
 }
 
-/// THE POSITIVE CASE: with the endpoint door and a receiving `agents:` entry both configured,
-/// `App::plane_slot(<key>)` is `Some` for EACH configured plane, every read hands back the SAME
-/// object (one construction, not a second, merely-equal one), and that object is the plane's own:
-/// its declared `admission` hook reads it, and every JSON-RPC path its declared `claims` hook reads
-/// off it is mounted in the built App's dispatch table for that plane — and, for a plane that
-/// contributes its data routes through the slot seam (`PlaneDecl::routes`), is a route the built
-/// router mounted. So `build_app_from_config` builds each plane ONCE via its `build` hook, and the
-/// mount table, the router surface and the audience check come off that one slot object. A DOOR row
-/// (the `agents:` owner here) contributes no data route through the slot seam: its
-/// claimed paths are served by the plane driver behind the mount table, which is what it is held to.
 #[test]
 fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -290,9 +226,7 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
             !claims.is_empty(),
             "the `{key}` plane claims its JSON-RPC door"
         );
-        // A plane served through its memory-ABI door has its claims mounted by the composition
-        // root at the data router's construction (ARCHITECT Q-L3B-KHARNESS), not by the kernel's
-        // router; the root's `door_boundary` suite holds that half for it under this test's name.
+
         if served_by_root(&slot) {
             continue;
         }
@@ -314,10 +248,6 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     }
 }
 
-/// THE NEGATIVE CASE (the RED-first gate): a deployment configuring NO plane section gets no slot
-/// for any mounting plane. Watched RED before `PlaneDecl::build` guarded absence (an unconditional
-/// `build` that always constructs an object makes `plane_slot` answer `Some` on a deployment that
-/// configured no plane).
 #[test]
 fn plane_slot_is_none_when_the_plane_is_not_configured() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -356,15 +286,10 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     }
 }
 
-// (`a_model_plane_request_is_counted_exactly_once` MOVED, assertions unchanged, to the root's door
-// suite, `crates/busbar/src/root/tests/serve_tests.rs`: a model request is served by the door that
-// serves the `pools` map, which the kernel's router alone does not mount (DEV-GREEN row 83).)
-
 #[cfg(test)]
 mod metrics_scrape {
     use super::*;
 
-    /// Every non-comment `/metrics` line for `family` that carries `plane="<plane>"`.
     fn series_for<'a>(exposition: &'a str, family: &str, plane: &str) -> Vec<&'a str> {
         let want = format!("plane=\"{plane}\"");
         exposition
@@ -373,8 +298,6 @@ mod metrics_scrape {
             .collect()
     }
 
-    /// Every non-comment `/metrics` line for `family` (no plane filter) — used for the model-plane
-    /// families, which carry no `plane` label.
     fn lines_for<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
         exposition
             .lines()
@@ -382,7 +305,6 @@ mod metrics_scrape {
             .collect()
     }
 
-    /// The sorted label KEYS of one exposition line.
     fn keys_of(line: &str) -> Vec<String> {
         line.split_once('{')
             .and_then(|(_, rest)| rest.rsplit_once('}'))
@@ -397,17 +319,6 @@ mod metrics_scrape {
             .unwrap_or_default()
     }
 
-    /// A TOOL-PLANE call and an AGENT-PLANE task each produce a `busbar_plane_requests_total` and a
-    /// `busbar_plane_request_duration_seconds` series on a real `/metrics` scrape, labelled with the
-    /// plane they arrived on — WHILE the model plane's `busbar_requests_total` stays v1.5.4-identical
-    /// (no `plane` label).
-    ///
-    /// Delete the observation layer and this test fails: without it, no mounted-plane request
-    /// reaches an emission site at all. That is what the test is for — the mounted planes were
-    /// invisible on `/metrics`.
-    ///
-    /// The test's NAME is pinned by `qa/capability-equality.json`, which cites it; the body names
-    /// no plane.
     #[tokio::test]
     async fn mounted_plane_traffic_appears_on_a_real_metrics_scrape() {
         busbar_kernel_testkit::test_support::metrics::init();
@@ -428,7 +339,6 @@ mod metrics_scrape {
         let base = format!("http://{addr}");
         let client = reqwest::Client::new();
 
-        // ── TOOL-PLANE TRAFFIC: a JSON-RPC list call on the door plane's mount ────────────────────
         let door_status = client
             .post(format!("{base}{door_mount}"))
             .json(&serde_json::json!({
@@ -443,7 +353,6 @@ mod metrics_scrape {
             .status()
             .as_u16();
 
-        // ── AGENT-PLANE TRAFFIC ─────────────────────────────────────────────────────────────────────
         let agents_status = client
             .post(format!("{base}{agents_mount}/agents/planner"))
             .json(&serde_json::json!({
@@ -458,11 +367,6 @@ mod metrics_scrape {
             .status()
             .as_u16();
 
-        // (The MODEL-plane traffic and its v1.5.4-shape assertions MOVED, unchanged, to the root's
-        // door suite: `the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape`. The byte-identity
-        // guard below still holds over every model-family line this scrape carries.)
-
-        // ── THE SCRAPE, through the real `/metrics` route ───────────────────────────────────────────
         let scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
         assert_eq!(
             scrape.status().as_u16(),
@@ -472,9 +376,6 @@ mod metrics_scrape {
         let exposition = scrape.text().await.unwrap();
         server.abort();
 
-        // THE MOUNTED PLANES ARE VISIBLE. Each lands on `busbar_plane_requests_total` /
-        // `busbar_plane_request_duration_seconds`, labelled with the plane it arrived on, so an
-        // operator can write `sum by (plane) (rate(busbar_plane_requests_total[5m]))`.
         for plane in [door_plane().key, agents_plane().key] {
             let counters = series_for(
                 &exposition,
@@ -498,7 +399,7 @@ mod metrics_scrape {
                 "no `{}` series for plane=\"{plane}\" after driving real traffic. Exposition:\n{exposition}",
                 busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
             );
-            // The mounted planes' family carries exactly {plane, ingress_protocol, pool, outcome}.
+
             for line in &counters {
                 assert_eq!(
                     keys_of(line),
@@ -513,9 +414,6 @@ mod metrics_scrape {
             }
         }
 
-        // BYTE-IDENTITY GUARD: the two model families never carry a `plane` label anywhere in the whole
-        // exposition. This is the assertion that fails if the BI-2 regression (a `plane` label on these
-        // pre-existing families) is ever reintroduced by any emission site.
         for family in [
             busbar_kernel::snapshot::REQUESTS_TOTAL,
             busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
@@ -530,27 +428,8 @@ mod metrics_scrape {
     }
 }
 
-/// The kernel's body-ingress convenience routes (`/{name}/v1/messages`,
-/// `/{provider}/{model}/v1/messages`): 1.5.5 surface, mounted where a plane installed body ingress.
 const BODY_INGRESS_ROUTES: [&str; 2] = ["/{name}/v1/messages", "/{provider}/{model}/v1/messages"];
 
-/// THE PLANE-BOUNDARY RATCHET (1.6.0), driven by the ROUTER TABLE rather than by a hand-listed
-/// sample.
-///
-/// The rule: an access token minted for the endpoint-door plane's resource is admissible on that
-/// plane and nowhere else. A sampled test proves that of the paths someone remembered; this one
-/// walks `CoreRouteTable::routes()` — the table every core route is entered into at the moment it is
-/// mounted — plus `App::boot_route_paths` for the plugin surface, so a route added later JOINS the
-/// assertion instead of quietly joining the blast radius. There is no skip arm: a path whose shape
-/// this test cannot turn into a concrete request PANICS rather than passing.
-///
-/// The admissible set is the set of paths the plane CLAIMS off its own configured object, so it is
-/// the plane's declaration, never a list written here. `declared_public` is the mirror ratchet on
-/// the other axis: a route mounted `RouteAuth::None` answers everyone, so adding one must be a
-/// deliberate act that shows up here.
-///
-/// The test's NAME is pinned by `qa/design-bindings.json` (PB-33) and the structure-lint choke-point
-/// table, which cite it; the body names no plane.
 #[tokio::test]
 async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
@@ -560,31 +439,16 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     busbar_kernel_testkit::test_support::metrics::init();
     let door = door_plane();
 
-    /// The host of the door plane's canonical URI in this test. The canonical URI is BOTH the
-    /// audience minted into `bound_token` below AND the `canonical_uri` the app is built with — one
-    /// string, used twice, because a test in which they differed would prove only that two
-    /// spellings disagree.
     const HOST: &str = "busbar.example.com";
     let canonical = format!("https://{HOST}/{}", door.key);
     let sections = door_section_yaml(HOST);
-    // The door's ingress paths, the ONLY places an audience-bound token may be admitted: every
-    // JSON-RPC path the plane claims off its configured object. The app below MOUNTS the plane, so
-    // this list is exercised in both directions: an audience-bound token is admitted here and
-    // nowhere else, and a plain data-plane token is admitted everywhere else and not here.
+
     let admissible: Vec<String> = vec![jsonrpc_mount(door, &sections)];
-    // A plane served through its memory-ABI door: the composition root mounts its claims and the
-    // root's `door_boundary` suite walks its door arm (ARCHITECT Q-L3B-KHARNESS). The kernel's
-    // router then mounts none of them, and the walk below holds the kernel's half: the
-    // audience-bound token buys nothing on any route the kernel mounts.
+
     let by_root = door_served_by_root(door, &sections);
-    // Core routes declared `RouteAuth::None`: unauthenticated by design, so no token of any kind
-    // is consulted there. `/healthz` is a liveness probe; `/auth/token` runs the auth chain in its
-    // own handler; the RFC 9728 metadata document for the door's resource must be readable by a
-    // caller that has no token yet, because that caller is the entire population the document
-    // exists for.
+
     let mut declared_public: Vec<String> = vec!["/healthz".to_string(), "/auth/token".to_string()];
-    // The door's RFC 9728 document is one of its claims: the kernel mounts it for a plane whose
-    // claims it mounts, and the composition root for a door plane (whose suite holds it there).
+
     if !by_root {
         declared_public.push(format!(
             "/.well-known/oauth-protected-resource{}",
@@ -600,8 +464,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
-    // An UNRESTRICTED key: `allowed_scopes: None` is the wildcard (`store.rs`), so the only thing
-    // that can turn the audience-bound sibling away is the plane boundary itself, never a scope.
+
     let (key, plain_token) = gov
         .mint_signed(
             busbar_kernel::governance::NewKeySpec {
@@ -651,14 +514,8 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     )
     .build();
 
-    // The table the SERVED router was built from: same function, same plugin-route input, same
-    // plane resource, so the enumeration cannot describe a different surface than the one under
-    // test. Read through the curated `(path, method, auth)` test-support seam so this cross-crate
-    // integration test names PUBLIC types only, never core's sealed `CoreRoute`/`CoreRouteTable`.
     let core_routes = busbar_kernel_testkit::routes::base_data_route_method_view(&app);
-    // FLOOR ON THE DISCOVERED SET, in the one dimension that matters here: the walk below is only a
-    // plane-boundary test if the router actually mounted the plane. Without this, deleting the door
-    // mount would leave every assertion below trivially satisfied and the test would still pass.
+
     for path in &admissible {
         if by_root {
             assert!(
@@ -676,19 +533,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             door.key
         );
     }
-    // THE MATCHING FLOOR ON `declared_public`, and it is the half the walk below cannot supply.
-    //
-    // The loop's public arm is one-directional: it fires only for a route the table reports as
-    // `RouteAuth::None`, and asks whether that route was declared. Nothing anywhere asked the
-    // reciprocal — whether a path NAMED here is still mounted `None` at all. So a route silently
-    // leaving the unauthenticated bypass set (remounted `Key`, or unmounted outright) does not fail
-    // this test: it simply takes the guarded arm, or vanishes from the walk, and the entry here
-    // becomes a comment about a rule nothing checks.
-    //
-    // That is not hypothetical bookkeeping. Appendix B binding PB-33 cites THIS test, by name, as
-    // the proof that `/auth/token` is in the unauthenticated exact-path bypass set — a property the
-    // test could not observe. This floor is what makes the citation true, and it is the exact
-    // sibling of the admissible floor above (same argument, other axis).
+
     for public in &declared_public {
         assert!(
             core_routes.iter().any(|(path, _, auth)| path == public
@@ -697,15 +542,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
              RouteAuth::None — the bypass set this names is not the one the router built"
         );
     }
-    // THE BODY-INGRESS CONVENIENCE ROUTES (1.5.5 surface, `/{name}/v1/messages`,
-    // `/{provider}/{model}/v1/messages`): OBSERVATION POINT MOVED (DEV-GREEN row 83, ARCHITECT
-    // option (a) on #1161). No plane installs a kernel body-model arrival any more, so the kernel's
-    // router mounts neither path: the door that serves the `pools` map serves both through its `/`
-    // claim, mounted by the composition root. The confinement this walk held on them (an
-    // audience-bound token buys nothing there, its plain sibling is admitted) is walked where that
-    // door is mounted: `root::door_steps::tests::door_boundary::
-    // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`, over every
-    // guarded route of the door's data router. Here, the kernel's half: it mounts neither.
+
     for pattern in BODY_INGRESS_ROUTES {
         assert!(
             !core_routes.iter().any(|(path, _, _)| path == pattern),
@@ -724,10 +561,6 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    // Turn an axum path PATTERN into one concrete request path. Every `{capture}` segment is a
-    // routing wildcard, so any non-empty segment matches; the values below are real names in this
-    // app so the request reaches the handler rather than dying earlier for an unrelated reason.
-    // A pattern shape this cannot render PANICS — that is the ratchet.
     fn concrete(pattern: &str) -> String {
         let mut out = String::new();
         for seg in pattern.split('/').skip(1) {
@@ -774,11 +607,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             continue;
         }
         let method = reqwest::Method::from_bytes(route.1.as_bytes()).unwrap();
-        // THE DOOR ARM, and it is the reciprocal of the data-plane arm below rather than a weaker
-        // version of it: on this plane the audience-bound token is the one that WORKS and the plain
-        // data-plane token is the one that must buy nothing. Asserting only the first half would
-        // pass against a server that admitted both, which is the failure mode the boundary exists
-        // to prevent.
+
         if admissible.contains(&route.0) {
             let url = format!("http://{addr}{path}");
             let anon = client
@@ -846,11 +675,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             continue;
         }
         let url = format!("http://{addr}{path}");
-        // The denial BASELINE for this exact route: no credential at all. Auth failures are
-        // protocol-shaped (`auth_failure_status_and_kind` — Gemini answers 400, Bedrock 403), so a
-        // literal 401 would be a claim about the envelope rather than about admission. Comparing
-        // against the no-credential response asserts the thing that matters: the audience-bound
-        // token buys exactly nothing here.
+
         let anon = client
             .request(method.clone(), &url)
             .body(body.clone())
@@ -872,8 +697,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             route.1,
             path
         );
-        // Control on the SAME route: the plain sibling of the same unrestricted binding IS
-        // admitted, so the denial above is the plane boundary and not an unrelated rejection.
+
         let plain = client
             .request(method, &url)
             .header(
@@ -909,14 +733,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         by_root || door_checked > 0,
         "no door-plane route was walked, so the reciprocal half of the boundary was never asserted"
     );
-    // THE KERNEL'S GUARDED SURFACE, WALKED WHOLE. The floor was 4 while the kernel mounted the
-    // list-models routes (`/v1/models`, `/v1beta/models`) and the two 1.5.5 convenience routes;
-    // those are the pools door's claims now (ARCHITECT 2026-10-16 3b C; DEV-GREEN row 83), walked,
-    // with the same assertions and a floor of 3, over the door's data router
-    // (`root::door_steps::tests::door_boundary::
-    // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`). OBSERVATION
-    // POINT MOVED: here, every guarded core route the table names is walked (none skipped), and
-    // the kernel's own `/stats` is among them, so an enumeration that sees no router stays red.
+
     let guarded_core = core_routes
         .iter()
         .filter(|(path, _, auth)| {
@@ -933,8 +750,6 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
          kernel's guarded `/stats` — the enumeration is not seeing the router: {core_routes:?}"
     );
 
-    // The plugin surface is enumerable through the same boot capture. This app loads no plugins,
-    // so the set is empty; the loop is here so a plugin route is covered the moment one exists.
     for path in &boot_plugin_paths {
         let url = format!("http://{addr}{path}");
         let anon = client.get(&url).send().await.unwrap().status();

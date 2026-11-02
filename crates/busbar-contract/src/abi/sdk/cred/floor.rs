@@ -2,18 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE AUTH FLOOR (coordinator rulings S4 and S5): which auth methods weaker than the best a
-//! protocol offers the operator's connection string allows. It is read from the operator's text
-//! when a [`super::CredUrl`] is split, carried by the [`super::Cred`] it seals and checked by the
-//! chip's recipes, so a plugin cannot widen it: no method relaxes it.
-//!
-//! * Postgres: libpq 16's `require_auth`. With none written, busbar allows only SCRAM-SHA-256 (and
-//!   a server that asks for no password); `require_auth=password`, `md5` or a list naming them
-//!   allows the weaker method. A list of `!`-negated methods allows every method it does not name.
-//! * MySQL: `enable_cleartext_plugin=true` allows `mysql_clear_password`; `secure_auth=false`
-//!   allows `mysql_old_password` (both the 1.5.5 driver's switches, off by default).
-//!   `caching_sha2_password` full authentication sends the password RSA-encrypted only to a server
-//!   key the operator pinned (`server_public_key_sha256=<hex SHA-256 of the key's DER>`), or in
-//!   clear on a unix socket (`socket=`) or a connection the host connector reports secured.
 
 /// A Postgres auth method, as libpq's `require_auth` names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,14 +58,11 @@ pub struct RequireAuth(u8);
 
 impl RequireAuth {
     /// No `require_auth` written: busbar 1.6.0 allows SCRAM-SHA-256 and a server that asks for no
-    /// password, never a weaker password method.
+
     pub const DEFAULT: Self = Self(PgAuth::ScramSha256.bit() | PgAuth::None.bit());
 
     /// Parse a `require_auth` value as libpq 16 does: a comma-separated list of method names, or a
-    /// list of `!`-negated ones (every method but those).
-    ///
-    /// # Errors
-    /// An unknown method, an empty list, a method named twice, or negated and plain names mixed.
+
     pub fn parse(value: &str) -> Result<Self, &'static str> {
         const MIXED: &str = "require_auth mixes negated (`!`) and plain methods";
         let mut negated = None;
@@ -142,7 +127,7 @@ impl AuthFloor {
     };
 
     /// The floor the operator's connection string `public` (its password already taken out) sets.
-    /// A value that does not parse allows nothing weaker: the plugin refuses it at its own parse.
+
     #[must_use]
     pub fn of(public: &str) -> Self {
         let mut f = Self::STRICT;
@@ -171,8 +156,6 @@ impl AuthFloor {
         f
     }
 
-    // Protocol capture already decoded this value with PostgreSQL's native grammar. Preserve
-    // every other operator flag while replacing only the PostgreSQL methods.
     pub(super) fn postgres(mut self, require_auth: Option<&str>) -> Self {
         self.pg = require_auth
             .and_then(|v| RequireAuth::parse(v).ok())

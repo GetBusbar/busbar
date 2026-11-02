@@ -1,33 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RECORDING HOST-TABLE SHIM: a TEST-ONLY wrapper that records the
-//! bytes crossing the plugin ABI, both ways, so the canary harness can show where a planted
-//! credential crosses (settings, declared secrets, outbound and passthrough credentials).
-//!
-//! It is built entirely out of the published ABI, in this test binary, and changes no production
-//! code path: a plugin door is wrapped on the PLUGIN side of the boundary.
-//!
-//! * [`wrap`] takes any door (a linked crate's `door`, or the `busbar_plugin_door` symbol of a
-//!   cdylib this test `dlopen`ed itself: the same `Door` a dropped-in plugin exports) and answers a
-//!   [`DoorFn`] over a copy of it whose every op slot is a trampoline. The trampoline decodes what
-//!   the HOST lends the op (`open`/`refresh`/`validate` settings and secrets, an auth op's
-//!   credential, settings, caller credential and headers), forwards to the real op, then decodes
-//!   what the PLUGIN wrote back into host buffers (an auth `fields` answer).
-//! * At `open` (and `ready`) the `HostTables` pointer the loader hands the plugin is swapped for a
-//!   RECORDING copy: the services, connector and I/O tables are replaced by tables of trampolines
-//!   that decode the bytes the plugin hands the host (a connection's target, every byte written on
-//!   a connection or handle, a spawned child's env) and the bytes the host answers
-//!   (`records.secret`), then forward to the loader's real slot with the real context.
-//!
-//! The loader builds ONE `HostTables` shape for every plugin (`dispatch/plugin.rs`, `Plugin::bind`,
-//! shared by `load_linked` and the dropped-in loads), so the recording tables wrap the linked and the
-//! dropped-in plugins' tables alike; what differs is only where the door came from.
-//!
-//! Everything here is `unsafe` ABI plumbing over raw pointers the host and plugin exchange. Every read
-//! is bounded by the `size` the writer stated, and nothing panics across an `extern "C"` edge: the
-//! bookkeeping runs under `catch_unwind`, and the real op or service is always called.
-
 #![allow(unsafe_code)]
 
 use std::collections::HashMap;
@@ -77,11 +50,8 @@ pub struct Crossing {
     pub bytes: Vec<u8>,
 }
 
-/// Every crossing recorded so far, process-wide.
 static LOG: Mutex<Vec<Crossing>> = Mutex::new(Vec::new());
 
-/// Every op and service call the shim forwarded (plugin, site), so a report can show the shim saw
-/// traffic even where no bytes were decoded.
 static CALLS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 fn push(plugin: &str, dir: Dir, site: String, bytes: Vec<u8>) {
@@ -102,17 +72,13 @@ fn call(plugin: &str, site: String) {
         .push((plugin.to_string(), site));
 }
 
-/// A snapshot of every crossing recorded so far.
 pub fn crossings() -> Vec<Crossing> {
     LOG.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
-/// A snapshot of every forwarded call (plugin, site).
 pub fn calls() -> Vec<(String, String)> {
     CALLS.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
-
-// ── raw readers ────────────────────────────────────────────────────────────────────────────────
 
 /// The bytes `ptr..ptr+len`, or nothing for NULL / empty / implausibly long.
 ///
@@ -153,20 +119,16 @@ unsafe fn read_in<T: Copy>(input: *const c_void) -> Option<T> {
     Some(unsafe { (input as *const T).read_unaligned() })
 }
 
-// ── the door wrapper ───────────────────────────────────────────────────────────────────────────
-
-/// How many doors one test process may wrap.
 const MAX_WRAPS: usize = 8;
-/// The most op slots a kind's table holds (lifecycle included) that the shim wraps.
+
 const MAX_OPS: usize = 32;
 
-/// One wrapped door: its label, its kind, the real ops and the recording door.
 struct Wrapped {
     label: String,
     kind: u32,
     real_ops: Vec<Option<Op>>,
     real_ready: Option<Op>,
-    /// The recording door's address (a `&'static Door`, kept as an address so the table is `Sync`).
+
     door: usize,
 }
 
@@ -203,7 +165,7 @@ pub unsafe fn wrap(label: &str, inner: *const Door) -> DoorFn {
         // SAFETY: `slots` op slots follow the 8-byte head, inside `size`.
         .map(|i| unsafe { (ops.add(8 + 8 * i) as *const Option<Op>).read_unaligned() })
         .collect();
-    // The recording table: the real one copied whole, each present slot replaced.
+
     let mut table = vec![0u64; size.div_ceil(8)];
     // SAFETY: `table` holds at least `size` bytes; the source is the real table of `size` bytes.
     unsafe { std::ptr::copy_nonoverlapping(ops, table.as_mut_ptr() as *mut u8, size) };
@@ -340,7 +302,6 @@ fn op_tramps(w: usize) -> [Op; MAX_OPS] {
     }
 }
 
-/// The lifecycle and auth op names, for the report.
 fn op_name(kind: u32, i: u32) -> String {
     let lifecycle = [
         "validate", "open", "refresh", "retire", "tick", "drive", "cancel", "release", "close",
@@ -365,12 +326,10 @@ fn op_name(kind: u32, i: u32) -> String {
     format!("op[{i}]")
 }
 
-/// Run `f`, swallowing a panic: bookkeeping must never unwind across the C ABI.
 fn quietly(f: impl FnOnce()) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 }
 
-/// The settings and secrets a lifecycle `in` lends.
 unsafe fn lent_settings_and_secrets(
     label: &str,
     op: &str,
@@ -413,7 +372,7 @@ fn on_op(
     let name = op_name(wr.kind, slot);
     let auth = wr.kind == KindCode::Auth as u32;
     quietly(|| call(&wr.label, format!("op:{name}")));
-    // BEFORE: what the host lends.
+
     quietly(|| {
         // SAFETY: `input` is the `in` the host wrote for this slot, sized by its head.
         unsafe {
@@ -510,7 +469,7 @@ fn on_op(
             }
         }
     });
-    // THE CROSSING: `open` gets the recording host tables in place of the loader's.
+
     let answer = if slot == life::OPEN && !input.is_null() {
         // SAFETY: an `in` starts with its size; `host` sits at its fixed offset inside it.
         unsafe {
@@ -533,7 +492,7 @@ fn on_op(
     } else {
         real(instance, input, out)
     };
-    // AFTER: what the plugin wrote back into the host's buffers.
+
     quietly(|| {
         if !(auth && slot == auth_slot::FIELDS) || answer.outcome() != Outcome::Ready {
             return;
@@ -597,20 +556,16 @@ fn on_ready(w: usize, instance: *mut c_void, input: *const c_void, out: *mut c_v
     }
 }
 
-// ── the recording host tables ──────────────────────────────────────────────────────────────────
-
-/// The three host tables a `HostTables` names.
 const SERVICES: usize = 0;
 const CONNS: usize = 1;
 const IO: usize = 2;
-/// The most slots one host table holds that the shim wraps.
+
 const MAX_SVC: usize = 40;
 
-/// The loader's real table of each family (its address), first seen.
 static REAL: [OnceLock<usize>; 3] = [const { OnceLock::new() }; 3];
-/// The recording table of each family (its address).
+
 static RECORDING: [OnceLock<usize>; 3] = [const { OnceLock::new() }; 3];
-/// A host context's plugin label, and the recording `HostTables` made for a real one.
+
 static CONTEXTS: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
 static MADE: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
 
@@ -659,15 +614,12 @@ unsafe fn recording_tables(label: &str, real: *const HostTables) -> *const HostT
     rec
 }
 
-/// The recording copy of one family's real table (`size: u32, slots: u32`, then `slots` service
-/// fns), or the real table itself when this family already had a different one.
 unsafe fn recording_table(family: usize, real: *const u8) -> *const u8 {
     if real.is_null() {
         return real;
     }
     let first = *REAL[family].get_or_init(|| real as usize);
     if first != real as usize {
-        // A second real table of one family: forward untouched rather than guess.
         return real;
     }
     let rec = *RECORDING[family].get_or_init(|| {
@@ -761,7 +713,6 @@ fn svc_tramps(family: usize) -> [ServiceFn; MAX_SVC] {
     }
 }
 
-/// The slot index of a table field at byte offset `off` (after the 8-byte head).
 const fn idx(off: usize) -> usize {
     (off - 8) / 8
 }
@@ -815,7 +766,7 @@ fn on_svc(
     let site = svc_name(family, i);
     let label = label_of(ctx);
     quietly(|| call(&label, site.clone()));
-    // BEFORE: what the plugin hands the host.
+
     quietly(|| {
         let p = Dir::PluginToHost;
         // SAFETY: `input` is the plugin's `in` for this service, sized by its head.
@@ -861,7 +812,7 @@ fn on_svc(
         }
     });
     let answer = real(ctx, input, out);
-    // AFTER: what the host answered into the plugin's buffers.
+
     quietly(|| {
         if family != SERVICES
             || i != idx(offset_of!(HostSlots, records_secret))
@@ -889,5 +840,4 @@ fn on_svc(
     answer
 }
 
-// The `InHead` import documents what every `in` starts with; keep it referenced.
 const _: usize = size_of::<InHead>();

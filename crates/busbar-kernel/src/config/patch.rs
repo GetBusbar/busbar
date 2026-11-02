@@ -1,22 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! PER-FIELD patches for the root config sections a `PUT /config/settings` may set.
-//!
-//! The overlay stores what the operator NAMED, never a whole section. Storing the section meant a
-//! partial body deserialized into a full struct of compiled defaults, so every field the operator
-//! did not mention silently reverted — including `config.yaml` values the API can neither read back
-//! (`GET` returns no effective values for unset fields) nor restore.
-//!
-//! Each patch is an all-`Option` twin, `deny_unknown_fields` so a typo is still a 400 at body-parse
-//! time, and `apply` splices only the named fields onto the RESOLVED base. Keeping the patch typed
-//! (rather than sparse JSON) is what lets `apply_to_deploy` stay infallible: it is called from boot,
-//! `--validate`, reload, apply and reset, none of which can take a merge error.
-//!
-//! `tls`, `admin_tls` and `store` are deliberately NOT field-merged — a cert bundle and a store
-//! definition are atomic units, and `store.settings` is opaque plugin config busbar must not
-//! reinterpret.
-
 use serde::{Deserialize, Serialize};
 
 /// Build a section patch: an all-`Option` twin, its per-field `apply`, and its accumulate-across-
@@ -72,8 +56,6 @@ section_patch!(
     }
 );
 
-/// Preserve explicit null on an optional setting: serde's default nested Option would collapse
-/// it into omission, preventing an operator from disabling a previously configured cap.
 fn deserialize_optional_patch<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -90,11 +72,6 @@ section_patch!(
         allow_all_metadata: bool,
     }
 );
-
-// 1.5.3: there is NO `ObservabilityPatch` any more. The `observability:` BLOCK IS DELETED
-// — its last field (`otlp_url`) is now an `export:` instance with `module: otlp`, and the
-// `export:` block is edited in config.yaml + applied via plugin reload like every other exporter,
-// never through the single-value settings overlay.
 
 section_patch!(
     /// Per-field patch for [`crate::config::AdvancedCfg`].

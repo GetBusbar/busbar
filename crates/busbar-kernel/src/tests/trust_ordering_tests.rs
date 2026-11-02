@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Store crossings through the real host API must preserve local decision order.
-
 use super::*;
 use crate::store::plane_view::KIND_TRUST_DECISION;
 use crate::trust::book::RulingRow;
@@ -19,7 +17,6 @@ const OTHER_ITEM: &str = "other-tool";
 const ORIGINAL: &str = "original-digest";
 const CHANGED: &str = "changed-digest";
 
-/// Keep real records, with hooks only at the Store crossings whose order the test controls.
 fn node(r: &Rig, probe: &Arc<Probe>, pool: Arc<dyn Offload>) -> Arc<KernelServices> {
     assert!(probe.record_store.set(Arc::clone(&r.store)).is_ok());
     if probe.decision_write.get().is_none() {
@@ -91,7 +88,6 @@ fn next_window(r: &Rig) {
     );
 }
 
-/// Park AFTER the real upsert, before the host can apply it to RAM.
 fn park_first_write(probe: &Probe, r: &Rig) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
     let (entered, at_store) = mpsc::channel();
     let (release, released) = mpsc::channel();
@@ -125,7 +121,7 @@ fn a_kept_approval_cannot_apply_after_a_newer_same_key_revoke() {
     std::thread::scope(|scope| {
         let approval = scope.spawn(|| node.trust_rule(WHOLE_KEY, Ruling::Approve));
         at_store.recv_timeout(CROSSING_TIMEOUT).unwrap();
-        // Old code writes revoke B and applies B here, then applies parked approval A last.
+
         let overlapping = node.trust_rule(WHOLE_KEY, Ruling::Revoke);
         let blocked_sight =
             run(|later| node.trust_sight(&caller(INSTANCE), COUNTERPARTY, CHANGED, later));
@@ -356,7 +352,7 @@ fn stale_snapshot_after_local_revoke(item: Option<&str>) {
     next_window(&r);
     node.trust_resync_tick();
     assert_eq!(judged(&node, item), Err(Distrust::NotApproved));
-    // A fresh read still accepts another node's later approval.
+
     let remote = self::node(&r, &Arc::new(Probe::default()), Arc::new(Inline));
     remote
         .decide_key(INSTANCE, COUNTERPARTY, item, Ruling::Approve, None)

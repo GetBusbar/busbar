@@ -33,7 +33,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::v1::contract::ADMIN_PREFIX;
 use busbar_kernel::config::named_map::NamedMapSection;
 
-/// One served operation: the upper-case HTTP method and the absolute, `{param}`-templated path.
 type Op = (String, String);
 
 /// Where an operation comes from — which decides who answers it and whether it is always present.
@@ -48,12 +47,10 @@ enum Source {
     Plane(&'static str),
 }
 
-/// The absolute admin path for a relative one.
 fn abs(rel: &str) -> String {
     format!("{ADMIN_PREFIX}{rel}")
 }
 
-/// The kernel loop's verbs by table name.
 fn loop_verbs() -> BTreeMap<&'static str, crate::verb::KernelVerb> {
     crate::verb::NEW_VERBS
         .iter()
@@ -63,10 +60,6 @@ fn loop_verbs() -> BTreeMap<&'static str, crate::verb::KernelVerb> {
         .collect()
 }
 
-/// THE OPERATIONS THE TABLE DECLARES AND THIS BUILD DOES NOT SERVE: a kernel verb whose effect is
-/// not bound (`verb::effect_bound`). The node's mount hands each to the surface's own fallback — the
-/// unmounted `404`, no audit row — so none is served and none is documented. Each keeps its admin
-/// corpus entry and cells: they are what shows the answer is 1.5.5's own for a path it never had.
 fn unbound_declared_operations() -> BTreeSet<Op> {
     let verbs = loop_verbs();
     crate::admin_codec::verbs::table()
@@ -80,11 +73,6 @@ fn unbound_declared_operations() -> BTreeSet<Op> {
         .collect()
 }
 
-/// THE NINE OPERATIONS THE OWNER REMOVED FROM 1.6.0 (`set_operator_key`, `set_escrow`,
-/// `set_dual_control`, `export_keyset`, `approve`, `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`). They are not verbs, so the table has no row for
-/// them and the node answers each with the unmounted `404` — exactly what it answered while they
-/// were declared-but-unbound, and the published 1.5.5 answer for a path it never had. Each keeps
-/// its admin corpus entry and cells, which are what show that answer did not move.
 const REMOVED_OPERATIONS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/operator-key"),
     ("POST", "/api/v1/admin/escrow"),
@@ -97,7 +85,6 @@ const REMOVED_OPERATIONS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/slices/resolve"),
 ];
 
-/// The removed operations as [`Op`]s.
 fn removed_operations() -> BTreeSet<Op> {
     REMOVED_OPERATIONS
         .iter()
@@ -105,8 +92,6 @@ fn removed_operations() -> BTreeSet<Op> {
         .collect()
 }
 
-/// EVERY ADMIN OPERATION THIS BUILD CAN SERVE, and who serves it. See the module doc for the three
-/// sources and why they are the complete set.
 fn served_admin_operations() -> BTreeMap<Op, Source> {
     crate::ensure_seam();
     let mut out = BTreeMap::new();
@@ -160,8 +145,6 @@ fn served_admin_operations() -> BTreeMap<Op, Source> {
     out
 }
 
-/// `METHOD + path -> PascalCase` — the operation-id scheme the admin corpus keys its operations by
-/// (the 1.5.5 document's own `operationId`s), reproduced independently of the document generator.
 fn op_id(method: &str, path: &str) -> String {
     fn cap(s: &str) -> String {
         let mut c = s.chars();
@@ -183,7 +166,6 @@ fn op_id(method: &str, path: &str) -> String {
     id
 }
 
-/// Whether a concrete request path (query cut) is an instance of a `{param}`-templated one.
 fn instance_of(template: &str, concrete: &str) -> bool {
     let concrete = concrete.split(['?', '#']).next().unwrap_or(concrete);
     let (t, c): (Vec<&str>, Vec<&str>) =
@@ -194,7 +176,6 @@ fn instance_of(template: &str, concrete: &str) -> bool {
             .all(|(t, c)| (t.starts_with('{') && t.ends_with('}') && !c.is_empty()) || t == c)
 }
 
-/// The oracle's data directory.
 fn oracle_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/shadow-oracle")
 }
@@ -205,7 +186,6 @@ fn read_json(path: std::path::PathBuf) -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
-/// Build a governance with a known admin token (the shape the moved admin e2e tests use).
 fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState> {
     std::sync::Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(
@@ -224,18 +204,11 @@ fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState>
     )
 }
 
-/// ITEM 44 — THE ADMIN CORPUS IS RECONCILED AGAINST THE SERVED ROUTER.
-///
-/// Fails when a served operation has no corpus entry or no `admin.ops` cell, and when a corpus
-/// entry or an `admin.ops` cell names an operation the build does not serve. The router half of the
-/// served list is asked live first, so "served" is a measurement of the router and not a second
-/// copy of a list.
 #[tokio::test]
 async fn admin_corpus_reconciles_with_the_served_router() {
     busbar_kernel_testkit::test_support::metrics::init();
     let served = served_admin_operations();
 
-    // ── the router half, asked live ──
     const TOKEN: &str = "served-surface-token";
     let app = crate::new_test_app().governance(gov(TOKEN)).build();
     let router = crate::build_router(app);
@@ -248,8 +221,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
         let req = client
             .request(method.clone(), format!("http://{addr}{path}"))
             .header("x-admin-token", TOKEN);
-        // A deliberately unparseable body on every write: a served handler refuses it before it
-        // touches anything, and an unserved path answers its fallback either way.
+
         let req = if method == reqwest::Method::GET {
             req
         } else {
@@ -265,7 +237,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
         let ask = &ask;
         async move { ask(&method, &abs("/no-such-admin-route/served-surface")).await }
     };
-    // CONTROL: the fallback is a 404 not_found — so "differs from the fallback" is not vacuous.
+
     let (control_status, _) = fallback_for("GET").await;
     assert_eq!(
         control_status, 404,
@@ -306,7 +278,6 @@ async fn admin_corpus_reconciles_with_the_served_router() {
     );
     handle.abort();
 
-    // ── the corpus source: one entry per served operation, nothing else ──
     let fixture = read_json(oracle_dir().join("fixtures/admin-bodies.json"));
     let ops = fixture["ops"]
         .as_object()
@@ -374,7 +345,6 @@ async fn admin_corpus_reconciles_with_the_served_router() {
          {uncorpused:?}"
     );
 
-    // ── the corpus itself: every served operation has a cell, every cell a served operation ──
     let corpus = read_json(oracle_dir().join("cells.json"));
     let by_id: BTreeMap<&str, &Op> = entries.iter().map(|(op, id)| (id.as_str(), op)).collect();
     let mut celled: BTreeSet<&str> = BTreeSet::new();
@@ -384,8 +354,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
         }
         let id = cell["id"].as_str().expect("cell id");
         let op_name = id.split('|').nth(1).expect("admin.ops|<op>|<variant>");
-        // The teller-row cells ride this family to exercise the admin TOKEN on the data plane;
-        // they name a credential, not an admin operation.
+
         if op_name == "admin-token" {
             continue;
         }
@@ -417,13 +386,6 @@ async fn admin_corpus_reconciles_with_the_served_router() {
     );
 }
 
-/// ITEMS 45/46 — EVERY SERVED VERB IS IN THE ONE SPEC, AND THERE IS ONLY ONE SPEC.
-///
-/// The generated document describes exactly the served list: no served operation missing, no
-/// documented operation unserved. A plane's operations carry `x-busbar-plane: <section>` (they are
-/// mounted only when that plane is configured) and nothing else does; the kernel loop's operations
-/// carry `x-busbar-since: 1.6.0`. And the side-car document, which existed so the served bytes need
-/// not move, is gone — this test is the behaviour that replaced it.
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_documents_every_served_admin_operation() {
@@ -492,7 +454,6 @@ fn openapi_documents_every_served_admin_operation() {
     );
 }
 
-/// Serve one app's `GET /openapi.json` (identity encoding) and parse it.
 async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> serde_json::Value {
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -510,14 +471,6 @@ async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> serde
     doc
 }
 
-/// LAW 7 ON THE SERVED DOCUMENT. The committed document describes every operation the build can
-/// serve; a node serves it FILTERED to the planes it configured.
-///
-/// With a 1.5.5 config (no plane section) the served document names no `tools`/`agents` path, and
-/// its paths are exactly the published 1.5.5 golden's (the recorded `admin.ops|GetOpenapiJson|ok`
-/// cell) plus the node's always-served 1.6.0 kernel verbs — nothing a 1.5.5 config does not mount.
-/// With `tools:` configured, the `tools` operations are described again and the `agents` ones are
-/// still not.
 #[tokio::test]
 async fn served_openapi_lists_only_the_configured_planes() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -533,8 +486,6 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .collect()
     };
 
-    // Every `$ref` a JSON subtree names, so the components a set of operations references can be
-    // read off the document rather than typed into this test.
     fn refs_in(v: &serde_json::Value, out: &mut BTreeSet<String>) {
         match v {
             serde_json::Value::Object(m) => {
@@ -554,7 +505,6 @@ async fn served_openapi_lists_only_the_configured_planes() {
         }
     }
 
-    // ── every plane section configured: the components ONLY plane operations reference ──
     let sections = ["tools", "agents"];
     let app = crate::new_test_app()
         .governance(gov("served-openapi-token"))
@@ -582,7 +532,6 @@ async fn served_openapi_lists_only_the_configured_planes() {
          reference ({plane_only:?}) — without them the check below would pass vacuously"
     );
 
-    // ── a 1.5.5 config: no plane section at all ──
     let app = crate::new_test_app()
         .governance(gov("served-openapi-token"))
         .plane_sections(&[])
@@ -620,7 +569,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
         "with a 1.5.5 config the served document must describe the 1.5.5 surface plus the \
          always-served kernel verbs, and nothing else"
     );
-    // No component survives that only a dropped plane operation referenced.
+
     let schemas = doc["components"]["schemas"].as_object().expect("schemas");
     for name in &plane_only {
         assert!(
@@ -629,7 +578,6 @@ async fn served_openapi_lists_only_the_configured_planes() {
         );
     }
 
-    // ── `tools:` configured, `agents:` not ──
     let app = crate::new_test_app()
         .governance(gov("served-openapi-token"))
         .plane_sections(&["tools"])
@@ -645,11 +593,6 @@ async fn served_openapi_lists_only_the_configured_planes() {
     );
 }
 
-/// A NAMED-MAP SECTION ANSWERS ITS OWN WRONG METHOD, ITS UNKNOWN NAME AND ITS MALFORMED BODY.
-///
-/// The five section routes share one router loop and one section value per mount; this pins what
-/// each of the shapes answers (`405`, `404`, `400`, `200`) so a change to how the section reaches
-/// the handlers shows as a status change here.
 #[tokio::test]
 async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body() {
     busbar_kernel_testkit::test_support::metrics::init();

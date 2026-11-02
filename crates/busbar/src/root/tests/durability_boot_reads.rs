@@ -1,36 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STORE THAT STOPS READING THE JOURNAL BACK is never taken for an empty chain (audit R1#3, row
-//! 159). Every production node keeps its chain in the configured Store; the boot reads it
-//! once to rebuild the book, and the boot steps after that read it again. When that second read
-//! fails, the amendment rebuild and the keyset binding must not go on as
-//! if the chain held nothing, and an audit window must not be answered as empty.
-//!
-//! A CHAIN THAT READS BACK BUT DOES NOT VERIFY is never taken for an empty one either (audit root
-//! r4 B-2, A-5): the boot refuses, naming the break, as it refuses a chain it cannot read.
-
 use super::audit::tests::inputs;
 use super::*;
 use crate::root::store_double::RecordSlots;
 
-/// The node the store-kept chain is written under.
 const NODE: u64 = 47;
 
-/// Wall seconds the tests run at.
 const NOW: u64 = 1_700_000_000;
 
 fn token() -> Grant<DurableWrite> {
     busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>()
 }
 
-/// A book with an unusable legacy data directory over `slots`, as the production boot builds it: the chain
-/// the store kept is resumed (and read back once, whole, to rebuild the book).
 fn over_store(slots: &RecordSlots) -> Durability {
     rebuilt_over(slots).expect("the store reads back")
 }
 
-/// [`over_store`], answering the build itself: a boot the chain refuses is an `Err` here.
 fn rebuilt_over(slots: &RecordSlots) -> Result<Durability, OpenError> {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
     build_on_store(
@@ -43,7 +29,6 @@ fn rebuilt_over(slots: &RecordSlots) -> Result<Durability, OpenError> {
     )
 }
 
-/// Wait until the store took everything the book's lane holds.
 fn drained(durability: &Durability) {
     assert!(
         durability
@@ -54,9 +39,6 @@ fn drained(durability: &Durability) {
     );
 }
 
-/// THE AMENDMENT REBUILD REFUSES THE BOOT when the store will not read the chain back. Taking the
-/// failed read for an empty chain rebuilt no amendment and bound no journal: every signed count
-/// correction reverted for the life of the process, and none sealed afterwards was journalled.
 #[test]
 fn an_amendment_rebuild_the_store_will_not_read_refuses_the_boot() {
     let slots = RecordSlots::new();
@@ -85,8 +67,6 @@ fn an_amendment_rebuild_the_store_will_not_read_refuses_the_boot() {
     assert_eq!(restarted.amendments_through, None, "nothing was rebuilt");
 }
 
-/// THE KEYSET BINDING REFUSES THE BOOT when the store will not read the chain back. Taking the
-/// failed read for a chain with no `Bootstrap` sealed a second one.
 #[test]
 fn a_keyset_binding_the_store_will_not_read_refuses_the_boot() {
     let slots = RecordSlots::new();
@@ -113,9 +93,6 @@ fn a_keyset_binding_the_store_will_not_read_refuses_the_boot() {
     );
 }
 
-/// AN AUDIT WINDOW THE STORE WILL NOT READ BACK IS NEVER ANSWERED AS EMPTY: the view answers
-/// nothing, which the range read renders as the store failure it is (`GovernanceError::Store`),
-/// never as a window with no records in it.
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_audit_window_the_store_will_not_read_is_never_answered_empty() {
@@ -150,8 +127,6 @@ fn an_audit_window_the_store_will_not_read_is_never_answered_empty() {
     );
 }
 
-/// A chain the store kept, two audit records long, written by a first boot and drained to the
-/// store.
 fn two_records(slots: &RecordSlots) {
     let token = token();
     let mut first = over_store(slots);
@@ -167,18 +142,6 @@ fn two_records(slots: &RecordSlots) {
     drained(&first);
 }
 
-/// A STORED CHAIN THAT DOES NOT VERIFY REFUSES THE BOOT, naming the break (BUSBAR-1.6.0.md THE
-/// DESIGN §7, l.1056-1059: a damaged money record is never taken silently, it is reported and
-/// nothing is settled on a guess; #79, l.3941: signed corrections stay dated). A record of the
-/// chain is edited in the store behind the node. Taken for an empty chain, the boot went on
-/// sealing onto it over an empty rebuild: the dated history was rebuilt from nothing (the card
-/// journal disarmed for the life of the process), audit numbering restarted at one on a chain that
-/// already carries them, the incarnation was one already used, and the amendment journal stayed
-/// unbound — all reported only as a restart finding.
-///
-/// The same chain unedited rebuilds first, so the refusal is the edit's and never the fixture's.
-///
-/// RED before the fix: the build answered `Ok` over `Replayed::nothing()`.
 #[test]
 fn a_stored_chain_that_does_not_verify_refuses_the_boot() {
     let slots = RecordSlots::new();
@@ -198,14 +161,6 @@ fn a_stored_chain_that_does_not_verify_refuses_the_boot() {
     );
 }
 
-/// THE AMENDMENT REBUILD REFUSES THE BOOT over a chain that does not verify, as it does over one
-/// the store will not read back (amend.rs, audit R1#3). The chain verified when the book was
-/// built and is edited in the store before the amendment rebuild reads it again. Answered `Ok`
-/// with nothing rebuilt, the amendment journal was never bound: every adjust sealed afterwards
-/// was memory-only and lost on the next restart (BUSBAR-1.6.0.md THE DESIGN §7, l.1056-1059).
-///
-/// RED before the fix: `restore_amendments` answered `Ok(())` and left `amendments_through` at
-/// `None`.
 #[test]
 fn an_amendment_rebuild_over_a_chain_that_does_not_verify_refuses_the_boot() {
     let slots = RecordSlots::new();

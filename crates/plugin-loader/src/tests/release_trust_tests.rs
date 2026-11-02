@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RELEASE TRUST CHAIN: root -> keys document -> release manifest -> artefact. Each link is
-//! proven to hold for a good release and to refuse, explained, for every way it can break.
-
 use super::*;
 use crate::sign::{parse_release_keys, sha256_hex, FirstPartyKey};
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_ASN1_SIGNING};
 
-/// A signer the tests hold the private half of.
 pub(crate) enum TestSigner {
     P256(EcdsaKeyPair),
     Ed25519(ed25519_dalek::SigningKey),
@@ -58,7 +54,6 @@ impl TestSigner {
     }
 }
 
-/// 2027-01-15T08:00:00Z.
 pub(crate) const NOW: u64 = 1_800_000_000;
 const DAY: u64 = 86_400;
 
@@ -70,7 +65,6 @@ pub(crate) fn checks() -> Checks {
     }
 }
 
-/// A keys document naming `signers` for the plugins role (threshold 1), expiring in 90 days.
 pub(crate) fn keys_doc(signers: &[&TestSigner]) -> KeysDoc {
     KeysDoc {
         version: 1,
@@ -88,7 +82,6 @@ pub(crate) fn keys_doc(signers: &[&TestSigner]) -> KeysDoc {
     }
 }
 
-/// `doc`'s envelope, signed by `by`.
 pub(crate) fn seal_keys(doc: &KeysDoc, by: &[&TestSigner]) -> Vec<u8> {
     let signed = wire::keys_signed(doc);
     let bytes = wire::canonical(&signed).unwrap();
@@ -96,7 +89,6 @@ pub(crate) fn seal_keys(doc: &KeysDoc, by: &[&TestSigner]) -> Vec<u8> {
     wire::write_envelope(&signed, &sigs).unwrap()
 }
 
-/// A release manifest listing `entries`, expiring in a year.
 pub(crate) fn targets_doc(entries: Vec<Target>) -> TargetsDoc {
     TargetsDoc {
         role: PLUGINS_ROLE.to_string(),
@@ -140,7 +132,6 @@ fn subject(sha: &str) -> Subject<'_> {
     }
 }
 
-/// The two roots (KMS and PIV, both P-256) and the interim release signer.
 struct World {
     kms: TestSigner,
     piv: TestSigner,
@@ -163,7 +154,6 @@ impl World {
         ]
     }
 
-    /// A good release: keys document by `root`, release manifest by the signer, listing the artefact.
     fn release(&self, root: &TestSigner) -> (Vec<u8>, Vec<u8>) {
         let keys = seal_keys(&keys_doc(&[&self.signer]), &[root]);
         let targets = seal_targets(
@@ -364,7 +354,6 @@ fn a_forged_retired_root_keyid_is_not_authenticated_as_a_retired_signature() {
         Err(SealRefusal::KeysSignature { .. })
     ));
 
-    // The unauthenticated retired-key label also cannot poison a valid current root signature.
     let mut valid: serde_json::Value = serde_json::from_slice(&keys).unwrap();
     valid["signatures"]
         .as_array_mut()
@@ -390,7 +379,7 @@ fn a_keys_document_altered_after_the_root_signed_it_is_refused() {
     let w = World::new();
     let stranger = TestSigner::p256();
     let honest = seal_keys(&keys_doc(&[&w.signer]), &[&w.kms]);
-    // Swap the stranger in under the root's signature.
+
     let mut env: serde_json::Value = serde_json::from_slice(&honest).unwrap();
     env["signed"] = wire::keys_signed(&keys_doc(&[&stranger]));
     let forged = serde_json::to_vec(&env).unwrap();
@@ -429,8 +418,6 @@ fn an_expired_release_manifest_is_refused() {
     assert!(matches!(e, SealRefusal::TargetsExpired { .. }), "{e:?}");
 }
 
-/// AT BOOT (TUF's semantics): an installed plugin's expired keys document and release manifest are
-/// not judged, so it never stops loading because time passed; everything else still is.
 #[test]
 fn at_boot_expired_documents_are_not_judged() {
     let w = World::new();
@@ -455,7 +442,6 @@ fn at_boot_expired_documents_are_not_judged() {
     ));
 }
 
-/// AT BOOT a revocation in an expired keys document is still honoured, digest and signer alike.
 #[test]
 fn at_boot_a_revocation_is_refused_though_the_keys_document_has_expired() {
     let w = World::new();
@@ -542,7 +528,6 @@ fn the_permanently_retired_public_key_stays_retired_when_delegated() {
     assert_eq!(decoded.keys[&retired_id].retired_reason(), Some(why));
     assert_eq!(w.signer.key().retired_reason(), None);
 
-    // No retired private material is available. A forged key id must not authenticate retirement.
     let targets = seal_targets(
         &targets_doc(vec![entry(NAME, VERSION, PLUGIN_TARGET, &artefact())]),
         &[&w.signer],
@@ -711,12 +696,10 @@ fn every_refusal_is_explained_and_coded() {
     }
 }
 
-// ── the wire encoding (provisional) ─────────────────────────────────────────────────────────────
-
 #[test]
 fn canonical_json_is_sorted_compact_and_matches_python() {
     let v = serde_json::json!({"b": [1, "x\"y\\z"], "a": {"d": true, "c": null}});
-    // python3 -c 'import json;print(json.dumps(v, sort_keys=True, separators=(",",":")))'
+
     assert_eq!(
         String::from_utf8(wire::canonical(&v).unwrap()).unwrap(),
         r#"{"a":{"c":null,"d":true},"b":[1,"x\"y\\z"]}"#
@@ -916,8 +899,6 @@ fn a_seal_round_trip_preserves_the_verified_chain_and_expiry_boundary() {
     assert!(wire::read_seal(&"00".repeat(64)).is_none());
     assert!(wire::read_seal("seal:{}").unwrap().is_err());
 }
-
-// ── the root key list ───────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn the_root_key_list_names_its_algorithm_per_key() {

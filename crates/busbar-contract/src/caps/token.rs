@@ -80,10 +80,7 @@ use crate::caps::step::Step;
 use std::marker::PhantomData;
 
 /// The proof that the caller is the kernel.
-///
-/// This is the crate's one deliberate hole (see the module documentation). It exists because token
-/// minting has to cross a crate boundary that Rust cannot police, and it is far better to have ONE
-/// audited symbol than a public constructor on each of the twelve tokens.
+
 pub struct KernelSeal(());
 
 impl KernelSeal {
@@ -150,12 +147,11 @@ pub struct CallId(u64);
 
 impl CallId {
     /// The sentinel a proof minted by the plain [`mint`](Pass::mint) carries: not bound to any
-    /// request. Direct-minted proofs (a unit's own tests, the composition-root seams) are unbound;
-    /// only the loop's per-request mints are bound.
+
     pub const UNBOUND: CallId = CallId(u64::MAX);
 
     /// Mint a request generation. Kernel only, by way of the seal. The kernel bumps its own counter
-    /// and hands the value here; `u64::MAX` is reserved for [`UNBOUND`](CallId::UNBOUND).
+
     pub fn seal(_seal: &KernelSeal, generation: u64) -> Self {
         CallId(generation)
     }
@@ -177,13 +173,7 @@ impl std::fmt::Debug for CallId {
 }
 
 /// A stage-pass: the proof that the loop is running step `S` for the current unit right now (#72).
-///
-/// Handed by reference to the unit that owns step `S`, and to no one else. It is the only thing that
-/// can build a [`crate::caps::SeatVerdict`] for `S`, so a unit cannot answer a question it was not asked,
-/// and it is the only thing that can read one back, so a unit cannot open its own answer.
-///
-/// Neither `Clone` nor `Copy`; minted fresh by the kernel and dropped when the call it was lent to
-/// returns.
+
 pub struct Pass<S: Step> {
     call: CallId,
     _step: PhantomData<fn() -> S>,
@@ -199,7 +189,7 @@ impl<S: Step> Pass<S> {
     }
 
     /// Mint the pass bound to one request's generation (#74). Kernel only. A pass minted for one
-    /// call does not [match](Pass::bound_to) another.
+
     pub fn mint_bound(_seal: &KernelSeal, call: CallId) -> Self {
         Pass {
             call,
@@ -208,7 +198,7 @@ impl<S: Step> Pass<S> {
     }
 
     /// Whether this pass belongs to `call`. An unbound pass belongs to no request, so it never
-    /// matches a bound context — a stray or stored pass is caught here (#74).
+
     pub fn bound_to(&self, call: CallId) -> bool {
         self.call != CallId::UNBOUND && self.call == call
     }
@@ -234,20 +224,7 @@ impl<S: Step> crate::plugin::KernelSeal for Pass<S> {
 }
 
 /// A capability grant: the proof that the caller may perform one privileged action `C` (#72/#73).
-///
-/// The single per-capability proof type. `Grant<Admittance>` opens a [`Hold`](crate::caps::Hold),
-/// `Grant<WriteMoney>` settles one, `Grant<Dial>` seals a reachable destination, and so on — one
-/// generic type over the sealed [`Capability`](crate::caps::capability) marker set, minted only by
-/// the kernel's [`KernelSeal`]. This is the whole of the former token zoo (`AdmitToken`,
-/// `TrustToken`, `UsageToken`, `LedgerToken`, `DurabilityToken`, `EgressAuthToken`,
-/// `TransportKeyToken`, `AdminToken`, `RecoveryToken`, `ExitToken`), unified.
-///
-/// A grant is also what opens the contract's own kernel-built views — a verified destination, a
-/// transport key handle. The contract sits below this crate and cannot name a grant, so the seam is
-/// the other way round: the grant satisfies the contract's marker.
-///
-/// Neither `Clone` nor `Copy`; minted fresh by the kernel and dropped when the call it was lent to
-/// returns.
+
 pub struct Grant<C: Capability> {
     call: CallId,
     _cap: PhantomData<fn() -> C>,
@@ -263,7 +240,7 @@ impl<C: Capability> Grant<C> {
     }
 
     /// Mint the grant bound to one request's generation (#74). Kernel only. A grant minted for one
-    /// call does not [match](Grant::bound_to) another.
+
     pub fn mint_bound(_seal: &KernelSeal, call: CallId) -> Self {
         Grant {
             call,
@@ -272,7 +249,7 @@ impl<C: Capability> Grant<C> {
     }
 
     /// Whether this grant belongs to `call`. An unbound grant belongs to no request, so it never
-    /// matches a bound context — a stray or stored grant is caught here (#74).
+
     pub fn bound_to(&self, call: CallId) -> bool {
         self.call != CallId::UNBOUND && self.call == call
     }
@@ -288,14 +265,6 @@ impl<C: Capability> std::fmt::Debug for Grant<C> {
         write!(f, "Grant<{}>", C::NAME)
     }
 }
-
-// ── the TEST-ONLY seal (#65) ────────────────────────────────────────────────────────────────────
-//
-// `plugin::TestKernelSeal` is declared in the plugin module so that a PLANE can name it — a plane
-// may not name THIS module at all (section 1.2) — but its impls belong here, beside `Pass` and
-// `Grant`, because this directory is the one place a reader (and `kernel-seal-impls`) has to look
-// to enumerate every type that can present a seal. Gated on this crate's own tests and the dev-only
-// feature, so it does not exist in a release build.
 
 #[cfg(any(test, feature = "test-seal"))]
 impl crate::plugin::sealed::KernelSealed for crate::plugin::TestKernelSeal {}

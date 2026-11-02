@@ -2,17 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The one journal: the fixed record, the chain over it, the bound on the buffer, and the two
-//! postures a restart has to survive.
-//!
-//! Each of these is a claim somebody could otherwise only take on trust. A chain that "detects
-//! tampering" is worth nothing until a test edits a record and watches it break at that record; a
-//! buffer that is "bounded" is worth nothing until a test fills it and reads back what the node
-//! decided to do about it.
 
 use crate::journal::{Journal, RecordClass, MEMORY_BUFFER_RECORDS};
 
 /// Fourteen classes, each pinned to its byte. The set is the contract's, so a test says the set did
-/// not change rather than a reviewer having to remember it.
+
 #[test]
 fn every_class_is_pinned_to_its_byte() {
     assert_eq!(RecordClass::all().len(), 14);
@@ -29,7 +23,7 @@ fn every_class_is_pinned_to_its_byte() {
 }
 
 /// The bound is pinned, and it is the one an operator cannot raise. Stated as a test because a
-/// number that quietly grew would turn a store outage into an out-of-memory kill.
+
 #[test]
 fn the_bound_is_pinned() {
     assert_eq!(MEMORY_BUFFER_RECORDS, 8192);
@@ -45,7 +39,7 @@ fn the_bound_is_pinned() {
 }
 
 /// The reading half of a body gives back exactly what the writing half put down, field by field, and
-/// answers `None` — never a panic — on a body that is short or not what the reader expected.
+
 #[test]
 fn a_body_reads_back_what_was_written() {
     let mut body = crate::BodyWriter::new();
@@ -67,14 +61,12 @@ fn a_body_reads_back_what_was_written() {
         "reading past the end is an answer, not a panic"
     );
 
-    // A body cut short.
     let mut short = crate::BodyReader::new(&bytes[..bytes.len() - 1]);
     assert_eq!(short.text(), Some("hold.open"));
     assert_eq!(short.num(), Some(7));
     assert_eq!(short.figure(), Some(-42));
     assert_eq!(short.bytes(), None);
 
-    // A length prefix that claims more than there is.
     let claim = u64::MAX.to_le_bytes();
     let mut lying = crate::BodyReader::new(&claim);
     assert_eq!(lying.text(), None);
@@ -126,8 +118,7 @@ fn chained_run(node: u64, n: u64) -> Vec<crate::Record> {
 }
 
 /// A MEMORY JOURNAL RESUMED FROM THE STORE'S CHAIN reads that chain back and continues it: the
-/// replay is the run the store kept, the head is its newest record's and the next number is past
-/// it — and nothing it was seeded with is shipped again.
+
 #[test]
 fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
     let run = chained_run(5, 40);
@@ -158,7 +149,7 @@ fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
 }
 
 /// An empty retaining journal starts below its bound. Append-past-bound and replay witnesses live
-/// in busbar-kernel's `tests/members/wal/poison_tests.rs`, where the host lends the durability grant.
+
 #[test]
 fn an_empty_retaining_journal_starts_below_its_bound() {
     let journal = Journal::memory_buffered_to(

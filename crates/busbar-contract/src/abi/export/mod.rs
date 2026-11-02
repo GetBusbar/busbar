@@ -70,15 +70,11 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 3;
 
 /// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
-/// the export table. A door states it as built
-/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
-/// `tests/layout_fingerprint.rs` holds it to its fold.
+
 pub const LAYOUT_FINGERPRINT: u64 = 0x95a37b669466aab6;
 
 /// The export kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-/// crossing its table, each with every field. A struct `abi/export/` gains is listed here (gate
-/// `abi-location`).
+
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops => head, deliver, scrape, status, check, serve),
     crate::layout_shape!(DeliverIn => head, op_id, stream, _reserved, batch),
@@ -225,7 +221,7 @@ pub enum ExportStream {
 
 impl ExportStream {
     /// Every stream in the frozen vocabulary, in ascending sensitivity order — the ONE list every
-    /// catalog walk, diagnostic and validator iterates.
+
     pub const ALL: &'static [ExportStream] = &[
         ExportStream::Metrics,
         ExportStream::Logs,
@@ -239,14 +235,14 @@ impl ExportStream {
     ];
 
     /// The stable snake_case wire/config token for this stream — the SAME spelling serde emits.
-    /// Rendered without serde so a config diagnostic can name the token without a JSON round-trip.
+
     pub const fn as_token(self) -> &'static str {
         match self {
             ExportStream::Metrics => "metrics",
             ExportStream::Logs => "logs",
             ExportStream::Traces => "traces",
             ExportStream::Costs => "costs",
-            // plane-purity: frozen-wire ExportDefCfg `streams:` token (frozen since 1.5.5)
+
             ExportStream::Decisions => "decisions",
             ExportStream::Events => "events",
             ExportStream::Identity => "identity",
@@ -256,8 +252,7 @@ impl ExportStream {
     }
 
     /// Parse a config/wire token into a stream. `None` for anything not in the frozen vocabulary —
-    /// INCLUDING the retired `audit`, so the caller can emit its own named diagnostic rather than a
-    /// generic "unknown variant".
+
     pub fn from_token(tok: &str) -> Option<ExportStream> {
         ExportStream::ALL
             .iter()
@@ -275,11 +270,7 @@ impl ExportStream {
     }
 
     /// The DOCUMENTED DEFAULT FIELD SET a sink receives when it subscribes to this stream and writes
-    /// no `fields:` override. Part of the contract — see the FREEZE RULES on [`ExportStream`].
-    ///
-    /// `metrics` is deliberately EMPTY: its unit is the documented metric CATALOG (families), not
-    /// record fields, so `fields:` does not apply to it and a `fields:` list aimed at it is a config
-    /// error rather than a filter that silently matches nothing.
+
     pub const fn default_fields(self) -> &'static [ExportField] {
         use ExportField as F;
         match self {
@@ -357,31 +348,21 @@ impl ExportStream {
     }
 
     /// The STRUCTURAL fields of this stream — the ones a `fields:` override may NOT remove.
-    ///
-    /// THE PINNED-FIELD RULE. Splitting one request across several streams means a sink receives
-    /// several record sets that must REASSEMBLE into one request, so `correlation_id` (the join key)
-    /// is pinned on EVERY per-request stream, and `seq`/`ts`/`prev_hash` are pinned on `events`
-    /// (drop `prev_hash` and the hash chain is gone). **`fields:` bounds DISCLOSURE; it must not be
-    /// able to break STRUCTURE.** Omitting one is a LOUD config error, never a silent no-op —
-    /// otherwise an operator can configure records that look complete and cannot be joined.
-    ///
-    /// Every pinned field is also a default field (asserted in this module's tests), so the pinned
-    /// set can only ever narrow a `fields:` list, never widen the stream's contract.
+
     pub const fn pinned_fields(self) -> &'static [ExportField] {
         use ExportField as F;
         match self {
-            // Aggregate: no records, so nothing structural to pin.
             ExportStream::Metrics => &[],
-            // Per-request streams: the join key.
+
             ExportStream::Logs
             | ExportStream::Costs
             | ExportStream::Decisions
             | ExportStream::Identity
             | ExportStream::Prompts
             | ExportStream::Completions => &[F::CorrelationId],
-            // A span tree is joined by its own ids, not by the request correlation id.
+
             ExportStream::Traces => &[F::TraceId, F::SpanId],
-            // The chain: position, time, and the link to the previous record.
+
             ExportStream::Events => &[F::Seq, F::Ts, F::PrevHash],
         }
     }
@@ -483,8 +464,7 @@ pub enum ExportField {
 
 impl ExportField {
     /// Every field in the frozen vocabulary — the ONE list every catalog walk iterates. Ordered to
-    /// match the enum declaration so a field's index is stable (an index is used as a bit position
-    /// by the engine's projection masks).
+
     pub const ALL: &'static [ExportField] = &[
         ExportField::CorrelationId,
         ExportField::Ts,
@@ -529,7 +509,7 @@ impl ExportField {
     ];
 
     /// The stable snake_case wire/config token for this field — the SAME spelling serde emits, and
-    /// the SAME key the engine writes into a projected record.
+
     pub const fn as_token(self) -> &'static str {
         match self {
             ExportField::CorrelationId => "correlation_id",
@@ -576,7 +556,7 @@ impl ExportField {
     }
 
     /// Parse a config/wire token into a field. `None` for anything not in the frozen vocabulary, so
-    /// the caller emits its own named diagnostic.
+
     pub fn from_token(tok: &str) -> Option<ExportField> {
         ExportField::ALL
             .iter()
@@ -585,8 +565,7 @@ impl ExportField {
     }
 
     /// This field's stable BIT POSITION — its index in [`ExportField::ALL`]. The engine's projection
-    /// mask is a bitset over these positions, the same shape `RequestedSignals` uses for hook
-    /// signals; the position is derived from the frozen list, never hand-assigned.
+
     pub fn bit(self) -> u32 {
         ExportField::ALL
             .iter()
@@ -620,8 +599,7 @@ pub struct MetricFamily {
 
 impl MetricFamily {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `MetricFamily { …, ..MetricFamily::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         name: String::new(),
         kind: String::new(),
@@ -645,8 +623,7 @@ pub struct MetricSample {
 
 impl MetricSample {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `MetricSample { …, ..MetricSample::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         name: String::new(),
         labels: Vec::new(),
@@ -671,7 +648,7 @@ pub const SCRAPE_KIND_COUNTER: u8 = 0;
 /// [`ScrapeFamily::kind`]: a gauge.
 pub const SCRAPE_KIND_GAUGE: u8 = 1;
 /// [`ScrapeFamily::kind`]: a histogram (`_bucket`/`_sum`/`_count` legs as separate
-/// [`ScrapeSample`]s).
+
 pub const SCRAPE_KIND_HISTOGRAM: u8 = 2;
 /// [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate [`ScrapeSample`]s).
 pub const SCRAPE_KIND_SUMMARY: u8 = 3;
@@ -679,13 +656,7 @@ pub const SCRAPE_KIND_SUMMARY: u8 = 3;
 pub const SCRAPE_KIND_UNTYPED: u8 = 4;
 
 /// [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families.
-///
-/// Set by the host for `/metrics/hooks`, the hook exposition (the hook-reported metrics the
-/// host validated, bounded and folded, a `hook` label on every sample), not for the recorder's
-/// snapshot. A sink renders them in the hook layout: the families in the order handed (by
-/// name), each family's samples in the order handed, `# HELP` when present then `# TYPE`, and no
-/// blank line between families. The dispatcher owns only the mechanism's own bit (`FLAG_RESUME`);
-/// a kind's bit rides through the call untouched.
+
 pub const SCRAPE_FLAG_HOOK_FAMILIES: u32 = 2;
 
 /// One label on a [`ScrapeSample`]: its key and value. A
@@ -790,10 +761,10 @@ pub struct StatusOut {
 }
 
 /// [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances
-/// share) — the OLD `CheckPhase::Limits`.
+
 pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD
-/// `CheckPhase::Instances` (the default).
+
 pub const CHECK_PHASE_INSTANCES: u32 = 1;
 
 /// One instance `check` may read at
@@ -885,7 +856,7 @@ pub const ROUTE_AUTH_NONE: u32 = 0;
 /// [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`.
 pub const ROUTE_AUTH_KEY: u32 = 1;
 /// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
-/// `RouteAuth::Admin`.
+
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
 /// One HTTP route this instance serves via `serve`: `{path,
@@ -924,8 +895,7 @@ pub struct Tail {
 
 impl Tail {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Tail { …, ..Tail::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         head: KindTailHead::ZERO,
         streams: std::ptr::null(),
@@ -936,10 +906,10 @@ impl Tail {
 }
 
 /// HOW THE EXPORT KIND TAIL IS MADE: from [`Tail::EMPTY`], its plain fields set
-/// directly and each list by its setter, to items that live for the program.
+
 impl Tail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-    /// sized to the whole tail.
+
     pub const EMPTY: Tail = Tail {
         head: KindTailHead {
             size: core::mem::size_of::<Tail>() as u32,
@@ -958,17 +928,13 @@ impl Tail {
 }
 
 /// The export kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
-///
-/// ASSUMPTION (M3-SHAPES): B.5 states no cancel disposition vocabulary. `deliver`, `scrape` and
-/// `serve` are the `may_pend` ops; the dispositions below cover all three uniformly (a batch/
-/// exposition/response either landed or did not — a telemetry sink has no partial-delivery
-/// concept of its own, unlike a chunked streaming reply's own disposition vocabulary).
+
 pub mod cancel {
     /// The pending op was aborted before it produced anything (deliver: the batch was not
-    /// accepted; scrape/serve: no bytes were written to the host buffer).
+
     pub const ABORTED: u32 = 0;
     /// The op had already completed when the cancel arrived (a race with the deadline); its
-    /// result stands.
+
     pub const RACED_TO_COMPLETION: u32 = 1;
 }
 

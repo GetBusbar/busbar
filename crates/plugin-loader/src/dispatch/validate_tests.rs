@@ -27,8 +27,6 @@ fn every_outcome_refuses_oversized_extensions_before_any_pointer_read() {
         Outcome::Failed,
         Outcome::Refused,
     ] {
-        // This pointer has no readable payload. The pure head checks must reject the length
-        // before any generic extension consumer can form a slice or search for a known key.
         let head = head(
             outcome,
             Blob {

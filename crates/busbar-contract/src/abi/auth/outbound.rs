@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE OUTBOUND FAMILY (the design's outbound auth): `open_outbound` binds a style to its
-//! credential and answers a handle. `fields` is the call the binding's transport makes at the
-//! style's auth points, the head final, before encode (THE DESIGN, "Auth points and guest
-//! lists", step 5). `outbound_ready` is the
-//! `ready` fact the health prober reads. The plugin caches inside itself: bearer and api-key build
-//! at open, and minted tokens refresh ahead of expiry on `tick`.
 
 use super::inbound::{NamedValue, RequestFacts};
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Span};
@@ -74,8 +69,7 @@ pub struct FieldSpan {
 
 impl FieldSpan {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `FieldSpan { …, ..FieldSpan::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         name: Span::ZERO,
         value: Span::ZERO,

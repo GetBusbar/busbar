@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The hook SDK: the 1.5.5 JSON a hook is handed is rebuilt byte for byte from the fixed views the
-//! host builds, and a 1.5.5 reply lowers into exactly the answer 1.5.5's host normalized it to,
-//! every answer passing the kind's own validator.
 
 use super::*;
 use crate::abi::hook::slot;
@@ -234,8 +232,7 @@ fn both(op: &'static str, prompt: bool, user: bool, with_cands: bool) -> (String
         budget: if with_cands { &b } else { &[] },
     };
     let req = request(prompt, user);
-    // What 1.5.5's host handed the plugin: the projection as a JSON value (the plugin's handler
-    // reads a `serde_json::Value`, however the bytes were ordered on the way).
+
     let old = serde_json::to_value(crate::hook_wire::build(op, &req, &cands, &ctx)).unwrap();
     let old = serde_json::to_string(&old).unwrap();
     let frame = DecideFrame::first(DecideView::build(&req, &cands, &ctx));
@@ -301,8 +298,6 @@ fn the_notify_projection_is_byte_identical_to_1_5_5_for_request_and_stage_taps()
     }
 }
 
-// ── lowering ─────────────────────────────────────────────────────────────────────────────────────
-
 #[test]
 fn reject_beats_restrict_beats_abstain_beats_order() {
     let all = json!({"order": [1], "abstain": true, "restrict": {"tags_any": ["a"]},
@@ -337,7 +332,7 @@ fn an_explicit_false_or_null_verb_is_absent_and_a_bad_detail_still_rejects() {
         lower_decide_reply(Ok(json!({"reject": false, "restrict": null, "order": [2]}))),
         Verdict::Prefer(vec![2])
     );
-    // Out-of-shape details keep the verb: the host defaults them (403, the canned message).
+
     assert_eq!(
         lower_decide_reply(Ok(json!({"reject": {"status": 70000, "message": 5}}))),
         Verdict::Reject {
@@ -352,21 +347,12 @@ fn an_explicit_false_or_null_verb_is_absent_and_a_bad_detail_still_rejects() {
             message: String::new()
         }
     );
-    // A malformed restrict restricts to nothing (the gate's `on_empty`), never allow-all.
+
     assert_eq!(
         lower_decide_reply(Ok(json!({"restrict": {"tags_any": []}}))),
         Verdict::Restrict(Vec::new())
     );
 }
-
-// THE 1.5.5 TABLES. Every row is one reply shape and the verdict 1.5.5's host normalized it to,
-// read off v1.5.5's source (`git show v1.5.5:<path>`); the comment on each row cites the line that
-// decides it. `W` = `crates/busbar/src/hooks/wire.rs`, `P` = `crates/busbar/src/hooks/plugin.rs`,
-// `L` = `crates/plugin-loader/src/hook.rs`, all at tag v1.5.5. A reply whose typed fields
-// (`HookResponse`, W:428-461: `order: Option<Vec<usize>>` W:431, `abstain: bool` W:433) do not
-// parse was ABSTAIN (P:51-56 decide, P:59-62 transform), never FAILED. What the host still does
-// after the lowering (W:516-526 the status clamp and message sanitiser, W:693-694 dropping an
-// unknown `idx`) is the kernel's, proven in `plane_driver::hooks::tests::wire_tests`.
 
 /// `decide`: each reply shape → 1.5.5's verdict.
 #[test]
@@ -376,91 +362,61 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         message: message.into(),
     };
     let rows = [
-        // W:690-692: no `order` → abstain.
         (json!({}), Verdict::Abstain),
-        // W:690-694: an order is preferred (the host drops unknown idxs, W:693-694).
         (json!({"order": [1, 0]}), Verdict::Prefer(vec![1, 0])),
-        // W:424-427: unknown keys are ignored.
         (json!({"order": [1], "note": "x"}), Verdict::Prefer(vec![1])),
-        // W:431 (`Option`, null = absent) then W:690-692.
         (json!({"order": null}), Verdict::Abstain),
-        // W:431 types `order` as `Vec<usize>`: the parse fails → P:54 abstain.
         (json!({"order": "x"}), Verdict::Abstain),
-        // W:431: a negative idx is not a `usize` → P:54.
         (json!({"order": [-1]}), Verdict::Abstain),
-        // W:431: a fractional idx is not a `usize` → P:54.
         (json!({"order": [1.5]}), Verdict::Abstain),
-        // W:433 types `abstain` as `bool`: the parse fails → P:54.
         (json!({"abstain": "yes"}), Verdict::Abstain),
-        // W:433 → P:54.
         (json!({"abstain": 1}), Verdict::Abstain),
-        // W:687-689: abstain wins over order.
         (json!({"abstain": true, "order": [1]}), Verdict::Abstain),
-        // W:687-694: `abstain: false` leaves the order.
         (
             json!({"abstain": false, "order": [1]}),
             Verdict::Prefer(vec![1]),
         ),
-        // Not an object: `HookResponse` does not parse → P:54.
         (json!(null), Verdict::Abstain),
-        // W:431: the array's first element is read as `order`, `1` is no `Vec` → P:54.
         (json!([1]), Verdict::Abstain),
-        // Not an object → P:54.
         (json!("garbage"), Verdict::Abstain),
-        // Not an object → P:54.
         (json!(42), Verdict::Abstain),
-        // Not an object → P:54.
         (json!(true), Verdict::Abstain),
-        // A valid reject beside a wrong-typed sibling: the WHOLE parse fails (W:431) → P:54; the
-        // reject is never read.
         (
             json!({"reject": {"status": 403, "message": "no"}, "order": "x"}),
             Verdict::Abstain,
         ),
-        // The same through `abstain` (W:433) → P:54.
         (
             json!({"reject": {"status": 403}, "abstain": "yes"}),
             Verdict::Abstain,
         ),
-        // A valid restrict beside a wrong-typed sibling (W:433) → P:54.
         (
             json!({"restrict": {"tags_any": ["a"]}, "abstain": "yes"}),
             Verdict::Abstain,
         ),
-        // W:670-675: reject wins over order; its detail as stated (W:516-526 clamps on the host).
         (
             json!({"reject": {"status": 451, "message": "no"}, "order": [1]}),
             reject(Some(451), "no"),
         ),
-        // W:438-446, W:670-675: any reject but `false` rejects, a bad detail defaulted (W:516-526).
         (json!({"reject": true}), reject(None, "")),
-        // W:516-522: a string status is no integer → the host's default.
         (json!({"reject": {"status": "451"}}), reject(None, "")),
-        // W:671: `reject: false` is the explicit "not rejecting".
         (
             json!({"reject": false, "order": [1]}),
             Verdict::Prefer(vec![1]),
         ),
-        // W:442-443: `reject: null` is absent.
         (
             json!({"reject": null, "order": [1]}),
             Verdict::Prefer(vec![1]),
         ),
-        // W:679-686 with W:475-489: tags trimmed, empties dropped.
         (
             json!({"restrict": {"tags_any": [" a ", ""]}, "order": [0]}),
             Verdict::Restrict(vec!["a".into()]),
         ),
-        // W:681-683: a malformed restrict restricts to nothing (the gate's `on_empty`).
         (json!({"restrict": {}}), Verdict::Restrict(Vec::new())),
-        // W:681-683, W:477-478: not an object → nothing.
         (json!({"restrict": "a"}), Verdict::Restrict(Vec::new())),
-        // W:680: `restrict: false` is the explicit "not restricting".
         (
             json!({"restrict": false, "order": [0]}),
             Verdict::Prefer(vec![0]),
         ),
-        // W:666-695 never reads `rewrite` (a transform verb): no order → abstain.
         (
             json!({"rewrite": {"messages": [{"role": "user"}]}}),
             Verdict::Abstain,
@@ -473,8 +429,7 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
             "1.5.5's host read the decide reply {reply} as {want:?}"
         );
     }
-    // L:173-175: a hook that SAID it could not answer (`HookReply::Failed`) is the operator's
-    // `on_error`, the one FAILED.
+
     assert_eq!(
         lower_decide_reply(Err("down".into())),
         Verdict::Failed("down".into())
@@ -491,59 +446,41 @@ fn a_transform_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         message: message.into(),
     };
     let rows = [
-        // W:539-542: no rewrite → abstain (the original body).
         (json!({}), RewriteVerdict::Abstain),
-        // W:539-540 with W:499-510: a well-formed rewrite.
         (json!({"rewrite": rw}), rewrite(&rw)),
-        // W:424-427: unknown keys are ignored.
         (json!({"rewrite": rw, "note": 1}), rewrite(&rw)),
-        // W:528-530: `order`/`restrict` are decide verbs, ignored here.
         (
             json!({"order": [1], "restrict": {"tags_any": ["a"]}}),
             RewriteVerdict::Abstain,
         ),
-        // W:460 (`Option`, null = absent) → W:541.
         (json!({"rewrite": null}), RewriteVerdict::Abstain),
-        // W:500: no `messages` → `parse_rewrite` None → W:541.
         (json!({"rewrite": false}), RewriteVerdict::Abstain),
-        // W:500 → W:541.
         (json!({"rewrite": {}}), RewriteVerdict::Abstain),
-        // W:501-503: an empty `messages` → W:541.
         (
             json!({"rewrite": {"messages": []}}),
             RewriteVerdict::Abstain,
         ),
-        // W:500: `messages` not an array → W:541.
         (
             json!({"rewrite": {"messages": "hi"}}),
             RewriteVerdict::Abstain,
         ),
-        // W:433 types `abstain` as `bool`: the parse fails → P:61 abstain.
         (json!({"abstain": 1}), RewriteVerdict::Abstain),
-        // A valid rewrite beside a wrong-typed sibling (W:431): the WHOLE parse fails → P:61.
         (
             json!({"rewrite": rw, "order": "x"}),
             RewriteVerdict::Abstain,
         ),
-        // A valid reject beside a wrong-typed sibling (W:433) → P:61; the reject is never read.
         (
             json!({"reject": {"status": 451}, "abstain": "yes"}),
             RewriteVerdict::Abstain,
         ),
-        // Not an object → P:61.
         (json!(null), RewriteVerdict::Abstain),
-        // W:431: `1` is no `Vec` → P:61.
         (json!([1]), RewriteVerdict::Abstain),
-        // Not an object → P:61.
         (json!("garbage"), RewriteVerdict::Abstain),
-        // W:533-538: reject wins over rewrite.
         (
             json!({"reject": {"status": 451, "message": "s"}, "rewrite": rw}),
             reject(Some(451), "s"),
         ),
-        // W:533-538: any reject but `false` rejects, its detail defaulted on the host (W:516-526).
         (json!({"reject": true}), reject(None, "")),
-        // W:534: `reject: false` is the explicit "not rejecting".
         (json!({"reject": false, "rewrite": rw}), rewrite(&rw)),
     ];
     for (reply, want) in rows {
@@ -553,8 +490,7 @@ fn a_transform_reply_lowers_to_the_verdict_1_5_5s_host_read() {
             "1.5.5's host read the transform reply {reply} as {want:?}"
         );
     }
-    // A hook's own `Err` from `transform_result` (added in 1.6.0; 1.5.5's `HookHandler` had no
-    // fallible transform, so no 1.5.5 hook could state it) is FAILED: the host's `on_error` decides.
+
     assert_eq!(
         lower_transform_reply(Err("down".into())),
         RewriteVerdict::Failed("down".into())
@@ -582,8 +518,6 @@ fn transform_reject_beats_rewrite_and_the_rewrite_crosses_as_its_json() {
         RewriteVerdict::Abstain
     );
 }
-
-// ── writing, judged by the kind's own validator ──────────────────────────────────────────────────
 
 fn frame_with(caps: crate::abi::host::hook::Caps) -> std::sync::Arc<DecideFrame> {
     let t = tags();
@@ -669,7 +603,7 @@ fn a_buffer_too_small_is_the_one_short_answer_with_nothing_written() {
         check_decide(&out, i.reject_message_cap, i.restrict_tags_cap, i.order_cap),
         Ok(())
     );
-    // The re-call's frame fits it.
+
     let again = frame.regrown_decide(&out);
     let mut out2: DecideOut = zeroed();
     assert_eq!(
@@ -694,8 +628,6 @@ fn a_buffer_too_small_is_the_one_short_answer_with_nothing_written() {
         Ok(())
     );
 }
-
-// ── the slots ────────────────────────────────────────────────────────────────────────────────────
 
 /// A typed hook: prefers the candidates in reverse, and records what its tap saw.
 struct Reverse(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
@@ -754,7 +686,7 @@ fn error_text(head: &OutHead) -> String {
 }
 
 /// A typed [`Hook`] reads the host's view as owned values through the slot, and answers into the
-/// host's buffers.
+
 #[test]
 fn the_decide_slot_hands_a_typed_hook_the_decoded_view() {
     let p = opened();
@@ -771,7 +703,7 @@ fn the_decide_slot_hands_a_typed_hook_the_decoded_view() {
 }
 
 /// RED: a host view whose prompt lists do not hold (a present prompt claiming messages behind a
-/// NULL pointer) is never read: the slot answers FAULT, for `decide`, `transform` and `notify`.
+
 #[test]
 fn red_a_broken_host_view_is_a_fault_not_a_read() {
     let p = opened();
@@ -801,7 +733,7 @@ fn red_a_broken_host_view_is_a_fault_not_a_read() {
         call::<Notify<OpenReverse>>(p, slot::NOTIFY, &bad_tap, &mut o),
         Outcome::Fault
     );
-    // The well-formed tap reaches the hook, as its 1.5.5 JSON.
+
     let before = SEEN.get().unwrap().lock().unwrap().len();
     assert_eq!(
         call::<Notify<OpenReverse>>(p, slot::NOTIFY, &tap.input(), &mut o),
@@ -815,7 +747,7 @@ fn red_a_broken_host_view_is_a_fault_not_a_read() {
 }
 
 /// An instance-less failure (`validate` over settings that are not an object) answers FAILED with
-/// its text readable by the host after the crossing returned.
+
 #[test]
 fn a_validate_failure_states_its_text() {
     let raw = b"[1]";
@@ -851,7 +783,7 @@ impl HookOpen for OpenPicky {
 }
 
 /// `validate` over `raw` for `P`'s hook, lent a reason buffer as the host's dispatcher lends every
-/// `validate` one: its outcome and, when it failed, its text.
+
 fn validated<P: HookOpen>(raw: &[u8]) -> (Outcome, String) {
     let mut reason = vec![0_u8; 1024];
     let mut input: ValidateIn = zeroed();
@@ -874,8 +806,7 @@ fn validated<P: HookOpen>(raw: &[u8]) -> (Outcome, String) {
 }
 
 /// RED (hook ABI defect 1): `validate` refuses the settings `open` refuses, in `open`'s words, so
-/// `--validate` never passes a hook configuration that boot refuses. Before, `validate` only
-/// checked that the settings are a JSON object.
+
 #[test]
 fn validate_refuses_what_open_refuses() {
     assert_eq!(
@@ -951,8 +882,6 @@ fn red_the_content_body_a_hook_sees_is_the_hosts_own_bytes() {
     closed::<OpenPeek>(p);
 }
 
-// ── pending on the far end (THE DESIGN, the plugin ABI: Ready|Pending(wake)) ─────────────────────
-
 thread_local! {
     /// Calls on this test thread: the fixture invokes ESTABLISH synchronously.
     static ESTABLISHED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -961,7 +890,7 @@ thread_local! {
 const DOWN: &str = "the far end is down";
 
 /// A scripted connector ESTABLISH: every even entry pends (the host finishes it off the op); the
-/// re-issue of the same handle answers the stored result, FAILED with [`DOWN`].
+
 extern "C" fn establish_pends(
     _: HostCtx,
     input: *const c_void,
@@ -1077,7 +1006,6 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
     assert_eq!(error_text(&out.head), DOWN);
     assert_eq!(ESTABLISHED.get(), 2);
 
-    // A ticket-less `decide` is answered at once: its exchange cannot pend.
     let mut none = frame.input();
     none.head.ticket = Ticket::NONE;
     let mut out: DecideOut = zeroed();
@@ -1087,7 +1015,6 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
     );
     assert_eq!(error_text(&out.head), ConnFailure::NoTicket.to_string());
 
-    // A fresh entry pends again, and a cancel of it aborts the op.
     input.head.flags = 0;
     let mut out: DecideOut = zeroed();
     assert_eq!(
@@ -1104,8 +1031,6 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
     assert_eq!(co.disposition, cancel::ABORTED);
     closed::<OpenForward>(p);
 }
-
-// ── a cancelled exchange closes its stream (status row 159) ─────────────────────────────────────
 
 /// The stream the closing connector's ESTABLISH answers.
 const HELD_STREAM: u64 = 9;
@@ -1203,7 +1128,7 @@ static DIALLING_SLOTS: ConnectorSlots = ConnectorSlots {
 };
 
 /// Open a [`Forward`] hook over `conns`, run one `decide` to PENDING on [`TICKET`], cancel that
-/// ticket, and close the instance.
+
 fn cancel_a_pending_decide(conns: &'static ConnectorSlots) {
     let tables = HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
@@ -1247,7 +1172,7 @@ fn a_cancelled_exchange_closes_the_stream_it_established() {
 }
 
 /// GREEN twin: an exchange cancelled before its stream was established closes nothing: the
-/// exchange it parked holds no stream, and the host is handed no CLOSE.
+
 #[test]
 fn a_cancelled_exchange_with_no_stream_closes_nothing() {
     cancel_a_pending_decide(&DIALLING_SLOTS);
@@ -1332,13 +1257,11 @@ fn a_hook_reads_the_session_and_the_1_5_5_projection_does_not_carry_it() {
     assert_eq!(Decoded::of(lend(&input)).session, None);
 }
 
-// ── the one short-buffer re-call (H5) ───────────────────────────────────────────────────────────
-
 /// How often [`Asks`] ran its `decide` / `transform`: each run is one POST to the far end.
 static ASKED: AtomicU32 = AtomicU32::new(0);
 
 /// A hook that asks the far end on every run (counted in [`ASKED`]) and answers more than the
-/// first frame's buffers hold.
+
 struct Asks;
 impl Hook for Asks {
     fn decide(&self, _: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
@@ -1360,10 +1283,7 @@ impl HookOpen for OpenAsks {
 }
 
 /// RED (hook ABI defect 5): a `decide` / `transform` whose verdict does not fit the host's buffers
-/// answers the one short FAILED; the host re-calls the op ONCE on the same ticket with grown
-/// buffers. That re-call answers the verdict the first run lowered, without running the hook again:
-/// a hook that POSTs (hook-webrequest) sends one request per op, never a second. A different ticket
-/// (a later op on the slot, a recycled ticket) runs the hook afresh.
+
 #[test]
 fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_hook_again() {
     let p = opened_with::<OpenAsks>(&zeroed());
@@ -1410,8 +1330,6 @@ fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_ho
         "transform ran again on the re-call"
     );
 
-    // A short answer on one ticket is never another ticket's: a later ticket on the same slot
-    // runs the hook.
     let mut out: DecideOut = zeroed();
     assert_eq!(
         call::<Decide<OpenAsks>>(p, slot::DECIDE, &input, &mut out),
@@ -1431,8 +1349,6 @@ fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_ho
     assert_eq!(ASKED.load(Ordering::SeqCst), 4);
     closed::<OpenAsks>(p);
 }
-
-// ── configure says why (H3) ─────────────────────────────────────────────────────────────────────
 
 /// A hook that refuses any pushed settings naming `"bad"`, saying why.
 struct Picky;
@@ -1546,7 +1462,7 @@ fn configure_sdk_leases_the_atomic_checkpoint_and_preserves_the_pushed_ack_versi
 }
 
 /// RED (hook ABI defect 3): a hook that will not take pushed settings says WHY, and the operator
-/// reads its words, not only that the version was not acknowledged.
+
 #[test]
 fn red_a_configure_refusal_states_the_hooks_reason() {
     let p = opened_with::<OpenPickyConfigure>(&zeroed());
@@ -1564,8 +1480,6 @@ fn red_a_configure_refusal_states_the_hooks_reason() {
     );
     closed::<OpenPickyConfigure>(p);
 }
-
-// ── open is handed its secrets and generation (H6) ──────────────────────────────────────────────
 
 /// One opening [`OpenSecrets`] was handed: its settings, secrets and generation.
 type Handed = (String, Vec<Vec<u8>>, u64);
@@ -1589,7 +1503,7 @@ impl HookOpen for OpenSecrets {
 }
 
 /// RED (hook ABI defect 6): `open` and `refresh` hand the hook the secrets the host resolved for
-/// it and the generation, not its settings alone.
+
 #[test]
 fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
     use crate::abi::mechanism::lifecycle::slot::REFRESH;
@@ -1646,10 +1560,8 @@ fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
     closed::<OpenSecrets>(p);
 }
 
-// ── a request the hook cannot build says why (H11) ──────────────────────────────────────────────
-
 /// A hook whose request cannot be built: the builder's text is its failure, told apart from the
-/// exchange's own.
+
 struct Unsendable;
 impl Hook for Unsendable {
     fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
@@ -1671,7 +1583,7 @@ impl HookOpen for OpenUnsendable {
 }
 
 /// RED (hook ABI defect 11): `Op::exchange`'s request builder returns its own text when it cannot
-/// build the request; the op answers it as the builder's, nothing sent, with no side channel.
+
 #[test]
 fn red_a_request_the_builder_refuses_answers_the_builders_text() {
     ESTABLISHED.set(0);
@@ -1703,12 +1615,8 @@ fn red_a_request_the_builder_refuses_answers_the_builders_text() {
     closed::<OpenUnsendable>(p);
 }
 
-// ── a scripted far end drives a PENDING decide to its answer (E11) ──────────────────────────────
-
 /// RED (the shared test kit, E11): a plugin's test drives an op that asks the far end through
-/// PENDING to its answer over the kit's scripted far end ([`crate::abi::sdk::test_support::far`]):
-/// every service pends once, the op is RESUMED, and the test reads what was sent. The `decide` POSTs
-/// once, closes its stream, and answers the far end's status as its order.
+
 #[test]
 fn a_scripted_far_end_drives_a_pending_decide_to_its_answer() {
     use crate::abi::sdk::test_support::fake::FakeHost;
@@ -1878,7 +1786,7 @@ fn operation_context_follows_pending_custody_and_retires_without_slot_reuse() {
             assert_eq!(out.disposition, cancel::ABORTED);
         };
         let last = || CREATED.with(|created| created.borrow().last().unwrap().clone());
-        // High slots disappear on CANCEL without ever being reused.
+
         for slot in 40..64 {
             let ticket = Ticket {
                 slot,
@@ -2388,7 +2296,7 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
                 break;
             }
             input.head.flags = FLAG_RESUME;
-            // Resumed calls cannot raise the original bound or change head-only behavior.
+
             PROBE.with(|probe| {
                 let mut probe = probe.borrow_mut();
                 let probe = probe.as_mut().unwrap();

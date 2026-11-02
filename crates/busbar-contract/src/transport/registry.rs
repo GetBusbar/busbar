@@ -2,31 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check that
-//! a composed stack is the stack every layer declared.
-//!
-//! All three are read by transports and by the composition root that wires them, and by nobody who
-//! writes a plane. Each of them is a declaration that used to be a comment: a generation nobody
-//! compared, a key three planes each guessed at, a layering nothing verified.
 
 use core::fmt;
 
 /// The transport kind's ABI generation, named here for the transports that reach it on this path.
-///
-/// It is defined once, in `abi::transport`, from the kind's own `ABI_VERSION`: this is a re-export,
-/// not a second home, so the generation a transport answers is the generation the kind declares.
 pub use crate::abi::transport::TRANSPORT_ABI;
 
 /// The transport fact keys the kernel reserves, spelled once.
-///
-/// Transport facts are open vocabulary, which is right for a transport's own facts. These six are
-/// not a transport's own: they are the structural values the arrival grammar already resolves
-/// against, and a plane cannot see a connection, so the request target reaches it as one of these
-/// or not at all. With nothing pinning the spelling, three planes each guessed `"path"` and said so
-/// in a comment, and the boot check that would have caught a fourth guessing something else had
-/// nothing to compare.
-///
-/// A transport that publishes one of these names the constant. A transport that publishes something
-/// of its own names it whatever it likes, and none of this applies.
+
 pub mod facts {
     /// The request target's path.
     pub const PATH: &str = "path";
@@ -51,9 +34,7 @@ pub mod facts {
     }
 
     /// The first reserved key a transport publishes without having declared it.
-    ///
-    /// Compares the supplied declaration and publication lists. Contract tests use this helper
-    /// to check reserved fact declarations; transport registration does not invoke it.
+
     #[must_use]
     pub fn undeclared<'a>(declared: &[&'a str], published: &[&'a str]) -> Option<&'a str> {
         published
@@ -64,19 +45,10 @@ pub mod facts {
 }
 
 /// The status numberings the kernel reserves, spelled once.
-///
-/// The same shape as [`facts`] one module up, and for the same reason. A transport's numbering is
-/// its own to name — [`crate::wire::WireStatus::namespace`] is an open key, which is the whole point
-/// of it not being an arm — but these two are not a transport's own: they are the numberings the
-/// tree's own readers keep tables for, and a transport that reports in one of them has to spell it
-/// the way those readers spell it or its statuses silently stop matching.
-///
-/// A transport in one of these names the constant as its claim row's status numbering
-/// ([`crate::abi::transport::Claim::status_namespace`]). A transport with a numbering of its own
-/// names it whatever it likes, and none of this applies.
+
 pub mod status_ns {
     /// The status-line numbering: three-digit codes, as the request-response transports (and the
-    /// event streams composed over them) read them off a response.
+
     pub const HTTP: &str = "http";
     /// The trailer numbering, as a call-per-path transport reads it off an answer's trailer.
     pub const GRPC: &str = "grpc";
@@ -118,11 +90,11 @@ pub struct TransportSettings {
 }
 
 /// The uninstalled-config fallback for [`TransportSettings::request_body_max_bytes`] — the value the
-/// config layer resolves `limits.request_body_max_bytes` to when no operator limit is installed.
+
 pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 /// The uninstalled-config fallback for [`TransportSettings::request_timeout_secs`] — the value the
-/// config layer resolves `limits.upstream_request_timeout_secs` to when unset.
+
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 impl Default for TransportSettings {
@@ -205,16 +177,7 @@ impl fmt::Display for CompositionError {
 impl std::error::Error for CompositionError {}
 
 /// The boot check over a registry's transports: every declared layer exists, and every composition
-/// that happened was declared.
-///
-/// Run once, at boot, after configuration is read. Both halves matter and neither implies the
-/// other: a transport can declare a layer nobody registered, and a root can compose a transport
-/// over a layer it never declared. Before this ran, `COMPOSES_OVER` was a comment with a type.
-///
-/// # Errors
-///
-/// Two transports share a key, a declared layer names no registered transport, or a transport was
-/// built over a layer it does not declare.
+
 pub fn check_composition(registered: &[Registered]) -> Result<(), CompositionError> {
     for (i, r) in registered.iter().enumerate() {
         if registered[..i].iter().any(|other| other.key == r.key) {

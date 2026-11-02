@@ -2,15 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE POINTER AND LENGTH PAIRS of every struct a call lends, from the one list
-//! the SDK states its `Lent` accessors from (`lent.rs`): what a [`TestIn`](super::test_in::TestIn)
-//! may set together, and nothing else. It lives with its one reader, the test support.
 
 use std::any::TypeId;
 use std::mem::offset_of;
 
 use crate::abi::mechanism::call::{AbiStr, Blob};
-// The names the lists state their structs by, as `lent.rs` imports them (each list's element types
-// ride along unread).
+
 #[allow(unused_imports)]
 use crate::abi::auth::{
     BeginLoginIn, CompleteLoginIn, FieldSpan, FieldsIn, IdentityBuf, NamedValue, StripName,
@@ -118,7 +115,7 @@ macro_rules! lent_embeds {
 lent_field_list!(lent_embeds);
 
 /// EVERY POINTER AND LENGTH PAIR an `in` of type `t` carries, its embedded structs', strings' and
-/// payloads' included, at their offsets in it: `(pointer, length, length's width)`.
+
 pub fn lent_pairs(t: TypeId) -> Vec<(usize, usize, usize)> {
     let word = std::mem::size_of::<usize>();
     let mut out = if t == TypeId::of::<AbiStr>() {

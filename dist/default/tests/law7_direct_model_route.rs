@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LAW 7 AND THE DIRECT MODEL ROUTE (BUSBAR-1.6.0.md §2 "A plugin loads if and only if config uses
-//! it. There are no special plugins."; §4 "Selection follows the classes"): a 1.5.5 configuration
-//! that routes to its models directly — `providers:` and `models:`, no `pools:` — uses the plane
-//! serving models, so the boot loads it and `POST /<model>/v1/messages` is served exactly as when
-//! the configuration also names the plane's verb. The plane is selected by its `models` section
-//! (`SECTION_SELECTS`), read off its rendered Statement, not by opening it.
-//!
-//! RED before `SECTION_SELECTS` selected: the plane's verb is `pools`, so the direct-routing
-//! configuration loaded no plane and the route answered as no plane serves it.
 #![cfg(unix)]
-// The configuration below is served by the plane door that declares `pools:`; a build without it is
-// not the shape this test is about.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -24,7 +13,6 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "law7-direct-model-route-admin";
 
-/// The far end's one answer, whatever it is asked: a whole message in the provider's dialect.
 fn upstream_answer() -> serde_json::Value {
     serde_json::json!({
         "id": "msg_law7_direct",
@@ -38,7 +26,6 @@ fn upstream_answer() -> serde_json::Value {
     })
 }
 
-/// A loopback far end answering every request with [`upstream_answer`], for the test's life.
 fn upstream() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the far end");
     let port = listener.local_addr().unwrap().port();
@@ -67,11 +54,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// The 1.5.5 shape: one provider at the far end, one model, keys on the data plane, an admin token;
-/// `pools` appended when given (the plane's verb).
 fn write_configs(dir: &Path, upstream: u16, data: u16, admin: u16, pools: &str) {
-    // The provider catalog row is test data (`fixtures/mock_provider.yaml`, the far end's dialect),
-    // not a literal here; its base URL is pointed at this test's far end.
     let catalog = include_str!("fixtures/mock_provider.yaml");
     assert!(
         catalog.contains("\"http://127.0.0.1:9\""),
@@ -165,8 +148,6 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// Boot a node over `pools` (empty: the direct-routing shape), mint a key, ask the direct route
-/// once, and answer what it said.
 fn direct_route_answer(tag: &str, upstream: u16, pools: &str) -> (u16, String) {
     let dir = fixture_dir(tag);
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());

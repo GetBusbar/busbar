@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The dealt blob's section: empty, unwritten and `null` are the empty section; the section's
-//! value otherwise, its sibling sections left alone; a blob that is not JSON or not a map refused.
-//! The one cancel rule ends the units each plane's own cancel ended (plane-mcp, plane-a2a,
-//! plane-decisions, plane-llm and plane-streaming, transcribed below) and answers as it did.
 
 use super::*;
 
@@ -40,8 +37,6 @@ fn a_blob_that_is_not_a_map_of_sections_is_refused() {
     );
 }
 
-// ── the one cancel rule, against the five planes' own ────────────────────────────────────────────
-
 use std::collections::BTreeMap;
 
 use crate::abi::mechanism::ticket::Ticket;
@@ -75,7 +70,7 @@ fn mcp(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
 }
 
 /// plane-a2a `agent_door.rs` `Cancel`: the named unit when held, else every unit on the ticket,
-/// is marked over and kept.
+
 fn a2a(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
     let mut answered = false;
     if let Some(u) = m.get_mut(&unit).filter(|_| unit != 0) {
@@ -109,7 +104,7 @@ fn bindings(m: &Table) -> std::collections::HashMap<Ticket, u64> {
 }
 
 /// plane-llm `UnitBook::cancel` (its PARTIAL/ABORTED half): the named unit, else the one bound to
-/// the ticket, leaves.
+
 fn llm(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
     let unit = if unit == 0 {
         match bindings(&m).get(&t) {
@@ -124,7 +119,7 @@ fn llm(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
 }
 
 /// plane-streaming `Units::far_answered` then `Units::cancel`: the unit bound to the ticket and
-/// the named one leave.
+
 fn streaming(mut m: Table, t: Ticket, unit: u64) -> (bool, Table) {
     let by_ticket = bindings(&m).get(&t).copied();
     let named = || by_ticket.into_iter().chain((unit != 0).then_some(unit));
@@ -185,7 +180,7 @@ fn tables() -> Vec<Table> {
 }
 
 /// Whether the table and cancel are ones the host makes: a ticket is unique per instance, so no two
-/// units hold one, and a cancel's ticket names no unit but the one it names (`0` names none).
+
 fn in_contract(m: &Table, t: Ticket, unit: u64) -> bool {
     let mut tickets: Vec<u32> = m
         .values()
@@ -209,9 +204,9 @@ fn the_one_cancel_rule_answers_as_each_plane_did() {
         for &(t, unit) in &cancels {
             let removed = helper(&m, t, unit, Ending::Remove);
             let kept = helper(&m, t, unit, Ending::Keep);
-            // a2a's own rule, on every input: the same units marked, the same answer.
+
             assert_eq!(kept, a2a(m.clone(), t, unit), "a2a {m:?} {t:?} {unit}");
-            // Removing drops exactly the units keeping marks.
+
             let marked: Table = kept.1.into_iter().filter(|(_, u)| !u.over).collect();
             assert_eq!(removed.0, kept.0);
             assert_eq!(
@@ -234,7 +229,7 @@ fn the_one_cancel_rule_answers_as_each_plane_did() {
             }
         }
     }
-    // Every case was reached: those the host makes, and those only the a2a rule was held to.
+
     assert_eq!((checked, beyond), (9111, 9114));
 }
 

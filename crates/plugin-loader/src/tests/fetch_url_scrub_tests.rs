@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/fetch.rs`: a `plugins.fetch` URL is printed without the
-//! credential it may carry (H10). An operator may spell a fetch URL with `user:pass@` or a
-//! `?token=` query; the reload warn line repeats the URL, and must repeat only
-//! `scheme://host[:port]/path`. A URL that carries neither is printed byte for byte.
-
 use super::*;
 use std::sync::{Arc, Mutex};
 
-/// Every field of every event logged while the closure ran, as `name=value` strings.
 fn logged(run: impl FnOnce()) -> Vec<String> {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let subscriber = Capture(Arc::clone(&seen));
@@ -18,7 +12,6 @@ fn logged(run: impl FnOnce()) -> Vec<String> {
     lines
 }
 
-/// A subscriber that records each event's fields and nothing else.
 struct Capture(Arc<Mutex<Vec<String>>>);
 
 struct Fields<'a>(&'a mut Vec<String>);
@@ -65,12 +58,10 @@ fn tmpdir() -> std::path::PathBuf {
 const SECRET_URL: &str =
     "https://fetcher:pw-H10-s3cr3t@plugins.example.test:8443/p/x.tar.gz?token=q-H10-tok&v=1";
 
-/// The connector's own refusal shape: it names the URL twice (`GET {url}: … ({url})`).
 fn refusing(url: &str) -> Result<Vec<u8>, String> {
     Err(format!("GET {url}: error sending request for url ({url})"))
 }
 
-/// One reload miss on `url`: what it logged, and what it recorded.
 fn reload_miss(url: &str) -> (Vec<String>, Vec<FetchOutcome>) {
     let dir = tmpdir();
     let spec = FetchSpec {
@@ -85,8 +76,6 @@ fn reload_miss(url: &str) -> (Vec<String>, Vec<FetchOutcome>) {
     (lines, outcomes)
 }
 
-/// H10: the reload warn line repeats the fetch URL with no userinfo and no query, in both its
-/// `url` and its `error` field.
 #[test]
 fn the_reload_warn_line_prints_no_url_userinfo_or_query() {
     let (lines, _) = reload_miss(SECRET_URL);
@@ -104,8 +93,6 @@ fn the_reload_warn_line_prints_no_url_userinfo_or_query() {
     );
 }
 
-/// A fetch URL with no userinfo and no query is printed exactly as written, in the warn line's
-/// `url` and `error` fields alike.
 #[test]
 fn a_plain_fetch_url_is_printed_byte_for_byte() {
     let plain = "http://127.0.0.1:49761/busbar-store-sqlite-1.0.6-x86_64.tar.gz";
@@ -127,8 +114,6 @@ fn a_plain_fetch_url_is_printed_byte_for_byte() {
     );
 }
 
-/// H10, the kernel's line: the recorded `Warned { url, error }` is what the kernel logs as
-/// `plugins.fetch: miss on reload` (PLUGINS_FETCH_RELOAD_MISS); it carries the printable URL too.
 #[test]
 fn the_recorded_reload_miss_carries_no_url_userinfo_or_query() {
     let (_, outcomes) = reload_miss(SECRET_URL);

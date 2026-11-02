@@ -31,7 +31,7 @@ fn verdict(r: Result<(), Refusal>) -> Option<u64> {
 }
 
 /// RED: under the default, a name answering a private, loopback, CGNAT or unique-local address is
-/// refused as internal; a public answer is admitted.
+
 #[test]
 fn a_private_answer_is_refused_by_default() {
     let g = Guard::default();
@@ -56,7 +56,7 @@ fn a_private_answer_is_refused_by_default() {
 }
 
 /// RED: an allowlist entry admits the private answer it names: a host, a `*.` wildcard, a v4
-/// CIDR, a v6 CIDR, and a v4 CIDR over a mapped v6 answer.
+
 #[test]
 fn the_allowlist_admits_a_private_answer() {
     let g = guard(
@@ -86,7 +86,7 @@ fn the_allowlist_admits_a_private_answer() {
         Ok(())
     );
     assert_eq!(g.judge_answer("x.test", &[ip("fd00:1::5")], C), Ok(()));
-    // The apex and a suffix without the dot are not under the wildcard.
+
     for host in ["corp.example", "xcorp.example"] {
         assert_eq!(
             verdict(g.judge_answer(host, &[ip("192.168.1.1")], C)),
@@ -120,7 +120,7 @@ fn a_mixed_answer_is_refused_whole() {
 }
 
 /// A host entry never admits a metadata answer; an IP or CIDR entry naming the metadata address
-/// does.
+
 #[test]
 fn a_name_entry_never_admits_a_metadata_answer() {
     let g = guard(true, &["evil.test"]);
@@ -136,11 +136,7 @@ fn a_name_entry_never_admits_a_metadata_answer() {
 }
 
 /// RED (security.md:208, "the denylist takes precedence over every private-range allowance, so
-/// `100.100.100.200` is blocked even when `100.64.0.0/10` is allowlisted"; a2a: metadata refused
-/// for a push callback): an IP/CIDR allowlist entry WIDER than one address never admits a
-/// cloud-metadata address inside it, in any class, as an answer or as a literal, with
-/// `block_private_addresses` either way. The range still admits its other, private addresses. The
-/// refusal is the metadata one, naming the address.
+
 #[test]
 fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
     for (entry, meta, private) in [
@@ -201,7 +197,7 @@ fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
             }
         }
     }
-    // An address `security.blocked_metadata_hosts` adds to the denylist is held the same way.
+
     let g = Guard::from_config(&Destinations {
         allow: vec!["203.0.113.0/24".into()],
         blocked: vec!["203.0.113.9".into()],
@@ -216,10 +212,7 @@ fn a_cidr_allowlist_entry_does_not_admit_a_metadata_address_inside_it() {
 }
 
 /// RED (security.md:171, "only an IP or CIDR entry naming the address does"; :230-239, the 1.5.5
-/// carve-outs and `allow_all_metadata`): the deliberate carve-outs still admit a metadata address.
-/// An allowlist entry that names exactly that address (a bare IP, or a /32 or /128 equal to it)
-/// admits it, its mapped spelling too; `allow_all_metadata` and an `allow_metadata_hosts` address
-/// entry admit it for a provider dial. A CIDR of the same base wider than one address does not.
+
 #[test]
 fn an_exact_metadata_allow_entry_is_the_documented_carve_out() {
     for (entry, meta) in [
@@ -308,7 +301,7 @@ fn block_false_admits_private_but_not_metadata() {
 }
 
 /// The name arm: a literal is judged as its own answer, a `localhost` name and an alternate IPv4
-/// spelling are refused before any resolution, a public name passes on to resolution.
+
 #[test]
 fn the_name_arm_decides_before_resolution() {
     let g = Guard::default();
@@ -336,9 +329,7 @@ fn the_name_arm_decides_before_resolution() {
 }
 
 /// The 1.5.5 keys that still load: for a provider dial, a carve-out NAME admits its metadata
-/// answer (as 1.5.5's did) and `allow_all_metadata` admits every metadata name and address; in any
-/// other class neither admits anything. An extra blocked host is refused as metadata unless the
-/// allowlist names it.
+
 #[test]
 fn the_1_5_5_keys_keep_their_meaning() {
     let legacy = |allow: &[&str], blocked: &[&str], all: bool| {
@@ -402,8 +393,7 @@ fn the_1_5_5_keys_keep_their_meaning() {
 }
 
 /// A provider's own carve-out (`providers.<p>.allow_metadata_hosts`) admits for a provider dial of
-/// a host that provider's URLs name, and for no other host: another provider's, or one no
-/// provider names.
+
 #[test]
 fn a_provider_carve_out_admits_only_for_its_own_url_host() {
     let g = Guard::from_config(&Destinations {
@@ -472,7 +462,7 @@ fn provider_metadata_carveouts_accept_http_schemes_in_any_case() {
 }
 
 /// A config commit re-publishes the metadata lists to every clone of the guard: a carve-out the
-/// commit removes is refused at the next judgement, and one it adds is admitted.
+
 #[test]
 fn a_commit_republishes_the_metadata_lists() {
     let carved = Destinations {
@@ -506,7 +496,7 @@ fn a_commit_republishes_the_metadata_lists() {
 }
 
 /// A bad allowlist entry refuses the boot, naming the key, its index and the entry (userinfo
-/// masked); a CIDR with bits past its prefix is refused too.
+
 #[test]
 fn a_bad_entry_is_refused_naming_the_key() {
     let refused = |e: &str| {
@@ -538,11 +528,7 @@ fn a_bad_entry_is_refused_naming_the_key() {
 }
 
 /// THE DEFAULT POLICY is one table: the provider class and a destination from request data (the
-/// default class, open-web) are refused private (THE DESIGN §5 destination guard); operator
-/// infrastructure is allowed private and loopback (§5 egress-class table); loopback-allowed is
-/// allowed loopback and refused every other private address (the destination guard still applying,
-/// as 1.5.5's collector guard refused them); while cloud metadata, a configured name rebinding to
-/// it included, stays refused in every class.
+
 #[test]
 fn private_is_refused_for_providers_and_request_data_and_allowed_for_operator_infrastructure() {
     let g = Guard::default();
@@ -573,9 +559,7 @@ fn private_is_refused_for_providers_and_request_data_and_allowed_for_operator_in
 }
 
 /// A provider dial with no allowlist entry for it is refused a private or loopback address, by
-/// name, by literal and by answer; the allowlist admits it; a HOST allowlist entry still never
-/// admits a metadata answer, and no 1.5.5 carve-out admits metadata for a host the provider does
-/// not name.
+
 #[test]
 fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     let strict = Guard::default();
@@ -629,8 +613,7 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
 }
 
 /// THE DESIGN §5 egress-class table, held beside the provider fix above: operator infrastructure is
-/// allowed private and loopback with no allowlist entry, and refuses cloud metadata even when the
-/// allowlist names the host and every 1.5.5 carve-out names the address.
+
 #[test]
 fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_carved() {
     let oi = EGRESS_OPERATOR_INFRASTRUCTURE;
@@ -669,9 +652,7 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
 }
 
 /// RED (THE DESIGN §5 "no blocking thread exists"; resource bounds): the dial guard's name
-/// lookups are CAPPED (`MAX_PENDING_LOOKUPS`): with the cap's lookups in flight one more is
-/// answered at once as a resolution failure and starts no thread. Uncapped, one thread was started per lookup, so a burst of dials while names were slow
-/// grew threads without limit.
+
 #[test]
 fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
     use std::sync::atomic::AtomicUsize;
@@ -719,11 +700,7 @@ fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
 }
 
 /// A CONFIGURED OPEN-WEB TARGET KEEPS THE OPEN-WEB CLASS ("a
-/// configured open-web target keeps the open-web class (public https only); only the egress
-/// default class is lifted when configured"; 1.5.5's webhook export refused a private or loopback
-/// URL). A webhook URL taken from settings is judged open-web, so `https://127.0.0.1` and a
-/// `10.x` address are refused; only the egress default is lifted to operator infrastructure.
-/// RED before the fix: the configured open-web need was lifted, and both were admitted.
+
 #[test]
 fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address() {
     assert_eq!(judged_class(EGRESS_OPEN_WEB, true), EGRESS_OPEN_WEB);
@@ -742,27 +719,25 @@ fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address
 }
 
 /// The odd spellings of the SSRF guard bypass (HIGH, a plugin argument guard's hosts reach
-/// here as written), each beside the plain ASCII host a URL client dials it as: `url` 2.5.8 maps the
-/// host by UTS #46 before it dials, so `ｌｏｃａｌｈｏｓｔ` fetches `localhost` and
-/// `①⑥⑨.②⑤④.①⑥⑨.②⑤④` fetches the metadata address.
+
 const ODD_SPELLINGS: [(&str, &str); 6] = [
-    // Full-width `ｌｏｃａｌｈｏｓｔ`.
+
     (
         "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}",
         "localhost",
     ),
-    // Circled digits `①②⑦.0.0.1`.
+
     ("\u{2460}\u{2461}\u{2466}.0.0.1", "127.0.0.1"),
-    // Circled digits `①⑥⑨.②⑤④.①⑥⑨.②⑤④`, the metadata address.
+
     (
         "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
         "169.254.169.254",
     ),
-    // The ideographic full stop: `LOCALHOST。`.
+
     ("LOCALHOST\u{3002}", "localhost"),
-    // Full-width `０ｘ７ｆ．１`, the short hex spelling `0x7f.1`.
+
     ("\u{ff10}\u{ff58}\u{ff17}\u{ff46}\u{ff0e}\u{ff11}", "0x7f.1"),
-    // Full-width `０１７７００００００００１`, the octal spelling `017700000001`.
+
     (
         "\u{ff10}\u{ff11}\u{ff17}\u{ff17}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff11}",
         "017700000001",
@@ -770,7 +745,7 @@ const ODD_SPELLINGS: [(&str, &str); 6] = [
 ];
 
 /// A name judgement as a verdict and the address that decided it, the refused host's own spelling
-/// left out: the one thing an odd spelling and its plain host may differ in.
+
 type NameVerdict = Result<Option<IpAddr>, (u64, Option<IpAddr>)>;
 
 fn judged(r: Result<Option<IpAddr>, Refusal>) -> NameVerdict {
@@ -778,8 +753,7 @@ fn judged(r: Result<Option<IpAddr>, Refusal>) -> NameVerdict {
 }
 
 /// RED, the SSRF guard bypass: every odd spelling is judged exactly as the plain ASCII host
-/// it maps to, in every class and strictness, the same verdict and the same deciding address. On
-/// the guard that compared a host only ASCII-lowercased, each read as an unknown name and passed.
+
 #[test]
 fn an_odd_spelling_is_judged_as_the_ascii_host_it_maps_to() {
     let g = Guard::default();
@@ -800,7 +774,7 @@ fn an_odd_spelling_is_judged_as_the_ascii_host_it_maps_to() {
             }
         }
     }
-    // And each is REFUSED where its plain host is, with its verdict.
+
     let refused = |h: &str| g.judge_name(h, C).err().map(|r| (r.verdict, r.addr));
     let lo = Some(ip("127.0.0.1"));
     let want = [
@@ -815,8 +789,7 @@ fn an_odd_spelling_is_judged_as_the_ascii_host_it_maps_to() {
         assert_eq!(refused(odd), want, "{odd}");
         assert_eq!(refused(plain), want, "{plain}");
     }
-    // The ASCII alternate spellings themselves are judged as before: refused as spellings, and in
-    // the loopback-allowed class read as the loopback address they spell.
+
     for spelling in ["0x7f.1", "017700000001"] {
         assert_eq!(
             g.judge_name_as(spelling, EGRESS_LOOPBACK_ALLOWED, false),
@@ -827,9 +800,7 @@ fn an_odd_spelling_is_judged_as_the_ascii_host_it_maps_to() {
 }
 
 /// RED: a host the mapping reads as nothing is refused as unjudgeable (`DEST_NO_HOST`), naming the
-/// host, before any list is asked: a name UTS #46 refuses, and a host `url` dials as an address the
-/// guard's own address reader does not read (`0x` is `0.0.0.0` to `url`). An allowlist entry
-/// spelling it admits nothing.
+
 #[test]
 fn a_host_that_maps_to_nothing_is_refused_as_unjudgeable() {
     let g = guard(true, &["0x"]);
@@ -855,8 +826,7 @@ fn a_host_that_maps_to_nothing_is_refused_as_unjudgeable() {
 }
 
 /// The operator's lists compare in the mapped form too: a `blocked_metadata_hosts` entry refuses
-/// the odd spelling of its name, an odd-spelt entry refuses the plain name, and an allowlist entry
-/// written in punycode admits the IDN name it is.
+
 #[test]
 fn the_configured_lists_compare_in_the_mapped_form() {
     let full_width_meta = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
@@ -885,7 +855,7 @@ fn the_configured_lists_compare_in_the_mapped_form() {
 }
 
 /// GREEN control: a public IDN name maps to its punycode name and is admitted, as the plain name
-/// is; its private answer is refused, as the plain name's is.
+
 #[test]
 fn a_public_idn_name_maps_to_punycode_and_is_allowed() {
     let g = Guard::default();
@@ -905,13 +875,12 @@ fn a_public_idn_name_maps_to_punycode_and_is_allowed() {
 }
 
 /// An IPv6 literal in brackets, with a zone id, and an ASCII host are judged as before, byte for
-/// byte: the mapping reads each as it is written.
+
 #[test]
 fn bracketed_zoned_and_ascii_hosts_are_judged_as_before() {
     let g = Guard::default();
     for (host, want) in [
         ("[::1]", Err((DEST_INTERNAL, Some(ip("::1"))))),
-        // An IPv6 link-local address is refused as metadata on every need.
         (
             "[fe80::1%25eth0]",
             Err((DEST_METADATA, Some(ip("fe80::1")))),
@@ -932,9 +901,7 @@ fn bracketed_zoned_and_ascii_hosts_are_judged_as_before() {
 }
 
 /// RED, the percent-escape the guard did not decode: a host holding a `%` outside an IPv6
-/// zone id is unjudgeable (`DEST_NO_HOST`), naming it, in every class, whatever the allowlist says:
-/// `%6c%6fcalhost` is `localhost` to a client that decodes it, and the guard read it as an unknown
-/// name and admitted it unresolved. A zone id's `%` is the literal's, judged as before.
+
 #[test]
 fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
     let g = guard(true, &["*.example", "127.0.0.0/8"]);
@@ -972,7 +939,7 @@ fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
         );
         assert!(!names_loopback(host), "{host}");
     }
-    // A zone id's `%` is the IPv6 literal's: judged as the address, as before.
+
     for zoned in ["[fe80::1%25eth0]", "fe80::1%eth0"] {
         assert_eq!(
             judged(g.judge_name(zoned, C)),
@@ -983,10 +950,7 @@ fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
 }
 
 /// The guard, the one metadata and link-local refusal a judged dial meets, refuses an IPv6
-/// link-local answer in every class, operator infrastructure included, with the endpoint check's
-/// verdict; only an IP or CIDR entry naming the address admits it (the allowlist's in any class, a
-/// provider carve-out's for a provider dial). A host entry, a private reach, `allow_all_metadata`
-/// and `block_private_addresses: false` admit nothing of it.
+
 #[test]
 fn ipv6_link_local_is_refused_in_every_class_unless_an_ip_entry_names_it() {
     let ll = ip("fe80::1");

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `Safe` slots through the real trampoline: the SDK mints the instance on a READY `open`, types it
-//! for every later call, and drops it on a READY `close` — never on anything else.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -64,10 +63,10 @@ const OPEN_DROP_PANICS: usize = 6;
 /// `close` with these `in.flags` answers FAILED.
 const CLOSE_FAILS: u32 = 7;
 /// `close` with these `in.flags` answers READY naming a reason leased from the state's own table
-/// (memory the box that goes at this `close` owns).
+
 const CLOSE_LEASES_ERROR: u32 = 8;
 /// `drive` with these `in.flags` answers FAILED with a reason leased from a table the body made
-/// for itself.
+
 const DRIVE_LOCAL_LEASE: u32 = 0x100;
 /// `drive` with these `in.flags` answers FAILED with a reason leased from the instance's table.
 const DRIVE_STATE_LEASE: u32 = 0x200;
@@ -131,7 +130,7 @@ mod plugin {
             _ => Outcome::Ready,
         }
     });
-    // Another state type than `open` installed: reads no instance.
+
     safe_slot!(Refresh, u32, RefreshIn, OutHead, |i, _input, _o| {
         if i.get().is_none() {
             Outcome::Refused
@@ -139,7 +138,7 @@ mod plugin {
             Outcome::Ready
         }
     });
-    // Installing outside `open` panics: FAULT.
+
     safe_slot!(Retire, Probe, GenIn, OutHead, |i, _input, _o| {
         let drops = i.get().expect("open installed a probe").drops;
         i.open(Probe {
@@ -172,8 +171,7 @@ mod plugin {
     safe_slot!(Cancel, Probe, CancelIn, CancelOut, |_i, _input, _o| {
         Outcome::Ready
     });
-    // A ticketed fresh entry parks [`PARKED`] and answers PENDING; its RESUME answers READY
-    // having found it, or FAILED.
+
     safe_slot!(Release, Probe, ReleaseIn, OutHead, |i, _input, _o| {
         if i.ticket().is_none() {
             Outcome::Ready
@@ -368,7 +366,6 @@ fn an_open_that_panics_after_installing_is_fault_and_drops_the_state() {
 
 #[test]
 fn a_pointer_the_body_forges_is_overwritten_by_the_minted_one() {
-    // RED: `out.instance = 0x10` in a safe body never reaches the host.
     let (o, inst, _) = open(OPEN_FORGES);
     assert_eq!(o, Outcome::Ready);
     assert_ne!(inst, 0x10 as *mut c_void);
@@ -378,7 +375,6 @@ fn a_pointer_the_body_forges_is_overwritten_by_the_minted_one() {
 
 #[test]
 fn a_ready_open_that_installs_nothing_hands_back_null() {
-    // The host judges a READY `open` with a NULL instance FAULT.
     let (o, inst, _) = open(OPEN_INSTALLS_NOTHING);
     assert_eq!(o, Outcome::Ready);
     assert!(inst.is_null());
@@ -404,7 +400,7 @@ fn installing_outside_open_is_fault() {
         call(table().head.retire, inst, &input, &mut out),
         Outcome::Fault
     );
-    // Only the refused probe drops; the instance is untouched.
+
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert_eq!(tick(inst), (Outcome::Ready, 42));
     assert_eq!(close(inst, 0), Outcome::Ready);
@@ -413,8 +409,6 @@ fn installing_outside_open_is_fault() {
 
 #[test]
 fn a_state_whose_drop_panics_still_closes_ready() {
-    // RED (C1 M5 c): the box is freed during the unwind, so a FAULT here would leave the host
-    // holding a freed instance it believes is open. The close answers READY.
     let (o, inst, drops) = open(OPEN_DROP_PANICS);
     assert_eq!(o, Outcome::Ready);
     assert_eq!(close(inst, 0), Outcome::Ready);
@@ -431,19 +425,15 @@ fn drive(instance: *mut c_void, flags: u32) -> Outcome {
 
 #[test]
 fn red_an_answer_leased_from_a_table_the_body_dropped_is_fault() {
-    // C1 M5 (b): the body's own `Leases` is dropped when it returns, freeing the reason the head
-    // names before the host copies it. The SDK answers FAULT, so the host reads nothing.
     let (_, inst, _) = open(OPEN_READY);
     assert_eq!(drive(inst, DRIVE_LOCAL_LEASE), Outcome::Fault);
-    // The GREEN twin: leased from the instance's table, the answer stands.
+
     assert_eq!(drive(inst, DRIVE_STATE_LEASE), Outcome::Failed);
     assert_eq!(close(inst, 0), Outcome::Ready);
 }
 
 /// THE REQUEST PATH TAKES NO SHARED LOCK WHEN NOTHING IS PARKED (THE DESIGN, the plugin ABI: "no allocation
-/// and no blocking on the hot path"). Every worker on an instance enters through the same `Head`;
-/// an entry on an instance with nothing parked must not touch the parked table's mutex, so it
-/// cannot wait on another worker holding it.
+
 #[test]
 fn an_entry_with_nothing_parked_takes_no_parked_lock() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -468,15 +458,12 @@ fn an_entry_with_nothing_parked_takes_no_parked_lock() {
 }
 
 /// A CROSSING ALLOCATES NOTHING, ITS PER-CALL LOG SCOPE INCLUDED (THE DESIGN, the plugin ABI: "no
-/// allocation and no blocking on the hot path"; the per-call scoped capture is kept). The
-/// thread's capture dispatcher is built once, on the worker's first crossing; every later crossing
-/// scopes the body under it with a reference-count clone and a thread-local swap, and allocates
-/// nothing.
+
 #[test]
 fn a_crossing_with_its_scoped_capture_allocates_nothing() {
     let (o, inst, _drops) = open(OPEN_READY);
     assert_eq!(o, Outcome::Ready);
-    // The worker's first crossings build its capture slot.
+
     assert_eq!(tick(inst), (Outcome::Ready, 42));
     assert_eq!(tick(inst), (Outcome::Ready, 42));
     crate::alloc_counter::reset();
@@ -489,9 +476,6 @@ fn a_crossing_with_its_scoped_capture_allocates_nothing() {
 
 #[test]
 fn red_a_ready_close_names_no_memory_its_freed_state_owned() {
-    // RED before the fix: the reason `close` leased from the state's table named the box the
-    // trampoline then freed, and the host read freed memory. The `out` the host reads now names
-    // none of it: its error is absent, the state gone, the answer READY.
     let (o, instance, drops) = open(OPEN_READY);
     assert_eq!(o, Outcome::Ready);
     let (closed, out) = close_out(instance, CLOSE_LEASES_ERROR);
@@ -524,7 +508,7 @@ fn cancel_ticket(instance: *mut c_void, ticket: Ticket) -> Outcome {
 }
 
 /// A continuation's destructor may call back into the same instance. Probe the existing slot
-/// guards first, so the broken baseline reports a failed assertion instead of deadlocking.
+
 #[test]
 fn cancelled_and_replaced_continuations_drop_unlocked_and_preserve_reentrant_work() {
     use std::sync::Arc;
@@ -547,7 +531,7 @@ fn cancelled_and_replaced_continuations_drop_unlocked_and_preserve_reentrant_wor
                 return;
             }
             self.entered.fetch_or(1, Ordering::SeqCst);
-            // This exact-ticket re-entry deadlocks if the destructor still owns the old guard.
+
             assert_eq!(cancel_ticket(instance, self.original), Outcome::Ready);
             self.entered.fetch_or(2, Ordering::SeqCst);
             assert_eq!(release(instance, self.replacement, 0), Outcome::Pending);
@@ -586,7 +570,7 @@ fn cancelled_and_replaced_continuations_drop_unlocked_and_preserve_reentrant_wor
             cancel_ticket(instance, original)
         };
         let fresh_value = head.take::<u64>(original);
-        // A late cancellation of the old generation must leave the destructor's new operation.
+
         let late = cancel_ticket(instance, original);
         let replacement_value = head.take::<u64>(replacement);
         assert_eq!(close(instance, 0), Outcome::Ready);
@@ -619,9 +603,7 @@ fn cancelled_and_replaced_continuations_drop_unlocked_and_preserve_reentrant_wor
 }
 
 /// A NOT-READY CONTINUATION COMES FROM A RECYCLED POOL (BUSBAR-1.6.0.md A.8, decision #30: "no
-/// allocation and no blocking on the hot path"). Once an instance has parked on a ticket, a later
-/// PENDING, RESUME, READY cycle on a recycled ticket reuses the continuation's allocation: the
-/// crossing pair allocates nothing.
+
 #[test]
 fn red_a_warm_pending_resume_ready_cycle_on_a_recycled_ticket_allocates_nothing() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -634,7 +616,7 @@ fn red_a_warm_pending_resume_ready_cycle_on_a_recycled_ticket_allocates_nothing(
         assert_eq!(release(inst, t, 0), Outcome::Pending);
         assert_eq!(release(inst, t, FLAG_RESUME), Outcome::Ready);
     }
-    // The ticket's slot, recycled: a new generation.
+
     let recycled = Ticket {
         slot: 3,
         generation: 3,
@@ -652,8 +634,7 @@ fn red_a_warm_pending_resume_ready_cycle_on_a_recycled_ticket_allocates_nothing(
 }
 
 /// A CROSSING ON ONE TICKET NEVER WAITS ON ANOTHER TICKET'S CONTINUATION (decision #30: no
-/// blocking on the hot path; A.8: zero contended atomics). With ticket A parked and its table held,
-/// a READY crossing on ticket B still completes.
+
 #[test]
 fn red_a_ready_crossing_completes_while_another_ticket_is_parked_and_held() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -707,7 +688,7 @@ fn warm_cycle_allocations(instance: *mut c_void, slot: u32) -> u64 {
 }
 
 /// The GREEN twin: a RESUME that takes its continuation back by value leaves its allocation in the
-/// instance's pool, so the warm cycle allocates nothing either.
+
 #[test]
 fn a_warm_cycle_that_takes_its_continuation_back_allocates_nothing() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -717,7 +698,7 @@ fn a_warm_cycle_that_takes_its_continuation_back_allocates_nothing() {
 }
 
 /// The control: the counter sees an allocation when one happens. A RESUME that takes its
-/// continuation back boxed makes exactly the one fresh box.
+
 #[test]
 fn the_counter_sees_the_box_a_boxed_resume_hands_back() {
     let (o, inst, _drops) = open(OPEN_READY);
@@ -727,7 +708,7 @@ fn the_counter_sees_the_box_a_boxed_resume_hands_back() {
 }
 
 /// More tickets parked at once than one segment holds: the table grows, and every ticket resumes
-/// its own continuation and frees its slot.
+
 #[test]
 fn the_parked_table_grows_past_a_segment_and_every_ticket_resumes_its_own() {
     let (o, inst, _drops) = open(OPEN_READY);

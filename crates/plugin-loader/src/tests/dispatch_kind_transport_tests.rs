@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The transport kind's adapter: each checked op answers GREEN and RED through `Kind::check`, a
-//! piece count one past the host's cap is FAULT before any slice exists, a foreign `in` is FAULT,
-//! every slot has a name, and only `arrival` and `locate` have a short answer.
-
 use std::mem::{size_of, zeroed};
 use std::ptr::NonNull;
 
@@ -33,7 +29,6 @@ fn f(rule: Rule, field: &'static str) -> Result<(), Fault> {
     Err(fault(rule, field))
 }
 
-/// An answer of `slot` over the test's own `in` and `out`.
 fn answer<I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'static> {
     // SAFETY: `i` and `o` are live for the answer's use in each test and nobody writes them.
     unsafe {
@@ -47,8 +42,6 @@ fn answer<I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'static> {
         )
     }
 }
-
-// ── carrier ──
 
 #[test]
 fn listen_green_and_red_no_short_path() {
@@ -158,8 +151,6 @@ fn dial_flush_and_shut_have_no_per_answer_rule() {
     }
 }
 
-// ── framer ──
-
 #[test]
 fn locate_green_red_and_short() {
     let mut i: LocateIn = z();
@@ -203,10 +194,8 @@ fn sink(pieces: &mut [FramePiece]) -> FramerSink {
     s
 }
 
-/// One framer op's answer over a given `out` and outcome.
 type FramerCall = Box<dyn Fn(&FramerOut, Outcome) -> Answer>;
 
-/// Every framer op's slot, with an `in` of its own struct carrying `sink`.
 fn framer_ins(s: FramerSink) -> Vec<(u32, FramerCall)> {
     fn with<I: 'static>(slot: u32, i: I) -> (u32, FramerCall) {
         let i = Box::leak(Box::new(i));
@@ -295,8 +284,6 @@ fn framer_pieces_one_past_the_cap_fault_before_any_slice() {
     }
 }
 
-/// RED, through the one dispatcher: a field block carrying a pseudo-field (`:path`) is FAULT on
-/// every framer op, and an accepted stream's request head is held to its slots.
 #[test]
 fn a_pseudo_field_or_a_bad_request_head_faults_every_framer_op() {
     let mut frame = *b":path: /\r\nx: 1\r\nGET/v1";
@@ -353,8 +340,6 @@ fn a_pseudo_field_or_a_bad_request_head_faults_every_framer_op() {
     }
 }
 
-// ── cancel ──
-
 #[test]
 fn cancel_green_and_red_on_its_disposition() {
     let i: InHead = z();
@@ -374,8 +359,6 @@ fn cancel_green_and_red_on_its_disposition() {
         );
     }
 }
-
-// ── foreign sizes ──
 
 #[test]
 fn an_in_smaller_than_the_ops_struct_is_foreign() {
@@ -414,8 +397,6 @@ fn an_out_smaller_than_the_ops_struct_is_foreign() {
     );
 }
 
-// ── names, identity ──
-
 #[test]
 fn every_slot_has_a_name() {
     for s in 0..SLOTS {
@@ -430,10 +411,6 @@ fn the_kind_is_transport_and_times_out_failed() {
     assert_eq!(Transport::TIMEOUT, Outcome::Failed);
 }
 
-// ── the tail the registry view reads ──
-
-/// A transport's tail is read and checked at bind: none refuses the load; a framer over the host's
-/// socket states its claims and no layer.
 #[test]
 fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -495,7 +472,7 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     assert_eq!(facts.claims, ["one", "two"]);
     assert!(facts.composes_over.is_empty());
     assert_eq!(facts.role, ROLE_FRAMER);
-    // The names are the Statement's: a tail whose rows outnumber them is refused at bind.
+
     let one_name = Statement {
         claims_len: 1,
         ..st
@@ -503,10 +480,6 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     assert!(Transport::context(&one_name).is_err(), "two rows, one name");
 }
 
-/// THE UPGRADE LINES ARE READ OFF THE CLAIM ROWS (ARCHITECT ruling Q128 U7): a claim whose row states
-/// `unit0_trigger = UNIT0_UPGRADE` is an upgrade line, and a claim that states anything else is not —
-/// RED: the same scheme with the trigger left at 0 yields an EMPTY upgrade set, so the host mounts no
-/// upgrade line for it.
 #[test]
 fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -562,11 +535,6 @@ fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
     );
 }
 
-/// THE FAULT TABLE AT BIND (busbar ARCHITECT breaker ruling Q1). A claim that classes its answers
-/// states what they mean to the breaker too: a tail with status rows and no fault table is refused,
-/// whether it was built before the table was appended (its size stops short of it, so the host
-/// reads it absent) or after (it states none). A claim with a fault table binds; a tail with no
-/// status rows owes none, so a carrier built before the append still binds.
 #[test]
 fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -621,11 +589,9 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
     tail.status_rows = status.as_ptr();
     tail.status_rows_len = 1;
 
-    // RED: status rows, no fault table.
     let refused = bind(&tail).expect_err("a classed claim with no fault table is refused");
     assert!(refused.contains("fault_rows"), "{refused}");
 
-    // GREEN: the same claim with its fault table.
     tail.fault_rows = faults.as_ptr();
     tail.fault_rows_len = 1;
     assert!(
@@ -633,14 +599,12 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
         "a classed claim with a fault table binds"
     );
 
-    // A tail built before the append: the host reads its fault table as absent, so the same
-    // status rows refuse it...
     tail.head.size = std::mem::offset_of!(TransportTail, fault_rows) as u32;
     assert!(
         bind(&tail).is_err(),
         "a pre-append framer that classes is refused"
     );
-    // ...and a pre-append carrier that classes nothing still binds.
+
     tail.role = ROLE_CARRIER;
     tail.status_rows = std::ptr::null();
     tail.status_rows_len = 0;
@@ -649,7 +613,6 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
         "a pre-append tail that owes no fault table binds"
     );
 
-    // A fault row that reads nothing is no row: refused.
     tail.head.size = size_of::<TransportTail>() as u32;
     let none = [FaultRow {
         fault: 0,
@@ -660,11 +623,6 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
     assert!(bind(&tail).is_err(), "a FAULT_NONE row is refused");
 }
 
-/// RED (ARCHITECT ruling (c) on #953: compiled-in = dropped-in, one contract and one path): a
-/// DROPPED-IN transport's offered points are read off its Statement's `extensions` at load, through
-/// the same reader a linked door's are (`check_offered_points`, from `tail_facts`): a transport
-/// stating `{Peer}` offers `{Peer}`, one stating no record `{Head, HeadBody}`, and a record of
-/// another length refuses the load.
 #[test]
 fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
     use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
@@ -737,9 +695,6 @@ fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
     );
 }
 
-/// RED (#65, #74): a dial's `begin` carrying the binding's auth handle is admitted only for the
-/// framer it was minted for, at the published generation, with its mac as minted; a malformed
-/// binding is refused too. Every refusal is before the crossing.
 #[test]
 fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
     use crate::dispatch::auth_handle::{generation, mint_auth_ref};
@@ -782,7 +737,7 @@ fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
         Some(Outcome::Refused),
         "a handle on accept"
     );
-    // Only `begin` is judged, and only a frame that holds a `BeginIn`.
+
     assert_eq!(
         Transport::admit(
             slot::INGEST,
@@ -794,8 +749,6 @@ fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
     );
 }
 
-/// RED: a `begin` whose scheme is undeclared (`0`, a zeroed `in`) or unknown is REFUSED before
-/// the crossing, on every side; a declared scheme is admitted.
 #[test]
 fn a_begin_with_an_undeclared_scheme_is_refused() {
     use busbar_contract::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE};
@@ -821,9 +774,6 @@ fn a_begin_with_an_undeclared_scheme_is_refused() {
     }
 }
 
-/// RED (the opening body's length): an `emit` whose `body_len` breaks the contract (a length with
-/// `body_len_known` `0`, a flag past `1`, a padding byte) is the host's own fault and never
-/// crosses; a known length, and no length at all, cross.
 #[test]
 fn an_emit_whose_body_length_breaks_the_contract_never_crosses() {
     let admit = |i: &EmitIn| {
@@ -854,10 +804,6 @@ fn an_emit_whose_body_length_breaks_the_contract_never_crosses() {
     assert_eq!(admit(&pad), Some(Outcome::Fault), "the padding");
 }
 
-/// RED (deadline classes, the op contracts): a TICKETED framer crossing is stamped with the class
-/// its op's contract states, `Stream` for `begin`, `ingest` and `emit` (a pending auth call inside
-/// one runs under the stream's deadline), never the carrier's `Connection`; a carrier's ticketed
-/// I/O keeps `Connection`; a ticket-less crossing is `Call`.
 #[test]
 fn a_ticketed_framer_crossing_is_stamped_with_its_contracts_class() {
     use crate::dispatch::plugin::stamped_class;
@@ -891,10 +837,6 @@ fn a_ticketed_framer_crossing_is_stamped_with_its_contracts_class() {
     }
 }
 
-/// RED (audit contract-src #11): every string list a transport's tail states is judged at bind by
-/// its own contract check, so a name counted over a NULL pointer refuses the load. The claims a
-/// connection may upgrade to (`check_upgrades_to`) and each claim row's fact keys
-/// (`check_claim_facts`) were never judged by the host.
 #[test]
 fn red_a_null_upgrade_name_or_claim_fact_refuses_the_bind() {
     use busbar_contract::abi::mechanism::call::AbiStr;

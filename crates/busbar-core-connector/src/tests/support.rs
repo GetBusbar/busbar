@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A TEST TRANSPORT ENTRY, in Rust behind the [`FramerDoor`] seam: an identity framer (the bytes are
-//! the frames, one frame per ingest on stream `0`) with knobs a test turns — a target that asks for
-//! connection security, a silence deadline, a `locate` that names another authority — and, stated a
-//! CARRIER, a carrier over the process's host I/O (`crate::hostio`, called as a carrier calls
-//! `io.*`); a record of every crossing and the thread it ran on. The one place in this crate that
-//! writes a host sink through its raw pointers, as a plugin does.
 
 #[derive(Clone, Copy, Default)]
 struct WipeWatch {
@@ -333,28 +328,22 @@ pub struct TestDoor {
     /// The supervision keys a [`DEST_RETIRED`] `dial` told it to forget, in order.
     pub retired_keys: Mutex<Vec<u64>>,
     /// The supervision keys whose `dial` it REFUSES, as a carrier's supervisor refuses a member's
-    /// program it holds down.
     pub held_keys: Mutex<HashSet<u64>>,
     /// The authority capacity every `locate` crossing offered (`LocateIn::authority_cap`), in order.
     pub locate_caps: Mutex<Vec<usize>>,
     /// EVERY BYTE THE FRAMER WAS HANDED: each `begin` and `encode` field value and each `emit`'s
-    /// bytes, in order (what a sealed value must never be found in).
     pub handed: Mutex<Vec<u8>>,
 }
 
 impl TestDoor {
     /// An entry named `name`, claiming `claims`, over `composes_over`. Its role is a FRAMER where it
-    /// names a layer (the shape these fixtures used for "framed" before the role was stated) and a
-    /// CARRIER otherwise; [`TestDoor::with_role`] states it outright.
+
     pub fn new(
         name: &str,
         claims: &[&'static str],
         composes_over: &[&'static str],
         knobs: Knobs,
     ) -> Self {
-        // A knob only a framer answers (a secure target, a protocol offer, a head, text or
-        // field-block frames, a silence deadline, another authority, scripted messages) states the
-        // entry a FRAMER: a carrier frames nothing.
         let frames = knobs.secure_name.is_some()
             || knobs.offer.is_some()
             || knobs.head
@@ -415,7 +404,7 @@ impl TestDoor {
     }
 
     /// The same entry, its claim reading a port whatever its role (a framer stating one is still no
-    /// carrier).
+
     #[must_use]
     pub fn with_port(mut self) -> Self {
         self.facts.ported = true;
@@ -797,7 +786,7 @@ impl FramerDoor for TestDoor {
                     if st.full_at.is_some_and(|n| st.emitted >= n) {
                         o.yielded.flags |= YIELD_STREAM_FULL;
                     }
-                    // A text emit is counted as its own op, so a test sees the bit cross.
+
                     let op = if i.flags & EMIT_TEXT != 0 {
                         "emit text"
                     } else {
@@ -980,7 +969,7 @@ fn text_of(s: busbar_contract::abi::mechanism::call::AbiStr) -> String {
 
 impl TestDoor {
     /// The carrier ops: a byte-stream carrier over the process's host I/O, each connection named by
-    /// the host's own handle.
+
     fn carry_io(&self, side: &dyn Side, call: Carry<'_>) -> Crossed {
         let io = super::hostio::process();
         let t = side.ticket();
@@ -1184,14 +1173,11 @@ impl Side for AuthTicket {
 }
 
 /// One `emit` crossing as a [`PendingDoor`] saw it first: its stream, the opening body length it
-/// carried (`EmitIn::body_len`) and whether that length is known (`EmitIn::body_len_known`).
+
 pub type EmitSeen = (u64, u64, u32);
 
 /// A TICKETED TEST ENTRY WHOSE AUTH MAY PEND: the test entry `inner`, its framings on tickets of
-/// their own (a new one each time the host asks). An `emit` on stream `pend` calls the auth
-/// (handle seq `0`) on its ticket: while the auth is not ready it has taken its bytes and answers
-/// PENDING; once the auth answers, the resumed emit hands those bytes to `inner`. Every other op
-/// is `inner`'s.
+
 pub struct PendingDoor {
     /// The entry the ops land on.
     pub inner: TestDoor,
@@ -1340,7 +1326,7 @@ pub fn lent(ptr: *const u8, len: usize) -> Vec<u8> {
 }
 
 /// A MULTIPLEXING framer's answer: one piece per byte of `lane_bytes`, on the stream the byte names
-/// (`'1'` is stream `1`), its byte the piece's, each ending its frame.
+
 pub fn pieces_on_lanes(sink: &FramerSink, o: &mut FramerOut, lane_bytes: &[u8]) {
     for (n, &b) in lane_bytes.iter().enumerate() {
         // SAFETY: the host's buffers; a test's few pieces fit them.

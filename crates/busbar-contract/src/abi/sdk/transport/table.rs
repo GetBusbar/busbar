@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! WHAT A TRANSPORT INSTANCE HOLDS BY TOKEN (its framings, its connections, its calls), with no lock
-//! shared between two of them.
-//!
-//! The per-chunk ops (`ingest`, `emit`, `timer`, `read`, `write`) reach a value through its token
-//! alone: the token names a slot, the slot's segment is found with one read of a set-once cell, and
-//! the slot's own lock is the only one taken. Each slot sits on its own cache lines, so two values
-//! never share one. [`Table::reach`] answers at once when another op holds the value
-//! ([`Reach::Busy`]); [`Table::hold`] waits for it.
-//!
-//! Only [`Table::insert`] and a release (once per value, never per chunk) take the free list's
-//! lock, to mint a slot and to give one back. Segments are allocated on first use and grow
-//! geometrically, so an instance that holds a handful of values holds a handful of slots. A token
-//! carries its slot's generation: one that outlived its value never reaches the value that reused
-//! the slot. A token is never `0`.
 
 use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
@@ -204,8 +191,7 @@ impl<T> Table<T> {
         let (k, at) = place(index as usize);
         let segment =
             self.segments[k].get_or_init(|| (0..BASE << k).map(|_| Slot::default()).collect());
-        // A free slot is held by nobody, save an op still holding a token it outlived, which
-        // finds the generation moved on and lets go.
+
         let mut slot = segment[at].0.lock().unwrap_or_else(PoisonError::into_inner);
         slot.generation = slot.generation.wrapping_add(1);
         slot.held = Some(Box::new(value));
@@ -213,11 +199,7 @@ impl<T> Table<T> {
     }
 
     /// The value `token` names, held for one op; never waited for.
-    ///
-    /// # Errors
-    ///
-    /// [`Reach::Gone`]: no value holds the token, or an op that panicked left it mid-step;
-    /// [`Reach::Busy`]: another op holds it.
+
     pub fn reach(&self, token: u64) -> Result<Held<'_, T>, Reach> {
         let (slot, index, generation) = self.slot(token)?;
         let state = match slot.0.try_lock() {
@@ -229,10 +211,7 @@ impl<T> Table<T> {
     }
 
     /// The value `token` names, held for one op, waiting while another op holds it.
-    ///
-    /// # Errors
-    ///
-    /// [`Reach::Gone`]: no value holds the token, or an op that panicked left it mid-step.
+
     pub fn hold(&self, token: u64) -> Result<Held<'_, T>, Reach> {
         let (slot, index, generation) = self.slot(token)?;
         let state = slot.0.lock().map_err(|_| Reach::Gone)?;
@@ -240,10 +219,7 @@ impl<T> Table<T> {
     }
 
     /// Drop the value `token` names and give its slot back; never waited for.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::reach`].
+
     pub fn remove(&self, token: u64) -> Result<T, Reach> {
         self.reach(token).map(Held::release)
     }

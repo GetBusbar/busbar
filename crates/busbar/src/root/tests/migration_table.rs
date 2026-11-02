@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ROOT MIGRATION TABLE, held to 1.5.5: one test per retired word. Each installs the root's table
-//! (as `main` does), then holds `--migrate-config`'s rewrite and change line, and boot's 1.x refusal,
-//! to the bytes 1.5.5 printed for that word (`src/root/tests/fixtures/retired_1_5_5.yaml`). The words
-//! and the bytes are data; this file spells neither.
-
 use super::{install, MIGRATION_ROWS};
 
-/// The 1.5.5 golden entry `n` of the retired words.
 fn golden(n: usize) -> serde_yaml::Value {
     let doc: serde_yaml::Value = serde_yaml::from_str(include_str!("fixtures/retired_1_5_5.yaml"))
         .expect("the golden parses");
@@ -21,7 +15,6 @@ fn field(v: &serde_yaml::Value, k: &str) -> String {
         .to_string()
 }
 
-/// The retired word at golden entry `n` meets exactly its 1.5.5 bytes.
 fn retired_word_meets_its_1_5_5_bytes(n: usize) {
     install();
     let g = golden(n);
@@ -37,7 +30,6 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
          providers: {{}}\nmodels: {{}}\npools: {{}}\n"
     );
 
-    // `--migrate-config`: the rewrite and its change line, byte for byte.
     let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output parses");
     assert_eq!(doc["store"]["module"].as_str(), Some(module.as_str()));
@@ -52,7 +44,6 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
         out.changes
     );
 
-    // Boot and `--validate`: the 1.x refusal names the word with 1.5.5's marker.
     let dir = std::env::temp_dir().join(format!(
         "busbar-migration-{n}-{}-{}",
         std::process::id(),
@@ -93,10 +84,6 @@ fn retired_word_3_meets_its_1_5_5_bytes() {
     retired_word_meets_its_1_5_5_bytes(2);
 }
 
-/// The observability lift-out and the 1.x hook registry golden: the published v1.5.5 binary's own
-/// output, beside the oracle's other 1.5.5 bytes
-/// (`testing/shadow-oracle/fixtures/migrate-observability-1.5.5.yaml`; its header names the binary's
-/// digest and the commands).
 fn observability_golden() -> serde_yaml::Value {
     serde_yaml::from_str(include_str!(
         "../../../../../testing/shadow-oracle/fixtures/migrate-observability-1.5.5.yaml"
@@ -104,8 +91,6 @@ fn observability_golden() -> serde_yaml::Value {
     .expect("the golden parses")
 }
 
-/// The `bullet` lines of `text` (the bullet stripped), from the line starting `head` to the next
-/// blank line; with an empty `head`, every `bullet` line of `text`.
 fn bullets(text: &str, head: &str, bullet: &str) -> Vec<String> {
     text.lines()
         .skip_while(|l| !l.starts_with(head))
@@ -115,10 +100,6 @@ fn bullets(text: &str, head: &str, bullet: &str) -> Vec<String> {
         .collect()
 }
 
-/// KN-2b: the kernel spells none of the words of the 1.5.3 observability lift-out or the 1.x hook
-/// registry's URL transport; the root's table hands them in. With the table installed,
-/// `--migrate-config`'s change lines, TODOs and rewritten document, boot's 1.x refusal and the typed
-/// parse's unknown-field hints are what the published v1.5.5 binary printed for the same input.
 #[test]
 fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     install();
@@ -210,11 +191,6 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     }
 }
 
-// ── THE TABLE IS THE RENDER OF plugins.yaml ─────────────────────────────────────────────────────
-// One home per fact: the words live in plugins.yaml (`migration:` and each entry's `retired:`); the
-// manifest's `[package.metadata.busbar.migration]` is their render, and an edit to either side alone is
-// red here, with the table to paste printed.
-
 const MANIFEST: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 const HEADER: &str = "[package.metadata.busbar.migration]";
@@ -227,11 +203,6 @@ fn text(v: &serde_yaml::Value, k: &str) -> Option<String> {
     v[k].as_str().map(str::to_string)
 }
 
-/// The table's rows, in order: the `migration:` block's frozen 1.5.5 text, sorted by key; then, per
-/// entry in registry order with a `retired:` list, one `retired.<kind>.<word> = "<alias>"` row per
-/// word and the entry's `manifest.<alias>` / `asset.<alias>` rows (each defaulting to the repo); and,
-/// per entry with a `former_names:` list, one `former.<alias> = "<name> …"` row (space-separated),
-/// which a linked row of the plugin answers by.
 fn rows(registry: &str) -> Vec<(String, String)> {
     let doc: serde_yaml::Value = serde_yaml::from_str(registry).expect("plugins.yaml parses");
     let mut out: Vec<(String, String)> = doc["migration"]
@@ -286,7 +257,6 @@ fn rows(registry: &str) -> Vec<(String, String)> {
     out
 }
 
-/// The rendered table: the header, the note and one quoted row per line.
 fn render(registry: &str) -> String {
     let mut s = format!("{HEADER}\n{NOTE}");
     for (k, v) in rows(registry) {
@@ -296,8 +266,6 @@ fn render(registry: &str) -> String {
     s
 }
 
-/// The manifest's table as written: from its header to the line before the next table header (or
-/// the end), less trailing blank lines.
 fn table(manifest: &str) -> String {
     let lines: Vec<&str> = manifest.lines().collect();
     let start = lines
@@ -314,8 +282,6 @@ fn table(manifest: &str) -> String {
     lines[start..end].iter().map(|l| format!("{l}\n")).collect()
 }
 
-/// `None` when the manifest's table is the render of the registry; else the reason, with the table
-/// to paste.
 fn drift(manifest: &str, registry: &str) -> Option<String> {
     let want = render(registry);
     (table(manifest) != want).then(|| {
@@ -325,7 +291,6 @@ fn drift(manifest: &str, registry: &str) -> Option<String> {
     })
 }
 
-/// The committed manifest's table IS the render of the committed plugins.yaml.
 #[test]
 fn the_committed_migration_table_is_the_render() {
     if let Some(reason) = drift(MANIFEST, REGISTRY) {
@@ -333,8 +298,6 @@ fn the_committed_migration_table_is_the_render() {
     }
 }
 
-/// The root's table answers a linked plugin's former names by its alias
-/// (`busbar_kernel::config::migration_table::former_names`), from the committed plugins.yaml.
 #[test]
 fn a_linked_plugin_reads_its_former_names_by_its_alias() {
     install();

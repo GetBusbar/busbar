@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The derivation artifact: proves the legacy rows of [`crate::verb::TABLE`] match
-//! `testing/shadow-oracle/fixtures/openapi-1.5.5.json` byte-for-byte — same 49 paths, same 66
-//! operations, same required scope for each (the names are pinned by `admin_codec/tests/verbs.rs`). Fails the build (not just the test) intent:
-//! an operation missing from the table, an extra operation in the table, or a scope disagreement
-//! are each a distinct assertion failure naming the offending path+method, so a drift is never
-//! reported as a single opaque "mismatch".
-//!
-//! `serde_json` is a dev-dependency ONLY for this file — see the crate-level doc.
-
 use crate::verb::{VerbRow, VerbScope, LEGACY_VERBS};
 use std::collections::BTreeSet;
 
@@ -22,14 +13,6 @@ struct FixtureOp {
     scope: String,
 }
 
-/// The operations the COMMITTED fixture names, with the scope the fixture itself carries.
-///
-/// The scope is READ OUT of `x-busbar-required-scope`, not recomputed here. It used to be derived
-/// by a hand-transcribed second copy of `verb::scope_for`'s rule — which meant the comparison below
-/// ran rule-copy-A against rule-copy-B and could not see a disagreement between the table and the
-/// artifact it is derived from. A corrected fixture row (say `plugins/inspect` becoming `full`)
-/// was then invisible: the test recomputed `read-only`, matched the table's `read-only`, and passed
-/// while the shipped table served a mutating POST to a read-only credential.
 fn fixture_ops() -> Vec<FixtureOp> {
     let doc: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is valid JSON");
     let paths = doc["paths"]
@@ -73,10 +56,6 @@ fn table_ops() -> Vec<FixtureOp> {
         .collect()
 }
 
-/// Every fixture operation declares a scope, and it is one of the two the table can express.
-///
-/// Stated separately so that a fixture row losing the key, or growing a third spelling, is reported
-/// as what it is rather than as a mismatch against the table.
 #[test]
 fn every_fixture_operation_declares_a_scope_the_table_can_express() {
     let ops = fixture_ops();
@@ -90,8 +69,7 @@ fn every_fixture_operation_declares_a_scope_the_table_can_express() {
             op.scope
         );
     }
-    // Both scopes are actually present, so a fixture that collapsed to one value everywhere — which
-    // would make the comparison below pass against an equally collapsed table — is caught here.
+
     assert!(ops.iter().any(|o| o.scope == "read-only"));
     assert!(ops.iter().any(|o| o.scope == "full"));
 }
@@ -126,10 +104,6 @@ fn every_fixture_operation_is_in_the_table_with_the_same_scope() {
     );
 }
 
-/// The dry-run carve-out is not hand-transcribed a second time anywhere this test can reach: the
-/// set asserted here is DERIVED from `LEGACY_VERBS` itself (method `POST` and scope `ReadOnly`),
-/// then checked against the fixture's own column, so the two can never silently drift out of step
-/// the way a second literal copy of the same two paths could.
 #[test]
 fn table_derived_read_only_post_paths_match_the_fixture_column() {
     let table_read_only_posts: BTreeSet<&str> = LEGACY_VERBS

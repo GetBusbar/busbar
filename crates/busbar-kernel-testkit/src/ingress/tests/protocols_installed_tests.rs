@@ -1,27 +1,12 @@
-//! Tests for `proto/installed.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did. The one test that installs a root runs in its
-//! own process: `tests/protocol_install.rs`.
-
 use super::*;
 
 static ROOTED: ProtocolDecl = ProtocolDecl::named("rooted");
 static ROOT: ProtocolDecl = ProtocolDecl::named("root");
 
-/// `Registry::decl`'s interned-name fast path compares data POINTERS. A pointer alone does not
-/// identify a string: a subslice of an interned `&'static str` (e.g. a caller stripping a suffix
-/// off an already-resolved name) starts at the SAME address as the string it was sliced from, so
-/// comparing pointers without also comparing LENGTHS treats "root" (the first four bytes of
-/// "rooted"'s own interned storage) as if it were "rooted" itself. With both "root" and "rooted"
-/// declared — "rooted" first, so it is the one the buggy short-circuit hits — resolving the
-/// four-byte slice must come back with root's OWN declaration, not rooted's codec/auth/verbs.
 #[test]
 fn a_prefix_slice_of_an_interned_name_resolves_its_own_declaration() {
     let reg = Registry::new([&ROOTED, &ROOT]);
 
-    // Not a fresh "root" literal: a slice INTO "rooted"'s own interned storage, so it shares
-    // rooted's data pointer while being four bytes long instead of six — exactly what a caller
-    // gets back from slicing (not reallocating) an already-interned protocol name.
     let prefix: &str = &ROOTED.name[..4];
     assert_eq!(
         prefix, "root",
@@ -44,10 +29,6 @@ fn a_prefix_slice_of_an_interned_name_resolves_its_own_declaration() {
     );
 }
 
-/// THE USAGE-TAP COUNT, KERNEL STEP (#83a SD-3, architect ruling R-USAGE; row 155): every usage-tap
-/// fault a plane's answer carries is counted by the kernel as ONE increment of
-/// `busbar_billing_tap_decode_fail_total{protocol,reason}`, and warned once per `(protocol, reason)`.
-/// The LLM plane's suite pins which fault each tap path returns; this pins what one fault counts.
 #[test]
 fn a_usage_tap_fault_counts_one_increment_under_its_reason() {
     use metrics::{

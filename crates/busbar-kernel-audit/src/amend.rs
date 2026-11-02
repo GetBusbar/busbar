@@ -2,31 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The two amendment classes: an access, and an adjustment.
-//!
-//! ## Access — every time somebody outside the node reads content
-//!
-//! Content never enters the chain, but it does leave the node: a hook sees it, an export plugin
-//! receives it. Each of those is a disclosure, and a disclosure that leaves no record is a
-//! disclosure nobody can answer questions about later. So every hook or export content access is an
-//! entry of its own, naming who read what and why, and — deliberately — not what they read.
-//!
-//! The record is small on purpose. It is written at request rate, so anything expensive in it would
-//! be a reason to turn it off, and an audit that gets turned off under load is an audit that is not
-//! there when it matters.
-//!
-//! ## Adjust — a record class no longer written
-//!
-//! Pre-release 1.6.0 builds sealed count corrections here and every money view folded them in, so
-//! two nodes reported different money for the same counts. An adjustment is now a signed usage-row
-//! delta through the ledger's own counts, so nothing writes this class any more and nothing reads it
-//! as money. The record shape stays only so a chain that already holds one still decodes and
-//! verifies; 1.5.5 had no amendments, so no released deployment holds any.
-//!
-//! ## Why these are amendments rather than fields on the audit record
-//!
-//! Both happen at a different time from the unit they concern, and often more than once. Folding
-//! them into the unit's own record would mean either rewriting that record — which the whole design
-//! exists to prevent — or waiting to write it until nothing further could happen, which is never.
 
 use crate::record::{subject_tag, subject_value, OpClassId, Subject};
 use busbar_contract::{
@@ -102,7 +77,7 @@ impl Reader {
 }
 
 /// A subject as the two frozen fields an amendment digests it by: its tag, then its identifier.
-/// The pair a durable record of the amendment carries, so reading it back reproduces the digest.
+
 pub fn subject_fields(subject: &Subject) -> (&'static str, String) {
     (subject_tag(subject), subject_value(subject))
 }
@@ -218,10 +193,7 @@ pub struct AmendChain {
 }
 
 /// HAND-WRITTEN, and it must stay that way — the same reason the retired admin chain writes its
-/// own: a DERIVED default gives a next position of zero, which is not a position a chain has, and
-/// the position is DIGESTED here, so a silently zero-based chain would seal amendments that a
-/// verifier walking from one rejects. It delegates to the one real constructor so the two cannot
-/// drift apart.
+
 impl Default for AmendChain {
     fn default() -> Self {
         AmendChain::new()
@@ -256,9 +228,7 @@ impl AmendChain {
     }
 
     /// Append one amendment, linking and sealing it.
-    ///
-    /// The token is the audit unit's, for the same reason sealing an audit record needs one: an
-    /// amendment is evidence, and evidence anybody could add is evidence nobody can rely on.
+
     pub fn append(&mut self, body: AmendBody, _token: &Pass<Audit>) -> Amendment {
         let mut amendment = Amendment {
             seq: self.next_seq,
@@ -273,18 +243,7 @@ impl AmendChain {
     }
 
     /// Recompute one amendment's digest from its own fields.
-    ///
-    /// Length-prefixed, like the fixed audit record and unlike the retired admin chain: nothing
-    /// here is already on anybody's disk, so the framing is chosen for the property rather than
-    /// inherited for compatibility.
-    ///
-    /// The subject enters as the same two frozen fields the audit record digests — a tag naming the
-    /// kind of subject, then its identifier — rather than as whatever the derived `Debug` prints.
-    /// A derive is not a wire format: renaming a subject variant, or a future compiler rendering an
-    /// enumeration differently, would move every sealed amendment hash, and an amendment is a
-    /// correction to money, so a moved hash makes the correction read as tampered. Two fields rather
-    /// than one for the reason the record gives: a principal whose identifier happened to read as
-    /// "node" must not digest as a node.
+
     pub fn digest_of(amendment: &Amendment) -> String {
         let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);
         d.text(&amendment.prev_hash);
@@ -319,8 +278,7 @@ impl AmendChain {
                 d.text(&a.authorised_by);
                 d.text(&a.reason);
                 d.num(a.wall);
-                // LAST and only when present, so an unscoped adjustment digests exactly as it
-                // was sealed; length-prefixed, so a pooled one can never digest as an unscoped one.
+
                 if let Some(pool) = &a.pool {
                     d.text(pool);
                 }
@@ -330,32 +288,11 @@ impl AmendChain {
     }
 
     /// VERIFY A WHOLE CHAIN of amendments: `amendments` is oldest-first and starts at the chain's
-    /// genesis, so the first position must be one and the first previous hash must be empty.
-    ///
-    /// That is what catches a HEAD truncation. A run whose oldest amendments were dropped links
-    /// perfectly to itself — every remaining amendment still names the one before it — and the only
-    /// thing that says amendments are missing is that the run does not begin where the chain does.
-    /// Seeding the expectation from the run's own first element instead would let a correction
-    /// history with its head cut off verify clean, and the amendments most worth removing are the
-    /// early ones a later correction was written to cover.
-    ///
-    /// There is deliberately NO lenient window form here, unlike the fixed record's chain. That one
-    /// has [`crate::record::AuditChain::verify_window`] because records are read out of a bounded
-    /// store whose oldest rows are legitimately pruned. Amendments are not pruned — an access and a
-    /// correction are the whole reason the journal is kept — so a run that does not start at the
-    /// genesis is missing entries, not windowed, and there is no caller for whom excusing that would
-    /// be right.
-    ///
-    /// An EMPTY run verifies, deliberately and for the reason the record's chain gives: "this chain
-    /// has no amendments" and "every amendment was deleted" are indistinguishable from the
-    /// amendments alone, and claiming otherwise would claim a guarantee this cannot provide. Use
-    /// [`Self::verify_to_head`] where the chain itself is on hand to say which it is.
+
     pub fn verify(amendments: &[Amendment]) -> Result<(), crate::record::AuditBreak> {
-        // The genesis anchor: position one, and no predecessor.
         let mut expected_prev = String::new();
         let mut expected_seq = 1u64;
         for (i, amendment) in amendments.iter().enumerate() {
-            // The link, then the position, reported apart: the record chain's own judgement.
             if let Some(kind) = crate::record::link_break(
                 &amendment.prev_hash,
                 amendment.seq,
@@ -380,11 +317,7 @@ impl AmendChain {
     }
 
     /// Whether a run of amendments ENDING AT THIS CHAIN'S HEAD is whole: the walk from the genesis,
-    /// plus the check the walk cannot make on its own — that the last amendment in the run is the
-    /// last one the chain sealed. A tail truncation is invisible to any verifier reading only the
-    /// amendments, because the survivors link and number correctly among themselves; it takes the
-    /// chain's own head to notice. The newest correction is also the likeliest one somebody would
-    /// want gone.
+
     pub fn verify_to_head(
         &self,
         amendments: &[Amendment],
@@ -424,7 +357,7 @@ pub fn content_access(
 }
 
 /// How many amendments a journal keeps in memory. Bounds RAM, not history: accesses are written at
-/// request rate, so an unbounded in-memory run is a leak.
+
 pub const AMENDMENTS_RETAINED: usize = 1000;
 
 /// A chain together with the amendments it sealed: the one node-wide journal a hook read and an
@@ -469,12 +402,7 @@ impl AmendJournal {
     }
 
     /// REBUILD A JOURNAL FROM A WHOLE RUN read back off durable storage, oldest first from the
-    /// genesis: the chain resumes at the run's head and the newest [`AMENDMENTS_RETAINED`] are held. The run is verified first, so a journal is never rebuilt
-    /// over a broken chain.
-    ///
-    /// # Errors
-    ///
-    /// The run does not verify from the genesis ([`AmendChain::verify`]).
+
     pub fn restore(run: Vec<Amendment>) -> Result<AmendJournal, crate::record::AuditBreak> {
         AmendChain::verify(&run)?;
         let chain = run.last().map_or_else(AmendChain::new, |a| {
@@ -489,11 +417,7 @@ impl AmendJournal {
     }
 
     /// Verify what is held: from the genesis while nothing has been released, and always to the
-    /// chain's own head. Once the window has moved, the run is checked from its first held link.
-    ///
-    /// # Errors
-    ///
-    /// The held window does not verify. `at_index` is one-based into the window.
+
     pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
         self.verify_window()
     }
@@ -538,21 +462,8 @@ impl AmendJournal {
     }
 }
 
-// A hook and an export sink are resolved per config generation, but what they read is the node's to
-// account for, so the node keeps ONE journal for the life of the process: a [`NodeAmendments`]
-// INSTANCE, held by the kernel state that outlives every config apply and handed to each writer —
-// never a process static, so two nodes (two books, two tests) never share one. Sealing an amendment
-// takes the audit step's token; rebuilding the journal from durable storage and binding where its
-// amendments are made durable take the durable-write grant. The kernel mints both, and only the
-// kernel can.
-
 /// WHERE A NODE JOURNAL'S AMENDMENTS ARE MADE DURABLE: handed every amendment the journal seals, in
-/// chain order, as it is sealed. The composition root binds one over its own journal
-/// ([`NodeAmendments::bind`]); with none bound the journal is memory-only, the retired shape.
-///
-/// Called with the journal's lock held — that is what keeps what reaches the sink in chain order with
-/// no gap — so an implementation must never seal an amendment itself, and no caller may seal one while
-/// holding whatever lock the sink takes.
+
 pub trait AmendSink: Send + Sync {
     /// `amendment` was just sealed onto the journal.
     fn sealed(&self, amendment: &Amendment);
@@ -593,8 +504,7 @@ impl NodeAmendments {
     }
 
     /// Poison-recovering: a panic under this lock (a sink that panicked) leaves an amendment that
-    /// was already sealed and held, and cascading the poison would take every hook read out of the
-    /// record over it. What the journal holds is checked on demand ([`Self::verify`]).
+
     fn held(&self) -> std::sync::MutexGuard<'_, Held> {
         self.held.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -609,12 +519,7 @@ impl NodeAmendments {
     }
 
     /// VERIFY THE JOURNAL AS IT IS HELD NOW — the on-demand check `GET /admin/verify` runs. The boot
-    /// restore verifies what it reads back; this verifies what the process holds at the moment it is
-    /// asked, so an edit made to the held run after boot is seen.
-    ///
-    /// # Errors
-    ///
-    /// The held run does not verify (see [`AmendJournal::verify`]).
+
     pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
         self.held().journal.verify()
     }
@@ -630,13 +535,7 @@ impl NodeAmendments {
     }
 
     /// REBUILD THE JOURNAL from a whole run read back off durable storage (see
-    /// [`AmendJournal::restore`]), replacing what it holds, and answer the position of the run's
-    /// newest amendment (0 for an empty run) — what [`Self::bind`] is told was already durable.
-    /// Takes the durable-write grant: replacing a node's journal is the boot's act, never a caller's.
-    ///
-    /// # Errors
-    ///
-    /// The run does not verify from the genesis; the journal is left as it was.
+
     pub fn restore(
         &self,
         run: Vec<Amendment>,
@@ -649,9 +548,7 @@ impl NodeAmendments {
     }
 
     /// BIND the journal's sink (`None` unbinds). Every amendment it still holds above position
-    /// `journalled_through` is handed over first, in chain order, so an amendment sealed between the
-    /// rebuild and the binding reaches the sink too and what is durable has no gap. Takes the
-    /// durable-write grant, as [`Self::restore`] does.
+
     pub fn bind(
         &self,
         sink: Option<std::sync::Arc<dyn AmendSink>>,
@@ -668,8 +565,7 @@ impl NodeAmendments {
     }
 
     /// Record that `reader` `name` was handed `fields` of a unit's content at `wall` (unix seconds,
-    /// the caller's clock — this unit reads none). `op_class` is the caller's label for the
-    /// operation — data, never branched on.
+
     #[allow(clippy::too_many_arguments)]
     pub fn record_read(
         &self,

@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The JSON span scanner, and the budget it has to meet.
-//!
-//! The case that matters is the big body whose one interesting key was serialised LAST: the whole
-//! body has to be walked before the answer exists, so that is where the cost is measured.
 
 use busbar_contract::spans::{resolve_pointer, Resolved};
 
@@ -36,7 +33,6 @@ fn a_truncated_document_asks_for_more_rather_than_answering() {
     let whole = br#"{"a": {"b": "value"}, "lane": "gold"}"#;
     for cut in 1..whole.len() - 1 {
         match resolve_pointer(&whole[..cut], "/lane") {
-            // Until the key has arrived the answer is "not yet", never a wrong span.
             Resolved::NeedMore | Resolved::Missing => {}
             Resolved::Found(span) => panic!("resolved at {cut} bytes to {:?}", span),
             Resolved::Malformed => panic!("a prefix of valid JSON called malformed at {cut}"),
@@ -47,8 +43,6 @@ fn a_truncated_document_asks_for_more_rather_than_answering() {
 
 #[test]
 fn escapes_are_decoded_on_both_sides_without_allocating_anything() {
-    // A slash inside a key is `~1` in the pointer and an ordinary character in the document; a
-    // tilde is `~0`; and the document's own escapes decode too.
     let body = "{\"a/b\": 1, \"c~d\": 2, \"e\\\"f\": 3, \"g\u{e9}h\": 4}".as_bytes();
     assert_eq!(found(body, "/a~1b"), b"1");
     assert_eq!(found(body, "/c~0d"), b"2");
@@ -58,9 +52,6 @@ fn escapes_are_decoded_on_both_sides_without_allocating_anything() {
 
 #[test]
 fn a_broken_surrogate_pair_in_a_key_is_a_miss_not_an_overflow() {
-    // A high half whose partner is not a low half: the arithmetic that combines the two would
-    // subtract 0xDC00 from something smaller. Every other bad escape here answers "no character",
-    // and so does this one.
     assert_eq!(
         resolve_pointer(b"{\"\\uD800\\u0041\": 1}", "/x"),
         Resolved::Missing
@@ -69,7 +60,7 @@ fn a_broken_surrogate_pair_in_a_key_is_a_miss_not_an_overflow() {
         resolve_pointer(b"{\"\\uD800\\uD800\": 1}", "/x"),
         Resolved::Missing
     );
-    // A lone high half with nothing after it, and a well-formed pair, both still behave.
+
     assert_eq!(
         resolve_pointer(b"{\"\\uD800\": 1}", "/x"),
         Resolved::Missing
@@ -82,10 +73,6 @@ fn a_broken_surrogate_pair_in_a_key_is_a_miss_not_an_overflow() {
 
 #[test]
 fn a_key_that_cannot_be_decoded_never_matches_the_pointer_that_prefixes_it() {
-    // A key whose decoded prefix is the token and whose remainder is a broken escape is NOT the
-    // token: the escape names no character, so the key is longer than what matched. Answering
-    // otherwise lets whoever wrote the body choose which member the kernel reads, because the
-    // scan stops at the first key it calls equal.
     assert_eq!(
         found(
             b"{\"model\\uD800\":\"cheap\",\"model\":\"expensive\"}",
@@ -101,7 +88,7 @@ fn a_key_that_cannot_be_decoded_never_matches_the_pointer_that_prefixes_it() {
         b"999"
     );
     assert_eq!(found(b"{\"\\uD800\": 1, \"\": 2}", "/"), b"2");
-    // The same on the raw-byte side: a key whose remainder is not UTF-8 at all.
+
     assert_eq!(
         found(
             b"{\"model\xff\":\"cheap\",\"model\":\"expensive\"}",
@@ -109,7 +96,7 @@ fn a_key_that_cannot_be_decoded_never_matches_the_pointer_that_prefixes_it() {
         ),
         br#""expensive""#
     );
-    // And a bad escape letter, which is the plainest undecodable remainder there is.
+
     assert_eq!(
         found(
             b"{\"model\\q\":\"cheap\",\"model\":\"expensive\"}",
@@ -121,9 +108,6 @@ fn a_key_that_cannot_be_decoded_never_matches_the_pointer_that_prefixes_it() {
 
 #[test]
 fn a_pointer_token_that_cannot_be_decoded_never_matches_the_key_that_prefixes_it() {
-    // The mirror of the key side: the pointer's own escape grammar has exactly `~0` and `~1`, so a
-    // token ending in a bare tilde, or in a tilde followed by anything else, names no member — not
-    // the member spelled with the part before it.
     let body = br#"{"model": 1, "model~": 2, "modelx": 3}"#;
     assert_eq!(resolve_pointer(body, "/model~"), Resolved::Missing);
     assert_eq!(resolve_pointer(body, "/model~x"), Resolved::Missing);
@@ -132,18 +116,15 @@ fn a_pointer_token_that_cannot_be_decoded_never_matches_the_key_that_prefixes_it
 
 #[test]
 fn a_duplicated_key_answers_the_last_one_the_way_every_parser_downstream_does() {
-    // serde_json — which 1.5.5 read every body with — and the providers' own parsers all take the
-    // LAST occurrence of a repeated member. Answering the first one prices and permits one model
-    // while the provider serves another, which is a choice the body's author gets to make.
     let body = br#"{"model":"cheap-mini","messages":[],"model":"expensive-max"}"#;
     assert_eq!(found(body, "/model"), br#""expensive-max""#);
-    // Nested, so it is the object being walked that decides and not the top level.
+
     let body = br#"{"usage":{"total_tokens":1,"total_tokens":999},"model":"m"}"#;
     assert_eq!(found(body, "/usage/total_tokens"), b"999");
-    // Three of them, and the middle one is not the answer either.
+
     let body = br#"{"a":1,"a":2,"a":3}"#;
     assert_eq!(found(body, "/a"), b"3");
-    // A duplicate of a key that is not the one asked for changes nothing.
+
     let body = br#"{"a":1,"b":2,"b":3}"#;
     assert_eq!(found(body, "/a"), b"1");
 }
@@ -163,8 +144,6 @@ fn nonsense_is_called_nonsense() {
 
 #[test]
 fn a_closer_that_does_not_match_its_opener_is_nonsense() {
-    // A container must close with the bracket that opened it. Counting brackets without recording
-    // which one opened each level answers Found over a span that is not a JSON value.
     assert_eq!(
         resolve_pointer(br#"{"a":[1,2}}"#, "/a"),
         Resolved::Malformed
@@ -174,7 +153,7 @@ fn a_closer_that_does_not_match_its_opener_is_nonsense() {
         resolve_pointer(br#"{"a":{"b":1]}"#, "/a"),
         Resolved::Malformed
     );
-    // The well-matched shapes still resolve.
+
     assert_eq!(found(br#"{"a":[1,2]}"#, "/a"), b"[1,2]");
     assert_eq!(found(br#"{"a":{"b":[1]}}"#, "/a"), br#"{"b":[1]}"#);
 }
@@ -196,7 +175,7 @@ fn a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves() {
     let body = big_body(1 << 20);
     assert!(body.len() >= 1 << 20);
     assert_eq!(found(&body, "/lane"), br#""gold""#);
-    // And the span is a span of the caller's bytes, not a copy of them.
+
     match resolve_pointer(&body, "/lane") {
         Resolved::Found(span) => {
             assert_eq!(span.of(&body), &body[span.start..span.end]);
@@ -222,8 +201,7 @@ fn thread_cpu() -> std::time::Duration {
 }
 
 /// The cost of each of `runs`: the fewest nanoseconds of this thread's CPU time any one of
-/// `rounds` rounds took, the runs INTERLEAVED round by round, so every run is measured on the same
-/// machine at the same moments and a burst of contention lands on all of them alike.
+
 fn costs(rounds: usize, runs: &mut [&mut dyn FnMut()]) -> Vec<f64> {
     let mut best = vec![std::time::Duration::MAX; runs.len()];
     for _ in 0..rounds {
@@ -241,7 +219,7 @@ const SMALL: usize = 1 << 17;
 const LARGE: usize = 1 << 20;
 
 /// A full walk of `body` by a production JSON reader (serde_json, every value read and ignored):
-/// the reference the scanner's cost is measured against, in the same build on the same machine.
+
 fn reference_walk(body: &[u8]) {
     let walked: serde::de::IgnoredAny =
         serde_json::from_slice(std::hint::black_box(body)).expect("the body is JSON");
@@ -249,21 +227,10 @@ fn reference_walk(body: &[u8]) {
 }
 
 /// THE SCANNER'S BUDGET, judged as ratios a loaded machine cannot move. A wall clock on a shared
-/// CI machine measures how many other tests held the cores; even the scanning thread's own CPU time
-/// moves with them (a sibling hyperthread, a shared cache, a hypervisor's stolen time), so no fixed
-/// nanosecond count is a verdict. What the budget MEANS is two things, and each is measured against
-/// something that slows down exactly as the scan does:
-///
-/// * LINEAR: walking a body costs the same per byte at any size, so a body eight times longer
-///   costs at most `3 x 8` times as much (a quadratic walk costs `8 x 8`).
-/// * WITHIN AN ORDER OF MAGNITUDE of a full walk of the same bytes by serde_json: the scanner skips
-///   values it does not need and is designed to be faster than a reader that visits every one, so a
-///   scan costing ten such walks is a regression of an order of magnitude.
-///
-/// `scan` answers one body; the verdict says which bound broke, with what it measured.
+
 fn judge(scan: &dyn Fn(&[u8])) -> Result<String, String> {
     let (small, large) = (big_body(SMALL), big_body(LARGE));
-    // A warm pass of each, then the measured rounds.
+
     scan(&small);
     scan(&large);
     reference_walk(&large);
@@ -292,7 +259,7 @@ fn judge(scan: &dyn Fn(&[u8])) -> Result<String, String> {
 }
 
 /// The scan the budget is about: a body whose one interesting key is last, so the whole body is
-/// walked before the answer exists.
+
 fn scan_for_the_last_key(body: &[u8]) {
     assert!(matches!(
         resolve_pointer(std::hint::black_box(body), "/lane"),
@@ -301,9 +268,7 @@ fn scan_for_the_last_key(body: &[u8]) {
 }
 
 /// The scanner's budget is under a microsecond per kibibyte of body scanned in a release build
-/// (measured where it landed: 359 ns per KiB, 2.65 GiB/s; 4,267 ns per KiB in a debug build, and
-/// `cargo test --release` is how to see the number that counts). The gate judges it by [`judge`]:
-/// linear in the body, and within an order of magnitude of a full walk of the same bytes.
+
 #[test]
 fn the_scanner_meets_its_budget_on_a_mebibyte() {
     match judge(&scan_for_the_last_key) {
@@ -313,9 +278,7 @@ fn the_scanner_meets_its_budget_on_a_mebibyte() {
 }
 
 /// THE BUDGET'S RED ARM: a planted QUADRATIC scanner fails [`judge`]. It is the regression the
-/// budget exists to catch, a reader that re-scans the body from its first byte each time another
-/// sixteen kibibytes arrive (the shape a streaming caller that forgot where it stopped has); every
-/// pass is the real scanner, so only the shape of the work differs.
+
 #[test]
 fn a_quadratic_scanner_fails_the_budget() {
     fn rescanning(body: &[u8]) {
@@ -335,16 +298,12 @@ fn a_quadratic_scanner_fails_the_budget() {
 
 #[test]
 fn an_array_index_is_the_pointer_grammars_index_and_not_whatever_parses() {
-    // The pointer grammar's array index is a single `0`, or a digit string with no leading zero.
-    // Rust's integer parse is more generous than that — it takes a leading `+`, and any number of
-    // leading zeroes — so a token the grammar says names nothing would otherwise resolve to an
-    // element, and two spellings would name one value where the grammar admits only one of them.
     let body = br#"{"items":[10,20,30]}"#;
     assert_eq!(found(body, "/items/1"), b"20");
     assert_eq!(resolve_pointer(body, "/items/01"), Resolved::Missing);
     assert_eq!(resolve_pointer(body, "/items/+1"), Resolved::Missing);
     assert_eq!(resolve_pointer(body, "/items/007"), Resolved::Missing);
-    // Zero on its own is the one index that may start with a zero.
+
     assert_eq!(found(body, "/items/0"), b"10");
 }
 
@@ -358,9 +317,6 @@ fn nested(depth: usize) -> (Vec<u8>, String) {
 
 #[test]
 fn ten_thousand_open_brackets_are_an_answer_rather_than_a_stack_overflow() {
-    // The depth bound is stated in the crate's own documentation as the reason it is a bound at
-    // all: a hostile body that is ten thousand open brackets has to come back as a refusal, and
-    // the only way to show that is to hand the scanner one.
     let body = vec![b'['; 10_000];
     assert_eq!(resolve_pointer(&body, "/0"), Resolved::Malformed);
     assert_eq!(resolve_pointer(&body, ""), Resolved::Malformed);
@@ -368,7 +324,6 @@ fn ten_thousand_open_brackets_are_an_answer_rather_than_a_stack_overflow() {
 
 #[test]
 fn the_depth_bound_is_where_the_documentation_says_it_is() {
-    // v1.5.5's bound: 128 deep reads, 129 deep is refused (`MAX_JSON_DEPTH`).
     let (body, pointer) = nested(128);
     assert_eq!(found(&body, &pointer), b"1", "128 deep is inside the bound");
 

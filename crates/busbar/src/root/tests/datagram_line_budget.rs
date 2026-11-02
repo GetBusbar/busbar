@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Actual CallerLeg/PortAssociations and Dialled/UpstreamLeg feedback, with independent terminal
-//! paths and ownership assertions. The output-layout helper sizes setup only, never the oracle.
-
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
@@ -84,7 +81,7 @@ impl ActualPair {
                 .unwrap();
         let initial = framing.rendezvous(b"caller offer", Instant::now()).unwrap();
         door.join(framing, &caller).unwrap();
-        // The real admission path publishes negotiated LINE and CHANNEL heads before writing.
+
         caller.yielded_batch(initial, Instant::now());
         let port = ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap();
         let b = Branching::new(
@@ -173,8 +170,7 @@ fn expected_paths(depth: u8, prefix: &[u8]) -> Vec<Vec<u8>> {
 async fn complete_feedback(limit: Option<usize>, depth: u8, per_batch: usize) {
     let actual = ActualPair::new(limit, per_batch, Terminals::Paths);
     assert_eq!(actual.pair.memory_account().limit(), limit);
-    // Recall controls fill more than half of the real frame loan per child. Two children
-    // genuinely cannot fit together; MORE is caused by loan capacity, not an invented pause.
+
     let prefix = if per_batch == 1 {
         vec![b'r'; FRAME_CAP / 2]
     } else {
@@ -224,7 +220,6 @@ async fn unlimited_actual_pair_completes_distinct_finite_feedback_in_both_direct
 
 #[tokio::test]
 async fn configured_ample_actual_pair_preserves_paths_and_same_operation_recalls() {
-    // Layout sizes setup; exact independent paths, counts and non-replay remain the oracle.
     let ample = datagram_output_reservation_bytes() + 128 * FRAME_CAP;
     complete_feedback(Some(ample), 4, 1).await;
     complete_feedback(Some(ample), 5, 2).await;
@@ -232,9 +227,6 @@ async fn configured_ample_actual_pair_preserves_paths_and_same_operation_recalls
 
 #[tokio::test]
 async fn an_idle_upstream_reader_releases_crossing_credit_before_the_callers_next_episode() {
-    // One real crossing reservation plus modest live-frontier storage fits these short finite
-    // trees. Keeping a second worst-case reservation for an empty port would prevent progress.
-    // The oracle below is actual terminal paths and successful publication on this same pair.
     let actual = ActualPair::new(
         Some(datagram_output_reservation_bytes() + 4 * FRAME_CAP),
         2,
@@ -253,8 +245,7 @@ async fn an_idle_upstream_reader_releases_crossing_credit_before_the_callers_nex
         received.sort();
         assert_eq!(received, expected_paths(3, &[prefix]));
         assert!(actual.caller_messages().is_empty());
-        // upstream_messages consumed every real reader allocation and reached port Pending.
-        // Repeated idle read/ready probes must leave no producer loan reserving future output.
+
         let wake = waker();
         assert!(!actual.upstream.ready(&wake));
         assert_eq!(
@@ -304,8 +295,7 @@ async fn a_caller_waits_before_accepting_input_until_actual_upstream_readers_rel
     const METADATA_HEADROOM: usize = 32 * FRAME_CAP;
     let crossing = datagram_output_reservation_bytes();
     let limit = crossing + PAYLOAD_BYTES + METADATA_HEADROOM;
-    // Setup alone uses the crossing layout. Independently initialized reader payloads plus
-    // this input exceed L, while this input plus a real crossing fits L after reader retirement.
+
     assert!(2 * PAYLOAD_BYTES > limit);
     let actual = ActualPair::new(
         Some(limit),
@@ -319,8 +309,7 @@ async fn a_caller_waits_before_accepting_input_until_actual_upstream_readers_rel
         assert_eq!(actual.upstream.write(&[0], true, false), Ok(1));
         assert!(actual.published().await.failure.is_none());
     }
-    // Every episode is genuinely quiescent. Only actual CHANNEL reader allocations hold
-    // the blocking credit; neither a busy association nor an active publisher causes Pending.
+
     let before = actual.published().await;
     assert_eq!(before.original_bytes, EPISODES as u64);
     assert_eq!(before.original_handed_bytes, EPISODES as u64);
@@ -410,8 +399,7 @@ async fn a_callers_own_unread_output_cannot_keep_its_unaccepted_write_waiting() 
     assert_eq!(before.original_handed_bytes, EPISODES as u64);
     actual.a.consume_without_output();
     let input = vec![b'i'; PAYLOAD_BYTES];
-    // This input fits with a crossing after retirement, as in the other-leg green twin.
-    // Its own queued output is no independent reader transfer capable of retiring credit.
+
     assert!(
         !tokio::time::timeout(COMPLETION_WAIT, actual.caller.write(&input, false))
             .await
@@ -427,7 +415,7 @@ async fn a_callers_own_unread_output_cannot_keep_its_unaccepted_write_waiting() 
     assert_eq!(actual.a.emitted(), vec![vec![0]; EPISODES]);
     assert!(actual.b.emitted().is_empty());
     assert!(actual.pair.closed());
-    // Prior accepted CHANNELs remain real, intact messages after explicit producer failure.
+
     for _ in 0..MESSAGES {
         let message = actual
             .caller_rx
@@ -459,7 +447,7 @@ async fn accepted_feedback_exhausts_instead_of_waiting_for_its_own_queued_reader
             .expect("finite seed completes before the expanding episode")
     );
     assert!(actual.published().await.failure.is_none());
-    // Two old real caller CHANNELs now retain their allocations. No receiver is active.
+
     let mut token = vec![b'p'; FRAME_CAP / 4];
     token[0] = 10;
     assert!(
@@ -529,8 +517,7 @@ async fn accepted_feedback_exhausts_instead_of_waiting_for_its_own_queued_reader
 async fn configured_frontier_exhaustion_reports_real_partial_publication_and_isolates_the_pair() {
     let limit = datagram_output_reservation_bytes() + 4 * FRAME_CAP;
     let actual = ActualPair::new(Some(limit), 2, Terminals::Paths);
-    // Each child contains this independently chosen initialized prefix. Its finite frontier
-    // reaches 1024 distinct tokens; it cannot all coexist in the configured fixture headroom.
+
     let mut token = vec![b'p'; FRAME_CAP / 4];
     token[0] = 10;
     assert!(
@@ -654,8 +641,7 @@ async fn overlapping_payloads_and_empty_metadata_remain_charged_until_real_reade
         assert_eq!(actual.upstream.write(&[0], true, false), Ok(1));
         assert!(actual.published().await.failure.is_none());
         let retained = memory.used();
-        // Independent minimum from actual reader payloads and descriptors. Both overlapping
-        // spans are deep copies; each empty message owns positive metadata despite zero bytes.
+
         let minimum = 2 * payload_bytes + (EMPTY_PIECES + 2) * std::mem::size_of::<Message>();
         assert!(
             retained >= baseline + minimum,

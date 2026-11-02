@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The shared props: a durability token, a disk that can be told to fail, and a temp directory.
-
 use std::io;
 use std::sync::{Arc, Mutex};
 
@@ -11,13 +9,10 @@ use busbar_contract::caps::{DurableWrite, Grant, KernelSeal, StepName};
 use busbar_kernel_wal::backend::{MemoryFactory, SegmentBackend, SegmentFactory};
 use busbar_kernel_wal::record::Record;
 
-/// A durability token. In production only the kernel mints one; in a test the kernel's own seal is
-/// available, which is exactly the hole the capability crate names out loud.
 pub fn durability_token() -> Grant<DurableWrite> {
     Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel())
 }
 
-/// The step a battery commits at. Any step will do; the log does not read it.
 pub const METER: StepName = StepName::Meter;
 
 /// What a failing disk should do on its next operation.
@@ -44,7 +39,6 @@ pub struct FaultSwitch {
 }
 
 impl FaultSwitch {
-    /// A switch with nothing set.
     pub fn new() -> Self {
         FaultSwitch {
             fault: Arc::new(Mutex::new(Fault::None)),
@@ -53,24 +47,18 @@ impl FaultSwitch {
         }
     }
 
-    /// Arm the next operation to fail.
     pub fn arm(&self, fault: Fault) {
         *self.fault.lock().unwrap() = fault;
     }
 
-    /// Disarm.
     pub fn clear(&self) {
         self.arm(Fault::None);
     }
 
-    /// While set, the factory refuses to open a segment it does not already hold — what a full
-    /// volume or an exhausted descriptor table does to a roll.
     pub fn refuse_new_segments(&self, refuse: bool) {
         *self.refuse_opens.lock().unwrap() = refuse;
     }
 
-    /// How many syncs the disk has been asked for. This is what makes "one sync per group commit"
-    /// a measurement rather than a claim.
     pub fn syncs(&self) -> u64 {
         *self.syncs.lock().unwrap()
     }
@@ -78,14 +66,12 @@ impl FaultSwitch {
     fn take(&self) -> Fault {
         let mut held = self.fault.lock().unwrap();
         let fault = *held;
-        // One-shot: a real EIO is an event, not a mode, and a test that wants a permanently broken
-        // disk arms it again.
+
         *held = Fault::None;
         fault
     }
 }
 
-/// A memory backing wearing the fault switch.
 pub struct FaultyBackend {
     inner: busbar_kernel_wal::backend::MemorySegment,
     switch: FaultSwitch,
@@ -93,8 +79,6 @@ pub struct FaultyBackend {
 
 impl SegmentBackend for FaultyBackend {
     fn write_all_at(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()> {
-        // A write fault is decided before the bytes land, so nothing is written — which is the
-        // pessimistic case the poison rule has to hold under anyway.
         let fault = { *self.switch.fault.lock().unwrap() };
         if fault == Fault::WriteEio {
             self.switch.clear();
@@ -128,20 +112,16 @@ impl SegmentBackend for FaultyBackend {
     }
 }
 
-/// Hands out faulty backings over a shared set of memory segments.
 pub struct FaultyFactory {
     inner: MemoryFactory,
     switch: FaultSwitch,
 }
 
 impl FaultyFactory {
-    /// A factory and the switch that drives it.
     pub fn new() -> (Self, FaultSwitch, MemoryFactory) {
         FaultyFactory::over(MemoryFactory::new())
     }
 
-    /// The same over memory that keeps every segment it ever handed out, the way a data directory
-    /// keeps its files across a restart.
     pub fn retaining() -> (Self, FaultSwitch, MemoryFactory) {
         FaultyFactory::over(MemoryFactory::retaining())
     }
@@ -208,12 +188,10 @@ pub struct KeepingShipper {
 }
 
 impl KeepingShipper {
-    /// A fresh one.
     pub fn new() -> Self {
         KeepingShipper::default()
     }
 
-    /// A snapshot of everything shipped so far, in order.
     pub fn records(&self) -> Vec<Record> {
         self.records.lock().unwrap().clone()
     }
@@ -239,7 +217,6 @@ impl busbar_kernel_wal::ship::Shipper<Record> for RefusingShipper {
     }
 }
 
-/// `n` records with bodies of the given length, numbered from `first_seq`.
 pub fn records(node: u64, first_seq: u64, n: u64, body_len: usize) -> Vec<Record> {
     (0..n)
         .map(|i| {
@@ -252,17 +229,6 @@ pub fn records(node: u64, first_seq: u64, n: u64, body_len: usize) -> Vec<Record
         .collect()
 }
 
-/// The names in the process's current directory that look like something THIS crate wrote: the
-/// `<index>.wal` segments `DirectoryFactory` hands out.
-///
-/// Compared as a NAME SET rather than as a count. The cwd is shared by every test in the binary and
-/// by whatever the toolchain is doing beside them, so a count changes for reasons that have nothing
-/// to do with the log — a lock file appearing, a sibling test's fixture arriving or leaving — and a
-/// count that happens to be unchanged also hides one file replacing another. Restricting the set to
-/// the log's own naming is what makes a difference here mean "the log wrote a segment where no data
-/// directory was configured", which is the only thing the assertion is for. The TempDir walk beside
-/// it stays the primary evidence: it is a directory nothing else touches, so it is asserted empty
-/// outright.
 pub fn cwd_segment_names() -> std::collections::BTreeSet<String> {
     let Ok(entries) = std::fs::read_dir(".") else {
         return std::collections::BTreeSet::new();
@@ -274,24 +240,15 @@ pub fn cwd_segment_names() -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-/// A directory nothing else is using, removed when the test ends.
 pub struct TempDir {
     path: std::path::PathBuf,
 }
 
 impl TempDir {
-    /// Make one, under the system temp directory.
     pub fn new(tag: &str) -> Self {
         TempDir::under(std::env::temp_dir(), tag)
     }
 
-    /// Make one inside the workspace's own build directory rather than the system temp directory.
-    ///
-    /// For a test that fills a segment: the system temp directory is a tmpfs on some machines and a
-    /// small partition on others, and a test that writes several segments' worth of frames there is
-    /// a test that fails for a reason that has nothing to do with the log. The build directory is on
-    /// the same volume as the checkout, is already the place the toolchain writes megabytes, and is
-    /// already ignored by git.
     pub fn in_build_dir(tag: &str) -> Self {
         let build = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -314,12 +271,10 @@ impl TempDir {
         TempDir { path }
     }
 
-    /// Where it is.
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
 
-    /// Every path inside it, at any depth.
     pub fn walk(&self) -> Vec<std::path::PathBuf> {
         let mut found = Vec::new();
         let mut stack = vec![self.path.clone()];
@@ -345,8 +300,6 @@ impl Drop for TempDir {
     }
 }
 
-/// The wall clock a test hands a log, in unix milliseconds — the reading the composition root
-/// hands a production one. A test may read a clock; the crate under test may not.
 pub fn wall_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

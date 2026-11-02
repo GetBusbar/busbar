@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/rows.rs`: the registry, read through the contract's view.
-
 use std::sync::Arc;
 
 use busbar_contract::plugin_rows::{NeedLevel, PluginRows, Trust};
@@ -10,7 +8,6 @@ use busbar_contract::store_calls::StoreDoor;
 
 use crate::{LinkedPlugin, PluginRegistry};
 
-/// A registry holding the build's store fixture as its linked in-process store.
 fn registry() -> PluginRegistry {
     let door = crate::both_ways::store_fixture::door;
     PluginRegistry::empty()
@@ -18,9 +15,6 @@ fn registry() -> PluginRegistry {
         .expect("the linked row registers")
 }
 
-/// A linked row reads back as the manifest it states: its name, kind, version, the trust a linked
-/// row has, and the store's own statements. RED by reading the row off the wrong field: a row that
-/// read `linked` off the trust verdict (a linked row is not first-party SIGNED) would answer false.
 #[test]
 fn a_linked_store_row_reads_back_through_the_view() {
     let rows: &dyn PluginRows = &registry();
@@ -42,7 +36,6 @@ fn a_linked_store_row_reads_back_through_the_view() {
     assert!(rows.loadable().is_empty() && rows.skipped().is_empty());
 }
 
-/// The store door and the refusals answer as the registry's own.
 #[test]
 fn the_store_door_and_the_refusals_are_the_registrys() {
     let reg = registry();
@@ -59,7 +52,6 @@ fn the_store_door_and_the_refusals_are_the_registrys() {
     assert_eq!(rows.secret_refusal("nope"), reg.secret_refusal("nope"));
 }
 
-/// A linked auth door stating the `client_secret` secret reference, and one stating none.
 struct Door;
 
 impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for Door {
@@ -114,9 +106,6 @@ mod unslotted {
     );
 }
 
-/// The view's `secret_slots` are the `secret_refs` the row's Statement names: a door naming
-/// `client_secret` answers it, a door naming none answers none, and a name no row answers none.
-/// RED by reading the wrong field (or none): the slotted row would answer empty.
 #[test]
 fn secret_slots_are_the_secret_refs_the_statement_names() {
     let reg = PluginRegistry::empty()
@@ -131,8 +120,6 @@ fn secret_slots_are_the_secret_refs_the_statement_names() {
     assert!(rows.secret_slots("nope").is_empty());
 }
 
-/// The root gets its own registry back through the view, by reference and owned; RED: a view
-/// that is not a registry is no registry.
 #[test]
 fn the_root_gets_its_registry_back() {
     let rows: Arc<dyn PluginRows> = Arc::new(registry());
@@ -181,8 +168,6 @@ fn the_root_gets_its_registry_back() {
     assert!(crate::rows::registry_of(&NotARegistry).is_none());
 }
 
-/// A linked auth door stating `base_url` reference-capable (its Statement's extensions, under
-/// `reference_fields`) beside its secret `client_secret`.
 mod referencing {
     const EXT: &[u8] = &busbar_contract::abi::mechanism::extensions::entry::<
         {
@@ -209,8 +194,6 @@ mod referencing {
     );
 }
 
-/// The view's `reference_slots` are the reference-capable paths the row's Statement names (lead
-/// ruling item 7a), apart from its `secret_slots`; a door naming none answers none.
 #[test]
 fn reference_slots_are_the_reference_fields_the_statement_names() {
     let reg = PluginRegistry::empty()

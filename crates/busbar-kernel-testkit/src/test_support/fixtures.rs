@@ -1,18 +1,5 @@
-//! The shared config-build fixtures and the two neutral app seams.
-//!
-//! Split out of `test_support/mod.rs` so that file stays under the layout ceiling. A child
-//! module reading `use super::*`, so every fixture below still names `TestApp`, `LaneSpec` and
-//! the rest exactly as it did when it lived one file up.
-
 use super::*;
 
-// ── SHARED CONFIG-BUILD FIXTURES (relocated from src/tests/tests.rs) ─────────────────────────────
-// `pub` so BOTH the in-crate unit tests and busbar-core's OWN integration-test target
-// (`crates/busbar/tests/plane_integration.rs`, where the plane crates link as ONE busbar_kernel) can build a RootCfg
-// and drive it through the real `build_app_from_config`.
-/// The `store:` block a test config names: the stand-in linked store row. A config names its store
-/// (owner ruling Q-STORE = (B), 2026-09-27: a config with no `store:` block is refused), so every
-/// fixture config carries this one.
 pub fn stand_in_store() -> crate::config::StoreCfg {
     crate::config::StoreCfg {
         module: crate::test_support::store_double::STORE.0.to_string(),
@@ -20,16 +7,10 @@ pub fn stand_in_store() -> crate::config::StoreCfg {
     }
 }
 
-/// A minimal `RootCfg` whose SOLE provider's `api_key` is the given secret reference — the smallest
-/// config that exercises `config_validate::secret_refs` (and thus `registry_refusal`).
 pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config::RootCfg {
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());
     let provider = crate::config::ProviderCfg {
-        // The registry-supplied residual-default dialect — the neutral test protocol — in place of the
-        // hard-coded `"openai"` literal. Under every surface that drives this fixture the LLM protocols
-        // are registered first (core's `cfg(test)` auto-publish, or each test's `install_test_seams`),
-        // so this resolves to the same default dialect the literal named.
         protocol: crate::ingress::protocols::residual_default_dialect()
             .expect("a residual-default protocol (the neutral test dialect) must be registered")
             .into(),
@@ -56,28 +37,8 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     cfg
 }
 
-// ── THE NEUTRAL FALLBACK-PLANE FIXTURE ────────────────────────────────────────────────────────────
-// `config::plane_sections::split_section_for_plane` REFUSES (not panics — see that fn's doc) when it resolves
-// `plane::fallback_key()` and finds no plane registered to own it: since the A6/HostCtx
-// dev-dependency-cycle cleanup moved every test that asserts REAL llm/mcp/a2a behaviour out to
-// `tests/*_cross_plane.rs` (the only place with ONE `busbar_kernel` in the graph — see that target's
-// docs), this crate's OWN `#[cfg(test)]` unit tests can no longer reach a real plane's `PLANE_DECL` at
-// all: calling the retired engine crate's `testkit::install_test_seams()` from here would register the REAL `llm`
-// PlaneDecl into the retired engine crate's OWN dependency-copy of this crate's process statics, not this compiled
-// unit's — completely inert. A unit test that merely needs "some plane exists" so `pools:`/config
-// resolution has an owner (not one that asserts what that plane DOES) calls this instead.
-//
-// Registers ONE neutral, all-stub `PlaneDecl` — no real dialect, no real wire format, nothing a
-// production match arm or an assertion about llm/mcp/a2a could key off — flagged `fallback: true` so
-// `plane::fallback_key()` resolves to it exactly the way the shipped LLM plane's flag does in
-// production. Every hook is `None`/no-op: this stands for "a plane is installed", never for what a
-// plane does. Idempotent (`register_test_plane` dedupes by key) and NOT isolated — a test that also
-// asserts against the registered SET (or needs a plane-free registry) wraps its own body in
-// `crate::test_support::planes::TestRegistryIsolation::empty()` around this call, the same as any other
-// `register_test_plane` caller.
 static NEUTRAL_FALLBACK_PLANE: crate::plane_driver::registry::PlaneDecl = NEUTRAL_FALLBACK;
 
-/// The neutral fallback plane's row, as a value a test's own neutral plane can extend.
 pub const NEUTRAL_FALLBACK: crate::plane_driver::registry::PlaneDecl =
     crate::plane_driver::registry::PlaneDecl {
         declaration: crate::plane_driver::registry::PlaneDeclaration {
@@ -101,8 +62,7 @@ pub const NEUTRAL_FALLBACK: crate::plane_driver::registry::PlaneDecl =
             caller_credential_refusal: None,
         },
         wire_format_names: |_| &[],
-        // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
-        // lane names one the boot accepts.
+
         provider_dialects: |_| crate::ingress::protocols::known_protocols(),
         claims: |_| Vec::new(),
         admission: |_| None,
@@ -130,25 +90,14 @@ pub const NEUTRAL_FALLBACK: crate::plane_driver::registry::PlaneDecl =
         door: None,
     };
 
-/// SAY, IN ONE LINE, THAT THIS TEST NEEDS A PLANE TO EXIST — not what it does, only that config
-/// resolution has somewhere to put a `pools:`/fallback section rather than refusing with "no plane is
-/// registered to own this config section". Call at the top of a test that builds/parses a
-/// `RootCfg`/`DeployCfg` (directly or via `resolve`) but asserts nothing about real llm/mcp/a2a
-/// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
-/// instead, where the real the retired engine crate/`busbar_mcp` and agent-engine crates are reachable.
 pub fn register_neutral_test_plane() {
     crate::test_support::planes::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }
 
-/// The neutral fallback plane [`register_neutral_test_plane`] registers, for a test that seeds an
-/// ISOLATED registry (`TestRegistryIsolation::seeded`) instead of adding to the shared one.
 pub fn neutral_fallback_plane() -> &'static crate::plane_driver::registry::PlaneDecl {
     &NEUTRAL_FALLBACK_PLANE
 }
 
-/// A CLOSED single-module auth chain (the given module), for integration tests that must build an
-/// mcp-server App (`mcp:` refuses an open data-plane chain). Built in-crate so the caller names no
-/// `AuthChainEntry` field.
 pub fn closed_auth_chain(module: &str) -> crate::config::AuthCfg {
     let mut auth = crate::config::AuthCfg::default_none();
     auth.chain = vec![crate::config::AuthChainEntry {
@@ -161,20 +110,13 @@ pub fn closed_auth_chain(module: &str) -> crate::config::AuthCfg {
     auth
 }
 
-/// Drive an oversized POST to `path` through the REAL layer stack and return the 413 body.
-/// Asserts only the status and JSON-ness; the SHAPE is each caller's assertion.
-///
-/// The request is handed to the router itself (`tower::ServiceExt::oneshot`), with the head a
-/// client writes (`host`, `content-type`, `content-length`): the body cap is the router's own
-/// layer, so no socket and no HTTP client is needed to reach it, and the kernel's manifest asks for
-/// neither (status row 130 E7, `tests/no_socket.rs`).
 pub async fn oversized_413_body(
     app: std::sync::Arc<crate::state::App>,
     path: &str,
 ) -> serde_json::Value {
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
-    // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
+
     let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
 
     let oversized = serde_json::json!({ "pad": "x".repeat(4096) }).to_string();
@@ -203,12 +145,6 @@ pub async fn oversized_413_body(
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
 }
 
-// ── THE NEUTRAL TEST-APP SEAM (crate::test_support::TestAppSeam) ──────────────────────────────
-// Core implements the neutral fixture seam for its concrete `TestApp`, so the extracted plane
-// test-kits (`busbar-mcp` and agent-engine) build and drive the test App through the trait — naming no
-// `busbar_kernel::state::App`/`test_support::TestApp` backwards. Each method delegates to the inherent
-// fixture logic above (or to the type-erased scratch map); the object-safe scratch primitives back the
-// generic `TestAppSeamExt::plane_scratch::<T>` sugar the plane test-kits call.
 impl crate::test_support::TestAppSeam for TestApp {
     fn plane_scratch_any(
         &mut self,
@@ -267,13 +203,6 @@ impl crate::test_support::TestAppSeam for TestApp {
     }
 }
 
-// ── THE NEUTRAL BUILT-APP SEAM (crate::test_support::BuiltAppSeam) ────────────────────────────
-// The second half of the fixture doorway: what a plane's tests drive on the `Arc<App>` that came OUT
-// of `TestApp::build()`. Each method is a thin delegate to the very fn the plane's tests used to name
-// directly (`plane_host::engine_host`, `build_router`, `App::plane_slot_mut`,
-// `metrics::refresh_scrape_gauges`), so a plane's money-path tests forward a request / mount the real
-// router / mutate their runtime slot through the trait, generic over `A: BuiltAppSeam`, naming no
-// `busbar_kernel::` item.
 impl crate::test_support::BuiltAppSeam for crate::state::App {
     fn engine_host_of(
         app: &std::sync::Arc<Self>,
@@ -303,12 +232,10 @@ impl crate::test_support::BuiltAppSeam for crate::state::App {
     }
 }
 
-/// The neutral configuration used to initialize private App state through the real builder.
-/// No provider, plane, plugin or listener is invented by this baseline.
 pub fn empty_cfg() -> crate::config::RootCfg {
     crate::config::RootCfg {
         plane_defs: Default::default(),
-        // No endpoint plane configured.
+
         endpoint_resources: Default::default(),
         oauth_as: None,
         credentials: Default::default(),

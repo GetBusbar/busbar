@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `plane_record_write` over a real plane-facing store: the admin write lands only in the named
-//! plane's own rows. It never reaches a row the kernel keeps (the durable demotion record among
-//! them), and two planes declaring one kind never land on each other's rows.
-
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::plane::PlaneDeclaration;
@@ -16,7 +12,6 @@ use busbar_kernel::trust::DemotionRecord;
 use super::{plane_record_write_effect, PlaneRecordSink};
 use crate::root::units_admin::AdminAnswer;
 
-/// A plane declaring `record_kinds`, keyed `key`; nothing else about it matters here.
 fn plane(key: &'static str, record_kinds: &'static [&'static str]) -> PlaneDeclaration {
     PlaneDeclaration {
         key,
@@ -40,10 +35,8 @@ fn plane(key: &'static str, record_kinds: &'static [&'static str]) -> PlaneDecla
     }
 }
 
-/// The record kinds plane-mcp declares at origin/dev (`door.rs` `RECORD_KINDS`).
 const MCP_KINDS: &[&str] = &["call", "demotion", "approval", "task"];
 
-/// Every kind the kernel keeps its own rows under in the store's plane records.
 const KERNEL_KINDS: &[&str] = &[
     "audit",
     "usage_residual",
@@ -52,15 +45,12 @@ const KERNEL_KINDS: &[&str] = &[
     "ticket",
 ];
 
-/// A fresh in-memory store, narrowed to the plane-facing seam the admin write and the kernel's
-/// demotion record both persist through.
 fn store() -> Arc<dyn PlaneStore> {
     PlaneStoreView::narrow(Arc::new(
         busbar_kernel_testkit::test_support::store_double::MemoryStore::new(),
     ))
 }
 
-/// The production sink's shape over `store`, recording the kind every record it took landed under.
 fn sink_into(store: &Arc<dyn PlaneStore>, landed: &Arc<Mutex<Vec<String>>>) -> PlaneRecordSink {
     let (store, landed) = (Arc::clone(store), Arc::clone(landed));
     Arc::new(move |record: &PlaneRecord| {
@@ -71,7 +61,6 @@ fn sink_into(store: &Arc<dyn PlaneStore>, landed: &Arc<Mutex<Vec<String>>>) -> P
     })
 }
 
-/// One `plane_record_write` of `body` against a node serving `planes`.
 fn write(
     body: &serde_json::Value,
     planes: &[PlaneDeclaration],
@@ -89,7 +78,6 @@ fn write(
     .answer
 }
 
-/// The answer's error envelope `(status, code)`.
 fn refusal(answer: &AdminAnswer) -> (u16, String) {
     let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
     (
@@ -101,11 +89,6 @@ fn refusal(answer: &AdminAnswer) -> (u16, String) {
     )
 }
 
-/// THE KERNEL'S DEMOTION ROW IS NOT THE ADMIN WRITE'S. plane-mcp declares the `demotion` kind, but
-/// the rows under it are the kernel's durable demotion record (`DemotionRecord`, replayed at every
-/// admit): an admin `plane_record_write` naming the MCP plane must neither overwrite, poison, nor
-/// re-dispose the kernel's row, so a demoted upstream cannot be re-opened through the admin verb.
-/// Each attempt is refused `403 forbidden` and the kernel's row reads back byte for byte.
 #[test]
 fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
     let store = store();
@@ -114,7 +97,6 @@ fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
     let demotions = DemotionRecord::default();
     demotions.set_sink(Arc::clone(&store));
 
-    // The kernel's own row, exactly as `DemotionRecord::record` writes it for the instance `mcp`.
     let key = demotion_key("mcp", "upstream-a");
     let kept = serde_json::to_vec(&serde_json::json!({
         "server": key, "reason": "drifted", "recorded_at": 100
@@ -137,12 +119,9 @@ fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
 
     let mcp = plane("mcp", MCP_KINDS);
     let attempts = [
-        // Re-point the row at another upstream: `upstream-a` would replay as never demoted.
         serde_json::json!({"plane": "mcp", "kind": "demotion", "id": key,
             "body": {"server": demotion_key("mcp", "elsewhere"), "reason": "drifted", "recorded_at": 100}}),
-        // Poison the row: every later admit would fail to read the demotions.
         serde_json::json!({"plane": "mcp", "kind": "demotion", "id": key, "body": {"nope": true}}),
-        // Re-dispose the row as terminal, so a terminal-only purge could take it.
         serde_json::json!({"plane": "mcp", "kind": "demotion", "id": key, "terminal": true,
             "body": {"server": key, "reason": "drifted", "recorded_at": 100}}),
     ];
@@ -170,7 +149,6 @@ fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
         .collect();
     assert_eq!(replayed, vec![(key, "drifted".to_string(), 100)]);
 
-    // No plane reaches ANY kernel kind through the admin write, whatever it declares.
     let squatter = plane("squatter", KERNEL_KINDS);
     for kind in KERNEL_KINDS {
         let attempt = serde_json::json!({"plane": "squatter", "kind": kind, "id": "x", "body": {}});
@@ -187,9 +165,6 @@ fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
     }
 }
 
-/// TWO PLANES DECLARING ONE KIND KEEP TWO SETS OF ROWS. `alpha` and `beta` both declare `note`; an
-/// admin write of `n-1` for each lands in that plane's own rows: neither overwrites the other's,
-/// and a read of one plane's rows answers only that plane's.
 #[test]
 fn two_planes_declaring_one_kind_neither_see_nor_overwrite_each_others_rows() {
     let store = store();
@@ -237,8 +212,6 @@ fn two_planes_declaring_one_kind_neither_see_nor_overwrite_each_others_rows() {
     }
 }
 
-/// The upsert commits and then loses its acknowledgement. A body read cannot prove which
-/// metadata landed, so local and durable retries keep the original unknown receipt verbatim.
 #[test]
 fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() {
     use crate::root::units_admin::AdminRequest;

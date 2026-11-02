@@ -1,18 +1,8 @@
-//! Tests for the node (`plane_node.rs`). Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use super::*`
-//! reaches the private items it always did.
-//!
-//! The plane is reached the way the node reaches it: a unit is HANDED to the node exactly as the
-//! plane's arrivals hand it (`plane::handed`), and the shell those arrivals replaced is read as the
-//! witness leg (`plane::shell`) — through the plane's test kit, which is the one door a test that
-//! drives units on nodes of its own has onto the plane. The tables the root installs are read off the
-//! linked table (`crate::LINKED`).
-
 use super::*;
 use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 
 use busbar_kernel::ingress::arrival::ArrivalPayload;
-// The plane the node is handed, as the manifest's linked table names it (the `node` axis).
+
 include!(concat!(env!("OUT_DIR"), "/node_plane.rs"));
 use self::node_plane::{proto_codec, testkit as plane};
 
@@ -22,19 +12,17 @@ use busbar_kernel::teller::{Ended, Kernel};
 use busbar_kernel_testkit::test_support::{
     LaneSpec, MockResponse, MockServer, MockServerState, TestApp,
 };
-// The mock far end's event-stream answers, whole and cut, by what they are.
+
 use busbar_kernel_testkit::test_support::MockResponse::{
     Sse as EventStream, SseTransportError as CutEventStream,
 };
 
-/// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
-/// the PATH rather than about a translation.
 const PROTO: &str = proto_codec::PROTO_OPENAI;
 const POOL: &str = "p";
 const LANE: &str = "m0";
-/// One cent, so that derived spend in cents reads as the billable count.
+
 const FEE_CENTS: i64 = 1;
-/// The token figures the scripted upstream reports on a delivered answer.
+
 const INPUT: u64 = 11;
 const OUTPUT: u64 = 7;
 
@@ -98,7 +86,6 @@ impl Fixture {
         }
     }
 
-    /// The bytes the caller sends.
     fn body(self) -> Bytes {
         if self == Fixture::Malformed {
             return Bytes::from_static(b"{not json");
@@ -140,51 +127,35 @@ fn json_headers() -> HeaderMap {
     h
 }
 
-/// A unique group name per rig, so two rigs never share a bucket.
 fn unique(prefix: &str) -> String {
     static N: AtomicU64 = AtomicU64::new(0);
     format!("{prefix}-{}", N.fetch_add(1, Ordering::SeqCst))
 }
 
-/// One deployment: a governed key, a one-lane pool, and a scripted upstream.
 struct Rig {
     app: Arc<busbar_kernel::state::App>,
     key: Arc<busbar_contract::records::VirtualKey>,
-    /// The BEARER the deployment's own door will resolve back to [`Rig::key`]. Minted rather
-    /// than synthesized, so a fixture that presents it is presenting the thing a client sends.
+
     token: String,
-    /// A bearer for a SECOND key on the same deployment whose lifetime has already run out.
-    /// It verifies against the same signer and names a live, enabled binding — the only thing
-    /// wrong with it is the clock, which is what makes it an expiry fixture rather than a
-    /// forgery fixture.
+
     expired_token: String,
     server: MockServer,
-    /// The scripted upstream's own state, kept so a fixture can ask whether the upstream was
-    /// dialled at all — "the unit stopped before the route step" is not a fact any counter on
-    /// this side of the loop reports.
+
     upstream: Arc<MockServerState>,
     charged_at: u64,
     group: String,
 }
 
-/// The signing secret every rig's door verifies against. One process-wide constant, because a
-/// per-rig secret would make "this token is not ours" and "this token has expired" the same
-/// failure.
 const SIGNING_SECRET: [u8; 32] = [7u8; 32];
-/// When a rig's tokens are minted, and when the live one runs out. The live `exp` is far enough
-/// out that a wall clock reads it as valid; the expired one is already behind every clock.
+
 const MINTED_AT: u64 = 1_700_000_000;
 const LIVE_EXP: u64 = 4_000_000_000;
 const DEAD_EXP: u64 = 1_000_000_000;
 
-/// The default rig: BILLING OFF (no `rate_card:`), the historical posture most fixtures run under.
 async fn rig(fixture: Fixture) -> Rig {
     rig_with_billing(fixture, false).await
 }
 
-/// A BILLED rig: a `rate_card:` prices the one lane model `m0`, so [`CostModel::pricing_enabled`] is
-/// true and — per DECISION #42 — the metering row + ledger fire. Used by the tests that ASSERT a
-/// metering row; the money surface only runs on a billed plane.
 async fn rig_billed(fixture: Fixture) -> Rig {
     rig_with_billing(fixture, true).await
 }
@@ -237,10 +208,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
             )
             .expect("seed the durable bucket");
     }
-    // A SIGNER, so the keys below are minted as the credentials a client actually presents and
-    // the deployment's own door can be asked to resolve them. Without one a rig could only ever
-    // hand the plane a hand-built context, which is the one thing an authenticate fixture must
-    // not do.
+
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &SIGNING_SECRET,
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -265,11 +233,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     let (_, expired_token) = gov
         .mint_signed(spec("root-node-expired"), DEAD_EXP, MINTED_AT)
         .expect("mint the expired key");
-    // DECISION #42: billing is on exactly when a `rate_card:` is present. A BILLED rig prices the
-    // one lane model `m0` (so the metering row + ledger run); the default rig configures no card (the
-    // money surface stays quiet). Either way the flat per-request fee stays `FEE_CENTS` — fee posting
-    // is independent of the token rates — and every non-`m0` fixture keeps working because the billed
-    // card only exists in the billed rig, which those fixtures never build.
+
     let priced_card = std::collections::BTreeMap::from([(
         LANE.to_string(),
         busbar_kernel::config::RateEntryCfg {
@@ -288,8 +252,6 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
-        // THE CONFIGURED AUTH CHAIN, so `admit_session` runs the same resolution the HTTP
-        // middleware runs rather than falling through an open front door.
         .keys_chain()
         .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
         .pool(POOL, &[(0, 1)])
@@ -321,8 +283,6 @@ impl Rig {
     }
 }
 
-/// Header values a response mints fresh per run. The NAME stays in the comparison and only the
-/// value is blanked, so a leg that stopped emitting one is still a divergence.
 const VOLATILE_HEADERS: [&str; 6] = [
     "date",
     "request-id",
@@ -336,7 +296,6 @@ const VOLATILE_HEADERS: [&str; 6] = [
 #[derive(Debug, PartialEq, Eq)]
 struct Observed(Vec<(&'static str, String)>);
 
-/// Blank the values a response synthesizes per run — ids and clocks.
 fn normalize(s: &str) -> String {
     fn blank(v: &mut serde_json::Value) {
         match v {
@@ -376,15 +335,6 @@ fn normalize(s: &str) -> String {
     }
 }
 
-/// Blank the per-run values in a response body, whatever its framing.
-///
-/// A bedrock stream is binary event-stream framing, not text: its `metadata` frame carries a
-/// wall-clock `metrics.latencyMs`, and every frame ends in a CRC over its own bytes. Read as one
-/// lossy string, [`normalize`] can neither parse nor blank it, so two legs whose streams took 0 ms
-/// and 1 ms compared as different bodies under load. Each frame is decoded here instead: its
-/// headers are kept byte for byte, its JSON payload goes through [`normalize`], and the two CRCs,
-/// which only restate the bytes compared beside them, are dropped. Anything that is not a clean
-/// run of frames is compared exactly as before.
 fn normalize_body(body: &[u8]) -> String {
     match event_stream_frames(body) {
         Some(frames) => frames
@@ -402,9 +352,6 @@ fn normalize_body(body: &[u8]) -> String {
     }
 }
 
-/// Split an event-stream body into `(headers, payload)` per frame. Each frame is a 12-byte
-/// prelude (total length, headers length, prelude CRC; big-endian u32s), the headers, the
-/// payload and a 4-byte message CRC. `None` unless the whole body is one or more such frames.
 fn event_stream_frames(mut body: &[u8]) -> Option<Vec<(&[u8], &[u8])>> {
     let be = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize;
     let mut frames = Vec::new();
@@ -425,9 +372,6 @@ fn event_stream_frames(mut body: &[u8]) -> Option<Vec<(&[u8], &[u8])>> {
     (!frames.is_empty()).then_some(frames)
 }
 
-/// The event-stream normalizer blanks the clock and nothing else: two streams that differ only in
-/// `metrics.latencyMs` (and so in their CRCs) compare equal, and two that differ in a delta's text
-/// still diverge.
 #[test]
 fn event_stream_bodies_compare_without_their_clock() {
     fn frame(payload: &str) -> Vec<u8> {
@@ -457,9 +401,6 @@ fn event_stream_bodies_compare_without_their_clock() {
     );
 }
 
-/// One field of what a leg left behind, by name. Absent reads as empty rather than panicking,
-/// so a comparison that named a field nobody observes fails on the VALUE rather than on the
-/// lookup — a missing field is a divergence, not a test bug.
 fn field(o: &Observed, k: &str) -> String {
     o.0.iter()
         .find(|(f, _)| *f == k)
@@ -467,8 +408,6 @@ fn field(o: &Observed, k: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Compare the two legs field by field, collecting every divergence under `label` rather than
-/// stopping at the first — one run should name everything that moved, not the earliest thing.
 fn compare(label: &str, legacy: &Observed, looped: &Observed, failures: &mut Vec<String>) {
     for ((f, want), (_, got)) in legacy.0.iter().zip(looped.0.iter()) {
         if want != got {
@@ -502,11 +441,8 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
         .unwrap_or_default();
     fields.push(("body", normalize_body(&body).replace(&rig.group, "<group>")));
 
-    // The body wrapper records the stream's outcome on drop; give it a tick before the reads.
     tokio::task::yield_now().await;
 
-    // THE MONEY. The derived figures the enforcer compares against a cap, and the raw per-model
-    // series row the flush writes.
     let gov = rig
         .app
         .governance
@@ -546,7 +482,6 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
             .join("\n"),
     ));
 
-    // THE BREAKER. The lane's own state after the walk.
     let store = &*rig.app.store;
     fields.push((
         "breaker",
@@ -562,7 +497,6 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     Observed(fields)
 }
 
-/// LEG 1 — the shipped entry point, on its own deployment.
 async fn leg_legacy(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
     let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
@@ -584,7 +518,6 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
     observed
 }
 
-/// LEG 2 — the same request through the kernel's loop over the nine step files.
 async fn leg_loop(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
     let resp = drive(&rig, fixture).await;
@@ -593,9 +526,6 @@ async fn leg_loop(fixture: Fixture) -> Observed {
     observed
 }
 
-/// [`leg_loop`] on a BILLED rig (a `rate_card:` present) — for the tests that assert the metering
-/// row, which #42 emits only when billing is on. The fixtures it is driven with all serve the priced
-/// `m0` lane, so the card names every model they reach and none is refused as unpriced.
 async fn leg_loop_billed(fixture: Fixture) -> Observed {
     let rig = rig_billed(fixture).await;
     let resp = drive(&rig, fixture).await;
@@ -604,7 +534,6 @@ async fn leg_loop_billed(fixture: Fixture) -> Observed {
     observed
 }
 
-/// One request, through the real loop, awaited on this task — exactly as the mount drives it.
 async fn drive(rig: &Rig, fixture: Fixture) -> Response {
     let node = Node::new();
     let arrival = plane::WalkArrival {
@@ -621,13 +550,6 @@ async fn drive(rig: &Rig, fixture: Fixture) -> Response {
     node.answer(plane::handed(arrival, None)).await
 }
 
-/// **One arrival is one reading, and both figures come out of it.**
-///
-/// The pure half of the straddle. A unit arriving at the last millisecond of a window has its
-/// seconds in that window and its milliseconds one tick short of the next: read the clock twice
-/// there and the second read is already over the line, so the table stamps the unit in one
-/// window and the books bill it in another. Read once and the two figures are two spellings of
-/// one instant, which is the property asserted here.
 #[test]
 fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
     const LAST_MILLISECOND: u64 = 1_700_000_000_999;
@@ -646,18 +568,6 @@ fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
     );
 }
 
-/// **Two units of one second are ordered by the monotonic stamp, not by the wall clock.**
-///
-/// The node's two clocks answer two different questions and the audit record and the posting
-/// stamp each want both. The wall clock DATES: it says which window a unit belongs to, and it is
-/// steppable, so an operator, an NTP correction or a leap second can hand two events timestamps
-/// that run backwards. The monotonic reading ORDERS: it only goes up, whatever the wall clock
-/// does.
-///
-/// So: units taken from one node inside one second — indistinguishable by the wall reading, and
-/// on a stepped clock possibly backwards by it — still come out of the monotonic reading in the
-/// order they were taken. Stamped from the wall clock twice, as this leg's postings were, the
-/// second field is a copy of the first and this ordering does not exist.
 #[test]
 fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let node = Node::new();
@@ -672,29 +582,22 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
             after.mono()
         );
     }
-    // Four units off one node inside one second is the ordinary case, not a contrived one — and
-    // it is exactly the case a wall clock cannot resolve, whichever direction it was stepped.
+
     assert!(
         taken
             .iter()
             .all(|a| a.secs() == taken[0].secs() || a.secs() == taken[0].secs() + 1),
         "the four were taken within a second of each other"
     );
-    // Two readings, not one written twice: a monotonic counter is a SEQUENCE and an epoch is a
-    // date, so the day they compare equal is the day one of them stopped being what it is.
+
     assert_ne!(taken[0].mono(), taken[0].secs());
 
-    // AND THE STAMP CARRIES IT. Two postings settled at one wall second, taken through the real
-    // settle path onto a real journal, come back off it in the order they were written — which
-    // is the ordering the record is FOR, and which does not exist if the second field is the
-    // first one copied.
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
-    // Both settlements through the ONE money-book seam over the shared book — the pass-through the
-    // live exit arm now takes, and what a second exit arm settling behind the first takes too.
+
     let book = std::sync::Arc::new(std::sync::Mutex::new(durability));
     let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
     let who = PrincipalId::new("acct:node");
@@ -736,25 +639,12 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     );
 }
 
-/// **A unit that arrives in the last millisecond of a window bills in THAT window.**
-///
-/// The driven half. The arrival is placed one millisecond short of a metering-bucket boundary —
-/// the one instant where two clock reads disagree — and the whole unit is run from it: the
-/// entry the in-flight table takes, the epoch the charges land in, and the row the flush
-/// writes. Every figure is then looked for in the bucket the unit arrived in, and the next
-/// bucket is checked to be empty, because a charge that leaked forward would have to land
-/// somewhere and that is where it would land.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in() {
     use busbar_kernel::governance::metering_bucket;
 
-    // BILLED: this test asserts a metering row lands in the bucket the unit arrived in, and #42 emits
-    // a metering row only when billing is on.
     let rig = rig_billed(Fixture::BufferedOk).await;
-    // The last SECOND of the bucket BEFORE the one the node's own clock is in, and the last
-    // MILLISECOND of that second. Before, so that a figure derived from a fresh clock read
-    // instead of from this arrival lands somewhere visibly different — in the live bucket,
-    // which is the one asserted empty below.
+
     let arrival_secs = metering_bucket(rig.charged_at) - 1;
     let arrived = Arrived::at(arrival_secs * 1_000 + 999, 0);
     assert_eq!(
@@ -783,7 +673,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
     let resp = node
         .answer_arriving_at(plane::handed(arrival, None), arrived)
         .await;
-    // Drain the body: this plane's money lands when the tap fills, which is on the drain.
+
     let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
     tokio::task::yield_now().await;
     rig.server.shutdown().await;
@@ -822,18 +712,8 @@ const CASES: [Fixture; 6] = [
     Fixture::UnknownModel,
 ];
 
-/// The unit-arrival epoch this proof pins, so the window a posting lands in is a fixed one.
 const EPOCH: u64 = 1_700_000_000;
 
-// -----------------------------------------------------------------------------------------
-// The lookup at the door
-// -----------------------------------------------------------------------------------------
-
-/// A history of one entry per `(effective_from_ms, output rate)`, built OUTSIDE the process
-/// holder so these proofs name their own instants instead of racing the wall clock.
-///
-/// The first entry is effective from zero for the same reason the holder's is: an instant before
-/// the first entry is a hole and a hole is a refusal.
 fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
     let mut history = busbar_kernel_ledger::cost::History::new();
     for (n, (from, output)) in entries.iter().enumerate() {
@@ -866,7 +746,6 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
     )
 }
 
-/// A report of `output` tokens on the lane the histories above price.
 fn report_of(output: u64) -> Report {
     Report {
         usage: busbar_contract::billing::Usage {
@@ -880,15 +759,6 @@ fn report_of(output: u64) -> Report {
     }
 }
 
-/// **THE UNIT PRICES AT THE INSTANT IT ARRIVED**, not at the instant the question is asked.
-///
-/// Two units, one snapshot, one call each: the one that arrived before the second entry took
-/// effect prices at the first entry's rate and the one that arrived after prices at the
-/// second's. Both readings are taken from the SAME history at the SAME moment, so the only thing
-/// that can be producing two answers is the arrival instant — which is the whole of rule 3.
-///
-/// A node that priced against "the current card" answers the later figure for both, which is
-/// exactly the recorded 1.5.5 behaviour and exactly what this replaces.
 #[test]
 fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
     let kernel = Kernel::new();
@@ -910,13 +780,6 @@ fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
     );
 }
 
-/// **THE PIN HOLDS.** A snapshot taken at admission cannot see an entry appended after it, so an
-/// apply landing mid-body does not reprice a request halfway through.
-///
-/// The pinned reader and the head are both asked about the SAME instant, and they answer
-/// differently — which is only possible because the pin stops the snapshot's slice short of the
-/// later entry. A holder that handed out the whole history and a live head would answer the new
-/// figure to a request that was admitted under the old one.
 #[test]
 fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
     let kernel = Kernel::new();
@@ -942,7 +805,6 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         .pin()
         .expect("the boot resolution put an entry in place");
 
-    // The apply that lands while the body is still draining.
     holder.apply(
         crate::root::kernel::card_from_config(
             [(
@@ -974,13 +836,6 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
     );
 }
 
-/// **THE PIN IS A SEQ, NOT ONLY AN `Arc`.** A reader holding the same history at a lower
-/// snapshot reads it as it stood at that snapshot.
-///
-/// The `Arc` alone is not the pin: an amendment, and a copy-on-write apply that a second reader
-/// already took, both leave one history holding entries a reader was never admitted under. The
-/// seq is what stops the slice short of them, and this asks the SAME history at two snapshots to
-/// prove the stopping is real rather than an accident of when the `Arc` was cloned.
 #[test]
 fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     let kernel = Kernel::new();
@@ -1004,11 +859,6 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     );
 }
 
-/// **THE POSTING CARRIES NO PRICE; THE FIGURE IS THE LOOKUP'S.**
-///
-/// The posting the pricing builds holds the counts and the instant and no figure at all, so there is
-/// nothing on it a reader could take for the money: asked again over the same history, the posting
-/// answers exactly the figure the pricing returned, and the instant it kept is the unit's own.
 #[test]
 fn the_posting_carries_no_price_and_its_figure_is_the_lookups() {
     let kernel = Kernel::new();
@@ -1032,17 +882,6 @@ fn the_posting_carries_no_price_and_its_figure_is_the_lookups() {
     );
 }
 
-/// **THE EXIT ARM, END TO END.** The reservation the door opened reaches the journal.
-///
-/// The loop's exit path is where a hold stops existing, and what it hands back is a POSTING that
-/// has moved no balance and left no record until something settles it. Before this arm was bound
-/// nothing on this plane did, so a unit ran, ended, posted — and posted into a value that was
-/// dropped. This drives the REAL loop over the real steps, takes the end it sealed, and puts the
-/// posting on a journal it then reads back.
-///
-/// The figures are this plane's own: the door opens the kernel's hold at zero, because the spend
-/// is the governance ledger's and the walk's tap already moved it. So what this proves is not a
-/// price — it is that the kernel's record of a unit having run reaches a durable record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     let rig = rig(Fixture::BufferedOk).await;
@@ -1072,8 +911,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         Box::new(busbar_kernel_wal::NullShipper::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
-    // Settle THROUGH the money-book seam, over the shared book — the pass-through the live exit arm
-    // now takes. The posting it lands and the record it replays are the exit arm's own bytes.
+
     let book = std::sync::Arc::new(std::sync::Mutex::new(durability));
     let who = PrincipalId::new("acct:node");
     let settled = settle(
@@ -1101,9 +939,6 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     assert_eq!(replayed.len(), 1, "one posting, one record");
 }
 
-/// A DRIVEN PLANE'S ABANDONED END POSTS ONCE, onto the node's book. The loop's sealed end is handed
-/// to the root's posting site under the unit's key: posted once for a unit whose facts are open,
-/// never for a unit that closed (returned) or was never opened, and never twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     use busbar_kernel::plane_driver::EndPost;
@@ -1136,7 +971,7 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
         kernel_verb_only: false,
     };
     let who = PrincipalId::new("acct:node");
-    // Opened, then abandoned: posted once; a second post of the same key posts nothing.
+
     let ended = drive_to_end(
         &rig,
         &node,
@@ -1151,7 +986,7 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
         Arrived::at(EPOCH * 1_000, 0),
         None,
     );
-    // Counted around each post: driving a unit to its end writes its own records on the book.
+
     let before = posted();
     site.post(&ctx(41), ended);
     assert!(posted() > before, "the abandoned end is on the book");
@@ -1166,7 +1001,7 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     let before = posted();
     site.post(&ctx(41), ended);
     assert_eq!(posted(), before, "an end posts at most once");
-    // Opened then closed (the unit returned): the node's exit arm posts it, not this site.
+
     let ended = drive_to_end(
         &rig,
         &node,
@@ -1184,9 +1019,6 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     rig.server.shutdown().await;
 }
 
-/// A DRIVEN PLANE'S ABANDONED END SEALS EXACTLY ONE AUDIT RECORD with its one line, from the facts
-/// and pass its audit door handed back; an abandoned unit whose audit door never answered seals none.
-/// RED: without the held pass the posting site seals no record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     use busbar_kernel::plane_driver::EndPost;
@@ -1220,7 +1052,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
         op_class: busbar_contract::caps::OpClassId::new("call"),
         finish: busbar_contract::FinishClass::Complete,
     };
-    // The audit door answered: one record, with the line.
+
     let ended = drive_to_end(
         &rig,
         &node,
@@ -1247,7 +1079,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
         before + 1,
         "exactly one audit record for the abandoned unit"
     );
-    // The audit door never answered: the line is posted, and no record is minted for it.
+
     let ended = drive_to_end(
         &rig,
         &node,
@@ -1263,11 +1095,6 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     rig.server.shutdown().await;
 }
 
-/// AUDIT-CHAIN, THE NODE'S PLANE: every unit the node answers, served (a dispatched completion) or
-/// refused (a body the arrival step cannot read), seals ONE record on the node's audit chain, the
-/// second linked to the first; the chain walks clean, and a record altered after its seal (the
-/// served unit re-told as refused) breaks the walk. RED: a loop whose audit door's pass is never
-/// handed back to the node seals nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain(
 ) {
@@ -1342,14 +1169,6 @@ async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_t
     );
 }
 
-/// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
-///
-/// One unit, driven once and then asked the same question under two origins. The delivered
-/// answer, the selected upstream and the relayed first frame are identical in both readings —
-/// the ONLY thing that differs is the origin the kernel sealed the unit under — so a difference
-/// in the count is a difference the origin made and nothing else. A client's request pays one
-/// fee; a unit the node ran for a provider pays none, which is the same answer the sibling plane
-/// gives to the same question.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_origin_unit_posts_no_flat_fee() {
     let rig = rig(Fixture::BufferedOk).await;
@@ -1388,16 +1207,6 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
     );
 }
 
-/// One request, driven through the real loop, answering with the END rather than the bytes.
-///
-/// The same drive [`Node::answer`] performs — the same table, the same slot, the same
-/// `run_unit_async` — kept apart only because the entry point answers a client and this answers
-/// the exit arm's proof.
-///
-/// `gov` is the caller's own resolved context rather than the rig's, because what the
-/// authenticate step ANSWERS is only visible on this side of the loop: the hold the door opens
-/// is opened for the principal that step settled on, and the posting the exit hands back names
-/// it. A drive that always used the rig's key could not tell the step's answer from the walk's.
 async fn drive_to_end(
     rig: &Rig,
     node: &Node,
@@ -1410,12 +1219,6 @@ async fn drive_to_end(
         .1
 }
 
-/// The same drive, handing the UNIT back beside the end it sealed.
-///
-/// A unit's evidence is a reading OF the unit, so a test that asks what this plane would settle
-/// has to hold the thing that ran rather than a copy of its answer. The unit is the one the plane
-/// hands the node; everything below is the node's drive, and the only difference is what is
-/// returned.
 async fn drive_keeping_the_unit(
     rig: &Rig,
     node: &Node,
@@ -1426,8 +1229,6 @@ async fn drive_keeping_the_unit(
     drive_screened_by(rig, node, fixture, gov, seats, None).await
 }
 
-/// A route whose plane SCREENS every unit before the door and stops it with `reason` (a gate-first
-/// plane's veto, SEAM-4j), its leg otherwise the plane's own.
 struct Screening<'r> {
     inner: &'r (dyn RouteAwait + Send + Sync),
     reason: busbar_contract::caps::ReasonCode,
@@ -1453,7 +1254,6 @@ impl RouteAwait for Screening<'_> {
     }
 }
 
-/// [`drive_keeping_the_unit`], the plane's route screening every unit with `screen` where set.
 async fn drive_screened_by(
     rig: &Rig,
     node: &Node,
@@ -1542,8 +1342,6 @@ async fn drive_screened_by(
     (units, ended)
 }
 
-/// THE SWITCH. Same fixture in, same bytes and same counters out — through the shipped entry
-/// point and through the kernel's loop over the step files.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_matches_the_shipped_entry_point_on_every_fixture() {
     let mut failures: Vec<String> = Vec::new();
@@ -1567,8 +1365,6 @@ async fn the_loop_matches_the_shipped_entry_point_on_every_fixture() {
     );
 }
 
-/// The ENDS are what the fixtures claim they are. Without this the comparison above could be
-/// green on six identical 404s and prove nothing about the loop at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_fixture_reaches_the_end_it_names() {
     let mut seen: Vec<(Fixture, String)> = Vec::new();
@@ -1600,15 +1396,8 @@ async fn every_fixture_reaches_the_end_it_names() {
     );
 }
 
-/// THE MONEY, spelled out rather than only compared.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
-    // A STREAMED unit accrues at stream end rather than at the buffered tap, so it is asserted
-    // in its own right: without this the comparison could be green on a stream metering nothing.
-    // BILLED (a `rate_card:` present): the delivered legs assert the metering row #42 emits only when
-    // billing is on. The refusal legs below stay on the default UNBILLED rig — their assertions are
-    // about the door/guard, and `UnknownModel` in particular must reach the POST-door refusal it
-    // names rather than the pre-admission unpriced-model refusal a card would trigger.
     let streamed = leg_loop_billed(Fixture::StreamedOk).await;
     assert_eq!(field(&streamed, "ledger_requests"), "1");
     assert_eq!(
@@ -1628,35 +1417,24 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
         format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1")
     );
 
-    // The door refused: nothing was charged, so there is nothing on the key's bucket at all.
     let refused = leg_loop(Fixture::OverBudget).await;
     assert_eq!(field(&refused, "ledger_requests"), "0");
     assert_eq!(field(&refused, "metering_rows"), "");
 
-    // The pre-admission guard refused: charged nothing either, and never reached the door.
     let guarded = leg_loop(Fixture::PoolAcl).await;
     assert_eq!(field(&guarded, "ledger_requests"), "0");
 
-    // Refused after the door: the admission slot is drawn and NEVER released, which is the rule
-    // that makes a request cap impossible to escape by failing.
     let post_door = leg_loop(Fixture::UnknownModel).await;
     assert_eq!(field(&post_door, "ledger_requests"), "1");
     assert_eq!(field(&post_door, "metering_rows"), "");
 }
 
-/// A CALLER THAT HANGS UP MID-DISPATCH KEEPS ITS FEE CHARGED (MONEY-AUDIT C-F1, spec §7 F13).
-///
-/// The upstream answers its headers and then holds its body, so the route step is parked on the
-/// read; the caller's answer future is dropped there, which is a client going away. The loop's
-/// guard ends the unit as `ClientGone` with nothing rendered. 1.5.5's dropped request never reached
-/// the non-2xx refund, so the flat fee the door charged stays on the key's bucket.
-/// RED: the abandoned end was finished as a 503 no client saw, and the non-2xx arm refunded it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged() {
     let rig = rig_billed(Fixture::BufferedOk).await;
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    // Popped next: the queue is a stack, so the last push is the first reply.
+
     rig.upstream.push(MockResponse::Gated {
         status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         body: serde_json::json!({"error": {"message": "still answering", "type": "server_error"}}),
@@ -1686,20 +1464,8 @@ async fn a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged() {
     );
 }
 
-/// W3.c / DECISIONS #42 + #43: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE, WRITE THE COUNTS, READ 0,
-/// YET STILL GOVERNED. The complement of `the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`
-/// (which drives the BILLED rig): with no card the node is a pure failover/routing proxy — the SAME
-/// delivered request is served identically (status 200) and writes the SAME metering row a billed
-/// plane writes, because the plane always ledgers what it did (#43, owner ruling 2026-09-22; the
-/// node's twin of item 36, 0ee95aafd). Billing off is the money VIEW: that row reads 0 (#42). And the
-/// plane is NOT unlimited: admission/governance still runs — a pool-ACL guard refuses exactly as it
-/// does on a billed plane — which is the "breaker + concurrency still enforced" half of #42 (both live
-/// on the admission/egress path, independent of the card).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_governs() {
-    // BILLING OFF (default rig, no `rate_card:`): a delivered request is served, and writes its
-    // metering row — the plane's own counts, byte-for-byte the row the BILLED rig writes — which the
-    // money view reads as 0.
     let free = leg_loop(Fixture::BufferedOk).await;
     assert_eq!(
         field(&free, "status"),
@@ -1712,24 +1478,20 @@ async fn billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_
         row,
         "billing off (no rate_card) still writes the plane's counts: the ledger is what the plane did (#43)"
     );
-    // …and the view reads those counts as 0 (#42): the derived spend is the flat per-request fee
-    // alone (`FEE_CENTS` x 1 request), the token counts contributing nothing — not a missing row.
+
     assert_eq!(
         field(&free, "ledger_spend_cents"),
         FEE_CENTS.to_string(),
         "billing off is the VIEW reading the counts as 0 (#42): only the flat fee posts"
     );
-    // The exact same delivered request on a BILLED rig writes the IDENTICAL row — the card changes
-    // what the row is WORTH, never whether it is written.
+
     let billed = leg_loop_billed(Fixture::BufferedOk).await;
     assert_eq!(
         field(&billed, "metering_rows"),
         row,
         "the same request on a billed plane writes exactly the same metering row"
     );
-    // STILL GOVERNED with billing off: the admission-time pool-ACL guard refuses, exactly as on a
-    // billed plane — the plane is a proxy, never unlimited. (Breaker + concurrency ride the same
-    // admission/egress path, which the card's absence never touches.)
+
     let guarded = leg_loop(Fixture::PoolAcl).await;
     assert_eq!(
         field(&guarded, "ledger_requests"),
@@ -1739,19 +1501,11 @@ async fn billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_
     assert_eq!(field(&guarded, "metering_rows"), "");
 }
 
-// ── THE TWO SURFACES WHOSE MODEL IS IN THE URL ─────────────────────────────────────────────
-
-/// THE DIALECT FIXTURE (`fixtures/plane_node_dialects.json`): each dialect's native request body
-/// and the facts its URL carries, as DATA (ARCHITECT F-T). The dialects are the plane's; this file
-/// reads them and names none, and every name the fixture spells is resolved against the linked
-/// table the root installs, so a row for a dialect the plane no longer declares fails here.
 static DIALECTS: LazyLock<serde_json::Value> = LazyLock::new(|| {
     serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
         .expect("the dialect fixture is JSON")
 });
 
-/// The dialects that keep their model in the path, read off the linked table the root installs —
-/// never retyped, so a dialect added to the table and not the fixture cannot pass here.
 fn path_dialects() -> Vec<&'static str> {
     crate::LINKED
         .path_ingress
@@ -1760,7 +1514,6 @@ fn path_dialects() -> Vec<&'static str> {
         .collect()
 }
 
-/// A dialect the fixture names, in the linked table's own `'static` spelling.
 fn linked_dialect(name: &str) -> &'static str {
     path_dialects()
         .into_iter()
@@ -1769,7 +1522,6 @@ fn linked_dialect(name: &str) -> &'static str {
         .unwrap_or_else(|| panic!("the fixture names `{name}`, which no linked table declares"))
 }
 
-/// The fixture's row for one URL-model dialect.
 fn path_row(proto: &str) -> &'static serde_json::Value {
     DIALECTS["path_model"]
         .as_array()
@@ -1779,15 +1531,12 @@ fn path_row(proto: &str) -> &'static serde_json::Value {
         .unwrap_or_else(|| panic!("the fixture has no `path_model` row for `{proto}`"))
 }
 
-/// The dialect's own miss copy for a URL that named `model`, or `None` where the dialect answers
-/// with the neutral sentence.
 fn miss_copy(proto: &str, model: &str) -> Option<String> {
     path_row(proto)["model_not_found"]
         .as_str()
         .map(|copy| copy.replace("{model}", model))
 }
 
-/// The status the door's over-budget turn-away answers in this URL-model dialect.
 fn over_budget_status(proto: &str) -> String {
     path_row(proto)["over_budget_status"]
         .as_str()
@@ -1795,9 +1544,6 @@ fn over_budget_status(proto: &str) -> String {
         .to_string()
 }
 
-/// The four ends a URL-model fixture reaches. Malformed and the pool ACL are the body surface's
-/// fixtures and are exercised there; what these four pin is the surface that was OFF the loop —
-/// a delivered answer, a streamed one, a name that resolves to nothing, and a spent budget.
 const PATH_CASES: [Fixture; 4] = [
     Fixture::BufferedOk,
     Fixture::StreamedOk,
@@ -1805,42 +1551,30 @@ const PATH_CASES: [Fixture; 4] = [
     Fixture::OverBudget,
 ];
 
-/// THE NATIVE REQUEST BODY each dialect's client sends. The model is NOT in it — that is the whole
-/// point of the surface — so one body per dialect serves every fixture.
 fn path_body(proto: &str) -> Bytes {
     let v = &path_row(proto)["body"];
     Bytes::from(serde_json::to_vec(v).expect("the fixture body serializes"))
 }
 
-/// The URL's facts, as the carry names them.
 type PathFacts = plane::PathModelFacts;
 
-/// WHAT THE URL SAYS, for the URL each fixture is sent to.
-///
-/// Spelled here rather than parsed, because the parse is the DIALECT'S and is pinned beside it —
-/// the plane's own tests drive the real `gemini_path_parse` / `bedrock_path_parse` over these
-/// exact URLs and assert these exact facts. What this file is responsible for is what the loop
-/// does with them.
 fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
     let model = fixture.model().to_string();
     let stream = fixture.streamed();
     PathFacts {
         operation: busbar_contract::operation::OpVerb::CHAT,
         stream,
-        // A streamed request on a dialect whose URL takes the JSON-array framing is framed that
-        // way; the other has no such framing at all.
+
         gemini_json_array: path_row(proto)["json_array_when_streamed"]
             .as_bool()
             .expect("every `path_model` row says whether it frames a stream as a JSON array")
             && stream,
-        // One dialect echoes its own versioned not-found copy; the other uses the neutral
-        // sentence. The api version is the one the fixture's URL carries.
+
         model_not_found_message: miss_copy(proto, &model),
         model,
     }
 }
 
-/// LEG 1 — the shipped path-model entry point, on its own deployment.
 async fn leg_legacy_path(fixture: Fixture, proto: &'static str) -> Observed {
     let rig = rig(fixture).await;
     let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
@@ -1866,7 +1600,6 @@ async fn leg_legacy_path(fixture: Fixture, proto: &'static str) -> Observed {
     observed
 }
 
-/// LEG 2 — the same request through the kernel's loop, with the URL's facts in the unit's carry.
 async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
     let rig = rig(fixture).await;
     let node = Node::new();
@@ -1888,8 +1621,6 @@ async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
     observed
 }
 
-/// THE SWITCH, ON THE URL-MODEL SURFACES. Same request in, same bytes and same counters out —
-/// through the shipped path-model entry point and through the kernel's loop over the step files.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_matches_the_shipped_path_model_entry_point() {
     let mut failures: Vec<String> = Vec::new();
@@ -1914,8 +1645,6 @@ async fn the_loop_matches_the_shipped_path_model_entry_point() {
     );
 }
 
-/// The ENDS are what these fixtures claim they are. Without this the comparison above could be
-/// green on eight identical 404s and prove nothing about the surface at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_url_model_fixture_reaches_the_end_it_names() {
     let mut seen: Vec<(&str, Fixture, String)> = Vec::new();
@@ -1937,12 +1666,7 @@ async fn every_url_model_fixture_reaches_the_end_it_names() {
             [
                 (proto, Fixture::BufferedOk, "200".to_string()),
                 (proto, Fixture::StreamedOk, "200".to_string()),
-                // Refused AFTER the door, so it is charged and audited as an admitted unit.
                 (proto, Fixture::UnknownModel, "404".to_string()),
-                // The door's own turn-away, in each dialect's own status vocabulary (#958: both
-                // answer a throttle as a throttle, the signed dialect as its Converse-declared
-                // throttling exception). Both are the shipped entry point's answer, read off it
-                // rather than assumed — the leg above proves the two legs agree.
                 (proto, Fixture::OverBudget, over_budget_status(proto)),
             ]
         })
@@ -1953,26 +1677,8 @@ async fn every_url_model_fixture_reaches_the_end_it_names() {
     );
 }
 
-/// A URL THAT NAMED NO MODEL ENDS WHERE THE SHIPPED ENTRY POINT ENDS IT.
-///
-/// The empty URL model is REACHABLE: bedrock's own path parse ends `unwrap_or_default()`, so a
-/// converse path whose model segment the handler did not recognise arrives as a `PathModelFacts`
-/// carrying an empty string. The shipped path-model entry point has no empty-model rung at all —
-/// it injects whatever the URL gave into the body and lets resolution answer, which for an empty
-/// name is the ordinary model-miss 404, taken after the door and therefore charged.
-///
-/// That is the answer the loop has to give too, and it is the whole reason this case is pinned:
-/// the body-model entry point DOES carry an empty-model rung (`Some(m) if !m.is_empty()` → a
-/// 400 "Missing required parameter"), and a step file that copies that rung onto the URL surface
-/// turns one dialect's unrecognised path segment from a charged 404 into an uncharged 400. Two
-/// different statuses, two different ledgers, on a request the shipped node answers one way.
-///
-/// Compared field for field against the shipped entry point rather than asserted as a number, so
-/// the body, the headers and the money all have to agree and not merely the status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_it() {
-    /// The fixture's facts with the model taken out — the shape bedrock's parse produces for a
-    /// path whose model segment resolved to nothing.
     fn nameless(proto: &'static str) -> PathFacts {
         let mut facts = path_facts(proto, Fixture::UnknownModel);
         facts.model = String::new();
@@ -2042,11 +1748,6 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
     );
 }
 
-/// THE PATH TABLE THE ROOT INSTALLS NAMES EVERY DIALECT THE SHELL DID. Same dialects, same names,
-/// same order — the path-axis twin of the body-table comparison below, and for the same reason: a
-/// dialect missing from the loop's table resolves no arrival and the surface 404s, which is a
-/// deletion wearing a routing bug's clothes. The loop's table is read off the linked table the root
-/// installs from, never off the plane by name.
 #[test]
 fn the_switched_path_table_names_every_dialect_the_plane_names() {
     let shipped: Vec<&str> = plane::shell::PATH_INGRESS.iter().map(|(n, _)| *n).collect();
@@ -2058,17 +1759,10 @@ fn the_switched_path_table_names_every_dialect_the_plane_names() {
     assert_eq!(switched, shipped);
 }
 
-/// THE URL'S FACTS ARE ONE UNIT'S, and they are the unit's for the whole of it.
-///
-/// They used to be pinned to the thread the loop ran on, which was sound only while the loop
-/// occupied one blocking worker end to end. It does not any more: a unit yields at its Route step
-/// and may be resumed on another thread, and the step that reads the dialect's miss copy is on
-/// the far side of that yield. So they ride the carry, and this says what the carry answers on
-/// each of the two shapes — the fact a body-model unit has none is half the seam.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_url_facts_ride_the_unit_and_not_the_thread() {
     let rig = rig(Fixture::BufferedOk).await;
-    // A URL-model dialect that carries its own miss copy, so both halves of the carry are asked.
+
     let proto = path_dialects()
         .into_iter()
         .find(|d| miss_copy(d, "").is_some())
@@ -2102,13 +1796,6 @@ async fn the_url_facts_ride_the_unit_and_not_the_thread() {
     rig.server.shutdown().await;
 }
 
-/// THE TABLE THE ROOT INSTALLS NAMES EVERY DIALECT THE SHELL DID. Same dialects, same names, same
-/// order.
-///
-/// The switch replaced one arrival table with another, and a dialect missing from the replacement
-/// does not fail loudly — it resolves no arrival and the surface 404s, which is a deletion wearing a
-/// routing bug's clothes. So the loop's table, as the linked table carries it to the root, and the
-/// shell's are compared as data.
 #[test]
 fn the_switched_table_names_every_dialect_the_plane_names() {
     let shipped: Vec<&str> = plane::shell::BODY_INGRESS.iter().map(|(n, _)| *n).collect();
@@ -2116,11 +1803,6 @@ fn the_switched_table_names_every_dialect_the_plane_names() {
     assert_eq!(switched, shipped);
 }
 
-/// THE INTERNER IS THE NODE'S, and it is idempotent.
-///
-/// A lane name is leaked to become the borrowed static one the priced axis is written in, so
-/// interning the same name twice must yield the same pointer: a leak per request would be a
-/// leak per request whatever it was called.
 #[test]
 fn the_nodes_interner_leaks_a_lane_name_once() {
     let node = Node::new();
@@ -2139,12 +1821,6 @@ fn the_nodes_interner_leaks_a_lane_name_once() {
     assert!(std::ptr::eq(first.as_str(), again.as_str()));
 }
 
-/// AND THE INTERNER IS REACHED ONCE PER NAME, not once per request.
-///
-/// The interner is one mutex for the whole image, and the Verify step resolves a name per
-/// candidate lane, per request — so a node that asks it every time makes every plane in the
-/// process queue behind one lock for an answer that was settled the first time. The count is
-/// per distinct name and does not grow with how often the name is asked for.
 #[test]
 fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
     let node = Node::new();
@@ -2172,10 +1848,6 @@ fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
     );
 }
 
-// ── STEP 1, DECODE — the six dialects, over the loop ────────────────────────────────────────
-
-/// The six dialects whose model rides the body. The same six the mount installs, read off the
-/// table rather than retyped, so a dialect added to one and not the other cannot pass here.
 fn body_dialects() -> Vec<&'static str> {
     crate::LINKED
         .body_ingress
@@ -2201,8 +1873,6 @@ enum Decoded {
     UnsupportedVerb,
 }
 
-/// THE NATIVE REQUEST BODY, per dialect. Each is the shape that dialect's own client sends, and
-/// the `model` member is the rung of the ladder a body-model surface resolves on.
 fn dialect_body(proto: &str, shape: Decoded) -> Bytes {
     if shape == Decoded::Malformed {
         return Bytes::from_static(b"{not json");
@@ -2211,16 +1881,13 @@ fn dialect_body(proto: &str, shape: Decoded) -> Bytes {
         .get(proto)
         .unwrap_or_else(|| panic!("the fixture has no `body_model` body for `{proto}`"))
         .clone();
-    // The ladder's rung 3 — and its absence, which is the whole of the `NoModel` shape.
+
     if shape != Decoded::NoModel {
         v["model"] = serde_json::Value::String(POOL.to_string());
     }
     Bytes::from(serde_json::to_vec(&v).expect("the fixture body serializes"))
 }
 
-/// A VERB THIS DIALECT DECLARES NO HANDLER FOR, found by ASKING the registry rather than by
-/// guessing: the first of the family's seven the dialect does not answer. `None` for a dialect
-/// that answers all seven, which is a dialect this shape has nothing to say about.
 fn unsupported_verb(proto: &str) -> Option<busbar_contract::operation::OpVerb> {
     [
         busbar_contract::operation::OpVerb::EMBEDDINGS,
@@ -2234,7 +1901,6 @@ fn unsupported_verb(proto: &str) -> Option<busbar_contract::operation::OpVerb> {
     .find(|op| plane::declines(proto, *op))
 }
 
-/// LEG 1 — the shipped body-model entry point, for any dialect and any verb.
 async fn leg_legacy_decode(
     proto: &'static str,
     operation: busbar_contract::operation::OpVerb,
@@ -2253,7 +1919,6 @@ async fn leg_legacy_decode(
     observed
 }
 
-/// LEG 2 — the same dialect and the same verb through the kernel's loop.
 async fn leg_loop_decode(
     proto: &'static str,
     operation: busbar_contract::operation::OpVerb,
@@ -2278,21 +1943,6 @@ async fn leg_loop_decode(
     observed
 }
 
-/// **STEP 1 OVER THE LOOP, ON EVERY DIALECT THE PLANE MOUNTS.**
-///
-/// The decode step answers two questions — which handler owns this `(protocol, operation)` pair,
-/// and which model the caller named — and every later step is about those two answers. So the
-/// step is driven through `run_unit` for each of the six body-model dialects in four shapes, and
-/// each is compared against the shipped entry point on its own deployment: the answer, the
-/// headers, the money and the breaker.
-///
-/// The ends are asserted BESIDE the comparison, not instead of it, because six identical 404s
-/// would compare equal and prove nothing about resolution at all:
-///
-/// * `Named` reaches the door, which is the observable fact that a model WAS resolved;
-/// * `NoModel` is the ladder's own refusal, in the dialect's envelope, charged to nobody;
-/// * `Malformed` is refused at step 0 — the plane parses before it reads the ladder;
-/// * `UnsupportedVerb` is the handler half, refused with the endpoint's own sentence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
     let mut failures: Vec<String> = Vec::new();
@@ -2310,8 +1960,6 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
             let answered = field(&looped, "body");
             let admitted = field(&looped, "ledger_requests");
             match shape {
-                // The model resolved, so the unit reached the door and drew its slot. A dialect
-                // whose ladder answered nothing would be refused BEFORE the door and read "0".
                 Decoded::Named => {
                     if admitted != "1" {
                         failures.push(format!(
@@ -2331,8 +1979,7 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
                         failures.push(format!("{label}: a refused unit was charged"));
                     }
                 }
-                // Step 0's parse refusal: the bytes are not a document, so there is nothing for
-                // the ladder to read and the unit never reaches step 1 at all.
+
                 Decoded::Malformed => {
                     if status != "400" || admitted != "0" {
                         failures.push(format!(
@@ -2344,9 +1991,7 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
                 Decoded::UnsupportedVerb => unreachable!("driven below, with its own verb"),
             }
         }
-        // THE HANDLER HALF. A verb the dialect declares nothing for, asked of the registry
-        // rather than guessed — and skipped for a dialect that answers the whole family, which
-        // is an honest absence rather than a fabricated 404.
+
         if let Some(op) = unsupported_verb(proto) {
             verbs_exercised += 1;
             let label = format!("{proto}/UnsupportedVerb");
@@ -2380,8 +2025,6 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
     );
 }
 
-// ── STEP 2, AUTHENTICATE — the three credentials, over the loop ─────────────────────────────
-
 /// The three credentials a client can present to a governed deployment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Credential {
@@ -2405,9 +2048,6 @@ impl Credential {
     }
 }
 
-/// THE DOOR, asked exactly as a transport asks it: the deployment's configured auth chain plus
-/// the one verdict resolution the HTTP middleware runs, over this rig's live governance state.
-/// No audience is expected, because the data-plane boundary expects none.
 async fn admit(
     rig: &Rig,
     cred: Credential,
@@ -2422,11 +2062,6 @@ async fn admit(
     .map_err(|refusal| format!("{refusal:?}"))
 }
 
-/// WHO THE LOOP DECIDED THIS UNIT IS, taken from the far end of the loop rather than from the
-/// fixture: the door opens the kernel's hold for the principal the AUTHENTICATE step settled
-/// on, and the posting the exit path hands back carries it. Nothing else on this plane reads
-/// that answer — the walk keeps its own context for the money and the record — so this is the
-/// one observation that is about step 2 and about nothing else.
 async fn principal_the_loop_settled_on(
     rig: &Rig,
     gov: busbar_contract::records::PlaneRequestCtx,
@@ -2443,7 +2078,6 @@ async fn principal_the_loop_settled_on(
         .to_string()
 }
 
-/// LEG 1 — the shipped entry point, driven with a context the DOOR produced.
 async fn leg_legacy_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) -> Observed {
     let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
@@ -2462,7 +2096,6 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx
     observe(rig, resp).await
 }
 
-/// LEG 2 — the loop, driven with the same context the door produced.
 async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) -> Observed {
     let node = Node::new();
     let arrival = plane::WalkArrival {
@@ -2480,40 +2113,16 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
     observe(rig, resp).await
 }
 
-/// **STEP 2 OVER THE LOOP: THE UNIT IS ATTRIBUTED TO WHAT THE DOOR RESOLVED, AND TO NOTHING
-/// ELSE.**
-///
-/// The plane's authenticate step is a READ of an outcome the auth middleware already produced —
-/// every 401 this plane could raise is raised upstream of it. A cell that hand-built a context and
-/// handed it to the loop would prove nothing about that, because it would be asserting the fixture.
-/// So every credential here goes through the deployment's OWN door
-/// (`auth::admit::admit_session`: the configured chain plus the one verdict resolution the
-/// HTTP middleware runs) and the loop is driven with whatever the door left behind.
-///
-/// Three credentials, and the door's answer decides which half of the cell runs:
-///
-/// * the deployment's live bearer is ADMITTED, so both legs run with the resolved context and
-///   are compared — and the unit is charged to that key's own ledger, which is the attribution
-///   claim spelled as something a reader can see;
-/// * a bearer this deployment never minted, and a bearer whose lifetime has run out, are both
-///   REFUSED at the door, so neither leg is ever entered. The loop cannot be softer than the
-///   shipped path here, because on both paths the plane is downstream of the same refusal; what
-///   it could do wrong is invent an identity for the request that follows, so the shape the
-///   middleware leaves when it binds no key is driven through both legs and must attribute the
-///   anonymous actor — never the refused key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
     let mut failures: Vec<String> = Vec::new();
     for cred in [Credential::Good, Credential::Bad, Credential::Expired] {
-        // LEG 1, on its own deployment: its own door, its own key, its own counters.
         let legacy_rig = rig(Fixture::BufferedOk).await;
         let legacy_admit = admit(&legacy_rig, cred).await;
-        // LEG 2, on another.
+
         let loop_rig = rig(Fixture::BufferedOk).await;
         let loop_admit = admit(&loop_rig, cred).await;
 
-        // THE DOOR AGREES WITH ITSELF across the two deployments. A cell whose two rigs made
-        // different admission decisions would compare two different requests.
         if legacy_admit.is_ok() != loop_admit.is_ok() {
             failures.push(format!(
                 "{cred:?}: the two deployments' doors disagree ({legacy_admit:?} vs \
@@ -2528,19 +2137,14 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                         "{cred:?}: the door admitted a credential it must refuse"
                     ));
                 }
-                // THE RESOLVED KEY IS THE DEPLOYMENT'S KEY — the door read the bearer back to
-                // the binding it was minted for, which is what makes the attribution below a
-                // statement about a credential rather than about a struct literal.
+
                 if loop_gov.key().map(|k| k.id.clone()).as_deref() != Some(loop_rig.key.id.as_str())
                 {
                     failures.push(format!(
                         "{cred:?}: the door resolved a key that is not this deployment's"
                     ));
                 }
-                // THE STEP'S OWN ANSWER, read at the far end of the loop: the hold the door
-                // opened names the principal step 2 settled on, and it is the resolved key. On
-                // its OWN deployment, because a second drive would double the counters the
-                // comparison below reads.
+
                 let settle_rig = rig(Fixture::BufferedOk).await;
                 match admit(&settle_rig, cred).await {
                     Ok(settle_gov) => {
@@ -2573,15 +2177,12 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                         "{cred:?}: the door refused the deployment's own bearer"
                     ));
                 }
-                // The door refused, so no unit exists on either leg. What the loop must not do
-                // is invent one: driven with the context the middleware leaves when it binds no
-                // key, both legs attribute the anonymous actor and leave the refused key's
-                // chain empty.
+
                 let open = busbar_contract::records::PlaneRequestCtx { key: None };
                 let anonymous = busbar_contract::auth::AuthPrincipal(None)
                     .actor_id()
                     .to_string();
-                // Whose unit the plane says it is, as its arrivals hand it to the node.
+
                 let (unbound, ..) = plane::handed(
                     plane::WalkArrival {
                         host: loop_rig.host(),
@@ -2601,8 +2202,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                         "{cred:?}: an unbound request is not attributed to the anonymous actor"
                     ));
                 }
-                // And the loop SETTLES on that actor: the hold the door opened for this unit
-                // names the anonymous caller, not the key whose bearer was just turned away.
+
                 let settle_rig = rig(Fixture::BufferedOk).await;
                 let settled = principal_the_loop_settled_on(&settle_rig, open.clone()).await;
                 if settled != anonymous || settled == settle_rig.key.id {
@@ -2637,10 +2237,6 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
     );
 }
 
-// ── STEP 4, APPROVE — the native seat, over the loop ────────────────────────────────────────
-
-/// A seated gate that stops every unit, and records that it was asked. The recording is what
-/// makes "the loop consulted the seat" a fact rather than an inference from the refusal.
 struct StopsEverything(std::sync::atomic::AtomicBool);
 impl plane::VetoSeat for StopsEverything {
     fn vetoes(&self, _p: &PrincipalId, _d: &[VerifiedDestination]) -> bool {
@@ -2649,8 +2245,6 @@ impl plane::VetoSeat for StopsEverything {
     }
 }
 
-/// A seated gate that stops nothing, and records that it was asked. Without this the pass-through
-/// half of the cell would be satisfied by a seat list the loop never reached at all.
 struct StopsNothing(std::sync::atomic::AtomicBool);
 impl plane::VetoSeat for StopsNothing {
     fn vetoes(&self, _p: &PrincipalId, _d: &[VerifiedDestination]) -> bool {
@@ -2659,8 +2253,6 @@ impl plane::VetoSeat for StopsNothing {
     }
 }
 
-/// One request through the real loop with a named seat list, exactly as the mount drives it with
-/// its own.
 async fn leg_loop_seated(
     rig: &Rig,
     seats: &'static [&'static (dyn plane::VetoSeat + Sync)],
@@ -2683,27 +2275,6 @@ async fn leg_loop_seated(
     observe(rig, resp).await
 }
 
-/// **STEP 4 OVER THE LOOP: THE NATIVE SEAT, BOTH WAYS.**
-///
-/// Approve is two halves and this plane's scope half has nothing to ask — its resource IS its
-/// destination, and the destination set was sealed one step earlier. What is left is the hook
-/// half, and the seat is the 1.6.0-native one: a gate that may stop a unit BEFORE the door and
-/// may do nothing else.
-///
-/// The MIGRATED hooks are not seated here and this cell says so first: `plane::native_seats()` is the
-/// list the mount installs, it is empty, and that emptiness is why a unit over the loop is
-/// unit-for-unit what the shipped path answers. Seating the migrated hooks would move a veto
-/// from after a charge to before one, which changes what is billed.
-///
-/// Then the three shapes, each on its own deployment:
-///
-/// * NOTHING SEATED — the shipped entry point's answer, field for field;
-/// * A SEAT THAT DOES NOT VETO — the same answer again, and the seat records that it WAS asked,
-///   so the pass-through above is a decision rather than an unwired field;
-/// * A SEAT THAT VETOES — the unit stops at Approve: before the door, so nothing is charged and
-///   no metering row exists; before the route step, so the upstream is never dialled; and it
-///   still leaves with the plane's own permission answer in the caller's dialect rather than the
-///   node's overload one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing() {
     use std::sync::atomic::AtomicBool;
@@ -2714,22 +2285,17 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
          path, and a veto moved in front of a charge changes what is billed"
     );
 
-    // THE SHIPPED ANSWER, on its own deployment — the expectation every seated run below is
-    // read against, rather than a status spelled here.
     let shipped_rig = rig(Fixture::BufferedOk).await;
     let shipped = leg_legacy_as(&shipped_rig, shipped_rig.gov()).await;
     shipped_rig.server.shutdown().await;
 
     let mut failures: Vec<String> = Vec::new();
 
-    // NOTHING SEATED: the mount's own list, which is the whole of today's behaviour.
     let bare_rig = rig(Fixture::BufferedOk).await;
     let bare = leg_loop_seated(&bare_rig, plane::native_seats()).await;
     compare("no seat", &shipped, &bare, &mut failures);
     bare_rig.server.shutdown().await;
 
-    // A SEAT THAT DOES NOT VETO: consulted, and the unit goes on to the same end.
-    // Seated for the length of the process, as a mount's seats are: a seat is configuration.
     let passing: &'static StopsNothing = Box::leak(Box::new(StopsNothing(AtomicBool::new(false))));
     let passing_rig = rig(Fixture::BufferedOk).await;
     let passed = leg_loop_seated(&passing_rig, Box::leak(Box::new([passing as _]))).await;
@@ -2748,7 +2314,6 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     }
     passing_rig.server.shutdown().await;
 
-    // A SEAT THAT VETOES: the unit stops at Approve.
     let stopping: &'static StopsEverything =
         Box::leak(Box::new(StopsEverything(AtomicBool::new(false))));
     let veto_rig = rig(Fixture::BufferedOk).await;
@@ -2764,8 +2329,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
             field(&stopped, "body")
         ));
     }
-    // BEFORE THE DOOR. Nothing charged, nothing metered — which is the whole reason the seat is
-    // at this step and not the next one.
+
     if field(&stopped, "ledger_requests") != "0" || !field(&stopped, "metering_rows").is_empty() {
         failures.push(format!(
             "a veto was charged: requests={} rows={}",
@@ -2773,7 +2337,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
             field(&stopped, "metering_rows")
         ));
     }
-    // BEFORE THE ROUTE STEP. The scripted upstream saw nothing at all.
+
     if veto_rig.upstream.get_last_request_path().is_some() {
         failures.push("a vetoed unit reached the upstream".to_string());
     }
@@ -2787,14 +2351,6 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     );
 }
 
-// ---------------------------------------------------------------------------------------------
-// THE ROUTE SEAM'S OWN INSTRUMENT
-// ---------------------------------------------------------------------------------------------
-
-/// One request through the real loop, with the node's dispatch count read beside its answer.
-///
-/// A NODE PER REQUEST, exactly as [`drive`] builds one, so the figure is this unit's and not a
-/// running total the order of the tests could change.
 async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) {
     let node = Node::new();
     let arrival = plane::WalkArrival {
@@ -2847,7 +2403,6 @@ async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) 
 async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one() {
     let mut failures: Vec<String> = Vec::new();
 
-    // Each end gets its OWN deployment, so one fixture's seeded budget cannot decide another's.
     for (fixture, expected, why) in [
         (
             Fixture::PoolAcl,
@@ -2867,10 +2422,7 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
     ] {
         let rig = rig(fixture).await;
         let (response, driven) = drive_counting(&rig, fixture).await;
-        // The body is drained before the count is judged, because the seam is polled by the loop
-        // and a response whose body is still owed is a unit whose leg may not have finished. It
-        // also keeps this cell on the same footing as every other one in this file, which reads
-        // its figures out of a drained answer.
+
         let observed = observe(&rig, response).await;
 
         match driven {
@@ -2884,11 +2436,6 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
             Some(_) => {}
         }
 
-        // THE SECOND WITNESS, where the deployment has one. A refusal that never reached the
-        // seam must also never have reached a socket, and these two facts are independent: the
-        // count is taken on this side of the loop and the path is recorded on the other. A cell
-        // that asserted only the count would pass on a seam that stopped counting a drive it
-        // still performed.
         let dialled = rig.upstream.get_last_request_path().is_some();
         if expected == 0 && dialled {
             failures.push(format!(
@@ -2903,10 +2450,6 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
             ));
         }
 
-        // AND THE ANSWER IS UNCHANGED. The seam awaits the leg it was handed and returns that
-        // leg's value, so what a client reads is what a client read. Asserted here rather than
-        // taken on trust: an instrument that moved a byte would be an instrument that changed
-        // the thing it measures.
         if field(&observed, "status").is_empty() {
             failures.push(format!(
                 "{fixture:?} ({why}): the unit produced no status at all"
@@ -2924,21 +2467,6 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
     );
 }
 
-// ── THE ENTRY-LEVEL SHADOW: run_gauntlet vs the kernel loop, AT THE RESOLVED-OP FUNNEL ────────
-//
-// `native_ingress::run` (native_ingress.rs:554) is the resolved-op funnel every native arrival
-// reaches with a model and an operation in hand — `operation_ingress` once the body's model is read,
-// `ingress_path_model` once the URL's is — and
-// at native_ingress.rs:592 it calls `run_gauntlet`, the LIVE money authority and the exact site #29's
-// flip lands on. LEG 1 drives that funnel through its public door `operation_ingress` (→ `run` →
-// `run_gauntlet`). LEG 2 drives the DORMANT kernel-loop sibling `native_run_via_loop` (the process
-// NODE, `answer_arriving_at`, over the nine step files). #29's flip is NOT thrown: `run()` still
-// calls `run_gauntlet`, and this proves the leg that would replace it is byte- and money-identical.
-
-/// The fixtures that REACH the resolved-op funnel. `Malformed` is refused at the arrival's own JSON
-/// parse — before a model exists and before `run` is ever entered — so it is the body-entry switch's
-/// fixture, not this one's. The other five all carry a valid JSON body and a resolvable model, which
-/// is the precondition every caller of `run` has already met by the time it funnels in.
 const RESOLVED_OP_CASES: [Fixture; 5] = [
     Fixture::BufferedOk,
     Fixture::StreamedOk,
@@ -2947,12 +2475,6 @@ const RESOLVED_OP_CASES: [Fixture; 5] = [
     Fixture::UnknownModel,
 ];
 
-/// LEG 1 — the SHIPPED path into the resolved-op funnel: the public native-ingress door
-/// `operation_ingress`, which reads the body's model, resolves the operation and its handler, parses
-/// the head, and funnels into `native_ingress::run` → `run_gauntlet` (the live money authority,
-/// native_ingress.rs:592). Entered at the public door rather than at `run` directly because `run`'s
-/// parsed-head argument is a crate-private engine type; the door builds it the way production does, so
-/// this leg is `run_gauntlet` reached with exactly the parsed head its production callers hand it.
 async fn leg_native_run(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
     let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
@@ -2974,17 +2496,6 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
     observed
 }
 
-/// THE KERNEL-LOOP DRIVE OF THE RESOLVED-OP ENTRY, beside the shell's money authority.
-///
-/// The shell's resolved-op funnel (`native_ingress::run`, reached through its `operation_ingress`
-/// door) builds a `NativePlane`/`GauntletRequest` and settles per-token billing through
-/// `busbar_kernel::plane_host::run_gauntlet`, late-accruing against the admission-pinned `ROOT_CARD`
-/// snapshot. This is that SAME
-/// resolved-op arrival as a unit handed to the process's ONE node — `answer_arriving_at` →
-/// `busbar_kernel::teller::run_unit_async`, settling onto the same Durability money-book the
-/// composition root binds via [`bind_book`]. The resolved `model` is carried as the unit's routing
-/// hint, exactly as `run()` carries its resolved `model`; `path: None`, because a resolved-op
-/// arrival's model rides its body.
 #[allow(clippy::too_many_arguments)]
 async fn native_run_via_loop(
     host: &Arc<dyn busbar_kernel::plane_driver::EngineHost>,
@@ -3009,19 +2520,12 @@ async fn native_run_via_loop(
         body,
         path: None,
     };
-    // The process's ONE node, the arrival instant HANDED IN so the shadow can pin the same window
-    // the legacy leg is charged in — and the mount's own Approve seats, empty on every deployment,
-    // so the Approve step is the no-op the shell has no equivalent step for.
+
     super::NODE
         .answer_arriving_at(plane::handed(arrival, Some(model.to_string())), arrived)
         .await
 }
 
-/// LEG 2 — the DORMANT kernel-loop sibling `native_run_via_loop`, driven at the SAME funnel with the
-/// SAME resolved-op hands. The arrival instant is pinned to the rig's epoch so both legs are charged
-/// in one window — and pinning it (rather than letting the node read its clock) is what lets this
-/// leg's `ROOT_CARD` pin resolve against the same card in force at the same instant the legacy leg's
-/// late accrual prices against, which is the money identity asserted below.
 async fn leg_native_run_via_loop(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
     let host = rig.host();
@@ -3047,12 +2551,6 @@ async fn leg_native_run_via_loop(fixture: Fixture) -> Observed {
     observed
 }
 
-/// THE ENTRY-LEVEL SWITCH. Same fixture into the resolved-op funnel, same bytes and same counters
-/// out — through the shipped `run_gauntlet` authority and through the dormant kernel loop.
-///
-/// Byte-identical Response, identical ledger/derived money, identical per-model metering rows. A
-/// divergence here is a divergence at the exact site #29 will one day flip, and the harness names the
-/// field, the fixture and both sides — which is the report the task asks for if the shadow ever moves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_matches_native_ingress_run_at_the_resolved_op_entry() {
     let mut failures: Vec<String> = Vec::new();
@@ -3070,14 +2568,8 @@ async fn the_loop_matches_native_ingress_run_at_the_resolved_op_entry() {
     );
 }
 
-/// THE MONEY, at the resolved-op funnel, spelled out rather than only compared — and ONE METER, not
-/// two. The dormant loop settles at its exit (`settle_end`) and accrues its per-token figure LATE,
-/// on the body's drain, against the pin taken at admission; the shipped leg does the same through
-/// `run_gauntlet`. If the loop double-counted against the late-accrual arm, this delivered unit would
-/// read two requests or twice the tokens on the one key's bucket. It reads exactly one of each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_resolved_op_loop_leaves_the_money_where_run_gauntlet_leaves_it() {
-    // A DELIVERED unit: one request, one metering row, the tap's reported token split — once.
     let shipped = leg_native_run(Fixture::BufferedOk).await;
     let looped = leg_native_run_via_loop(Fixture::BufferedOk).await;
     for f in [
@@ -3103,8 +2595,6 @@ async fn the_resolved_op_loop_leaves_the_money_where_run_gauntlet_leaves_it() {
         "the reported split, accrued once — not doubled against the late-accrual arm"
     );
 
-    // A STREAMED unit accrues at stream end rather than at the buffered tap: assert it in its own
-    // right so the identity is not green on a stream metering nothing.
     let s_shipped = leg_native_run(Fixture::StreamedOk).await;
     let s_looped = leg_native_run_via_loop(Fixture::StreamedOk).await;
     for f in ["ledger_requests", "ledger_tokens", "metering_rows"] {
@@ -3119,16 +2609,11 @@ async fn the_resolved_op_loop_leaves_the_money_where_run_gauntlet_leaves_it() {
         (INPUT + OUTPUT).to_string()
     );
 
-    // The door refused (over budget): nothing charged on either leg — no phantom request the loop
-    // invented by entering the funnel.
     let refused = leg_native_run_via_loop(Fixture::OverBudget).await;
     assert_eq!(field(&refused, "ledger_requests"), "0");
     assert_eq!(field(&refused, "metering_rows"), "");
 }
 
-/// The legacy and loop legs report the same ledger spend for the delivered fixture. This rig
-/// prices through its governance ledger; real pinned-history provenance is covered by the active
-/// plane_node_seal tests with explicit local histories, independently of the process-global card.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_legs_report_the_same_ledger_spend() {
     let shipped = leg_native_run(Fixture::BufferedOk).await;
@@ -3140,28 +2625,8 @@ async fn both_legs_report_the_same_ledger_spend() {
     );
 }
 
-/// THE PROVENANCE STAMP NAMES THE CARD IN FORCE WHEN THE UNIT ARRIVED (#79), not the newest card
-/// ever published and not a literal.
-///
-/// This stamp used to be a hardcoded `0`, and `0` is not a neutral placeholder: it is
-/// `HistorySeq::OPENING`, a REAL entry number. So every posting this plane made claimed the opening
-/// card had priced it — and the node (`plane_node`) is the root unit module that is live on the
-/// serving path, so this was a confident wrong answer on shipped traffic, which is worse than none.
-///
-/// THE CANARY IS THE POINT. Three dated entries over one history and three arrivals, one in each
-/// window. Two of the three expected values are NON-ZERO, so the pre-fix code — which answered `0`
-/// for every unit — fails this test on those two. A test whose expectations were all `0` would have
-/// passed against the bug it was written for.
-///
-/// It also pins the MILLISECOND binding: `effective_from` is written on the millisecond scale
-/// (`root/kernel.rs:435`), so a resolution handed the seconds reading matches only the from-zero
-/// opening entry and reports it forever. The `_at_seconds` assertion below is that hazard made
-/// visible — it is the bug wearing a different hat, and it would pass a "reads a history" review.
 #[test]
 fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
-    // Dated on the MILLISECOND scale the history is written on. The first is effective from instant
-    // zero however it is dated — one entry has to cover every instant, or an early arrival falls in
-    // a hole and is reported as OPENING for a different reason.
     const SECOND_CARD_MS: u64 = 1_700_000_500_000;
     const THIRD_CARD_MS: u64 = 1_700_000_900_000;
 
@@ -3202,18 +2667,12 @@ fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
         "a unit that arrived after the third card names the third entry"
     );
 
-    // NO HISTORY PINNED — a build with no root ledger. The opening entry is the only one that
-    // covers every instant by construction, so it is the honest fallback rather than a silent hole.
     assert_eq!(
         card_in_force(None, 1_700_000_600_000),
         0,
         "no pinned history falls back to the opening entry"
     );
 
-    // THE SECONDS/MILLISECONDS HAZARD, made visible. Handed the SECONDS reading of the same instant
-    // that resolves to entry 1 above, every arrival collapses onto the opening entry — the original
-    // bug with a lookup in front of it. `Arrived::ms()` is what the settle path passes, and this is
-    // why.
     assert_eq!(
         stamped_ms(1_700_000_600),
         0,
@@ -3222,14 +2681,6 @@ fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
     );
 }
 
-// ---------------------------------------------------------------------------------------------
-// ITEM 126 — TWO BOOKS OVER ONE EVENT: WHICH ONE IS THE INVOICE, AND A DISAGREEMENT IS RED
-// ---------------------------------------------------------------------------------------------
-
-/// A dated history of `(effective_from_ms, input rate, output rate, flat fee)` entries over the one
-/// lane `"lane"`, built outside the process holder so the proof names its own instants. `present`
-/// is the #42 switch: `false` builds the ABSENT card (billing off — every class at nothing, the flat
-/// fee still carried, `card_from_config`'s documented shape).
 fn fee_history_of(
     entries: &[(u64, f64, f64, i64)],
     present: bool,
@@ -3265,7 +2716,6 @@ fn fee_history_of(
     )
 }
 
-/// A late report of `input`/`output` tokens and `fee_count` billable requests on `"lane"`.
 fn split_report(input: u64, output: u64, fee_count: u32) -> Report {
     let mut units = std::collections::BTreeMap::new();
     if input != 0 {
@@ -3281,11 +2731,6 @@ fn split_report(input: u64, output: u64, fee_count: u32) -> Report {
     }
 }
 
-/// **THE INVOICE'S FIGURE for one unit** — what `GET /api/v1/admin/usage` serves for the metering
-/// row this unit lands on, computed by the admin read's OWN function (`read_path_money`, a `pub use`
-/// of the served derivation, never a copy) at the instant that read resolves the row at:
-/// `row_priced_at_ms(bucket start, era start)`, where the era is the `effective_from` of the entry
-/// in force when the unit accrued (what `record_metering` stamps as `priced_from_ms`).
 fn invoice_micros(
     history: &crate::root::kernel::PinnedHistory,
     arrived_ms: u64,
@@ -3315,8 +2760,6 @@ fn invoice_micros(
         .expect("the invoice's card prices every lane the fixture serves")
 }
 
-/// The second book's figure (nano-units) through the CHECKED micro-projection — the one money type,
-/// which refuses a figure it cannot hold rather than pinning it at the ceiling (item 28).
 fn second_book_micros(
     second_book: Result<u64, busbar_kernel_ledger::cost::Unpriceable>,
 ) -> Result<i64, String> {
@@ -3326,9 +2769,6 @@ fn second_book_micros(
         .map_err(|refusal| format!("{nanos} nano-units do not project: {refusal:?}"))
 }
 
-/// The reconciliation: the second book's posting (nano-units) projected through the ONE checked
-/// micro-projection must equal the invoice's figure. A second book that REFUSED where the invoice
-/// served a figure disagrees with it. `Err` names the cell and both figures.
 fn books_agree(
     label: &str,
     second_book: Result<u64, busbar_kernel_ledger::cost::Unpriceable>,
@@ -3345,28 +2785,6 @@ fn books_agree(
     }
 }
 
-/// **TWO BOOKS, ONE EVENT — THE INVOICE IS THE GOVERNANCE LEDGER, AND THE SECOND BOOK MUST AGREE WITH
-/// IT CELL BY CELL.**
-///
-/// A delivered node unit leaves two records. The walk's completion tap accrues its counts onto the
-/// GOVERNANCE LEDGER (the metering series + usage ledger) — raw counts, no price, which is what
-/// `/usage` serves and what 1.5.5 billed. Then [`LateAccrual`] PRICES the same reading and posts
-/// the priced amount onto the kernel-loop Durability book. By the money model (BUSBAR-1.6.0.md
-/// Part 0: *money = f(ledger, ratecard), derived at read time*; #43/#71: the ledger stores counts;
-/// #77(3): a price is NEVER stored) only the first can be the invoice: it holds the facts and the
-/// served figure is the read-time view over them. The Durability posting carries a priced figure,
-/// so it is a derived reading — sound exactly while it agrees with the invoice, and a defect the
-/// moment it does not.
-///
-/// The cells mirror `billing|rate-card|history-mid-window`: a boot card, a 10x card, then a 100x card
-/// with a 3-unit flat fee, and a unit arriving in each window — plus a fee-only unit (a failed
-/// billing that still carries its request), a token-only provider-origin unit (fee count 0), and a
-/// billing-OFF deployment (absent card, #42: tokens at nothing, fee still carried).
-///
-/// THE NEGATIVE CONTROL is inside the test: the same comparator fed a PLANTED divergence — the
-/// second book priced against the head card instead of the card in force at arrival, and the second
-/// book dropping the fee — must report RED. A comparator that could not see those would make the
-/// green above meaningless.
 #[test]
 fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red() {
     let kernel = Kernel::new();
@@ -3441,7 +2859,6 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
         failures.join("\n")
     );
 
-    // A NON-VACUITY FLOOR: the billed cells are not all zero, so agreement is not 0 == 0.
     assert_eq!(
         Ok(invoice_micros(&billed, 10_000, &split_report(11, 7, 1))),
         // 11 x 50 + 7 x 100 + the 3-unit fee at the one scale.
@@ -3454,8 +2871,6 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
     );
     assert_ne!(invoice_micros(&billed, 10_000, &split_report(11, 7, 1)), 0);
 
-    // THE PLANTED DIVERGENCES — each must go RED.
-    // (1) the second book prices a unit that arrived under the boot card at the HEAD card.
     let early = split_report(11, 7, 1);
     let at_head = priced_amount(&billed, Arrived::at(10_000, 1), &token, &early);
     assert!(
@@ -3467,7 +2882,7 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
         .is_err(),
         "a second book priced at the head card was NOT caught disagreeing with the invoice"
     );
-    // (2) the second book drops the flat fee.
+
     let fee_dropped = priced_amount(
         &billed,
         Arrived::at(10_000, 1),
@@ -3485,7 +2900,6 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
     );
 }
 
-/// A PRESENT card (#42) that prices `"lane"`'s input and output and is SILENT about cache reads.
 fn cache_silent_history() -> crate::root::kernel::PinnedHistory {
     use busbar_kernel_ledger::cost::{History, HistorySeq, LaneClass, RateCard};
     let card = RateCard::from_micro_rates(
@@ -3507,17 +2921,6 @@ fn cache_silent_history() -> crate::root::kernel::PinnedHistory {
     )
 }
 
-/// **AN UNPRICED CLASS ON A PRESENT CARD KEEPS ITS COUNTS ROW, AND THE READ REFUSES** (#42, #43).
-///
-/// The unit read 1,000 input, 250 output and 10,000,000 cache-read tokens; the card in force names
-/// input and output for the lane and says nothing about cache reads. Before, settlement priced
-/// through the READ posture, which flags the silent class and prices it at nothing, so the second
-/// book took 7,000,000 nano-units — the input and output alone — for a unit whose largest line
-/// was never priced: a RATECARD fault (a class the card should have refused) booked as a figure.
-///
-/// Now settlement prices fail-closed and REFUSES; the posting still carries every count, whole,
-/// and the served read over the same counts refuses the same class. Nothing is zeroed, nothing is
-/// dropped, and no partial figure reaches a book.
 #[test]
 fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses() {
     let kernel = Kernel::new();
@@ -3530,7 +2933,6 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     );
     let at = Arrived::at(4_000, 7);
 
-    // THE ROW: the counts, whole — not zeroed, not dropped, not trimmed to the priced classes.
     let (posting, priced) = priced_posting(&history, at, &token, &report);
     let counts: std::collections::BTreeMap<&str, u64> = posting
         .quantities
@@ -3548,7 +2950,6 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     );
     assert_eq!(posting.fee_count, 1, "the billable count rides the row");
 
-    // SETTLEMENT REFUSES the class: no figure stands for it.
     assert!(
         matches!(
             priced,
@@ -3565,7 +2966,6 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
         "the second book was handed a figure — a partial is a silent zero for the unpriced class"
     );
 
-    // THE READ over the same counts row — the served /admin/usage derivation — refuses too.
     use busbar_core_admin::v1::service::read_path_money as invoice;
     let view = history.view();
     let (_, card) = view.card_at(at.ms()).expect("the card is in force");
@@ -3587,10 +2987,6 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     );
 }
 
-/// **A FIGURE THE RECORD CANNOT HOLD REFUSES; IT IS NEVER PINNED AT THE CEILING** (item 28).
-///
-/// 10^17 output tokens at 1,000 micro-units each is 10^23 nano-units: inside the one function's
-/// arithmetic, past a `u64`. The narrowing used to answer `u64::MAX` — a bill nobody posted.
 #[test]
 fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
     let kernel = Kernel::new();
@@ -3617,14 +3013,6 @@ fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
     );
 }
 
-/// ITEM 129: THE DROP GUARD MARKS, AND THE SWEEP SETTLES WHAT IT MARKED.
-///
-/// A unit whose task goes away before its end is reached leaves its hold in its cell. The guard used
-/// to REMOVE the slot on every way out, so the sweep — the second holder of a key to that cell —
-/// could never see it, and nothing in production called the sweep anyway: the hold stayed in a cell
-/// nothing would ever take it out of and the unit posted nothing. Now the guard marks and leaves the
-/// slot, and the next arrival's sweep takes the hold, posts it onto the node's book, and gives the
-/// slot back.
 #[test]
 fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
     let node = Node::new();
@@ -3657,7 +3045,6 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         })
         .expect("the uncapped table takes the unit");
 
-    // The task goes away with its hold still in the cell: an end nobody reached.
     drop(Occupied {
         node: &node,
         slot: Arc::clone(&slot),
@@ -3680,7 +3067,6 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         "the hold is still in the cell: nobody has settled it"
     );
 
-    // The next arrival sweeps.
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
     assert_eq!(
         slot.cell().state(),
@@ -3705,10 +3091,9 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         );
         assert_eq!(durability.ledger.book().len(), 1, "and on the book");
     }
-    // Nothing marked is left, so the next arrival's sweep walks nothing.
+
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 6, 100)), 0);
 
-    // A unit that reached its own end gives its slot straight back, unmarked.
     let key = UnitKey::new(42);
     let slot = node
         .inflight
@@ -3739,7 +3124,6 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
     assert!(node.inflight.get(key).is_none());
 }
 
-/// A fresh node over a memory-buffered book, and that book.
 fn swept_node() -> (
     Node,
     Arc<std::sync::Mutex<crate::root::durability::Durability>>,
@@ -3756,8 +3140,6 @@ fn swept_node() -> (
     (node, book)
 }
 
-/// Enter unit `key` into `node`'s table with its arrival hold, then drop its guard unfinished: a
-/// unit whose task went away under operation class `op_class`, its hold at `hold` on the chain.
 fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, hold: Option<u64>) {
     let slot = node
         .inflight
@@ -3786,21 +3168,6 @@ fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, hold: Option<u
     });
 }
 
-/// Q128 p29#5: A SWEPT UNIT SEALS EXACTLY ONE AUDIT RECORD, AND ITS AMOUNT IS ITS LEDGER LINE.
-///
-/// THE DESIGN §1 (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
-/// plane ... never optional"; §7 U14 (l.1061-1065): one audit record per unit, sealed at its one
-/// line. A unit whose task disappeared is ended by the node's sweep, never by its own exit, so the
-/// record is the sweep's to seal: outcome `Failed(at, TaskLost)`, finish `Error`, the operation class
-/// the unit's guard recorded, the hold its admission opened, and the posted line by its registered
-/// class. The swept unit's evidence went with its task, so its line is the estimated zero under the
-/// kernel's own class: a money figure no registration declares and a record may not hold (§1
-/// l.193-195, #43, #77(3)), so the record names no line and its amount, zero, is the zero the line
-/// moved. And the record reads back, as every record on the journal must at the next boot.
-///
-/// RED before the fix: the sweep posted the unit's line with `None::<Sealing>` ("A unit the sweep
-/// ends never handed back its audit pass: it has no record"), so the book had a posting and the
-/// chain no record.
 #[test]
 fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line() {
     let (node, book) = swept_node();
@@ -3836,8 +3203,7 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
     assert_eq!(record.outcome.finish, RecordFinish::Error);
     assert_eq!(record.what.op_class.as_str(), "widget_call");
     assert_eq!(record.controls.hold_ref.as_deref(), Some("3"));
-    // The amount: the line the sweep posted was the estimated zero under the kernel's own class,
-    // which the record does not name, and the money it moved is that zero.
+
     assert!(
         record.usage.lines.is_empty(),
         "a record names no money-class line: {:?}",
@@ -3860,7 +3226,7 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
         "the record's amount equals the money its line moved"
     );
     assert!(durability.retained_audit_findings().is_empty());
-    // It reads back off the journal, as the next boot reads it.
+
     let replayed = durability
         .journal
         .replay()
@@ -3878,10 +3244,6 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
     );
 }
 
-/// Q128 p29#5: NO UNIT SETTLES WITH ZERO AUDIT RECORDS. Every unit the sweep settles has its one
-/// record on the chain, one each, so the book's lines and the chain's records count the same units.
-///
-/// RED before the fix: the swept units posted their lines and sealed nothing.
 #[test]
 fn no_swept_unit_settles_with_zero_audit_records() {
     let (node, book) = swept_node();
@@ -3920,19 +3282,8 @@ fn no_swept_unit_settles_with_zero_audit_records() {
     assert_eq!(durability.audit_records.len(), keys.len());
 }
 
-// ---------------------------------------------------------------------------------------------
-// P2A-books (#71/#43/#42; follows items 126 and 71): THE SECOND BOOK CARRIES THE COUNTS, AND THE
-// TWO BOOKS AGREE ON EVERY CLASS CELL
-// ---------------------------------------------------------------------------------------------
-
-/// The open class a rerank's search units are ledgered under (`busbar-llm-codec`'s
-/// `SEARCH_UNITS_CLASS`, which `record_resp_usage` ledgers verbatim — item 134). Spelled here because
-/// this crate does not depend on the codec.
 const SEARCH_UNITS: &str = "search_units";
 
-/// The classes the units these tests drive report are DECLARED — what the boot's registration
-/// (`register_classes`: the reserved four, the node plane's declared `search_units`) makes true in a
-/// real process. The vocabulary is the process's, so registering them again is idempotent.
 fn declare_test_classes() {
     let mut registration = crate::root::kernel::new_registration();
     for class in busbar_contract::records::RESERVED_UNITS {
@@ -3941,8 +3292,6 @@ fn declare_test_classes() {
     let _ = registration.key(SEARCH_UNITS);
 }
 
-/// Run the late arm's posting for one drained `report` onto a fresh node book, and hand the book
-/// back.
 fn late_post(
     history: &crate::root::kernel::PinnedHistory,
     at: Arrived,
@@ -3950,7 +3299,7 @@ fn late_post(
     report: &Report,
 ) -> crate::root::durability::NodeBook {
     declare_test_classes();
-    // The book prices its chain against the same history the arm priced the unit against.
+
     let pinned = history.clone();
     let node = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
     let kernel = Kernel::new();
@@ -3975,9 +3324,6 @@ fn late_post(
     node
 }
 
-/// The unit records the second book's chain holds (settlements and counts rows), read back off the
-/// journal — each with the figure the book derives from its counts at its epoch (the chain itself
-/// holds no money, #71).
 fn second_book_rows(
     node: &crate::root::durability::NodeBook,
 ) -> Vec<crate::root::durability::Posting> {
@@ -3985,15 +3331,10 @@ fn second_book_rows(
     durability
         .read_back()
         .into_iter()
-        // The overdraft CARRY beside a late settlement repeats its unreserved part and carries no
-        // counts; it is the same unit's second record, not a second unit.
         .filter(|p| p.kind != crate::root::durability::PostingKind::Carry)
         .collect()
 }
 
-/// THE GOVERNANCE LEDGER'S ROW for one unit — the invoice's facts: the class map the tap ledgers
-/// VERBATIM (`meter_ledger`; for a rerank `record_resp_usage` ledgers `{search_units: n}`), the
-/// serving lane, and the billable count the fee is charged on.
 fn governance_row(report: &Report) -> crate::root::durability::UnitCounts {
     crate::root::durability::UnitCounts {
         lane: report.lane.clone(),
@@ -4008,15 +3349,6 @@ fn governance_row(report: &Report) -> crate::root::durability::UnitCounts {
     }
 }
 
-/// **THE AGREEMENT CHECK, EVERY CLASS CELL** — the second book's record of one unit against the
-/// governance ledger's, cell by cell over the UNION of their classes (reserved and open alike), the
-/// lane and the fee count; then the money: the invoice is the one function over the governance row
-/// at the unit's arrival (`price_exact`, which every served read prices through), and the second
-/// book must hold that figure as a settlement — or, where the invoice is nothing or REFUSES, a
-/// counts row with no figure (a refused one where it refuses). `Err` names every cell that differs.
-///
-/// 21f725601's comparator priced the TOKEN cells alone (`UsageBreakdown`), so a class outside the
-/// reserved four could differ between the books and both sides of it would still read equal.
 fn every_cell_agrees(
     label: &str,
     second: &[crate::root::durability::Posting],
@@ -4083,14 +3415,10 @@ fn every_cell_agrees(
     }
 }
 
-/// A PRESENT card over `"lane"` pricing input 3 / output 16 micro-units, a fee of `fee`, and — when
-/// `search_units` is `Some` — the open class `search_units` at that many nano-units per unit
-/// (the `units:` grammar, item 123). `None` is a present card SILENT about search units.
 fn rerank_history(fee: i64, search_units: Option<u64>) -> crate::root::kernel::PinnedHistory {
     rerank_history_on("lane", fee, search_units)
 }
 
-/// [`rerank_history`], over the lane named `lane`.
 fn rerank_history_on(
     lane: &str,
     fee: i64,
@@ -4117,7 +3445,6 @@ fn rerank_history_on(
     )
 }
 
-/// A rerank's drained report: `units` search units and one billable request, no tokens.
 fn rerank_report(units: u64) -> Report {
     Report {
         usage: busbar_contract::billing::Usage {
@@ -4128,14 +3455,6 @@ fn rerank_report(units: u64) -> Report {
     }
 }
 
-/// **AN UNPRICED CLASS ON A PRESENT CARD LEAVES A DURABLE COUNTS ROW, AND THE READ REFUSES**
-/// (#71/#43/#42).
-///
-/// The card prices input and output and is silent about cache reads; the unit read all three. The
-/// late arm used to post NO row at all — it warned with the counts and returned, so the second book
-/// held nothing for a unit the node served. Now it posts the counts row: every class, whole, with
-/// the money UNPRICED (no figure, no zero, no partial), the balance unmoved, and the read over it
-/// refusing. Rows posted per refused unit: 0 -> 1.
 #[test]
 fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_refuses() {
     use crate::root::durability::PostingKind;
@@ -4194,7 +3513,6 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     );
     assert_eq!(durability.refused_rows().len(), 1);
 
-    // And the two books agree on it cell by cell: the governance read refuses the same class.
     every_cell_agrees(
         "refused",
         &rows,
@@ -4205,14 +3523,10 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     .expect("both books refuse the same unit");
 }
 
-/// **A RERANK'S SEARCH UNITS AGREE ACROSS BOTH BOOKS** (items 123/134 on the governance ledger; this
-/// book now carries and prices them too). Priced: the settlement carries `{search_units: 50}` and
-/// the figure the invoice derives from it. A present card silent about search units: both REFUSE.
-/// And the 21f725601 token cells, through the every-cell check, still agree.
 #[test]
 fn a_reranks_search_units_agree_across_both_books() {
     let at = Arrived::at(4_000, 7);
-    // 2,000 micro-units = 2,000,000 nano-units per search unit, and a 3-unit fee.
+
     let priced = rerank_history(3, Some(2_000_000));
     let report = rerank_report(50);
     let node = late_post(&priced, at, "vk_rerank", &report);
@@ -4225,7 +3539,7 @@ fn a_reranks_search_units_agree_across_both_books() {
         at.ms(),
     )
     .expect("the books agree on the rerank");
-    // NON-VACUITY: the search units are in the figure, not only the fee.
+
     let fee_only = late_post(&priced, at, "vk_fee", &rerank_report(0));
     let fee_only = second_book_rows(&fee_only);
     assert_eq!(
@@ -4254,7 +3568,6 @@ fn a_reranks_search_units_agree_across_both_books() {
         rows[0].refusal
     );
 
-    // The token cells of 21f725601, every class cell compared.
     let billed = fee_history_of(
         &[
             (0, 0.5, 1.0, 0),
@@ -4286,9 +3599,6 @@ fn a_reranks_search_units_agree_across_both_books() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// **A PLANTED OPEN-CLASS DIVERGENCE GOES RED.** The second book's rerank row, planted three ways —
-/// the open class under-counted, the open class dropped, and the figure priced without it (the
-/// shape this book had: fee only, no counts) — each is named by the every-cell check.
 #[test]
 fn a_planted_open_class_divergence_goes_red() {
     let at = Arrived::at(4_000, 7);
@@ -4319,7 +3629,6 @@ fn a_planted_open_class_divergence_goes_red() {
         "a dropped open class was NOT caught"
     );
 
-    // The pre-change second book: priced at the fee alone, with no counts on the record.
     let fee_only = second_book_rows(&late_post(&priced, at, "vk_fee", &rerank_report(0)));
     let mut head_shaped = rows.clone();
     head_shaped[0].settled = fee_only[0].settled;
@@ -4348,30 +3657,12 @@ fn a_planted_open_class_divergence_goes_red() {
     );
 }
 
-/// The serving lane of the served-rerank fixture: a Cohere lane, the one dialect whose rerank reader
-/// reads `meta.billed_units.search_units`.
 const RERANK_LANE: &str = "rerank-v3.5";
-/// The pool the rerank fixture's caller names.
+
 const RERANK_POOL: &str = "rr";
-/// The search units the scripted Cohere upstream bills.
+
 const RERANK_UNITS: u64 = 50;
 
-/// **A SERVED RERANK, THROUGH THE REAL WALK, PUTS IDENTICAL SEARCH UNITS ON BOTH BOOKS** (#71/#43,
-/// follows 15d23bb90 and item 134).
-///
-/// A Bedrock-dialect rerank (`/model/{model}/invoke` with `query` + `documents`) served by a Cohere
-/// lane whose upstream bills 50 search units: the real loop over the real steps, the real
-/// cross-protocol buffered tap, and the REAL late arm — the node's own `attach_late_accrual`, fired by
-/// draining the body the client is handed, onto a bound book. Nothing is hand-built between the
-/// upstream's bytes and either book.
-///
-/// The governance side is read off the governance ledger itself (the key's bucket, flushed to its
-/// store), not derived from the report the second book was posted from — so the agreement is two
-/// books compared, not one report compared with itself.
-///
-/// RED before the tap carried open classes: `TapReport.usage` was a `TokenUsage` and the buffered
-/// tap's projection dropped `Billing::Counted`, so the late report carried no classes, the second
-/// book's row held no `search_units` and priced the fee alone, while the governance ledger held 50.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     declare_test_classes();
@@ -4409,9 +3700,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
             MINTED_AT,
         )
         .expect("mint the deployment's key");
-    // No `rate_card:` on the governance side: its ledger accrues the raw counts either way (#43),
-    // and the agreement check prices the governance row through the SAME history the second book
-    // is priced against, below.
+
     let cost = busbar_kernel::cost::CostModel::resolve_parts(None, FEE_CENTS, &Default::default());
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let app = TestApp::new()
@@ -4432,7 +3721,6 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         key: Some(Arc::clone(&key)),
     };
 
-    // 2,000 micro-units per search unit and a 3-unit fee, over the serving lane.
     let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
     let node = Node::new();
     let pinned = history.clone();
@@ -4462,7 +3750,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     };
     let arrived = Arrived::at(EPOCH * 1_000, 0);
     let key_n = node.next_key.mint();
-    // THE UNIT, as the plane's path arrival hands it to the node.
+
     let (principal, op_class, _proto, build) = plane::handed(arrival, None);
     let meter = Arc::new(AccrualMeter::new());
     let (units, route, finish) = build((node.resolver(), EPOCH));
@@ -4493,8 +3781,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         admin_listener: false,
         kernel_verb_only: false,
     };
-    // THE PIN the node's own drive takes off `ROOT_CARD` at admission, handed in: the process
-    // holder is empty in a test, and the late arm posts nothing without a pinned history.
+
     let driven = Driven {
         node: &node,
         route: &*route,
@@ -4521,8 +3808,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     )
     .await;
     node.inflight.remove(key_n);
-    // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the unit's one line and the terminal's
-    // bytes, wrapped by the late arm, drained the way a client drains them.
+
     let (answer, late) = finish();
     let response = answer
         .expect("the served unit posted its terminal")
@@ -4544,7 +3830,6 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .expect("the served body drains");
     server.shutdown().await;
 
-    // THE GOVERNANCE LEDGER: the key's bucket, flushed to its store and read back.
     gov.flush_budgets();
     let ledger = gov
         .store()
@@ -4568,8 +3853,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
                 .collect::<std::collections::BTreeMap<_, _>>()
         })
         .unwrap_or_default();
-    // NON-VACUITY: the governance ledger holds the search units, so an agreement below is an
-    // agreement ON them.
+
     assert_eq!(
         classes.get(SEARCH_UNITS),
         Some(&RERANK_UNITS),
@@ -4581,8 +3865,6 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         classes,
     };
 
-    // THE UNIT'S ONE FIXED AUDIT RECORD, sealed where its one line was written (the late arm): its
-    // amount is the line's counts, and it is sealed under this boot's incarnation.
     {
         let durability = book.durability.lock().expect("unpoisoned");
         assert_eq!(
@@ -4610,8 +3892,6 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         assert!(durability.retained_audit_findings().is_empty());
     }
 
-    // THE SECOND BOOK: the late arm's row, and it is the unit's ONLY line (KERNEL<>PLUGINS step
-    // 14): the exit wrote none, and the one line is a settlement carrying the counts.
     let rows = second_book_rows(&book);
     assert_eq!(
         rows.len(),
@@ -4634,11 +3914,6 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .expect("both books hold the same search units and the same figure");
 }
 
-/// **THE NODE PLANE'S BOOK BINDING JOURNALS THE APPLIED CARDS** (#79): a build with this plane and no
-/// admin surface binds the dated rate-card history to the book here or nowhere, so a card applied
-/// after the boot must land on the chain through this binding alone. Before, only the admin
-/// assembly bound it: this plane's node settled onto the book while every live apply stayed in
-/// memory, and a restart repriced the node's postings at the boot card.
 #[test]
 fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     use crate::root::kernel::{CardApplied, RootHistory};
@@ -4671,7 +3946,6 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch directory");
 
-    // The production boot's holder: armed, resolved at boot, its history rebuilt by the book.
     let holder: &'static RootHistory = Box::leak(Box::default());
     holder.arm_journal();
     apply(holder, 3.0, 1_000);
@@ -4689,7 +3963,6 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
         .expect("the journal opens"),
     ));
 
-    // THE NODE PLANE'S BINDING, and nothing else — no admin assembly.
     super::bind_node_book(&Node::new(), holder, Arc::clone(&book));
     apply(holder, 5.0, 20_000);
 
@@ -4716,13 +3989,6 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------------------------
-// THE NODE AXIS (ARCHITECT R7): the linked arrivals hand their units to the node the root installs
-// ---------------------------------------------------------------------------------------------
-
-/// A pipeline stand-in for the one arrival below, which never reaches a rejection: the request is a
-/// well-formed chat body on the dialect's own endpoint, so the only answers it could need are the
-/// shaping ones, and they delegate to the same renderer core's host delegates to.
 struct ServedHost;
 
 impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
@@ -4784,16 +4050,6 @@ impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
     }
 }
 
-/// **THE ARRIVALS THE ROOT INSTALLS DRIVE THEIR UNITS THROUGH THE NODE IT HANDS THEM** (ARCHITECT
-/// R7(a)+(b)).
-///
-/// The plane's linked arrivals are the loop's and nothing else: there is no build in which they answer
-/// through the shell, so an arrival whose plane was never handed a node has no path to serve on. What
-/// the boot does on the linked table's `node` axis (`register_protocols`) is done here — every entry
-/// on the axis is handed the node the root unit drives — and then one ordinary request is sent to the
-/// dialect's arrival exactly as the linked table carries it to the root. It is served: the answer is
-/// the upstream's 200, and the upstream was dialled, which only a unit that ran its Route step through
-/// a node can do. An entry never handed a node answers the node's overload refusal and dials nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_linked_arrivals_hand_their_units_to_the_node_the_root_installs() {
     let rig = rig(Fixture::BufferedOk).await;
@@ -4845,12 +4101,6 @@ async fn the_linked_arrivals_hand_their_units_to_the_node_the_root_installs() {
     rig.server.shutdown().await;
 }
 
-/// ONE LINE PER UNIT, WHEN THE LATE READING NEVER ARRIVES (KERNEL<>PLUGINS step 14).
-///
-/// The exit hands its posting to the late arm and writes none itself. A body that drains with no
-/// reading behind it (the tap never filled) must still leave the unit's line: the exit's own
-/// posting, written by the arm, closing the reservation. An arm that dropped it would leave the
-/// unit with no line at all.
 #[test]
 fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
     let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
@@ -4886,11 +4136,6 @@ fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
     assert_eq!(rows[0].settled, 0);
 }
 
-/// **A CLASS NO PLANE DECLARED IS REFUSED FAIL-CLOSED, NEVER BILLED AT ZERO**
-/// (`BUSBAR-1.6.0.md` §7). The unit read 1,000 input tokens and 40 units of a class nothing
-/// declares or configures. The line is still written with EVERY count, its money is refused
-/// (`UndeclaredClass`), no balance moves, and the read over it refuses — even on a card that prices
-/// input.
 #[test]
 fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
     let history = cache_silent_history();
@@ -4927,8 +4172,6 @@ fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
     assert!(durability.settled_read(&key, window).is_err());
     drop(durability);
 
-    // And on a node with NO card, where a declared class would post at nothing, the undeclared one
-    // is still refused — the written line and every replay of it (`read_back` re-derives the chain).
     let absent = fee_history_of(&[(0, 0.0, 0.0, 0)], false);
     let node = late_post(&absent, at, "vk_undeclared_absent", &report);
     let rows = second_book_rows(&node);
@@ -4943,9 +4186,6 @@ fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
     );
 }
 
-/// **A DECLARED OPEN CLASS ON AN ABSENT CARD IS NOT REFUSED** — 1.5.5's billing-off shape is
-/// unchanged: a rerank's declared `search_units` on a node with no card posts its counts row at
-/// nothing, with no refusal, exactly as before the undeclared-class rule.
 #[test]
 fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
     let absent = fee_history_of(&[(0, 0.0, 0.0, 0)], false);
@@ -4967,10 +4207,6 @@ fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
     );
 }
 
-/// THE WALK'S DISPATCH RECORD, ON THE BOOK (ARCHITECT P3 (c), 2026-10-02): a write-ahead record the
-/// egress walk makes for a unit whose facts are open is written onto the node's book under that
-/// unit's balance, window and arrival before the dial; one for a unit with no open facts is refused,
-/// so its dial never happens.
 #[test]
 fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
     use busbar_kernel_egress::ports::{Dispatched, DurabilityUnavailable, Journal};
@@ -5018,11 +4254,6 @@ fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
     site.close(UnitKey::new(51));
 }
 
-/// RED (SEAM-4j through the node): a plane whose route SCREENS the unit before the door (a
-/// gate-first plane's veto) is screened through the node's own wrapper: the unit is refused at
-/// Approve's seat with the screen's reason and the door never admits it, so the key's ledger counts
-/// no request. RED before: the node's wrapper answered the default screen, the unit was admitted
-/// (one request on the ledger) and served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_screened_veto_through_the_node_admits_nothing() {
     let rig = rig(Fixture::BufferedOk).await;
@@ -5059,13 +4290,6 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
     rig.server.shutdown().await;
 }
 
-/// **A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED** (ARCHITECT 2026-10-07 H3 ruling):
-/// the book's journal is kept by the configured store, the store refuses and the lane to it is
-/// full, so a new money-bearing unit is answered 503 with the reason — before anything is built,
-/// held or journalled for it — and nothing the journal holds is dropped. A state 1.5.5 never
-/// reached (it kept no journal).
-///
-/// RED before the fix: the node admitted the unit and drove its build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
     for data_dir in [
@@ -5131,13 +4355,6 @@ async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
     }
 }
 
-/// THE RECORD'S AMOUNT IS COUNTS AND A CARD VERSION, NEVER A PRICE (`BUSBAR-1.6.0.md` THE DESIGN
-/// §1, "The amount is the unit's counts plus the rate-card version, never a price"; §7).
-///
-/// A unit whose exit settles a non-zero figure (the settlement writer's money, in nano-units) seals
-/// its record beside that line. The record names what the unit reported, by class; the exit's
-/// posting carries no class and no count, only the figure it moved, so the record it seals has no
-/// line of it at all.
 #[test]
 fn the_exit_arm_seals_no_money_figure_into_the_record() {
     use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
@@ -5152,7 +4369,6 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
     let book = Arc::new(std::sync::Mutex::new(durability));
     node.bind_book(Arc::clone(&book));
 
-    // The figure the settlement writer moved: 150 nano-units against a hold of 100.
     const MONEY: u64 = 150;
     let who = PrincipalId::new("acct:h2");
     let hold = Hold::open(&grant::<Admittance>(), who.clone(), 100);
@@ -5191,14 +4407,6 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
     );
 }
 
-// ---------------------------------------------------------------------------------------------
-// F25 REHOME (coverage map rows 378, 381, 584, 585, 629, 688): the legacy plane's money cells, on
-// the node
-// ---------------------------------------------------------------------------------------------
-
-/// A rig whose key is bound (when `limit` is set) to one group carrying `limit`, priced by `card`
-/// (`None`: billing off) at a flat fee of `fee` cents, its one lane `lane` (handed the scripted
-/// upstream's origin) in pool [`POOL`], the upstream answering each of `replies`, the last first.
 async fn rig_over(
     limit: Option<busbar_kernel::config::groups::LimitCfg>,
     card: Option<std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
@@ -5272,12 +4480,10 @@ async fn rig_over(
     }
 }
 
-/// The rig's one lane, as [`rig`] configures it, over the upstream at `origin`.
 fn the_lane(origin: &str) -> LaneSpec {
     LaneSpec::new(LANE, PROTO, origin).provider("test")
 }
 
-/// A daily budget of `amount` cents on the key's group.
 fn budget_per_day(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
         metric: busbar_kernel::config::groups::LimitMetric::Budget,
@@ -5291,7 +4497,6 @@ fn budget_per_day(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
     }
 }
 
-/// One chat arrival on the rig, as the plane's arrivals hand it to the node.
 fn chat_arrival(rig: &Rig, fixture: Fixture) -> plane::WalkArrival {
     plane::WalkArrival {
         host: rig.host(),
@@ -5306,18 +4511,6 @@ fn chat_arrival(rig: &Rig, fixture: Fixture) -> plane::WalkArrival {
     }
 }
 
-/// A PRE-ROUTING REFUSAL NEVER REFUNDS A PRIOR CHARGE.
-///
-/// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_pre_routing_failure_does_not_refund_prior_charge`
-/// (coverage map row 378, REHOME). 1.5.5 behaviour pinned: a key carrying one legitimately charged
-/// request (one flat fee, admitted on the real admission charge) sends a body that is not JSON; the
-/// arrival step refuses it 400 before any model resolves, it was never charged, so it refunds
-/// nothing: the prior request and its fee stay on the key's bucket. Beside
-/// [`the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`], which never drives `Malformed`.
-///
-/// RED: the pre-routing 400 finished through the refunding arm, eroding the prior charge (the
-/// requests or the spend read 0), which a repeated malformed body would turn into unbounded
-/// overspend past a hard cap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pre_routing_refusal_leaves_a_prior_charge_intact() {
     let rig = rig(Fixture::Malformed).await;
@@ -5347,16 +4540,6 @@ async fn a_pre_routing_refusal_leaves_a_prior_charge_intact() {
     );
 }
 
-/// THE ADMISSION CHECK READS THE ARRIVAL'S WINDOW, NOT THE CLOCK (#29, admission side).
-///
-/// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_admit_check_uses_charged_at_window_not_clock`
-/// (coverage map row 381, REHOME). 1.5.5 behaviour pinned: a key's group holds one fee a day and
-/// that fee was already charged into a PAST day. A unit arriving in that past day is refused over
-/// budget (429) against the window it arrived in, where the spend lives; a unit arriving now, in
-/// today's empty window, is admitted and served. The old home pinned the window's rows only.
-///
-/// RED: the admission check keyed off a fresh clock read: the past-day unit is admitted against
-/// today's empty window (and its charge overshoots the cap of the day it arrived in).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_admission_check_reads_the_arrival_window_and_not_the_clock() {
     use busbar_kernel::governance::SECS_PER_DAY;
@@ -5420,18 +4603,6 @@ async fn the_admission_check_reads_the_arrival_window_and_not_the_clock() {
     );
 }
 
-/// AN ALIASED LANE PRICES AT THE RATE CARD UNDER ITS CONFIG NAME.
-///
-/// Legacy: the retiring engine crate's `src/engine/tests/usage_tap_tests.rs::ledger_prices_an_aliased_lane_at_the_rate_card`
-/// (coverage map row 629, REHOME; mapped to `serve_money.rs`, whose dropped-in test plane composes
-/// no egress and has no lane alias to serve, so it is pinned here on the node-axis plane's served
-/// unit). 1.5.5 behaviour pinned: the card is keyed by the CONFIG model name; a lane whose
-/// `upstream_model` differs is sent the wire name but ledgered and priced under its config name, so
-/// 600 input and 400 output tokens at 1,000 micro-units each land as 1,000 tokens on the key's
-/// group bucket and derive 100 cents against the card.
-///
-/// RED: the accrual keyed by the wire model, which the card cannot name: the spend derives 0 and a
-/// budget-capped group goes uncapped on token cost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
     const WIRE: &str = "m0-on-the-wire";
@@ -5497,19 +4668,14 @@ async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
     );
 }
 
-/// The first frame of the streamed answer: one content delta, no usage.
 const FIRST_FRAME: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}"#;
 
-/// What a drive that keeps the unit's finish observed: the status line, the bytes the caller
-/// drained before the body ended or broke, and the tap's late reading of what the unit consumed.
 struct Reached {
     status: StatusCode,
     drained: Vec<u8>,
     reported: Option<Reported>,
 }
 
-/// One streamed chat through the real loop on a node of its own, its finish kept: the caller's
-/// answer is drained frame by frame (a broken body ends the drain), then the tap is read.
 async fn drive_reading_the_tap(rig: &Rig) -> Reached {
     use http_body_util::BodyExt as _;
     let node = Node::new();
@@ -5593,19 +4759,6 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
     }
 }
 
-/// THE TAP REPORTS THE END A STATUS LINE CANNOT.
-///
-/// Legacy: the retiring engine crate's `src/unit/tests/chain.rs::the_tap_reports_the_end_a_status_line_cannot`
-/// (coverage map row 688, REHOME). 1.5.5 behaviour pinned for the two tap fixtures — a 2xx stream
-/// cut after one content frame, and a 2xx transfer that failed before its first byte: both answer
-/// the caller under a 200 status line and neither completes, so what the response actually reached
-/// is the cut (the one relayed frame, no terminator) or nothing at all; the tap's report names the
-/// lane that served it (the legacy lane 0, the config lane `m0`), bills what streamed before the
-/// end — zero tokens, no usage frame arrived — and the key's ledger holds no tokens and no metering
-/// row. The old home pinned the cut reasons and partial flags on the relay alone.
-///
-/// RED: the tap reports nothing, keys the report to another lane, bills tokens that never streamed,
-/// or the caller is handed an end (a terminator) the far end never reached.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_tap_reports_the_end_a_status_line_cannot() {
     let tap_cases = [
@@ -5661,9 +4814,6 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
     }
 }
 
-/// What one served rerank left on the two books: its status, the governance ledger's counts for
-/// the serving lane (as the unit's counts row), the key's derived spend in cents on the governance
-/// ledger (`Err`: the read refused, #42), and the second (durable) book's rows for the unit.
 struct RerankBooks {
     status: StatusCode,
     governance: crate::root::durability::UnitCounts,
@@ -5672,7 +4822,6 @@ struct RerankBooks {
 }
 
 impl RerankBooks {
-    /// The search units the durable book's row carries.
     fn durable_units(&self) -> Option<u64> {
         self.rows
             .first()
@@ -5682,10 +4831,6 @@ impl RerankBooks {
     }
 }
 
-/// ONE RERANK SERVED THROUGH THE REAL WALK, as [`a_served_rerank_puts_identical_search_units_on_both_books`]
-/// serves it: a `lane_dialect` lane whose upstream answers `upstream`, the unit arriving in
-/// `arrival_dialect` (by its URL when `by_path`, else by its body's `model`), the governance side
-/// priced by `cost`, the node's book over `history`.
 async fn serve_rerank(
     lane_dialect: &'static str,
     arrival_dialect: &'static str,
@@ -5885,7 +5030,6 @@ async fn serve_rerank(
     }
 }
 
-/// The far end's rerank answer, billing `units` search units (`None`: it bills none).
 fn rerank_answer(units: Option<u64>) -> serde_json::Value {
     let mut answer = serde_json::json!({
         "id": "rr-1",
@@ -5897,8 +5041,6 @@ fn rerank_answer(units: Option<u64>) -> serde_json::Value {
     answer
 }
 
-/// The rerank fixture's two dialects, in the linked table's own spelling: the dialect its lane's
-/// provider speaks, and the URL-model dialect it arrives on.
 fn rerank_dialects() -> (&'static str, &'static str) {
     let named = |key: &str| {
         linked_dialect(
@@ -5910,20 +5052,6 @@ fn rerank_dialects() -> (&'static str, &'static str) {
     (named("provider"), named("path_dialect"))
 }
 
-/// A RERANK'S SEARCH UNITS REACH THE PRICE, ON BOTH BOOKS (item 134; #42's three arms).
-///
-/// Legacy: the retiring engine crate's `src/engine/tests/rerank_search_units_tests.rs::a_reranks_search_units_reach_the_price`
-/// (coverage map row 584, REHOME). 1.5.5 behaviour pinned, on a served rerank of the fixture's
-/// provider dialect: a card pricing `search_units` at 2,000 micro-units (0.2 cents) each derives 10
-/// cents for 50 units and 0 cents for 1 (a 5,000-document rerank no longer bills like a
-/// 1-document one, and one unit rounds to nothing); a present card silent about `search_units`
-/// REFUSES the read, never a silent 0; no card (billing off) reads 0. The durable book agrees cell
-/// by cell on every arm: 50 x and 1 x 2,000,000 nano-units settled, the silent card refused, the
-/// absent card a counts row with no figure. The old home pinned the 50-unit price and the silent
-/// card's refusal on the second book alone.
-///
-/// RED: the search units dropped or priced as a flat request (10 cents read 0), one unit rounded
-/// up, a silent card read as 0, billing off charging, or the two books disagreeing on any arm.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reranks_search_units_reach_the_price_on_both_books() {
     let (provider, _) = rerank_dialects();
@@ -6021,18 +5149,6 @@ async fn a_reranks_search_units_reach_the_price_on_both_books() {
     .expect("both books read the rerank at nothing with billing off");
 }
 
-/// A SAME-DIALECT RERANK PUTS IDENTICAL SEARCH UNITS ON BOTH BOOKS (Q29, completing item 134).
-///
-/// Legacy: the retiring engine crate's `src/engine/tests/rerank_search_units_tests.rs::a_same_protocol_rerank_puts_identical_search_units_on_both_books`
-/// (coverage map row 585, REHOME). 1.5.5 behaviour pinned, for BOTH of the fixture's rerank
-/// dialects served same-dialect (its provider dialect arriving by body, and its URL-model dialect
-/// arriving by URL, each onto a lane of its own dialect): a far end billing 50 search units leaves
-/// 50 on the governance ledger and 50 on the durable book's row; a rerank that bills none books
-/// none on either (`None`, `None`). The old home served one cross-dialect rerank.
-///
-/// RED: a same-dialect relay that keeps no copy of the far end's body (neither book holds the
-/// units), a tap that reads token usage only (the durable book misses them), or a unit-less rerank
-/// that books a count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_same_dialect_rerank_puts_identical_search_units_on_both_books() {
     let (provider, by_url) = rerank_dialects();

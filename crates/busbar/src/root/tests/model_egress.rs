@@ -1,7 +1,3 @@
-//! Tests for `model_egress.rs`: what the served egress records and resolves, pinned at the root's
-//! own seams (the breaker port the walk and the prober record through, and the pools the walk is
-//! sealed over).
-
 use super::*;
 use busbar_kernel_testkit::test_support::{LaneSpec, TestApp};
 
@@ -39,12 +35,10 @@ fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
     );
 }
 
-/// The served breaker port over `app`'s lane store, each of `pools` a cell under the default ladder.
 fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> WalkCells {
     cells_routing(LiveApp::fixed(app), pools, &[])
 }
 
-/// [`cells_over`], with each of `direct` a model a route names directly.
 fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
     let names = Arc::new(
         app.load()
@@ -193,11 +187,6 @@ fn wall_secs() -> u64 {
         .as_secs()
 }
 
-/// A SUCCESSFUL HEALTH PROBE COUNTS ONCE on the lane's `/stats` `ok`, whatever number of pools the
-/// lane sits in (1.5.5 `engine/health.rs`: one bump per 2xx probe, mirroring the single `err` bump
-/// of a failed one). The lane sits in three pools, each with a live cell of its own, and is probed
-/// twice through the served breaker port: `ok` rises by exactly two. A per-cell count would read
-/// eight (the default cell and three pool cells, per probe).
 #[test]
 fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
     let pools = ["first", "second", "third"];
@@ -212,7 +201,6 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
     let token = busbar_kernel_testkit::test_support::tokens::pass();
     let now = wall_secs();
 
-    // Every pool's cell exists before the probes, as a served request through each makes it.
     for pool in pools {
         assert!(!cells.observe(pool, dest, Outcome::Success, now, &token));
     }
@@ -228,13 +216,6 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
     );
 }
 
-/// A SUCCESS JOINS THE ERROR-RATE WINDOW AT THE WALK'S `now`, as a failure does: six successes
-/// and then five transient failures against the member of pool `p`, every one observed through the
-/// served breaker port at the same instant of the walk's clock, leave a window of 5 errors in 11
-/// outcomes (45%, under the default trip of 50% over at least five), so the cell stays Closed, as
-/// 1.5.5's one clock kept it. The walk's clock reads an hour past the wall, as a test clock may.
-/// RED: a success recorded on the store's own wall-clock read falls out of the window the walk's
-/// failures are judged in, so those five read as 5 of 5 and trip the cell Open.
 #[test]
 fn a_success_is_recorded_on_the_walks_clock() {
     let app = TestApp::new()
@@ -272,12 +253,6 @@ fn a_success_is_recorded_on_the_walks_clock() {
     );
 }
 
-/// A HEALTH PROBE'S SUCCESS JOINS THE WALK'S WINDOW: one success the walk observes, five successful
-/// probes and then five transient failures the walk observes, all at one instant of the walk's
-/// clock (an hour past the wall, as a test clock may be), leave a window of 5 errors in 11 outcomes
-/// in pool `p`'s cell (45%, under the default trip), so it stays Closed.
-/// RED: probe successes recorded on the store's own wall-clock read fall out of the window the
-/// walk's failures are judged in, so those read as 4 of 5 and trip the cell Open.
 #[test]
 fn a_probe_success_joins_the_walks_window() {
     let app = TestApp::new()
@@ -289,7 +264,6 @@ fn a_probe_success_joins_the_walks_window() {
     let token = busbar_kernel_testkit::test_support::tokens::pass();
     let now = wall_secs() + 3_600;
 
-    // The pool's cell exists before the probes, as a served request through it makes it.
     assert!(!cells.observe("p", dest, Outcome::Success, now, &token));
     for _ in 0..5 {
         cells.probed(dest, Outcome::Success, now, &token);
@@ -317,13 +291,6 @@ fn a_probe_success_joins_the_walks_window() {
     );
 }
 
-/// A PROBE'S FAILURE AND EVERY HARD-DOWN ARM THEIR COOLDOWNS ON THE WALK'S CLOCK, the clock the
-/// walk's admission and shed then read them on (an hour past the wall). One failed probe benches
-/// pool `p`'s member for 1.5.5's 27..=33 s (the streak bumped to 1: 15 x 2, +-3), and a hard-down,
-/// the walk's own or a probe's, parks every cell for the full sticky cooldown, read at the walk's
-/// clock exactly.
-/// RED: each was armed from the store's own wall-clock read, so at the walk's clock an hour on the
-/// cooldown has already run out (it reads 0).
 #[test]
 fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
     let token = busbar_kernel_testkit::test_support::tokens::pass();
@@ -335,7 +302,7 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
             .pool("p", &[(0, 1)])
             .build();
         let cells = cells_over(Arc::clone(&app), &["p"]);
-        // The pool's cell exists before the record, as a served request through it makes it.
+
         assert!(!cells.observe("p", dest, Outcome::Success, now, &token));
         (app, cells)
     };
@@ -368,11 +335,7 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
     }
 }
 
-/// The pools `upstream_credentials` resolves to, for `section` (the `pools:` body).
 fn pools_of(section: &str) -> ModelPools {
-    // The deployment names `models:`/`pools:`, which config resolution hands a plane: register the
-    // kernel's neutral test plane first, as the timeout cells do (nextest runs each test in its
-    // own process, so no other test has registered one).
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
         "providers: {{}}\nmodels: {{}}\npools:\n{section}"
@@ -382,10 +345,6 @@ fn pools_of(section: &str) -> ModelPools {
     ModelPools::of(&cfg)
 }
 
-/// THE ALL-POOLS `upstream_credentials:` DEFAULT IS INHERITED (1.5.5's scalar override rule): a
-/// pool that sets none takes the all-pools default, a pool that sets its own keeps it, and a route
-/// naming a model directly takes the default. Driven both ways round, so neither value is the one
-/// that merely happens to be the built-in; and with no default at all, nothing is passed through.
 #[test]
 fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every_direct_route() {
     for (default, other, passes) in [("passthrough", "own", true), ("own", "passthrough", false)] {
@@ -415,12 +374,6 @@ fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every
     );
 }
 
-/// LEGACY the retired engine crate's `src/engine/tests/ingress_integration_tests.rs::test_forward_resolved_by_model_uses_lane_default_breaker_cell`.
-/// A ROUTE NAMING A MODEL DIRECTLY RECORDS ON THE LANE-DEFAULT CELL (`""`), the one cell 1.5.5's
-/// `/<model>/v1/messages` and its by-model forward both selected: one transient on the direct
-/// route's pool arms a cooldown on the lane's `""` cell and none under the model's own name, so a
-/// model's breaker state is not split by the shape of the route that reached it.
-/// RED: a direct route recorded under the model's name leaves the `""` cell's cooldown at 0.
 #[test]
 fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
     let app = TestApp::new()
@@ -441,11 +394,7 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         app.store.cooldown_remaining_in("", 0, now) > 0,
         "the direct route's fault arms the lane-default cell"
     );
-    // NO OUTCOME IS RECORDED UNDER THE MODEL'S OWN NAME. Read through the cell's outcome window,
-    // not its cooldown: any read of a pool cell creates it on first touch, and a created cell
-    // INHERITS the lane's current health (the store's `pool_cell`: state, cooldown and streak,
-    // never the window), so its cooldown reads the lane's whatever the route recorded. The window
-    // is the cell's own record: empty unless the fault was observed into that cell.
+
     assert_eq!(
         app.store.error_rate_in("", 0, now),
         Some(1.0),
@@ -458,13 +407,6 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
     );
 }
 
-/// A WALK THAT SPANS A CONFIG APPLY RECORDS INTO THE NEW STORE: the walk's breaker resolves the live
-/// App once at its start, and a swap mid-walk moves its next record onto the App the live
-/// configuration answers then, as a breaker that read the live App on every call did. A success
-/// lands on the first App's lane store; after the swap, a fault lands on the second App's, and
-/// the first's window stays free of faults. Recording the fault on both stores changes the
-/// retired store's error rate too, so the assertion distinguishes a duplicate from no write.
-/// RED: a walk pinned to the App it started on records the fault into the retired store.
 #[test]
 fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let generation = || {
@@ -528,10 +470,6 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
     );
 }
 
-/// A KEYLESS LANE IS NOT PROBED (security.md: "`api_key: none` ... the lane sends no auth header
-/// and is skipped by the health prober"): two providers configure the same active `health:` block,
-/// one keyed and one declaring `api_key: none`; only the keyed provider's model is in the probe set.
-/// RED: the keyless lane's model is probed like any other.
 #[test]
 fn a_keyless_lane_is_not_probed() {
     busbar_kernel_testkit::test_support::register_neutral_test_plane();

@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The process plane list must be the fold of the registration set that is actually installed: two
-//! distinct sets of equal length never alias (item 117 — 8 `units_llm` tests once failed whenever the
-//! `plane_decisions` tests ran first, even single-threaded).
-
 use super::*;
 use crate::test_support::planes::TestRegistryIsolation;
 
@@ -29,7 +25,6 @@ fn two_distinct_registration_sets_of_equal_size_do_not_alias() {
         );
     }
     {
-        // Same size as the set before it, different plane: must NOT be served the {ONE} fold.
         let _reg = TestRegistryIsolation::seeded(&[&TWO]);
         let k = keys();
         assert!(
@@ -42,7 +37,6 @@ fn two_distinct_registration_sets_of_equal_size_do_not_alias() {
         );
     }
     {
-        // Back to the first set: the fold follows the set again, whichever was read last.
         let _reg = TestRegistryIsolation::seeded(&[&ONE]);
         let k = keys();
         assert!(k.contains(&"memo-one") && !k.contains(&"memo-two"), "{k:?}");

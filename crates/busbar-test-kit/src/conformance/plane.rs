@@ -178,17 +178,14 @@ use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
 #[path = "plane_host.rs"]
 mod host;
 
-/// The capacity of each of the host's per-piece lists (units, record writes, fields).
 const CAP: usize = 8;
-/// How long a submitted op may wait (PENDING) before its deadline cancels it: well past every wait
-/// a conforming plane makes, so a plane that never wakes fails the step instead of hanging the run.
+
 const OP_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The deadline of an op submitted now.
 fn deadline() -> u64 {
     now_ns().saturating_add(u64::try_from(OP_DEADLINE.as_nanos()).unwrap_or(u64::MAX))
 }
-/// A session's reply buffer when its inputs name none.
+
 const SESSION_REPLY_CAP: usize = 1 << 16;
 
 fn text(v: &Value, what: &str) -> Vec<u8> {
@@ -199,13 +196,10 @@ fn text(v: &Value, what: &str) -> Vec<u8> {
     }
 }
 
-/// An optional string input: absent is `None`.
 fn optional(v: &Value, what: &str) -> Option<Vec<u8>> {
     (!v.is_null()).then(|| text(v, what))
 }
 
-/// `<bytes>`: a string, or parts each a string or `{ "repeat": "<text>", "times": n }`; absent is
-/// none.
 fn bytes(v: &Value, what: &str) -> Vec<u8> {
     match v {
         Value::Null => Vec::new(),
@@ -229,7 +223,6 @@ fn num(v: &Value, what: &str) -> u64 {
         .unwrap_or_else(|| panic!("conformance.json: plane.{what} must be a number"))
 }
 
-/// An optional number input: absent is `or`.
 fn num_or(v: &Value, what: &str, or: u64) -> u64 {
     if v.is_null() {
         or
@@ -256,7 +249,6 @@ fn pairs(v: &Value, what: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Optional pairs: absent is none.
 fn pairs_or_none(v: &Value, what: &str) -> Vec<(String, String)> {
     if v.is_null() {
         Vec::new()
@@ -265,7 +257,6 @@ fn pairs_or_none(v: &Value, what: &str) -> Vec<(String, String)> {
     }
 }
 
-/// Head fields over `pairs`' bytes.
 fn field_list(pairs: &[(String, String)]) -> Vec<Field> {
     pairs
         .iter()
@@ -276,7 +267,6 @@ fn field_list(pairs: &[(String, String)]) -> Vec<Field> {
         .collect()
 }
 
-/// A host buffer element, zeroed.
 fn z<T: Copy>() -> T {
     // SAFETY: called only for the plane ABI's plain C structs (`UnitCount`, `RecordWrite`,
     // `OutField`, `SignalEntry`, `MessageView`): integers, spans, pointers and unions of integers,
@@ -300,7 +290,6 @@ fn abi(b: &[u8]) -> AbiStr {
     }
 }
 
-/// Text the plane answered in its own memory, read at once (valid until its next call).
 fn read(s: AbiStr) -> String {
     if s.ptr.is_null() || s.len == 0 {
         return String::new();
@@ -318,8 +307,6 @@ fn at(buf: &[u8], s: Span) -> String {
     )
 }
 
-/// A record write's key or value as the line shows it: its text, when it is printable UTF-8;
-/// else `hex:` and its bytes in lower-case hex.
 fn shown(buf: &[u8], s: Span) -> String {
     let (from, len) = (s.offset as usize, s.len as usize);
     let Some(b) = buf.get(from..from + len) else {
@@ -334,7 +321,6 @@ fn shown(buf: &[u8], s: Span) -> String {
     }
 }
 
-/// What `ArriveOut::route` names.
 fn route_class(route: u8) -> String {
     match route {
         ROUTE_POOL => "pool".into(),
@@ -345,7 +331,6 @@ fn route_class(route: u8) -> String {
     }
 }
 
-/// What `ArriveOut::route_flags` states, by name; a bit the ABI does not name, as its number.
 fn route_flags(flags: u8) -> Vec<String> {
     let mut named: Vec<String> = [
         (ROUTE_ONCE, "once"),
@@ -363,7 +348,6 @@ fn route_flags(flags: u8) -> Vec<String> {
     named
 }
 
-/// A generation snapshot as one line: its generation and its claims, `VERB TARGET` each.
 fn snapshot(s: Option<&OwnedSnapshot>) -> String {
     s.map_or_else(
         || "snapshot=none".into(),
@@ -388,9 +372,6 @@ fn claims<'a>(c: impl Iterator<Item = (&'a str, &'a str)>) -> String {
         .join(", ")
 }
 
-/// THE MEMORY ONE PIECE LENDS THE PLANE: the host's buffers (reply, units, record writes, fields,
-/// arena) and the piece's own bytes, head fields and carried names. Built in place in the `Arc`
-/// that is lent to the op (THE DESIGN §2), so its pointers stay valid however the op ends.
 struct Piece {
     reply: Vec<u8>,
     units: [UnitCount; CAP],
@@ -429,9 +410,6 @@ struct Given<'a> {
     head: &'a [(String, String)],
 }
 
-/// What every piece carries beside its own: the member (and pool) an ATTEMPT names, and the
-/// caller's reference; and the host the inputs state, which keeps the record writes a READY
-/// answer carries, as the kernel's flush writes them, so the plane reads them back.
 struct Carried {
     member: Vec<u8>,
     pool: Option<Vec<u8>>,
@@ -440,7 +418,6 @@ struct Carried {
 }
 
 impl Carried {
-    /// Keep the `RECORD_PUT` writes `piece`'s answer carried, when it answered READY.
     fn keep(&self, piece: &Piece, c: &Called, o: &OnPieceOut) {
         use busbar_contract::abi::mechanism::call::Outcome;
         let Some(h) = &self.host else {
@@ -485,7 +462,6 @@ impl Buffer {
         }
     }
 
-    /// The (units, fields) capacities a piece meets.
     const fn caps(self) -> (usize, usize) {
         match self {
             Self::Units => (0, CAP),
@@ -502,8 +478,6 @@ impl Buffer {
 }
 
 impl Piece {
-    /// `g`'s piece, `reply_cap` bytes of reply buffer, its frame with the lists at `caps`: the
-    /// memory lent, and the frame over it.
     fn lent(
         reply_cap: usize,
         g: Given<'_>,
@@ -566,7 +540,6 @@ impl Piece {
         String::from_utf8_lossy(&self.reply[..n]).into_owned()
     }
 
-    /// What the plane answered and wrote, as one line.
     fn line(&self, c: &Called, o: &OnPieceOut) -> String {
         format!(
             "{} emitted={} more={} to_far_end={} done={} status={} verb={} target={} \
@@ -584,9 +557,6 @@ impl Piece {
         )
     }
 
-    /// [`Piece::line`] with the need a far-bound answer rides: a session step's line.
-    /// The ledger lane the answer names and its record writes, each written only when the answer
-    /// carries one (` lane=<lane>`, ` records=[..]`).
     fn ledger(&self, o: &OnPieceOut) -> String {
         let mut out = String::new();
         if o.lane.len != 0 {
@@ -634,18 +604,12 @@ impl Piece {
     }
 }
 
-/// ONE UNIT AS THE KERNEL DRIVES IT: its ticket, on which every piece of the unit (and the one
-/// re-call a short answer earns) is submitted, and its reply buffer's capacity.
 struct Unit {
     ticket: Ticket,
     reply_cap: usize,
 }
 
 impl Unit {
-    /// A unit on a fresh request ticket of `d`'s.
-    ///
-    /// # Panics
-    /// When no ticket is free.
     fn mint(d: &Dispatcher, reply_cap: usize) -> Self {
         Self {
             ticket: d.mint(0).expect("a unit's ticket is minted"),
@@ -653,14 +617,11 @@ impl Unit {
         }
     }
 
-    /// The unit is over: its ticket recycled.
     fn end(self, d: &Dispatcher) {
         d.recycle(self.ticket);
     }
 }
 
-/// One piece's answer: as the host reads it, whether it was SHORT, the memory it was lent and the
-/// frame back (`None` when the op was faulted mid-crossing).
 struct Pieced {
     called: Called,
     short: bool,
@@ -669,7 +630,6 @@ struct Pieced {
 }
 
 impl Pieced {
-    /// The plane's `out` (an all-zero one when no frame came back).
     fn out(&self) -> OnPieceOut {
         self.frame.as_ref().map_or_else(output, |f| f.out)
     }
@@ -679,9 +639,6 @@ impl Pieced {
     }
 }
 
-/// `on_piece` of `g`, the lists at `caps`, SUBMITTED ON THE UNIT'S TICKET as the kernel's plane
-/// driver submits it (Stream class, the piece's memory lent to the op): a piece that answers
-/// PENDING is resumed on its wake until it answers.
 fn on_piece(
     p: &Plugin<Plane>,
     d: &Dispatcher,
@@ -714,8 +671,6 @@ fn on_piece(
     }
 }
 
-/// `g` met with `buffer` at capacity 0: SHORT, then its ONE re-call with room, re-submitted on the
-/// unit's ticket over the same memory (two crossings).
 fn short_then(
     p: &Plugin<Plane>,
     d: &Dispatcher,
@@ -757,19 +712,17 @@ fn short_then(
     )
 }
 
-/// An arrival the inputs state: its unit, claim, request line and head.
 struct Arrival {
     unit: u64,
     claim: u32,
     method: Vec<u8>,
     target: Vec<u8>,
     fields: Vec<(String, String)>,
-    /// The line names the route the arrival routes over.
+
     route: bool,
 }
 
 impl Arrival {
-    /// The same arrival for another unit.
     fn for_unit(&self, unit: u64) -> Self {
         Self {
             unit,
@@ -830,7 +783,6 @@ fn arrive(p: &Plugin<Plane>, a: &Arrival, body: &[u8]) -> String {
     }
 }
 
-/// One step of a session.
 enum Act {
     Arrive(Arrival, Vec<u8>),
     Piece {
@@ -848,7 +800,7 @@ enum Act {
         body: Vec<u8>,
         rewrite: Option<Vec<u8>>,
     },
-    /// `tick` at `now_ns`; `wakes`: its driver ticket is woken, so `drive` crosses on it too.
+
     Tick {
         now_ns: u64,
         wakes: bool,
@@ -856,11 +808,10 @@ enum Act {
     Cancel,
 }
 
-/// A unit the inputs drive step by step (`plane.sessions[]`).
 struct Session {
     name: String,
     unit: u64,
-    /// The pool member its ATTEMPT names, when not `plane.member`.
+
     member: Option<Vec<u8>>,
     stream: u64,
     claim: u32,
@@ -1015,12 +966,6 @@ impl Session {
     }
 }
 
-/// `drive` AS THE KERNEL'S WAKES DRIVE IT (THE DESIGN §11.4): the instance's DRIVER ticket woken,
-/// as a host service's completion wakes it, so the dispatcher crosses `drive` on it in the kind's
-/// own frame (its head and its `driver` field name the driver, so a service that pends inside
-/// registers there, and a PENDING drive is RESUMED on its next wake). Its answer (the first that
-/// is not PENDING) and the streams it named, collected as the kernel collects them. `None` (no
-/// driver ticket: the instance is not open) answers REFUSED without a crossing.
 fn drive(p: &Plugin<Plane>, driver: Option<Ticket>) -> (Called, Vec<u64>) {
     use busbar_contract::abi::mechanism::call::Outcome;
     let answer = |outcome, error: Option<&[u8]>| Called {
@@ -1047,8 +992,6 @@ fn drive(p: &Plugin<Plane>, driver: Option<Ticket>) -> (Called, Vec<u64>) {
     }
 }
 
-/// `project` of a session's unit: the view's signals, whether a rewrite was applied, and the
-/// projected body (last on the line).
 fn project(
     p: &Plugin<Plane>,
     s: &Session,
@@ -1091,15 +1034,8 @@ fn project(
     )
 }
 
-/// How long a `tick` that wakes its driver ticket waits for the `drive` the wake calls.
 const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// `tick` at `now_ns` on the instance's DRIVER TICKET (`driver`), as the kernel ticks an instance
-/// (its head names the driver, so a session that now owes its end names it). When the inputs say it
-/// `wakes`, the dispatcher calls `drive` on the woken driver ticket, and the step waits (at most
-/// [`WAKE_WAIT`]) for that second crossing's answer, so it is counted in this step; the names that
-/// `drive` answered are collected there, as the kernel collects them, so a later `drive` step
-/// reads only its own. `None` (no driver ticket: the instance is not open) crosses nothing.
 fn tick_on_driver(
     p: &Plugin<Plane>,
     d: &Dispatcher,
@@ -1121,7 +1057,6 @@ fn tick_on_driver(
     format!("{} next={next}", called(&answered(&done)))
 }
 
-/// `cancel` of the op on `ticket` (a session's): its disposition and the record writes it carried.
 fn cancel(p: &Plugin<Plane>, ticket: Ticket) -> String {
     let mut records = [z::<RecordWrite>(); CAP];
     let mut arena = [0_u8; 1024];
@@ -1138,8 +1073,6 @@ fn cancel(p: &Plugin<Plane>, ticket: Ticket) -> String {
     )
 }
 
-/// THE SESSIONS LEG: each session's steps, in order, each its own step of the fold
-/// (`<name> <label>`), pinned at one crossing (a piece met `short`: two).
 fn sessions(
     r: &mut Recorder<'_>,
     (p, d, driver): (&Plugin<Plane>, &Dispatcher, Option<Ticket>),
@@ -1148,7 +1081,7 @@ fn sessions(
 ) {
     for s in all {
         let unit = Unit::mint(d, s.reply_cap);
-        // The session's own member, when it names one: its ATTEMPT names that far end.
+
         let own = s.member.as_ref().map(|member| Carried {
             member: member.clone(),
             pool: c.pool.clone(),
@@ -1212,7 +1145,6 @@ fn sessions(
     }
 }
 
-/// The script's fixtures, read once from `inputs.plane`.
 struct Inputs {
     bad: Vec<Vec<u8>>,
     refresh: Vec<u8>,
@@ -1220,8 +1152,7 @@ struct Inputs {
     carried: Carried,
     claimed: Arrival,
     unclaimed: Arrival,
-    /// The plane serves a one-request unit that reaches a far end (`plane.request_unit`, default
-    /// `true`): the one, narrow, short and empty units are driven and judged only when it does.
+
     request_unit: bool,
     request: Vec<u8>,
     status: u32,
@@ -1231,14 +1162,10 @@ struct Inputs {
     short: (u64, Buffer),
     empty: Option<u64>,
     sessions: Vec<Session>,
-    /// Every unit of the script arrives (as the claimed one) and sends the caller's body after its
-    /// ATTEMPT, for a plane that holds a unit's state from its arrival.
+
     arrive_each: bool,
     refusal: (u32, Vec<u8>),
-    /// THE ADMIN REQUESTS SERVED FIRST (`plane.serve_first`), each crossed on the plane's `serve`
-    /// op after `start` and before any unit arrives, as an operator's admin call reaches a running
-    /// instance: a plane whose units need state it gathers itself (over its own connection needs,
-    /// from the far ends `far_ends` declares) is brought to it the way production brings it.
+
     serve_first: Vec<ServeFirst>,
 }
 
@@ -1314,7 +1241,7 @@ impl Inputs {
             }
         }
         let f = &k["far_end"];
-        // A plane with no request unit states none of its fixtures: each reads as empty.
+
         let need = |v: &Value| request_unit || !v.is_null();
         Self {
             bad,
@@ -1383,7 +1310,6 @@ impl Inputs {
     }
 }
 
-/// The ATTEMPT piece of `unit` on `claim`: from the kernel, no bytes, attempt 1.
 fn attempt(unit: u64, claim: u32) -> Given<'static> {
     Given {
         unit,
@@ -1398,8 +1324,6 @@ fn attempt(unit: u64, claim: u32) -> Given<'static> {
     }
 }
 
-/// A piece of the far end's answer to `unit` on `claim`, its status and kept head fields given on
-/// the piece that states them.
 fn far_end<'a>(
     unit: u64,
     claim: u32,
@@ -1420,14 +1344,6 @@ fn far_end<'a>(
     }
 }
 
-/// THE SETTINGS `open` AND `refresh` ARE HANDED, in the form the composition root hands them
-/// (`busbar::root::serve::settings_of`): a plane that declares the kernel-owned `pools` map, or
-/// reads any section beside its own (`SECTION_CONSUMED`), is handed ONE object keyed by section,
-/// `{<declaring section>: <settings>}`; any other plane its section bare, as written. The inputs
-/// carry no consumed section's value, so the keyed object is that of a deployment writing none of
-/// them, unless the inputs' settings are keyed already (an object carrying the declaring section's
-/// key and no key but it and the consumed sections'): those are handed as written. Settings that
-/// are not a JSON value, or are `null`, are handed as written.
 fn handed(facts: &ServedFacts, settings: &[u8]) -> Vec<u8> {
     let keyed =
         facts.section == busbar_contract::section::RESERVED_POOLS_KEY || !facts.consumed.is_empty();
@@ -1449,7 +1365,6 @@ fn handed(facts: &ServedFacts, settings: &[u8]) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ facts.section: value })).expect("a keyed blob")
 }
 
-/// `open` of generation 1 over `settings`, under `public_url` when one is named.
 fn open(p: &Plugin<Plane>, settings: &[u8], public_url: Option<&[u8]>) -> String {
     let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
     (f.input.open.generation, f.input.open.settings) = (1, json(settings));
@@ -1472,9 +1387,7 @@ fn leg_dispatcher(host: Option<Arc<host::Host>>) -> Arc<Dispatcher> {
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let mut k = Inputs::of(s.kind_inputs("plane"));
-    // The kernel services the plugin's inputs state (`plane.host`), served on the leg's dispatcher;
-    // stating none, a dispatcher that serves none. Each leg's host is its own: what one leg's plane
-    // wrote, drew or claimed, the other's never sees.
+
     k.carried.host = host::Host::of(&s.kind_inputs("plane")["host"]).map(Arc::new);
     let settings = leg.settings(s);
     let answer = (k.status, k.head.as_slice());
@@ -1482,8 +1395,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let (c, claim) = (&k.carried, k.claimed.claim);
 
     let d = leg_dispatcher(k.carried.host.clone());
-    // The plane's own declared needs (a card it fetches, a callback it delivers) reach the far
-    // ends its inputs state (`far_ends`), as the auth script's do; naming none, the leg's table.
+
     let far = s.far_table();
     let bound = match &far {
         Some(table) => crate::dispatch::Bind {
@@ -1495,7 +1407,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         None => s.bind(&d, "plane"),
     };
     let p = load::<Plane>(s, leg, bound).expect("the plane door loads");
-    // The loaded instance is admitted on what its Statement declares, as the kernel admits it.
+
     if let Some(h) = &k.carried.host {
         h.admit(&p.declared());
     }
@@ -1509,9 +1421,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             p.max_inflight()
         )
     });
-    // `validate` is handed the blob stage 3g deals a plane: `{<declaring section>: <settings>}`
-    // (`config_validate::deal`, `Seat::Verbs`); `open` and `refresh` take it as the composition
-    // root hands it ([`handed`]): keyed by section for a plane that reads sections beside its own.
+
     let section = p.served().section;
     let dealt = |b: &[u8]| -> Vec<u8> {
         let value: Value = serde_json::from_slice(b).expect("conformance.json settings are JSON");
@@ -1523,15 +1433,14 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         });
     }
     r.line("validate", 1, || called(&validate(&p, &dealt(&settings))));
-    // No instance yet: the host refuses without a crossing.
+
     r.line("arrive unopened", 0, || arrive(&p, &k.claimed, &k.request));
     let opened = handed(&p.served(), &settings);
     r.line("open", 1, || open(&p, &opened, url));
     ready_step(&mut r, s, &p, &d);
-    // One open per instance: the host refuses without a crossing.
+
     r.line("open again", 0, || open(&p, &opened, url));
-    // The instance's DRIVER ticket, as the kernel mints it once the instance is open: `drive` and
-    // `tick` are submitted on it.
+
     let driver = d.driver(&p, 0);
     r.line("hydrate", 1, || generation(&p, slot::HYDRATE, 1));
     r.line("start", 1, || generation(&p, slot::START, 1));
@@ -1545,12 +1454,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         arrive(&p, &k.unclaimed, &k.request)
     });
 
-    // THE ONE-REQUEST UNITS (a plane that serves one: `plane.request_unit`, default true).
     if k.request_unit {
         let unit = k.claimed.unit;
         let whole = PIECE_HAS_STATUS | PIECE_LAST;
         let room = (CAP, CAP);
-        // One unit: the ATTEMPT, the caller's body, the far end's whole answer.
+
         let one = Unit::mint(&d, 1024);
         for (label, g) in [
             ("attempt", attempt(unit, claim)),
@@ -1572,11 +1480,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }
         one.end(&d);
 
-        // Another, whose answer is written `reply_cap` bytes at a time, then paid out by `more`.
         let (narrow_unit, cap, more) = k.narrow;
         let narrow = Unit::mint(&d, cap);
-        // With `arrive_each`, a unit arrives first and its caller's body follows its ATTEMPT (through
-        // the whole unit's buffers).
+
         let arrives = |r: &mut Recorder<'_>, what: &str, unit: u64| {
             if k.arrive_each {
                 r.line(&format!("{what} arrive"), 1, || {
@@ -1615,8 +1521,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }
         narrow.end(&d);
 
-        // Another, whose answer meets a units (or fields) buffer of capacity 0: SHORT, then its one
-        // re-call.
         let (short_unit, buffer) = k.short;
         let short = Unit::mint(&d, 1024);
         arrives(&mut r, "short", short_unit);
@@ -1630,7 +1534,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         });
         short.end(&d);
 
-        // A caller body that ended empty.
         if let Some(empty) = k.empty {
             let unit = Unit::mint(&d, 1024);
             arrives(&mut r, "empty", empty);
@@ -1686,7 +1589,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         let (c, named) = drive(&p, driver);
         format!("{} sessions={}", called(&c), named.len())
     });
-    // A plane answers under no lease: the release of none.
+
     r.line("release none", 1, || called(&release(&p, 0)));
     r.line("tick", 1, || match driver {
         Some(driver) => {
@@ -1704,7 +1607,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         let c = p.call(life::CANCEL, &mut f);
         format!("{} disposition={}", called(&c), f.out.cancel.disposition)
     });
-    // The refresh's frame carries no public URL: the instance keeps the one its `open` was handed.
+
     let refresh = |what: &[u8]| {
         let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(input(), output());
         (f.input.generation, f.input.settings) = (2, json(what));
@@ -1714,7 +1617,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("refresh", 1, || refresh(&handed(&p.served(), &k.refresh)));
     r.line("retire", 1, || generation(&p, life::RETIRE, 1));
     r.line("close", 1, || called(&close(&p)));
-    // Closed: the host answers FAULT without a crossing.
+
     r.line("arrive after close", 0, || {
         arrive(&p, &k.claimed, &k.request)
     });
@@ -1722,8 +1625,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         d.recycle(driver);
     }
     let fold = r.fold();
-    // A broken contract names its line and then the whole fold, so a plane repo whose suite fails
-    // reads every step's answer (the cause is often a step before the one the contract names).
+
     if let Err(broken) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         contract(&fold, s.kind_inputs("plane"));
     })) {
@@ -1738,8 +1640,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             .collect();
         panic!("{why}\nthe {leg:?} fold:\n{}", steps.join("\n"));
     }
-    // AN UNREACHED SCHEME WAS NEVER TOUCHED (row 114): the claim conformance.json states is that
-    // no open of this fold rode one; an open that did is the scheme reached, not unreached.
+
     if let Some(table) = &far {
         let tried = table.unreached_opens();
         assert!(
@@ -1760,11 +1661,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     fold
 }
 
-/// THE DECLARED CLASSES ARE THE EMITTED ONES. The other direction, a count
-/// under a class the tail does not declare, is the dispatcher's own check on every answer
-/// (`check_on_piece`: a class index past the tail's billable classes is FAULT). This is the half no
-/// check held: a class the plane declares, an operator prices, and the plane never reports. The
-/// billable classes of `billable` that no step of `fold` reports a unit count under, in tail order.
 pub(super) fn unreported_classes<'c>(fold: &Fold, billable: &[&'c str]) -> Vec<&'c str> {
     let reported: std::collections::BTreeSet<usize> = fold
         .iter()
@@ -1778,9 +1674,6 @@ pub(super) fn unreported_classes<'c>(fold: &Fold, billable: &[&'c str]) -> Vec<&
         .collect()
 }
 
-/// The class indices a piece's line reports units under: its `units=["<class>:<amount>:<reported>",
-/// ...]` list ([`Piece::line`]). An `arrive` line states a count of estimates, not a list, and
-/// reports none.
 fn reported_indices(line: &str) -> Vec<usize> {
     let Some(at) = line.find("units=[") else {
         return Vec::new();
@@ -1792,9 +1685,6 @@ fn reported_indices(line: &str) -> Vec<usize> {
         .collect()
 }
 
-/// RED, THE DECLARED-BUT-NEVER-EMITTED CLASS: the plane's honest fold, judged against its declared
-/// billable classes with one more class appended (a plane that declares a class it never reports),
-/// names that class; the honest declaration names none.
 pub(super) fn red_unreported_class(s: &Subject) {
     let f = fold(s, Leg::Linked);
     let d = dispatcher();
@@ -1812,7 +1702,6 @@ pub(super) fn red_unreported_class(s: &Subject) {
     );
 }
 
-/// Every allocation a `serve` frame names, held until its last crossing returns.
 struct ServeLend {
     request: ServeFirst,
     request_fields: Vec<Field>,
@@ -1853,7 +1742,6 @@ impl ServeLend {
     }
 }
 
-/// One admin request on its real ticket; all input and output allocations belong to the loan.
 fn serve(p: &Plugin<Plane>, d: &Arc<Dispatcher>, request: Option<&ServeFirst>) -> String {
     let (lend, f) = ServeLend::frame(request);
     let (c, f) = on_ticket_frame(
@@ -1874,7 +1762,6 @@ fn serve(p: &Plugin<Plane>, d: &Arc<Dispatcher>, request: Option<&ServeFirst>) -
     )
 }
 
-/// The step labelled `label`'s answer.
 fn answer<'f>(fold: &'f Fold, label: &str) -> &'f str {
     fold.iter()
         .find(|s| s.label == label)
@@ -1882,7 +1769,6 @@ fn answer<'f>(fold: &'f Fold, label: &str) -> &'f str {
         .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
 }
 
-/// `[[<class>, <amount>], ...]` as a piece's line writes reported units.
 fn reported(v: &Value, what: &str) -> String {
     let units: Vec<String> = pairs(v, what)
         .iter()
@@ -1891,15 +1777,6 @@ fn reported(v: &Value, what: &str) -> String {
     format!("units={units:?}")
 }
 
-/// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: no answer the
-/// kind's check refused (FAULT) but after `close`; the settings judged at `validate`; one `open`
-/// per instance; each generation's snapshot holds the claims the inputs state; a claimed request
-/// arrives READY (over the route the inputs name, when they name one) and an unclaimed one is
-/// refused at its status; the ATTEMPT goes to the far end; the caller's body and the far end's
-/// answer are relayed as the inputs state, with the far end's count REPORTED at its last piece
-/// (whole, paid out through a narrow buffer, and after a short answer's re-call alike); every
-/// session step answers as its `want` states; the refusal speaks the dialect; the lifecycle
-/// answers READY.
 fn contract(fold: &Fold, k: &Value) {
     let at = |label: &str| answer(fold, label);
     let str_of = |v: &Value, what: &str| String::from_utf8(text(v, what)).expect("UTF-8 input");
@@ -2017,7 +1894,7 @@ fn contract(fold: &Fold, k: &Value) {
         !unclaimed.starts_with("Ready ") && unclaimed.ends_with(&format!(" status={status}")),
         "an unclaimed request is refused at {status}: {unclaimed}"
     );
-    // The one-request units, for a plane that serves one (`plane.request_unit`).
+
     if request_unit {
         attempts_and_bodies(fold, k);
 
@@ -2033,7 +1910,6 @@ fn contract(fold: &Fold, k: &Value) {
             "the far end's whole answer, relayed with its count ({units}): {whole}"
         );
 
-        // The narrow answer: its pieces, in order, are the whole answer; only the last is done.
         let more = num(&k["narrow"]["more"], "narrow.more");
         let mut pieces = vec![at("narrow far_end").to_string()];
         pieces.extend((0..more).map(|i| at(&format!("narrow more #{i}")).to_string()));
@@ -2066,7 +1942,6 @@ fn contract(fold: &Fold, k: &Value) {
             pieces[0]
         );
 
-        // The short answer: FAILED with the room it needs and a re-call token, then the whole answer.
         let short = at("far_end short");
         let buffer = Buffer::of(&k["short"]["buffer"], "short.buffer").unwrap_or(Buffer::Units);
         assert!(
@@ -2099,10 +1974,6 @@ fn contract(fold: &Fold, k: &Value) {
     }
 }
 
-/// THE ATTEMPTS AND THE CALLER'S BODIES: each ATTEMPT goes to the far end (or, for a plane that
-/// writes the request on the caller's body, `plane.attempt.to_far_end: false`, is taken with nothing
-/// sent); each unit that arrived (`plane.arrive_each`) arrived READY; every caller's body is
-/// relayed as `request_out`.
 fn attempts_and_bodies(fold: &Fold, k: &Value) {
     let at = |label: &str| answer(fold, label);
     let str_of = |v: &Value, what: &str| String::from_utf8(text(v, what)).expect("UTF-8 input");
@@ -2131,7 +2002,6 @@ fn attempts_and_bodies(fold: &Fold, k: &Value) {
     }
 }
 
-/// Every session step answered as its `want` states (`plane.sessions[].steps[].want`).
 fn sessions_contract(fold: &Fold, sessions: &Value) {
     for s in sessions.as_array().into_iter().flatten() {
         let name = s["name"].as_str().unwrap_or_default();
@@ -2143,7 +2013,6 @@ fn sessions_contract(fold: &Fold, sessions: &Value) {
     }
 }
 
-/// The keys a session step's `want` may name.
 const WANTS: &[&str] = &[
     "outcome",
     "to_far_end",
@@ -2169,8 +2038,6 @@ const WANTS: &[&str] = &[
     "turns",
 ];
 
-/// `line` (step `label`'s answer) answers as `want` states; a step met `short` answered FAILED with
-/// the room it needs and a re-call token first, and `want` is its re-call's answer.
 fn judge(label: &str, line: &str, want: &Value, short: Option<&str>) {
     let want = want
         .as_object()

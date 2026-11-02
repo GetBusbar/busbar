@@ -2,61 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOST CONNECTOR, mechanism-shaped (`BUSBAR-1.6.0.md` THE DESIGN, the connections section):
-//! the ONE connector every plugin of every kind reaches its connections through, whatever wire it
-//! speaks over them. It lives in `abi/host/`, not `abi/transport/`: it is a HOST table any kind
-//! calls (a store, an auth, a secret, an export or a plane plugin), while `abi/transport/` is the
-//! table a transport PLUGIN implements for the connector to build connections from.
-//!
-//! A NEED. Every plugin states what it needs as `(transport, auth)` PER DIRECTION ([`Need`]); the
-//! kernel instantiates it through the connector and never learns the plugin's name or kind.
-//!
-//! THE RULES THE TABLE CARRIES:
-//!
-//! * **The host dials.** The host owns the endpoint list, name resolution to many addresses, their
-//!   order, the connect timeout and keepalive. After its handshake a plugin may reject the endpoint
-//!   it landed on ([`service::REJECT_ENDPOINT`]); the connector closes it and tries the next.
-//! * **Every connection is full-duplex.** A plugin may issue [`service::WRITE`] while a [`service::READ`] on
-//!   the same stream is pending; each carries its own completion handle.
-//! * **Mid-stream security upgrade is ONE generic service** ([`service::UPGRADE_SECURE`]), for any
-//!   wire that negotiates connection security after connecting in the clear. Connection security
-//!   stays core-only: the plugin sends and reads its own negotiation bytes, then asks the host to
-//!   upgrade. After it, [`StreamFacts::peer_cert_hash`] exposes the far end's certificate hash (the
-//!   channel-binding input).
-//! * **Establishment is off the request workers.** Dial, security and the plugin's own
-//!   authentication exchange run on the host's connector lane ([`service::ESTABLISH`], deadline
-//!   class `Connection`); only an established stream's traffic is request-path.
-//! * **One op, one connection.** A request op checks ONE connection out of the host's per-instance
-//!   pool ([`service::CHECKOUT`]) and holds it across every PENDING until READY, FAILED or cancel,
-//!   then checks it back in ([`service::CHECKIN`]). Pool policy (min/max, ping-on-reuse,
-//!   reset-on-return, a local socket for a local endpoint, connect attributes) is HOST config; the
-//!   reset itself is the plugin kind's own op. A write-behind op keeps its connection across reload.
-//! * **A cancelled op's stream is closed, never pooled.** An op the host cancels (its kind's
-//!   disposition `CANCEL_ABANDONED`, `abi::auth`, or any other) may leave its stream mid-exchange
-//!   (half a request written, half a reply unread), so the host never checks it back in nor hands
-//!   it to another op: it is CLOSED. The SDK's parked exchange closes the stream it established
-//!   when the cancel drops it (`abi::sdk::exchange`, on no ticket), and a stream a cancelled op
-//!   still holds is closed with the instance. This host serves no pool at all ([`service::CHECKOUT`]
-//!   and [`service::CHECKIN`] are NULL), so nothing it closes is ever reused.
-//! * **Cancel may need a second stream** to the same endpoint ([`service::SIDE_STREAM`]).
-//! * **Host services:** the process identity (OS user, pid, program name; [`service::IDENTITY`]).
-//!   Random bytes (nonces, key-exchange seeds) come from the ONE random service, the host
-//!   service `random.fill` (`abi/host/service.rs`, `op::RANDOM_FILL`); the connector's
-//!   [`service::RANDOM`] slot is RETIRED: kept for its place in the table, served by no host.
-//! * **The far end's notices and warnings** travel as the metrics-and-diagnostics envelope's `Diag`s, severity `0`/`1`;
-//!   there is no other channel.
-//!
-//! THE CALL SHAPE, shared with the host services (`abi/host/service.rs`). Every service is a
-//! [`ServiceFn`]: `svc(ctx, in, out)`, `extern "C"`, answering the mechanism's outcome. `in` leads
-//! with a [`ServiceHead`] carrying the service's completion handle; a service that cannot finish answers PENDING, wakes the handle's ticket, and
-//! on resume the plugin re-issues the SAME handle and receives the stored result — the host never
-//! runs a service twice. A call with `handle.ticket` = `Ticket::NONE` may not pend.
-//!
-//! [`crate::abi::mechanism::ticket::HostTables::conns`] hands this table to every instance that
-//! declared a need.
 
-// THE SHARED CALL SHAPE. In a connector answer, `ServiceOut::value` is the stream a service produced
-// (`ESTABLISH`, `REJECT_ENDPOINT`, `SIDE_STREAM`, `CHECKOUT`), `0` otherwise, and `ServiceOut::len`
-// the bytes moved (`READ`: `0` = the end; `WRITE`).
 pub use crate::abi::host::service::{ServiceFn, ServiceHead, ServiceOut};
 use crate::abi::mechanism::call::{AbiStr, Blob};
 
@@ -68,15 +14,15 @@ pub const DIRECTION_OUTBOUND: u32 = 2;
 /// [`Need::egress_class`]: the connector's default class.
 pub const EGRESS_DEFAULT: u32 = 0;
 /// [`Need::egress_class`] `provider`: upstreams a plane reaches — the allow-list, and cloud
-/// metadata hosts only when allowed.
+
 pub const EGRESS_PROVIDER: u32 = 1;
 /// [`Need::egress_class`] `operator-infrastructure`: databases, secret services, directories —
-/// private, loopback and plaintext allowed; pinned; cloud metadata hosts refused.
+
 pub const EGRESS_OPERATOR_INFRASTRUCTURE: u32 = 2;
 /// [`Need::egress_class`] `open-web`: public destinations over a secure connection only.
 pub const EGRESS_OPEN_WEB: u32 = 3;
 /// [`Need::egress_class`] `loopback-allowed`: a secure connection, or plaintext to loopback; the
-/// node's own ports refused.
+
 pub const EGRESS_LOOPBACK_ALLOWED: u32 = 4;
 
 /// ONE NEED, declared once per direction: which transport claim carries it and which auth style
@@ -132,8 +78,7 @@ pub struct Need {
 
 impl Need {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Need { …, ..Need::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         direction: 0,
         egress_class: 0,
@@ -153,7 +98,7 @@ impl Need {
 }
 
 /// HOW THE NEED ROW IS MADE: from [`Need::EMPTY`], its plain fields set directly
-/// and each list by its setter, to items that live for the program.
+
 impl Need {
     /// Nothing stated: every string absent, every list empty, every number zero.
     pub const EMPTY: Need = Need {
@@ -185,19 +130,15 @@ impl Need {
 pub const KEEP_NAMED: u32 = 0;
 
 /// [`Need::keep_mode`]: every response head field crosses but the kernel's [`ALWAYS_DENIED`] and
-/// the plugin's [`Need::deny_response_headers`]. A same-dialect relay is the far end's head
-/// (OWNER ruling 2026-10-02, dialect fidelity F2: relay every upstream header except the governed
-/// set).
+
 pub const KEEP_ALL_EXCEPT_DENIED: u32 = 1;
 
 /// What [`KEEP_ALL_EXCEPT_DENIED`] always strips, the kernel's list: every hop-by-hop field
-/// ([`crate::abi::transport::fields::HOP_BY_HOP`], and every field a `connection` field names), and
-/// the framing the kernel re-derives: `content-length` and `content-encoding`.
+
 pub const ALWAYS_DENIED: &[&str] = &["content-length", "content-encoding"];
 
 /// Whether the response head field `name` (lower-case) crosses to the plugin under a need's
-/// `mode`, its `kept` names ([`KEEP_NAMED`]) or its `denied` names ([`KEEP_ALL_EXCEPT_DENIED`]);
-/// `nominated` are the answer's `connection` field values. An unknown mode keeps nothing.
+
 #[must_use]
 pub fn keeps_response_field<'a>(
     mode: u32,
@@ -221,7 +162,7 @@ pub fn keeps_response_field<'a>(
 pub const KEEP_RESPONSE_HEADERS_MAX: usize = 32;
 
 /// The response head fields no need may keep: hop-by-hop fields (the connection's, not the
-/// answer's) and fields that carry a credential or a session secret.
+
 pub const NEVER_KEPT: &[&str] = &[
     "connection",
     "keep-alive",
@@ -264,14 +205,14 @@ pub mod service {
     /// Close a stream.
     pub const CLOSE: u32 = 9;
     /// RETIRED: random bytes come from the one random service, the host service `random.fill`
-    /// (`op::RANDOM_FILL`). The number and its slot keep their place; no host serves it.
+
     pub const RANDOM: u32 = 10;
     /// The process identity.
     pub const IDENTITY: u32 = 11;
     /// Read the next piece of the far end's reply to what the plugin sent, with its descriptor.
     pub const READ_REPLY: u32 = 12;
     /// Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its
-    /// own wire head from it. A stream that is not framed refuses it (use [`WRITE`]).
+
     pub const WRITE_REQUEST: u32 = 13;
 }
 
@@ -312,26 +253,18 @@ pub struct EstablishIn {
 pub const WITHIN_SEPARATOR: &str = ",";
 
 /// THE REQUEST FIELD BY WHICH A PLUGIN PINS A REQUEST'S DIAL (SEC-8F1), the request-path twin of
-/// [`EstablishIn::within`] for a request the HOST dials: a field of this name in a request bound
-/// for the far end (a plane's attempt answer, [`crate::abi::plane::EMIT_TO_FAR_END`]) is the
-/// host's, never the far end's, exactly as [`crate::abi::auth::SCOPE_REQUEST_FIELD`] is. Its value
-/// is the address set the dial must land on, IP literals joined by [`WITHIN_SEPARATOR`] (the
-/// addresses `dest.judge` wrote under `DEST_RESOLVE`). The host takes it out of the request before
-/// anything is encoded and holds the address its own judgement pins at dial time against it, before
-/// any byte is written: outside it, nothing is sent. An entry that is not an IP literal sends
-/// nothing either. Stated twice, the last stands. It can only narrow where a request lands, never
-/// widen it; no wire ever carries it.
+
 pub const WITHIN_REQUEST_FIELD: &str = "busbar-dial-within";
 
 /// Whether the request field `name` is [`WITHIN_REQUEST_FIELD`] (a field name compares
-/// case-insensitively).
+
 #[must_use]
 pub fn is_within_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(WITHIN_REQUEST_FIELD.as_bytes())
 }
 
 /// The address set a [`WITHIN_REQUEST_FIELD`] value states: `None` when an entry is not an IP
-/// literal (the request is then sent nowhere); an empty value states none.
+
 #[must_use]
 pub fn within_of(value: &[u8]) -> Option<Vec<std::net::IpAddr>> {
     let text = std::str::from_utf8(value).ok()?;
@@ -357,13 +290,10 @@ pub const CAUSE_FRAMER: u64 = 5;
 /// `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent.
 pub const CAUSE_CREDENTIAL_UNAVAILABLE: u64 = 6;
 /// `ServiceOut::value` on a refusal: the request's auth refused it; nothing was sent.
-///
-/// An auth outcome, never the destination failing: the host records nothing against the
-/// destination for it.
+
 pub const CAUSE_AUTH_REFUSED: u64 = 7;
 /// `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent.
-///
-/// An auth outcome, never the destination failing, as [`CAUSE_AUTH_REFUSED`].
+
 pub const CAUSE_AUTH_FAILED: u64 = 8;
 
 /// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
@@ -414,10 +344,7 @@ pub struct UpgradeIn {
 }
 
 /// [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's
-/// `rediss://…#insecure`; ARCHITECT ruling 2026-10-03 on Q-L16-4). An operator opt-in the plugin
-/// sets from its settings, never a default: honoured ONLY for a need of class
-/// [`EGRESS_OPERATOR_INFRASTRUCTURE`] (any other is REFUSED), and the host logs a WARN naming the
-/// instance the first time it honours it.
+
 pub const UPGRADE_VERIFY_OFF: u32 = 1;
 
 /// The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`.
@@ -536,7 +463,7 @@ pub struct IdentityIn {
 }
 
 /// [`ReplyPiece::kind`]: the terminal piece of a reply with no head — what became of what the
-/// plugin sent (delivered or not), in [`ReplyPiece::code`] and [`ReplyPiece::reason`].
+
 pub const REPLY_ACK: u32 = 1;
 /// [`ReplyPiece::kind`]: the reply's head: its code, its reason and its fields.
 pub const REPLY_HEAD: u32 = 2;
@@ -615,8 +542,7 @@ pub struct RequestPiece {
 
 impl RequestPiece {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `RequestPiece { …, ..RequestPiece::ZERO }` so a field appended later
-    /// reads as not declared.
+
     pub const ZERO: Self = Self {
         kind: 0,
         _reserved: 0,

@@ -1,23 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A LOADER-BACKED ROOT FOR THE IN-PROCESS TESTS OF THIS PACKAGE.
-//!
-//! The kernel never names the loader (BUSBAR-1.6.0.md THE DESIGN l.322), so a test build of the
-//! kernel stands in-process doubles in for the composition root's seams: its registry build admits
-//! no dropped-in tarball, and its auth axis opens only the kit's linked doubles. A test here that
-//! drives the kernel in process over a REAL dropped-in plugin (a signed tarball the loader scans, a
-//! cdylib the loader loads) installs this instead — the loader's own registry build and auth rows,
-//! as the root composes them — through the kernel's test seams
-//! (`busbar_kernel_testkit::test_support::{install_test_root, install_test_auth_axis}`, read ahead of the
-//! stand-in). An integration test cannot call the root's code (the root is a binary), so this is the
-//! root's composition restated over the loader; the root's own unit tests prove the root's.
-//!
-//! The trust a scan judges under is the test build's: the `plugins:` block through the loader's
-//! `TrustPolicy::from_config`, its first-party key [`release_key`] (the embedded release key's
-//! private half no test holds).
-
-// Each test binary that includes this module uses its own part of it.
 #![allow(dead_code)]
 
 use std::sync::Arc;
@@ -30,18 +13,11 @@ use busbar_plugin_loader::boot::{Build, Note, Scan};
 use busbar_plugin_loader::sign::{SigningKey, TrustInput, TrustPolicy};
 use busbar_plugin_loader::{LinkedPlugin, PluginRegistry};
 
-/// The test build's release key: the first-party key [`trust_policy`] holds in place of the
-/// embedded one. A test signs a first-party plugin with it (publisher `busbar`).
 #[must_use]
 pub fn release_key() -> SigningKey {
     SigningKey::from_bytes(&[0x5a; 32])
 }
 
-/// The test build's trust resolution: `cfg` through the loader's `TrustPolicy::from_config`, as the
-/// root resolves it, its first-party key [`release_key`].
-///
-/// # Errors
-/// A reserved or malformed publisher.
 pub fn trust_policy(cfg: &PluginsCfg) -> Result<TrustPolicy, String> {
     let mut policy = TrustPolicy::from_config(TrustInput {
         publishers: &cfg.publisher_keys(),
@@ -55,7 +31,6 @@ pub fn trust_policy(cfg: &PluginsCfg) -> Result<TrustPolicy, String> {
     Ok(policy)
 }
 
-/// The registry row one of the kernel's linked rows states (the root's `boot::linked_row`).
 fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     let row = match *row {
         LinkedRow::Store((key, ephemeral, door, canonical)) => {
@@ -69,7 +44,6 @@ fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     row.with_former_names(former)
 }
 
-/// The loader's registry build over the kernel's linked rows (the root's `boot::registry_rows`).
 fn registry_rows(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
@@ -108,13 +82,11 @@ fn registry_rows(
     Ok(Arc::new(registry))
 }
 
-/// Whether a dropped-in `kind: hook` row of `rows` answers `module` (the root's `hook_answers`).
 fn hook_answers(rows: &dyn PluginRows, module: &str) -> bool {
     busbar_plugin_loader::rows::registry_of(rows)
         .is_some_and(|registry| busbar_plugin_loader::hook_door::dropped_answers(registry, module))
 }
 
-/// The registry of this build's linked rows alone.
 fn linked_registry() -> PluginRegistry {
     let linked = busbar_kernel::preflight::linked_rows()
         .iter()
@@ -125,9 +97,6 @@ fn linked_registry() -> PluginRegistry {
         .unwrap_or_else(|_| PluginRegistry::empty())
 }
 
-/// The loader's auth rows over `rows` on a dispatcher of their own, lent the kernel's seal, with the
-/// kit's outbound double serving every outbound style and its carriers where no row states them
-/// (what the kernel's stand-in axis answers for a build that links no auth plugin).
 fn auth_axis(rows: Arc<dyn PluginRows>) -> Arc<dyn AuthAxis> {
     let registry = busbar_plugin_loader::rows::registry_arc(rows)
         .unwrap_or_else(|| Arc::new(linked_registry()));
@@ -137,7 +106,6 @@ fn auth_axis(rows: Arc<dyn PluginRows>) -> Arc<dyn AuthAxis> {
     )))
 }
 
-/// The loader's auth rows, the kit's outbound double beside them.
 struct LoaderAuth(Arc<dyn AuthAxis>);
 
 impl AuthAxis for LoaderAuth {
@@ -195,19 +163,14 @@ impl AuthAxis for LoaderAuth {
     }
 }
 
-/// One FIRST-PARTY export sink a test links: its name, its alias and its door (`plugin_door!`).
 pub type ExportDoor = (
     &'static str,
     &'static str,
     busbar_contract::abi::mechanism::door::DoorFn,
 );
 
-/// The export sinks [`link_exports`] linked, as a registry held for the test binary's life.
 static EXPORT_REGISTRY: std::sync::OnceLock<PluginRegistry> = std::sync::OnceLock::new();
 
-/// The loader's export rows over [`EXPORT_REGISTRY`], on a dispatcher of their own carrying the
-/// kernel's host services (so an opened sink's `serve` reads the host snapshot service as it does in
-/// a booted process).
 fn export_rows() -> Option<busbar_plugin_loader::export_axis::ExportRows<'static>> {
     static DISPATCHER: std::sync::OnceLock<Arc<busbar_plugin_loader::dispatch::Dispatcher>> =
         std::sync::OnceLock::new();
@@ -224,16 +187,12 @@ fn export_rows() -> Option<busbar_plugin_loader::export_axis::ExportRows<'static
     ))
 }
 
-/// The export axis: the linked sinks over the loader, and the kernel kit's stand-in for every word
-/// none of them answers.
 struct LoaderExports;
 
-/// The kit's stand-in export axis.
 fn kit() -> &'static dyn busbar_contract::export_calls::ExportAxis {
     &busbar_kernel_testkit::test_support::export_axis::STAND_IN
 }
 
-/// Whether a linked sink answers `module`.
 fn sink(module: &str) -> Option<busbar_plugin_loader::export_axis::ExportRows<'static>> {
     export_rows().filter(|r| r.linked(module))
 }
@@ -313,12 +272,8 @@ impl busbar_contract::export_calls::ExportAxis for LoaderExports {
     }
 }
 
-/// The axis [`install`] installs.
 static EXPORTS: LoaderExports = LoaderExports;
 
-/// INSTALL the loader-backed registry build, auth axis and export axis over the kernel's stand-in
-/// (the first install stands). Call it at the top of every test that needs them, before the test
-/// touches the kernel.
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -335,13 +290,6 @@ pub fn install() {
     });
 }
 
-/// LINK `exports` on the installed export axis as the composition root links its sinks (each a
-/// first-party row over its door), ahead of the kit's stand-in. The first link stands.
-///
-/// The kit's stand-in is installed with them: its neutral rows answer every other FIRST-PARTY
-/// sink's frozen 1.5.5 module word (`request-log-file` among them), as a linked build resolves
-/// each, so a configuration naming one resolves here as it did when the kit linked these sinks
-/// itself (`install_export_axis`).
 pub fn link_exports(exports: &'static [ExportDoor]) {
     install();
     busbar_kernel_testkit::test_support::export_axis::install_export_axis();
@@ -356,19 +304,11 @@ pub fn link_exports(exports: &'static [ExportDoor]) {
     });
 }
 
-// ── THE PLUGIN ADMISSION, OVER THE LOADER ───────────────────────────────────────────────────────
-//
-// The composition root's admission (`crates/busbar/src/root/admission.rs`, `ADMISSION`) restated
-// over the loader under the test build's trust ([`trust_policy`]), for the in-process admin tests
-// of this package: the same pipeline in the same words. The root's own unit tests prove the root's.
-
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
 use busbar_plugin_loader::sign::{evaluate, validate_structure, Manifest, Verdict, HOST_IDENTITY};
 
-/// The admission an admin test's `TestApp` carries (`TestApp::plugin_admission`).
 pub static ADMISSION: LoaderAdmission = LoaderAdmission;
 
-/// What a manifest states, in the kernel's words.
 fn stated(m: &Manifest) -> Stated {
     Stated {
         name: m.name.clone(),
@@ -381,7 +321,6 @@ fn stated(m: &Manifest) -> Stated {
     }
 }
 
-/// `tarball` unpacked and its manifest checked (the root's `unpack_checked`).
 fn unpack_checked(
     tarball: &[u8],
     what: &str,

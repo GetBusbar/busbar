@@ -58,14 +58,12 @@ use busbar_contract::abi::sdk::out::Scalar;
 use super::{zeroed, AllZero};
 
 mod sealed {
-    /// Only this module implements it.
+
     pub trait Lendable {}
-    /// Only this module implements it.
+
     pub trait Settled {}
 }
 
-/// An element a [`TestIn`] list may name: a number, or a row of numbers, sealed strings and sealed
-/// payloads alone, so no pointer a test could state by hand. Sealed.
 pub trait Lendable: sealed::Lendable + Copy + 'static {}
 macro_rules! lendable {
     ($($t:ty),+ $(,)?) => {$(
@@ -89,7 +87,6 @@ lendable!(
     busbar_contract::abi::export::CheckInstance,
 );
 
-/// An `in` with a settings payload: its builder states it as JSON. Sealed.
 pub trait Settled: sealed::Settled + AbiIn {
     /// The settings field.
     #[doc(hidden)]
@@ -136,13 +133,10 @@ impl<I: AllZero> Default for TestIn<'_, I> {
 }
 
 impl<I: 'static> TestIn<'_, I> {
-    /// Every pointer and length pair an `I` carries, its embedded structs' included:
-    /// `(pointer's offset, length's offset, length's width)`.
     fn pairs() -> Vec<(usize, usize, usize)> {
         busbar_contract::abi::sdk::test_support::lent_pairs(std::any::TypeId::of::<I>())
     }
 
-    /// The `width`-byte unsigned value at byte `at` of the `in`.
     fn read(&self, at: usize, width: usize) -> u64 {
         // SAFETY: `at + width` lies inside `self.input` (an offset `offset` checked, or one of the
         // `in`'s own pairs), and every byte of an `AllZero` `in` is initialised.
@@ -158,13 +152,6 @@ impl<I: 'static> TestIn<'_, I> {
         }
     }
 
-    /// THE `in` IS WHAT ITS BUILDERS SET (status row 194): every pointer and length pair holds what
-    /// a builder wrote there together, and every other pair is NULL and empty. A call runs this
-    /// before the slot reads a byte.
-    ///
-    /// # Panics
-    ///
-    /// A pair holds anything else.
     pub(crate) fn check(&self) {
         let word = size_of::<usize>();
         let mut pairs = Self::pairs();
@@ -173,8 +160,7 @@ impl<I: 'static> TestIn<'_, I> {
             let now = (self.read(p, word), self.read(n, w));
             let set = match self.lent.iter().find(|e| e.0 == p) {
                 Some(e) => (e.3, e.4),
-                // A pair no builder set is NULL; its length is empty, unless another list the
-                // builders set shares it (a decide's candidates and their dynamics).
+
                 None => match self.lent.iter().find(|e| e.1 == n) {
                     Some(e) => (0, e.4),
                     None => (0, 0),
@@ -190,7 +176,6 @@ impl<I: 'static> TestIn<'_, I> {
 }
 
 impl<'a, I: AllZero> TestIn<'a, I> {
-    /// The all-zero `in`: every number `0`, every pointer NULL, every list empty.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -201,8 +186,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         }
     }
 
-    /// The byte offset of the field `pick` names, checked to lie inside an `I`; `pick` is handed a
-    /// zeroed `I`, never this one.
     fn offset<F>(pick: impl FnOnce(&I) -> &F) -> usize {
         let blank: I = zeroed();
         let base = ptr::from_ref(&blank) as usize;
@@ -214,12 +197,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         at - base
     }
 
-    /// The width of the length at `len` that is the pointer at `ptr`'s own: a pair the `in`
-    /// states, never two fields a test names apart.
-    ///
-    /// # Panics
-    ///
-    /// The two are not one of the `in`'s pairs.
     fn paired(ptr: usize, len: usize) -> usize {
         Self::pairs()
             .into_iter()
@@ -233,7 +210,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
             })
     }
 
-    /// Keep what the builders just wrote at the pair `ptr`/`len`.
     fn record(&mut self, ptr: usize, len: usize, width: usize) {
         let word = size_of::<usize>();
         let stated = (self.read(ptr, word), self.read(len, width));
@@ -241,13 +217,11 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self.lent.push((ptr, len, width, stated.0, stated.1));
     }
 
-    /// Write `value` into the field `pick` names.
     fn put<F>(&mut self, pick: impl FnOnce(&I) -> &F, value: F) {
         let at = Self::offset(pick);
         self.put_at(at, value);
     }
 
-    /// Write `value` at byte `at` of the `in`, the offset of a field of type `F` ([`Self::offset`]).
     fn put_at<F>(&mut self, at: usize, value: F) {
         // SAFETY: `at` is the offset of a field of type `F` inside `self.input` (checked by
         // `offset`); `write_unaligned` needs no alignment and drops nothing (`F` here is plain
@@ -261,7 +235,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         }
     }
 
-    /// Set the pointer-free field `pick` names (a [`Scalar`]: a number, a span, a ticket).
     #[must_use]
     pub fn set<F: Scalar>(mut self, pick: impl FnOnce(&I) -> &F, value: F) -> Self {
         let at = Self::offset(pick);
@@ -283,7 +256,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self
     }
 
-    /// Set the string field `pick` names to `bytes`, borrowed for `'a`.
     #[must_use]
     pub fn string(mut self, pick: impl FnOnce(&I) -> &AbiStr, bytes: &'a [u8]) -> Self {
         let at = Self::offset(pick);
@@ -292,7 +264,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self
     }
 
-    /// Set the payload field `pick` names to `bytes` of `fmt`, borrowed for `'a`.
     #[must_use]
     pub fn blob(mut self, pick: impl FnOnce(&I) -> &Blob, bytes: &'a [u8], fmt: u32) -> Self {
         let at = Self::offset(pick);
@@ -301,7 +272,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self
     }
 
-    /// Set the list `ptr`/`len` name to `items`, borrowed for `'a`.
     #[must_use]
     pub fn list<T: Lendable>(
         mut self,
@@ -317,8 +287,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self
     }
 
-    /// Set the list of strings `ptr`/`len` name to one string over each of `items`, borrowed for
-    /// `'a`; the list itself is held by the `TestIn`.
     #[must_use]
     pub fn strings(
         mut self,
@@ -336,8 +304,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self
     }
 
-    /// Set the list of payloads `ptr`/`len` name to one payload of `fmt` over each of `items`,
-    /// borrowed for `'a`; the list itself is held by the `TestIn`.
     #[must_use]
     pub fn blobs(
         mut self,
@@ -356,8 +322,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self
     }
 
-    /// Set the list of fields `ptr`/`len` name to one field over each `(name, value)` of
-    /// `items`, borrowed for `'a`; the list itself is held by the `TestIn`.
     #[must_use]
     pub fn fields(
         mut self,
@@ -381,12 +345,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self
     }
 
-    /// Lend the host buffer `ptr`/`cap` name: `buf`, borrowed mutably for `'a`, for the slot to
-    /// fill. A test reads what it wrote through [`super::written`] once the call returns.
-    ///
-    /// # Panics
-    ///
-    /// `buf` is longer than the capacity field can state.
     #[must_use]
     pub fn buffer<T: Scalar, C: Scalar + TryFrom<usize>>(
         mut self,
@@ -410,8 +368,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
         self
     }
 
-    /// Point the field `ptr` names at `nested`, an `in` struct built the same way and borrowed for
-    /// `'a` (a dial's destination, a datagram lane).
     #[must_use]
     pub fn nested<T: AllZero>(
         mut self,
@@ -425,7 +381,6 @@ impl<'a, I: AllZero> TestIn<'a, I> {
 }
 
 impl<'a, I: Settled + AllZero> TestIn<'a, I> {
-    /// The `in`'s settings: `json`, borrowed for `'a`.
     #[must_use]
     pub fn settings(mut self, json: &'a [u8]) -> Self {
         let field = ptr::from_mut(self.input.settings_field()) as usize;
@@ -436,7 +391,6 @@ impl<'a, I: Settled + AllZero> TestIn<'a, I> {
     }
 }
 
-/// A string over `bytes`, which the caller's `TestIn<'a, _>` borrows for `'a`.
 fn lend_str(bytes: &[u8]) -> AbiStr {
     // SAFETY: every caller stores the string in a `TestIn` whose `'a` the bytes are borrowed for
     // (or in a list that `TestIn` holds), so they outlive every read the slot makes during the
@@ -444,7 +398,6 @@ fn lend_str(bytes: &[u8]) -> AbiStr {
     unsafe { AbiStr::from_raw_parts(bytes.as_ptr(), bytes.len()) }
 }
 
-/// As [`lend_str`], a payload of `fmt`.
 fn lend_blob(bytes: &[u8], fmt: u32) -> Blob {
     // SAFETY: as `lend_str`.
     unsafe { Blob::from_raw_parts(bytes.as_ptr(), bytes.len(), fmt, 0) }

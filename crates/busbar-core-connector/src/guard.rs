@@ -2,55 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DESTINATION GUARD: the one check every outbound connection asks, whatever dials it. It is
-//! the only code that decides whether an address may be dialled.
-//!
-//! * Every name is compared in ONE form (`norm`, `busbar_contract::net::judged_host`): the ASCII
-//!   name or address a URL client dials, UTS #46 to-ASCII and `url`'s IPv4 reading, so
-//!   `ｌｏｃａｌｈｏｓｔ` is `localhost` and `①⑥⑨.②⑤④.①⑥⑨.②⑤④` is `169.254.169.254`. A host that maps
-//!   to nothing, or holds a `%` escape outside an IPv6 zone id (`%6c%6fcalhost`, which a decoding
-//!   client dials as `localhost`), is refused as unjudgeable ([`DEST_NO_HOST`]) before any other
-//!   rule is asked.
-//! * [`Guard::judge_name`] runs BEFORE resolution: a cloud-metadata name, an alternate IPv4
-//!   spelling, a `localhost` name and an IP literal (judged as its own answer) are decided here,
-//!   at once, so a hostile name never reaches a resolver.
-//! * [`Guard::judge_answer`] runs AFTER resolution, over EVERY address the name answered: one
-//!   refused address refuses the whole answer (a mixed answer is a hostile answer: a rebinding
-//!   resolver answers a public and an internal address together and lets the connect pick).
-//!   The caller then dials exactly an address judged here (resolve, pin, dial the pin).
-//!
-//! Per address, in order: the allowlist (`advanced.allow_destinations`) admits (a denylisted
-//! address only by an entry naming it exactly, below); in the provider
-//! class only, the 1.5.5 metadata carve-outs admit (below); then the extra refusals
-//! (`security.blocked_metadata_hosts`); then cloud metadata is refused, whatever
-//! `block_private_addresses` says; then, where `block_private_addresses` holds and the dial's class
-//! refuses private addresses ([`PRIVATE_REFUSED_IN`]: the provider class, and a destination from
-//! request data or the network), every private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
-//! unique-local, unspecified and the rest of that list); in the loopback-allowed class, where
-//! `block_private_addresses` holds, every private address but loopback ([`is_loopback`]: the class
-//! is named for it, and 1.5.5 reached a loopback collector with no configuration).
-//! A HOST allowlist entry never admits a metadata answer: it is how internal DNS is
-//! admitted, and it must not become a way to reach IMDS by a rebinding answer. The denylist (cloud
-//! metadata and `security.blocked_metadata_hosts`) takes precedence over every private-range
-//! allowance: an IP/CIDR entry admits a denylisted address only when it names exactly that address
-//! (a bare IP, a /32 or a /128 equal to it), never because a wider range covers it, so
-//! `100.64.0.0/10` does not admit `100.100.100.200` and `169.254.0.0/16` does not admit
-//! `169.254.169.254`.
-//!
-//! THE 1.5.5 CARVE-OUTS speak for provider dials only, as they did in 1.5.5, where they were read
-//! for a provider's own URLs and nowhere else: a provider's `allow_metadata_hosts` admits only for
-//! a host that provider's own URLs name (`base_url`, `token_url`), `security.allow_metadata_hosts`
-//! and `security.allow_all_metadata` for any provider dial. No other class (the default class,
-//! open-web, loopback-allowed, operator infrastructure) admits metadata through any carve-out;
-//! operator infrastructure refuses it whatever they say. IPv6 link-local (fe80::/10) is refused in
-//! every class as metadata is (the same `DEST_METADATA` verdict the endpoint check gave it), and
-//! admitted only by an IP or CIDR entry naming it (the allowlist's, or a provider carve-out's).
-//! This guard is the ONLY metadata and link-local refusal a judged dial meets: the endpoint check
-//! ahead of it reads only that the target names a host (`crate::endpoint::named`), so the
-//! carve-outs and the allowlist reach every dial. The carve-outs and the extra refusals are re-read
-//! at every config commit ([`Guard::publish`]); the allowlist and `block_private_addresses` are
-//! fixed at boot.
-//!
-//! The ranges and names are `busbar_contract::net`'s, read only here.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -67,21 +18,7 @@ use busbar_contract::net::{
 use busbar_kernel::config::Destinations;
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
-/// for (where `block_private_addresses` holds; the allowlist is the escape hatch).
-///
-/// - `provider` (THE DESIGN §5 destination guard, scoped by
-///   the rule "the 'refused unless allowlisted' default applies to the
-///   provider and IdP egress classes only"): a provider dial, its configured `base_url` included, is
-///   refused a private or loopback address unless `advanced.allow_destinations` names it.
-/// - the default class and `open-web`: a destination from request data or the network.
-///
-/// Not here: `operator-infrastructure` (private, loopback and plaintext allowed; pinned) and
-/// `loopback-allowed`, which the guard's address arm holds to the same refusal LOOPBACK EXCEPTED
-/// (https to any host, the destination guard still applying; 1.5.5 refused a private, CGNAT,
-/// unique-local or link-local collector and admitted a loopback one, v1.5.5
-/// `crates/busbar/src/observability.rs:620-633`, `:676-728`). Cloud metadata is refused in every
-/// class whatever this table says, a configured NAME rebinding to it included, unless an IP
-/// allowlist entry (or a /32 or /128) names exactly that address (or, for a provider dial only, a 1.5.5 carve-out).
+
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
     connector::EGRESS_DEFAULT,
     CARVE_OUT_CLASS,
@@ -89,20 +26,15 @@ pub const PRIVATE_REFUSED_IN: &[u32] = &[
 ];
 
 /// The one class the 1.5.5 metadata carve-outs are read in ([`Metadata::lifts`]): the provider
-/// class, as 1.5.5 read them for provider URLs only. The guard speaks in classes; this is the
-/// class's one spelling here.
+
 const CARVE_OUT_CLASS: u32 = connector::EGRESS_PROVIDER;
 
 /// The loopback-allowed class: private addresses refused but loopback, and an alternate IPv4
-/// spelling judged as the address it spells ([`Guard::judge_name_with`]).
+
 const LOOPBACK_CLASS: u32 = connector::EGRESS_LOOPBACK_ALLOWED;
 
 /// LOOPBACK AS 1.5.5'S COLLECTOR GUARD READ IT (v1.5.5 `crates/busbar/src/observability.rs:620-633`
-/// `otlp_addr_is_internal`, `:643-664` `otlp_host_is_loopback`): IPv4 `127.0.0.0/8`, IPv6 `::1`,
-/// and the IPv4-mapped and -compatible spellings of a `127.0.0.0/8` address (`::ffff:127.0.0.1`,
-/// `::127.0.0.1`). `::1` is asked first: it reads as `0.0.0.1` through `to_ipv4`. The
-/// loopback-allowed class's plaintext rule and private refusal, and the node's own ports, all read
-/// loopback through this one predicate.
+
 #[must_use]
 pub fn is_loopback(addr: IpAddr) -> bool {
     match addr {
@@ -112,13 +44,7 @@ pub fn is_loopback(addr: IpAddr) -> bool {
 }
 
 /// A HOST WRITTEN AS LOOPBACK, as 1.5.5's collector and webrequest guards read the URL's host for
-/// their plaintext rule (v1.5.5 `crates/busbar/src/observability.rs:643-664` `otlp_host_is_loopback`;
-/// busbar-hook-webrequest v1.0.6 `src/net_guard/mod.rs:155` `host_is_loopback`): a literal, in any
-/// spelling, of a loopback address ([`is_loopback`]: `127.0.0.1`, `127.1`, `2130706433`, `[::1]`,
-/// `[::ffff:127.0.0.1]`, …), or the RFC 6761 `localhost` / `*.localhost` names, any case, one
-/// trailing root dot ignored. Any other name is not loopback whatever it resolves to: 1.5.5 refused
-/// `http://` to it ("must use https:// for a non-loopback collector") before resolving anything.
-/// The loopback-allowed class's plaintext rule reads loopback through this one predicate.
+
 #[must_use]
 pub fn names_loopback(host: &str) -> bool {
     let Some(name) = norm(host) else {
@@ -131,14 +57,11 @@ pub fn names_loopback(host: &str) -> bool {
 }
 
 /// The classes a need whose config names its target is lifted out of, to operator infrastructure:
-/// the egress default only. A configured OPEN-WEB target keeps the open-web class, public https
-/// only, as 1.5.5's webhook export refused a private or loopback URL; a provider dial is refused a
-/// private address unless allowlisted whether or not its config names the target.
+
 const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,
-/// `configured`, in the egress default class) the operator's own destination, judged as operator
-/// infrastructure (THE DESIGN §5 egress-class table). An open-web or provider need keeps its class.
+
 #[must_use]
 pub fn judged_class(class: u32, configured: bool) -> u32 {
     let trusted = connector::EGRESS_OPERATOR_INFRASTRUCTURE;
@@ -233,7 +156,7 @@ impl Entry {
         let Entry::Net(net, len) = self else {
             return false;
         };
-        // A v4 network covers the mapped, compatible and NAT64 spellings of its addresses too.
+
         match (*net, canonical(addr), addr) {
             (IpAddr::V4(n), IpAddr::V4(a), _) => prefix_eq(&n.octets(), &a.octets(), *len),
             (IpAddr::V6(n), _, IpAddr::V6(a)) => prefix_eq(&n.octets(), &a.octets(), *len),
@@ -242,7 +165,7 @@ impl Entry {
     }
 
     /// Whether this entry NAMES `addr` itself: a bare IP, or a /32 or /128, equal to it (in any
-    /// spelling [`Entry::covers`] reads). A wider network covers addresses without naming them.
+
     fn pins(&self, addr: IpAddr) -> bool {
         matches!(self, Entry::Net(net, len) if *len == full(*net)) && self.covers(addr)
     }
@@ -263,19 +186,13 @@ fn prefix_eq(net: &[u8], addr: &[u8], len: u8) -> bool {
 }
 
 /// THE ONE MAPPING every name the guard compares goes through, a target's and a configured
-/// entry's alike: unbracketed, mapped to the ASCII name or address a URL client dials
-/// (`busbar_contract::net::judged_host`: UTS #46 to-ASCII, held to `url` 2.5.8's IPv4 reading),
-/// lowercased, one trailing dot dropped. An ASCII host, an alternate IPv4 spelling and an IPv6
-/// literal (a zone id included) are what this compared before, byte for byte. `None`: a host that
-/// maps to nothing the guard can judge, refused as such ([`DEST_NO_HOST`]).
+
 fn norm(host: &str) -> Option<String> {
     judged_host(host).ok()
 }
 
 /// An `advanced.allow_destinations` entry as [`strict`] reads it: unbracketed, lowercased, one
-/// trailing dot dropped. Not mapped: a name entry must be ASCII letters, digits, `-` and `_`
-/// ([`is_name`]) and an address entry parses as an address, so every entry admitted is ASCII,
-/// which [`norm`] reads as it is written; a non-ASCII entry is refused at boot as before.
+
 fn fold(entry: &str) -> String {
     let h = entry.trim_start_matches('[').trim_end_matches(']');
     h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
@@ -291,11 +208,7 @@ fn full(ip: IpAddr) -> u8 {
 }
 
 /// A 1.5.5 list entry (`allow_metadata_hosts`, `blocked_metadata_hosts`), read as 1.5.5 read it:
-/// an address in any literal spelling, else a name, mapped as a target is ([`norm`]) so the two are
-/// compared in one form. Never refused here: their validation runs at configuration time, which
-/// refuses, naming it, every entry this mapping reads as nothing (UTS #46 refuses it, it holds a
-/// `%` outside an IPv6 zone id, or it ends in a number that is no IPv4 address); one that reaches
-/// here anyway names no target the guard admits to judgement, so it is dropped.
+
 fn legacy(entry: &str) -> Option<Entry> {
     let e = norm(entry.trim())?;
     if e.is_empty() {
@@ -391,7 +304,6 @@ impl Metadata {
     fn from_config(d: &Destinations) -> Metadata {
         let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
         for (url, own) in &d.url_allow {
-            // The one http(s) URL reader; a URL it cannot read names no host, so carves nothing.
             let read = busbar_kernel_egress::trust::net::split_url(url).ok();
             if let Some(host) = read.and_then(|(_, host, _, _)| norm(&host)) {
                 by_host
@@ -409,9 +321,7 @@ impl Metadata {
     }
 
     /// Whether a carve-out lifts the refusal of `name` (normalized) answering `addr` (`None`: the
-    /// name itself) under `class`: in the provider class only, `allow_all`, or an entry of the
-    /// everywhere list or of the providers that name `name` that names the host or the
-    /// address.
+
     fn lifts(&self, name: &str, addr: Option<IpAddr>, class: u32) -> bool {
         if class != CARVE_OUT_CLASS {
             return false;
@@ -426,9 +336,7 @@ impl Metadata {
     }
 
     /// Whether a carve-out ENTRY names `addr` itself for a dial of `name` under `class`: the
-    /// provider class only, an IP entry of the everywhere list or of the providers that name
-    /// `name`. Neither `allow_all_metadata` nor a host entry lifts an address that is not a
-    /// metadata address (IPv6 link-local).
+
     fn carves_address(&self, name: &str, addr: IpAddr, class: u32) -> bool {
         let own = self.by_host.get(name).map_or(&[][..], Vec::as_slice);
         class == CARVE_OUT_CLASS && self.everywhere.iter().chain(own).any(|e| e.covers(addr))
@@ -460,11 +368,7 @@ impl Default for Guard {
 
 impl Guard {
     /// The guard a deployment states.
-    ///
-    /// # Errors
-    ///
-    /// An `advanced.allow_destinations` entry that is none of host, `*.domain`, IP or CIDR (or a
-    /// CIDR with bits past its prefix), named by its index.
+
     pub fn from_config(d: &Destinations) -> Result<Guard, String> {
         Ok(Guard {
             block_private: d.block_private_addresses,
@@ -479,8 +383,7 @@ impl Guard {
     }
 
     /// A config commit: the metadata lists `d` states (the carve-outs and the extra refusals)
-    /// replace the ones in force, for every clone of this guard and every judgement after it, as
-    /// 1.5.5 re-read them at every reload. The allowlist and `block_private_addresses` are boot's.
+
     pub fn publish(&self, d: &Destinations) {
         let lists = Arc::new(Metadata::from_config(d));
         *self
@@ -495,34 +398,25 @@ impl Guard {
     }
 
     /// Whether a private address is refused: where `block_private_addresses` holds and the class
-    /// is one [`PRIVATE_REFUSED_IN`] names, or wherever the caller's own configuration refuses
-    /// private reach (`strict`, `DEST_REFUSE_PRIVATE`), whatever the deployment says.
+
     fn refuses_private(&self, class: u32, strict: bool) -> bool {
         strict || (self.block_private && PRIVATE_REFUSED_IN.contains(&class))
     }
 
     /// Whether private address `addr` is refused in the loopback-allowed class: where
-    /// `block_private_addresses` holds, every one but loopback ([`is_loopback`]).
+
     fn refuses_off_loopback(&self, class: u32, addr: IpAddr) -> bool {
         self.block_private && class == LOOPBACK_CLASS && !is_loopback(addr)
     }
 
     /// The name arm, before any resolution, under egress class `class`. `Ok(Some(ip))`: the host
-    /// is an IP literal, judged as its own answer; `Ok(None)`: a name to resolve and then judge
-    /// with [`Guard::judge_answer`].
-    ///
-    /// # Errors
-    ///
-    /// The [`Refusal`] the name (or the literal) decides.
+
     pub fn judge_name(&self, host: &str, class: u32) -> Result<Option<IpAddr>, Refusal> {
         self.judge_name_as(host, class, false)
     }
 
     /// [`Guard::judge_name`], private reach refused whatever the deployment says when `strict`.
-    ///
-    /// # Errors
-    ///
-    /// The [`Refusal`] the name (or the literal) decides.
+
     pub fn judge_name_as(
         &self,
         host: &str,
@@ -533,14 +427,7 @@ impl Guard {
     }
 
     /// [`Guard::judge_name_as`] for a destination its need holds a PRIVATE REACH to (`reach`, the
-    /// registration's `abi::plane::TRUST_PRIVATE_REACH`, sealed per need and destination): the host
-    /// is admitted as an allowlist entry naming it would be, for this judgement alone — a private
-    /// address or a loopback name passes, a cloud-metadata name or address never does, and the
-    /// class is unchanged.
-    ///
-    /// # Errors
-    ///
-    /// The [`Refusal`] the name (or the literal) decides.
+
     pub fn judge_name_with(
         &self,
         host: &str,
@@ -555,8 +442,7 @@ impl Guard {
                 addr: None,
             })
         };
-        // Every comparison below is of the mapped name: a host no mapping reads is not judged at
-        // all (fail closed), whatever the allowlist or the class.
+
         let Some(name) = norm(host) else {
             return refuse(DEST_NO_HOST);
         };
@@ -569,14 +455,7 @@ impl Guard {
         if m.blocked.iter().any(|e| e.names(&name)) && !lifted {
             return refuse(DEST_METADATA);
         }
-        // An alternate IPv4 spelling names no address the guard reads, so it is refused; but in
-        // the loopback-allowed class a spelling is the address it spells, judged as that address,
-        // as 1.5.5's collector and webrequest guards read it: their URL parser canonicalized
-        // `127.1`, `2130706433`, `0x7f000001`, `017700000001`, `0177.0.0.1` to `127.0.0.1`, and
-        // `16909060` to `1.2.3.4`, before the guard looked (v1.5.5
-        // `crates/busbar/src/observability.rs:695-710`, `:738-764`). So a spelling of loopback is
-        // the loopback collector, a spelling of a public address a public collector, and a
-        // spelling of a private or metadata address is refused as the address it is.
+
         if is_alternate_ipv4_encoding(&name)
             && !(class == LOOPBACK_CLASS && host_ip(&name).is_some())
         {
@@ -586,8 +465,7 @@ impl Guard {
             self.judge_address(host, ip, class, strict, reach)?;
             return Ok(Some(ip));
         }
-        // The `localhost` family RFC 6761 reserves to loopback (the metadata names were decided
-        // above).
+
         let loopback_name = name == "localhost" || name.ends_with(".localhost");
         if loopback_name && self.refuses_private(class, strict) && !allowed && !reach {
             return refuse(DEST_INTERNAL);
@@ -596,21 +474,13 @@ impl Guard {
     }
 
     /// The answer arm, after resolution: EVERY address `host` answered with is judged, and one
-    /// refused address refuses the whole answer.
-    ///
-    /// # Errors
-    ///
-    /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
+
     pub fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), Refusal> {
         self.judge_answer_with(host, addrs, class, false, false)
     }
 
     /// [`Guard::judge_answer`] for a destination its need holds a private reach to
-    /// ([`Guard::judge_name_with`]).
-    ///
-    /// # Errors
-    ///
-    /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
+
     pub fn judge_answer_with(
         &self,
         host: &str,
@@ -649,26 +519,18 @@ impl Guard {
         };
         let m = self.metadata();
         let metadata = ip_is_cloud_metadata(&addr);
-        // IPv6 LINK-LOCAL (fe80::/10, whatever its egress class): refused in every class, and
-        // admitted only by an IP or CIDR allowlist entry, or a provider's carve-out entry, that
-        // names the address.
+
         let link_local = matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6));
         let listed = |l: &[Entry]| l.iter().any(|e| e.covers(addr));
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
-        // The denylist (cloud metadata, and `security.blocked_metadata_hosts`) takes precedence
-        // over every private-range allowance: an allowlist network admits a denylisted address
-        // only when it names exactly that address (`Entry::pins`), never because a wider range
-        // covers it (`100.64.0.0/10` does not admit `100.100.100.200`).
+
         let denied = metadata || listed(&m.blocked);
         let allowlisted = if denied {
             self.allow.iter().any(|e| e.pins(addr))
         } else {
             listed(&self.allow)
         };
-        // The 1.5.5 carve-outs, a provider dial's only (`Metadata::lifts`): a NAME there admits
-        // its metadata answer, as 1.5.5's did; `allow_all_metadata` admits every metadata address
-        // and every extra blocked one. A need's private reach to the destination admits as a HOST
-        // entry naming it would: never a metadata or link-local address.
+
         let carved = if link_local {
             m.carves_address(&name, addr, class)
         } else {
@@ -698,7 +560,7 @@ impl Guard {
 }
 
 /// Where one resolution's answer goes: called once, from any thread. `Err` is a resolution
-/// failure, not an empty answer.
+
 pub type Resolved = Box<dyn FnOnce(Result<Vec<IpAddr>, String>) + Send>;
 
 /// A resolver that answers off the caller's thread: the guard's one resolution of a name.
@@ -735,8 +597,7 @@ impl Resolve for SystemResolver {
 static RESOLVING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Resolve `host` by `lookup` on a thread of its own, answering through `done`, with at most `cap`
-/// resolutions counted in `in_flight` at once: past it `done` is answered now with a failure and
-/// no thread starts. The place is given back when the lookup ends, whoever still waits for it.
+
 pub(crate) fn resolve_capped<F>(
     host: &str,
     done: Resolved,
@@ -758,7 +619,6 @@ pub(crate) fn resolve_capped<F>(
     let spawned = std::thread::Builder::new()
         .name("busbar-resolve".into())
         .spawn(move || {
-            // Given back when this thread ends, an unwinding panic included.
             let _place = place;
             let answer = lookup(host.as_str());
             if let Some(done) = take(&mine) {

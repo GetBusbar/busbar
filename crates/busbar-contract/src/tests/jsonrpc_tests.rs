@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The envelope reader, at the unit. The socket-level batteries of each protocol that reads an
-//! envelope prove it really routes through this; these prove what it decides.
 
 use super::*;
 
@@ -13,8 +12,6 @@ fn read_ok(v: serde_json::Value) -> Envelope {
 fn read_err(v: serde_json::Value) -> Invalid {
     read(&v).expect_err("expected a refusal")
 }
-
-// ══ THE THREE CASES THAT ARE ROUTINELY CONFLATED ═════════════════════════════════════════════════
 
 #[test]
 fn an_absent_id_is_a_notification() {
@@ -28,10 +25,6 @@ fn an_absent_id_is_a_notification() {
 
 #[test]
 fn a_null_id_is_not_a_notification_it_is_an_invalid_request() {
-    // THE DISTINCTION THIS WHOLE MODULE TURNS ON. `{"id": null}` and `{}` are two different
-    // messages: one is a badly formed request, the other is a notification. An implementation that
-    // reaches for `unwrap_or(Null)`, or that tests `id.is_null()` to mean "absent", has already
-    // merged them and cannot tell these two lines apart.
     let e = read_err(serde_json::json!({ "jsonrpc": "2.0", "id": null, "method": "m" }));
     assert_eq!(e.code, INVALID_REQUEST);
     assert_eq!(e.id, serde_json::Value::Null);
@@ -44,8 +37,6 @@ fn a_string_or_number_id_is_a_request_and_the_value_survives_exactly() {
         serde_json::json!(1),
         serde_json::json!(0),
         serde_json::json!(-7),
-        // The empty string is a legal id and is NOT absent. A reader that treats falsy as missing
-        // turns this request into a notification and never answers it.
         serde_json::json!(""),
     ] {
         assert_eq!(
@@ -57,8 +48,7 @@ fn a_string_or_number_id_is_a_request_and_the_value_survives_exactly() {
             "id {id} did not survive"
         );
     }
-    // A string id and the numeric id that stringifies to it stay DISTINCT values, so a dispatcher
-    // keyed on them cannot cross-deliver.
+
     let s = read_ok(serde_json::json!({ "jsonrpc": "2.0", "id": "1", "method": "m" }));
     let n = read_ok(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "m" }));
     assert_ne!(s, n);
@@ -77,8 +67,6 @@ fn an_id_that_is_neither_string_nor_number_nor_null_is_refused() {
     }
 }
 
-// ══ THE ENVELOPE ITSELF ══════════════════════════════════════════════════════════════════════════
-
 #[test]
 fn the_jsonrpc_member_is_required_and_must_be_exactly_2_0() {
     for envelope in [
@@ -89,7 +77,7 @@ fn the_jsonrpc_member_is_required_and_must_be_exactly_2_0() {
     ] {
         let e = read_err(envelope.clone());
         assert_eq!(e.code, INVALID_REQUEST, "{envelope} was accepted");
-        // section 5's other half: the id WAS legible, so it is echoed rather than nulled.
+
         assert_eq!(e.id, serde_json::json!(1), "{envelope}");
     }
 }
@@ -124,21 +112,13 @@ fn a_batch_array_and_a_scalar_are_both_refused_as_not_a_message_object() {
 
 #[test]
 fn an_envelope_defect_is_judged_before_the_id_so_a_notification_shaped_one_is_still_answered() {
-    // The ORDER claim, asserted rather than described. A body with no `id` AND no `jsonrpc` is not
-    // silently swallowed as a notification: it is not a JSON-RPC message, so section 5's "error in
-    // detecting the id" applies and it is refused with a null id.
     let e = read_err(serde_json::json!({ "method": "m" }));
     assert_eq!(e.code, INVALID_REQUEST);
     assert_eq!(e.id, serde_json::Value::Null);
 }
 
-// ══ THE RESPONSE SHAPES ══════════════════════════════════════════════════════════════════════════
-
 #[test]
 fn the_error_envelope_always_carries_an_id_member_even_when_it_is_null() {
-    // section 5: "This member is REQUIRED." An error response with the member OMITTED is what an
-    // ingress once emitted for a request whose id it could not read, and a peer's own
-    // `isResponse()` predicate (`'id' in msg`) would not have classified it as a response at all.
     let body = error_body(serde_json::Value::Null, INVALID_REQUEST, "no", None);
     assert!(
         body.as_object().expect("object").contains_key("id"),
@@ -149,11 +129,6 @@ fn the_error_envelope_always_carries_an_id_member_even_when_it_is_null() {
     assert_eq!(body["error"]["code"], INVALID_REQUEST);
     assert!(body["error"].get("data").is_none(), "no data, no member");
 }
-
-// ══ THE RESPONSE READER ══════════════════════════════════════════════════════════════════════════
-//
-// The other direction of travel. These prove what `read_response` DECIDES; the socket-level proof
-// that each caller really routes through it reads the bytes off a wire rather than calling this.
 
 fn sent(id: serde_json::Value) -> serde_json::Value {
     id
@@ -169,22 +144,16 @@ fn reply_err(body: serde_json::Value, sent_id: serde_json::Value) -> NotAnAnswer
 }
 
 /// THE DEFECT, AT THE UNIT. Every one of these was accepted as the answer to request `1` before the
-/// correlation existed: the reader never looked at `id`, so "which request is this?" had no answer
-/// and every body that parsed was treated as the answer to the one in flight.
+
 #[test]
 fn a_response_that_does_not_name_the_request_that_was_sent_is_not_that_requests_answer() {
     for body in [
-        // A DIFFERENT request's answer. The case that serves caller A with upstream B's reply.
         serde_json::json!({ "jsonrpc": "2.0", "id": 2, "result": { "leaked": true } }),
         serde_json::json!({ "jsonrpc": "2.0", "id": "1", "result": {} }),
-        // section 5 spends `null` on "I could not tell which request this was".
         serde_json::json!({ "jsonrpc": "2.0", "id": null, "result": {} }),
-        // No `id` member at all — REQUIRED on a Response, and the shape a notification has.
         serde_json::json!({ "jsonrpc": "2.0", "result": {} }),
-        // Not an id at all.
         serde_json::json!({ "jsonrpc": "2.0", "id": true, "result": {} }),
         serde_json::json!({ "jsonrpc": "2.0", "id": [1], "result": {} }),
-        // An ERROR for another request is equally not this request's answer.
         serde_json::json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -1, "message": "no" } }),
     ] {
         let e = reply_err(body.clone(), sent(serde_json::json!(1)));
@@ -197,7 +166,7 @@ fn a_response_that_does_not_name_the_request_that_was_sent_is_not_that_requests_
 }
 
 /// The control the case above is worthless without: a response that DOES name the request is served,
-/// and its payload comes back verbatim.
+
 #[test]
 fn a_response_naming_the_request_that_was_sent_is_read_and_its_payload_survives() {
     assert_eq!(
@@ -219,8 +188,7 @@ fn a_response_naming_the_request_that_was_sent_is_read_and_its_payload_survives(
 }
 
 /// A string id and the number that stringifies to it are DIFFERENT ids, in this direction too — the
-/// request reader asserts the same thing, and a correlation that coerced them would let a peer
-/// answer request `1` with the answer to request `"1"`.
+
 #[test]
 fn correlation_never_coerces_across_types() {
     assert_eq!(
@@ -242,9 +210,7 @@ fn correlation_never_coerces_across_types() {
 }
 
 /// The ONE deliberate looseness, and its bound. JSON has a single number type, so `1` and `1.0` are
-/// the same value and a peer that echoes one for the other has correlated correctly. Refusing a
-/// correct answer is as much a correlation failure as accepting a wrong one — but the looseness is
-/// numeric only, and `2.0` is still not `1`.
+
 #[test]
 fn the_same_number_written_two_ways_correlates_and_a_different_number_still_does_not() {
     assert!(read_response(
@@ -327,24 +293,19 @@ fn exact_numeric_ids_correlate_without_restricting_the_integer_range() {
 }
 
 /// A correlated body still has to BE a response. These are the arms that say "the peer is broken"
-/// rather than "the peer answered somebody else", and the two are kept apart because an operator
-/// acts on them differently.
+
 #[test]
 fn a_correlated_body_that_is_not_a_response_is_refused_as_a_shape_and_not_as_a_correlation() {
     for body in [
         serde_json::json!({ "id": 1, "result": {} }),
         serde_json::json!({ "jsonrpc": "1.0", "id": 1, "result": {} }),
         serde_json::json!({ "jsonrpc": 2.0, "id": 1, "result": {} }),
-        // Neither member: section 5 requires exactly one.
         serde_json::json!({ "jsonrpc": "2.0", "id": 1 }),
-        // BOTH members: section 5 says both MUST NOT be included, and guessing which the sender
-        // meant is how a failure is served as a success.
         serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
             "result": { "ok": true },
             "error": { "code": -1, "message": "actually it failed" }
         }),
-        // A batch, and a scalar.
         serde_json::json!([{ "jsonrpc": "2.0", "id": 1, "result": {} }]),
         serde_json::json!("a string"),
     ] {
@@ -357,8 +318,7 @@ fn a_correlated_body_that_is_not_a_response_is_refused_as_a_shape_and_not_as_a_c
 }
 
 /// `"error": null` beside a `result` is a shape real peers emit, and it means "no error". Reading it
-/// as an error would turn every such peer's success into a failed hop — which is why the
-/// both-present check above is written against the same non-null filter.
+
 #[test]
 fn an_explicitly_null_error_member_is_absent_rather_than_an_error() {
     assert_eq!(
@@ -388,9 +348,7 @@ fn an_error_member_is_read_with_its_code_and_message() {
 }
 
 /// A KERNEL REFUSAL WITH NO UNIT, IN THE JSON-RPC WIRE: the bytes v1.5.5 answered when a request was
-/// refused before any unit was made (no credential; a body over the cap), exactly: `id` null, code
-/// `-32600`. Every other reason has no unit-less body of its own. RED before the one table: each
-/// renderer kept its own copy of these bytes.
+
 #[test]
 fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
     use crate::abi::plane::RefusalCode;
@@ -412,7 +370,7 @@ fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
             assert_eq!(unitless_kernel_body(code.code()), None, "{code:?}");
         }
     }
-    // The bytes are the one error envelope, with the unattributable `null` id.
+
     for (code, message) in [
         (RefusalCode::Unauthenticated, "authentication failed"),
         (
@@ -429,11 +387,6 @@ fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
     }
 }
 
-// ══ THE ENVELOPE WRITERS ══════════════════════════════════════════════════════════════════════════
-//
-// Each case is a plane's own envelope site, over that plane's own test vector: the writer's bytes
-// equal what the site writes today, `serde_json::to_vec(&json!({ "jsonrpc": "2.0", ... }))`.
-
 use serde_json::json;
 
 fn bytes(v: &serde_json::Value) -> Vec<u8> {
@@ -442,14 +395,12 @@ fn bytes(v: &serde_json::Value) -> Vec<u8> {
 
 #[test]
 fn a_result_is_the_bytes_the_planes_json_sites_write() {
-    // plane-mcp ask.rs `relayed_result` (tests/ask.rs `the_relayed_result_keeps_...`).
     let result = json!({
         "resultType": "input_required",
         "inputRequests": { "s": { "method": "sampling/createMessage", "params": { "x": [1, 2] } } },
         "requestState": "ours",
     });
-    // plane-mcp tool_tasks.rs `task_result` (tests/tasks.rs), a2a relay.rs `relayed`, a string
-    // id, the empty result, and the `null` a far end's absent result is answered as.
+
     for (id, result) in [
         (json!(7), result),
         (
@@ -479,7 +430,6 @@ fn a_result_is_the_bytes_the_planes_json_sites_write() {
 
 #[test]
 fn a_result_carries_the_far_ends_bytes_verbatim() {
-    // plane-a2a answer_bytes.rs: the far end's own `result` bytes, never re-serialised.
     let far = br#"{"z":1,"a":123456789012345678901234567890,"big":1e400}"#;
     assert_eq!(
         result_bytes(b"7", far),
@@ -490,8 +440,6 @@ fn a_result_carries_the_far_ends_bytes_verbatim() {
 
 #[test]
 fn an_error_is_the_bytes_the_planes_json_sites_write() {
-    // plane-a2a relay.rs `grpc_error`, agent_arrival.rs `envelope` (with and without the
-    // `ErrorInfo` data), and a message that needs escaping.
     let info = json!([{
         "@type": "type.googleapis.com/google.rpc.ErrorInfo",
         "domain": "a2a-protocol.org",
@@ -526,7 +474,7 @@ fn an_error_is_the_bytes_the_planes_json_sites_write() {
             "{}",
             String::from_utf8_lossy(&want)
         );
-        // The one Value builder and the byte writer are one envelope.
+
         assert_eq!(
             want,
             bytes(&error_body(
@@ -537,8 +485,7 @@ fn an_error_is_the_bytes_the_planes_json_sites_write() {
             ))
         );
     }
-    // The v1.5.5 unit-less refusal, as the plane's own audit pins it (key order aside, it is the
-    // same envelope).
+
     let written = error_bytes(b"null", INVALID_REQUEST, "authentication failed", None);
     let pinned: serde_json::Value = serde_json::from_slice(UNITLESS_UNAUTHENTICATED).expect("JSON");
     assert_eq!(
@@ -549,8 +496,6 @@ fn an_error_is_the_bytes_the_planes_json_sites_write() {
 
 #[test]
 fn a_request_is_the_bytes_the_planes_json_sites_write() {
-    // plane-mcp client/jsonrpc.rs `tools_list`, door_tasks.rs (id 0), line.rs `issue` (a string
-    // id), client/compat.rs `initialize_request`, door_line.rs `ping` (no params), a2a rest.rs.
     let meta = json!({
         "_meta": {
             "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -598,8 +543,6 @@ fn a_request_is_the_bytes_the_planes_json_sites_write() {
 
 #[test]
 fn a_notification_is_the_bytes_the_planes_json_sites_write() {
-    // plane-mcp door_sessions.rs (resources/updated), framing.rs (notifications/message),
-    // client/compat.rs `initialized_notification` (no params).
     for (method, params) in [
         (
             "notifications/resources/updated",

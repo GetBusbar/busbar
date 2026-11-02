@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! AN OPEN METER CLASS'S CONFIGURED RATE, in the card's own representation (#83a O1: the rate-card
-//! representation is ledger semantics, so it lives with the card). Relocated verbatim from the
-//! shared value crate's `billing` module: the type, its exact-decimal parse and its two-form wire
-//! encoding are unchanged, and it reads no float anywhere.
 
 /// **ONE OPEN METER CLASS'S CONFIGURED RATE, held the way the rate card holds it: an integer number
 /// of NANO-units per unit** (item 123, #71, #77(4)).
@@ -27,7 +24,7 @@
 pub struct UnitRate(u64);
 
 /// Nano-units per configured micro-unit: the one scale step between the config's unit and the card's
-/// — the crate's own [`NANOS_PER_MICRO`](super::NANOS_PER_MICRO), at this type's width.
+
 const NANOS_PER_MICRO_UNIT: u64 = super::NANOS_PER_MICRO as u64;
 
 impl UnitRate {
@@ -47,7 +44,7 @@ impl UnitRate {
     pub fn parse_micros(text: &str) -> Result<UnitRate, String> {
         let count = busbar_contract::count::read_count(text)
             .map_err(|e| format!("`{text}` is not an exact non-negative decimal rate ({e:?})"))?;
-        // `Count` holds the value at scale 6; the card's unit is scale 3 of the configured one.
+
         let per_nano = i128::from(1_000_000 / NANOS_PER_MICRO_UNIT);
         if count.micros() % per_nano != 0 {
             return Err(format!(

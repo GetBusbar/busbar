@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SCHEMA-ONLY response views for the admin endpoints whose handlers build an ad-hoc
-//! `serde_json::json!({…})` body rather than serializing a named contract struct (the keys resource,
-//! the config-mutation results, `hooks/{name}/schema`+`/status`, the version detail/diff, and the
-//! `{items,next_cursor}` list envelopes the keys/audit/versions handlers hand-roll).
-//!
-//! These types are **never serialized at runtime** — they exist purely so `openapi_doc()` can emit a
-//! typed `$ref` for every operation instead of a bodyless `{"description":"OK"}`. Each mirrors, field
-//! for field, the exact JSON its handler produces; the golden/drift test (`#[cfg(feature =
-//! "openapi-schema")]`) keeps the whole doc — and therefore these shapes — locked to the code. The
-//! module is compiled ONLY under `openapi-schema` (a CI-only feature), so it adds nothing to the
-//! shipped binary. `#[allow(dead_code)]` because the fields are read by schemars' derive, not by
-//! Rust code.
-
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -273,8 +260,6 @@ pub struct ConfigSettingsView {
     ///
     /// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
     /// bag; the redaction applies to the bags nested INSIDE it.
-    // settings-leak-lint: allow — response ENVELOPE member; every bag nested inside it is reduced to
-    // `settings_keys` by `service::redact_settings_bags` before serialization (both verbs).
     pub settings: serde_json::Value,
     /// Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
     /// build and a store open all happen once at process start, so a `POST /config/reload` does NOT
@@ -411,9 +396,6 @@ pub struct HookStatusView {
     pub note: Option<String>,
 }
 
-/// The `HookStatusView.metrics` array's item schema: `{}`, not schemars' default boolean
-/// `true` for `serde_json::Value` — the "accepts anything" schema every generator understands, in a
-/// position (`items`) where the boolean form is fatal to `kin-openapi`/`oapi-codegen`.
 fn hook_status_metrics_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "array",
@@ -475,9 +457,6 @@ pub struct ConfigVersionPageView {
     pub next_cursor: Option<String>,
 }
 
-/// A compile-time cross-check that this schema module stays in step with the frozen error taxonomy:
-/// referencing every [`AdminError`] variant here means adding a new variant forces a look at this
-/// module. (Never called — the match is the assertion.)
 #[allow(unused)]
 fn _error_taxonomy_is_referenced(e: &AdminError) {
     match e {

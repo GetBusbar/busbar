@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Retained heads use the Store independently of source-record reconstruction. These tests exercise
-//! real conditional requests and restart reads; they do not invent a fixed-audit pruning API.
-
 use super::*;
 use crate::root::store_double::RecordSlots;
 use busbar_contract::abi::sdk::store::conditional::{Mutation, Request};
@@ -118,8 +115,6 @@ fn absent_schema_backfills_signed_samples_and_restarts_without_source_reconstruc
     );
     drop(sealed);
 
-    // A new reader holds neither the old RAM history nor the source records. This is a durable
-    // head-store restore, not a claim that the production journal supports pruning.
     let reloaded = load(&slots, NODE)
         .unwrap()
         .expect("independent persisted history");
@@ -265,7 +260,7 @@ fn restart_sampling_uses_last_sample_wall_not_tip_wall_or_journal_position() {
     let slots = RecordSlots::new();
     let mut sealed = Sealed::new();
     sealed.audit(START);
-    sealed.policy(); // Journal positions and audit positions deliberately diverge.
+    sealed.policy();
     sealed.audit(START + 1_800);
     initialize(&slots, NODE, &sealed.records).unwrap();
     assert_eq!(load(&slots, NODE).unwrap().unwrap().tip().unwrap().seq, 2);
@@ -330,8 +325,6 @@ fn samples_beyond_one_store_page_restore_every_anchor_including_genesis() {
     );
 }
 
-/// Exercise the lane's actual multipart writer. The head checkpoint must accompany the final part
-/// of this complete record, and an already committed record must not be cleared on replay.
 #[test]
 fn actual_multipart_write_reads_back_whole_and_replay_preserves_every_part() {
     let slots = RecordSlots::new();
@@ -374,8 +367,6 @@ fn actual_multipart_write_reads_back_whole_and_replay_preserves_every_part() {
     );
 }
 
-/// Every scalar may need all twenty decimal digits. Keep a genuinely signed head at that width
-/// inside the real Store slot; duplicating the complete sampled head overflowed this boundary.
 #[test]
 fn maximum_width_signed_checkpoint_fits_one_real_store_record() {
     let slots = RecordSlots::new();
@@ -403,8 +394,6 @@ fn maximum_width_signed_checkpoint_fits_one_real_store_record() {
     assert_eq!(checkpoint(&slots, NODE).unwrap().unwrap().0, expected);
 }
 
-/// A real successor takes the expired host lease after the old writer read its predicate but
-/// before the Store decides the final-part/head transaction. Neither output may escape the fence.
 #[test]
 fn host_lease_takeover_between_predicate_and_final_transaction_blocks_the_old_head() {
     use super::super::store_identity::{lease_row, set_lease_expiry, take_node, NODE_SCHEMA};
@@ -441,8 +430,7 @@ fn host_lease_takeover_between_predicate_and_final_transaction_blocks_the_old_he
                         .any(|predicate| predicate.schema == NODE_SCHEMA),
                     "the final-part/head request must carry the lease it just observed"
                 );
-                // This callback runs outside the fixture's locks. Its nested real lease take is
-                // guarded above and mutates only the identity schema, so it cannot recurse here.
+
                 set_lease_expiry(&other, HOST, 1);
                 let successor =
                     take_node(&other, HOST).expect("a successor takes the expired lease");
@@ -483,8 +471,6 @@ fn host_lease_takeover_between_predicate_and_final_transaction_blocks_the_old_he
     assert_ne!(lease_row(&slots, HOST).unwrap().0, old_holder);
 }
 
-/// A historical usage class can disappear from today's registry without changing a sealed
-/// signature. Retaining its head must not require decoding that opaque historical usage payload.
 #[test]
 fn historical_usage_class_absent_from_current_registry_keeps_its_signed_head() {
     let mut sealed = Sealed::new();
@@ -519,8 +505,6 @@ fn historical_usage_class_absent_from_current_registry_keeps_its_signed_head() {
         vec![expected.clone()]
     );
 
-    // Migration sees the same real journal records, with no existing independent-head schema.
-    // The typed record's read finding stays valid; backfilling its signed head is a separate seam.
     let migrated = RecordSlots::new();
     assert_eq!(
         initialize(&migrated, NODE, &sealed.records)

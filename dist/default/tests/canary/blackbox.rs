@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BLACK-BOX SINKS: the shipped `busbar` binary, driven only from outside.
-//!
-//! [`node`] plants every canary a config can carry (env and file SecretRefs, `${VAR}` interpolation
-//! into a plugin setting, a provider's URL userinfo, the admin token, an export URL's path token)
-//! and serves: it mints a key, sends one request per provider carrying caller-credential canaries,
-//! reads every admin view, waits for the request-log export, then stops the node. The sinks are the
-//! node's whole log (stdout+stderr, so every tracing line and any panic message), every admin and
-//! data-plane response, the exported request log, `--validate` over the same config, and what each
-//! far end received.
-//!
-//! [`refusals`] runs `--validate` over configs built to be REFUSED with a canary inside, so the
-//! refusal and diagnostic text is a sink.
-
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -26,7 +13,6 @@ use base64::Engine as _;
 use crate::canary::{Canary, Sink};
 use crate::common;
 
-/// A fresh scratch directory for one scenario.
 pub fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-canary-{tag}-{}-{}",
@@ -39,8 +25,6 @@ pub fn scratch(tag: &str) -> PathBuf {
     d
 }
 
-/// A far end answering every request with a whole Anthropic message, recording each request it
-/// received (head and body) for the sweep.
 struct FarEnd {
     port: u16,
     seen: Arc<Mutex<Vec<String>>>,
@@ -81,7 +65,6 @@ fn far_end() -> FarEnd {
     FarEnd { port, seen }
 }
 
-/// One HTTP/1.1 exchange over a fresh connection: the whole raw response (head and body).
 fn http(port: u16, method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> String {
     let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else {
         return String::new();
@@ -117,7 +100,6 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// The canaries the served node is planted with, by name.
 pub struct NodeCanaries {
     pub env_ref: Canary,
     pub file_ref: Canary,
@@ -146,15 +128,12 @@ impl NodeCanaries {
     }
 }
 
-/// The URL userinfo user both userinfo canaries ride with.
 pub const USERINFO_USER: &str = "canaryuser";
 
-/// `user:pass` as an `authorization: Basic` value carries it.
 pub fn basic_form(pass: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(format!("{USERINFO_USER}:{pass}"))
 }
 
-/// Mounted authenticated JSON views of this scenario (GET, with the admin token).
 const ADMIN_VIEWS: &[&str] = &[
     "/api/v1/admin/config",
     "/api/v1/admin/config/settings",
@@ -180,9 +159,6 @@ const ADMIN_VIEWS: &[&str] = &[
     "/api/v1/admin/hooks",
 ];
 
-// Keep these responses as sinks too, without claiming they exercised an authenticated view:
-// named-definition settings are PATCH-only; trust is not a core GET route; this config has no
-// prometheus export; healthz is deliberately unauthenticated.
 const OTHER_RESPONSES: &[&str] = &[
     "/api/v1/admin/export/hook/settings",
     "/api/v1/admin/identity-providers/admin-tokens/settings",
@@ -191,7 +167,6 @@ const OTHER_RESPONSES: &[&str] = &[
     "/healthz",
 ];
 
-/// The served node's config.yaml and providers.yaml, every canary planted.
 fn write_node_config(
     dir: &Path,
     c: &NodeCanaries,
@@ -274,7 +249,6 @@ export:
     reqlog
 }
 
-/// The node's environment: every env-planted canary.
 fn env_of(cmd: &mut Command, dir: &Path, c: &NodeCanaries) {
     cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env_remove("BUSBAR_PROVIDERS")
@@ -283,7 +257,6 @@ fn env_of(cmd: &mut Command, dir: &Path, c: &NodeCanaries) {
         .env("CANARY_INTERP", &c.interp.value)
         .env("CANARY_ADMIN_TOKEN", &c.admin_token.value)
         .env("RUST_BACKTRACE", "1")
-        // The most a log can say: an operator debugging a node turns this on.
         .env("RUST_LOG", "trace");
 }
 
@@ -300,7 +273,6 @@ fn stop(child: &mut Child) {
     }
 }
 
-/// SERVE a planted node and collect every sink a black box can see.
 pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     let mut sinks = Vec::new();
     let mut notes = Vec::new();
@@ -314,7 +286,6 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());
     let reqlog = write_node_config(&dir, c, &ports, data, admin);
 
-    // `--validate` over the same config: its whole output is a sink.
     let mut v = Command::new(common::boot::exe());
     v.arg("--validate");
     env_of(&mut v, &dir, c);
@@ -411,7 +382,7 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         }
         sinks.push(Sink::text(format!("admin:GET {view}"), *view, answer));
     }
-    // The request log is written behind the response: wait for it, bounded.
+
     wait_for(Duration::from_secs(5), || {
         std::fs::read_to_string(&reqlog).is_ok_and(|t| t.lines().count() >= 4)
     });
@@ -419,7 +390,7 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         Ok(t) => sinks.push(Sink::text("export:request-log-file", "reqlog.jsonl", t)),
         Err(e) => notes.push(format!("the request-log export wrote nothing: {e}")),
     }
-    // Give a failing webhook delivery its moment to log.
+
     std::thread::sleep(Duration::from_millis(500));
     stop(&mut child);
     assert!(
@@ -452,7 +423,6 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     (sinks, notes)
 }
 
-/// `--validate` over `config` (with `env`): exit code and the whole output.
 fn validate(dir: &Path, config: &str, env: &[(&str, &str)]) -> (i32, String) {
     std::fs::write(dir.join("config.yaml"), config).expect("config.yaml");
     let mut cmd = Command::new(common::boot::exe());
@@ -478,7 +448,6 @@ fn validate(dir: &Path, config: &str, env: &[(&str, &str)]) -> (i32, String) {
     )
 }
 
-/// The canaries the refusal configs carry, by name.
 pub struct RefusalCanaries {
     pub inline_api_key: Canary,
     pub webhook_header_shape: Canary,
@@ -499,10 +468,8 @@ impl RefusalCanaries {
     }
 }
 
-/// One refusal case: its name, its config, and the environment it runs with.
 type RefusalCase = (&'static str, String, Vec<(&'static str, String)>);
 
-/// REFUSE configs built around a canary: each `--validate` refusal is a sink.
 pub fn refusals(c: &RefusalCanaries) -> (Vec<Sink>, Vec<String>) {
     let dir = scratch("refusals");
     let mut sinks = Vec::new();

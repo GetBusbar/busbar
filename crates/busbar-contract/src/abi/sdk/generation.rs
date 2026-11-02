@@ -2,21 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE GENERATION BORROW follows the shared memory rule: plugin-owned returned memory remains
-//! valid until the plugin's next refresh generation. The SDK lends every op
-//! a [`Gen<'g>`]: a proof, which only the SDK can make, that
-//! what is borrowed for `'g` lives at least until the instance's next refresh generation. The
-//! runtime writers of the ABI's strings and payloads take one beside the memory they name
-//! ([`AbiStr::lent`](crate::abi::mechanism::call::AbiStr::lent),
-//! [`Blob::lent`](crate::abi::mechanism::call::Blob::lent),
-//! [`Out::lent_str`](super::Out::lent_str)),
-//! so the borrow checker, not a reviewer, holds an `out`'s contents to memory that outlives every
-//! read the host makes of it.
-//!
-//! A slot body reaches its op's borrow through its instance
-//! ([`Instance::generation`](super::Instance::generation)): `'g` is the instance's own lifetime,
-//! which the instance state (`Instance::get`) lives for and nothing of the call's does. A string the
-//! state owns is accepted; a local, or a string the host lent the call, is refused at compile time.
-//! A plugin crate stays `#![forbid(unsafe_code)]`: none of this asks it for `unsafe`.
 
 use std::marker::PhantomData;
 

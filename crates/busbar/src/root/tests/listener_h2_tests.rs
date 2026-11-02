@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TLS LISTENER SERVES HTTP/2 TO A CLIENT THAT OFFERS IT, end to end over the production pieces: the connector's
-//! `tls::prepare` builds the listener's wrap from a `tls:` block, the root's `listener::serve` runs
-//! the accept loop and the hardened auto builder, and a real rustls client speaks to it.
-//!
-//! * a client offering `h2` negotiates `h2` and is SERVED HTTP/2, not merely advertised it;
-//! * a client offering only `http/1.1` negotiates `http/1.1` and is served HTTP/1.1, as in 1.5.5.
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -20,14 +13,12 @@ use rustls::pki_types::pem::PemObject;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// A scratch directory of this process's own for one test's PEM files.
 fn scratch(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("busbar-tls-h2-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
 }
 
-/// A self-signed `localhost` identity written to two PEM files; the certificate PEM for the client.
 fn identity(dir: &std::path::Path) -> (TlsCfg, String) {
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("a test cert");
@@ -44,7 +35,6 @@ fn identity(dir: &std::path::Path) -> (TlsCfg, String) {
     (tls, cert_pem)
 }
 
-/// The listener a `tls:` block brings up, serving `/healthz`, on an ephemeral port.
 async fn tls_listener(tls: &TlsCfg) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
     let security = busbar_core_connector::tls::prepare(
         "h2-listener",
@@ -68,7 +58,6 @@ async fn tls_listener(tls: &TlsCfg) -> (SocketAddr, tokio::sync::oneshot::Sender
     (addr, stop)
 }
 
-/// A TLS client to `addr` trusting `cert_pem` and offering exactly `protocols` over ALPN.
 async fn connect(
     addr: SocketAddr,
     cert_pem: &str,

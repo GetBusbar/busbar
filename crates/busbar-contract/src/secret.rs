@@ -2,26 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The SECRET-MODULE contract (`kind: secret` plugins). A secret module turns a config secret
-//! reference's opaque `settings` into the secret BYTES: the `env` plugin reads an environment
-//! variable (settings.key), the `file` plugin reads a file (settings.path), and a third-party module
-//! (vault, a cloud secret manager, a database) implements the same contract behind the plugin trust
-//! pipeline. The engine sees only the contract - never the implementation - and treats every
-//! failure as FAIL-CLOSED (an unresolvable secret refuses boot, never resolves empty).
-//!
-//! Moved here, module-path-only, from `busbar-api` (DECISIONS #83/#84; the per-kind trait is the
-//! contract's, #35(a)). The error is [`SecretModuleError`] here because
-//! [`crate::kinds::SecretError`] is a different type (#35 de-collision); its `Debug` keeps the
-//! historical `SecretError` label so every rendering is byte-identical. The `env`/`file` sources
-//! are ordinary secret-kind plugins in their own repos (one secret plugin per source; THE DESIGN,
-//! "Plugins"), called through the secret kind table; the kernel reaches every loaded secret plugin
-//! through [`SecretAxis`] and [`SecretCalls`]. The [`SecretResolve`] seam followed the config
-//! secret reference it takes into this crate once that reference merged here, when `busbar-api`
-//! retired.
 
 use crate::secret_ref::SecretRef;
 
 /// RESOLVED SECRET BYTES, as the host holds them: the
-/// zeroizing holder the secret plugin wrote the value into, never a plain `Vec` or `String`.
+
 pub type SecretBytes = crate::redacted::Secret<Vec<u8>>;
 
 /// The result type every secret module call returns.
@@ -49,8 +34,7 @@ pub enum SecretErrorKind {
 }
 
 /// A secret-resolution failure: a [`SecretErrorKind`] plus a human-readable message. The message
-/// must NEVER carry secret material - name the source (variable name, path, module) and the
-/// failure, not the value.
+
 pub struct SecretModuleError {
     pub kind: SecretErrorKind,
     pub message: String,
@@ -80,8 +64,6 @@ impl SecretModuleError {
     }
 }
 
-// MANUAL `Debug`, byte-identical to the derive this type carried as `crate::secret::SecretModuleError`: the
-// rename is a module-path de-collision (#35), and a `{:?}` in a log line must not change with it.
 impl std::fmt::Debug for SecretModuleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretError")
@@ -99,7 +81,7 @@ impl std::fmt::Display for SecretModuleError {
 impl std::error::Error for SecretModuleError {}
 
 /// Every error constructed before this taxonomy existed becomes `Internal` — behaviorally identical
-/// to the old bare-string error (same message, same fail-closed treatment), just now typed.
+
 impl From<String> for SecretModuleError {
     fn from(s: String) -> Self {
         SecretModuleError::internal(s)
@@ -112,33 +94,19 @@ impl From<&str> for SecretModuleError {
 }
 
 /// The NEUTRAL secret-resolver SEAM an extracted plane names instead of the engine's concrete
-/// `SecretResolver`. A plane only needs to turn a [`SecretRef`] into bytes or a UTF-8 string;
-/// naming this trait — not the core struct — keeps the plane free of an engine dependency. The
-/// engine's `SecretResolver` implements it (delegating to its own resolution), and `EngineHost`
-/// hands the plane an `Arc<dyn SecretResolve>` snapshot.
-///
-/// FAIL-CLOSED, exactly as the underlying resolver: an unknown module, an unset source, or an empty
-/// value is an `Err(String)`, never an empty secret. The error is a neutral `String` — a plane never
-/// sees an engine-only error type across this seam.
-///
-/// THE VALUE IS HELD, NEVER PLAIN (the credential chip, row 6: host-owned secret bytes): every answer is a
-/// zeroizing [`Secret`](crate::redacted::Secret) — the bytes the secret plugin wrote into the
-/// host's buffer, moved, never copied into a `Vec` or a `String` — read only under a kernel seal and
-/// wiped when it drops.
+
 pub trait SecretResolve: Send + Sync {
     /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
-    /// instance — need the untrimmed bytes rather than a string.
+
     fn resolve(&self, secret: &SecretRef) -> Result<crate::redacted::Secret<Vec<u8>>, String>;
 
     /// Resolve a reference to UTF-8 TEXT (trailing newline trimmed; fail-closed on non-UTF-8 or
-    /// empty), the same bytes moved into a `Secret<String>`. Some consumers — a credential-minting
-    /// path, for instance — need the text form.
+
     fn resolve_string(&self, secret: &SecretRef)
         -> Result<crate::redacted::Secret<String>, String>;
 
     /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a source that
-    /// reads the disk resolves (THE DESIGN Q-DISK R4, OWNER 2026-10-13). Every other source answers
-    /// exactly as [`Self::resolve`] does.
+
     fn resolve_at_config(
         &self,
         secret: &SecretRef,
@@ -157,12 +125,7 @@ pub trait SecretResolve: Send + Sync {
     }
 
     /// [`Self::resolve`] (or, with `scope`, [`Self::resolve_at_config`]) whose refusal KEEPS the
-    /// source's `abi::secret::ERROR_KIND_*` code: a caller that answers a missing secret
-    /// differently from an unreachable source reads it here. A resolver that names no code answers
-    /// its text as `ERROR_KIND_INTERNAL`.
-    ///
-    /// # Errors
-    /// The refusal, its code and its text (the same text the other forms answer).
+
     fn resolve_refusing(
         &self,
         secret: &SecretRef,
@@ -191,24 +154,14 @@ pub struct SecretRefused {
 }
 
 /// ONE OPENED SECRET PLUGIN INSTANCE'S CALLS, as the kernel's secret resolver makes them (every
-/// secret resolution crosses the secret kind table through the one dispatcher). The plugin loader
-/// implements it; the kernel names only this. Every call is boot-, refresh- or setup-time, off the
-/// request path, and blocks the calling thread up to its deadline.
+
 pub trait SecretCalls: Send + Sync {
     /// `resolve` one reference's `settings` object (JSON bytes) to the secret's material, which the
-    /// plugin wrote into the host's zeroed buffer: the [`Secret`](crate::redacted::Secret) it comes
-    /// back in (no lease, and no copy on either side).
-    ///
-    /// # Errors
-    /// The plugin's refusal, its code and its text.
+
     fn resolve(&self, settings: &[u8]) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused>;
 
     /// `resolve` at CONFIG TIME, with its proof ([`ConfigScope`](crate::config_time::ConfigScope)):
-    /// the one way a source that reads the disk resolves (THE DESIGN Q-DISK R4, OWNER 2026-10-13).
-    /// Every other source answers exactly as [`Self::resolve`] does.
-    ///
-    /// # Errors
-    /// The plugin's refusal, its code and its text.
+
     fn resolve_at_config(
         &self,
         settings: &[u8],
@@ -219,49 +172,31 @@ pub trait SecretCalls: Send + Sync {
 }
 
 /// The secret axis the composition root hands to the kernel, through
-/// the contract seam rather than the loader: every secret plugin the
-/// root admitted, linked or dropped in, by the `module` a reference spells (its Statement name or an
-/// alias). Installed once, in the root's rows; the kernel names nothing behind it.
+
 pub trait SecretAxis: Send + Sync {
     /// The SUGARS the admitted secret plugins' Statements declare (audit contract-admin #10, Law 1:
-    /// the shorthand a reference may use is each plugin's own declaration): what the host reads
-    /// its configuration's secret references against, naming no source itself.
+
     fn sugars(&self) -> crate::secret_ref::Sugars;
 
     /// Whether a secret plugin answers `module`, linked or dropped in.
     fn answers(&self, module: &str) -> bool;
 
     /// Whether `module` names a secret plugin this build LINKS (a reference to it needs no
-    /// `secrets:` block and no plugins directory).
+
     fn linked(&self, module: &str) -> bool;
 
     /// JUDGE one reference to `module` at config time, before anything resolves: its plugin's
-    /// `check` (`abi::secret::Ops::check`) over the reference's `settings`, with no instance and no
-    /// I/O. `Ok` when the plugin accepts it, serves no `check`, or no plugin answers `module` (its
-    /// existence is the registry's to judge); else the plugin's reasons, one per line, which the
-    /// host renders after the reference's config path.
-    ///
-    /// # Errors
-    /// The plugin's reasons.
+
     fn check(&self, _module: &str, _settings: &serde_json::Value) -> Result<(), Vec<String>> {
         Ok(())
     }
 
     /// The process's ONE instance of the linked plugin `module` names, opened on first use with no
-    /// settings (a linked source takes no module-level configuration).
-    ///
-    /// # Errors
-    /// No linked plugin answers `module`, or it will not load or open; the text names it.
+
     fn shared(&self, module: &str) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
 
     /// OPEN a new instance of `module` over its module-level `settings` (as written: a secret
-    /// reference stays a reference), each settings key its Statement names in `secret_refs`
-    /// resolved through `resolve` and lent to `open` in that order. Closed when the last handle
-    /// drops.
-    ///
-    /// # Errors
-    /// No plugin answers `module`, a named secret reference does not resolve, or the plugin will not
-    /// load or open; the text names it.
+
     fn open(
         &self,
         module: &str,

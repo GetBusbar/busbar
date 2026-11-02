@@ -51,11 +51,9 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, WakeFn};
 mod sealed {
     use busbar_contract::abi::host::service::ServiceFn;
 
-    /// Only this module implements it: the three host tables.
     pub trait Table: Sized {
-        /// Install `f` at slot `op`.
         fn install(&mut self, op: u32, f: ServiceFn);
-        /// This table in `host`.
+
         fn of(host: &mut super::FakeHost) -> &mut Self;
     }
 
@@ -75,9 +73,7 @@ mod sealed {
         pub op: Option<u32>,
     }
 
-    /// Only this module implements it: the reviewed service `in`s and the regions they lend.
     pub trait In {
-        /// Every pointer field the `in` lends, besides its `AbiStr`, `Blob` and `ServiceBufs`.
         const REGIONS: &'static [Region];
     }
 
@@ -85,33 +81,24 @@ mod sealed {
     #[derive(Debug)]
     pub struct HostToken(pub(super) ());
 
-    /// Only this module implements it: the `open` ins that carry the host's tables.
     pub trait Host {
-        /// The `host` field.
         fn host_field(
             &mut self,
             token: HostToken,
         ) -> &mut *const busbar_contract::abi::mechanism::ticket::HostTables;
     }
 
-    /// Only this module implements it: `*const T` and `*mut T`.
     pub trait Ptr<T> {
-        /// The pointer, read.
         fn get(&self) -> *const T;
     }
 }
 
 use sealed::Region;
 
-/// A reviewed service `in`: it leads with a `ServiceHead`, and every pointer field it lends is
-/// stated. Sealed.
 pub trait ServiceIn: sealed::In + Copy + 'static {}
 
-/// A host table a fake fills. Sealed: `HostSlots`, `IoSlots` and `ConnectorSlots`.
 pub trait ServiceTable: sealed::Table + Copy + 'static {}
 
-/// A raw pointer field to `T` a test reads a lent region through ([`ServiceCall::lent`]). Sealed:
-/// `*const T` and `*mut T`.
 pub trait RawPtr<T>: sealed::Ptr<T> {}
 impl<T> sealed::Ptr<T> for *const T {
     fn get(&self) -> *const T {
@@ -126,8 +113,6 @@ impl<T> sealed::Ptr<T> for *mut T {
 }
 impl<T> RawPtr<T> for *mut T {}
 
-/// An `open` `in` that carries the host's tables (`host`), for [`FakeHost::lend_to`]. Sealed:
-/// the lifecycle `OpenIn` and the plane's `PlaneOpenIn`.
 pub trait TakesHost: sealed::Host {}
 impl sealed::Host for busbar_contract::abi::mechanism::lifecycle::OpenIn {
     fn host_field(&mut self, _: sealed::HostToken) -> &mut *const HostTables {
@@ -153,12 +138,9 @@ pub struct LentIn<'h, I> {
     host: PhantomData<&'h FakeHost>,
 }
 
-/// A test double for one host service.
 pub trait FakeService: 'static {
-    /// The service's `in`.
     type In: ServiceIn;
-    /// Answer one call: read what the plugin lent, write what the service writes, and set the
-    /// reply's scalars through `call`; the outcome returned is the reply's.
+
     fn serve(call: &mut ServiceCall<Self::In>) -> Outcome;
 }
 
@@ -199,7 +181,6 @@ macro_rules! slots {
     };
 }
 
-/// The host services table's slots (`HostSlots`).
 pub mod host {
     use busbar_contract::abi::host::service::op as ops;
     use busbar_contract::abi::host::service::{self as svc, HostSlots};
@@ -237,7 +218,6 @@ pub mod host {
     );
 }
 
-/// The host's I/O table's slots (`IoSlots`).
 pub mod io {
     use busbar_contract::abi::host::io::op as ops;
     use busbar_contract::abi::host::io::{self as hio, IoSlots};
@@ -256,7 +236,6 @@ pub mod io {
     );
 }
 
-/// The connector table's slots (`ConnectorSlots`; the retired `random` slot is never served).
 pub mod conn {
     use busbar_contract::abi::host::conn::connector::service as ops;
     use busbar_contract::abi::host::conn::connector::{self as c, ConnectorSlots};
@@ -278,7 +257,6 @@ pub mod conn {
     );
 }
 
-/// One pointer field naming exactly one `T`.
 const fn one(at: usize, size: usize, write: bool) -> Region {
     Region {
         at,
@@ -289,7 +267,6 @@ const fn one(at: usize, size: usize, write: bool) -> Region {
     }
 }
 
-/// One pointer field naming as many `T` as the `usize` field at `count_at` counts.
 const fn counted(at: usize, count_at: usize, size: usize, write: bool, op: Option<u32>) -> Region {
     Region {
         at,
@@ -313,9 +290,6 @@ macro_rules! service_in {
     )+};
 }
 
-// Each `in` below leads with `head: ServiceHead` (the service ABI), and its regions are every raw
-// pointer field it states, each with the count its ABI doc names. Its `AbiStr`, `Blob` and
-// `ServiceBufs` fields describe themselves.
 service_in!(
     svc::ClockNowIn => [one(
         offset_of!(svc::ClockNowIn, reading),
@@ -471,58 +445,33 @@ pub struct ServiceCall<I> {
 }
 
 impl<I: ServiceIn> ServiceCall<I> {
-    /// The context the plugin called with.
     #[must_use]
     pub fn ctx(&self) -> HostCtx {
         self.ctx
     }
 
-    /// The `in`, as the plugin passed it (its scalars; read what it lends through the methods
-    /// below).
     #[must_use]
     pub fn input(&self) -> &I {
         &self.input
     }
 
-    /// The bytes an `AbiStr` field of the `in` lends.
-    ///
-    /// # Panics
-    ///
-    /// `field` names no field of this call's `in`, or the string is NULL with a length.
     pub fn bytes(&self, field: impl FnOnce(&I) -> &AbiStr) -> &[u8] {
         let s = field(&self.input);
         self.offset(s, "an AbiStr");
         lent(s.ptr, s.len, "AbiStr")
     }
 
-    /// [`ServiceCall::bytes`], as text.
-    ///
-    /// # Panics
-    ///
-    /// As [`ServiceCall::bytes`], or the text is not UTF-8.
     pub fn text(&self, field: impl FnOnce(&I) -> &AbiStr) -> &str {
         let b = self.bytes(field);
         core::str::from_utf8(b).unwrap_or_else(|_| panic!("AbiStr: not UTF-8: {b:?}"))
     }
 
-    /// The bytes a `Blob` field of the `in` lends.
-    ///
-    /// # Panics
-    ///
-    /// `field` names no field of this call's `in`, or the blob is NULL with a length.
     pub fn blob(&self, field: impl FnOnce(&I) -> &Blob) -> &[u8] {
         let b = field(&self.input);
         self.offset(b, "a Blob");
         lent(b.ptr, b.len, "Blob")
     }
 
-    /// The list a raw pointer field of the `in` lends for the host to read (`WriteIn::bytes`,
-    /// `SpawnIn::args`, `RequestIn::piece`), counted as the `in` states.
-    ///
-    /// # Panics
-    ///
-    /// `field` is no read region of this call's `in` (on this op), or the region is NULL with a
-    /// count, or misaligned.
     pub fn lent<T: 'static, P: RawPtr<T>>(&self, field: impl FnOnce(&I) -> &P) -> &[T] {
         let p = field(&self.input);
         let at = self.offset(p, "a pointer");
@@ -530,12 +479,6 @@ impl<I: ServiceIn> ServiceCall<I> {
         lent(p.get(), n, "the read region")
     }
 
-    /// The name and value of each `Field` a `*const Field` list field of the `in` lends
-    /// (`SpawnIn::env`).
-    ///
-    /// # Panics
-    ///
-    /// As [`ServiceCall::lent`], or a name or value is NULL with a length.
     pub fn lent_fields(&self, field: impl FnOnce(&I) -> &*const Field) -> Vec<(&[u8], &[u8])> {
         let list: &[Field] = self.lent(field);
         list.iter()
@@ -548,15 +491,6 @@ impl<I: ServiceIn> ServiceCall<I> {
             .collect()
     }
 
-    /// Write a result into a `ServiceBufs` field of the `in`: `bytes` into its buffer and `spans`
-    /// into its spans, and the reply's `len` and `items`. A result the plugin's capacity does not
-    /// hold writes nothing, states its full size in `needed_bytes`/`needed_items`, and answers
-    /// `false`.
-    ///
-    /// # Panics
-    ///
-    /// `field` names no field of this call's `in`, or a capacity comes with a NULL or misaligned
-    /// buffer.
     pub fn fill(
         &mut self,
         field: impl FnOnce(&I) -> &ServiceBufs,
@@ -587,14 +521,6 @@ impl<I: ServiceIn> ServiceCall<I> {
         true
     }
 
-    /// Write `bytes` into a byte region of the `in` the host writes (`ReadIn::buf`,
-    /// `ReplyIn::buf`, an `addr_buf`), and the reply's `len`. Bytes the region's capacity does not
-    /// hold write nothing, state their size in `needed_bytes`, and answer `false`.
-    ///
-    /// # Panics
-    ///
-    /// `field` is no write region of this call's `in` (on this op), or the region is NULL with a
-    /// capacity.
     pub fn fill_lent(&mut self, field: impl FnOnce(&I) -> &*mut u8, bytes: &[u8]) -> bool {
         let p = field(&self.input);
         let at = self.offset(p, "a pointer");
@@ -613,12 +539,6 @@ impl<I: ServiceIn> ServiceCall<I> {
         true
     }
 
-    /// Write `value` into the one `T` a pointer field of the `in` lends for the host to write
-    /// (`ClockNowIn::reading`, `ReplyIn::piece`, `FactsIn::facts`).
-    ///
-    /// # Panics
-    ///
-    /// `field` is no single write region of this call's `in`, or it is NULL or misaligned.
     pub fn put<T: Copy>(&mut self, field: impl FnOnce(&I) -> &*mut T, value: T) {
         let p = field(&self.input);
         let at = self.offset(p, "a pointer");
@@ -634,19 +554,16 @@ impl<I: ServiceIn> ServiceCall<I> {
         unsafe { slot.write(value) };
     }
 
-    /// The reply's scalar answer (`ServiceOut::value`).
     pub fn set_value(&mut self, value: u64) -> &mut Self {
         self.reply.value = value;
         self
     }
 
-    /// The reply's byte count (`ServiceOut::len`), for a service whose `len` is no write.
     pub fn set_len(&mut self, len: u64) -> &mut Self {
         self.reply.len = len;
         self
     }
 
-    /// A FAILED or REFUSED answer's reason.
     pub fn set_error(&mut self, reason: &'static str) -> &mut Self {
         self.reply.error = AbiStr {
             ptr: reason.as_ptr(),
@@ -655,7 +572,6 @@ impl<I: ServiceIn> ServiceCall<I> {
         self
     }
 
-    /// The offset of `field` in this call's `in`.
     fn offset<F>(&self, field: &F, what: &str) -> usize {
         let base = ptr::addr_of!(self.input).addr();
         let at = ptr::from_ref(field).addr();
@@ -666,8 +582,6 @@ impl<I: ServiceIn> ServiceCall<I> {
         at - base
     }
 
-    /// The region at `at`, `write` or read, of `size`-byte entries, on this op: its count, and
-    /// whether it names exactly one.
     fn region(&self, at: usize, write: bool, size: usize) -> (usize, bool) {
         let op = self.op;
         let r = I::REGIONS
@@ -698,8 +612,6 @@ impl<I: ServiceIn> ServiceCall<I> {
     }
 }
 
-/// `len` entries at `ptr`, lent by the plugin for the call. Called ONLY with a region a reviewed
-/// `in` states, or an `AbiStr`/`Blob` field of the call's `in`.
 fn lent<'a, T>(ptr: *const T, len: usize, field: &str) -> &'a [T] {
     if len == 0 {
         return &[];
@@ -715,8 +627,6 @@ fn lent<'a, T>(ptr: *const T, len: usize, field: &str) -> &'a [T] {
     unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 
-/// THE TRAMPOLINE every fake slot holds: the plugin's `in` read and checked, the double run, the
-/// reply written. A double's panic answers FAULT and never crosses the C boundary.
 extern "C" fn trampoline<S: FakeService, const OP: u32>(
     ctx: HostCtx,
     input: *const c_void,
@@ -776,7 +686,6 @@ impl Default for FakeHost {
 }
 
 impl FakeHost {
-    /// Every slot absent, the context `HostCtx::NONE`, no wake.
     #[must_use]
     pub fn new() -> Self {
         let mut services: HostSlots = zeroed();
@@ -806,7 +715,6 @@ impl FakeHost {
         host
     }
 
-    /// Serve `slot` with the double `S`.
     #[must_use]
     pub fn serve<S, T, const OP: u32>(
         mut self,
@@ -822,8 +730,6 @@ impl FakeHost {
         self
     }
 
-    /// Serve the connector services a framed exchange crosses with the scripted far end
-    /// ([`super::far::Far`], which the test holds for its scope).
     #[must_use]
     pub fn far(mut self) -> Self {
         self.conns.establish = Some(super::far::establish);
@@ -834,24 +740,18 @@ impl FakeHost {
         self
     }
 
-    /// The context every host call is made with.
     #[must_use]
     pub fn ctx(mut self, ctx: HostCtx) -> Self {
         self.tables.ctx = ctx;
         self
     }
 
-    /// The wake.
     #[must_use]
     pub fn wake(mut self, wake: WakeFn) -> Self {
         self.tables.wake = Some(wake);
         self
     }
 
-    /// Lend this host's tables to an `open`'s `in` (its `host`): the one consumer of them. The
-    /// `in` comes back as a [`LentIn`] that borrows the host, so it cannot outlive it; the test
-    /// hands it to [`super::reply::call_hosted`] and never holds the `in` itself again. No table,
-    /// and no `ServiceFn`, is handed to the test.
     pub fn lend_to<I: TakesHost>(&self, mut input: I) -> LentIn<'_, I> {
         *input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
         LentIn {
@@ -861,11 +761,6 @@ impl FakeHost {
         }
     }
 
-    /// [`FakeHost::lend_to`] over a [`TestIn`](super::test_in::TestIn) (status row 194): the `in`
-    /// a test built through its builders, every byte it names borrowed for `'h`, lent this
-    /// host's tables. The [`LentIn`] borrows both, so it outlives neither; it goes to
-    /// [`super::reply::call_hosted_in`]. #1471 keeps this name beside its own `lend_to`, so
-    /// `host.lend_in(input)` compiles before and after.
     pub fn lend_in<'h, I: TakesHost + super::AllZero>(
         &'h self,
         input: super::test_in::TestIn<'h, I>,
@@ -882,10 +777,6 @@ impl FakeHost {
         }
     }
 
-    /// This host's tables, lent for as long as the host lives: passed by value to
-    /// `Services::of(tables)`, `Wake::of(tables)` or `Host::of(tables)`. The SDK snapshots the
-    /// function tables; no raw table reference or function accessor escapes the proof.
-    ///
     pub fn lent(&self) -> busbar_contract::abi::sdk::Lent<'_, HostTables> {
         // SAFETY: the tables are this host's own, every pointer in them one of its own boxed
         // tables, all alive and unmoved while `self` is borrowed (`link` points them only when
@@ -909,7 +800,6 @@ impl FakeHost {
         (&self.services, &self.io, &self.conns)
     }
 
-    /// Point the `HostTables` at the three tables again, after any change to them.
     fn link(&mut self) {
         self.tables.services = ptr::from_ref(&*self.services);
         self.tables.io = ptr::from_ref(&*self.io);

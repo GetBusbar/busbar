@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The walk: how many attempts, which cell they record against, when a failure fails over, and
-//! when it does not.
-//!
-//! Carried over from the previous release's pool-cell and reroute tests. The claims are the same:
-//! a member that cannot be reached at all is failed over from; a member that answered is not; the
-//! outcome lands on the ROUTING pool's cell and not the default one; the hop cap is a hop cap and
-//! not an attempt cap; and the request budget is spent once, after the success, and given back
-//! when the answer does not arrive whole. Every route here is the walk's members, attempted by the
-//! production far end.
-
 use crate::test_support::tokens::pass;
 use busbar_contract::abi::transport::STATUS_CALLER_FAULT;
 use busbar_contract::conn::ConnError;
@@ -23,7 +13,6 @@ use super::{member, Node, Routed};
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::ports::{disposition, Outcome};
 
-/// Two members of equal weight: the walk's floor offers `a` first.
 fn two_lane_pool() -> Node {
     let mut node = Node::with_lanes(&["a", "b"]);
     node.pool(
@@ -98,7 +87,6 @@ fn the_walk_takes_the_hop_cap_plus_one_attempts() {
         "a cap of three hops attempts four members: the first attempt is not a hop"
     );
 
-    // The same count off the walk itself: four members taken, then the pool's terminal.
     let mut walker = node.walker("primary");
     for _ in 0..4 {
         drop(walker.take());
@@ -113,8 +101,7 @@ fn the_walk_takes_the_hop_cap_plus_one_attempts() {
 #[test]
 fn there_is_no_failover_after_the_first_byte() {
     let node = two_lane_pool();
-    // The first piece is relayed and then the far end drops before the answer completes. The
-    // caller already has part of the answer, so the walk must not try the sibling.
+
     node.conns.script(
         "a",
         Script::Truncated(frame(Some(WireStatusClass::Success), "head")),
@@ -140,12 +127,6 @@ fn there_is_no_failover_after_the_first_byte() {
     );
 }
 
-/// A MID-STREAM CUT IS NOT A REFUND (spec Part 2 #62, OWNER-LOCKED; #77(2) "no refunds"): once a
-/// byte of a STREAMED answer has reached the caller, a cut bills what streamed to the cut point and
-/// the budget unit the success spent stands. The transfer is still recorded as failed, as 1.5.5 did
-/// on a stream cut after its first byte (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`,
-/// the `had_first && is_sse` arm: the compensating transient, the stream marked ended, nothing
-/// refunded).
 #[test]
 fn a_stream_cut_after_its_first_byte_refunds_nothing() {
     let mut node = two_lane_pool();
@@ -168,12 +149,6 @@ fn a_stream_cut_after_its_first_byte_refunds_nothing() {
     );
 }
 
-/// A BUFFERED answer cut mid-transfer delivered nothing to the caller, whatever bytes of its body
-/// had arrived: the unit its head spent is given back, with the compensating transient. 1.5.5's
-/// buffered read refunded through its `budget_guard` on a mid-body transport failure (v1.5.5
-/// `crates/busbar/src/proxy/engine/mod.rs:329-353`), and its non-stream passthrough body refunded
-/// on a post-first-byte non-SSE failure (`crates/busbar/src/proxy/response_body.rs:358-409`). #62
-/// bills what was delivered to the caller; a buffered answer delivered nothing.
 #[test]
 fn a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit() {
     let node = two_lane_pool();
@@ -196,12 +171,6 @@ fn a_buffered_answer_cut_after_its_first_byte_refunds_the_budget_unit() {
     );
 }
 
-/// A client that goes away while a BUFFERED answer is being read takes nothing with it: 1.5.5's
-/// `budget_guard` dropped armed and gave the unit back (v1.5.5
-/// `crates/busbar/src/proxy/engine/mod.rs:229-256`, `BudgetSpendGuard::drop`; the non-stream
-/// passthrough body's `FirstByteBody::drop`, `crates/busbar/src/proxy/response_body.rs:608-617`).
-/// The registered #62 difference moves only a STREAMED answer's cancel. A client that left is not
-/// the member's fault, so nothing is recorded against it.
 #[test]
 fn a_buffered_answer_the_client_cancels_after_its_first_byte_refunds_the_budget_unit() {
     let node = two_lane_pool();
@@ -236,12 +205,6 @@ fn a_buffered_answer_the_client_cancels_after_its_first_byte_refunds_the_budget_
     );
 }
 
-/// A stream the CLIENT cancels after its first byte is a cut like any other (spec Part 2 #62 names
-/// "disconnect" among them; #77(2) "no refunds, no adjusting lines"): what streamed is billed and the
-/// budget unit its success spent stands. 1.5.5 gave the unit back here (v1.5.5
-/// `crates/busbar/src/proxy/response_body.rs:608-617`, `FirstByteBody::drop`); that difference is
-/// the owner's, registered in `testing/shadow-oracle/accepted-differences.json` and named in the
-/// CHANGELOG. A client that left is not the member's fault, so nothing is recorded against it.
 #[test]
 fn a_stream_the_client_cancels_after_its_first_byte_refunds_nothing() {
     let mut node = two_lane_pool();
@@ -276,11 +239,6 @@ fn a_stream_the_client_cancels_after_its_first_byte_refunds_nothing() {
     );
 }
 
-/// The other side of #62: a success whose answer is cut before ANY byte reached the caller
-/// delivered nothing, so the unit its head spent is given back, with the compensating transient
-/// (v1.5.5 `crates/busbar/src/proxy/response_body.rs:358-409`, the pre-first-byte arm;
-/// `crates/busbar/src/proxy/engine/mod.rs:329-353`, a buffered body that failed before the caller
-/// saw any of it).
 #[test]
 fn a_cut_before_the_first_byte_refunds_the_budget_unit() {
     let node = two_lane_pool();
@@ -373,11 +331,6 @@ fn a_member_that_answers_with_a_server_error_is_failed_over_from() {
     );
 }
 
-/// A withdrawn credential is a caller-fault CLASS (the fee leg), which alone would penalise
-/// nothing. The transport's fault reading is what says the credential was refused, and it has to
-/// reach the classifier for the destination to go down. The verdict here is stated against the
-/// READING: a walk that hands the classifier no reading falls through to the caller's answer, which
-/// records nothing, so the destination is never recorded hard-down.
 #[test]
 fn a_hard_reading_reaches_the_classifier_and_the_destination_goes_hard_down() {
     let node = two_lane_pool();
@@ -417,9 +370,7 @@ fn a_hard_reading_reaches_the_classifier_and_the_destination_goes_hard_down() {
         vec![Outcome::HardDown],
         "and the destination is recorded hard-down, which is what fans out to its siblings"
     );
-    // The hard-down is recorded and then RELAYED to the plane (step 24, member-401: 1.5.5's attempt
-    // classifier ends the walk on an auth hard-down, and the plane's judge renders it); the far end
-    // no longer fails it over before the plane has seen it.
+
     assert!(
         matches!(&outcome, Routed::Delivered(d) if d.destination == DestinationId::new(0)
             && d.status.map(|(code, _)| code) == Some(403)),
@@ -427,9 +378,6 @@ fn a_hard_reading_reaches_the_classifier_and_the_destination_goes_hard_down() {
     );
 }
 
-/// The wait a far end asks for is a fact about THAT answer, and the only layer that ever sees it
-/// is the connector that read the response head. It has to arrive at the classifier or the
-/// cooldown is computed from the ladder alone and the far end's floor is silently dropped.
 #[test]
 fn a_transient_reading_carries_the_upstreams_own_wait_through_to_the_breaker() {
     let node = two_lane_pool();
@@ -462,8 +410,6 @@ fn a_transient_reading_carries_the_upstreams_own_wait_through_to_the_breaker() {
     );
 }
 
-/// The other half of the same claim: a far end that asked for nothing must not have a wait
-/// invented for it. `None` here is what leaves the cooldown to the ladder.
 #[test]
 fn a_transient_reading_with_no_wait_leaves_the_cooldown_to_the_ladder() {
     let node = two_lane_pool();
@@ -489,9 +435,6 @@ fn a_transient_reading_with_no_wait_leaves_the_cooldown_to_the_ladder() {
     );
 }
 
-/// THE RED ARM, AT THE WALK: a far end whose framer states no fault reading (it declares no fault
-/// table) is read as the caller's whatever its class says. The class is the fee leg and never
-/// stands in for the breaker's reading: nothing is recorded and the answer is relayed.
 #[test]
 fn an_answer_with_no_fault_reading_records_nothing_and_is_relayed() {
     let node = two_lane_pool();
@@ -531,7 +474,7 @@ fn a_request_too_large_excludes_every_member_with_the_same_or_a_smaller_window()
     members[1].context_max = Some(8_000);
     members[2].context_max = Some(200_000);
     node.pool("primary", members);
-    // The classifier says this answer means the request was too big for the member's window.
+
     node.breaker.set_verdict(
         Some(WireFault::Caller),
         busbar_kernel_egress::ports::Classified {
@@ -564,9 +507,7 @@ fn a_dispatch_that_cannot_be_recorded_sends_nothing() {
     *node.journal.fail.lock().unwrap() = true;
 
     let outcome = node.route("primary");
-    // 1.5.5 had no dispatch record; its internal failures before a dispatch answered 500 with the
-    // internal words at once, the probe given back, no other member tried (v1.5.5
-    // `crates/busbar/src/proxy/engine/mod.rs:1514-1526`, `:1621-1631`).
+
     assert_eq!(
         outcome.shed(),
         Some(&super::Refusal {
@@ -597,13 +538,6 @@ fn a_dispatch_that_cannot_be_recorded_sends_nothing() {
     );
 }
 
-// ── THE SERVED BREAKER UNDER THE WALK ──────────────────────────────────────────────────────────
-//
-// The cases below are the previous release's pool-cell, budget and stream-cut tests, rehomed
-// (F25 row 155) at the strength they had: what they pin is a breaker cell's state, its window and
-// a destination's lifetime budget, so they run over busbar-kernel-breaker's `BreakerUnit` bound to
-// the egress port as the composition root binds it, not over the scripted `TestBreaker`.
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -621,11 +555,6 @@ use busbar_kernel_egress::wire::STATUS_SERVICE_UNAVAILABLE;
 use super::harness::Reply;
 use crate::plane_driver::{Egress, FarEnd, Pick};
 
-/// THE SERVED BREAKER: busbar-kernel-breaker's [`BreakerUnit`] bound to the egress port exactly as
-/// the composition root's `BreakerAdapter` binds it (`crates/busbar/src/root/adapters.rs`), every
-/// pool under one ladder. Beside it, the one fact the unit does not hold (a destination that is
-/// administratively dead, the port's [`Unavailable::Dead`]) and every outcome the far end recorded,
-/// in order.
 pub(super) struct RealBreaker {
     pub(super) unit: BreakerUnit,
     cfg: BreakerCfg,
@@ -634,12 +563,10 @@ pub(super) struct RealBreaker {
 }
 
 impl RealBreaker {
-    /// The served breaker, every pool under the default ladder.
     pub(super) fn new() -> Arc<Self> {
         Self::with_cfg(BreakerCfg::default())
     }
 
-    /// The served breaker, every pool under `cfg`.
     pub(super) fn with_cfg(cfg: BreakerCfg) -> Arc<Self> {
         Arc::new(Self {
             unit: BreakerUnit::new(),
@@ -649,7 +576,6 @@ impl RealBreaker {
         })
     }
 
-    /// Mark `destination` administratively dead.
     pub(super) fn kill(&self, destination: DestinationId) {
         self.dead
             .lock()
@@ -664,12 +590,10 @@ impl RealBreaker {
             .contains(&destination)
     }
 
-    /// The `(pool, destination)` cell of the unit.
     pub(super) fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
         self.unit.cell(pool, destination)
     }
 
-    /// Every outcome the far end recorded against `pool`'s cell of `destination`, in order.
     pub(super) fn outcomes(&self, pool: &str, destination: DestinationId) -> Vec<Outcome> {
         self.observed
             .lock()
@@ -680,7 +604,6 @@ impl RealBreaker {
             .collect()
     }
 
-    /// How many successes the far end recorded against any member of `pool`.
     pub(super) fn successes(&self, pool: &str) -> usize {
         self.observed
             .lock()
@@ -754,8 +677,6 @@ impl Breaker for RealBreaker {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        // The root adapter's own reading (`root::adapters`): no number crosses, the transport's
-        // fault reading of the frame does; no class and no reading at all is no answer.
         let reading = if status.class.is_none() && status.fault.is_none() {
             busbar_kernel_breaker::classify::Reading::NoAnswer
         } else {
@@ -819,21 +740,19 @@ impl Breaker for RealBreaker {
     }
 }
 
-/// The node's production far end, its breaker the served one.
 pub(super) fn real_egress(node: &Node, real: &Arc<RealBreaker>) -> Egress {
     let mut egress = node.egress();
     egress.breaker = crate::plane_driver::fixed_breaker(Arc::clone(real) as Arc<dyn Breaker>);
     egress
 }
 
-/// A two-piece answer whose first piece states HTTP `status`, in its class.
 pub(super) fn answer(status: u32) -> Vec<Reply> {
     let class = match status {
         200..=299 => WireStatusClass::Success,
         400..=499 => WireStatusClass::CallerFault,
         _ => WireStatusClass::FarEndFault,
     };
-    // The fault reading a framer whose table follows its class states (`harness::frame`'s).
+
     let fault = match class {
         WireStatusClass::FarEndFault => Some(WireFault::Transient),
         WireStatusClass::CallerFault => Some(WireFault::Caller),
@@ -851,13 +770,10 @@ pub(super) fn answer(status: u32) -> Vec<Reply> {
     ]
 }
 
-/// The status a 200 answer's first piece hands the plane: the number and its class.
 pub(super) fn ok_200() -> Option<(u32, u32)> {
     Some((200, u32::from(STATUS_SUCCESS)))
 }
 
-/// [`Node::route_on`] on the node's paused runtime, bounded so a route that never resolves fails the
-/// test instead of hanging it.
 pub(super) fn route_over(node: &Node, egress: &Egress, pool: &str) -> Routed {
     node.rt.block_on(async {
         tokio::time::timeout(
@@ -869,11 +785,6 @@ pub(super) fn route_over(node: &Node, egress: &Egress, pool: &str) -> Routed {
     })
 }
 
-/// F25 row 95: rehomed from the retired engine crate's src/engine/tests/dial_refusal_failover_tests.rs::a_refused_primary_fails_over_to_the_next_lane.
-/// The primary's dial is refused before any connection opens (the destination guard's refusal, as
-/// the connector reports it to the far end; the name's resolution and the judgement are the
-/// connector's): the walk moves on and the next member answers 200, the primary never got a
-/// connection, and the served breaker has the primary cooling down on a transient in its cell.
 #[test]
 fn a_refused_primary_fails_over_to_the_next_lane() {
     let node = two_lane_pool();
@@ -907,9 +818,6 @@ fn a_refused_primary_fails_over_to_the_next_lane() {
     assert!(real.cooldown_remaining("primary", DestinationId::new(0), now, &token) > 0);
 }
 
-/// The degraded rig of rows 118-121: pool `primary`'s only member (`a`) is administratively dead,
-/// so the pool spills into `fb`, whose member `b` has its `fb` cell expired-Open (its recovery probe
-/// due). `b` answers with `script`.
 fn fallback_probe_rig(script: Script) -> (Node, Arc<RealBreaker>) {
     let mut node = Node::with_lanes(&["a", "b"]);
     node.pool("primary", vec![member(DestinationId::new(0), "a")]);
@@ -935,9 +843,6 @@ fn fallback_probe_rig(script: Script) -> (Node, Arc<RealBreaker>) {
     (node, real)
 }
 
-/// F25 row 118: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_2xx_closes_pool_cell_not_default.
-/// A fallback-pool member whose cell is probing answers 200: it is relayed, the FALLBACK POOL's
-/// cell goes HalfOpen to Closed, and the default cell is untouched (Closed, nothing recorded).
 #[test]
 fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
     let (node, real) = fallback_probe_rig(Script::Frames(answer(200)));
@@ -964,10 +869,6 @@ fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
     assert!(real.outcomes("", b).is_empty());
 }
 
-/// F25 row 119: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell.
-/// The same rig with the fallback member's dial refused while its cell is probing: the failed probe
-/// reopens the FALLBACK POOL's cell with a fresh cooldown (Open, not wedged HalfOpen), the chain is
-/// spent, and the default cell is untouched.
 #[test]
 fn test_forward_once_fallback_transport_error_opens_pool_cell() {
     let (node, real) = fallback_probe_rig(Script::DialError(ConnError::Refused));
@@ -997,11 +898,6 @@ fn test_forward_once_fallback_transport_error_opens_pool_cell() {
     );
 }
 
-/// F25 row 120: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_5xx_fault_trips_and_releases_probe.
-/// The same rig with the probing fallback member answering 503: the 503 is relayed, the probe is
-/// resolved (the cell is not wedged HalfOpen), the cooldown is extended by the backoff so an
-/// immediate admission is refused, a day on the cell admits again, and the default cell is
-/// untouched.
 #[test]
 fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
     let (node, real) = fallback_probe_rig(Script::Frames(answer(503)));
@@ -1036,11 +932,6 @@ fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
     assert_eq!(real.cell("", b).state(), BreakerState::Closed);
 }
 
-/// F25 row 121: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_client_4xx_does_not_trip_breaker.
-/// The same rig with the probing fallback member answering 400 (the caller's own fault): the 400 is
-/// relayed, nothing is recorded against the member, the probe is given back (Open, not HalfOpen)
-/// with its expired cooldown intact, so the cell admits again at once; the default cell is
-/// untouched.
 #[test]
 fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
     let (node, real) = fallback_probe_rig(Script::Frames(answer(400)));
@@ -1071,10 +962,6 @@ fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
     assert_eq!(real.cell("", b).state(), BreakerState::Closed);
 }
 
-/// F25 row 135: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_max_requests_budget_caps_lane_and_counts_ok.
-/// A lane with a lifetime budget of 2 in pool `pc`: requests 1 and 2 are served 200, request 3 is
-/// refused 503; the lane's cell holds exactly two successes and no failure, its budget is spent,
-/// and it is no longer usable.
 #[test]
 fn test_max_requests_budget_caps_lane_and_counts_ok() {
     let lane = DestinationId::new(0);
@@ -1118,10 +1005,6 @@ fn test_max_requests_budget_caps_lane_and_counts_ok() {
     assert!(real.unit.try_admit("pc", lane, now).is_err());
 }
 
-/// F25 row 136: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_failover_exclusions_remove_member_from_pool.
-/// A pool's `failover.exclusions` removes the named member: five requests over a pool of `alpha`
-/// and `beta` with `beta` excluded are all served by `alpha`, and `beta` is never dialled and has
-/// nothing recorded.
 #[test]
 fn test_failover_exclusions_remove_member_from_pool() {
     let (alpha, beta) = (DestinationId::new(0), DestinationId::new(1));
@@ -1155,12 +1038,6 @@ fn test_failover_exclusions_remove_member_from_pool() {
     assert_eq!(real.successes("pe"), 5);
 }
 
-/// F25 row 155: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_permit_lifetime_during_stream.
-/// A lane of one concurrency slot streams a five-piece answer: the slot is free before the request,
-/// held while the stream is relayed (after its 200 head), and free again once it is drained. The
-/// test is the plane: it states its reading of every far-end piece it is handed, as the plane
-/// driver does for each one (`plane_driver::route`'s `judged_stating`), so the last one's reading
-/// settles the attempt.
 #[test]
 fn test_permit_lifetime_during_stream() {
     let lane = DestinationId::new(0);
@@ -1224,13 +1101,6 @@ fn test_permit_lifetime_during_stream() {
     });
 }
 
-/// F25 row 364: rehomed from the retired engine crate's src/engine/tests/ingress_indistinguishability_tests.rs::test_repeated_pre_first_byte_failures_trip_breaker.
-/// Three consecutive streamed attempts on pool `p`'s member, each a 200 head cut before its first
-/// byte: every cut is counted against the pool cell (its error count 1, 2, 3), the cell stays
-/// Closed after the first two and is Open after the third. Through the far end each head records
-/// its optimistic success first (as 1.5.5's did), which resets a consecutive streak, so the trip is
-/// read on the error-rate ladder: 3 cuts among 6 outcomes reach its 0.5 threshold at its 5-outcome
-/// floor exactly on the third attempt, and without the cuts the window holds successes only.
 #[test]
 fn test_repeated_pre_first_byte_failures_trip_breaker() {
     let lane = DestinationId::new(0);
@@ -1255,7 +1125,7 @@ fn test_repeated_pre_first_byte_failures_trip_breaker() {
             min_requests: 5,
             consecutive_n: 3,
         },
-        // A sub-threshold failure benches nothing, so the next attempt is admitted at once.
+
         bench_below_trip_threshold: false,
         ..BreakerCfg::default()
     });
@@ -1289,9 +1159,6 @@ fn test_repeated_pre_first_byte_failures_trip_breaker() {
     }
 }
 
-/// One post-first-byte transport cut on pool `p`'s member, whose lifetime budget is one unit; the
-/// caller asked for a streamed answer when `stream`. Answers whether the unit the head spent came
-/// back: a fresh spend succeeds.
 fn refunded_after_a_post_first_byte_cut(stream: bool) -> bool {
     let lane = DestinationId::new(0);
     let mut node = Node::with_lanes(&["m"]);
@@ -1329,10 +1196,6 @@ fn refunded_after_a_post_first_byte_cut(stream: bool) -> bool {
     real.unit.spend_budget(lane)
 }
 
-/// F25 row 366: rehomed from the retired engine crate's src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit.
-/// The same post-first-byte transport cut, a lane budget of one: on a buffered (non-SSE) answer the
-/// head's unit comes back (a second spend succeeds); on a streamed (SSE) answer it is kept (a
-/// second spend fails). Both arms in one test: the rule is that they differ.
 #[test]
 fn test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit() {
     assert!(
@@ -1345,10 +1208,6 @@ fn test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit() {
     );
 }
 
-/// F25 row 587: rehomed from the retired engine crate's src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves.
-/// A breaker-healthy primary whose one slot is held is offered by the order, refused by the
-/// admission and passed over inside the one loop: the twin serves 200 and the primary is never
-/// dialled.
 #[test]
 fn a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves() {
     let (primary, twin) = (DestinationId::new(0), DestinationId::new(1));
@@ -1390,7 +1249,7 @@ fn every_attempt_is_recorded_before_its_dial() {
     assert_eq!(dispatched.len(), 2, "one record per attempt");
     assert_eq!(dispatched[0].destination, DestinationId::new(0));
     assert_eq!(dispatched[1].destination, DestinationId::new(1));
-    // v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1448` numbered its attempts from one.
+
     assert_eq!(dispatched[0].attempt, 1);
     assert_eq!(dispatched[1].attempt, 2);
     assert_eq!(
@@ -1403,8 +1262,7 @@ fn every_attempt_is_recorded_before_its_dial() {
 #[test]
 fn an_attempt_whose_caller_goes_away_mid_send_abandons_its_record() {
     let node = two_lane_pool();
-    // The member accepts the open and then says nothing, so the attempt is parked on its answer
-    // when the caller drops it.
+
     node.conns.script("a", Script::Hang);
 
     node.abandon_mid_answer("primary");

@@ -35,9 +35,7 @@ impl fmt::Display for Refused {
 impl std::error::Error for Refused {}
 
 /// An opaque AES-GCM key and its provider-owned AES/GHASH state.
-///
-/// Operations take an exclusive borrow. The caller must never reuse a nonce when sealing
-/// under the same key. Tags are always 16 bytes and nonces are always 12 bytes.
+
 pub struct AesGcm(NonNull<lc::EVP_CIPHER_CTX>);
 
 // SAFETY: the context owns its allocations, has no thread affinity, and no pointer escapes.
@@ -54,9 +52,7 @@ impl fmt::Debug for AesGcm {
 
 impl AesGcm {
     /// Initialize AES-128-GCM or AES-256-GCM from a borrowed key.
-    ///
-    /// # Errors
-    /// The key is not 16 or 32 bytes, or the provider cannot initialize its context.
+
     pub fn new(key: &[u8]) -> Result<Self, Refused> {
         lc::init();
         // SAFETY: these descriptors have static lifetime. The key slice lives through
@@ -87,10 +83,7 @@ impl AesGcm {
     }
 
     /// Write ciphertext followed by its 16-byte tag; return the bytes written.
-    /// The caller must use a unique nonce for every seal under this key.
-    ///
-    /// # Errors
-    /// A length is unsupported or encryption fails. The output is wiped on failure.
+
     pub fn seal(
         &mut self,
         nonce: &[u8; GCM_NONCE_LEN],
@@ -114,9 +107,7 @@ impl AesGcm {
     }
 
     /// Authenticate ciphertext and its trailing 16-byte tag, then return plaintext length.
-    ///
-    /// # Errors
-    /// A length is unsupported or authentication fails. The output is wiped on failure.
+
     pub fn open(
         &mut self,
         nonce: &[u8; GCM_NONCE_LEN],
@@ -229,10 +220,7 @@ pub mod test_support {
     }
 
     /// Observe newly initialized keys on this thread while `action` runs.
-    ///
-    /// The callback receives the live context and cipher-data addresses, respectively.
-    /// They are metadata, not Rust references or allocation sizes. A native allocator
-    /// witness must independently identify their owning allocations and lifetimes.
+
     pub fn with_owned_state_observer<T>(observer: Observer, action: impl FnOnce() -> T) -> T {
         struct Restore(Option<Observer>);
         impl Drop for Restore {

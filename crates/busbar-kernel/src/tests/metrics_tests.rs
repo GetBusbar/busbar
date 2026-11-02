@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/metrics.rs`.
-
 use super::*;
 use crate::governance::{GovState, MemoryStore, RecordStore, VirtualKey};
 use crate::test_support::{LaneSpec, TestApp};
 use std::sync::Arc;
-// Named directly now that the recorder-install half (which imported it) lives in the substrate.
+
 use std::time::Duration;
 
-/// The protocol a test lane names. The kernel test binary registers no dialect (its built-ins are
-/// the neutral `proto-*` set), so a lane's protocol here is a name nothing resolves, exactly as the
-/// dialect word it replaces was: the neutral crate's tests spell no dialect.
 const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
 
 #[test]
@@ -31,18 +26,13 @@ fn test_render_exposes_emitted_counter() {
         out.contains(REQUESTS_TOTAL),
         "exposition should contain the emitted counter; got:\n{out}"
     );
-    // The label set and incremented value should be present in the scrape.
+
     assert!(
         out.contains("outcome=\"ok\""),
         "label should render; got:\n{out}"
     );
 }
 
-/// Closes the `enabled`/`recorder_installed`/`retaining`/`describe`/`GAUGE_IDLE_TIMEOUT`
-/// coverage gaps together, since `ENABLED`/`HANDLE` are process-global `OnceLock`s that
-/// can only be driven through their "resolved" state once per test binary — every other test
-/// in this module already calls `init()`, so by the time this runs the globals are certainly
-/// resolved either way; the assertions below are meaningful regardless of ordering.
 #[test]
 fn test_enabled_recorder_installed_retaining_and_describe_after_init() {
     init();
@@ -58,9 +48,7 @@ fn test_enabled_recorder_installed_retaining_and_describe_after_init() {
         retaining(),
         "retaining() must be true once the recorder is installed"
     );
-    // describe() registers HELP text via describe_counter! — observable in the exposition as
-    // a `# HELP <metric> <text>` line. A no-op describe() (the `with ()` mutant) would leave
-    // this line absent even though the counter itself still renders once emitted.
+
     metrics::counter!(
         REQUESTS_TOTAL,
         "ingress_protocol" => "describe_probe",
@@ -75,8 +63,6 @@ fn test_enabled_recorder_installed_retaining_and_describe_after_init() {
     );
 }
 
-/// The gauge idle-eviction window is exactly 24h, not some other magnitude a mutated
-/// `*`/`+`/`/` in `24 * 60 * 60` could silently produce.
 #[test]
 fn test_gauge_idle_timeout_is_exactly_24_hours() {
     assert_eq!(GAUGE_IDLE_TIMEOUT, Duration::from_secs(86_400));
@@ -85,19 +71,13 @@ fn test_gauge_idle_timeout_is_exactly_24_hours() {
 
 #[test]
 fn test_init_is_idempotent_and_does_not_panic() {
-    // Regression: `init()` no longer `expect()`s the recorder install. Calling it repeatedly
-    // (as startup + every test does) must be a no-op past the first install and must never
-    // panic — even though the global recorder can only be installed once per process. A second
-    // install attempt would fail, but the `OnceLock` short-circuits it.
     init();
     init();
     init();
-    // After init, render must not panic and (in a process where install succeeded) is non-empty
-    // only once a metric is emitted; the key assertion is simply that the calls return cleanly.
+
     let _ = render();
 }
 
-/// Helper: build a minimal `GovState` backed by an in-memory SQLite store.
 fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
     let store = Arc::new(MemoryStore::new());
     store.put_key(&key).unwrap();
@@ -121,8 +101,6 @@ fn sample_vkey(id: &str) -> VirtualKey {
     }
 }
 
-/// `refresh_scrape_gauges` with governance enabled emits the key's actual spend and tokens. Keys
-/// have no budget cap; remaining-budget gauges belong to group buckets instead.
 #[test]
 fn test_scrape_gauges_key_spend_and_remaining() {
     init();
@@ -130,8 +108,6 @@ fn test_scrape_gauges_key_spend_and_remaining() {
     let key = sample_vkey("vk_spend_test01");
     let gov = gov_with_key(key.clone());
 
-    // Seed a durable ledger directly: 200 requests (derived spend = 200 cents at the
-    // TestApp default `CostModel::flat(1)`) plus 5000 tokens so the tokens gauge is nonzero.
     let usage_store = gov.store();
     usage_store
         .put_usage(
@@ -151,7 +127,6 @@ fn test_scrape_gauges_key_spend_and_remaining() {
         )
         .unwrap();
 
-    // Build a minimal App with governance.
     let app = TestApp::new()
         .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
         .pool("pool-a", &[(0, 1)])
@@ -162,7 +137,7 @@ fn test_scrape_gauges_key_spend_and_remaining() {
     metrics::with_local_recorder(&recorder, || refresh_scrape_gauges(&app));
 
     let out = handle();
-    // The key id must appear in the output (cardinality-bounded label).
+
     assert!(
         out.contains("vk_spend_test01"),
         "key id must appear as label in scrape output; got:\n{out}"
@@ -177,17 +152,13 @@ fn test_scrape_gauges_key_spend_and_remaining() {
             .any(|line| line == format!("{KEY_TOKENS_TOTAL}{{key=\"{}\"}} 5000", key.id)),
         "the seeded key's tokens gauge must carry its actual value; got:\n{out}"
     );
-    // 1.5.0: keys are pure auth (no cap), so no per-key budget-remaining gauge exists; the
-    // remaining/limit dimension lives on the GROUP buckets (asserted below).
+
     assert!(
         !out.contains("busbar_key_budget_remaining_cents"),
         "the removed per-key remaining gauge must not resurface; got:\n{out}"
     );
 }
 
-/// A group bucket WITHOUT a `budget` cap must NOT emit `BUCKET_BUDGET_REMAINING_CENTS` - the
-/// gauge is meaningless without a ceiling and would just be 0. (The per-key remaining gauge is
-/// gone entirely: keys are pure auth.)
 #[test]
 fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
     init();
@@ -196,7 +167,6 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
     key.group = Some("uncapped-grp".to_string());
     let gov = gov_with_key(key);
 
-    // The group carries only a requests limit: its minute bucket exists but has NO budget cap.
     let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
         std::collections::BTreeMap::from([(
             "uncapped-grp".to_string(),
@@ -226,9 +196,7 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
     refresh_scrape_gauges(&app);
 
     let out = render();
-    // The remaining gauge for the budget-less bucket must NOT appear.
-    // NOTE: other tests in this process may have emitted it for different buckets; we can only
-    // check that this bucket id does not appear on a budget-remaining line.
+
     let remaining_lines: Vec<&str> = out
         .lines()
         .filter(|l| l.contains(BUCKET_BUDGET_REMAINING_CENTS))
@@ -239,7 +207,7 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
                 "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line}"
             );
     }
-    // Its spend series DOES appear, keyed by the new (bucket, group, window) dimensions.
+
     assert!(
         out.lines().any(|l| l.contains(BUCKET_SPEND_CENTS)
             && l.contains("group:uncapped-grp@minute")
@@ -248,10 +216,6 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
     );
 }
 
-/// The 1.5.0 cost-model exposure: `busbar_bucket_tokens{bucket, model, tier}` series for key
-/// AND budget-group buckets, derived `busbar_bucket_spend_cents` / `_budget_remaining_cents`
-/// for group buckets, and the key's MINT-TIME labels echoed onto its series (so external
-/// dashboards can `sum by (team)` without busbar knowing what a team is).
 #[test]
 #[allow(clippy::field_reassign_with_default)]
 fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
@@ -262,7 +226,6 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     key.labels = std::collections::BTreeMap::from([("team".to_string(), "growth".to_string())]);
     let gov = gov_with_key(key.clone());
 
-    // A cost model with the growth group; flat fee 1 (TestApp default shape).
     let groups = std::collections::BTreeMap::from([(
         "growth".to_string(),
         crate::config::GroupCfg {
@@ -283,7 +246,6 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     )]);
     let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
 
-    // Accrue per-model tier tokens through the REAL accrual path (fans out to key + group).
     gov.record_usage(
         &cost,
         &key,
@@ -307,7 +269,6 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     refresh_scrape_gauges(&app);
     let out = render();
 
-    // Key-bucket per-(model, tier) series with the mint label echoed.
     let key_line = out
         .lines()
         .find(|l| {
@@ -326,8 +287,6 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
         "input tier value: {key_line}"
     );
 
-    // Group-bucket series exist too (the chain accrual fanned out), keyed by the 1.5.0
-    // per-(group, window) bucket id and carrying the group/window dimensions.
     assert!(
         out.lines().any(|l| l.starts_with("busbar_bucket_tokens")
             && l.contains("bucket=\"group:growth@total\"")
@@ -336,8 +295,7 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
             && l.contains("tier=\"output\"")),
         "group-bucket token series missing: {out}"
     );
-    // Derived group spend (0 without a rate card and no admitted request) + remaining
-    // (= full cap).
+
     assert!(
         out.lines()
             .any(|l| l.starts_with("busbar_bucket_spend_cents")
@@ -353,21 +311,6 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     );
 }
 
-/// `refresh_scrape_gauges` must emit at most `key_gauge_limit` (2000) distinct per-key series
-/// even when the governance store holds more than that many virtual keys.
-///
-/// The truncation logic (`keys.iter().take(key_gauge_limit)`) is exercised by creating
-/// key_gauge_limit + 1 keys, running a scrape, and asserting the count of distinct `key=`
-/// label values in the `busbar_key_spend_cents` lines is ≤ key_gauge_limit.
-///
-/// Creating 2001 rows in an in-memory SQLite instance is fast (< 50 ms on any modern machine);
-/// using `put_key` directly on the store bypasses the `GovState` cache and is the simplest
-/// deterministic way to seed a large key set.
-/// THE KEY-GAUGE WARN LATCH IS PROCESS-GLOBAL (`metrics::money`, `KEY_GAUGE_LIMIT_WARNED`): the
-/// first scrape over the limit sets it, the next scrape under the limit clears it. The two tests
-/// that cross the limit therefore hold this lock for their whole body. Without it, the truncation
-/// test's over-limit scrape could land between the boundary test's at-limit scrape (latch cleared)
-/// and its over-limit scrape, take the latch, and leave the boundary test's warning at debug.
 static KEY_GAUGE_LATCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn key_gauge_latch() -> std::sync::MutexGuard<'static, ()> {
@@ -378,12 +321,10 @@ fn key_gauge_latch() -> std::sync::MutexGuard<'static, ()> {
 fn test_key_gauge_limit_truncation() {
     let _latch = key_gauge_latch();
     init();
-    // The default key-gauge limit is 2000 (no limits installed in this test ⇒ the historical
-    // default). We use the same value here to keep the test self-consistent.
+
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
     let store = Arc::new(MemoryStore::new());
 
-    // Insert LIMIT + 1 keys so the truncation branch fires.
     for i in 0..=(LIMIT) {
         let id = format!("vk_limit_{i:04x}");
         let key = VirtualKey {
@@ -401,8 +342,7 @@ fn test_key_gauge_limit_truncation() {
             ..Default::default()
         };
         store.put_key(&key).unwrap();
-        // Seed minimal usage so the key has a row in usage_counters and the spend gauge is
-        // actually emitted (keys with zero usage_for results are skipped).
+
         store
             .put_usage(
                 &id,
@@ -433,22 +373,12 @@ fn test_key_gauge_limit_truncation() {
 
     let out = render();
 
-    // Count distinct `key=` values that appear on busbar_key_spend_cents data lines
-    // (i.e. non-comment lines that contain the metric name). Each emitted series produces one
-    // such line, so this counts emitted series directly.
     let spend_series_count = out
         .lines()
         .filter(|l| !l.starts_with('#') && l.contains(KEY_SPEND_CENTS))
         .filter(|l| l.contains("vk_limit_"))
         .count();
 
-    // EXACTLY the limit, not merely "at most" it. `<= LIMIT` is satisfied by any truncation at all
-    // — a `.take(1)`, a `.take(0)` guarded by the `> 0` floor below, an off-by-a-thousand — so the
-    // pair of bounds it replaces bracketed the answer between 1 and 2000 and called that a proof.
-    // With LIMIT + 1 keys seeded, all of them carrying usage (so none is skipped for a zero
-    // `usage_for`), the cap is BINDING and the emitted count is a single determined number: LIMIT.
-    // Asserting that number is what makes a regression in either direction — a cap that stopped
-    // capping (2001) or one that clamped far below its own value — a failure here.
     assert_eq!(
         spend_series_count,
         LIMIT,
@@ -458,9 +388,6 @@ fn test_key_gauge_limit_truncation() {
     );
 }
 
-/// Build an `App` backed by a governance store seeded with `n` distinct virtual keys, each
-/// with minimal usage so its per-key spend gauge actually emits. Shared by the key-gauge-limit
-/// boundary tests below.
 fn app_with_n_keys(n: usize) -> Arc<App> {
     let store = Arc::new(MemoryStore::new());
     for i in 0..n {
@@ -506,11 +433,6 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
         .build()
 }
 
-/// `keys.len() > key_gauge_limit` is the EXACT boundary that gates the truncation warning: a
-/// mutated `>` (e.g. `<`) would make the warning fire on the WRONG side of the boundary
-/// (never at `limit + 1`, always below `limit`, or some other inversion) — `render()`'s output
-/// is unaffected either way (`.take(key_gauge_limit)` bounds emission unconditionally), so
-/// this can only be proven via the actual `tracing::warn!` call, not the metric text.
 #[test]
 fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
     use crate::test_support::warn_capture::WarnCapture;
@@ -519,7 +441,6 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
     init();
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
 
-    // AT the limit: no warning.
     let app_at_limit = app_with_n_keys(LIMIT);
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -534,7 +455,6 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
         cap.messages()
     );
 
-    // ONE past the limit: warning fires.
     let app_over_limit = app_with_n_keys(LIMIT + 1);
     let cap2 = WarnCapture::default();
     let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
@@ -551,8 +471,6 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
     );
 }
 
-/// Cardinality invariant: label values in the scrape output must NOT contain raw bearer secrets
-/// (which start with `sk-bb-`). The key id (`vk_<hex>`) is the only key-identifying label.
 #[test]
 fn test_cardinality_invariant_no_raw_secret_in_labels() {
     init();
@@ -574,8 +492,7 @@ fn test_cardinality_invariant_no_raw_secret_in_labels() {
             "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out}"
         );
 }
-/// A source of its own (leaked, as the process one is) whose gauges drop out after `idle`, and its
-/// test-view reader.
+
 fn local_source(idle: Duration) -> (&'static Source, impl Fn() -> String) {
     let width = Duration::from_secs(1);
     let source: &'static Source = Box::leak(Box::new(Source::new(width, SUMMARY_BUCKETS, idle)));
@@ -584,14 +501,6 @@ fn local_source(idle: Duration) -> (&'static Source, impl Fn() -> String) {
     })
 }
 
-/// A gauge whose subject is gone must stop being exported; one still being refreshed must not.
-///
-/// Per-key gauges are only `set` while iterating LIVE keys, so without an idle timeout a deleted
-/// key's spend was re-rendered with its final value for the life of the process — `/metrics`
-/// growing with lifetime key churn, and dashboards showing a deleted key's spend as current.
-///
-/// Driven through a LOCALLY-built source: installing is global and once-per-process, but
-/// building is not, so the reaping behaviour can be exercised on a short window.
 #[test]
 fn a_gauge_that_stops_being_refreshed_is_expired() {
     let idle = Duration::from_millis(60);
@@ -606,8 +515,7 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
     assert!(before.contains("busbar_test_live_subject"));
 
     std::thread::sleep(idle * 3);
-    // Only the live subject is refreshed — exactly what `refresh_scrape_gauges` does for the
-    // keys that still exist.
+
     metrics::with_local_recorder(&recorder, || {
         metrics::gauge!("busbar_test_live_subject").set(2.0);
     });
@@ -623,8 +531,6 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
     );
 }
 
-/// Counters and histograms must NOT be reaped: expiring a counter resets it and breaks `rate()`,
-/// and expiring a histogram discards its summary. Only gauges are in the mask.
 #[test]
 fn only_gauges_are_expired() {
     let idle = Duration::from_millis(60);
@@ -647,14 +553,6 @@ fn only_gauges_are_expired() {
     );
 }
 
-/// Item 24: the money gauges moved into `snapshot/money.rs` and now reach the recorder through ONE
-/// named boundary, `money::set_gauge`, instead of an inline `as f64` at each site. The served
-/// `/metrics` text must be the text 1.5.5 served. For every probe value the SAME family is written
-/// once the 1.5.5 way (the direct cast, kept here as the reference) and once through the boundary,
-/// under two distinct `key` labels, and the rendered value text of the two lines must be identical
-/// byte for byte — including above 2^53 and at the type extremes, where the float rounds. For every
-/// value whose magnitude is at most 2^53 the rendered text must also be exactly the integer's
-/// decimal digits: the served figure is the exact integer.
 #[test]
 fn money_gauge_bytes_are_the_1_5_5_bytes() {
     init();
@@ -725,7 +623,6 @@ fn money_gauge_bytes_are_the_1_5_5_bytes() {
     }
 }
 
-/// A key with an all-time ledger row of `input` input tokens and one request, in `store`.
 fn seed_viewed_key(store: &dyn RecordStore, id: &str, input: u64) -> VirtualKey {
     let key = VirtualKey {
         id: id.to_string(),
@@ -752,7 +649,6 @@ fn seed_viewed_key(store: &dyn RecordStore, id: &str, input: u64) -> VirtualKey 
     key
 }
 
-/// A cost model pricing `m` at `input_utok` per input token, with a flat `fee`, and no groups.
 fn priced_at(input_utok: f64, fee: i64) -> crate::cost::CostModel {
     let card = std::collections::BTreeMap::from([(
         "m".to_string(),
@@ -764,7 +660,6 @@ fn priced_at(input_utok: f64, fee: i64) -> crate::cost::CostModel {
     crate::cost::CostModel::resolve_parts(Some(&card), fee, &Default::default())
 }
 
-/// The spend gauge's value for `key` in `out`.
 fn spend_of(out: &str, key: &str) -> String {
     let needle = format!("key=\"{key}\"");
     let line = (out.lines())
@@ -799,7 +694,6 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         .governance(gov.clone())
         .build();
 
-    // (1)
     refresh_scrape_gauges(&app);
     let first = gov.money_view_pricings();
     assert_eq!(
@@ -816,7 +710,6 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "scrapes with no fact moving must not price again"
     );
 
-    // (4) a served request: admission, then the tap's accrual.
     let now = 1_700_000_000;
     gov.try_admit(&app.cost, &keys[0], "", now)
         .expect("an uncapped key admits");
@@ -831,7 +724,6 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "the serving path prices nothing through the money view"
     );
 
-    // (2)
     refresh_scrape_gauges(&app);
     assert_eq!(
         gov.money_view_pricings(),
@@ -839,7 +731,6 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "a write between two scrapes reprices exactly that one bucket"
     );
 
-    // (3) the same governance under a new card.
     let old = spend_of(&render(), "vk_view_b");
     let swapped = TestApp::new()
         .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
@@ -930,7 +821,6 @@ macro_rules! gauge_plane {
     };
 }
 
-/// One declared class of `family`.
 const fn gauge_class(
     class: &'static str,
     family: &'static str,
@@ -938,7 +828,6 @@ const fn gauge_class(
     crate::plane_driver::registry::BillableClass { class, family }
 }
 
-// The fallback plane's shape: the four 1.5.5 token tiers, then a class in another family.
 gauge_plane!(
     GAUGE_FALLBACK_PLANE,
     "gauge-fallback",
@@ -952,7 +841,6 @@ gauge_plane!(
     ]
 );
 
-// A plane whose token classes are not the four tiers, beside a class in another family.
 gauge_plane!(
     GAUGE_AUDIO_PLANE,
     "gauge-audio",
@@ -970,7 +858,6 @@ gauge_plane!(
     ]
 );
 
-/// Every exposition line of `family` whose labels carry `needle`, sorted.
 fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
     let mut lines: Vec<String> = (out.lines())
         .filter(|l| l.starts_with(&format!("{family}{{")) && l.contains(needle))
@@ -980,11 +867,6 @@ fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
     lines
 }
 
-/// **THE 1.5.5 MONEY-GAUGE BYTES, WHOLE LINES** for a lane of the fallback plane: one
-/// `busbar_bucket_tokens` series per token tier, zeros included, the `tier` label spelled as 1.5.5
-/// spelled it, and the key's spend and token-total gauges. A class outside the token family
-/// (`search_units`) is priced, never a token series. Any change to a metric name, a label key, a
-/// label value or a figure fails here.
 #[test]
 fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     init();
@@ -1049,10 +931,6 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     );
 }
 
-/// **A PLANE'S OWN TOKEN CLASSES ARE GAUGED, NOT THE FALLBACK PLANE'S TIERS** (audit K2#2): a lane
-/// of a plane declaring `audio_tokens_in`/`audio_tokens_out` gets one `busbar_bucket_tokens` series
-/// per class it declares in the token family, zeros included, and none for the four tiers it never
-/// declared. Its duration class is priced, never a token series.
 #[test]
 fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
     init();

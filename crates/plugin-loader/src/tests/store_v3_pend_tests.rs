@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STORE THAT PENDS (the store SDK's `Step`/`Op`; REVIEWER and ARCHITECT, binding): an op that
-//! pends once and resumes answers what the same op answers inline; a usage batch cancelled after
-//! its write went out and retried with the SAME `op_id` answers what it applied, counted once; a
-//! RESUME with nothing parked is FAULT, never a fresh run; PENDING on the connector with no service
-//! in flight is FAULT.
-
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
@@ -35,11 +29,8 @@ fn now_ns() -> u64 {
     crate::dispatch::now_ns()
 }
 
-/// What a pend-once op keeps across its PENDING turn.
 struct Kept<T>(T);
 
-/// Pend once, keeping `answer`, then answer it on the RESUME: the op's result is computed in its
-/// first entry (the write went out), and the resume only hands it back.
 fn pend_once<T: Send + Sync + 'static>(
     cx: &mut Op<'_>,
     answer: impl FnOnce() -> T,
@@ -58,7 +49,6 @@ fn pend_once<T: Send + Sync + 'static>(
     }
 }
 
-/// The ops these tests compare, each pending once (1 ms) before answering.
 struct PendsOnce;
 
 impl Hooks for PendsOnce {
@@ -123,14 +113,10 @@ fn ready<T>(s: Step<T>) -> T {
     }
 }
 
-/// The usage batch a cancel cuts off after its write went out: it applies on its first entry, then
-/// pends for long (a remote store waiting on its commit's answer). Its first retry of an `op_id`
-/// is answered at once, from the store's dedupe.
 struct CommitsThenPends;
 
 static PENDED: Mutex<Option<HashSet<OpId>>> = Mutex::new(None);
 
-/// The bucket of the batch the test cancels; only it pends, and only its first attempt.
 const CANCELLED: &str = "m";
 
 impl Hooks for CommitsThenPends {
@@ -160,7 +146,6 @@ impl Hooks for CommitsThenPends {
     }
 }
 
-/// Pends on the connector with no service made (`delete_key`), which nothing would wake.
 struct PendsOnNothing;
 
 impl Hooks for PendsOnNothing {
@@ -237,7 +222,6 @@ fn plane(id: &str, parent: Option<&str>, seq: u64) -> PlaneRecord {
     }
 }
 
-/// One store's answers to the compared ops, over the same writes.
 fn transcript(s: &LoadedStore) -> String {
     rt().block_on(async {
         s.record_put(
@@ -257,7 +241,7 @@ fn transcript(s: &LoadedStore) -> String {
             .expect("append");
         let listed =
             StoreCalls::list_plane_records(s, "ev", &PlaneSelector::Parent("t".into())).await;
-        // The count batch, pended the same way: a usage batch and its replay.
+
         let cells = [(
             "k",
             60u64,
@@ -281,8 +265,6 @@ fn an_op_that_pends_and_resumes_answers_what_the_inline_op_answers() {
     assert_eq!(pended, inline);
 }
 
-/// COUNTS: a usage batch cancelled after its write went out, retried with the SAME `op_id`,
-/// answers what the first attempt applied, and the ledger counts it once.
 #[test]
 fn a_usage_batch_cancelled_after_its_write_retries_counted_once() {
     let s = open(commits_then_pends::door);
@@ -310,7 +292,6 @@ fn a_usage_batch_cancelled_after_its_write_retries_counted_once() {
     assert_eq!(counted.requests, 4, "counted once, not twice");
 }
 
-/// The raw door: its open, and a `delete_key` entry on `ticket` with `flags`.
 fn raw_delete_key(
     door: busbar_contract::abi::mechanism::door::DoorFn,
     ticket: Ticket,
@@ -379,7 +360,7 @@ fn a_resume_with_nothing_parked_is_fault_and_never_a_fresh_run() {
         raw_delete_key(crate::both_ways::store_fixture::door, TICKET, FLAG_RESUME),
         Outcome::Fault
     );
-    // The same op, fresh, runs: an id never written is FAILED, the store's own answer.
+
     assert_eq!(
         raw_delete_key(crate::both_ways::store_fixture::door, TICKET, 0),
         Outcome::Failed
@@ -394,10 +375,6 @@ fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
     );
 }
 
-// ── the governance bridge on a ticket (ARCHITECT ruling 2026-10-03 on Q-L14-1) ────────────────
-
-/// A remote store's `list_denylist`: on a ticket it pends once (its round trip in flight) and
-/// answers on the resume; on no ticket it cannot reach its backend at all, so it refuses.
 struct RemoteDenylist;
 
 impl Hooks for RemoteDenylist {
@@ -428,9 +405,6 @@ mod remote_denylist {
     );
 }
 
-/// RED (Q-L14-1 (a)): the kernel's governance store reaches every slot through the synchronous
-/// bridge; a store that answers PENDING there and READY on its wake completes the op, as a
-/// remote store's every round trip must.
 #[test]
 fn a_store_that_pends_then_answers_completes_a_governance_op_on_the_bridge() {
     let s = open(remote_denylist::door);
@@ -543,8 +517,6 @@ impl busbar_contract::conn::DeclaredConns for Table {
     }
 }
 
-/// A store that reaches its backend over one `tcp` need: its `list_denylist` checks out the op's
-/// one connection to the backend and answers what it got.
 struct OverTcp;
 
 impl Hooks for OverTcp {
@@ -567,7 +539,6 @@ pub(super) const NO_TEXT: busbar_contract::abi::mechanism::call::AbiStr =
         len: 0,
     };
 
-/// One outbound `tcp` need, its target named by the store.
 pub(super) const TCP: &[busbar_contract::abi::host::conn::connector::Need] =
     &[busbar_contract::abi::host::conn::connector::Need {
         direction: busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND,
@@ -596,9 +567,6 @@ mod over_tcp {
     );
 }
 
-/// RED (Q-L14-1 (b)): a store whose door declares a `tcp` need is handed the connector, its need
-/// declared on the host's connection table, exactly as every other kind; its op on the bridge
-/// checks out a stream there.
 #[test]
 fn a_store_declaring_a_tcp_need_receives_a_connector() {
     let table = Arc::new(Table::default());
@@ -632,7 +600,6 @@ fn a_store_declaring_a_tcp_need_receives_a_connector() {
     );
 }
 
-/// A store door with no needs states none: the Statement the base arm builds is unchanged.
 #[test]
 fn a_store_door_without_needs_states_none() {
     // SAFETY: the SDK's `'static` door and Statement.
@@ -644,13 +611,8 @@ fn a_store_door_without_needs_states_none() {
     assert_eq!(st.needs_len, 1);
 }
 
-// ── open on a ticket, with a connect step (ARCHITECT ruling 2026-10-03 on Q-L16-2) ────────────
-
-/// How many times `PendsInOpen`'s `open` ran.
 static PENDS_IN_OPEN_OPENS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// A store whose connect step pends once (its backend's first round trip in flight) and then
-/// answers it reached the backend.
 struct PendsInOpen;
 
 impl Hooks for PendsInOpen {
@@ -664,7 +626,6 @@ impl Hooks for PendsInOpen {
         Ok(Arc::new(MemoryStore::new()))
     }
     fn connect(_: &MemoryStore, cx: &mut Op<'_>) -> Step<Result<(), String>> {
-        // A remote backend's round trip needs the ticket to pend on.
         if !cx.can_pend() {
             return Step::Ready(Err(
                 "pends-in-open reaches its backend only on a ticket".into()
@@ -678,8 +639,6 @@ mod pends_in_open {
     busbar_contract::store_door!(super::Wrapped<super::PendsInOpen>, "pends-in-open", "0", 64);
 }
 
-/// RED (Q-L16-2): a store whose connect step PENDS in `open` completes its open (the boot's
-/// store load) on the wake, `open` itself running once, and serves.
 #[test]
 fn a_store_pending_in_open_completes_the_load_and_serves() {
     let before = PENDS_IN_OPEN_OPENS.load(std::sync::atomic::Ordering::SeqCst);
@@ -696,7 +655,6 @@ fn a_store_pending_in_open_completes_the_load_and_serves() {
     );
 }
 
-/// A store whose connect step reaches its backend over its `tcp` need: a checkout at `open`.
 struct ConnectsOverTcp;
 
 impl Hooks for ConnectsOverTcp {
@@ -721,7 +679,6 @@ mod connects_over_tcp {
     );
 }
 
-/// `door` loaded over `table` (the host's connection table) and opened.
 fn open_over(
     door: busbar_contract::abi::mechanism::door::DoorFn,
     table: &Arc<Table>,
@@ -742,9 +699,6 @@ fn open_over(
     LoadedStore::open(p, d, b"{}", mint)
 }
 
-/// RED (Q-L16-2): the connect step reaches the backend over the host's connection table at `open`
-/// (a ticketed open; a ticket-less one has no connector), and closes that connection when it
-/// answers.
 #[test]
 fn a_store_connects_over_the_hosts_table_at_open() {
     let table = Arc::new(Table::default());
@@ -761,7 +715,6 @@ fn a_store_connects_over_the_hosts_table_at_open() {
     RecordStore::add_denylist(&s, "dave", "test").expect("it serves");
 }
 
-/// RED (Q-L16-2): an unreachable backend fails the LOAD, at `open`, in the store's own words.
 #[test]
 fn an_unreachable_backend_fails_the_load_with_the_stores_message() {
     let table = Arc::new(Table::default());
@@ -779,10 +732,6 @@ fn an_unreachable_backend_fails_the_load_with_the_stores_message() {
     );
 }
 
-// ── a store op's body as a future over its one raw connection (store SDK `wire`) ──────────────
-
-/// A store whose `list_denylist` is a wire protocol: it connects to the backend its settings name
-/// (`{"addr": ...}`), sends a line and answers the line the backend sends back.
 struct OverWire;
 
 static WIRE_ADDR: Mutex<String> = Mutex::new(String::new());
@@ -833,8 +782,6 @@ mod over_wire {
     );
 }
 
-/// A backend that answers each line, after `delay`, as `echo <line>`, in two writes (so the op's
-/// reads pend, and a reply arrives in pieces).
 fn line_backend(delay: Duration) -> String {
     use std::io::{BufRead, Write};
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -860,8 +807,6 @@ fn line_backend(delay: Duration) -> String {
     addr
 }
 
-/// The store's wire body runs across PENDING entries over the host's connection table (a real
-/// TCP backend that answers late, in two pieces) and answers the backend's reply.
 #[test]
 fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
     let addr = line_backend(Duration::from_millis(30));
@@ -887,7 +832,7 @@ fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
         RecordStore::list_denylist(&s).expect("the wire op answers"),
         vec!["echo hello".to_string()]
     );
-    // A second op is its own connection, and answers the same.
+
     assert_eq!(
         RecordStore::list_denylist(&s).expect("again"),
         vec!["echo hello".to_string()]

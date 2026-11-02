@@ -42,23 +42,7 @@ pub use emit::emit;
 #[path = "tests/catalog_tests.rs"]
 mod catalog_tests;
 
-// ── THE SHAPES live in `busbar_contract::diagnostic` (DECISIONS #83; #83a O3, SD-1): the entry struct
-//    a plane fills, its class and severity, and the banner. Re-exported here under their historical
-//    paths, so every caller (and every catalog const below) compiles unchanged.
 pub use busbar_contract::diagnostic::{Banner, Class, Diagnostic, Severity};
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE PLANE-CONTRIBUTED CATALOG. The neutral [`REGISTRY`] carries only the plane-AGNOSTIC built-in
-// diagnostics; each extracted plane crate OWNS its own `Diagnostic` consts, and the composition
-// root folds them (with every first-party plugin's declared codes) ONCE into a [`Catalogue`] it
-// lends by value to every reader. The runtime catalog an operator sees is [`Catalogue::all`] —
-// `REGISTRY ∪ the root's fold` — so a plane's codes resolve through [`Catalogue::by_code`] on the
-// catalogue the root lent, and a build with a plane compiled out never sees (or renders) that
-// plane's diagnostics. The kernel holds no catalogue of its own: everything crosses the ABI, the
-// host names no plane const, and a plane never edits this file. Numbering/identity is preserved on
-// the move — a plane const keeps its `BUSBAR-NNNN`, so an operator's old logs stay resolvable —
-// codes are REGISTERED, never renumbered.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// ONE RUNTIME CATALOGUE: the neutral built-ins ([`REGISTRY`]) and the plane-contributed and
 /// plugin-declared entries the composition root folded, lent by value. `Copy`: the root folds once
@@ -70,25 +54,18 @@ pub struct Catalogue {
 }
 
 impl Catalogue {
-    /// The neutral built-ins alone: a no-planes build, or a reader no root lent a fold to.
     pub const NEUTRAL: Catalogue = Catalogue { installed: &[] };
 
-    /// The catalogue over `installed`, the root's fold of every linked plane's owned diagnostics and
-    /// every first-party plugin's declared ones.
     #[must_use]
     pub const fn lent(installed: &'static [&'static Diagnostic]) -> Catalogue {
         Catalogue { installed }
     }
 
-    /// The plane-contributed and plugin-declared entries the root folded, without the built-ins.
     #[must_use]
     pub fn installed(self) -> &'static [&'static Diagnostic] {
         self.installed
     }
 
-    /// THE FULL RUNTIME CATALOG: neutral built-ins ([`REGISTRY`]) followed by the root's fold. This
-    /// is what a `GET /diagnostics`, a CLI `explain`, or a rendered docs page reads — never the bare
-    /// [`REGISTRY`], which is only the neutral half.
     #[must_use]
     pub fn all(self) -> Vec<&'static Diagnostic> {
         REGISTRY
@@ -98,8 +75,6 @@ impl Catalogue {
             .collect()
     }
 
-    /// Look a code up across the FULL catalog (neutral built-ins ∪ the root's fold), e.g. for a
-    /// plugin's reported banner or a CLI `busbar explain 1001`.
     #[must_use]
     pub fn by_code(self, code: u16) -> Option<&'static Diagnostic> {
         REGISTRY
@@ -110,24 +85,8 @@ impl Catalogue {
     }
 }
 
-// The emit macros a PLUGIN crate reaches are `busbar_contract`'s (#83a O3: the diagnostic shapes and
-// the `diag = "BUSBAR-NNNN"` log format are the contract's); this crate's own `#[macro_export]`
-// twins, which expand identically, are at the bottom of this module.
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE CATALOG is data: `catalog.toml` beside this file. `build.rs` renders each entry as a
-// `Diagnostic` const of the same name, and `REGISTRY` in the file's order.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 include!(concat!(env!("OUT_DIR"), "/diagnostics_catalog.rs"));
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// Doc generation — `docs/diagnostics.md` (human) and `docs/diagnostics.json` (machine).
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// Render the operator-facing markdown page for an arbitrary catalog slice: one section per class, a
-/// table anchored by slug so `…/diagnostics#<slug>` deep-links. Shared by the neutral snapshot and
-/// each plane crate's own snapshot, so the doc form of every diagnostic is byte-identical wherever it
-/// is owned.
 pub fn render_markdown_for(catalog: &[&Diagnostic]) -> String {
     let mut out = String::new();
     out.push_str("# Busbar diagnostics catalog\n\n");
@@ -172,10 +131,7 @@ pub fn render_markdown_for(catalog: &[&Diagnostic]) -> String {
     out
 }
 
-/// Render the machine-readable catalog for an arbitrary catalog slice (stable field order, pretty,
-/// trailing newline). Shared by the neutral snapshot and each plane crate's own snapshot.
 pub fn render_json_for(catalog: &[&Diagnostic]) -> String {
-    // Hand-rolled to avoid a serde derive dependency on a doc artifact and to pin field order.
     let mut items = Vec::new();
     let mut sorted = catalog.to_vec();
     sorted.sort_by_key(|d| d.code);
@@ -200,7 +156,6 @@ pub fn render_json_for(catalog: &[&Diagnostic]) -> String {
     format!("[\n{}\n]\n", items.join(",\n"))
 }
 
-/// Stable lowercase key for a class in the JSON form.
 fn class_key(c: Class) -> &'static str {
     match c {
         Class::Durability => "durability",
@@ -215,7 +170,6 @@ fn class_key(c: Class) -> &'static str {
     }
 }
 
-/// Minimal JSON string escaping for the doc artifact (quote, backslash, control chars).
 fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -233,15 +187,6 @@ fn json_str(s: &str) -> String {
     out.push('"');
     out
 }
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// Emit macros. `#[macro_export]` (was crate-internal): an out-of-tree plugin crate relocated off
-// core names these at `busbar_kernel::diagnostics::{diag_warn, diag_debug, diag_error}` on its own hot
-// path, so they must cross the crate boundary — the one mechanism a `macro_rules!` has for that is `#[macro_export]`
-// (which also surfaces them at the crate root). The `pub use` below re-exports them at their
-// historical `crate::diagnostics::…` path so every in-crate `use crate::diagnostics::diag_warn;`
-// caller is unchanged. Sites in this crate use `use crate::diagnostics::diag_warn;`.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// `warn!` carrying the `diag = "BUSBAR-NNNN"` field. First arg is the [`Diagnostic`] const.
 #[macro_export]

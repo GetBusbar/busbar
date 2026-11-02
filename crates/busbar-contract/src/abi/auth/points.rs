@@ -2,21 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE AUTH POINTS: the one vocabulary a transport and an auth meet on (THE DESIGN, "Auth
-//! points and guest lists", step 1). A transport never names an auth and an auth never names a
-//! transport: a transport declares the points it offers, an auth style declares the points it
-//! needs, and the host calls the auth at each point through its handle. Defined here, once;
-//! `abi::transport` re-exports it and never redefines it. Only the owner and the ARCHITECT add a
-//! point, and a new point changes the auth and transport kind ABIs.
-//!
-//! | point | the transport calls | the auth sees |
-//! |---|---|---|
-//! | [`AuthPoint::Peer`] | once per connection, at connect or spawn | peer facts |
-//! | [`AuthPoint::Head`] | once per request, when the head is final | method, target, authority, field lines |
-//! | [`AuthPoint::HeadBody`] | once per request, with the whole body held (bounded) | the head and the body |
-//! | [`AuthPoint::Frame`] | reserved: named, not built until a style needs it | — |
-//!
-//! Points are ordered `Peer` < `Head` < `HeadBody`. `HeadBody` includes the head, so a set never
-//! holds both ([`super::check_points`]).
 
 /// [`AuthPoints`] bit of [`AuthPoint::Peer`].
 pub const POINT_PEER: u32 = 1;
@@ -25,7 +10,7 @@ pub const POINT_HEAD: u32 = 2;
 /// [`AuthPoints`] bit of [`AuthPoint::HeadBody`].
 pub const POINT_HEAD_BODY: u32 = 4;
 /// [`AuthPoints`] bit of [`AuthPoint::Frame`]: RESERVED. No set may hold it yet
-/// ([`super::check_points`] refuses it).
+
 pub const POINT_FRAME: u32 = 8;
 
 /// One auth point. Its value is its [`AuthPoints`] bit, so the order is the design's:
@@ -47,7 +32,7 @@ pub enum AuthPoint {
 
 impl AuthPoint {
     /// The point a single bit names; `None` for any other value (no bit, several bits, an unknown
-    /// bit). [`AuthPoint::Frame`] is named, so its bit answers it.
+
     #[must_use]
     pub const fn from_bit(bit: u32) -> Option<Self> {
         match bit {

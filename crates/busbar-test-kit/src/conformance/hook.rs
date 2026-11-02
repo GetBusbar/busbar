@@ -96,31 +96,26 @@ use super::{
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
 
-/// THE WATCH BUDGET every `decide`/`transform` is submitted under, and its deadline: the hook's
-/// `timeout_ms` as the host's hook door rides it on the op (THE DESIGN §11.7), generously.
 const BUDGET: Duration = Duration::from_secs(10);
 
-/// The host's first reject-message buffer, in bytes.
 const MESSAGE_CAP: usize = 4096;
-/// The host's first restrict-tags buffer, in bytes.
+
 const TAGS_CAP: usize = 4096;
-/// The host's first rewrite buffer, in bytes.
+
 const REWRITE_CAP: usize = 64 * 1024;
 
-/// The pool and dialect every request names.
 const POOL: &str = "conformance";
 
-/// One request of the set: the host's view, the op, and the line its answer must read.
 pub(super) struct Request {
     label: String,
     op: u32,
-    /// The candidates' model and provider names, which `statics` point into.
+
     _names: Vec<String>,
     statics: Vec<CandidateStatic>,
     dynamics: Vec<CandidateDynamic>,
-    /// The verdict the request must answer ([`verdict`]'s form).
+
     expect: String,
-    /// Whether the expected answer overflows the host's first buffer (the ONE re-call).
+
     short: bool,
 }
 
@@ -198,7 +193,7 @@ impl Request {
             let rate = f("rate_headroom").inspect(|_| present |= CANDIDATE_HAS_RATE_HEADROOM);
             dynamics.push(CandidateDynamic {
                 latency_ms: latency.unwrap_or(0.0),
-                // Absent is no concurrency; present and not a u64 is a broken script, refused.
+
                 available_concurrency: c.get("available_concurrency").map_or(0, |n| {
                     n.as_u64().unwrap_or_else(|| {
                         panic!("conformance.json: request '{label}': available_concurrency {n}")
@@ -224,12 +219,10 @@ impl Request {
         }
     }
 
-    /// The step's pinned crossings: one, and the ONE re-call when the answer overflows.
     fn pinned(&self) -> u64 {
         1 + u64::from(self.short)
     }
 
-    /// The line an honest answer reads.
     fn line(&self) -> String {
         format!(
             "Ready lease=false | {} recalled={}",
@@ -238,7 +231,6 @@ impl Request {
     }
 }
 
-/// The expected verdict, in [`verdict`]'s form, and whether it overflows the first buffers.
 fn expected(label: &str, op: u32, e: &Value, order_cap: usize) -> (String, bool) {
     let s = |k: &str| e[k].as_str().unwrap_or("").to_string();
     match (op, e["verb"].as_str()) {
@@ -282,7 +274,6 @@ fn expected(label: &str, op: u32, e: &Value, order_cap: usize) -> (String, bool)
     }
 }
 
-/// The host's buffers for one op.
 struct Bufs {
     order: Vec<u32>,
     message: Vec<u8>,
@@ -305,15 +296,12 @@ impl Bufs {
     }
 }
 
-/// THE MEMORY ONE `decide`/`transform` LENDS THE HOOK: the request's view and the host's buffers,
-/// built in place in the `Arc` lent to the op (THE DESIGN §2).
 struct Lend {
     request: Arc<Request>,
     bufs: Bufs,
 }
 
 impl Lend {
-    /// `r` over `bufs`: the memory lent, and the `in` over it.
     fn of(r: &Arc<Request>, bufs: Bufs) -> (Arc<Self>, DecideIn) {
         let mut lend = Arc::new(Self {
             request: Arc::clone(r),
@@ -359,15 +347,12 @@ fn head<T: Copy>(buf: &[T], n: usize) -> Vec<T> {
     buf[..n.min(buf.len())].to_vec()
 }
 
-/// One op's answer: as the host reads it, whether it was SHORT, and what it said.
 struct Crossed {
     called: Called,
     short: bool,
     said: Said,
 }
 
-/// ONE SUBMISSION of `r`'s op `op` on `ticket`, WATCHED (the hook door's way: the watch budget and
-/// the deadline the hook's `timeout_ms`), over `bufs`, lent to the op.
 fn cross(
     p: &Plugin<Hook>,
     d: &Dispatcher,
@@ -427,14 +412,12 @@ fn cross(
     }
 }
 
-/// A ticket of `d`'s for one request (`None` when none is free: the step answers REFUSED).
 fn ticket(d: &Dispatcher) -> Option<Ticket> {
     d.mint(0)
 }
 
 const NO_TICKET: &str = "Refused lease=false no ticket";
 
-/// The verdict a READY answer of `op` names; `verb=none` for any other outcome.
 fn verdict(op: u32, c: &Called, s: &Said) -> String {
     if c.outcome != Outcome::Ready {
         return "verb=none".to_string();
@@ -463,10 +446,6 @@ fn verdict(op: u32, c: &Called, s: &Said) -> String {
     }
 }
 
-/// THE HOST'S WAY WITH ONE REQUEST (`hook_door`'s): the op submitted watched on a ticket of its
-/// own over the first buffers, and on a short answer THE ONE re-call, re-submitted on that ticket
-/// over buffers of the size it named. Its line: the outcome the host acts on, the verdict, and
-/// whether it took the re-call.
 pub(super) fn ask(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap: usize) -> String {
     let Some(t) = ticket(d) else {
         return NO_TICKET.to_string();
@@ -492,7 +471,6 @@ pub(super) fn ask(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap:
     )
 }
 
-/// The first answer of `r`, short, then re-submitted on its ticket over the SAME short buffers.
 fn recall_again(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap: usize) -> String {
     let Some(t) = ticket(d) else {
         return NO_TICKET.to_string();
@@ -512,9 +490,6 @@ fn recall_again(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap: u
     line
 }
 
-/// THE BIND THE HOOK SCRIPT LOADS ITS DOOR WITH, on each leg: as every kind whose needs reach a
-/// far end is bound ([`super::bind_far`], the auth and plane scripts'), over a table serving the far
-/// ends its inputs name (`far_ends`), else the leg's own table ([`Subject::bind`]).
 pub(super) fn bind_for(d: &Dispatcher, s: &Subject) -> crate::dispatch::Bind {
     bind_far(d, "hook", s)
 }
@@ -565,8 +540,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .map(|q| (q.label.clone(), q.line()))
         .collect();
     managed(&mut r, (k, &p, &d), &settings, &mut expect);
-    // The short answer re-submitted on its ticket over the same short buffers: one crossing
-    // each, then FAULT.
+
     if let Some(short) = &short {
         r.line("re-call short again", 2, || {
             recall_again(&p, &d, short, order_cap)
@@ -585,7 +559,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     expect.push((after_label, after.line()));
     contract(&fold, &expect, orders).unwrap_or_else(|e| panic!("{leg:?}: the hook contract: {e}"));
-    // THE RED ARM: a door that ranks the other way answers otherwise, and is refused.
+
     let reversed = reversed(&fold);
     if reversed != fold {
         assert!(
@@ -596,11 +570,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     fold
 }
 
-/// The settings version the script's `configure` pushes (`open` is 1), and the scripted one's.
 const PUSHED: u64 = 2;
 const SCRIPTED: u64 = 3;
 
-/// `configure` with `settings` at `version`: the host's line and the version it acknowledged.
 fn configure(p: &Plugin<Hook>, settings: &[u8], version: u64) -> String {
     let mut f: Frame<ConfigureIn, ConfigureOut> = Frame::new(input(), output());
     f.input.version = version;
@@ -610,8 +582,6 @@ fn configure(p: &Plugin<Hook>, settings: &[u8], version: u64) -> String {
     format!("{} | acked={}", called(&c).trim_end(), f.out.acked_version)
 }
 
-/// One request-stage `notify`, submitted on a ticket of its own (a tap that asks the far end
-/// pends and is resumed on its wake): the host's line.
 fn notify(p: &Plugin<Hook>, d: &Dispatcher) -> String {
     let Some(t) = ticket(d) else {
         return NO_TICKET.to_string();
@@ -631,8 +601,6 @@ fn notify(p: &Plugin<Hook>, d: &Dispatcher) -> String {
     called(&answered(&done)).trim_end().to_string()
 }
 
-/// The JSON blob a READY answer leased, as one token: `json=<compact JSON>`, `json=invalid` when
-/// the bytes are not JSON, `json=none` for any other outcome.
 fn blob_json(c: &Called, b: Blob) -> String {
     if c.outcome != Outcome::Ready {
         return "json=none".to_string();
@@ -650,7 +618,6 @@ fn blob_json(c: &Called, b: Blob) -> String {
     }
 }
 
-/// `status` (or `describe`, `op`): the host's line and the lease it holds.
 fn leased(p: &Plugin<Hook>, op: u32) -> (String, u64) {
     let (c, token) = if op == slot::STATUS {
         let mut f: Frame<InHead, StatusOut> = Frame::new(input(), output());
@@ -666,9 +633,6 @@ fn leased(p: &Plugin<Hook>, op: u32) -> (String, u64) {
     (format!("{} | {token}", called(&c).trim_end()), c.lease)
 }
 
-/// THE MANAGEMENT OPS on the open instance (H9): `configure` (and the inputs' scripted one),
-/// `notify`, `status` and `describe`, each lease released. What the inputs pin is pushed onto
-/// `expect`.
 fn managed(
     r: &mut Script<'_>,
     (k, p, d): (&Value, &Plugin<Hook>, &Dispatcher),
@@ -713,13 +677,6 @@ fn managed(
     }
 }
 
-/// The request whose short answer the script re-calls, and the order proof it rests on. A hook that
-/// may order (`orders`) must have one `decide` expecting an order longer than the first buffer; a
-/// hook that declared `orders: false` has none ([`abstain_only`]).
-///
-/// # Errors
-/// The hook may order and no `decide` expects an order longer than `order_cap`; or it declared
-/// `orders: false` and a request expects an order.
 pub(super) fn recall_request(
     orders: bool,
     requests: &[Arc<Request>],
@@ -736,11 +693,6 @@ pub(super) fn recall_request(
         })
 }
 
-/// A hook that declared `orders: false` is judged on abstain-only: no `decide` of the set expects
-/// an order.
-///
-/// # Errors
-/// The first request that expects an order.
 pub(super) fn abstain_only(requests: &[Arc<Request>]) -> Result<(), String> {
     match requests
         .iter()
@@ -755,7 +707,6 @@ pub(super) fn abstain_only(requests: &[Arc<Request>]) -> Result<(), String> {
     }
 }
 
-/// `fold` with every PREFER order reversed: what a door that ranks the other way answers.
 fn reversed(fold: &Fold) -> Fold {
     fold.iter()
         .cloned()
@@ -772,9 +723,6 @@ fn reversed(fold: &Fold) -> Fold {
         .collect()
 }
 
-/// THE MANAGEMENT OPS' CONTRACT (H9): none FAULTs; `configure` READY acknowledges the version it
-/// was pushed, and FAILED names why; a scripted `configure` the hook must refuse is FAILED naming
-/// why; `status` and `describe` READY carry JSON.
 fn management(fold: &Fold) -> Result<(), String> {
     let at = |label: &str| {
         fold.iter()
@@ -826,12 +774,6 @@ fn management(fold: &Fold) -> Result<(), String> {
     Ok(())
 }
 
-/// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: the lifecycle
-/// answers READY where it must and FAILED with its reason where it must; every request answers
-/// exactly its expected line (verb, order, status, message, the re-call taken or not); a re-call
-/// that is short again is FAULT; an unopened or closed instance serves nothing.
-///
-/// A hook that declared `orders: false` FAILS the contract if any step answered an order (RED ARM).
 pub(super) fn contract(
     fold: &Fold,
     expect: &[(String, String)],
@@ -866,7 +808,7 @@ pub(super) fn contract(
         let line = at(label)?;
         need(line == want, label, &format!("{line} (want: {want})"))?;
     }
-    // EVERY bad setting: each validate FAILED naming why, each open FAILED (H1).
+
     fn bad<'f>(fold: &'f Fold, prefix: &'static str) -> impl Iterator<Item = &'f super::Step> {
         fold.iter().filter(move |s| s.label.starts_with(prefix))
     }

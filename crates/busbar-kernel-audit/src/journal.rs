@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A sealed record, as the node's journal keeps it: `audit.v4`.
-//!
-//! The journal is the source of truth for the fixed audit chain. A node keeps its newest records in
-//! memory as a cache and answers an older window by decoding them back off the journal, so this
-//! body carries the WHOLE record — every field the digest frames, in a lossless form, plus the
-//! recipe it was sealed under, its digest, its signature and the key that made it. Decoding one
-//! and recomputing its digest must give the digest it carries; a record that does not is tampered,
-//! and the chain walk says so.
-//!
-//! The framing is this crate's own and deliberately dull: a text is a big-endian `u32` length and
-//! its bytes, a number is a big-endian `u64`, an optional value is a presence number and then the
-//! value. The body opens with [`JOURNAL_TAG`], so a journal record that is not an audit record is
-//! told apart before anything is parsed.
-//!
-//! One thing the body cannot carry by value is a usage line's CLASS: the record holds the
-//! registered static name ([`busbar_contract::MeterClassId`]), never an owned string, so a class is
-//! resolved against the node's registered vocabulary on the way back in. A class the vocabulary does
-//! not hold is an error the caller reports — never a line dropped.
 
 use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, UnitKey};
 
@@ -48,10 +31,7 @@ impl std::fmt::Display for FieldTooLong {
 impl std::error::Error for FieldTooLong {}
 
 /// The journal body of one sealed record.
-///
-/// # Errors
-///
-/// A text field does not fit the body's length prefix ([`FieldTooLong`]); nothing is written.
+
 pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     let mut w = Writer::new();
     w.text(JOURNAL_TAG);
@@ -117,14 +97,7 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
 }
 
 /// Read a journal body back into the record it keeps.
-///
-/// `Ok(None)` is a body that is not an audit record at all. `class` resolves a usage line's class
-/// name to the registered static name; a class it cannot resolve, and any body that does not parse
-/// to the end, is an `Err` naming what was wrong.
-///
-/// # Errors
-///
-/// The body opens with [`JOURNAL_TAG`] and does not decode, or names a class `class` cannot resolve.
+
 pub fn from_journal_body(
     bytes: &[u8],
     class: &dyn Fn(&str) -> Option<MeterClassId>,
@@ -137,7 +110,7 @@ pub fn from_journal_body(
 }
 
 /// The independently retained head fields of one journalled audit record.
-/// This copies the published claim; full body/digest verification remains the audit verifier's job.
+
 pub struct JournalHead {
     /// The original record's published position, digest, signature, key identifier and wall clock.
     pub head: crate::heads::SignedHead,
@@ -148,10 +121,7 @@ pub struct JournalHead {
 }
 
 /// Read audit head metadata without resolving the historical plane's meter vocabulary.
-/// Skipped identity/destination fields are borrowed, never copied into new private buffers.
-///
-/// # Errors
-/// An audit prefix is truncated or its recipe is unknown. Non-audit bodies answer `None`.
+
 pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, String> {
     let mut r = Reader { bytes, at: 0 };
     if r.text().as_deref() != Some(JOURNAL_TAG) {
@@ -170,17 +140,17 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
     let hash = r.text().ok_or_else(bad)?;
     let signature = r.opt_text().ok_or_else(bad)?;
     let key_id = r.opt_text().ok_or_else(bad)?;
-    r.skip_text().ok_or_else(bad)?; // subject tag
-    r.skip_text().ok_or_else(bad)?; // subject identifier
-    r.num().ok_or_else(bad)?; // unit key
-    r.num().ok_or_else(bad)?; // boot incarnation
-    r.skip_text().ok_or_else(bad)?; // operation class
-    r.skip_opt_text().ok_or_else(bad)?; // destination
-    r.opt_num().ok_or_else(bad)?; // parent
-    r.skip_opt_text().ok_or_else(bad)?; // pre-hook head
-    r.skip_opt_text().ok_or_else(bad)?; // post-hook head
+    r.skip_text().ok_or_else(bad)?;
+    r.skip_text().ok_or_else(bad)?;
+    r.num().ok_or_else(bad)?;
+    r.num().ok_or_else(bad)?;
+    r.skip_text().ok_or_else(bad)?;
+    r.skip_opt_text().ok_or_else(bad)?;
+    r.opt_num().ok_or_else(bad)?;
+    r.skip_opt_text().ok_or_else(bad)?;
+    r.skip_opt_text().ok_or_else(bad)?;
     let wall = r.num().ok_or_else(bad)?;
-    r.num().ok_or_else(bad)?; // monotonic clock
+    r.num().ok_or_else(bad)?;
     let node = r.num().ok_or_else(bad)?;
     Ok(Some(JournalHead {
         head: crate::heads::SignedHead {
@@ -383,9 +353,7 @@ fn read_source(r: &mut Reader<'_>) -> Option<QuantitySource> {
 }
 
 /// The subject a sealed body's two frozen fields name — through the ONE decoder the amendment
-/// journal reads its subjects with ([`crate::amend::subject_from_fields`]), which accepts a pair only
-/// when it re-renders to exactly the text that was read. A second, laxer decoder here took `"007"`
-/// as node 7, a value the record never rendered.
+
 pub(crate) fn subject_of(tag: &str, value: &str) -> Option<Subject> {
     crate::amend::subject_from_fields(tag, value)
 }
@@ -431,7 +399,7 @@ fn finish_of(tag: &str) -> Option<FinishClass> {
 }
 
 /// The inverse of [`outcome_tag`], checked by re-rendering: an outcome is accepted only when it
-/// renders back to exactly the tag that was read.
+
 pub(crate) fn outcome_of(tag: &str) -> Option<Outcome> {
     let outcome = if tag == "Completed" {
         Outcome::Completed
@@ -479,8 +447,7 @@ fn abort_of(tag: &str) -> Option<Abort> {
 }
 
 /// The body writer. A text longer than `limit` (the length prefix's own bound, `u32::MAX`, outside
-/// this module's tests) is never cut to fit: it marks the body refused, and [`Writer::finish`] says
-/// so.
+
 pub(crate) struct Writer {
     out: Vec<u8>,
     limit: usize,

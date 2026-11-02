@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EGRESS WALK'S PRODUCTION PORTS: the clock reads the wall and
-//! a monotonic origin and sleeps on the runtime's timer; a member's `max_concurrent` slots are held
-//! until dropped and handed to the longest waiter; the counters label a member by its name and keep
-//! each pool's wait depth balanced.
-
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -96,8 +91,6 @@ fn the_counters_label_a_member_by_name_and_keep_each_pools_depth() {
     assert_eq!(t.depth("p"), 0, "a depth never reads below empty");
 }
 
-// ── F25 REHOME: the attempt timeout a sealed member carries, the queue's one wake, the p95 ring ───
-
 /// A connection table that opens nothing: the sealing below never dials.
 #[derive(Debug, Default)]
 struct Shut;
@@ -181,8 +174,6 @@ impl busbar_kernel_egress::ports::Journal for Unwritten {
     fn abandoned(&self, _: &busbar_kernel_egress::ports::Dispatched) {}
 }
 
-/// A dialect the root links, read as data off the node's dialect fixture (the root's sources name
-/// no dialect).
 fn a_linked_dialect() -> String {
     let path = concat!(
         env!("BUSBAR_CORE_DIR"),
@@ -196,12 +187,7 @@ fn a_linked_dialect() -> String {
         .expect("the fixture names a body-model dialect")
 }
 
-/// THE MODEL-SERVING EGRESS, sealed by [`crate::root::model_egress::compose`] the way the serve
-/// path seals it, over a deployment where model `patient` states a 10000 ms attempt timeout and
-/// model `plain` states none; pool `fast` overrides `patient` to 50 ms and leaves `plain` bare, and
-/// pool `slow` names `patient` with no override. Both models are also routable directly.
 fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
-    // The deployment names `models:`/`pools:`, which config resolution hands a plane.
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
     let dialect = a_linked_dialect();
     let mut defs = std::collections::HashMap::new();
@@ -257,7 +243,6 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     egress
 }
 
-/// The attempt timeout the sealed `pool`'s member `model` carries.
 fn sealed_attempt_ms(
     egress: &busbar_kernel::plane_driver::Egress,
     pool: &str,
@@ -274,11 +259,6 @@ fn sealed_attempt_ms(
         .attempt_timeout_ms
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/attempt_timeout_precedence_tests.rs::test_member_override_wins_over_model_default`
-/// 1.5.5: the pool member's `attempt_timeout_ms` override wins over the
-/// model-level default, so one model carries 10000 ms in one pool and 50 ms in another.
-///
-/// RED: the sealed member carries the model's 10000 ms (or nothing) instead of its pool's 50 ms.
 #[test]
 fn a_members_attempt_timeout_wins_over_its_models_default() {
     let egress = sealed_timeouts();
@@ -289,10 +269,6 @@ fn a_members_attempt_timeout_wins_over_its_models_default() {
     );
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/attempt_timeout_precedence_tests.rs::test_model_default_applies_when_member_has_no_override`
-/// 1.5.5: a member without an override inherits the model-level default.
-///
-/// RED: a member that states no override loses its model's 10000 ms cap (or takes another pool's).
 #[test]
 fn test_model_default_applies_when_member_has_no_override() {
     let egress = sealed_timeouts();
@@ -303,23 +279,12 @@ fn test_model_default_applies_when_member_has_no_override() {
     );
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/attempt_timeout_precedence_tests.rs::test_no_cap_anywhere_is_none`
-/// 1.5.5: with neither level set the attempt is uncapped (`None`): it
-/// runs under the walk's budget alone.
-///
-/// RED: a member whose pool and model state no cap is sealed with one.
 #[test]
 fn test_no_cap_anywhere_is_none() {
     let egress = sealed_timeouts();
     assert_eq!(sealed_attempt_ms(&egress, "fast", "plain"), None);
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/attempt_timeout_precedence_tests.rs::test_empty_cands_uses_model_default`
-/// 1.5.5: a single-model route has no member rows at all, so the
-/// model-level value is the only source: 10000 ms where the model states it, uncapped where it
-/// states none.
-///
-/// RED: a route naming a model directly drops the model's own attempt timeout (or invents one).
 #[test]
 fn test_empty_cands_uses_model_default() {
     let egress = sealed_timeouts();
@@ -330,13 +295,6 @@ fn test_empty_cands_uses_model_default() {
     assert_eq!(sealed_attempt_ms(&egress, "plain", "plain"), None);
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/on_exhausted_tests.rs::queue_two_waiters_one_freed_permit_wakes_exactly_one`
-/// 1.5.5: with two waiters parked on a saturated one-slot member,
-/// freeing ONE slot lets EXACTLY ONE dispatch; the other stays parked (no thundering herd, the cap
-/// never exceeded) until the winner's slot frees in turn.
-///
-/// RED: one freed slot wakes both waiters, hands out a second slot, or loses the wake so neither
-/// (or only the first) ever proceeds.
 #[tokio::test]
 async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
     let permits = std::sync::Arc::new(MemberPermits::new([(A, 1)]));
@@ -389,11 +347,6 @@ async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
     }
 }
 
-/// NO LOST WAKEUP: a slot freed in the window around the moment a waiter parks is kept for it, so
-/// the waiter dispatches well inside a short wait rather than missing the wake and timing out.
-/// Driven fifty times so the free lands on both sides of the park. Rehomes
-/// the retired engine crate's `src/engine/tests/on_exhausted_tests.rs::queue_no_lost_wakeup_when_permit_freed_in_the_window`.
-/// RED: a wake fired before the waiter registered is lost, and the waiter waits out its bound.
 #[tokio::test]
 async fn a_slot_freed_as_its_waiter_parks_is_not_lost() {
     for _ in 0..50 {
@@ -414,14 +367,6 @@ async fn a_slot_freed_as_its_waiter_parks_is_not_lost() {
     }
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/signal_catalog_tests.rs::latency_reservoir_p95_is_nearest_rank_and_bounded`
-/// 1.5.5: the reservoir behind `CandidateLatencyP95Ms` reads `None`
-/// until a sample lands (never a fabricated 0); its p95 is nearest-rank in whole milliseconds
-/// rounded up (1..=100 ms gives 95, a 0.2 ms sample gives 1); NaN, zero and negative samples are
-/// ignored; and the ring is bounded, so after 1000 samples of 7 ms only those decide (7).
-///
-/// RED: an empty ring reads 0, the rank or the rounding moves, a garbage sample is counted, or the
-/// ring stops evicting its oldest samples.
 #[test]
 fn latency_reservoir_p95_is_nearest_rank_and_bounded() {
     use crate::root::model_egress::LatencyReservoir;
@@ -444,8 +389,6 @@ fn latency_reservoir_p95_is_nearest_rank_and_bounded() {
     assert_eq!(ring.p95_ms(), Some(7));
 }
 
-/// The value of the one exposition line of `family` whose labels hold every one of `labels`, `0`
-/// when there is none.
 fn scraped(family: &str, labels: &[&str]) -> f64 {
     busbar_kernel_testkit::test_support::export_axis::render()
         .lines()
@@ -455,11 +398,6 @@ fn scraped(family: &str, labels: &[&str]) -> f64 {
         .sum()
 }
 
-/// RED: a lane
-/// word the plane never declared, and a pool its walk cannot reach, fall back to the walk's own
-/// labels and count on `busbar_plugin_label_refused_total`; a declared word and a reachable entry
-/// are taken. Without the bound the stated words would be emitted as given, and a plane could mint
-/// a series per distinct string.
 #[test]
 fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
     use busbar_kernel_egress::ports::StatedLabels;

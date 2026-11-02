@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `GET /api/v1/admin/usage` PRICES THROUGH THE PROCESS'S DATED HISTORY, the one the kernel's rate
-//! dater holds (`busbar_kernel::rate_apply`), and through no seam of the admin crate's own.
-//!
-//! R6 (BUSBAR-1.6.0.md, l.1472-1476): the cleanliness crates keep EXACTLY their two `OnceLock`
-//! seams; l.1558: "add no new kernel `OnceLock` seam beyond the two R6 exempts". The usage read
-//! used to reach the history through a static of its own that the composition root filled by name;
-//! the history it needs is the one the kernel's rate dater already hands the budget book. So the
-//! only install this test makes is the kernel's: if the read priced off anything else, a row earned
-//! under the opening card would read back at the current one.
-//!
-//! A test BINARY of its own: the rate dater is process-wide, and the crate's unit tests read usage
-//! with no dater installed.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -24,13 +11,11 @@ use busbar_kernel::rate_apply::RateEpoch;
 use busbar_kernel_testkit::test_support::rate_holders::install_rate_epoch;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-/// The one priced lane: a metering row's `model` and the card's lane, spelled once.
 const LANE: &str = "m-dated-read";
 const PROVIDER: &str = "dated-read";
-/// One thousand input tokens, so N micro-units a token reads back as `N * 1_000`.
+
 const TOKENS: u64 = 1_000;
 
-/// The deployment's dated history, as the composition root's rate holder hands it over.
 struct Holder(Arc<History>);
 
 impl RateEpoch for Holder {
@@ -43,7 +28,6 @@ impl RateEpoch for Holder {
     }
 }
 
-/// A one-lane card at `micro_per_token` micro-units per input token, no flat fee.
 fn card(micro_per_token: u64) -> RateCard {
     RateCard::from_config(
         Some([(
@@ -57,8 +41,6 @@ fn card(micro_per_token: u64) -> RateCard {
     )
 }
 
-/// The CURRENT cost model: one micro-unit a token, so a read that fell back to it answers 1,000
-/// where the dated history answers 10,000.
 fn current_cost() -> CostModel {
     let rates = BTreeMap::from([(
         LANE.to_string(),
@@ -70,7 +52,6 @@ fn current_cost() -> CostModel {
     CostModel::resolve_parts(Some(&rates), 0, &BTreeMap::new())
 }
 
-/// Governance holding one metering row in `bucket`, earned under the opening entry.
 fn governance(bucket: u64) -> Arc<GovState> {
     let store = Arc::new(MemoryStore::new());
     RecordStore::add_metering(
@@ -96,8 +77,6 @@ fn governance(bucket: u64) -> Arc<GovState> {
     Arc::new(GovState::new(store, None).expect("governance builds"))
 }
 
-/// RED while the usage read priced through a seam of the admin crate's own: with only the kernel's
-/// rate dater installed, it fell back to the current card (1,000) and named no rate-card version.
 #[tokio::test]
 async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let holder: &'static Holder =
@@ -108,7 +87,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     busbar_core_admin::install();
     let bucket = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now())
         - METERING_BUCKET_SECS;
-    // An OPEN admin posture: the read reaches its handler rather than an authentication refusal.
+
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(governance(bucket))
         .cost(current_cost())

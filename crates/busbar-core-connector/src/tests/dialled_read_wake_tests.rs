@@ -95,7 +95,6 @@ impl LegSink for Caller {
 
 impl Caller {
     fn poll_publication(&self) -> Poll<()> {
-        // The future is outside the caller lock while it calls back into the real pairing.
         let mut task = self.task.lock().unwrap().take().expect("scheduled actor");
         let result = task.as_mut().poll(&mut Context::from_waker(Waker::noop()));
         if result.is_pending() {
@@ -165,7 +164,7 @@ impl FramerDoor for RawFramer {
                             && bytes.len() <= input.sink.frame_cap
                             && input.sink.pieces_cap > 0
                     );
-                    // D1 and D2 yield only caller-bound LINE; D3 yields channel output.
+
                     let stream = if bytes[1] == 3 { 3 } else { 20 };
                     // SAFETY: both output loans are checked above, and the piece names only
                     // initialized bytes copied before this crossing returns.
@@ -235,8 +234,7 @@ fn establish_keying(
         host_cert.fingerprint(),
     );
     let mut now = Instant::now();
-    // Match the existing datagram handshake fixtures' finite clock pump; no sleeps or socket
-    // timings establish the presented state used by the readiness control below.
+
     for _ in 0..200 {
         while let Some((to, packet)) = host.poll_send() {
             assert_eq!(to, far_addr);
@@ -310,8 +308,7 @@ impl Rig {
         let (mut framing, _) =
             DatagramFraming::accept(door.clone(), host_cert.clone(), port.local_addr()).unwrap();
         framing.rendezvous(b"terms", Instant::now()).unwrap();
-        // Admit the real sender through an integrity-checked STUN request. The ordinary raw
-        // fixture requests no bind and has no deadline; the keyed control completes DTLS below.
+
         let username = b"host:far";
         let mut check = vec![0, 1, 0, 36, 0x21, 0x12, 0xa4, 0x42];
         check.extend_from_slice(&[7; 12]);
@@ -422,8 +419,7 @@ fn line_only_socket_batches_rearm_reads_after_their_actual_continuation() {
             rig.pending(read);
             assert_eq!(rig.door.inputs.lock().unwrap().len(), 2);
             assert_eq!(rig.woke.count.load(Ordering::SeqCst), 0);
-            // An extra poll while this continuation is unpolled must leave the actor owning
-            // progress, without waking the reader into a busy loop.
+
             rig.pending(read);
             assert_eq!(rig.woke.count.load(Ordering::SeqCst), 0);
             assert_eq!(rig.door.inputs.lock().unwrap().len(), 2);
@@ -431,8 +427,7 @@ fn line_only_socket_batches_rearm_reads_after_their_actual_continuation() {
             assert_eq!(rig.woke.count.load(Ordering::SeqCst), 1);
             assert_eq!(rig.caller.frames.lock().unwrap().len(), 2);
             rig.woke.clear();
-            // The completion wake gets the reader back to a real Pending receive. Only then
-            // send D3: the port's registered interest must drive its channel message.
+
             rig.pending(read);
             assert_eq!(rig.woke.count.load(Ordering::SeqCst), 0);
             rig.send(&[0x80, 3]);
@@ -453,15 +448,13 @@ fn the_existing_datagram_drive_bound_wakes_once_with_an_unread_packet_remaining(
     crate::support::worker().block_on(async {
         let rig = Rig::new(None);
         for _ in 0..READS_PER_DRIVE {
-            rig.send(&[0xff]); // Security drops these: every step is Complete, no output batch.
+            rig.send(&[0xff]);
         }
-        rig.send(&[0xff, 1]); // One more Complete packet remains after the existing drive bound.
+        rig.send(&[0xff, 1]);
         rig.send(&[0x80, 3]);
         loop {
             rig.woke.clear();
-            // Tokio's readiness polls also consume its cooperative task budget, which is
-            // smaller than READS_PER_DRIVE. Isolate this drive's own fairness bound;
-            // a cooperative yield otherwise stops early and defers its wake until yield.
+
             tokio::task::unconstrained(async { rig.pending(false) }).await;
             let mut next = [0; 2];
             if rig.socket.peek_from(&mut next).unwrap().0 == 2 {
@@ -524,7 +517,7 @@ fn cancellation_before_actor_poll_and_terminal_storage_failure_do_not_rewake() {
         let rig = Rig::new(None);
         rig.send(&[0x80, 1]);
         rig.first_batch(false).await;
-        // Dropping a never-polled scheduled future runs its real publication cancellation guard.
+
         let task = rig.caller.task.lock().unwrap().take().unwrap();
         drop(task);
         assert!(rig.dialled.pairing.publication_outcome().failure.is_some());
@@ -604,8 +597,7 @@ fn conn_wait_reports_the_keying_timeout_after_the_exchange_spent_the_outer_deadl
         let held = crate::Held::over(None, None, None)
             .bounded(1)
             .dialling(rig.dialled);
-        // The exchange head already began the answer: Conns::wait must now use the leg's
-        // keying readiness instead of being rescued by Held::within_due's initial-head bound.
+
         held.answered();
         assert!(held.due.lock().unwrap().is_none());
         connector.slab.declare(owner, need);

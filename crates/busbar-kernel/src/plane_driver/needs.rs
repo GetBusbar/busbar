@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! WHICH NEEDS A MEMBER DIALS (ARCHITECT ruling 2026-10-02, amended by Q-L5B-NEEDS 2026-10-03;
-//! `BUSBAR-1.6.0.md` spec #3: every plugin declares its connection needs as a LIST of
-//! `(transport, auth)` per direction, and the kernel instantiates them through the connector).
-//! Resolved ONCE, at config load, never per request: each member's outbound auth binding, the auth
-//! plugin key its route or member config names, is matched against the plane instance's declared
-//! OUTBOUND needs on the `auth` element, and EVERY need it matches is bound for the member, one
-//! binding per (transport, auth). None refuses the load; two matching needs over one transport are
-//! one binding twice and refuse it too, naming the member and the needs. A far request names the
-//! need it rides (`OnPieceOut::need`); one that names none rides the member's first bound need
-//! ([`super::MemberRoute::need`]): per request, an index lookup.
-//!
-//! The kernel names no scheme and no plane here: it compares the keys the config and the plane's
-//! Statement state, byte for byte.
-
 use std::collections::BTreeMap;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
@@ -91,13 +77,6 @@ impl std::fmt::Display for NeedRefusal {
 
 impl std::error::Error for NeedRefusal {}
 
-/// THE NEEDS EACH MEMBER DIALS: `needs` is the plane instance's declared needs in Statement order
-/// (a [`NeedId`] is a position in it); only outbound needs are matched. Each member's bound needs,
-/// in declared order: every outbound need its auth key names, at most one per transport.
-///
-/// # Errors
-///
-/// The first member whose auth key matches no outbound need, or two over one transport.
 pub fn resolve_member_needs(
     needs: &[ReadNeed],
     members: &[MemberAuth<'_>],

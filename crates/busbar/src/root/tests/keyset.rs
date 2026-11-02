@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling 2026-09-26):
-//! ephemeral for helpers without a Store, Store-owned for every deployment configuration.
-
 use super::*;
 use crate::root::durability::{build_with_cards, keyset_of, DurabilityConfig, Scratch};
 use busbar_kernel_audit::{AuditChain, AuditRecord};
@@ -27,7 +24,6 @@ fn node(data_dir: Option<&Path>) -> Durability {
     .expect("the book opens")
 }
 
-/// A fresh host over one Store fixture, with a legacy directory supplied to both public APIs.
 fn boot(
     slots: &crate::root::store_double::RecordSlots,
     dir: &Path,
@@ -53,7 +49,6 @@ fn drained(book: &Durability) {
         .drain(std::time::Duration::from_secs(5)));
 }
 
-/// One unit's audit record, sealed on the chain: signed when the chain has a key.
 fn seal(durability: &mut Durability) -> AuditRecord {
     use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
@@ -105,7 +100,6 @@ fn seal(durability: &mut Durability) -> AuditRecord {
         .expect("the record is cached")
 }
 
-/// Whether `keys` vouches for `record`'s signature.
 fn verifies(record: &AuditRecord, keys: &busbar_kernel_audit::AuditKeySet) -> bool {
     record
         .key_id
@@ -114,10 +108,6 @@ fn verifies(record: &AuditRecord, keys: &busbar_kernel_audit::AuditKeySet) -> bo
         .is_some_and(|key| AuditChain::verify_signature(record, key).is_ok())
 }
 
-/// AN EPHEMERAL NODE VERIFIES ITS OWN BOOT'S SIGNATURES (PB-13): no data directory, a key minted
-/// for this process, the chain's records signed with it, and the node's own keyset verifies them.
-/// RED arm: a second ephemeral boot mints a DIFFERENT key, and the first boot's record does not
-/// verify against it — nothing survives the process, which is what ephemeral means.
 #[test]
 fn an_ephemeral_node_verifies_its_own_boots_signatures() {
     let mut first = node(None);
@@ -154,7 +144,6 @@ fn an_ephemeral_node_verifies_its_own_boots_signatures() {
     );
 }
 
-/// Store keysets seal their fingerprint without a local cache.
 #[test]
 fn the_first_boot_with_a_data_dir_keeps_its_keyset_in_the_store_and_seals_a_bootstrap() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -207,7 +196,6 @@ fn a_restart_with_the_data_dir_signs_with_the_same_store_key() {
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
 }
 
-/// A Store that kept the journal but lost its keyset refuses with the sealed fingerprint.
 #[test]
 fn keyset_missing_refuses_in_its_exact_words_when_the_store_key_is_gone() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -218,7 +206,7 @@ fn keyset_missing_refuses_in_its_exact_words_when_the_store_key_is_gone() {
     drained(&first);
     let records = crate::root::durability::read_chain(slots.calls().as_ref(), 7).unwrap();
     drop(first);
-    // Restore only the journal through the Store's real lane; this Store has no keyset row.
+
     let restored = crate::root::store_double::RecordSlots::new();
     let lane =
         crate::root::durability::JournalLane::start(restored.calls(), "restored-store").unwrap();
@@ -259,7 +247,6 @@ fn keyset_missing_refuses_a_store_holding_another_key() {
     );
 }
 
-/// A helper has no restart contract, even when supplied a data directory.
 #[test]
 fn helpers_never_cache_a_keyset_with_or_without_a_data_dir() {
     let dir = Scratch::new("keyset-helper");
@@ -275,7 +262,6 @@ fn helpers_never_cache_a_keyset_with_or_without_a_data_dir() {
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
 }
 
-/// The Store is authoritative even if a different key was left in a legacy local cache.
 #[test]
 fn a_stored_keyset_with_no_bootstrap_is_adopted_and_a_legacy_cache_is_untouched() {
     let slots = crate::root::store_double::RecordSlots::new();

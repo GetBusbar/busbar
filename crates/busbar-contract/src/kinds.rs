@@ -1,12 +1,8 @@
 //! The shapes the plugin kinds share outside `abi/`: a plane's fact and credential-locator
-//! answers, the auth kind's challenge round, the store kind's record shapes and error, an export
-//! sink's acknowledgement, and the envelope-field bound.
 
 use crate::bounded::{Facts, MAX_RECORD_BYTES};
 use crate::ids::SchemeAlt;
 use core::fmt;
-
-// ── shared fact shapes ───────────────────────────────────────────────────────────────────────
 
 /// What a plane answers a read-only introspection verb with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -24,8 +20,6 @@ pub struct ContentFacts<'u> {
     /// The facts, under this plane's own declared keys.
     pub facts: Facts<'u>,
 }
-
-// ── auth ─────────────────────────────────────────────────────────────────────────────────────
 
 /// Where a plane says this unit's credential is, and how it narrows the claim's scheme.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -54,8 +48,6 @@ pub struct Challenge {
     pub rounds_left: u8,
 }
 
-// ── store ────────────────────────────────────────────────────────────────────────────────────
-
 /// One fixed-size record's bytes.
 ///
 /// The size ceiling is the design's, and it is a ceiling on the *record*, not on the batch: a
@@ -67,9 +59,7 @@ pub struct RecordBytes {
 
 impl RecordBytes {
     /// Take bytes as a record.
-    ///
-    /// # Errors
-    /// Returns the length back when the bytes exceed the record ceiling.
+
     pub fn new(bytes: Vec<u8>) -> Result<Self, usize> {
         if bytes.len() > MAX_RECORD_BYTES {
             return Err(bytes.len());
@@ -116,13 +106,5 @@ impl fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
-// ── secret ───────────────────────────────────────────────────────────────────────────────────
-
 /// A reference to a secret: `{ module, settings }`, where `settings` is the resolving plugin's own
-/// reference grammar. There is ONE `SecretRef` (DECISIONS #83 merge, fold F1): the config reference
-/// type defined in [`crate::secret_ref`], re-exported here under the kind ABI's spelling.
 pub use crate::secret_ref::SecretRef;
-
-// ── export ───────────────────────────────────────────────────────────────────────────────────
-
-// ── the shapes the loop passes around that no one kind owns ───────────────────────────────────

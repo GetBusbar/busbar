@@ -1,83 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Plugin **manifest, signing input, structural validation, and trust evaluation** for busbar.
-//!
-//! A PLUGIN IS A PLUGIN: plugins of every kind share ONE manifest format and ONE trust
-//! model, discriminated only by the manifest `kind` field. Every plugin ships as a signed tarball
-//! containing exactly the cdylib and this manifest; identity comes from the SIGNED manifest, never
-//! from the filename.
-//!
-//! The manifest carries:
-//!
-//! - **identity**: `name` (canonical, e.g. `busbar-store-valkey-plugin`), `alias` (the short config name,
-//!   e.g. `valkey`), `kind` (`store` | `auth` | `hook` | `secret` | `export` | `plane` | `transport`), `version` (semver);
-//! - **binding + compat**: `sha256` (of the library bytes, pinning the manifest to that exact
-//!   binary) and `abi_version` (its `kind`'s one memory-ABI version, the only version fact admission reads);
-//! - **authenticity**: `publisher` + `signature` over the *canonical whole manifest*;
-//! - **display**: `description`, `homepage`, `license` (all signed, so they cannot be spoofed).
-//!
-//! The signature covers the entire manifest (every field except `signature` itself) via
-//! [`canonical_manifest_bytes`], and the manifest pins the library by `sha256`, so **neither the
-//! manifest nor the library can be altered or swapped independently**.
-//!
-//! ## Trust model
-//!
-//! - **First-party**: a manifest whose `publisher` is `busbar` verifies against the release public
-//!   key EMBEDDED in the binary ([`embedded_release_pubkey`]) - trusted with ZERO configuration.
-//!   First-party anti-downgrade is PER-PLUGIN: rollback pins (`first_party_floors`) and
-//!   `plugins.min_versions` floors, both hard rejects. There is no automatic binary-version
-//!   floor — first-party plugins version on independent lines (1.0.x/2.x under a 1.5.0 engine).
-//! - **Retired**: a first-party manifest signed by a key on [`RETIRED_RELEASE_KEYS`] is REFUSED
-//!   (`retired_key`) even when the build embeds that key, unless the operator names the key under
-//!   `plugins.trust.publishers`; then it loads as an explicit opt-in the boot WARNs about.
-//! - **Third-party**: `plugins.trust.publishers` allowlists third-party signing keys. A valid
-//!   signature from an allowlisted publisher is TRUSTED. `plugins.min_versions` pins per-plugin
-//!   anti-downgrade floors (first- and third-party alike).
-//! - **Everything else** (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT,
-//!   rejected. The operator opts in per category via [`TrustPolicy::allow_unsigned`] and
-//!   [`TrustPolicy::allow_third_party`].
-//!
-//! This MODULE is pure data + policy: no I/O, no engine state. Discovery, unpacking, and loading
-//! live in this crate's other modules; the engine sees neither. [`sign`] exists for the release
-//! pipeline / packaging tooling - OSS ships verification, not a signing service.
-//!
-//! ## Why NOT Sigstore keyless yet (1.5.0 spike outcome - deferred)
-//!
-//! A 1.5.0 spike of the `sigstore` crate (v0.14) found it cannot be adopted without regressing the
-//! security gates: its tree carries `rsa 0.9.10` with RUSTSEC-2023-0071 (the Marvin RSA timing
-//! sidechannel, "no safe upgrade available"), which `cargo deny check advisories` rejects, and it
-//! roughly triples the dependency surface. When a mitigated release ships, the swap is localized to
-//! [`evaluate`]'s signature check; the manifest shape and posture are primitive-independent.
-
-// `SigningKey`/`VerifyingKey` are re-exported so external signing tooling can name them via this crate.
-// No `Verifier` import: verification goes through the inherent `VerifyingKey::verify_strict`, not
-// the permissive trait method — see `signature_ok`.
 use ed25519_dalek::Signature;
 pub use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The reserved first-party publisher name. A manifest carrying this publisher verifies against the
-/// EMBEDDED release key ([`TrustPolicy::first_party_key`]), never against `publishers` - an operator
-/// cannot (and need not) allowlist a key named `busbar`.
 pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
 /// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which kind's
 /// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
 /// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN
 /// §11.2). Every kind, `plane` and `transport` included, loads only through its door.
-// One line, as it always was: the kind list is one statement, not seven.
+
 #[rustfmt::skip]
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];
 
-/// This binary's own host identity — the value [`Manifest::host`] must match (or omit) to load.
-/// `busbar` names the OSS engine. A sibling product (e.g. `busbar-ui`) that reuses this exact
-/// manifest/signing/ABI machinery stamps its own plugins `host: busbar-ui`; those manifests are
-/// STRUCTURALLY VALID (same memory ABI, same signed-manifest shape, same `kind` vocabulary)
-/// but semantically foreign — a `busbar-ui` `store` plugin persists tenants/deployments, not the
-/// keys/denylists an engine `store` plugin implements. Same `kind` string, incompatible contracts,
-/// so `host` is what disambiguates them structurally rather than trusting `kind` alone.
 pub const HOST_IDENTITY: &str = "busbar";
 
 /// One first-party ROOT key this build trusts: the id every refusal names, and the public key.
@@ -95,7 +33,6 @@ pub struct FirstPartyKey {
 pub use crate::release_trust::ReleaseKey;
 
 impl FirstPartyKey {
-    /// An ed25519 key the list states no id for, named by its first 16 hex digits.
     pub fn unnamed(key: VerifyingKey) -> Self {
         let hex = hex::encode(key.as_bytes());
         FirstPartyKey {
@@ -104,31 +41,14 @@ impl FirstPartyKey {
         }
     }
 
-    /// Why this public root is permanently retired. Constructing a root directly never bypasses
-    /// the same compromised-key guard used by the build-time parser and manifest evaluator.
     #[must_use]
     pub fn retired_reason(&self) -> Option<&'static str> {
         self.key.retired_reason()
     }
 }
 
-/// The build-time variable carrying the first-party key list ([`parse_release_keys`]).
 pub const RELEASE_KEYS_ENV: &str = "BUSBAR_RELEASE_PUBKEY";
 
-/// Parse a first-party ROOT key list: entries separated by `,`, each one of
-///
-/// * `<id>:p256:<130 hex>`: an ECDSA P-256 key, its 65-byte uncompressed SEC1 point;
-/// * `<id>:ed25519:<64 hex>`: an ed25519 key;
-/// * `<id>:<64 hex>`: an ed25519 key (the pre-1.6.0 spelling);
-/// * `<64 hex>`: an unnamed ed25519 key ([`FirstPartyKey::unnamed`]; a run key).
-///
-/// Every entry must be a usable key; ids are valid plugin names (`[a-z0-9-]+`) and neither an id
-/// nor a key may repeat. An empty list is refused: a list that names no key is a packaging bug,
-/// not a choice.
-///
-/// # Errors
-///
-/// The first entry that is not a usable, unique key, naming it by position.
 pub fn parse_release_keys(spec: &str) -> Result<Vec<FirstPartyKey>, String> {
     let mut keys: Vec<FirstPartyKey> = Vec::new();
     for (i, entry) in spec.split(',').map(str::trim).enumerate() {
@@ -192,8 +112,6 @@ pub fn parse_release_keys(spec: &str) -> Result<Vec<FirstPartyKey>, String> {
     Ok(keys)
 }
 
-/// The first-party public root list embedded at build time. Malformed or missing lists yield no
-/// roots, so a build cannot silently trust only the valid prefix of a damaged key list.
 #[must_use]
 pub fn embedded_release_keys() -> Vec<FirstPartyKey> {
     option_env!("BUSBAR_RELEASE_PUBKEY")
@@ -201,22 +119,7 @@ pub fn embedded_release_keys() -> Vec<FirstPartyKey> {
         .unwrap_or_default()
 }
 
-/// The busbar release ed25519 PUBLIC key embedded at BUILD time via the `BUSBAR_RELEASE_PUBKEY`
-/// environment variable (64 hex chars). `None` in a build where it was not provided (local dev
-/// builds): first-party verification is then impossible and a `publisher: busbar` plugin is treated
-/// as unsigned (loadable only under `allow_unsigned`).
-///
-/// THE RELEASE KEY. The public half is the `BUSBAR_RELEASE_PUBKEY` build input; no private half is
-/// ever in this tree. `.cargo/config.toml` commits no key while the 1.6.0 key ceremony is pending
-/// (the retired 1.5 key, [`RETIRED_RELEASE_KEYS`], is not trusted), so a local build embeds none.
-/// `scripts/release-key-guard.sh` refuses to build a release binary without a well-formed 64-hex
-/// key, and `scripts/verify-artifact.py` checks the embedded key in the published artifact.
-/// A build that embeds a RETIRED key still refuses what it signed
-/// ([`evaluate`]).
-/// (Owner ruling 2026-09-30, N3 / Q90: a statement of the contract, not a deferral.)
 pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
-    // Compatibility for callers that can use one legacy ed25519 root. Release verification
-    // uses the whole list, including P-256 roots, through embedded_release_keys instead.
     embedded_release_keys()
         .into_iter()
         .find_map(|root| match root.key {
@@ -225,11 +128,6 @@ pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
         })
 }
 
-/// THE RETIRED RELEASE KEYS: `(hex ed25519 public key, why it is retired)`. A first-party manifest
-/// whose signature verifies against one of these is REFUSED ([`RejectKind::RetiredKey`]), whatever
-/// key the build embeds (a build whose `BUSBAR_RELEASE_PUBKEY` still names a retired key trusts
-/// nothing it signed), unless the operator names the key under `plugins.trust.publishers`. Compiled
-/// in, so no configuration can be missing it.
 pub const RETIRED_RELEASE_KEYS: &[(&str, &str)] = &[(
     "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7",
     "the busbar 1.5 CI release key, retired 2026-10-28: its private seed was held in a GitHub \
@@ -237,9 +135,6 @@ pub const RETIRED_RELEASE_KEYS: &[(&str, &str)] = &[(
      signature no longer proves busbar made the plugin",
 )];
 
-/// The retired key (`hex`, `why`) of `list` whose signature `manifest` carries, judged over the
-/// canonical manifest bytes alone: WHO signed decides the refusal, before the library binding is
-/// judged.
 fn retired_signer<'a>(
     manifest: &Manifest,
     list: &[(&'a str, &'a str)],
@@ -259,11 +154,8 @@ fn retired_signer<'a>(
     })
 }
 
-/// Compiled-in revocations of exact library bytes; unlike missing signatures, no opt-in
-/// permits an artifact on this list.
 pub const REVOKED_DIGESTS: &[(&str, &str)] = &[];
 
-/// The compiled-in artifact revocations as a policy map.
 #[must_use]
 pub fn revoked_digests() -> BTreeMap<String, String> {
     REVOKED_DIGESTS
@@ -386,28 +278,18 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// The names config may reference this plugin by beside its canonical `name`: the alias, then
-    /// each former name ([`Manifest::former_names`]).
     pub fn config_names(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.alias.as_str()).chain(self.former_names.iter().map(String::as_str))
     }
 
-    /// Every identifier this plugin claims: its canonical `name`, then [`Manifest::config_names`].
     pub fn identities(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.name.as_str()).chain(self.config_names())
     }
 
-    /// Whether config naming `word` names this plugin: its name, its alias or a former name.
     pub fn answers_to(&self, word: &str) -> bool {
         self.identities().any(|n| n == word)
     }
 
-    /// The Statement rendering this manifest states ([`Manifest::statement`], hex-decoded); `None`
-    /// when it states none.
-    ///
-    /// # Errors
-    ///
-    /// A `statement` that is not lowercase hex.
     pub fn stated_rendering(&self) -> Result<Option<Vec<u8>>, String> {
         self.statement
             .as_deref()
@@ -420,13 +302,6 @@ impl Manifest {
             .transpose()
     }
 
-    /// The facts this manifest's Statement rendering carries, read back without opening the plugin
-    /// ([`rendering::read`](busbar_contract::abi::mechanism::rendering::read)); `None` when it
-    /// states none.
-    ///
-    /// # Errors
-    ///
-    /// A `statement` that is not lowercase hex, or not one whole Statement rendering.
     pub fn stated(
         &self,
     ) -> Result<Option<busbar_contract::abi::mechanism::rendering::Read>, String> {
@@ -443,8 +318,6 @@ impl Manifest {
     }
 }
 
-/// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
-/// host reaches them beside [`Manifest`].
 pub use busbar_contract::abi::mechanism::observe::{DiagnosticDecl, SeriesDecl};
 
 /// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
@@ -547,7 +420,6 @@ pub enum EgressPolicy {
 }
 
 impl EgressPolicy {
-    /// The policy's manifest spelling (`open-web` | `collector`).
     pub const fn as_token(self) -> &'static str {
         match self {
             EgressPolicy::OpenWeb => "open-web",
@@ -555,31 +427,12 @@ impl EgressPolicy {
         }
     }
 
-    /// Whether this is the default policy — what a manifest that declares none states.
     pub fn is_default(&self) -> bool {
         *self == EgressPolicy::OpenWeb
     }
 }
 
 impl Declares {
-    /// THE ONE READER OF A DECLARES DOCUMENT (a plugin's `declares.json`; ARCHITECT ruling (b),
-    /// 2026-10-07): pack's `--declares-file`, a linked export row's `DECLARES` and a linked plane
-    /// door's `linked-declares` row all read through here, and nothing else deserializes declares
-    /// bytes into [`Declares`] (`declares_reader_tests` scans the tree for one).
-    ///
-    /// A networked plugin's file states `needs` (the transport schemes its Statement's needs name)
-    /// for the conformance suite (`the_declared_needs_are_the_statements`) and the fleet render (its
-    /// conformance host). The needs belong to the Statement, so the section never carries them:
-    /// `needs` is checked to be a list of scheme names and removed, and the rest is read with every
-    /// other unknown key still refused. Which schemes it names is not this reader's to judge: core
-    /// names no transport (Law 1), the suite holds the list to the Statement's, and boot resolves a
-    /// Statement's need against the claims the linked and dropped-in transports make. A SIGNED
-    /// manifest's `declares` is not a declares document: it is read with the manifest and refuses
-    /// `needs`.
-    ///
-    /// # Errors
-    /// The bytes are not JSON, `needs` is not a list of non-empty strings, or the rest is not a
-    /// `declares` section (an unknown key, a malformed declaration).
     pub fn from_declares_json(bytes: &[u8]) -> Result<Declares, String> {
         let mut doc: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|e| format!("not a `declares` section: {e}"))?;
@@ -593,16 +446,13 @@ impl Declares {
                 }
             }
         }
-        // The superseded contract-ABI range (THE DESIGN §2 l.237-240: a plugin declares its kind's
-        // ABI version, never a range): a declares FILE may still state it until the fleet's
-        // re-render strips it from every repo (the DECLARES gate accepts it until then), so it is
-        // dropped here, never read and never carried into a manifest.
+
         if let Some(m) = doc.as_object_mut() {
             m.remove("contract_abi");
         }
         let read: Self =
             serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))?;
-        // A retention is stated for a declared destination only.
+
         if let Some(key) = read.keep.keys().find(|k| !read.destinations.contains(k)) {
             return Err(format!(
                 "not a `declares` section: `keep` names `{key}`, which is not a declared destination"
@@ -611,7 +461,6 @@ impl Declares {
         Ok(read)
     }
 
-    /// Nothing declared — the section is left off the wire (and out of the signed bytes).
     pub fn is_empty(&self) -> bool {
         self.metrics.is_empty()
             && self.diagnostics.is_empty()
@@ -623,7 +472,6 @@ impl Declares {
             && self.hook.is_none()
     }
 
-    /// Whether the hook may answer an order: `declares.hook.orders`, `true` when not stated.
     #[must_use]
     pub fn hook_orders(&self) -> bool {
         self.hook.is_none_or(|h| h.orders)
@@ -645,14 +493,11 @@ pub struct HookNeeds {
 }
 
 impl HookNeeds {
-    /// Does the plugin declare ANY content need? Used to surface intent at register/load.
     pub fn declares_any(&self) -> bool {
         self.prompt != NeedLevel::No || self.user != NeedLevel::No
     }
 }
 
-/// One axis of a hook manifest's declared intent: the contract's (`busbar_contract::plugin_rows`),
-/// the shape the kernel reads a row's needs in.
 pub use busbar_contract::plugin_rows::NeedLevel;
 
 /// How a plugin was permitted to load when it is NOT signed by a trusted key - the operator's
@@ -756,15 +601,6 @@ pub struct TrustInput<'a> {
 }
 
 impl TrustPolicy {
-    /// Resolve a `plugins:` block's trust facts: the EMBEDDED first-party release key, the binary's
-    /// version (diagnostics only), the configured third-party publishers, opt-ins and per-name
-    /// floors. The AUTOMATIC first-party floor (the per-name high-water marks) is NOT resolved
-    /// here: it is an observed fact the registry build arms ([`crate::boot::registry`]).
-    ///
-    /// # Errors
-    ///
-    /// A publisher named for busbar's embedded key, or a malformed publisher key (a skipped trust
-    /// anchor could wrongly reject a good plugin).
     pub fn from_config(i: TrustInput<'_>) -> Result<Self, String> {
         let mut publishers = BTreeMap::new();
         for &(name, public_key) in i.publishers {
@@ -810,19 +646,10 @@ pub enum Verdict {
     Allowed { reason: String, allow: AllowReason },
 }
 
-/// The engine's BINDING LIFECYCLE default for whether a settings change needs a process restart,
-/// derived from plugin `kind` — never plugin-declared. `store`/`secret` plugins bind once at
-/// process start (every field is restart-scoped by
-/// construction, regardless of what a plugin author writes); `hook`/`auth` plugin registries
-/// rebuild hot. An unrecognized kind defaults to the SAFE direction (restart-required) — the same
-/// fail-safe posture [`effective_restart_required`]'s override gate takes.
 pub fn kind_restart_default(kind: &str) -> bool {
     match kind {
         "hook" | "auth" => false,
-        // "store" | "secret" | anything else: restart-required is the safe default. An unknown
-        // kind should never have reached here (KNOWN_KINDS gates it earlier in the pipeline), but
-        // this function must still answer something rather than panic, and restart-required is
-        // the fail-safe direction to guess wrong in.
+
         _ => true,
     }
 }
@@ -853,9 +680,6 @@ pub fn effective_restart_required(
         Some(true) => true,
         Some(false) => {
             if !default {
-                // The kind default is already hot-appliable; a `false` override changes nothing
-                // observable, so there is nothing to gate — this is not the silent-data-loss
-                // direction the asymmetry exists to guard against.
                 false
             } else if matches!(
                 verdict,
@@ -864,11 +688,8 @@ pub fn effective_restart_required(
                     ..
                 }
             ) {
-                // Trusted first-party: the override is HONORED — the field is hot-appliable.
                 false
             } else {
-                // Not trusted-first-party: the override is IGNORED — the kind default (true,
-                // restart-required) is enforced regardless of what the manifest claims.
                 true
             }
         }
@@ -915,7 +736,6 @@ pub enum RejectKind {
 }
 
 impl RejectKind {
-    /// The category as one host word: what the audit chain records for a skipped plugin.
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
@@ -932,33 +752,11 @@ impl RejectKind {
     }
 }
 
-/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
-/// provider's allow-list and metadata hosts (a plane's upstreams). The connector's default class
-/// and the open web are any trusted plugin's (ARCHITECT ruling EGRESS-GRANT 2026-10-03; the cold
-/// lane's `declares.egress` grant, on the door's needs).
-///
-/// `loopback-allowed` is NOT here (OWNER 2026-10-24, oracle BOOT-W23): a collector or hook on
-/// loopback the operator admitted with `plugins.trust` loaded in 1.5.5, UNVERIFIED; the opt-in is
-/// the operator's grant. `operator-infrastructure` is NOT here either. §5's egress-class table gives it to "databases, vault,
-/// ldap; auth mint endpoints" with no first-party condition (`BUSBAR-1.6.0.md` l.604-611): its
-/// targets come from operator settings, and the plugins that dial them (a store, a secret service, a
-/// directory, an IdP's token exchange) were dropped-in plugins in 1.5.5 that an operator's
-/// `plugins.trust` opt-in loaded. Refusing that class to a plugin the operator admitted changes what
-/// 1.5.5 served, which only an owner signature may do ("Law beats table", l.613; "the default is
-/// 1.5.5's behaviour", l.364-365); the opt-in is the operator's grant (l.829, Part 2 #75 l.2276).
 pub const FIRST_PARTY_EGRESS: [(u32, &str); 1] = [(
     busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
     "provider",
 )];
 
-/// THE EGRESS-CLASS GRANT on a door plugin's needs: `Err` naming the first need of `manifest`'s
-/// stated Statement whose egress class is a first-party grant ([`FIRST_PARTY_EGRESS`]). Asked of a
-/// plugin that is not first-party; a manifest that states no Statement (a cold plugin) declares no
-/// need here.
-///
-/// # Errors
-///
-/// The refusal, naming the plugin and the class.
 pub fn egress_grant(manifest: &Manifest) -> Result<(), String> {
     let Some(stated) = manifest.stated()? else {
         return Ok(());
@@ -989,7 +787,6 @@ pub struct Rejected {
 }
 
 impl Rejected {
-    /// Construct a rejection from a structured `kind` and a human `reason`.
     fn new(kind: RejectKind, reason: String) -> Self {
         Rejected {
             reason,
@@ -1006,15 +803,10 @@ impl std::fmt::Display for Rejected {
 }
 impl std::error::Error for Rejected {}
 
-/// Lowercase-hex SHA-256 of `bytes` - the library digest stored in the manifest.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     busbar_contract::redacted::sha256_hex(bytes)
 }
 
-/// The canonical byte string that is signed/verified: the whole manifest MINUS its `signature`, as
-/// deterministic sorted-key JSON. Using a `BTreeMap` makes the key order deterministic INDEPENDENT
-/// of serde_json's `preserve_order` feature, so the signer and verifier always agree in any build.
-/// Any field added to the manifest is automatically covered.
 pub fn canonical_manifest_bytes(m: &Manifest) -> Vec<u8> {
     let value = serde_json::to_value(m).expect("manifest is serializable");
     let obj = value
@@ -1028,9 +820,6 @@ pub fn canonical_manifest_bytes(m: &Manifest) -> Vec<u8> {
     serde_json::to_vec(&sorted).expect("canonical manifest serializes")
 }
 
-/// Sign a manifest with a publisher's key: set `sha256` from the artifact, clear any existing
-/// `signature`, sign the canonical bytes, and return the completed [`Manifest`]. For the release
-/// pipeline / packaging tooling - never runs in the engine (which only verifies).
 pub fn sign(key: &SigningKey, mut manifest: Manifest, artifact: &[u8]) -> Manifest {
     manifest.sha256 = sha256_hex(artifact);
     manifest.signature = String::new();
@@ -1039,15 +828,6 @@ pub fn sign(key: &SigningKey, mut manifest: Manifest, artifact: &[u8]) -> Manife
     manifest
 }
 
-/// Parse a hex-encoded 32-byte ed25519 public key (as configured in `plugins.trust.publishers`).
-///
-/// A WEAK (small-order / identity) key is REFUSED here rather than admitted to the allowlist.
-/// `VerifyingKey::from_bytes` only checks that the point decompresses, and the identity point
-/// decompresses fine — but a signature made against it satisfies the permissive cofactored
-/// verification equation for EVERY message. An allowlist entry naming such a key (a placeholder, a
-/// truncated or zero-filled paste, a key an attacker supplied in a vendor document) would therefore
-/// mark ANY artifact as `Trusted`. The refusal is at parse time so the bad entry never becomes a
-/// trust anchor; the strict verification below is the second half of the same guard.
 pub fn public_key_from_hex(s: &str) -> Result<VerifyingKey, String> {
     let bytes = hex::decode(s.trim()).map_err(|e| format!("public key not valid hex: {e}"))?;
     let arr: [u8; 32] = bytes
@@ -1081,7 +861,6 @@ pub enum FirstPartyUnverified {
 }
 
 impl FirstPartyUnverified {
-    /// The ids of every key the signature was tried against: empty for [`Self::Malformed`].
     #[must_use]
     pub fn trusted_keys(&self) -> &[String] {
         match self {
@@ -1091,9 +870,6 @@ impl FirstPartyUnverified {
         }
     }
 
-    /// The refusal naming every trusted key id, for an operator tool (`busbar-plugin-pack
-    /// verify`): an operator holding a plugin signed by a retired or unknown key reads which keys
-    /// this binary trusts. The loader's own reason is [`Display`](std::fmt::Display), 1.5.5's bytes.
     #[must_use]
     pub fn naming_trusted_keys(&self) -> String {
         match self {
@@ -1107,8 +883,6 @@ impl FirstPartyUnverified {
     }
 }
 
-/// The loader's reason, byte-for-byte 1.5.5's: the boot WARN line and `Rejected.reason` carry it.
-/// The key ids travel structured, in [`FirstPartyUnverified::trusted_keys`].
 impl std::fmt::Display for FirstPartyUnverified {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1121,21 +895,6 @@ impl std::fmt::Display for FirstPartyUnverified {
     }
 }
 
-/// WHICH first-party key vouches for `manifest` over `bytes`.
-///
-/// * A manifest carrying a RELEASE SEAL ([`crate::release_trust::wire::read_seal`]): the root of
-///   `keys` that signed the seal's keys document, once the whole chain holds
-///   ([`crate::release_trust::verify_release`], judged at `checks`) for this binary's target.
-/// * A per-plugin ed25519 `signature` (the pre-1.6.0 shape, a run key's): the first ed25519 key of
-///   `keys` it verifies against (the same binding and strict check as every signature,
-///   [`signature_ok`]).
-///
-/// # Errors
-///
-/// The library does not match the manifest or the signature is malformed
-/// ([`FirstPartyUnverified::Malformed`]), a per-plugin signature verifies against none of `keys`
-/// ([`FirstPartyUnverified::NoKey`]), or a seal's chain does not hold
-/// ([`FirstPartyUnverified::Release`]); the last two carry every key id this build trusts.
 pub fn first_party_signer<'k>(
     manifest: &Manifest,
     bytes: &[u8],
@@ -1151,12 +910,6 @@ pub fn first_party_signer<'k>(
     )
 }
 
-/// [`first_party_signer`] for a plugin built for `target` rather than this binary's own: the
-/// release tooling verifies every target's tarball on one machine.
-///
-/// # Errors
-///
-/// As [`first_party_signer`].
 pub fn first_party_signer_for<'k>(
     manifest: &Manifest,
     bytes: &[u8],
@@ -1187,7 +940,6 @@ fn first_party_signer_evidence<'k>(
         })
 }
 
-/// [`first_party_signer`] for a sealed manifest.
 fn first_party_sealed<'k>(
     manifest: &Manifest,
     bytes: &[u8],
@@ -1239,12 +991,7 @@ fn first_party_sealed<'k>(
     ))
 }
 
-/// The signature `manifest` carries, once its `sha256` is proven to bind `bytes`.
 fn bound_signature(manifest: &Manifest, bytes: &[u8]) -> Result<Signature, String> {
-    // Normalize the manifest digest to lowercase before comparing, consistently with
-    // `validate_structure` (which compares against `m.sha256.to_ascii_lowercase()`). `sha256_hex`
-    // always emits lowercase hex; without this an uppercase-hex manifest digest would pass the
-    // structural integrity check yet fail here, an inconsistency between the two verifiers.
     if sha256_hex(bytes) != manifest.sha256.to_ascii_lowercase() {
         return Err("library hash does not match the manifest".to_string());
     }
@@ -1257,14 +1004,7 @@ fn bound_signature(manifest: &Manifest, bytes: &[u8]) -> Result<Signature, Strin
     Ok(Signature::from_bytes(&sig_arr))
 }
 
-/// Whether a manifest's signature verifies against `bytes` using `key`: the library hash must match
-/// the manifest's `sha256` (binding), and the signature must verify over the canonical manifest
-/// (authenticity + integrity).
 fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result<(), String> {
-    // Normalize the manifest digest to lowercase before comparing, consistently with
-    // `validate_structure` (which compares against `m.sha256.to_ascii_lowercase()`). `sha256_hex`
-    // always emits lowercase hex; without this an uppercase-hex manifest digest would pass the
-    // structural integrity check yet fail here, an inconsistency between the two verifiers.
     if sha256_hex(bytes) != manifest.sha256.to_ascii_lowercase() {
         return Err("library hash does not match the manifest".to_string());
     }
@@ -1275,19 +1015,11 @@ fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result
         .try_into()
         .map_err(|_| "signature must be 64 bytes".to_string())?;
     let sig = Signature::from_bytes(&sig_arr);
-    // STRICT verification, not the permissive cofactored `verify`. `verify_strict` refuses a weak
-    // (small-order) public key and a non-canonically-encoded `R`, both of which the permissive
-    // check accepts — and a weak key accepts a forged signature over ANY message, which is a
-    // universal forgery against a trust anchor. Every honestly-generated key and every signature
-    // this crate's `sign` produces verify identically under both, so no published artifact changes
-    // verdict: the strictness only closes the forgery shapes.
+
     key.verify_strict(&canonical_manifest_bytes(manifest), &sig)
         .map_err(|_| "signature does not verify".to_string())
 }
 
-/// Read the validated numeric core, ignoring the same pre-release/build suffix as before.
-/// Components stay decimal strings: valid versions have no integer-width limit. Removing leading
-/// zeroes gives each numeric component one spelling without changing the accepted grammar.
 fn version_components(v: &str) -> Option<[&str; 3]> {
     if !valid_semver(v) {
         return None;
@@ -1301,12 +1033,6 @@ fn version_components(v: &str) -> Option<[&str; 3]> {
     Some([component()?, component()?, component()?])
 }
 
-/// True when `have` is greater-than-or-equal-to `floor` under exact numeric core ordering.
-///
-/// A malformed nonempty floor is unsatisfiable. Numeric components compare by decimal length and
-/// then lexically, so even a component above u64 cannot silently become a zero/partial floor.
-/// Leading-zero and pre-release/build-suffix treatment are unchanged. An EMPTY floor is the
-/// documented "no floor" spelling and still admits everything.
 pub fn version_at_least(have: &str, floor: &str) -> bool {
     if floor.is_empty() {
         return true;
@@ -1324,9 +1050,6 @@ pub fn version_at_least(have: &str, floor: &str) -> bool {
     true
 }
 
-/// Explanatory suffix for a floor rejection: empty for a well-formed floor, and for a malformed one a
-/// clause that names the real cause. Without it an operator with `min_versions: v1.6.0` reads
-/// "version 1.6.0 is below the pinned minimum v1.6.0" and concludes busbar is broken.
 fn floor_note(floor: &str) -> &'static str {
     if floor.is_empty() || valid_semver(floor) {
         ""
@@ -1338,8 +1061,6 @@ fn floor_note(floor: &str) -> &'static str {
     }
 }
 
-/// Is `s` a well-formed plugin name/alias: non-empty lowercase `[a-z0-9-]+`, no leading/trailing
-/// dash. The tight charset keeps names filesystem-, config-, and log-safe.
 pub fn valid_name(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with('-')
@@ -1348,18 +1069,10 @@ pub fn valid_name(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Is `v` a well-formed semver core? The contract's one judge
-/// ([`busbar_contract::plugin::valid_semver`]).
 pub fn valid_semver(v: &str) -> bool {
     busbar_contract::plugin::valid_semver(v)
 }
 
-/// PHASE 1 - STRUCTURAL validation of a manifest + its library bytes, INDEPENDENT of trust: a
-/// signed-but-malformed manifest still fails here. Checks every required field is present and
-/// well-formed, the `sha256` integrity binding holds against `lib_bytes`, and the declared
-/// `abi_version` is one this binary supports for the declared `kind` (`supported_abi`). Returns the
-/// FIRST failure as a specific, named reason. Parse errors are the caller's (the manifest must
-/// already have deserialized to call this).
 pub fn validate_structure(
     m: &Manifest,
     lib_bytes: &[u8],
@@ -1381,11 +1094,6 @@ pub fn validate_structure(
     validate_abi(m, supported_abi)
 }
 
-/// The STATEMENT half of [`validate_structure`] — everything a manifest says about the plugin rather
-/// than about the artifact file (`sha256` is the file's): name, alias, former names, kind, version,
-/// publisher, host. A plugin linked into the build has no artifact, and states exactly this; the registry's
-/// linked door runs it, then [`validate_abi`], so a linked row passes the same structural gate a
-/// dropped-in one does.
 pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
     if !valid_name(&m.name) {
         return Err(format!(
@@ -1434,19 +1142,9 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     if m.publisher.trim().is_empty() {
         return Err("manifest publisher is empty".to_string());
     }
-    // A stated Statement must be one whole rendering: every no-dlopen reader relies on it.
+
     m.stated()?;
-    // HOST identity gate: an ABSENT `host` means `busbar` (backward compatible with every manifest
-    // packed before this field existed). An EXPLICIT `host` that is not the caller's own identity
-    // is a hard structural reject — not a silent ignore — because a sibling product (busbar-ui)
-    // reuses the identical memory ABI and signed-manifest shape, so a foreign-host manifest
-    // would otherwise pass the ABI handshake and go on to answer `kind`-matched calls (e.g.
-    // `store`) with an incompatible payload contract. This check runs in phase 1 (structural),
-    // independent of trust/signature, so even a validly-signed foreign-host manifest is refused.
-    //
-    // `host_identity` is a PARAMETER, not a hardcoded const: this verifier is shared verbatim by
-    // sibling products with different host identities (busbar's own callers pass `HOST_IDENTITY` = `"busbar"`; busbar-ui passes its
-    // own), so it cannot close over a single fixed value the way `supported_abi` never did either.
+
     if let Some(host) = m.host.as_deref() {
         if host != host_identity {
             return Err(format!(
@@ -1459,24 +1157,14 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     Ok(())
 }
 
-/// The payload-schema negotiation of [`validate_structure`]: the manifest's `abi_version` against the
-/// binary's supported range for its kind.
 pub fn validate_abi(
     m: &Manifest,
     supported_abi: &dyn Fn(&str) -> &'static [u32],
 ) -> Result<(), String> {
-    // `supported_abi` returns a CONTIGUOUS `[floor, max]` inclusive range (its endpoints) of the
-    // ABI versions the binary speaks for this kind (the kind's ONE version, THE DESIGN §11.2; a
-    // manifest states no contract-ABI range). Negotiate the manifest's declared
-    // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.
-    // An empty slice means the kind is unsupported (already caught by KNOWN_KINDS, but fail-closed).
     let supported = supported_abi(&m.kind);
     match (supported.first(), supported.last()) {
         (Some(&floor), Some(&max)) if m.abi_version >= floor && m.abi_version <= max => {}
         (Some(&floor), Some(&max)) => {
-            // This arm is reached only for a version OFF the supported window — older OR newer.
-            // C21/ABI-o1: each kind admits exactly its current version, so any mismatch is fixed the
-            // same way — rebuild the plugin against THIS host's (1.6.0) SDK. Both ends name it.
             let rebuild = format!(" — {}", crate::dispatch::load::REBUILD);
             return Err(format!(
                 "manifest abi_version {} is not supported for kind '{}' by this binary (supported \
@@ -1504,22 +1192,16 @@ fn hard_seal_refusal(refusal: &crate::release_trust::SealRefusal) -> Option<Reje
     }
 }
 
-/// The untrusted category of an artifact that is NOT signed by a trusted key - decides which
-/// explicit opt-in flag (if any) could permit it.
 enum Untrusted {
-    /// No valid signature: empty/tampered signature, or a first-party manifest in a build with no
-    /// embedded key. Opt-in is `allow_unsigned`. A tamper of a KNOWN key's signature is still
-    /// "unsigned" for opt-in purposes - it never counts as third-party. `tampered` distinguishes a
-    /// PRESENT-but-failed signature (verification failed against a held key) from a plain
-    /// no-signature/no-key case, for display labels ONLY (both are `allow_unsigned`-gated).
-    Unsigned { reason: String, tampered: bool },
-    /// A manifest whose `publisher` is NOT `busbar` and NOT in the allowlist. Its signature cannot
-    /// be verified here (no key held), so it is a third-party artifact. Opt-in is
-    /// `allow_third_party`.
-    ThirdParty { publisher: String },
-    /// A first-party manifest signed by a RETIRED release key: `key` (hex), `why` it is retired,
-    /// and the `plugins.trust.publishers` entry naming it when the operator trusts it explicitly
-    /// (its signature then also bound to the library).
+    Unsigned {
+        reason: String,
+        tampered: bool,
+    },
+
+    ThirdParty {
+        publisher: String,
+    },
+
     Retired {
         key: String,
         why: String,
@@ -1556,9 +1238,6 @@ pub fn evaluate(
     evaluate_with_evidence(bytes, manifest, policy).map(|(verdict, _)| verdict)
 }
 
-/// Trust evaluation with authenticated Store rollback evidence from the same seal verification.
-/// Only a trusted first-party seal returns a keys-document version; raw signatures and explicit
-/// untrusted opt-ins never manufacture one.
 pub fn evaluate_with_evidence(
     bytes: &[u8],
     manifest: &Manifest,
@@ -1622,8 +1301,6 @@ fn evaluate_against_with_evidence(
         None
     };
     if stale.is_some() && manifest.publisher == FIRST_PARTY_PUBLISHER && !roots.is_empty() {
-        // Freshness alone is refuse-only. Authenticate the boot-time chain solely to retain
-        // hard revocation/rollback vetoes; discard every success and its version evidence.
         let boot_checks = crate::release_trust::Checks {
             enforce_expiry: false,
             ..checks
@@ -1646,9 +1323,7 @@ fn evaluate_against_with_evidence(
     }
     let mut authenticated_keys_version = None;
     let mut trusted_keys = Vec::new();
-    // Trust determination first: which key (if any) proves this manifest? A manifest with NO
-    // signature at all is UNSIGNED regardless of its (unverifiable, self-declared) publisher -
-    // only a PRESENT signature from a non-allowlisted publisher counts as third-party.
+
     let by_retired = (manifest.publisher == FIRST_PARTY_PUBLISHER)
         .then(|| retired_signer(manifest, retired))
         .flatten();
@@ -1667,10 +1342,6 @@ fn evaluate_against_with_evidence(
             tampered: false,
         })
     } else if let Some((key, hex_key, why)) = by_retired {
-        // A RETIRED release key signed this first-party manifest. It is judged before the embedded
-        // key, so a build that still embeds a retired key trusts nothing it signed. The operator's
-        // explicit trust is a `plugins.trust.publishers` entry naming the key; the signature must
-        // then also bind this library, exactly as every trusted signature must.
         match policy.publishers.iter().find(|(_, k)| **k == key) {
             None => Err(Untrusted::Retired {
                 key: hex_key.to_string(),
@@ -1744,22 +1415,6 @@ fn evaluate_against_with_evidence(
         }
     };
 
-    // FIRST-PARTY anti-downgrade: PER-NAME floors only. There is deliberately NO automatic
-    // binary-version floor: first-party plugins version on their own independent lines (the
-    // stores/auth/hooks ship 1.0.x under a 1.5.0 engine — product decision,
-    // 2026-08-02), so "at or above the binary's version" would reject every correctly-signed
-    // current release.
-    //
-    // The floor that IS applied is the per-name HIGH-WATER MARK (`first_party_high_water`): the
-    // highest version of THIS name this deployment has itself seen and loaded. That couples the
-    // floor to the plugin's own version line instead of the binary's, so it closes the replay
-    // (`docs/plugins.md` security-model item 3) without rejecting current releases. A name with no
-    // mark carries no floor — a first install is not a downgrade.
-    //
-    // An EXPLICIT, audited rollback pin (`first_party_floors`, from `POST /plugins/rollback` via the
-    // persisted `plugin_versions` overlay) REPLACES the mark for the pinned name — that is the
-    // documented override, and it is scoped per name so rolling A back never admits an old B.
-    // `min_versions` (below) floors first- and third-party alike and is checked separately.
     if let Ok(true) = trusted_or_untrusted {
         let pinned = policy.first_party_floors.get(&manifest.name);
         let floor = pinned
@@ -1790,14 +1445,6 @@ fn evaluate_against_with_evidence(
         }
     }
 
-    // CONFIGURED anti-downgrade floor (hard reject, BEFORE any opt-in relaxation), keyed by the
-    // manifest name. A floored name must be TRUSTED and its (now-verified) version must clear the
-    // floor; anything else is a hard reject no opt-in flag can relax. The reject KIND is split by trust
-    // state so the display label is honest: a TRUSTED artifact below the floor is `AntiDowngrade`
-    // ("trusted (below floor)"); an UNTRUSTED artifact carrying a floored name is `UntrustedFloored`
-    // (labeled by its real untrusted state). Both are still hard rejects — the floor requires trusted
-    // proof, so a stripped-signature copy cannot launder a downgrade past it — but the untrusted case
-    // is never mislabeled "trusted (below floor)" in `--list-plugins`.
     if let Some(floor) = policy.min_versions.get(&manifest.name) {
         match &trusted_or_untrusted {
             Ok(_) if version_at_least(&manifest.version, floor) => {}
@@ -1874,8 +1521,7 @@ fn evaluate_against_with_evidence(
                 ))
             }
         }
-        // The operator names the retired key: it loads, as an explicit opt-in the boot WARNs about
-        // (`PLUGIN_LOADED_UNVERIFIED`), never as a current first-party plugin.
+
         Err(Untrusted::Retired {
             key,
             why,
@@ -1893,9 +1539,6 @@ fn evaluate_against_with_evidence(
             why,
             trusted_as: None,
         }) => {
-            // A retired key is a REVOCATION, not a missing signature (owner-signed 2026-10-30,
-            // SEC-ALLOWUNS): allow_unsigned, which admits code that carries no signature, does
-            // not admit code a revoked key signed. Only naming the key explicitly does.
             let unsigned_note = if policy.allow_unsigned {
                 " plugins.trust.allow_unsigned does not admit a retired key: a retired key is a \
                  revocation, not a missing signature."
@@ -1929,7 +1572,7 @@ fn evaluate_against_with_evidence(
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)] // TEST ONLY
+#[allow(unsafe_code)]
 #[path = "tests/sign_tests.rs"]
 mod tests;
 

@@ -17,7 +17,6 @@ const FIXTURE: &str = concat!(
     "/tests/fixtures/no_store_1_5_5.yaml"
 );
 
-/// A fresh, isolated directory holding the fixture's providers catalog.
 fn workdir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-store-required-{}-{tag}-{}",
@@ -54,8 +53,6 @@ fn validate(dir: &Path, config: &Path) -> Output {
         .expect("run busbar --validate")
 }
 
-/// RED: `--validate` refuses the no-store fixture with the store-required line. Without the
-/// refusal the fixture validates (exit 0) and the first assertion fails.
 #[test]
 fn validate_refuses_a_config_without_a_store_block() {
     let dir = workdir("refuse");
@@ -77,9 +74,6 @@ fn validate_refuses_a_config_without_a_store_block() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RED: `--migrate-config` inserts `store: {module: memory}` into the no-store fixture and lists
-/// the change, and the migrated config validates. Without the insertion the migrated config has no
-/// `store:` and the first assertion fails.
 #[test]
 fn migrate_inserts_the_memory_store_and_the_result_validates() {
     let dir = workdir("migrate");
@@ -103,9 +97,7 @@ fn migrate_inserts_the_memory_store_and_the_result_validates() {
     std::fs::write(&migrated, &stdout).unwrap();
     let out = validate(&dir, &migrated);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // The migrated config satisfies the store requirement in every build. A build that compiles no
-    // plane serving the fixture's provider still refuses that provider, so the assertion is on the
-    // store line, and on a clean exit whenever nothing else is refused.
+
     assert!(
         !stderr.contains("store is required"),
         "the migrated config carries its store; stderr:\n{stderr}"

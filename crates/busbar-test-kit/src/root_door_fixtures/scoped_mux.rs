@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A loaded SDK framer whose streams pend on the real auth service independently.
-
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +22,6 @@ use busbar_contract::abi::transport as t;
 
 busbar_contract::own_seal!(Own);
 
-/// The local token, intentionally reused by different host connections.
 pub const TOKEN: u64 = 41;
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(TOKEN + 2);
 const CLAIM_NAMES: &[AbiStr] = &[abi_str("http")];
@@ -54,7 +51,6 @@ const STATEMENT: Statement = Statement {
     ..statement("scoped-mux-fixture", "0.0.1", 64)
 };
 
-/// Per-instance fixture state; no callback blocks a plugin crossing.
 pub struct Mux {
     auth: Mutex<AuthRef>,
     opening: Mutex<HashMap<Ticket, u64>>,
@@ -181,7 +177,6 @@ fn authenticate_at(
     }
 }
 
-/// Copy the lent line and optionally claim a deliberately mismatching opening token.
 pub struct Begin;
 impl SafeSlot for Begin {
     type In = t::BeginIn;
@@ -247,7 +242,6 @@ impl SafeSlot for Begin {
     }
 }
 
-/// Decode one fixture stream or resume its stored auth completion.
 pub struct Ingest;
 impl SafeSlot for Ingest {
     type In = t::IngestIn;
@@ -357,7 +351,6 @@ impl SafeSlot for Ingest {
     }
 }
 
-/// Retire a framing and retain its token for the fixture's wire observation.
 pub struct Finish;
 impl SafeSlot for Finish {
     type In = t::FinishIn;
@@ -378,7 +371,6 @@ impl SafeSlot for Finish {
     }
 }
 
-/// An operation this fixture does not serve.
 pub struct Refused<I, O>(PhantomData<(I, O)>);
 impl<I: AbiIn, O: AbiOut> SafeSlot for Refused<I, O> {
     type In = I;

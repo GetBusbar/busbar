@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE RENDERING'S PINS: a golden of one Statement carrying every field, and a RED arm per field —
-//! a rendering that dropped, reordered or ignored a field would leave two different Statements
-//! with the same bytes, and a manifest check built on it would pass a lying manifest.
 
 use super::*;
 use crate::abi::host::conn::connector::{
@@ -231,8 +229,7 @@ fn every_field_changes_the_bytes() {
     push("trust_from", &|s| s.trust_from = NONE);
     push("answers dropped", &|s| s.answers_len = 0);
     push("a claim dropped", &|s| s.claims_len = 1);
-    // Moving a string between two adjacent fields keeps every byte but the boundary: the length
-    // prefixes are what tell them apart.
+
     push("name/version boundary", &|s| {
         s.name = abi_str("golden-plugin1");
         s.version = abi_str(".2.3");
@@ -240,8 +237,7 @@ fn every_field_changes_the_bytes() {
     for (name, st) in &edits {
         assert_ne!(bytes(st), base, "{name} did not change the rendering");
     }
-    // Each semantic Need field is independently bound, including the list boundaries. Padding
-    // and pointers are not facts; their live contents and declaration order are.
+
     const HEADERS: &[AbiStr] = &[abi_str("x-first"), abi_str("x-second")];
     let need = NEEDS[0];
     for (name, other) in [
@@ -418,9 +414,7 @@ fn a_truncated_padded_or_foreign_rendering_is_unreadable() {
     let mut foreign = b.clone();
     foreign[0] = b'X';
     assert_eq!(read(&foreign).unwrap_err().what, "the magic");
-    // A count no rest could hold is refused, never used to size an allocation.
-    // Start from a valid control, then replace the families count, after both strings, so this
-    // reaches In::count rather than failing while reading a string's length.
+
     let control = statement("count-control", "1", 1);
     let mut huge = bytes(&control);
     assert!(read(&huge).is_ok());
@@ -555,8 +549,6 @@ fn older_renderings_require_repacking_instead_of_defaulting_missing_policy() {
     }
 }
 
-// ── THE KIND TAIL, RENDERED WHOLE (ARCHITECT ruling 2026-10-20, audit root#7 and loader#9) ───────
-
 const STYLES: &[crate::abi::auth::StyleDecl] = &[
     crate::abi::auth::StyleDecl {
         name: abi_str("golden-style"),
@@ -655,7 +647,7 @@ fn an_auth_tail_renders_whole_and_reads_back_with_no_library() {
             credential_kinds: vec!["golden-kind".into()],
         }
     );
-    // A truncated or padded tail is refused, never read short.
+
     assert!(read_auth_tail(&r.kind_tail[..r.kind_tail.len() - 1]).is_err());
     let mut padded = r.kind_tail.clone();
     padded.push(0);
@@ -718,8 +710,6 @@ fn every_auth_tail_field_changes_the_bytes() {
 
 #[test]
 fn a_tail_renders_by_the_growth_rule() {
-    // A plugin built when the auth tail froze states its frozen size: the fields appended after it
-    // render absent, whatever bytes follow in its memory.
     let mut old = auth_tail();
     old.head.size = crate::abi::auth::TAIL_FROZEN as u32;
     let b = with_tail(KindCode::Auth, &old).expect("renders");
@@ -823,8 +813,7 @@ fn every_kind_renders_its_tail_facts_not_only_its_size() {
 }
 
 /// These are identity checks on the public rendering, not a second encoder: changing a declared
-/// grant, route or transport fact must not leave the bytes signed at admission unchanged. Comparing
-/// each variant with the others also detects two independent facts folded into the same value.
+
 fn distinct_tail_renderings<T>(kind: KindCode, cases: &[(&str, T)]) {
     let mut seen = Vec::new();
     for (name, tail) in cases {
@@ -1497,11 +1486,7 @@ fn transport_status_fault_and_setting_rows_keep_every_declared_fact() {
 }
 
 /// A PLANE'S COMMAND-LINE HELP READS BACK FROM ITS RENDERING, with no library (audit busbar-src r4
-/// S-2; BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped in, one loading path). The host
-/// reads a dropped-in plane's `busbar --help` rows, its line-serve flag among them, off the signed
-/// manifest before any configuration is served, as it reads a linked door's off its tail. Every
-/// tail field rendered before the help is stated, so a reader that skipped one reads another field
-/// as the help.
+
 #[test]
 fn a_plane_tails_cli_help_reads_back_with_no_library() {
     use crate::abi::plane::PlaneTail;

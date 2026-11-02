@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE `op_id` ALLOCATOR PER PROCESS, A FRESH ONE PER BOOT (ARCHITECT ruling on op_id identity): a
-//! store handle mints its bridge writes' `op_id`s from the node's one allocator, never a counter of
-//! its own. Over a DURABLE store (its dedupe log outlives every handle), a second handle, a reload
-//! or a restart would otherwise re-mint an earlier write's id, and the store would answer the new
-//! write as that one's replay and apply nothing.
-
 use std::sync::Arc;
 
 use crate::both_ways::store_fixture::MemoryStore;
@@ -21,9 +15,6 @@ use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
-/// A DURABLE store stand-in: every instance opened on the same settings (the same "database") is
-/// the SAME backing store, as every open of one database file is, whichever thread opens it. Its
-/// dedupe log outlives any handle, as a durable one does.
 struct Shared;
 
 type Databases = std::collections::HashMap<Vec<u8>, Arc<MemoryStore>>;
@@ -61,7 +52,6 @@ macro_rules! boot {
     };
 }
 
-/// The store on database `db`, minting from `mint`.
 fn open(db: &str, mint: OpIdMint) -> LoadedStore {
     open_door(db, mint, shared::door)
 }
@@ -187,7 +177,6 @@ fn provided_id_batches_replay_across_handles_and_refuse_a_different_body() {
     );
 }
 
-/// Commit once, pend with the computed answer, then lose only its first completion reply.
 struct PendingLostReply;
 impl Hooks for PendingLostReply {
     fn add_usage_batch(

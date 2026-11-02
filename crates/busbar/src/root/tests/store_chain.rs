@@ -1,13 +1,8 @@
-//! The journal on the configured store, at the lane: what the store keeps reads back as the chain,
-//! a refused record is retained and re-offered until the store takes it, and a full lane refuses
-//! with its reason and drops nothing (ARCHITECT 2026-10-07 H3 ruling).
-
 use super::*;
 use crate::root::store_double::RecordSlots;
 
 const WAIT: Duration = Duration::from_secs(5);
 
-/// Unblock a deliberately delayed Store crossing even when the asserting thread unwinds.
 struct ReleaseTransaction(Option<std::sync::mpsc::Sender<()>>);
 
 impl ReleaseTransaction {
@@ -26,7 +21,6 @@ impl Drop for ReleaseTransaction {
     }
 }
 
-/// Delay one selected immutable candidate before the fixture takes its transaction locks.
 fn gate_transaction(
     slots: &RecordSlots,
     selected: impl Fn(&busbar_contract::abi::sdk::store::conditional::Request) -> bool
@@ -57,7 +51,6 @@ fn gate_transaction(
     (receive, ReleaseTransaction(Some(release)))
 }
 
-/// A record of `len` body bytes for `(node, seq)`.
 fn record(node: u64, seq: u64, len: usize) -> Record {
     Record::new(
         node,
@@ -66,8 +59,6 @@ fn record(node: u64, seq: u64, len: usize) -> Record {
     )
 }
 
-/// A record larger than one slot's bound crosses as parts and reads back whole, in chain order, and
-/// only this node's records come back.
 #[test]
 fn what_the_store_kept_reads_back_whole_and_in_order() {
     let slots = RecordSlots::new();
@@ -90,9 +81,6 @@ fn what_the_store_kept_reads_back_whole_and_in_order() {
     );
 }
 
-/// A STORE THAT REFUSES keeps the record at the head of the lane: it is offered again until the
-/// store takes it, the verb waiting on it is told the store's reason, and nothing behind it lands
-/// first.
 #[test]
 fn a_refused_record_is_retained_and_lands_once_the_store_recovers() {
     let slots = RecordSlots::new();
@@ -127,8 +115,6 @@ fn a_refused_record_is_retained_and_lands_once_the_store_recovers() {
     );
 }
 
-/// A FULL LANE turns the next batch away (the journal retains it) and refuses new money-bearing
-/// work with its reason; nothing it holds is dropped, and it clears once the store takes them.
 #[test]
 fn a_full_lane_refuses_money_with_its_reason_and_drops_nothing() {
     let slots = RecordSlots::new();
@@ -167,12 +153,6 @@ fn a_full_lane_refuses_money_with_its_reason_and_drops_nothing() {
     );
 }
 
-/// THE LEASE IS THE LANE'S (row 159; BUSBAR-1.6.0.md Part 0, no process-global static seam): each
-/// lane holds the lease its boot took on a host name in its store. Driven by hand, one flush tick
-/// at a time (no clock, no sleep): a lane's tick refreshes its own lease on every
-/// `LEASE_REFRESH_TICKS`-th tick; one lane releasing its lease releases it in the store and its
-/// ticks refresh nothing after; another lane of the same process keeps its own lease, held and
-/// refreshed.
 #[test]
 fn a_lane_releases_the_lease_it_holds_and_another_lane_keeps_its_own() {
     use super::super::store_identity::{lease_row, set_lease_expiry, LEASE_REFRESH_TICKS};
@@ -189,8 +169,6 @@ fn a_lane_releases_the_lease_it_holds_and_another_lane_keeps_its_own() {
     let (holder_a, _) = lease_row(calls.as_ref(), a).expect("a's lease is in the store");
     let (holder_b, _) = lease_row(calls.as_ref(), b).expect("b's lease is in the store");
 
-    // THE HELD LEASE IS REFRESHED: marked stale, it is untouched until the lane's
-    // `LEASE_REFRESH_TICKS`-th tick, which writes it a fresh expiry under the same holder.
     set_lease_expiry(calls.as_ref(), b, 1);
     for _ in 1..LEASE_REFRESH_TICKS {
         other.refresh_held_lease();
@@ -208,7 +186,6 @@ fn a_lane_releases_the_lease_it_holds_and_another_lane_keeps_its_own() {
         "the refresh tick wrote the lease a fresh expiry"
     );
 
-    // THE RELEASED LANE'S LEASE IS GONE: released in the store, and its ticks refresh nothing.
     lane.release_held_lease();
     assert_eq!(
         lease_row(calls.as_ref(), a),
@@ -224,8 +201,6 @@ fn a_lane_releases_the_lease_it_holds_and_another_lane_keeps_its_own() {
         "a released lane's tick refreshed a lease it no longer holds"
     );
 
-    // THE OTHER LANE'S LEASE IS STILL HELD: untouched by the first lane's release, and refreshed by
-    // its own next refresh tick.
     assert_eq!(
         lease_row(calls.as_ref(), b),
         Some((holder_b, expires)),
@@ -240,18 +215,6 @@ fn a_lane_releases_the_lease_it_holds_and_another_lane_keeps_its_own() {
     assert!(again > 1, "the other lane still refreshes its lease");
 }
 
-/// A RETAINED BATCH LARGER THAN THE LANE IS TAKEN ONCE THE LANE IS EMPTY (audit root r4 B-3;
-/// ARCHITECT 2026-10-07 H3 ruling, `store_chain.rs` module docs: a full lane fails closed "until the
-/// store takes what is queued. No record is dropped."; BUSBAR-1.6.0.md THE DESIGN §7 l.991-998: the
-/// kernel writes exactly what it is told, one sealed line per unit). While the store refuses, the
-/// fail-closed node still journals what it may (admin units, checkpoints, accruals), so the batch
-/// the journal retains and re-offers outgrows the lane's bound. Beside what waits, that batch is
-/// still turned away (the bound holds, the green twin); once the store took everything, the empty
-/// lane takes it whole, and the node admits once it drains.
-///
-/// RED before the fix: the lane took a batch only if it fit beside what waits, so a retained batch
-/// over the bound was turned away even by an empty lane: `refuses_money` stayed `Some` for good and
-/// the batch, held only in memory, never reached the store.
 #[test]
 fn a_retained_batch_larger_than_the_lane_is_taken_once_the_lane_is_empty() {
     let slots = RecordSlots::new();
@@ -286,8 +249,6 @@ fn a_retained_batch_larger_than_the_lane_is_taken_once_the_lane_is_empty() {
     );
 }
 
-/// A's part write already holds its exact lease predicate when B takes the expired lease and
-/// publishes the same node/sequence. The Store must reject A's stale transaction atomically.
 #[test]
 fn a_delayed_old_journal_writer_cannot_overwrite_the_successors_same_position() {
     use super::super::store_identity::{lease_row, set_lease_expiry};
@@ -386,8 +347,6 @@ fn a_delayed_old_journal_writer_cannot_overwrite_the_successors_same_position() 
     lane_b.release_held_lease();
 }
 
-/// Renewal/release was prepared while A still owned the row; takeover occurs before its CAS.
-/// Checking ownership only before an unconditional write would clobber B in both cases.
 #[test]
 fn a_stale_lease_renewal_or_release_cannot_change_a_taken_over_lease() {
     use super::super::store_identity::{lease_row, set_lease_expiry};
@@ -444,8 +403,6 @@ fn a_stale_lease_renewal_or_release_cannot_change_a_taken_over_lease() {
     }
 }
 
-/// Shutdown cannot free an identity while its accepted Store crossing can still land. Once the
-/// lane drains, release retires the worker and prevents every retained shipper from publishing.
 #[test]
 fn a_lane_releases_its_host_lease_only_after_the_pending_writer_drains_and_retires() {
     use super::super::store_identity::lease_row;

@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests MOVED here from busbar-core when the admin API service was extracted: they drive the
-//! `/api/v1/admin/*` HTTP surface (mounted through the seam), which busbar-core's own test binary
-//! no longer serves. Behavior is byte-identical; only the crate they live in changed.
-
 use axum::Router;
-/// The operator credential's second line, as the linked operator plugin states it.
+
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
-/// A present-but-blank `x-admin-token` must be rejected on
-/// the admin surface. Driven end-to-end through the real router + `auth_middleware` so the
-/// extraction + constant-time compare are exercised together. A correct token via the same header
-/// authorizes, proving the 401 is the empty-filter and not a blanket reject.
 #[tokio::test]
 async fn test_admin_blank_header_token_rejected() {
     use busbar_kernel::governance::GovState;
@@ -32,7 +24,6 @@ async fn test_admin_blank_header_token_rejected() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    // Blank x-admin-token (and no Bearer) → 401: a blank header is treated as absent.
     let r_blank = client
         .get(&url)
         .header(X_ADMIN_TOKEN, "")
@@ -46,7 +37,6 @@ async fn test_admin_blank_header_token_rejected() {
         r_blank.status()
     );
 
-    // Correct x-admin-token → authorized, proving the reject above is the empty-filter.
     let r_ok = client
         .get(&url)
         .header(X_ADMIN_TOKEN, "admintok")
@@ -91,8 +81,6 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    // Correct Bearer + WRONG x-admin-token → authorized (the header compare must not veto a
-    // matching Bearer; the fold is OR, not AND).
     let r = client
         .get(&url)
         .bearer_auth("admintok")
@@ -107,9 +95,6 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
         r.status()
     );
 
-    // WRONG Bearer + correct x-admin-token → authorized. This is the short-circuit regression: a
-    // `||` would have stopped after the Bearer miss only if the header were checked next, but the
-    // real risk is the inverse ordering — assert the header compare is reached and admits.
     let r = client
         .get(&url)
         .bearer_auth("wrong")
@@ -124,7 +109,6 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
         r.status()
     );
 
-    // Both wrong → 401.
     let r = client
         .get(&url)
         .bearer_auth("wrong")
@@ -141,15 +125,6 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     handle.abort();
 }
 
-/// Regression for the admin-surface carrier-separation invariant promised
-/// by the comment at the top of the `is_admin` branch: the `/admin` operator surface is guarded
-/// ONLY by `Authorization: Bearer` and `x-admin-token` — NOT by the vendor-SDK client-token
-/// carriers (`x-api-key` / `x-goog-api-key`) that `extract_client_token` also reads. A future
-/// DRY refactor unifying admin extraction onto `extract_client_token` would let the operator
-/// admin token be presented via the carriers every native vendor SDK populates, turning any
-/// leaked/observed client header into operator-surface (key create/delete) access. This pins the
-/// boundary: the CORRECT admin secret presented via `x-api-key` or `x-goog-api-key` MUST 401,
-/// while the two sanctioned admin carriers MUST authorize.
 #[tokio::test]
 async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     use busbar_kernel::governance::GovState;
@@ -169,9 +144,6 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    // The admin secret presented via the vendor-SDK carriers MUST be rejected: these carriers are
-    // the client-token surface, NOT the operator surface. Exercise BOTH carriers, on BOTH the
-    // GET (list) and POST (create) admin verbs, since the admin auth branch is verb-agnostic.
     for carrier in ["x-api-key", "x-goog-api-key"] {
         let r_get = client
             .get(&url)
@@ -201,8 +173,6 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
         );
     }
 
-    // The two sanctioned admin carriers MUST authorize (proving the 401s above are carrier
-    // separation, not a blanket reject).
     let r_authz = client
         .get(&url)
         .bearer_auth("admintok")
@@ -231,14 +201,13 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     handle.abort();
 }
 
-/// token authenticates `/api/v1/admin/*` and returns above the data-plane gate, unchanged.
 #[tokio::test]
 async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     busbar_kernel_testkit::test_support::metrics::init();
     let (gov, _secret) = dp_gov_with_key();
     let app = crate::new_test_app().governance(gov).build();
     let (addr, handle) = dp_serve(app).await;
-    // Mint a key through the admin API using the operator admin token.
+
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header(X_ADMIN_TOKEN, "admintok")
@@ -252,7 +221,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
         "admin token must authenticate the admin API and mint (got {})",
         r.status()
     );
-    // Wrong admin token → 401 (admin gate still enforced).
+
     let bad = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header(X_ADMIN_TOKEN, "nope")
@@ -269,11 +238,6 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     handle.abort();
 }
 
-/// SPLIT-LISTENER NO-DOUBLE-EXPOSURE: with a separate admin listener the admin surface must live
-/// ONLY on the admin router. `build_split_routers_with_limits` must yield an admin router that
-/// serves `/api/v1/admin/*` and a data router that does NOT — even for a request carrying a VALID
-/// admin token (the route is ABSENT, not merely auth-guarded), so the public data bind can never
-/// reach the management plane. Both planes keep an open, unauthenticated `/healthz`.
 #[tokio::test]
 async fn split_admin_listener_no_double_exposure() {
     use busbar_kernel::governance::GovState;
@@ -284,8 +248,7 @@ async fn split_admin_listener_no_double_exposure() {
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-    // One configured lane so `/healthz` reports ready (200) rather than "no usable lanes" (503) —
-    // the probe URL is never actually dialed here; the test only exercises routing/auth.
+
     let app = crate::new_test_app()
         .lane(LaneSpec::new(
             "test-model",
@@ -316,31 +279,23 @@ async fn split_admin_listener_no_double_exposure() {
     }
 
     let admin_path = format!("{}/keys", crate::v1::contract::ADMIN_PREFIX);
-    // Admin surface SERVED on the admin plane (valid token ⇒ 200).
+
     assert_eq!(
         get(admin_router.clone(), &admin_path, Some("admintok")).await,
         200,
         "admin router must serve the admin surface"
     );
-    // Admin surface ABSENT on the data plane — even WITH a valid admin token it is a hard 404,
-    // proving the route is not mounted here (no double-exposure), not merely auth-blocked.
+
     assert_eq!(
         get(data_router.clone(), &admin_path, Some("admintok")).await,
         404,
         "data router must NOT serve the admin surface even for an authenticated admin request"
     );
-    // Both planes keep an open, unauthenticated liveness probe.
+
     assert_eq!(get(admin_router, "/healthz", None).await, 200);
     assert_eq!(get(data_router, "/healthz", None).await, 200);
 }
 
-/// The /admin management API — create→list→usage→delete, admin-token gating, and a minted
-/// secret then authenticating as a working virtual key. RELOCATED here from a plane crate's
-/// `engine::forward_pool_integration_tests` (1.6.0): the admin `/api/v1/admin/keys*` routes mount
-/// only through the admin seam (`crate::build_router`), which a plane's test binary never
-/// installs (busbar-admin is NOT a dep of any plane, per BUSBAR-1.6.0.md Part 2 #37 — a PLANE crate must
-/// not depend on busbar-admin nor mount the admin surface). The duplicate there was deterministically
-/// RED (valid-token POST → 404); this is its correct home, where the seam is mounted.
 #[tokio::test]
 async fn test_governance_admin_api() {
     use busbar_kernel::governance::GovState;
@@ -349,7 +304,7 @@ async fn test_governance_admin_api() {
 
     busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    // A signing key is required to MINT signed-token keys (1.5.0).
+
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -367,7 +322,6 @@ async fn test_governance_admin_api() {
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
-    // Missing admin token → 401.
     let r = client
         .post(format!("{base}/api/v1/admin/keys"))
         .json(&serde_json::json!({"name": "x"}))
@@ -376,7 +330,6 @@ async fn test_governance_admin_api() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 401, "no admin token → unauthorized");
 
-    // Create a key with the admin token.
     let r = client
         .post(format!("{base}/api/v1/admin/keys"))
         .bearer_auth("admintok")
@@ -387,7 +340,7 @@ async fn test_governance_admin_api() {
     assert_eq!(r.status().as_u16(), 201, "admin create → 201");
     let created: serde_json::Value = r.json().await.unwrap();
     let id = created["id"].as_str().unwrap().to_string();
-    // The key credential is a busbar-SIGNED token (1.5.0), returned once - never a stored secret.
+
     let secret = created["token"].as_str().unwrap().to_string();
     assert!(secret.starts_with("bbk_"), "signed token returned once");
     assert!(
@@ -396,7 +349,6 @@ async fn test_governance_admin_api() {
     );
     assert!(created.get("secret").is_none(), "no legacy secret in 1.5.0");
 
-    // List shows it (no hash).
     let r = client
         .get(format!("{base}/api/v1/admin/keys"))
         .bearer_auth("admintok")
@@ -407,7 +359,6 @@ async fn test_governance_admin_api() {
     assert_eq!(listed["items"].as_array().unwrap().len(), 1);
     assert!(listed["items"][0].get("generation_hash").is_none());
 
-    // Usage endpoint works.
     let r = client
         .get(format!("{base}/api/v1/admin/keys/{id}/usage"))
         .bearer_auth("admintok")
@@ -416,8 +367,6 @@ async fn test_governance_admin_api() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
 
-    // The minted secret authenticates as a virtual key: its allowed pool passes the ACL →
-    // routing 404 (no such pool wired), proving the key is live + ACL applied.
     let r = client
         .post(format!("{base}/allowedpool/v1/messages"))
         .bearer_auth(&secret)
@@ -431,7 +380,6 @@ async fn test_governance_admin_api() {
         "minted key authenticates + ACL passes"
     );
 
-    // Delete, then it's gone from the list.
     let r = client
         .delete(format!("{base}/api/v1/admin/keys/{id}"))
         .bearer_auth("admintok")
@@ -451,8 +399,6 @@ async fn test_governance_admin_api() {
     handle.abort();
 }
 
-// Local helpers copied from busbar-core's auth tests (shared there; a private copy here).
-/// Local helper: serve a router on an ephemeral port, returning (addr, join handle).
 async fn dp_serve(
     app: std::sync::Arc<busbar_kernel::state::App>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -463,7 +409,6 @@ async fn dp_serve(
     (addr, handle)
 }
 
-/// A governance engine (admin token set) with ONE enabled, pool-`pa` virtual key. Returns (gov, secret).
 fn dp_gov_with_key() -> (std::sync::Arc<busbar_kernel::governance::GovState>, String) {
     use busbar_kernel::governance::{GovState, NewKeySpec};
     use busbar_kernel_testkit::test_support::store_double::MemoryStore;

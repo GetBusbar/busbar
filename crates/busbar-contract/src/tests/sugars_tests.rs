@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! [`Sugars::declare`]: the shorthand a secret plugin's Statement declares is read off its
-//! rewrites, and the host refuses two plugins claiming one word or one role, a core-grammar word,
-//! a sugar with no settings key and a fact about a word the Statement does not declare. The words
-//! here are test words, no source's.
 
 use super::*;
 use crate::abi::mechanism::door::{

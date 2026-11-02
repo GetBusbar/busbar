@@ -11,20 +11,7 @@ use crate::cost::{
 use super::{card, INPUT};
 
 /// **THE NEUTRAL TIER IS THE IDENTITY, AT EVERY MAGNITUDE INCLUDING THE CEILING.**
-///
-/// This cell used to read `assert_eq!(apply_tier(u128::MAX, 20_000), u128::MAX / 10_000)` and
-/// called that saturation. It was not saturation, it was the defect written down as an
-/// expectation: `saturating_mul` pinned the PRODUCT at `u128::MAX` and the divide by ten thousand
-/// then shrank it, so the function returned one ten-thousandth of the true amount and a test
-/// asserted that it should.
-///
-/// The row below it is why that mattered rather than being a curiosity at an unreachable input.
-/// `tier_bp` is `STANDARD_TIER_BP` on EVERY production path in this tree (`plane_node.rs` pins it
-/// on the posting, `policy.rs` pins it on the group, and both defaults resolve to it), so ×1 is
-/// the only tier the arithmetic is ever actually asked for — and ×1 at the ceiling was returning
-/// `34028236692093846346337460743176821` in place of
-/// `340282366920938463463374607431768211455`. A bill of `u128::MAX` was derived as ten thousand
-/// times less than itself.
+
 #[test]
 fn the_neutral_tier_is_the_identity_at_every_magnitude() {
     assert_eq!(
@@ -38,9 +25,7 @@ fn the_neutral_tier_is_the_identity_at_every_magnitude() {
 }
 
 /// A tiered amount that genuinely does not fit is refused; one that does is exact.
-///
-/// The distinction the old spelling could not make: `u128::MAX` at double price really is past the
-/// type, so it has no answer — but `u128::MAX` at ×1 is not past anything and must come back whole.
+
 #[test]
 fn only_a_genuinely_unrepresentable_tiered_amount_is_refused() {
     assert_eq!(checked_apply_tier(u128::MAX, 20_000), None);
@@ -49,8 +34,7 @@ fn only_a_genuinely_unrepresentable_tiered_amount_is_refused() {
         Some(u128::MAX)
     );
     assert_eq!(checked_apply_tier(0, 20_000), Some(0));
-    // Half the ceiling at double price is exactly the ceiling plus one, which is the first value
-    // that does not fit — the boundary stated as arithmetic rather than as a literal.
+
     assert_eq!(checked_apply_tier((u128::MAX / 2) + 1, 20_000), None);
     assert_eq!(
         checked_apply_tier(u128::MAX / 2, 20_000),
@@ -59,32 +43,17 @@ fn only_a_genuinely_unrepresentable_tiered_amount_is_refused() {
 }
 
 /// **#44 AT THE EXACT HALF.**
-///
-/// *"only a 'per-N-units' division term uses banker's (half-to-even) rounding"*, restated by #81:
-/// *"a per-N-units division term still uses banker's rounding (#44), because a DIVISION can
-/// genuinely be inexact where a MEASUREMENT cannot."* `× tier_bp / 10_000` is that term.
-///
-/// The five tier implementations this tree carried truncated toward zero (four of them) or rounded
-/// up (one), and not one of them was banker's. Truncation is not rounding: it is a discount the
-/// operator never configured, taken in one direction, on every posting, forever.
-///
-/// These are amounts at whatever scale the caller hands the function. The one function hands it
-/// the exact scale-15 accumulator, so on a bill the tie falls far below one nano-unit — see
-/// `fifteen_nano_units_at_half_price_bill_seven` for what a whole-nano amount bills.
+
 #[test]
 fn a_tier_that_lands_on_an_exact_half_rounds_to_even() {
-    // 5 x 5,000bp = 2.5 exactly. 2 is even, so DOWN. (Truncation agreed here by luck.)
     assert_eq!(checked_apply_tier(5, 5_000), Some(2));
-    // 15 x 5,000bp = 7.5 exactly. 7 is odd, so UP to 8. (Truncation gave 7.)
+
     assert_eq!(checked_apply_tier(15, 5_000), Some(8));
-    // 25 x 5,000bp = 12.5 exactly. 12 is even, so DOWN.
+
     assert_eq!(checked_apply_tier(25, 5_000), Some(12));
-    // 3 x 5,000bp = 1.5 exactly. 1 is odd, so UP to 2. (Truncation gave 1.)
+
     assert_eq!(checked_apply_tier(3, 5_000), Some(2));
 
-    // AND THE TIE IS THE ONLY PLACE THE EVEN RULE APPLIES. Either side of it goes to the nearer
-    // neighbour regardless of parity, which is what distinguishes banker's from "always down to
-    // even".
     assert_eq!(
         checked_apply_tier(14, 5_000),
         Some(7),
@@ -121,24 +90,9 @@ fn a_tier_that_lands_on_an_exact_half_rounds_to_even() {
 }
 
 /// **BYTE-NEUTRALITY AT THE ONLY TIER THIS TREE EVER ASKS FOR.**
-///
-/// `tier_bp` is [`STANDARD_TIER_BP`] on every production path: the live posting pins it
-/// (`crates/busbar/src/root/plane_node.rs`, `Posting::from_usage(.., STANDARD_TIER_BP, ..)`), the
-/// group runtime pins it (`crates/busbar/src/root/policy.rs`), a `LedgerEntry` defaults to it, and
-/// the recompute archive's `tier_bp` defaults to it. No operator configuration key sets a
-/// basis-point multiplier at all — a lane's configured `tier` is a routing LABEL (`"large"`), not a
-/// price.
-///
-/// So this is the sweep that says the rounding correction moved no byte anybody can observe: over
-/// the whole ordinary range, at the tier every posting actually carries, the answer is the input,
-/// which is what the previous implementation also gave. Zero differences.
-///
-/// The rounding rule only becomes visible at a tier that is not ×1, and a tier that is not ×1 is
-/// unreachable from any configuration this tree parses.
+
 #[test]
 fn the_neutral_tier_moves_no_ordinary_amount() {
-    // A deterministic spread across every magnitude a book reaches, plus the exact powers of ten
-    // either side of each one, so the sweep lands on and beside every rounding step.
     let mut cases: Vec<u128> = Vec::new();
     let mut decade: u128 = 1;
     for _ in 0..34 {
@@ -159,8 +113,7 @@ fn the_neutral_tier_moves_no_ordinary_amount() {
             Some(pre),
             "x1 moved an ordinary amount: {pre}"
         );
-        // And the previous implementation's answer, computed here, is the same one — for every
-        // amount whose ×10,000 stayed inside the type, which is every amount below about 3.4e34.
+
         if pre < u128::MAX / 10_000 {
             assert_eq!(
                 Some(pre.saturating_mul(10_000) / 10_000),
@@ -173,19 +126,10 @@ fn the_neutral_tier_moves_no_ordinary_amount() {
     assert_eq!(checked, 479, "the sweep must actually have run");
 }
 
-///
 /// The tier is #44's per-N-units division term and rounds half-to-even, but it rounds at the scale
-/// the one function computes it at: the exact scale-15 accumulator ([`Tally::exact`]). Fifteen
-/// nano-units are `15_000_000` there, and half of that is `7_500_000` exactly, so there is nothing
-/// for half-to-even to round. The billed nano-unit figure is then the single truncation toward
-/// zero ([`nanos_of_exact`]), the same projection 1.5.5 read every figure through: `7`.
-///
-/// Pinned on the settlement lookup ([`price_at_card`]) and on the accumulator it drives, so a change
-/// that rounded at the nano-unit scale instead — which would bill `8` — is a red here, and has to
-/// arrive with an oracle cell proving it leaves 1.5.5's billed figures where they are.
+
 #[test]
 fn fifteen_nano_units_at_half_price_bill_seven() {
-    // One unit of a class the card prices at fifteen nano-units: 0.015 micro-units, quantised once.
     let card = card("m", 0.015, 0.0, 0);
     let posting = Posting {
         lane: "m".to_string(),
@@ -220,7 +164,5 @@ fn fifteen_nano_units_at_half_price_bill_seven() {
     assert_eq!(exact, 7_500_000, "the tier's answer at scale 15 is exact");
     assert_eq!(nanos_of_exact(exact), Ok(7));
 
-    // The same function handed a whole-nano amount would round the half up to the even 8. That is
-    // not a billed figure: no caller in the tree hands it one.
     assert_eq!(checked_apply_tier(15, 5_000), Some(8));
 }

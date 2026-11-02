@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The two amendment classes.
-
 use crate::test_support::tokens::pass;
 use busbar_contract::{
     caps::{Audit as AuditStep, KernelSeal},
@@ -15,10 +13,6 @@ use busbar_kernel_audit::amend::{
 };
 use busbar_kernel_audit::record::{AuditBreakKind, OpClassId, Subject};
 
-/// The two constructors are pinned against each other, as the retired admin chain already pins
-/// its own: a DERIVED default gives a next position of zero, which is not a position a chain has —
-/// the first entry is one — and the position is DIGESTED, so a chain that quietly started at zero
-/// would seal entries a verifier walking from one rejects.
 #[test]
 fn the_default_amend_chain_is_the_new_one_because_a_derived_default_starts_at_zero() {
     let made = AmendChain::new();
@@ -28,7 +22,6 @@ fn the_default_amend_chain_is_the_new_one_because_a_derived_default_starts_at_ze
     assert_eq!(defaulted.head(), made.head());
 }
 
-/// The same pinning for the fixed record's chain, which digests its position too.
 #[test]
 fn the_default_audit_chain_is_the_new_one() {
     let made = busbar_kernel_audit::record::AuditChain::new();
@@ -49,9 +42,6 @@ fn an_access() -> AmendBody {
     )
 }
 
-/// A pre-release 1.6.0 count correction, built as that release sealed it. Nothing writes one now
-/// (a correction is a signed delta on the usage rows, MONEY-DESIGN §4), but a chain that holds one
-/// must still verify, so the record stays decodable and these tests keep sealing it.
 #[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
 fn correction(
     amends: &str,
@@ -78,7 +68,6 @@ fn correction(
     }))
 }
 
-/// Whole-unit counts per class.
 fn counts(pairs: &[(&str, i128)]) -> ClassCounts {
     pairs
         .iter()
@@ -86,7 +75,6 @@ fn counts(pairs: &[(&str, i128)]) -> ClassCounts {
         .collect()
 }
 
-/// A correction of one count: `was`, then `now`, of the one class `input_tokens`.
 fn one_count(amends: &str, subject: Subject, was: i128, now: i128) -> AmendBody {
     correction(
         amends,
@@ -126,21 +114,13 @@ fn an_access_records_who_read_what_and_never_what_they_read() {
         AmendBody::Access(a) => {
             assert_eq!(a.reader, Reader::Hook);
             assert_eq!(a.name, "compress");
-            // FIELD NAMES, not values. An amendment that carried the content would put content on a
-            // chain that cannot be erased, which is the one thing the design forbids outright.
+
             assert_eq!(a.fields, vec!["messages".to_string(), "system".to_string()]);
         }
         other => panic!("expected an access, got {other:?}"),
     }
 }
 
-/// AN EXPORT ACCESS IS RECORDED THE SAME WAY A HOOK ACCESS IS — same class, same fields, same
-/// position — and the ONE thing that differs, who read it, is sealed into the digest.
-///
-/// Both are appended at the same position of fresh chains with every other field equal, so the
-/// only digested difference is the reader's word. If `Reader::Export` ever sealed as `"hook"`, an
-/// export plugin shipping content off the node and a hook reading it in-process would seal to one
-/// digest, and a stored export access could be swapped for a hook access and still verify.
 #[test]
 fn an_export_access_is_recorded_the_same_way_a_hook_access_is() {
     let access_by = |reader| {
@@ -156,7 +136,6 @@ fn an_export_access_is_recorded_the_same_way_a_hook_access_is() {
     let hook = AmendChain::new().append(access_by(Reader::Hook), &pass::<AuditStep>());
     let export = AmendChain::new().append(access_by(Reader::Export), &pass::<AuditStep>());
 
-    // The same way: one class, one position, one link, one shape of body.
     assert_eq!(export.class(), AmendClass::Access);
     assert_eq!(export.class(), hook.class());
     assert_eq!((export.seq, &export.prev_hash), (hook.seq, &hook.prev_hash));
@@ -172,11 +151,9 @@ fn an_export_access_is_recorded_the_same_way_a_hook_access_is() {
         other => panic!("expected two accesses, got {other:?}"),
     }
 
-    // The digested words for the two readers, pinned the way the class words are.
     assert_eq!(Reader::Hook.as_str(), "hook");
     assert_eq!(Reader::Export.as_str(), "export");
 
-    // And the reader is SEALED: the two accesses differ only in who read, and so must their digests.
     assert_eq!(AmendChain::digest_of(&export), export.hash);
     assert_ne!(
         export.hash, hook.hash,
@@ -205,8 +182,6 @@ fn a_correction_names_what_it_amends_and_why() {
 
 #[test]
 fn the_original_figure_survives_the_correction() {
-    // The point of an amendment being a new entry: there is no state in which the original amount
-    // has quietly become something else.
     let mut chain = AmendChain::new();
     let amendment = chain.append(a_correction(), &pass::<AuditStep>());
     match &amendment.body {
@@ -219,7 +194,7 @@ fn the_original_figure_survives_the_correction() {
                 a.now,
                 counts(&[("input_tokens", 800), ("output_tokens", 200)])
             );
-            // Counts and the card epoch they price at — never a money figure (owner ruling Q9).
+
             assert_eq!(a.lane, "gpt-4o");
             assert_eq!(a.card_epoch_ms, 1_700_000_000_000);
         }
@@ -277,9 +252,6 @@ fn removing_an_amendment_from_the_middle_is_caught() {
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
 }
 
-/// THE IN-MEMORY WINDOW IS BOUNDED. Accesses arrive at request rate, so the journal releases the
-/// oldest held amendment past [`AMENDMENTS_RETAINED`] — and still verifies the window it holds to
-/// the chain's head.
 #[test]
 fn a_journal_bounds_what_it_holds() {
     let mut journal = AmendJournal::new();
@@ -295,11 +267,6 @@ fn a_journal_bounds_what_it_holds() {
     assert!(journal.verify().is_ok());
 }
 
-/// CUTTING THE HEAD OFF A CORRECTION HISTORY IS CAUGHT.
-///
-/// The survivors link perfectly to each other — every one still names the amendment before it — so
-/// the only thing that says entries are missing is that the run does not begin where the chain
-/// does. The earliest amendments are the ones somebody covering a correction would drop first.
 #[test]
 fn truncating_the_head_of_an_amendment_run_is_caught() {
     let mut chain = AmendChain::new();
@@ -316,7 +283,6 @@ fn truncating_the_head_of_an_amendment_run_is_caught() {
     assert_eq!(brk.at_index, 1, "the cut is reported at the run's start");
 }
 
-/// CUTTING THE TAIL OFF takes the chain's own head to notice, exactly as it does for records.
 #[test]
 fn truncating_the_tail_of_an_amendment_run_is_caught_against_the_chain_head() {
     let mut chain = AmendChain::new();
@@ -328,15 +294,12 @@ fn truncating_the_tail_of_an_amendment_run_is_caught_against_the_chain_head() {
     assert!(chain.verify_to_head(&run).is_ok());
 
     run.pop();
-    // The survivors still walk from the genesis, which is precisely why the walk alone cannot see
-    // this and the head check must.
+
     assert!(AmendChain::verify(&run).is_ok());
     let brk = chain.verify_to_head(&run).unwrap_err();
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
 }
 
-/// An EMPTY run verifies against itself and fails against a chain that sealed something: the two
-/// readings of "no amendments" are only distinguishable with the chain on hand.
 #[test]
 fn an_empty_run_verifies_alone_and_fails_against_a_chain_that_sealed_one() {
     assert!(AmendChain::verify(&[]).is_ok());
@@ -356,10 +319,6 @@ fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     assert!(AmendChain::verify(&[first, second]).is_ok());
 }
 
-/// A PRINCIPAL NAMED AFTER ANOTHER SUBJECT'S TAG STILL DIGESTS AS A PRINCIPAL.
-///
-/// The tag and the value are two digested fields rather than one joined string, which is the whole
-/// reason this cannot collide.
 #[test]
 fn a_principal_pseudonym_that_reads_as_a_node_does_not_digest_as_one() {
     let mut one = AmendChain::new();
@@ -375,12 +334,6 @@ fn a_principal_pseudonym_that_reads_as_a_node_does_not_digest_as_one() {
     assert_ne!(as_principal.hash, as_node.hash);
 }
 
-/// THE SEALED AMENDMENT DIGEST IS A FROZEN VALUE, not whatever today's encoder happens to produce.
-///
-/// Every amendment a deployment has written is verified by recomputing this digest, so a change
-/// that moves it makes a stored correction report itself TAMPERED. The hex below was produced by an
-/// earlier build over the fixture in this test; it is a value to preserve, never one to re-capture
-/// from a failing run. Moving it needs a migration for anything already on disk, not an edit here.
 #[test]
 fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
     let mut chain = AmendChain::new();
@@ -406,11 +359,6 @@ fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
     );
 }
 
-/// Q64/Q67: AN ADJUSTMENT NAMES ITS POOL, and one sealed before the field existed keeps its hash.
-/// The unscoped fixture still digests to the frozen `2efa7693…a940` above (so a stored adjustment
-/// still verifies, and still reads unscoped); the same correction naming `pool-a` digests to its
-/// own value, derived independently by `amend_digest.py` (6fac14e479, "pooled adjust"), never captured from a
-/// run. The pool is on the record the chain seals.
 #[test]
 fn a_pooled_adjustment_digests_its_pool_and_an_unscoped_one_digests_as_sealed() {
     let pooled = |pool: Option<&str>| {
@@ -444,8 +392,6 @@ fn the_two_class_names_are_the_two_the_journal_knows() {
 
 #[test]
 fn an_amendment_names_the_audit_record_it_amends() {
-    // The one place the two chains touch: an amendment carries the digest of the entry it concerns,
-    // so a reader can go from one to the other without the two chains sharing a buffer.
     use busbar_contract::caps::{Origin, OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::record::{
         Audit, AuditChain, AuditInputs, Controls, FinishClass, OutcomeFacts, Usage, What,
@@ -510,9 +456,6 @@ fn an_amendment_names_the_audit_record_it_amends() {
     }
 }
 
-/// A JOURNAL REBUILT FROM ITS WHOLE RUN is the journal that sealed it: the same head, and the next
-/// amendment links on where the run ended. A run with its head cut
-/// off is refused rather than rebuilt.
 #[test]
 fn a_journal_rebuilt_from_its_run_reads_and_continues_as_the_one_that_sealed_it() {
     let mut sealed = AmendJournal::new();
@@ -532,7 +475,6 @@ fn a_journal_rebuilt_from_its_run_reads_and_continues_as_the_one_that_sealed_it(
     );
 }
 
-/// The two frozen subject fields read back as the subject they were written from, for every kind.
 #[test]
 fn a_subject_reads_back_from_the_fields_it_is_digested_by() {
     use busbar_kernel_audit::amend::{subject_fields, subject_from_fields};

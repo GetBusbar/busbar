@@ -2,29 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE `test-seal` FEATURE MAY NEVER REACH A RELEASE BUILD.
-//!
-//! #65 sealed [`busbar_contract::plugin::KernelSeal`]: the supertrait that closes it lives in a
-//! `pub(crate)` module, so no crate outside this one can implement it. That is a compiler
-//! guarantee and the `compile_fail` fixture on the trait proves it.
-//!
-//! The one deliberate exception is `plugin::TestKernelSeal`, gated on the `test-seal` feature,
-//! which exists because a PLANE crate may not name [`busbar_contract::caps`] (ARCHITECTURE section
-//! 1.2, asserted from the inside by each plane's own `purity` test) and therefore cannot mint a
-//! real capability token for its own fixtures. `qa/construction.toml`'s `kernel-seal-impls` rule
-//! named both the gap and the remedy: *"their test seals cannot move onto a token until the
-//! contract offers a seal a plane is allowed to name"*.
-//!
-//! An exception that anything could switch on would put the forgery straight back. Cargo features
-//! are ADDITIVE and unify across a build graph, so a single non-dev edge declaring
-//! `features = ["test-seal"]` would compile `TestKernelSeal` into the release artifact and hand
-//! every crate in the workspace a seal it never had to earn. This test is what stops that being a
-//! thing anyone can do quietly: the feature may be named ONLY under `[dev-dependencies]` (or
-//! `[dev-dependencies.busbar-contract]`), never under `[dependencies]`, `[build-dependencies]` or
-//! a `[target.*]` table of either.
-//!
-//! This is a source scan, and unlike the scan it replaces it is guarding an exception rather than
-//! standing in for a type-system rule that does not exist: the trait is genuinely sealed either
-//! way, and what is checked here is only whether the ONE escape hatch stayed dev-only.
 
 use std::path::{Path, PathBuf};
 
@@ -70,7 +47,7 @@ fn section_of(lines: &[&str], idx: usize) -> String {
 }
 
 /// A section that is dev-only: `[dev-dependencies]`, `[dev-dependencies.x]`, and the
-/// `[target.'cfg(..)'.dev-dependencies]` forms.
+
 fn is_dev_section(section: &str) -> bool {
     let inner = section.trim_start_matches('[').trim_end_matches(']');
     inner
@@ -79,10 +56,7 @@ fn is_dev_section(section: &str) -> bool {
 }
 
 /// Every line of one manifest's `text` naming `feature` outside a dev-only table, and how many dev
-/// edges in it name it. `own` is this crate's own manifest: there the one `<feature> = [...]` line
-/// under `[features]` is the feature's DEFINITION, not an edge, and is the only line of that table
-/// excused; any other `[features]` line naming it (`default = ["<feature>"]`, another feature
-/// switching it on) turns it on in every build and is an offender.
+
 fn offenders_in(feature: &str, text: &str, own: bool, label: &str) -> (Vec<String>, usize) {
     let mut offenders = Vec::new();
     let mut dev_edges = 0usize;
@@ -171,16 +145,16 @@ fn the_test_seal_feature_is_named_only_on_dev_dependency_edges() {
 }
 
 /// RED PLANTS for the dev-edge scan the rules above run: each manifest below turns `test-seal` on
-/// outside a dev edge and is refused; the dev edge and the feature's own empty definition pass.
+
 #[test]
 fn the_dev_edge_scan_refuses_every_non_dev_edge() {
     const F: &str = "test-seal";
     let pin = r#"busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "0", features = ["test-seal"] }"#;
-    // GREEN: a plugin's dev edge.
+
     let (o, d) = offenders_in(F, &format!("[dev-dependencies]\n{pin}\n"), false, "plant");
     assert!(o.is_empty(), "{o:?}");
     assert_eq!(d, 1);
-    // GREEN: the dotted dev table and a target dev table.
+
     let (o, _) = offenders_in(
         F,
         "[dev-dependencies.busbar-contract]\nfeatures = [\"test-seal\"]\n",
@@ -195,10 +169,10 @@ fn the_dev_edge_scan_refuses_every_non_dev_edge() {
         "plant",
     );
     assert!(o.is_empty(), "{o:?}");
-    // GREEN: this crate's own empty definition.
+
     let (o, _) = offenders_in(F, "[features]\ntest-seal = []\n", true, "own");
     assert!(o.is_empty(), "{o:?}");
-    // RED: every non-dev way to turn it on.
+
     for planted in [
         format!("[dependencies]\n{pin}\n"),
         "[dependencies.busbar-contract]\nfeatures = [\"test-seal\"]\n".to_string(),
@@ -211,7 +185,7 @@ fn the_dev_edge_scan_refuses_every_non_dev_edge() {
         let (o, _) = offenders_in(F, &planted, false, "plant");
         assert_eq!(o.len(), 1, "not refused:\n{planted}");
     }
-    // RED: this crate's own `default`, and its definition made to switch itself on elsewhere.
+
     for planted in [
         "[features]\ndefault = [\"test-seal\"]\ntest-seal = []\n",
         "[features]\ntest-seal = []\ntest-seal = [\"test-seal\"]\n",

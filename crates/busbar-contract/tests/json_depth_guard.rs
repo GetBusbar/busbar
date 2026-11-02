@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE JSON DEPTH GUARD (`spans::exceeds_max_depth`) answers exactly as the copies it replaced.
-//!
-//! The guard is a security floor that used to live twice, in the host's JSON seam
-//! (`busbar-kernel/src/json.rs`) and in the LLM plane's (`codec/json.rs`), held together by a drift
-//! test over `testing/plane-copies/json-depth.json`. Both copies were the same scan; it is frozen
-//! below as [`kernel_copy`] and the one guard must agree with it on every input here: the whole
-//! shared fixture, the edge cases the floor exists for, and every short string over the bytes the
-//! scan reads.
 
 use busbar_contract::spans::{exceeds_max_depth, MAX_JSON_DEPTH};
 
@@ -92,8 +85,7 @@ fn the_floor_is_128_and_the_shared_fixture_holds_it() {
     for case in cases {
         let body = fixture_body(case);
         let refused = agree(body.as_bytes(), MAX_JSON_DEPTH);
-        // The fixture records the seam's whole verdict (the parse included), so an accepted body
-        // must pass the guard, and a nested shape past the floor must be refused by the guard alone.
+
         if case["accepted"].as_bool().expect("verdict") {
             assert!(!refused, "an accepted body tripped the guard: {case}");
         }
@@ -158,14 +150,14 @@ fn the_edge_cases_the_floor_exists_for() {
             "{body:.80}"
         );
     }
-    // The bound is the caller's: zero refuses any container.
+
     assert!(!agree(b"1", 0));
     assert!(agree(b"[]", 0));
     assert!(!agree(br#""[""#, 0));
 }
 
 /// Every string up to six bytes over the bytes the scan reads (plus one it does not), at every
-/// bound that can matter at that length: the two must agree on all of them.
+
 #[test]
 fn every_short_input_gets_the_kernel_verdict() {
     const ALPHABET: &[u8] = b"[{]}\"\\a";

@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The model-serving config SHAPE, as neutral vocabulary.
-//!
-//! [`ModelCfg`] is the per-entry shape a model-serving plane's `models:` map deserializes into —
-//! `pools.models.<name>` (the model-inference plane) and `decisions.models.<name>` (the jev
-//! decisions plane, DECISIONS #47) both reuse this ONE type rather than each inventing a
-//! look-alike. Before this module existed it lived kernel-side
-//! (`busbar_kernel::config::providers::ModelCfg`), which meant any plane naming it also named the
-//! kernel — a violation of DECISIONS #40's dep-wall (a plugin crate's entire workspace dependency
-//! closure is `busbar-contract` and nothing else). It moved here verbatim (DECISIONS #38:
-//! `busbar-contract` is the one contract/ABI crate holding the neutral vocab every side of the seam
-//! shares) — same field names, same order, same types, same serde attributes, so no config key and
-//! no wire byte changed. `busbar-kernel` re-exports it at its historical
-//! `config::providers::ModelCfg` / `config::ModelCfg` paths so every existing kernel-side caller
-//! keeps compiling unchanged.
 
 use serde::Deserialize;
 
@@ -104,8 +91,7 @@ pub fn neg1() -> i64 {
 /// `Passthrough` forwards the CALLER's credential upstream. A proto writer uses THIS to resolve an
 /// otherwise-ambiguous credential scheme to the single native header the caller's real client
 /// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
-// `Serialize` is additive and is what lets a config section carrying this field be projected back
-// to a raw definition document.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamCreds {

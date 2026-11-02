@@ -1,23 +1,9 @@
 //! The overlap predicate is reflexive, symmetric and total over the cross-product of forms.
-//!
-//! The claims section of the design puts three demands on this predicate, and all three are here.
-//! Total means every pair of forms has an answer — the walk below visits all one hundred and
-//! sixty-nine ordered pairs and every one of them returns. Reflexive means a claim overlaps
-//! itself, which is what makes "two identical claims" a boot refusal rather than a race. Symmetric
-//! means the answer does not depend on which claim the boot check happens to visit first.
-//!
-//! There is also a fixture per form pair, because "it returned" is a weaker claim than "it
-//! returned the right answer", and a conservative predicate that answered *true* everywhere would
-//! pass the first three properties while refusing every configuration.
 
 use busbar_contract::grammar::{PathSeg, Selector, SelectorFamily, SelectorForm};
 
 /// Every selector form, for walking the cross-product.
-///
-/// The totality table lives with the proof that walks it rather than on the crate's plugin-visible
-/// surface: nothing in the kernel, the units or the planes reads the list — they match on a form —
-/// so it is evidence about the enum, not a thing the enum offers. `is_listed` below is the
-/// exhaustive match that keeps the two in step.
+
 const ALL_FORMS: &[SelectorForm] = &[
     SelectorForm::ExactPath,
     SelectorForm::PrefixOneLevel,
@@ -35,7 +21,7 @@ const ALL_FORMS: &[SelectorForm] = &[
 ];
 
 /// The table's own totality check: an exhaustive match, so a form added to the enum stops this
-/// proof compiling until it is given a row in the table above and a representative below.
+
 fn is_listed(form: SelectorForm) -> bool {
     let listed = match form {
         SelectorForm::ExactPath
@@ -92,7 +78,6 @@ fn overlaps_is_total_over_the_cross_product() {
     let mut pairs = 0usize;
     for a in &selectors {
         for b in &selectors {
-            // Calling it at all is the assertion: a predicate with a hole would not return here.
             let _ = a.overlaps(b);
             pairs += 1;
         }
@@ -142,27 +127,21 @@ fn different_families_always_overlap() {
 /// Fixture per pair within the path family.
 #[test]
 fn the_path_family_is_decided_rather_than_assumed() {
-    // Two exact paths.
     assert!(Selector::ExactPath("/a").overlaps(&Selector::ExactPath("/a")));
     assert!(!Selector::ExactPath("/a").overlaps(&Selector::ExactPath("/b")));
 
-    // An exact path under a one-level prefix, and one too deep for it.
     assert!(Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v1/models")));
     assert!(!Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v1/models/x")));
     assert!(!Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v2/models")));
 
-    // A sibling whose name merely STARTS with the prefix is not under it: one level down begins
-    // at a segment boundary, not at a byte offset.
     assert!(!Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v1models")));
     assert!(!Selector::PrefixOneLevel("/api").overlaps(&Selector::ExactPath("/apikeys")));
     assert!(!Selector::PrefixOneLevel("/v1").overlaps(&Selector::ExactPath("/v1")));
 
-    // A pattern against a path it matches and one it does not.
     let pat = Selector::PathPattern(&[PathSeg::Var, PathSeg::Lit("v1"), PathSeg::Tail]);
     assert!(pat.overlaps(&Selector::ExactPath("/openai/v1/chat/completions")));
     assert!(!pat.overlaps(&Selector::ExactPath("/openai/v2/chat/completions")));
 
-    // Two patterns that differ in a literal segment cannot both match.
     let a = Selector::PathPattern(&[
         PathSeg::Lit("model"),
         PathSeg::Var,
@@ -175,11 +154,9 @@ fn the_path_family_is_decided_rather_than_assumed() {
     ]);
     assert!(!a.overlaps(&b));
 
-    // A variable segment overlaps a literal in the same position.
     let c = Selector::PathPattern(&[PathSeg::Var, PathSeg::Var, PathSeg::Lit("converse")]);
     assert!(a.overlaps(&c));
 
-    // Suffix and substring against exact paths.
     assert!(Selector::PathSuffix("/converse").overlaps(&Selector::ExactPath("/model/x/converse")));
     assert!(!Selector::PathSuffix("/converse").overlaps(&Selector::ExactPath("/model/x/invoke")));
     assert!(Selector::PathContains(":generateContent")
@@ -189,31 +166,27 @@ fn the_path_family_is_decided_rather_than_assumed() {
 }
 
 /// A one-level prefix read as the pattern it is: the prefix's literals, then one more segment.
-///
-/// The two forms used to fall through to the catch-all and answer "they might", which made a prefix
-/// on one root and a pattern on another read as a contest. They are comparable segment by segment
-/// exactly as two patterns are, because a one-level prefix IS a pattern.
+
 #[test]
 fn a_one_level_prefix_and_a_pattern_are_compared_segment_by_segment() {
     let prefix = Selector::PrefixOneLevel("/mesh");
 
-    // Same root, one level down: the prefix's own shape.
     assert!(prefix.overlaps(&Selector::PathPattern(&[
         PathSeg::Lit("mesh"),
         PathSeg::Var
     ])));
-    // A different root cannot be reached from this prefix.
+
     assert!(!prefix.overlaps(&Selector::PathPattern(&[
         PathSeg::Lit("grid"),
         PathSeg::Var
     ])));
-    // Right root, wrong depth: a prefix takes exactly one segment, never two.
+
     assert!(!prefix.overlaps(&Selector::PathPattern(&[
         PathSeg::Lit("mesh"),
         PathSeg::Var,
         PathSeg::Var,
     ])));
-    // A tail swallows whatever is left, so it reaches one level down as well.
+
     assert!(prefix.overlaps(&Selector::PathPattern(&[
         PathSeg::Lit("mesh"),
         PathSeg::Tail
@@ -231,26 +204,19 @@ fn two_suffixes_collide_only_when_one_ends_the_other() {
 }
 
 /// A suffix against a pattern, decided rather than assumed.
-///
-/// A suffix's slashes are the path's own slashes, so a suffix pins the pattern's LAST segments: the
-/// pieces between its slashes are whole segments, counted from the end. A pattern whose segment in
-/// one of those positions is a literal that does not match cannot produce a path ending that way,
-/// however the rest of it is filled in.
+
 #[test]
 fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
     let mesh_tasks =
         Selector::PathPattern(&[PathSeg::Lit("mesh"), PathSeg::Lit("tasks"), PathSeg::Var]);
-    // `/mesh/tasks/<id>` has three segments and the last two are `tasks` and one variable: no path
-    // it matches can end `/v1/embeddings`, because that would need the second-from-last segment to
-    // be `v1`.
+
     assert!(!Selector::PathSuffix("/v1/embeddings").overlaps(&mesh_tasks));
     assert!(!mesh_tasks.overlaps(&Selector::PathSuffix("/v1/audio/speech")));
-    // The variable IS the last segment, so a suffix inside one segment still reaches it.
+
     assert!(Selector::PathSuffix("-draft").overlaps(&mesh_tasks));
-    // And the pinned literals, when they do line up.
+
     assert!(Selector::PathSuffix("/tasks/live").overlaps(&mesh_tasks));
 
-    // A tail is open-ended: whatever the suffix asks for, the tail can supply.
     let admin = Selector::PathPattern(&[
         PathSeg::Lit("api"),
         PathSeg::Lit("v1"),
@@ -259,10 +225,9 @@ fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
     ]);
     assert!(Selector::PathSuffix("/v1/audio/speech").overlaps(&admin));
 
-    // A pattern shorter than the suffix's own segment count cannot end with it.
     assert!(!Selector::PathSuffix("/v1/audio/speech")
         .overlaps(&Selector::PathPattern(&[PathSeg::Var, PathSeg::Var])));
-    // And the whole-path alignment: the suffix may start at the leading slash itself.
+
     assert!(
         Selector::PathSuffix("/v1/audio/speech").overlaps(&Selector::PathPattern(&[
             PathSeg::Lit("v1"),
@@ -273,29 +238,23 @@ fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
 }
 
 /// A substring against a pattern, decided rather than assumed.
-///
-/// A substring carrying a slash asks for consecutive whole segments, so it can be placed against a
-/// pattern the same way a suffix can — anywhere rather than at the end. A substring with no slash
-/// at all lands inside one segment, and any variable segment can be that one.
+
 #[test]
 fn a_substring_against_a_pattern_asks_for_consecutive_segments() {
     let mesh_agents =
         Selector::PathPattern(&[PathSeg::Lit("mesh"), PathSeg::Lit("agents"), PathSeg::Var]);
 
-    // `/v1/audio/` needs the whole segments `v1` and `audio` next to each other, with something
-    // after them. Nothing this pattern matches has that shape.
     assert!(!Selector::PathContains("/v1/audio/").overlaps(&mesh_agents));
     assert!(!Selector::PathContains("/v1/messages").overlaps(&mesh_agents));
-    // With no slash it lives inside a segment, and the variable is one.
+
     assert!(Selector::PathContains(":predict").overlaps(&mesh_agents));
-    // One leading slash asks only that a segment START with the rest, and the variable can.
+
     assert!(Selector::PathContains("/converse").overlaps(&mesh_agents));
-    // A literal segment that starts with it works too.
+
     assert!(Selector::PathContains("/agen").overlaps(&mesh_agents));
-    // And one that does not, does not.
+
     assert!(!Selector::PathContains("/mesh/agents/x/y").overlaps(&mesh_agents));
 
-    // A tail answers anything.
     assert!(
         Selector::PathContains("/v1/audio/").overlaps(&Selector::PathPattern(&[
             PathSeg::Lit("api"),
@@ -307,20 +266,16 @@ fn a_substring_against_a_pattern_asks_for_consecutive_segments() {
 /// Fixture per pair within the header family.
 #[test]
 fn the_header_family_is_decided_rather_than_assumed() {
-    // Different header names never collide.
     assert!(!Selector::HeaderPresent("x-api-key")
         .overlaps(&Selector::HeaderPresent("anthropic-version")));
 
-    // Same name, present against anything: overlaps.
     assert!(
         Selector::HeaderPresent("x-api-key").overlaps(&Selector::HeaderExact("x-api-key", "abc"))
     );
 
-    // Same name, two exact values.
     assert!(!Selector::HeaderExact("x-api-key", "abc")
         .overlaps(&Selector::HeaderExact("x-api-key", "def")));
 
-    // Same name, prefix against a value that starts with it, and one that does not.
     assert!(
         Selector::HeaderPrefix("authorization", "AWS4-").overlaps(&Selector::HeaderExact(
             "authorization",
@@ -330,7 +285,6 @@ fn the_header_family_is_decided_rather_than_assumed() {
     assert!(!Selector::HeaderPrefix("authorization", "AWS4-")
         .overlaps(&Selector::HeaderExact("authorization", "Token xyz")));
 
-    // Header names are compared without regard to case, as the wire treats them.
     assert!(
         Selector::HeaderPresent("X-Api-Key").overlaps(&Selector::HeaderExact("x-api-key", "abc"))
     );
@@ -342,7 +296,7 @@ fn the_remaining_families_are_decided_rather_than_assumed() {
     assert!(Selector::Sni("api.example").overlaps(&Selector::Sni("API.EXAMPLE")));
     assert!(!Selector::Sni("api.example").overlaps(&Selector::Sni("other.example")));
     assert!(!Selector::Alpn("h2").overlaps(&Selector::Alpn("http/1.1")));
-    // A name and a protocol are independent facts of one handshake.
+
     assert!(Selector::Sni("api.example").overlaps(&Selector::Alpn("h2")));
     assert!(!Selector::StreamName("control").overlaps(&Selector::StreamName("media")));
     assert!(!Selector::Port(443).overlaps(&Selector::Port(8443)));
@@ -350,11 +304,7 @@ fn the_remaining_families_are_decided_rather_than_assumed() {
 }
 
 /// One table writes both the ladder and the claim list, so the two cannot disagree.
-///
-/// A claim carries exactly one selector, which is right, and a plane whose protocol detection is a
-/// fourteen-rung ladder therefore has two dozen claims. Transcribing them twice by hand -- once as
-/// rungs and once as the narrower declaration -- is where a rung gets added to one list and
-/// forgotten in the other. Here the two are the same table read twice by the compiler.
+
 #[test]
 fn one_ladder_table_writes_both_lists() {
     #[derive(Debug)]
@@ -396,13 +346,11 @@ fn one_ladder_table_writes_both_lists() {
         assert_eq!(*claim, entry.claim, "the two lists drifted");
     }
 
-    // Order is the table's order, and the rung numbers ascend.
     let rungs: Vec<u16> = FIXTURE_LADDER.iter().map(|r| r.rung).collect();
     assert_eq!(rungs, vec![1, 2, 2, 3]);
     assert_eq!(FIXTURE_LADDER[0].dialect, "alpha");
     assert_eq!(FIXTURE_LADDER[1].dialect, "beta");
 
-    // The builder is the caller's, so scheme and alternatives are declared once, not per row.
     for claim in FIXTURE_CLAIMS {
         assert_eq!(claim.scheme, Some("inbound"));
         assert_eq!(claim.scheme_alternatives, &["token"]);
@@ -432,13 +380,7 @@ fn a_claim_with_no_scheme_is_anonymous() {
 }
 
 /// The family a form belongs to is fixed, and this is WHICH one.
-///
-/// Asserting only that the answer is a family named somewhere in the enum is an assertion no answer
-/// could fail, and the family is not a label: `different_families_always_overlap` above reads it,
-/// so a form that moved into another family would quietly stop being asked the question its own
-/// family answers. The expectation is a decision per form, written out, with no catch-all — so a
-/// form added to the enum stops this file compiling until somebody says which part of a request it
-/// reads.
+
 #[test]
 fn every_form_has_one_family() {
     for form in ALL_FORMS {
@@ -466,17 +408,7 @@ fn every_form_has_one_family() {
 }
 
 /// The property the whole tightening rests on: DISJOINT means no arrival matches both.
-///
-/// The overlap rule is allowed to be conservative — to answer "they might" where it cannot prove
-/// otherwise — and every tightening above narrows that. What must never happen is the other
-/// direction: a pair reported disjoint that one arriving request satisfies, because that is a route
-/// decided by declaration accident with the boot check saying nothing about it. So the corpus below
-/// is walked against every pair of path-family selectors, and a disjoint answer is checked against
-/// every path in it.
-///
-/// The corpus is generated rather than listed: every path the fixtures' own literals can spell, to
-/// the depth the fixtures reach, plus the shapes the segment reasoning is delicate about — a
-/// trailing slash and a doubled one.
+
 #[test]
 fn a_disjoint_answer_is_never_contradicted_by_an_arrival() {
     let selectors = path_fixtures();
@@ -497,7 +429,7 @@ fn a_disjoint_answer_is_never_contradicted_by_an_arrival() {
 }
 
 /// Every path-family form, in the shapes the declared claim set actually uses (plane roots
-/// spelled neutrally).
+
 fn path_fixtures() -> Vec<Selector> {
     const MESH_TASKS: &[PathSeg] = &[PathSeg::Lit("mesh"), PathSeg::Lit("tasks"), PathSeg::Var];
     const MESH_PUSH: &[PathSeg] = &[
@@ -571,8 +503,7 @@ fn arrival_corpus() -> Vec<String> {
     ];
     let mut corpus: Vec<String> = vec![String::from("/")];
     let mut level: Vec<String> = vec![String::new()];
-    // Four segments deep is one past the deepest fixture, which is what makes "the pattern runs out
-    // before the suffix does" a case the corpus actually contains.
+
     for depth in 0..4 {
         let mut next = Vec::new();
         for stem in &level {
@@ -580,8 +511,7 @@ fn arrival_corpus() -> Vec<String> {
                 next.push(format!("{stem}/{segment}"));
             }
         }
-        // The two shapes the segment reasoning is delicate about, at the deepest level only: the
-        // cross-product is already large, and the awkward shapes are about slashes, not depth.
+
         if depth == 3 {
             let awkward: Vec<String> = next
                 .iter()
@@ -596,10 +526,7 @@ fn arrival_corpus() -> Vec<String> {
 }
 
 /// Whether one path-family selector matches a concrete path, as the transports evaluate it.
-///
-/// The pattern arm is the contract's own rule, read through the exact-path pair of the overlap
-/// predicate rather than spelled a second time here: an evaluator that disagreed with the boot's
-/// own reading would be testing something other than the boot.
+
 fn matches_path(selector: &Selector, path: &str) -> bool {
     match selector {
         Selector::ExactPath(p) => *p == path,
@@ -612,9 +539,7 @@ fn matches_path(selector: &Selector, path: &str) -> bool {
 }
 
 /// A corpus path as the `'static` string the exact-path form takes.
-///
-/// The corpus is built once per test process and every path in it is compared against every
-/// selector, so leaking it is the lifetime the fixture already has.
+
 fn leak(path: &str) -> &'static str {
     Box::leak(path.to_owned().into_boxed_str())
 }

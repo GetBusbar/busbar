@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ORACLE'S STORE BACKENDS NEVER TAKE A PINNED PORT. A wire-exact capture cell pins its mock's
-//! port (cells.json `capture.mock.port`, 24733 for wire.h1|stream|anthropic): the 1.5.5 golden
-//! records that host port, so the mock must get exactly it. The store harness
-//! (testing/shadow-oracle/scripts/oracle-box-store-services.sh) is handed random ports by the oracle
-//! check; one that lands on a pinned port is refused and replaced by a free port no cell pins, before
-//! any container starts. RED before: valkey started on :24733 and the wire cell failed ("capture
-//! mock port 24733 is not free").
-
 use std::path::Path;
 use std::process::Command;
 
@@ -16,7 +8,6 @@ fn root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The store harness's `env` (no docker): its export lines and what it said, for these ports.
 fn env_for(pg: u16, my: u16, vk: u16) -> (String, String) {
     let out = Command::new("bash")
         .arg(root().join("testing/shadow-oracle/scripts/oracle-box-store-services.sh"))
@@ -34,7 +25,6 @@ fn env_for(pg: u16, my: u16, vk: u16) -> (String, String) {
     )
 }
 
-/// Every port a capture cell pins.
 fn pinned() -> Vec<u16> {
     let cells: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(root().join("testing/shadow-oracle/cells.json")).expect("cells"),

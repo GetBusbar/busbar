@@ -59,10 +59,7 @@ fn test_reject_stops_the_chain() {
 }
 
 /// "First identify wins" is only proven by TWO modules that would both identify: if the second
-/// module never returns `Identify` at all, an assertion that the FIRST one's principal came back
-/// says nothing about order — it would pass even if the chain ran every module and returned the
-/// last identification, or picked one at random. Both modules here identify a different principal,
-/// so only walk order decides which one the chain reports.
+
 #[test]
 fn test_first_identify_wins_among_two_modules_that_would_both_identify() {
     let first = Canned::new(
@@ -119,7 +116,6 @@ fn test_empty_chain_is_open_front_door() {
 
 #[test]
 fn test_keys_in_chain_sets_flag_not_module() {
-    // The keys arm keeps the door SHUT even though the module list is empty.
     let c = chain(Vec::new(), true);
     assert!(
         !c.is_open(),
@@ -163,7 +159,6 @@ fn test_keys_arm_runs_after_every_module_and_identifies() {
 
 #[test]
 fn test_audience_bound_token_is_rejected_on_the_data_plane() {
-    // The verifier admits only a token minted for this audience; with no audience required, none is expected.
     let verifier = OneKey {
         token: "vk-token",
         aud: Some("https://resource.example/"),

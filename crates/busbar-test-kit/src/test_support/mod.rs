@@ -140,11 +140,10 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC};
 use busbar_contract::abi::sdk::door::{KindOps, MacroDoor};
 
 mod sealed {
-    /// Only this module implements it: the reviewed kind tails.
+
     pub trait SealedTail {}
-    /// Only this module implements it: the plane tail's counted row lists.
+
     pub trait PlaneRow: Sized + 'static {
-        /// The list in `tail`: its pointer, its count and its field name.
         fn of(tail: &busbar_contract::abi::plane::PlaneTail) -> (*const Self, usize, &'static str);
     }
 }
@@ -157,11 +156,7 @@ pub mod test_in;
 
 pub use busbar_contract::abi::sdk::test_support::{zeroed, AllZero};
 
-// ── THE STATEMENT, READ ─────────────────────────────────────────────────────────────────────────
-
-/// A kind's Statement tail [`DoorView::kind_tail`] reads. Sealed: the six kind tails below.
 pub trait KindTail: sealed::SealedTail + Copy + 'static {
-    /// The kind whose Statement carries this tail.
     const KIND: KindCode;
 }
 
@@ -175,8 +170,6 @@ macro_rules! kind_tail {
     )+};
 }
 
-// Each is the `#[repr(C)]` tail its kind's `abi/<kind>/` module states, leading with
-// `head: KindTailHead`; secret states none.
 kind_tail!(
     Store => busbar_contract::abi::store::StoreTail,
     Auth => busbar_contract::abi::auth::AuthTail,
@@ -244,10 +237,6 @@ pub struct ViewOp {
     takes: Option<core::any::TypeId>,
 }
 
-/// THE `in` OF ONE SLOT, read off the kinds' own slot table (the `KindSlot` impls each kind's
-/// `slot_structs!` states, status row 194): `Probe<C, N>` answers `C`'s slot-`N` `in` where `C`
-/// states one (`Has`), and nothing where it does not (`Lacks`, reached only through one more
-/// autoderef). Each table is named concretely below, so the choice is made per table and slot.
 struct Probe<C, const N: u32>(core::marker::PhantomData<C>);
 
 trait Has {
@@ -286,8 +275,6 @@ macro_rules! slot_in_of {
     };
 }
 
-/// The `in` of slot `index` in table `C`, as `C`'s own slot table states it. (`&&Probe` is
-/// the probe: the borrow is how the slot table is consulted.)
 #[allow(clippy::needless_borrow)]
 fn table_in<C: 'static>(index: u32) -> Option<core::any::TypeId> {
     use core::any::TypeId;
@@ -314,8 +301,6 @@ fn table_in<C: 'static>(index: u32) -> Option<core::any::TypeId> {
     None
 }
 
-// THE PROBE COVERS EVERY SLOT: no kind's table holds more slots than `slot_in_of!` reads (0 to 95).
-// A kind that outgrows it fails to compile here, never skips its check.
 const _: () = {
     use busbar_contract::abi::sdk::door::slot_count;
     assert!(slot_count::<busbar_contract::abi::store::Ops>() <= 96);
@@ -327,8 +312,6 @@ const _: () = {
     assert!(slot_count::<busbar_contract::abi::transport::Ops>() <= 96);
 };
 
-/// The `in` type of slot `index` of a `T` door: its lifecycle's for a lifecycle slot, its kind's
-/// own otherwise; `None` for a table no kind states (a host's own test double).
 pub(crate) fn slot_in_type<T: KindOps>(index: u32) -> Option<core::any::TypeId> {
     if index < busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS {
         table_in::<T::Lifecycle>(index)
@@ -338,23 +321,15 @@ pub(crate) fn slot_in_type<T: KindOps>(index: u32) -> Option<core::any::TypeId> 
 }
 
 impl ViewOp {
-    /// The slot's index in its kind's table (the mechanism's SLOT LAYOUT).
     #[must_use]
     pub fn index(&self) -> u32 {
         self.index
     }
 
-    /// The slot and the door it is a slot of, for [`reply`] alone.
     pub(crate) fn parts(self) -> (Op, &'static Door, u32) {
         (self.op, self.door, self.index)
     }
 
-    /// The slot is entered over its own `in` type, `I`, and no other (status row 194): an `in` of
-    /// another slot would hand it fields read as pointers it never was lent.
-    ///
-    /// # Panics
-    ///
-    /// `I` is not the slot's `in`.
     pub(crate) fn check_in<I: 'static>(self) {
         if let Some(takes) = self.takes {
             assert!(
@@ -367,17 +342,9 @@ impl ViewOp {
     }
 }
 
-// THE ONE WAY IN, pinned at compile time on every build of this module (this crate's own tests
-// included, with or without the feature): `DoorView::of` takes a `MacroDoor` and nothing else. A
-// change of its parameter to any door function breaks this line before any test runs.
 const _: fn(MacroDoor) -> DoorView = DoorView::of;
 
 impl DoorView {
-    /// The door the macro built.
-    ///
-    /// # Panics
-    ///
-    /// A door without [`DOOR_MAGIC`], or a door with no Statement.
     #[must_use]
     pub fn of(door: MacroDoor) -> Self {
         let door: &'static Door = (door.door_fn())();
@@ -394,28 +361,16 @@ impl DoorView {
         Self { door, statement }
     }
 
-    /// The door itself.
     #[must_use]
     pub fn door(&self) -> &'static Door {
         self.door
     }
 
-    /// The Statement itself (its scalar fields; read its lists through the methods below).
     #[must_use]
     pub fn statement(&self) -> &'static Statement {
         self.statement
     }
 
-    /// Validate the needs this actual exported Statement declares, including their nested
-    /// response-header lists, using the host's shared need validator.
-    ///
-    /// # Errors
-    ///
-    /// The rule a declared need breaks, unchanged from the shared validator.
-    ///
-    /// # Panics
-    ///
-    /// The Statement's needs list breaks the door contract (NULL with a count or misaligned).
     pub fn check_needs(&self) -> Result<(), busbar_contract::abi::mechanism::check::Fault> {
         let needs = list(
             self.statement.needs,
@@ -428,27 +383,16 @@ impl DoorView {
         unsafe { busbar_contract::abi::mechanism::check::check_needs(needs) }
     }
 
-    /// The kind the door states, or `None` for a number no kind has.
     #[must_use]
     pub fn kind(&self) -> Option<KindCode> {
         KindCode::from_raw(self.door.kind())
     }
 
-    /// The plugin's name.
-    ///
-    /// # Panics
-    ///
-    /// The name is not UTF-8, or is NULL with a length.
     #[must_use]
     pub fn name(&self) -> &'static str {
         text(self.statement.name, "statement.name")
     }
 
-    /// The URL schemes the Statement claims (a transport's), in stated order.
-    ///
-    /// # Panics
-    ///
-    /// The list or a name breaks the door contract (NULL with a count, misaligned, not UTF-8).
     #[must_use]
     pub fn claims(&self) -> Vec<&'static str> {
         let st = self.statement;
@@ -458,11 +402,6 @@ impl DoorView {
             .collect()
     }
 
-    /// The structured answers the Statement declares (`answers`), in stated order.
-    ///
-    /// # Panics
-    ///
-    /// As [`DoorView::claims`].
     #[must_use]
     pub fn declares(&self) -> Vec<&'static str> {
         let st = self.statement;
@@ -472,12 +411,6 @@ impl DoorView {
             .collect()
     }
 
-    /// The Statement's kind tail, as the kind's `T`.
-    ///
-    /// # Panics
-    ///
-    /// The door is not of `T`'s kind, states no tail, or states one misaligned or shorter than `T`
-    /// (a plugin built against an older contract than this test).
     #[must_use]
     pub fn kind_tail<T: KindTail>(&self) -> &'static T {
         assert_eq!(
@@ -503,14 +436,6 @@ impl DoorView {
         unsafe { &*tail }
     }
 
-    /// ONE SLOT of the door's table, as [`reply::call_in`] enters it: `pick` names the slot
-    /// (`|t| &t.head.open`, `|t| &t.resolve`), and the handle remembers which door and which slot
-    /// it is. `None` when the door leaves the slot absent. A [`ViewOp`] is made here and nowhere
-    /// else (status row 159).
-    ///
-    /// # Panics
-    ///
-    /// As [`DoorView::ops`], or `pick` answers a reference that is not a slot of the table.
     #[must_use]
     pub fn op<T: KindOps>(
         &self,
@@ -536,11 +461,6 @@ impl DoorView {
         })
     }
 
-    /// The door's ops table, as the kind's `T`.
-    ///
-    /// # Panics
-    ///
-    /// The door is not of `T`'s kind, or its table is NULL, misaligned or shorter than `T`.
     #[must_use]
     pub fn ops<T: KindOps>(&self) -> &'static T {
         assert_eq!(
@@ -566,12 +486,6 @@ impl DoorView {
         unsafe { &*table }
     }
 
-    /// A transport's claim rows, row `i` describing [`DoorView::claims`]`[i]`.
-    ///
-    /// # Panics
-    ///
-    /// As [`DoorView::kind_tail`] for a transport tail, or a row's list or text breaks the door
-    /// contract.
     #[must_use]
     pub fn claim_rows(&self) -> Vec<ClaimRow> {
         let tail = self.kind_tail::<busbar_contract::abi::transport::TransportTail>();
@@ -596,8 +510,6 @@ impl DoorView {
             .collect()
     }
 }
-
-// ── A PLANE'S TAIL, READ ────────────────────────────────────────────────────────────────────────
 
 /// One text the plane tail states, for [`DoorView::plane_text`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -639,8 +551,6 @@ pub enum PlaneWords {
     MetricLanes,
 }
 
-/// A row type of one of the plane tail's counted lists, for [`DoorView::plane_rows`]. Sealed: the
-/// eight row lists `PlaneTail` states.
 pub trait PlaneRow: sealed::PlaneRow + Copy {}
 
 /// `plane_row!(Row => list, list_len; ...)`.
@@ -655,7 +565,6 @@ macro_rules! plane_row {
     )+};
 }
 
-// Each is the `#[repr(C)]` row type of the `PlaneTail` list it names, counted by the field after it.
 plane_row!(
     DialectAuth => dialect_auth, dialect_auth_len;
     OpClass => op_classes, op_classes_len;
@@ -677,11 +586,6 @@ pub struct BillableClassRow {
 }
 
 impl DoorView {
-    /// One text the plane tail states (empty = absent).
-    ///
-    /// # Panics
-    ///
-    /// As [`DoorView::kind_tail`] for a plane tail, or the text breaks the door contract.
     #[must_use]
     pub fn plane_text(&self, which: PlaneText) -> &'static str {
         let t = self.kind_tail::<busbar_contract::abi::plane::PlaneTail>();
@@ -702,12 +606,6 @@ impl DoorView {
         text(s, field)
     }
 
-    /// One counted list of words the plane tail states, as the raw list (for the kind's own
-    /// checks, which take it).
-    ///
-    /// # Panics
-    ///
-    /// As [`DoorView::kind_tail`] for a plane tail, or the list breaks the door contract.
     #[must_use]
     pub fn plane_word_list(&self, which: PlaneWords) -> &'static [AbiStr] {
         let t = self.kind_tail::<busbar_contract::abi::plane::PlaneTail>();
@@ -726,11 +624,6 @@ impl DoorView {
         list(ptr, len, field)
     }
 
-    /// One counted list of words the plane tail states, in stated order.
-    ///
-    /// # Panics
-    ///
-    /// As [`DoorView::plane_word_list`], or a word is not UTF-8.
     #[must_use]
     pub fn plane_words(&self, which: PlaneWords) -> Vec<&'static str> {
         self.plane_word_list(which)
@@ -739,23 +632,12 @@ impl DoorView {
             .collect()
     }
 
-    /// One counted row list the plane tail states (its scalar fields; a billable class's texts
-    /// through [`DoorView::billable_classes`]).
-    ///
-    /// # Panics
-    ///
-    /// As [`DoorView::kind_tail`] for a plane tail, or the list breaks the door contract.
     #[must_use]
     pub fn plane_rows<T: PlaneRow>(&self) -> &'static [T] {
         let (ptr, len, field) = T::of(self.kind_tail::<busbar_contract::abi::plane::PlaneTail>());
         list(ptr, len, field)
     }
 
-    /// The billable classes the plane tail states, in stated order.
-    ///
-    /// # Panics
-    ///
-    /// As [`DoorView::plane_rows`], or a class or family is not UTF-8.
     #[must_use]
     pub fn billable_classes(&self) -> Vec<BillableClassRow> {
         self.plane_rows::<busbar_contract::abi::plane::BillableClass>()
@@ -768,14 +650,6 @@ impl DoorView {
     }
 }
 
-// ── WHAT A PLUGIN WROTE INTO A LENT BUFFER ──────────────────────────────────────────────────────
-
-/// The bytes a plugin wrote into `lent`, the buffer the test lent it (an `err_buf`, an `into`),
-/// where its `out` states it wrote `len` (`field` names that length).
-///
-/// # Panics
-///
-/// `len` is more than the capacity the test lent.
 #[must_use]
 pub fn written<'b>(
     lent: &'b [u8],
@@ -793,11 +667,6 @@ pub fn written<'b>(
     &lent[..n]
 }
 
-/// [`written`], as text.
-///
-/// # Panics
-///
-/// As [`written`], or the bytes are not UTF-8.
 #[must_use]
 pub fn written_text<'b>(
     lent: &'b [u8],
@@ -808,8 +677,6 @@ pub fn written_text<'b>(
     core::str::from_utf8(b).unwrap_or_else(|_| panic!("{field}: not UTF-8: {b:?}"))
 }
 
-/// A Statement list as a slice. Called ONLY with a list read out of a [`DoorView`]'s Statement or
-/// tail, whose `'static` entries the door contract promises.
 fn list<T>(ptr: *const T, len: usize, field: &str) -> &'static [T] {
     if len == 0 {
         return &[];
@@ -825,13 +692,10 @@ fn list<T>(ptr: *const T, len: usize, field: &str) -> &'static [T] {
     unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 
-/// A Statement string's bytes. Called ONLY with a string read out of a [`DoorView`]'s Statement,
-/// tail or row.
 fn bytes(s: AbiStr, field: &str) -> &'static [u8] {
     list(s.ptr, s.len, field)
 }
 
-/// A Statement string as text.
 fn text(s: AbiStr, field: &str) -> &'static str {
     let b = bytes(s, field);
     core::str::from_utf8(b).unwrap_or_else(|_| panic!("{field}: not UTF-8: {b:?}"))

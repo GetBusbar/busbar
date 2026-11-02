@@ -2,21 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ABI-LAYOUT GOLDEN GATE.
-//!
-//! Records every cross-boundary POD struct's field byte-offsets and size into a COMMITTED golden
-//! (`tests/golden/abi-layout.golden`). A reorder/resize/insert WITHOUT a major airlock bump changes
-//! an offset and fails this test — the machine check behind the "append-only, major-airlock" rule.
-//!
-//! Offsets are stable across the 64-bit targets busbar ships (pointers/`usize` are 8 bytes on
-//! x86_64 and aarch64 alike; every field here is a fixed-width scalar or pointer), so ONE golden
-//! covers them. Re-seed intentionally with `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-contract`;
-//! a re-seed that is not append-only is refused unless named `BUSBAR_UPDATE_GOLDEN=break`
-//! ([`layout_breaks`]).
 
 use busbar_contract::abi::host::conn::{ConnCtx, ConnSlots, WireOpenDesc, WirePiece};
 use busbar_contract::abi::shared::{DeclStr, WireConnFacts, WireField};
 use busbar_contract::abi::AbiPreamble;
-// THE ONE MEMORY ABI (M0 ABI-SPEC): aliased, so a name two kinds share cannot collide.
+
 use busbar_contract::abi::mechanism::call::{
     AbiStr as MechStr, Blob as MechBlob, Diag as MechDiag, Envelope as MechEnvelope,
     Field as MechField, InHead as MechInHead, MetricEntry as MechMetricEntry,
@@ -41,7 +31,7 @@ use busbar_contract::abi::{
     auth::Ops as AuthOps, plane::Ops as PlaneOps, store::Ops as StoreOps,
     transport::Ops as TransportOps,
 };
-// M3-SHAPES (abi-v2-perkind.md B.2/B.4/B.5): the secret/hook/export kinds' own ops and shapes.
+
 use busbar_contract::abi::export::{
     CheckIn as ExportCheckIn, CheckInstance as ExportCheckInstance, CheckOut as ExportCheckOut,
     DeliverIn as ExportDeliverIn, Ops as ExportOps, Route as ExportRoute,
@@ -65,7 +55,7 @@ use busbar_contract::abi::secret::{
     CheckIn as SecretCheckIn, Ops as SecretOps, ResolveIn as SecretResolveIn,
     ResolveOut as SecretResolveOut,
 };
-// THE AUTH KIND (v3, design B.3): aliased, as the mechanism's are.
+
 use busbar_contract::abi::auth::{
     AuthTail, BeginLoginIn as AuthBeginLoginIn, BeginLoginOut as AuthBeginLoginOut,
     CompleteLoginIn as AuthCompleteLoginIn, FieldSpan as AuthFieldSpan, FieldsIn as AuthFieldsIn,
@@ -76,13 +66,13 @@ use busbar_contract::abi::auth::{
     RequestFacts as AuthRequestFacts, StripName as AuthStripName, StyleDecl as AuthStyleDecl,
     TargetIn as AuthTargetIn, TargetOut as AuthTargetOut, VerifyIn as AuthVerifyIn,
 };
-// THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
+
 use busbar_contract::abi::host::conn::connector as hconn;
 use busbar_contract::abi::host::io as hio;
 use busbar_contract::abi::host::service as hsvc;
 use busbar_contract::abi::plane as pkind;
 use busbar_contract::abi::transport as tkind;
-// THE STORE KIND (v3): aliased with a `Store` prefix so a golden line names its kind.
+
 use busbar_contract::abi::store::{
     AddUsageBatchIn as StoreAddUsageBatchIn, AppendPlaneRecordIn as StoreAppendPlaneRecordIn,
     BlobIn as StoreBlobIn, CountOut as StoreCountOut, GetPlaneRecordIn as StoreGetPlaneRecordIn,
@@ -124,8 +114,6 @@ fn compute_layout() -> String {
 
     record!(s, AbiPreamble, [magic, abi_major, abi_minor]);
 
-    // The borrowed string, the connection facts and the borrowed field the connection table
-    // carries (`abi::shared`).
     record!(s, DeclStr, [ptr, len]);
     record!(
         s,
@@ -144,9 +132,6 @@ fn compute_layout() -> String {
     );
     record!(s, WireField, [name, value]);
 
-    // THE CONNECTION TABLE: one slot per `Conns` operation, the open descriptor and the
-    // piece a read writes. Several fields are same-width neighbours — a swap is invisible to all
-    // but this.
     record!(s, ConnCtx, [ptr]);
     record!(
         s,
@@ -189,8 +174,6 @@ fn compute_layout() -> String {
         ]
     );
 
-    // THE ONE MEMORY ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the shared mechanism and the seven kind
-    // tables. This golden is the ONE layout pin (`abi-audit` F2).
     record!(s, MechRawOutcome, []);
     record!(s, MechStr, [ptr, len]);
     record!(s, MechBlob, [ptr, len, fmt, flags]);
@@ -232,7 +215,7 @@ fn compute_layout() -> String {
         MechOutHead,
         [size, outcome, _reserved, wake_at_ns, lease, error, envelope, extensions]
     );
-    // The door's fields are private (status row 195, the sealed door): it records its own offsets.
+
     for (field, at) in MechDoor::__layout() {
         writeln!(s, "MechDoor.{field}={at}").unwrap();
     }
@@ -361,7 +344,7 @@ fn compute_layout() -> String {
         StoreStoreTail,
         [head, durable_plane, fork_refusal, _reserved]
     );
-    // The C renderer names the tuple member `f0`; Rust addresses the same member as `0`.
+
     writeln!(s, "StoreOpId.f0={}", std::mem::offset_of!(StoreOpId, 0)).unwrap();
     record!(s, StoreOpId, []);
     record!(s, StoreUsageCell, [bucket, window_start, delta]);
@@ -603,7 +586,6 @@ fn compute_layout() -> String {
     record!(s, PlaneOps, [head]);
     record!(s, TransportOps, [head]);
 
-    // THE TRANSPORT KIND (abi/transport/) and THE HOST CONNECTOR (abi/host/conn/connector.rs).
     record!(
         s,
         tkind::Ops,
@@ -915,7 +897,7 @@ fn compute_layout() -> String {
         tkind::AdoptIn,
         [head, side, _reserved, facts, leftover, leftover_len, sink]
     );
-    // THE PLANE KIND (abi/plane/).
+
     record!(
         s,
         pkind::Ops,
@@ -1383,8 +1365,7 @@ fn compute_layout() -> String {
         [kind, _reserved, method, target, fields, timeout_ms]
     );
     record!(s, hconn::RequestIn, [head, stream, buf, len, piece]);
-    // The host services (abi/host/service.rs) and the call shape they share with the connector.
-    // THE HOST'S I/O TABLE (`abi/host/io.rs`, `io.*`).
+
     record!(
         s,
         hio::IoSlots,
@@ -1572,7 +1553,6 @@ fn compute_layout() -> String {
         [head, unit, cause, line, conn, stream, answer, request]
     );
 
-    // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve, check]);
     record!(s, SecretResolveIn, [head, settings, secret_buf, secret_cap]);
     record!(
@@ -1581,8 +1561,7 @@ fn compute_layout() -> String {
         [head, secret, error_kind, _reserved, needed]
     );
     record!(s, SecretCheckIn, [head, settings, err_buf, err_cap]);
-    // M3-SHAPES (abi-v2-perkind.md B.4): the hook kind's decide/transform/notify/configure/
-    // status/describe/serve, its views and its Statement tail.
+
     record!(
         s,
         HookOps,
@@ -1792,8 +1771,6 @@ fn compute_layout() -> String {
         ]
     );
 
-    // M3-SHAPES (abi-v2-perkind.md B.5): the export kind's deliver/scrape/status/check/serve and
-    // its Statement tail.
     record!(s, ExportOps, [head, deliver, scrape, status, check, serve]);
     record!(s, ExportDeliverIn, [head, op_id, stream, _reserved, batch]);
     record!(s, ExportScrapeLabel, [key, value]);
@@ -1850,9 +1827,6 @@ fn abi_layout_matches_golden() {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
 
     if let Some(mode) = std::env::var_os("BUSBAR_UPDATE_GOLDEN") {
-        // THE RE-SEED IS JUDGED, NOT TRUSTED: it used to write whatever layout it
-        // found, and the "do not re-seed" below was a sentence a re-seed never reads. A diff that
-        // moves, resizes or removes what a peer already reads is refused unless the seed names it.
         let breaks = layout_breaks(&existing, &actual);
         assert!(
             breaks.is_empty() || mode == RESEED_BREAK,
@@ -1866,13 +1840,10 @@ fn abi_layout_matches_golden() {
             breaks.join("\n  ")
         );
         std::fs::write(path, &actual).expect("write golden");
-        // On a seed run, do not also assert (the file was just written to match).
+
         return;
     }
 
-    // A missing or empty golden is a FAILURE, not an invitation to self-seed. Seeding on absence
-    // means deleting the file is a way to make this gate pass — the check would bless whatever
-    // layout it found and report success, which is the opposite of what a golden is for.
     assert!(
         !existing.trim().is_empty(),
         "\nABI LAYOUT GOLDEN MISSING: {path}\n\
@@ -1916,10 +1887,7 @@ fn golden_members(text: &str) -> BTreeMap<&str, BTreeMap<&str, u64>> {
 }
 
 /// WHAT A RE-SEED WOULD BREAK: every change from `old` to `new` that is not an append. A struct
-/// that is new, or that gains fields at or past its old size with every old field where it was, is
-/// an append. A field whose offset moved (a reorder, or an insert before it), a size or alignment
-/// that changed with nothing appended to explain it (a resize), and a field or struct that is gone
-/// are breaks, one line each.
+
 fn layout_breaks(old: &str, new: &str) -> Vec<String> {
     let (old, new) = (golden_members(old), golden_members(new));
     let mut out = Vec::new();
@@ -1967,8 +1935,7 @@ fn layout_breaks(old: &str, new: &str) -> Vec<String> {
 }
 
 /// RED ARM, THE RE-SEED: a moved field, a resize, an insert and a removal are
-/// each a break the re-seed refuses; an append and a new struct are not; the layout against itself
-/// is clean.
+
 #[test]
 fn a_reseed_that_is_not_append_only_is_refused() {
     let actual = compute_layout();
@@ -2014,7 +1981,7 @@ fn a_reseed_that_is_not_append_only_is_refused() {
 }
 
 /// THE COMPARATOR: the golden and the layout agree line for line, or the first line that differs is
-/// named.
+
 fn compare(existing: &str, actual: &str) -> Result<(), String> {
     if existing == actual {
         return Ok(());
@@ -2080,7 +2047,7 @@ fn a_perturbed_plane_golden_line_fails_the_comparator() {
 }
 
 /// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails
-/// the comparator.
+
 #[test]
 fn a_perturbed_auth_golden_line_fails_the_comparator() {
     let actual = compute_layout();
@@ -2122,7 +2089,7 @@ fn a_perturbed_hook_golden_line_fails_the_comparator() {
 }
 
 /// RED ARM, store kind: one perturbed store golden line (a `UsageCell`'s `window_start` offset)
-/// fails the comparator.
+
 #[test]
 fn a_perturbed_store_golden_line_fails_the_comparator() {
     let actual = compute_layout();

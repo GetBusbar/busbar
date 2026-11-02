@@ -2,45 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `busbar-core-connector::tls` — the core-side connection-security seam, folded in
-//! verbatim from the `busbar-core-connsec` crate it was (THE DESIGN: TLS lives only in the connector).
-//!
-//! A trusted, compiled-in `core`-kind sibling of `busbar-kernel` (the same category as
-//! the other core-tier crates): never a plugin, always linked, off the hot path. It owns the
-//! WHOLE connection-security prep for one binding — read the operator's `tls:` config, pull the
-//! resolved key material through the secret kind (`busbar_kernel::config::secret::SecretResolver`,
-//! the one seam every other TLS-material reader in this tree already goes through), and build an
-//! OPAQUE [`busbar_contract::transport::wire::ConnectionSecurity`] wrap.
-//!
-//! A transport is handed nothing but that wrap. It calls the ONE operation the trait exposes —
-//! `wrap(stream) -> securedstream` — and never sees a rustls type or a key byte: the whole point of
-//! the contract-side trait is that this crate is the only place in the tree that names
-//! `rustls::ServerConfig` for an INBOUND (listener) binding, and the [`client`] module is the
-//! OUTBOUND half: the host's outbound trust (extra anchors, an SPKI pin, a client identity) applied
-//! to a dialled stream through the same opaque wrap. A future connection-security variant
-//! (mTLS with a different verifier shape, a PQ hybrid signature scheme, ...) is a change to this
-//! crate alone.
-//!
-//! ## Negotiation and fail-closed
-//!
-//! The operator's binding config is the source of truth for whether a binding is TLS.
-//! [`prepare`] reconciles it against the transport's declared
-//! wrappable-byte-stream capability:
-//!
-//! * config plaintext (`tls: None`) ⇒ the [`Identity`] wrap (a byte-for-byte no-op).
-//! * config TLS + a capable transport ⇒ the material is resolved and a [`Tls`] wrap is built and
-//!   handed over.
-//! * config TLS + an INCAPABLE transport, or config TLS whose cert/key cannot be resolved/parsed ⇒
-//!   [`prepare`] returns `Err` and the binding must not come up. There is no third outcome: a
-//!   binding is never silently downgraded to plaintext.
-//!
-//! ## Where the TLS-config-build logic came from
-//!
-//! [`load_cert_chain`], [`load_private_key`], [`load_client_roots`], [`build_server_config`] and
-//! [`install_crypto_provider`] are relocated byte-for-byte (only the module path each name is
-//! reached through changed) from `busbar-kernel`'s own `tls` module, where the SAME native inbound
-//! TLS termination has built its `rustls::ServerConfig` this way since before this crate existed.
-//! The accept-loop/hyper-serving machinery is a LISTENER concern this crate does not touch, and
-//! `read_pem` (the one turn-a-`SecretRef`-into-PEM function, which the readers below call) lives here.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -61,17 +22,8 @@ use rustls::{RootCertStore, ServerConfig};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 /// Install ring's [`rustls::crypto::CryptoProvider`] as the process default. Must run before
-/// [`build_server_config`].
-///
-/// Idempotent: a "provider already installed" error is expected and ignored, because all we require
-/// is that *a ring provider* is the process default before any `ServerConfig` is built. Must run
-/// before any other subsystem in this process builds a rustls config on the ambient provider, which
-/// is why several call sites (the outbound client config, test setup) call this directly rather
-/// than assuming the inbound listener already has. Moved here from `busbar-kernel`'s `tls` module
-/// with the rest of the TLS code (TLS stays in the connector).
+
 pub fn install_crypto_provider() {
-    // Err(_) => some other code path already installed one. Since busbar only ever links ring, the
-    // installed backend is ring too, so there is nothing to fix and nothing to warn about.
     let _ = ring().install_default();
 }
 
@@ -81,9 +33,7 @@ pub(crate) fn ring() -> rustls::crypto::CryptoProvider {
 }
 
 /// The process's crypto backend, installed first ([`install_crypto_provider`]): the default the
-/// process holds (ring, the only one busbar links), or ring itself where none could be read. A
-/// verifier that checks only a handshake's signature reads its signature algorithms here, so it
-/// verifies with the same backend every config the process builds uses.
+
 #[must_use]
 pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
     let _ = ring().install_default();
@@ -93,7 +43,7 @@ pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 /// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
-/// source-named message. Never logs contents.
+
 fn read_pem(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
@@ -108,9 +58,7 @@ fn read_pem(
 }
 
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
-/// public, but we still avoid echoing them.
-///
-/// Relocated verbatim from `busbar_kernel::tls::load_cert_chain`.
+
 fn load_cert_chain(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
@@ -131,9 +79,7 @@ fn load_cert_chain(
 }
 
 /// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs key
-/// material - error messages name only the secret source.
-///
-/// Relocated verbatim from `busbar_kernel::tls::load_private_key`.
+
 fn load_private_key(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
@@ -142,9 +88,7 @@ fn load_private_key(
     let bytes = read_pem(resolver, secret, "key")?;
     let seal = busbar_kernel::seal::lend();
     let bytes = bytes.expose(&seal);
-    // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1, and SEC1 sections, picking the first
-    // private-key section it finds. `NoItemsFound` means none was present; any other variant is a
-    // genuine parse error. Neither path echoes key material - error messages name only the source.
+
     use rustls::pki_types::pem::Error as PemError;
     PrivateKeyDer::from_pem_slice(bytes).map_err(|e| match e {
         PemError::NoItemsFound => {
@@ -155,13 +99,7 @@ fn load_private_key(
 }
 
 /// BUSBAR'S CLIENT IDENTITY for one destination, from its two secret references: the PEM chain
-/// (leaf first) and the PEM private key, parsed as the inbound listener parses its own. Errors name
-/// the sources, never the bytes. Whether the pair is usable is judged when it is sealed into a
-/// destination's anchors ([`client::seal`]).
-///
-/// # Errors
-///
-/// Either reference does not resolve, or does not parse.
+
 pub fn client_identity(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     cert: &SecretRef,
@@ -176,8 +114,7 @@ pub fn client_identity(
 }
 
 /// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
-///
-/// Relocated verbatim from `busbar_kernel::tls::load_client_roots`.
+
 fn load_client_roots(
     resolver: &SecretResolver,
     secret: &SecretRef,
@@ -202,7 +139,7 @@ fn load_client_roots(
 }
 
 /// The ALPN ids a TLS listener offers, in its order of preference. The listener's hyper builder
-/// serves both: it reads an `h2` connection's preface and serves HTTP/2.
+
 const ALPN_OFFER: [&[u8]; 2] = [ALPN_H2, b"http/1.1"];
 
 /// The ALPN id of HTTP/2 over TLS (RFC 9113 §3.3).
@@ -212,11 +149,7 @@ const ALPN_H2: &[u8] = b"h2";
 const H2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// A connection whose ALPN is `h2` is KNOWN to be HTTP/2, so RFC 9113 §3.4 governs its first bytes
-/// (RFC 9113 §3.4): anything but the connection preface is a connection error. No h2 frame layer
-/// exists yet to send a GOAWAY on, so the error closes the connection with no bytes; it is never
-/// handed on to be read as an HTTP/1 request line. Reads at most the preface's 24 bytes and stops
-/// at the first one that differs; the bytes read are the preface, which [`Preface`] hands back
-/// first.
+
 async fn expect_h2_preface<S: futures::io::AsyncRead + Unpin>(io: &mut S) -> std::io::Result<()> {
     let mut got = [0u8; 24];
     let mut n = 0;
@@ -235,7 +168,7 @@ async fn expect_h2_preface<S: futures::io::AsyncRead + Unpin>(io: &mut S) -> std
 }
 
 /// An ALPN-h2 stream whose preface [`expect_h2_preface`] has read: reads hand the preface back
-/// first, then the stream's own bytes; writes go straight through.
+
 struct Preface<S> {
     io: S,
     replayed: usize,
@@ -288,18 +221,7 @@ impl<S: futures::io::AsyncWrite + Unpin> futures::io::AsyncWrite for Preface<S> 
 }
 
 /// Construct the rustls [`ServerConfig`] from the operator's [`TlsCfg`].
-///
-/// * `client_ca` present ⇒ a [`WebPkiClientVerifier`] is installed: the client MUST present a
-///   certificate chaining to that CA or the handshake fails (mTLS required).
-/// * `client_ca` absent ⇒ `with_no_client_auth()` (server-only TLS).
-///
-/// ALPN offers [`ALPN_OFFER`], `h2` first then `http/1.1` (a signed customer-visible change from
-/// 1.5.5, which offered `http/1.1` alone): a client that offers `h2` speaks HTTP/2 over TLS, one
-/// that offers only `http/1.1` (or no ALPN) is served as in 1.5.5. Returns a clear, source-named
-/// error on any load/parse problem (the caller turns it into `die`).
-///
-/// Relocated verbatim from `busbar_kernel::tls::build_server_config`: every other
-/// field, default and error message is unchanged — only the module this function lives in moved.
+
 pub fn build_server_config(
     tls: &TlsCfg,
     resolver: &SecretResolver,
@@ -354,10 +276,7 @@ impl ConnectionSecurity for Identity {
 }
 
 /// The TLS connection-security wrap: runs the rustls server handshake built by
-/// [`build_server_config`] over the accepted stream.
-///
-/// Holds the already-built [`ServerConfig`] (never a `SecretRef`, never key bytes — those were
-/// consumed when the config was built) so `wrap` never re-reads the secret kind per connection.
+
 pub struct Tls {
     config: Arc<ServerConfig>,
 }
@@ -373,11 +292,6 @@ impl Tls {
 impl ConnectionSecurity for Tls {
     fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a> {
         Box::pin(async move {
-            // `RawIo` is the contract's rustls-free, futures-io-based stream type; `tokio_rustls`
-            // needs tokio's `AsyncRead`/`AsyncWrite`. `FuturesAsyncReadCompatExt::compat` bridges
-            // the futures-io stream in, the handshake runs, and `TokioAsyncReadCompatExt::compat`
-            // bridges the tokio-io result back out — the same futures-io/tokio-io seam the
-            // kernel's accept loop crosses on the other side of this call.
             let tokio_io = FuturesAsyncReadCompatExt::compat(io);
             let acceptor = tokio_rustls::TlsAcceptor::from(self.config.clone());
             let tls_stream = acceptor.accept(tokio_io).await?;
@@ -431,21 +345,7 @@ impl std::fmt::Display for FailClosed {
 impl std::error::Error for FailClosed {}
 
 /// Reconcile one binding's operator config against its transport's capability and build the opaque
-/// wrap the transport is handed — the negotiation it requires:
-///
-/// * `tls_cfg` is `None` ⇒ `Ok(`[`Identity`]`)`, regardless of `transport_capable` (a plaintext
-///   binding never needs the capability at all).
-/// * `tls_cfg` is `Some` and `transport_capable` is `false` ⇒
-///   `Err(`[`FailClosed::IncapableTransport`]`)` — never a silent plaintext downgrade.
-/// * `tls_cfg` is `Some`, `transport_capable` is `true`, and the material resolves and parses ⇒
-///   `Ok(`[`Tls`]`)`.
-/// * `tls_cfg` is `Some`, `transport_capable` is `true`, but the material does not resolve/parse ⇒
-///   `Err(`[`FailClosed::MaterialUnavailable`]`)` — [`build_server_config`] already fails closed on
-///   a missing/bad cert; this just carries that failure through the same `Result`.
-///
-/// # Errors
-///
-/// See [`FailClosed`].
+
 pub fn prepare(
     label: &str,
     tls_cfg: Option<&TlsCfg>,
@@ -458,7 +358,6 @@ pub fn prepare(
             label: label.to_string(),
         }),
         Some(tls) => {
-            // Ring installed as the process's backend before the `ServerConfig` is built.
             let _ = installed_crypto();
             let config = build_server_config(tls, resolver).map_err(|reason| {
                 FailClosed::MaterialUnavailable {

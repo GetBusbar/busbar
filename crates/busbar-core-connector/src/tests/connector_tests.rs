@@ -26,8 +26,7 @@ mod final_insert_retirement_tests;
 mod declared_timeout_tests;
 
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
-/// private address the scheme-rule test names (the destination guard refuses both by default), so
-/// what those tests assert stays the connector's own rule.
+
 pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
     let allow = ["127.0.0.1", "::1", "10.1.2.3"].map(str::to_owned).to_vec();
     std::sync::Arc::new(crate::LiteralsOnly(
@@ -48,7 +47,7 @@ async fn far_end() -> (tokio::net::TcpListener, String) {
 }
 
 /// A need declared without a transport (an inbound need) dials nothing: its open is refused; an
-/// undeclared one is refused as undeclared.
+
 #[test]
 fn a_need_declared_without_a_transport_dials_nothing() {
     let c = Connector::new();
@@ -69,9 +68,7 @@ fn a_need_declared_without_a_transport_dials_nothing() {
 }
 
 /// A need over a scheme no loaded transport serves is refused when it is declared, by the inherent
-/// declare and the table's alike, and is left undeclared, so no open ever meets an unserved scheme;
-/// re-declaring a served need over an unserved scheme drops its record. The same need over the
-/// served scheme opens.
+
 #[test]
 fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens() {
     worker().block_on(async {
@@ -90,7 +87,7 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
             Err(ConnError::Refused)
         );
         assert_eq!(c.declared(OWNER, NeedId(1)), Some(Err(ConnError::Refused)));
-        // An inbound need over an unserved scheme is refused alike.
+
         let mut inbound = unserved.clone();
         inbound.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
         assert_eq!(
@@ -115,7 +112,6 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
             Err(ConnError::UndeclaredNeed)
         );
 
-        // The served scheme opens.
         DeclaredConns::declare(&c, OWNER, NeedId(2), &config_targeted_need(""), None, None)
             .expect("a served scheme declares");
         let id = c
@@ -123,7 +119,6 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
             .expect("a need over a served scheme opens");
         c.close(OWNER, id).unwrap();
 
-        // A served need re-declared over an unserved scheme loses its record.
         assert_eq!(
             c.declare_over(OWNER, NeedId(2), "nowhere"),
             Err(ConnError::Refused)
@@ -163,8 +158,6 @@ fn a_metadata_target_is_refused_before_any_dial() {
     assert!(endpoint::check(desc.target).is_err());
 }
 
-// ── the table over a composed connection ──
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -188,8 +181,7 @@ fn serving(wakes: Arc<AtomicU64>) -> Connector {
 }
 
 /// A declared need over a served transport opens a real connection: the opening body goes out,
-/// a read with nothing ready is Pending with the ticket registered, the far end's bytes wake the
-/// ticket, and the next read answers them.
+
 #[test]
 fn a_need_over_a_served_transport_reaches_a_real_far_end() {
     worker().block_on(async {
@@ -216,8 +208,7 @@ fn a_need_over_a_served_transport_reaches_a_real_far_end() {
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
         let mut buf = [0_u8; 64];
         assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
-        // Nothing drives the connection but the caller's own reads: read until the far end has the
-        // opening body (it answers only after a pause, so no answer is taken here).
+
         let mut rx = rx;
         let first = loop {
             assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
@@ -243,8 +234,7 @@ fn a_need_over_a_served_transport_reaches_a_real_far_end() {
 }
 
 /// The connector's wake names the caller the read registered its ticket for, never only the ticket:
-/// the host blames the instance that supplied a ticket it never minted, whichever thread the wake
-/// fires on. Every wake of a read parked by `OWNER` on ticket 7 is `(7)`.
+
 #[test]
 fn a_parked_reads_wake_names_the_caller_it_parked_for() {
     worker().block_on(async {
@@ -296,7 +286,7 @@ fn a_parked_reads_wake_names_the_caller_it_parked_for() {
 }
 
 /// A write through the table stated as text reaches the framer as a text emit (`EMIT_TEXT`), held
-/// through the dial like any early write.
+
 #[test]
 fn a_text_write_through_the_table_reaches_the_framer_as_text() {
     worker().block_on(async {
@@ -347,8 +337,7 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
 }
 
 /// The table's head piece from a framer whose head field block states `declared` as its declared
-/// body length (or states none), read through the connection table from a far end that answers a
-/// one-field head.
+
 fn head_through_the_table(declared: Option<u64>) -> Piece {
     head_through_the_table_with(crate::support::Knobs {
         fields: true,
@@ -414,8 +403,7 @@ fn head_through_the_table_with(knobs: crate::support::Knobs) -> Piece {
 }
 
 /// RED (1.5.5 parity, the pre-body download cap): the declared body length a framer states on its
-/// head's field block reaches the table's head piece untouched, never as a field; a framer that
-/// states none yields none.
+
 #[test]
 fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
     assert_eq!(
@@ -426,9 +414,7 @@ fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
 }
 
 /// A head whose code the framer states in the HANDSHAKE's numbering (`PIECE_CODE_HANDOFF`: an upgrade's
-/// handshake answered, e.g. refused `403`) reaches the table's head piece in that numbering, the
-/// status-line one, never as a code of the claim's own; a head without the bit names none (the
-/// claim's).
+
 #[test]
 fn a_handshake_code_reaches_the_tables_head_piece_in_the_handshakes_numbering() {
     let head = |flags| {
@@ -479,8 +465,7 @@ fn a_metadata_target_is_refused_even_over_a_served_transport() {
 const RESTRICTED: u32 = 7;
 
 /// RED: each need's dial is judged under the need's OWN egress class. A judge that refuses internal
-/// addresses in a restricted class refuses a loopback target for the need declared in that class,
-/// while the same target opens for a need in the default class on the same connector.
+
 #[test]
 fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
     worker().block_on(async {
@@ -522,7 +507,7 @@ fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
 }
 
 /// RED: writes made while a dial's judgement is pending are held under the same cap: a write past
-/// it is taken short, and the next is answered Pending, never buffered without bound.
+
 #[test]
 fn writes_held_for_a_pending_judgement_are_capped() {
     let view = Transports::new(vec![Entry {
@@ -530,7 +515,7 @@ fn writes_held_for_a_pending_judgement_are_capped() {
         alpn: Vec::new(),
     }])
     .unwrap();
-    // A judge that never answers: every dial stays in flight.
+
     let judge = |_: &str, _: u32, done: crate::Judged| {
         std::mem::forget(done);
         None
@@ -570,7 +555,7 @@ fn writes_held_for_a_pending_judgement_are_capped() {
 }
 
 /// An empty pending write keeps its message flags; a blocked writer waits for judgement and
-/// retries without duplicating either the held frame or the unaccepted write.
+
 #[test]
 fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
     use crate::framer::{Call, Crossed, DoorFacts};
@@ -748,12 +733,10 @@ fn a_pending_empty_write_wakes_on_refusal_and_closes() {
 }
 
 /// A need dials a hostname through the kernel's one judge, over the plugin's own table. Its one
-/// `unsafe` is the host's own lowered table (`HostConns::new`), test-only as `support` is.
+
 #[allow(unsafe_code)]
 #[path = "name_dial_tests.rs"]
 mod name_dial;
-
-// ── EGRESS: the declared target; metadata and link-local are refused on every need ──
 
 /// A connector serving the byte-exact door, admitting literals (its loopback far ends allowlisted).
 fn literal_connector() -> Connector {
@@ -766,8 +749,7 @@ fn literal_connector() -> Connector {
 }
 
 /// RED: a need whose config names its target (`target_from`) dials that target and no other: an
-/// open to another host, or to another port on the same host, is refused before any dial, while
-/// the declared target itself opens.
+
 #[test]
 fn a_config_targeted_need_dialing_elsewhere_is_refused() {
     worker().block_on(async {
@@ -818,8 +800,7 @@ fn config_targeted_need(target_from: &str) -> ReadNeed {
 }
 
 /// A need the loader's conns fill declares with the target its `target_from` resolved to is pinned
-/// to it (option A): an open to another host is refused before any dial, while the resolved target
-/// opens. Declaring it again with another target (a refresh) moves the pin.
+
 #[test]
 fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
     worker().block_on(async {
@@ -859,7 +840,7 @@ fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
 }
 
 /// RED: a need whose `target_from` resolved to nothing is refused, its answer kept, and nothing
-/// opens on it, even after an earlier declaration pinned it.
+
 #[test]
 fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
     worker().block_on(async {
@@ -889,7 +870,7 @@ fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
 }
 
 /// A need whose target the plugin names (no `target_from`) is judged by its egress class only: any
-/// host the class admits opens.
+
 #[test]
 fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
     worker().block_on(async {
@@ -912,7 +893,7 @@ fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
 }
 
 /// RED: a plugin-named need to a cloud metadata or link-local address is refused, whatever its
-/// class admits.
+
 #[test]
 fn a_plugin_named_need_to_the_metadata_address_is_refused() {
     worker().block_on(async {
@@ -937,11 +918,7 @@ fn a_plugin_named_need_to_the_metadata_address_is_refused() {
 }
 
 /// A provider need whose 1.5.5 carve-out (`allow_metadata_hosts: ["169.254.169.254"]`, as 1.5.5
-/// documented it for IMDS) names a metadata address is DIALLED there: the guard admits it and the
-/// connector dials the address the judgement pinned (here the loopback far end standing in for the
-/// metadata service). The same open from a need in another class, and to a metadata address no
-/// carve-out names, is refused by the same guard. RED on the endpoint check that refused every
-/// metadata host ahead of the guard, so its carve-outs reached no dial.
+
 #[test]
 fn a_provider_carve_out_reaches_its_metadata_address_on_the_dial() {
     worker().block_on(async {
@@ -994,9 +971,7 @@ fn a_provider_carve_out_reaches_its_metadata_address_on_the_dial() {
 }
 
 /// THE CONNECTOR NEVER FOLLOWS AN ANSWER. A far end answering a `302` whose `Location` names
-/// another listener hands that answer to the need's owner through the table, byte for byte, and the
-/// connector dials nothing the answer names: the listener it points at never sees a connection, so
-/// nothing the request carried (a token exchange's client secret) is re-sent there.
+
 #[test]
 fn an_answer_naming_another_place_is_handed_up_and_never_dialled() {
     worker().block_on(async {
@@ -1044,11 +1019,7 @@ fn an_answer_naming_another_place_is_handed_up_and_never_dialled() {
 }
 
 /// A plugin's exchange whose head carries a NUL (or a CR or LF) in its target, its request target,
-/// its method, a field name or a field value, or a field stating the message's own framing
-/// (`Content-Length`, `Transfer-Encoding`, any case), is REFUSED whole before anything is dialled:
-/// the far end never sees a connection, so no byte of it (a token exchange's client secret) leaves.
-/// A clean head with an `Authorization` field opens. RED on the connector that handed every head to
-/// the framer.
+
 #[test]
 fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
     worker().block_on(async {
@@ -1188,12 +1159,7 @@ fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
 }
 
 /// Where the host writes an instance's authority ([`DeclaredConns::hold_authority`], held by the
-/// loader for every auth-kind instance), an open whose head carries a `host` field of its own (any
-/// case) is REFUSED before anything is dialled, as 1.5.5 refused it on an auth module's token
-/// exchange: the far end sees no connection. The same instance's clean head opens. GREEN ARM: an
-/// instance the host holds no authority for (a plane's upstream, which may sign its `host`, SigV4)
-/// opens with the `host` field it wrote. RED on the head check that refused only the framing
-/// fields.
+
 #[test]
 fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
     worker().block_on(async {
@@ -1243,7 +1209,7 @@ fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
             )
             .expect("the auth instance's clean head opens");
         c.close(OWNER, id).unwrap();
-        // GREEN ARM: a plane's upstream keeps the `host` field it wrote (and signed).
+
         let id = c
             .open(
                 OTHER,
@@ -1266,8 +1232,7 @@ fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
 }
 
 /// A HOST-SIDE READER awaits a connection through `poll_read`: nothing ready is `Pending` with the
-/// reader's own waker registered, the far end's bytes wake THAT waker (the task finishes without
-/// being re-polled by anything else), and no plugin ticket is ever woken.
+
 #[test]
 fn a_host_side_reader_is_woken_through_its_own_waker() {
     worker().block_on(async {
@@ -1312,7 +1277,7 @@ fn a_host_side_reader_is_woken_through_its_own_waker() {
 }
 
 /// A far end that takes the opening and then holds the connection open, answering nothing, until
-/// `release` fires (or `answer` is written first, after `after`, then held again).
+
 fn stalled_far_end(
     l: tokio::net::TcpListener,
     answer: Option<(
@@ -1339,8 +1304,7 @@ fn stalled_far_end(
 }
 
 /// RED (BUSBAR-1.6.0.md:4890): `timeout_ms` bounds the WHOLE request until its answer, not only the
-/// dial. A far end that connects, takes the request and never answers is a timeout once the bound
-/// passes: a host-side reader is woken with it, within the bound and not at the far end's leisure.
+
 #[test]
 fn a_request_bound_times_out_a_far_end_that_never_answers() {
     worker().block_on(async {
@@ -1381,7 +1345,7 @@ fn a_request_bound_times_out_a_far_end_that_never_answers() {
 }
 
 /// RED: a plugin reader (a ticket, as WRITE_REQUEST's exchange reads) waiting on a request past
-/// its bound has its ticket woken, and its next read is the timeout.
+
 #[test]
 fn a_request_bound_wakes_a_plugin_ticket_with_the_timeout() {
     worker().block_on(async {
@@ -1426,7 +1390,7 @@ fn a_request_bound_wakes_a_plugin_ticket_with_the_timeout() {
 }
 
 /// The bound ends where the answer begins: an answer whose first piece arrived inside the bound is
-/// read to its end even when its later pieces arrive after it.
+
 #[test]
 fn a_request_bound_is_spent_once_the_answer_begins() {
     worker().block_on(async {
@@ -1477,10 +1441,7 @@ fn last_instant(now: std::time::Instant) -> std::time::Instant {
 }
 
 /// RED: a request's `timeout_ms` is the plugin's own number, any `u64` (a secret-vault
-/// `timeout_secs` it saturates to `u64::MAX`). A bound past the last instant the clock can hold is
-/// no bound of its own (the op's deadline ends the op), never an overflowing `Instant` add, which
-/// panics where `Instant` is narrow. RED before: the bound was an unchecked add (`due_at` did not
-/// exist, so this did not compile; on such a platform `bounded(u64::MAX)` panicked).
+
 #[test]
 fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
     let now = std::time::Instant::now();
@@ -1492,7 +1453,7 @@ fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
     let last = last_instant(now);
     assert_eq!(due_at(last, u64::MAX), None, "past the clock: no bound");
     assert_eq!(due_at(last, 1_000), None);
-    // Through the held connection: no bound of its own, and no panic.
+
     let held = Held::over(None, None, None).bounded(u64::MAX);
     let due = held.due.lock().expect("due");
     assert!(
@@ -1502,7 +1463,7 @@ fn a_request_bound_past_the_clock_is_no_bound_of_its_own() {
 }
 
 /// A request whose `timeout_ms` is `u64::MAX` opens and reads its answer whole: the bound does not
-/// cut it, and nothing overflows on the way.
+
 #[test]
 fn a_request_with_the_largest_timeout_reads_its_answer() {
     worker().block_on(async {
@@ -1536,14 +1497,12 @@ fn a_request_with_the_largest_timeout_reads_its_answer() {
     });
 }
 
-// ── EGRESS: the scheme each egress class allows ──
-
 use busbar_contract::abi::host::conn::connector::{
     EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 
 /// A connector serving a plaintext door (`plain`) and a door whose targets ask for connection
-/// security (`sec`), admitting every literal, with a client config for the secure one.
+
 fn scheme_connector() -> Connector {
     let view = Transports::new(vec![
         Entry {
@@ -1585,7 +1544,7 @@ fn open_in(c: &Connector, need: u32, target: &str) -> Result<ConnId, ConnError> 
 }
 
 /// RED: open-web dials over connection security only: a plaintext target, public or not, is
-/// refused before any judgement; the same class over a secure target opens.
+
 #[test]
 fn http_to_a_public_host_under_open_web_is_refused() {
     worker().block_on(async {
@@ -1603,7 +1562,7 @@ fn http_to_a_public_host_under_open_web_is_refused() {
 }
 
 /// Operator-infrastructure takes the operator's configured plaintext private target (1.5.5's
-/// private-network http api_base case).
+
 #[test]
 fn the_operator_infrastructure_http_private_target_is_allowed() {
     worker().block_on(async {
@@ -1617,7 +1576,7 @@ fn the_operator_infrastructure_http_private_target_is_allowed() {
 }
 
 /// RED: loopback-allowed dials plaintext to loopback only: a plaintext private (non-loopback)
-/// address is refused; plaintext loopback opens.
+
 #[test]
 fn loopback_allowed_refuses_plaintext_off_loopback() {
     worker().block_on(async {
@@ -1632,10 +1591,7 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
 }
 
 /// A mint endpoint's need, its target the binding's own setting, in the `loopback-allowed` class,
-/// dials a plaintext loopback endpoint and refuses a plaintext private one; the `open-web` class it
-/// was declared in refused the loopback endpoint outright. Each refusal is the need's ADMISSION at
-/// declare (the target is pinned, so its static facts are judged there, G1(a)), and every open on
-/// the refused need is refused with it.
+
 #[test]
 fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plaintext() {
     worker().block_on(async {
@@ -1803,9 +1759,7 @@ fn a_carrier_bind_failure_identifies_the_need_without_printing_its_failure_text(
 }
 
 /// An inbound need listens through the table: the listener is bound for the need's owner, an
-/// accepted connection is held for that owner (read and answered on the piece's stream through the
-/// table), another instance can neither accept on the need nor read the connection, and a need
-/// listens once.
+
 #[test]
 fn an_inbound_need_listens_and_its_connections_are_its_owners() {
     worker().block_on(async {
@@ -1877,7 +1831,7 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
         );
         c.emit(OWNER, id, stream, b"welcome"[..5].as_ref(), false, false)
             .unwrap();
-        // Nothing drives the connection but the owner's own calls.
+
         let answered = loop {
             let _ = c.wait(OWNER, &[id], 3);
             if client.is_finished() {
@@ -1895,7 +1849,7 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
 }
 
 /// The test carrier, with an `accept` that HANGS once armed: it says it is inside the crossing,
-/// then does not come back until the test lets it.
+
 struct HangingAccept {
     inner: TestDoor,
     gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -1932,9 +1886,7 @@ impl FramerDoor for HangingAccept {
 }
 
 /// RED before a listener was driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs
-/// under a host lock): the listener's mutex was held across the carrier's `accept`, so a second
-/// accept beside one that hung waited on the plugin for as long as it hung. Now the second answers
-/// PENDING at once, and is woken once the first puts the listener back.
+
 #[test]
 fn an_accept_beside_a_hung_carrier_accept_never_waits_and_is_woken_once_it_is_back() {
     let rt = worker();
@@ -2034,11 +1986,7 @@ fn userinfo_connector() -> Connector {
 }
 
 /// The refusal of a userinfo in a need's target STAYS for every target the need's own
-/// settings did not give it — a need with no `target_from`, a member path, a path outside its
-/// settings. Such a target carrying a userinfo — a URL's `user:pass@` or a bare `user@host:port` —
-/// is REFUSED, fail closed: the answer is kept for the need's admission, and nothing opens on it.
-/// So is a settings-derived target whose userinfo cannot be read out of it. The same target
-/// without the userinfo is declared.
+
 #[test]
 fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
     worker().block_on(async {
@@ -2100,11 +2048,7 @@ fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
 }
 
 /// USERINFO IS NOT PART OF A
-/// SETTINGS-DERIVED TARGET. A need whose `target_from` reads the plugin's own settings, declared
-/// with a target carrying a userinfo — a URL's `user:pass@`, a bare `user:pass@host:port` or
-/// `user@host:port` — is declared, pinned to that target WITHOUT the userinfo, and opens there.
-/// The userinfo is dropped: no record the connector keeps holds it, no event logged while the need
-/// is declared, admitted, opened or refused carries it, and no error text says it.
+
 #[test]
 fn a_settings_derived_target_is_declared_without_its_userinfo() {
     const USER: &str = "the-user";
@@ -2141,13 +2085,12 @@ fn a_settings_derived_target_is_declared_without_its_userinfo() {
                 said.push(format!("{:?}", pinned(NeedId(0))));
                 said.push(format!("{:?}", c.declared_spec(OWNER, NeedId(0))));
             }
-            // The cleared target is the one the need dials: an open naming none opens there.
+
             let id = c
                 .open(OWNER, NeedId(0), &OpenDesc::default())
                 .expect("the cleared target opens");
             c.close(OWNER, id).unwrap();
-            // A settings-derived target refused on other grounds (a cloud metadata host) says
-            // nothing of its userinfo either, and leaves no record of it.
+
             let metadata = format!("{USER}:{SECRET}@169.254.169.254:80");
             let e = DeclaredConns::declare(&c, OWNER, NeedId(1), &need, Some(&metadata), None)
                 .expect_err("a metadata host is refused");
@@ -2223,15 +2166,14 @@ fn gone(pid: &str) -> bool {
 }
 
 /// A need whose `target_from` resolved to a PROGRAM is carried in the
-/// operator-infrastructure class: every open spawns it (no shell, only its stated environment),
-/// its stdin and stdout are the connection, and the connector kills it on close.
+
 #[test]
 fn a_program_need_spawns_its_program_and_kills_it_on_close() {
     use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
     worker().block_on(async {
         let c = literal_connector();
         let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
-        // The program states its process id, then echoes what it is sent.
+
         let echo = program("/bin/sh", &["-c", "echo $$; exec /bin/cat"], &[]);
         assert_eq!(
             DeclaredConns::declare_program(&c, OWNER, NeedId(0), &need, &echo),
@@ -2275,8 +2217,7 @@ fn a_program_inherits_no_environment_but_its_own() {
 }
 
 /// RED: a program need is refused outside the operator-infrastructure class, with an auth style,
-/// over an unserved scheme, or for a command that is not an absolute path — and an open on it that
-/// names a target of its own is refused: it spawns its program and nothing else.
+
 #[test]
 fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
     use busbar_contract::abi::host::conn::connector::{
@@ -2330,7 +2271,7 @@ fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
 }
 
 /// A dialled exchange's EMPTY answers, binary and text, reach the caller as body pieces; the
-/// exchange completes only on the framer's `PIECE_END`, never on an empty piece.
+
 #[test]
 fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag() {
     worker().block_on(async {
@@ -2404,8 +2345,7 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
 }
 
 /// THE TRANSPORT PIN (the transport pin): a destination's sealed trust anchors are enforced by the
-/// connector itself on every connection to it, against a real TLS far end on loopback whose
-/// certificate chains to a test root the connector trusts.
+
 mod transport_pin {
     use std::sync::{Arc, Mutex};
 
@@ -2425,7 +2365,7 @@ mod transport_pin {
     }
 
     /// One issued leaf: its DER, its key's PKCS#8 DER, and its key's pin, taken off the key pair
-    /// itself (never off the certificate the connector walks).
+
     struct Leaf {
         der: Vec<u8>,
         key: Vec<u8>,
@@ -2434,9 +2374,7 @@ mod transport_pin {
 
     impl Pki {
         /// A fresh root under a subject no other root of this process carries: two roots sharing
-        /// a subject would make one a name-match candidate for the other's leaves, and a leaf
-        /// under an unrelated root would then be refused on its signature, not as an unknown
-        /// issuer.
+
         fn new() -> Self {
             static ROOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let n = ROOTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2470,12 +2408,11 @@ mod transport_pin {
     }
 
     /// What the far end saw on one connection: the bytes it read, and whether the dialler
-    /// presented a client certificate.
+
     type Seen = Arc<Mutex<Option<(Vec<u8>, bool)>>>;
 
     /// A TLS far end on loopback serving `leaf` (asking for a client certificate under `pki`'s
-    /// root when `mutual`), answering `answer` once it read five bytes: its address, and what it
-    /// saw.
+
     async fn tls_far_end(pki: &Pki, leaf: &Leaf, mutual: bool) -> (String, Seen) {
         crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
@@ -2520,8 +2457,7 @@ mod transport_pin {
     }
 
     /// A connector serving a door whose targets ask for connection security under the name
-    /// `localhost` (`sec`) and a plaintext one (`plain`), trusting `pki`'s root, with `need` 0
-    /// declared over `sec` and need 1 over `plain`.
+
     fn trusting(pki: &Pki) -> Connector {
         let view = Transports::new(vec![
             Entry {
@@ -2559,7 +2495,7 @@ mod transport_pin {
     }
 
     /// Open need 0 at `far` with a five-byte opening body and read to its first answer: the
-    /// connection, and the read's answer.
+
     async fn exchange(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
         let desc = OpenDesc {
             target: far,
@@ -2581,7 +2517,7 @@ mod transport_pin {
     }
 
     /// A far end serving the pinned key is reached, and the connection's facts carry the key it
-    /// observed; no client identity was presented (none is sealed).
+
     #[test]
     fn a_far_end_serving_the_pinned_key_is_reached_and_its_key_is_the_facts() {
         worker().block_on(async {
@@ -2609,7 +2545,7 @@ mod transport_pin {
     }
 
     /// RED: a far end serving ANOTHER key (a valid chain, the right name) is refused after its
-    /// handshake and before a request byte is written; the facts still name the key it served.
+
     #[test]
     fn a_far_end_serving_another_key_is_refused_before_any_request_byte() {
         worker().block_on(async {
@@ -2638,7 +2574,7 @@ mod transport_pin {
                 "no request byte reached the far end"
             );
             c.close(OWNER, id).expect("closed");
-            // Unsealed, the same far end is reached again: the refusal was the anchors'.
+
             c.anchor(OWNER, NeedId(0), "", &far, &Anchors::default())
                 .expect("unsealed");
             let (_, got) = exchange(&c, &far).await;
@@ -2647,7 +2583,7 @@ mod transport_pin {
     }
 
     /// A far end that asks for a client certificate is presented the sealed identity, and the
-    /// facts say so; without one sealed, the same far end refuses the handshake.
+
     #[test]
     fn a_sealed_client_identity_is_presented_to_a_mutual_far_end() {
         worker().block_on(async {
@@ -2703,10 +2639,7 @@ mod transport_pin {
     }
 
     /// RED: two REGISTRATIONS at one authority hold their own anchors. The first seals a client
-    /// identity, the second (sealed after it, at the same `host:port`) seals none: an open naming
-    /// the first still presents ITS identity to the mutual far end, and an open naming the second
-    /// presents nothing, never the first's. Keyed by the authority alone, the second seal dropped
-    /// the first's and the first registration's own open was refused.
+
     #[test]
     fn two_registrations_at_one_authority_each_present_their_own_identity() {
         worker().block_on(async {
@@ -2740,7 +2673,7 @@ mod transport_pin {
     }
 
     /// RED: a pinned destination reached without connection security has no key to hold, and is
-    /// refused before any dial; an identity that does not parse refuses the seal.
+
     #[test]
     fn a_pinned_destination_over_plaintext_is_refused_and_a_bad_identity_refuses_the_seal() {
         worker().block_on(async {
@@ -2768,7 +2701,7 @@ mod transport_pin {
                 c.anchor(OWNER, NeedId(0), "", &far, &bad),
                 Err(ConnError::Refused)
             );
-            // A need the owner never declared seals nothing.
+
             assert_eq!(
                 c.anchor(OTHER, NeedId(0), "", &far, &anchors),
                 Err(ConnError::Refused)
@@ -2777,8 +2710,7 @@ mod transport_pin {
     }
 
     /// A TLS far end on loopback serving `leaf`, answering every five bytes it reads with one
-    /// one-byte message and the exchange's end (`xe`, the scripted entry's) and keeping each
-    /// connection open: its address.
+
     async fn keeping_tls_far_end(leaf: &Leaf) -> String {
         crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
@@ -2810,7 +2742,7 @@ mod transport_pin {
     }
 
     /// [`trusting`]'s connector, its secure entry answering the scripted messages, keeping every
-    /// line an exchange finished on: need 0 is declared over it.
+
     fn pooled_trusting(pki: &Pki) -> Connector {
         let view = Transports::new(vec![
             Entry {
@@ -2852,10 +2784,7 @@ mod transport_pin {
     }
 
     /// RED (THE DESIGN §8, the connector holds every destination's trust; the transport pin): a
-    /// line secured under one seal of a destination's anchors is never lent to an open held to
-    /// another. Sealed again with a key the far end does not serve, the next open dials afresh and
-    /// is refused at its handshake; keyed without the anchors, it rode the line verified under the
-    /// old seal and the new pin was never checked.
+
     #[test]
     fn a_pooled_line_is_never_lent_once_its_destination_is_sealed_again() {
         worker().block_on(async {
@@ -2922,9 +2851,7 @@ mod transport_pin {
     }
 
     /// A connector whose own trust is the public roots alone, its secure entry (riding the plain
-    /// address carrier, as [`pooled_trusting`]'s does) answering the scripted messages, keeping
-    /// every line an exchange finished on: a far end under a private root is reached only through
-    /// a need whose `trust_from` names that root.
+
     fn pooled_public_roots() -> Connector {
         let view = Transports::new(vec![
             Entry {
@@ -2982,11 +2909,7 @@ mod transport_pin {
     }
 
     /// RED (THE DESIGN §5, the host connector: a need's `trust_from` is "an extra trusted root
-    /// added on top of the public roots"; §8, the connector holds each need's trust): a line
-    /// verified under a need's operator CA is never lent once the need is declared again with
-    /// another CA. The next open dials afresh and its handshake is refused, as the far end's root is
-    /// no longer trusted; keyed without the need's client config, it rode the line the old CA
-    /// verified and the new trust was never checked.
+
     #[test]
     fn a_pooled_line_is_never_lent_once_its_need_trusts_another_operator_ca() {
         worker().block_on(async {
@@ -3016,9 +2939,7 @@ mod transport_pin {
     }
 
     /// GREEN twin: a need declared once under its operator CA keeps pooling: its next open rides
-    /// the line its first exchange finished on, and the far end accepts one connection only. (The
-    /// scripted framer answers on its one stream, so an exchange over a lent line is read to its
-    /// first byte, as `a_pooled_line_is_never_lent_to_another_need_or_instance`'s is.)
+
     #[test]
     fn a_need_under_its_operator_ca_rides_its_own_pooled_line() {
         worker().block_on(async {
@@ -3107,9 +3028,7 @@ mod transport_pin {
     }
 
     /// A reload replaces an instance with one under a new id and the gone one is forgotten. Over
-    /// every replace cycle nothing a gone instance declared, sealed, bound or held stays on the
-    /// connector. GREEN twins: the instance that replaced it, and a neighbour never replaced, keep
-    /// every record and still exchange; a forgotten id declared again works.
+
     #[test]
     fn a_forgotten_instance_leaves_no_record_however_many_reloads() {
         worker().block_on(async {
@@ -3122,8 +3041,7 @@ mod transport_pin {
                 client_identity: None,
                 private_reach: false,
             };
-            // Declared as the loader declares a plugin's need (`DeclaredConns::declare`), which
-            // records the declaration as well as the need.
+
             let need = ReadNeed {
                 transport: "sec".to_owned(),
                 ..super::config_targeted_need("")
@@ -3214,10 +3132,7 @@ mod transport_pin {
     }
 
     /// RED (`PollConns::anchor`: "an open naming it, to its own target's authority, is held to its
-    /// anchors alone (none, where they are empty)"): a registration holding NO anchors, sealed
-    /// BEFORE another registration at the same authority that holds a client identity, still
-    /// presents nothing. Read through to the destination's seal, its open presented the other
-    /// registration's identity.
+
     #[test]
     fn a_registration_holding_no_anchors_never_borrows_one_sealed_after_it() {
         worker().block_on(async {
@@ -3251,10 +3166,7 @@ mod transport_pin {
     }
 
     /// RED (`PollConns::anchor`; "a pin nobody enforces is refused, never dropped"): an open naming
-    /// no registration is held to the destination's anchors. Where every registration sealed at
-    /// its authority agrees, that is theirs; where they disagree there is no one answer, and the
-    /// open is refused. Kept as whichever registration was sealed last, a registration holding
-    /// nothing erased another's pin and identity for every such open.
+
     #[test]
     fn an_open_naming_no_registration_is_refused_where_the_registrations_at_its_authority_disagree()
     {
@@ -3300,12 +3212,11 @@ mod transport_pin {
     }
 
     /// What a splicing proxy saw, one entry per tunnel in the order they were asked: the CONNECT
-    /// head, and every byte it relayed from the dialler to the far end after answering it.
+
     type ProxySeen = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
     /// A CONNECT proxy on loopback, as a corporate egress proxy is: it reads the CONNECT head,
-    /// answers `200`, dials the authority it was asked for and splices the two sockets, recording
-    /// the head and every byte the dialler sent through the tunnel.
+
     async fn splicing_proxy() -> (u16, ProxySeen) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3352,8 +3263,7 @@ mod transport_pin {
                         if n == 0 {
                             break;
                         }
-                        // Recorded before it is relayed, so the far end's answer never outruns
-                        // the record of what reached it.
+
                         saw.lock().unwrap()[slot].1.extend_from_slice(&buf[..n]);
                         if up_w.write_all(&buf[..n]).await.is_err() {
                             break;
@@ -3403,15 +3313,7 @@ mod transport_pin {
     }
 
     /// THE KERNEL ENGINE'S PROXIED mTLS HOP, THROUGH THE CONNECTOR (the CONNECT proxy and
-    /// busbar's client identity are the connector's alone once the kernel engine is deleted). A
-    /// secured dial under a proxy asks the proxy for a tunnel to the far end's own authority before
-    /// anything else, then runs the handshake over the tunnel: the far end's key is the one
-    /// observed, busbar's sealed identity is presented to a far end that asks for one, and the
-    /// proxy relays only ciphertext (the request bytes never cross it in the clear).
-    ///
-    /// RED: with no identity sealed, the same proxied dial reaches the mutual far end and is
-    /// refused by it, so the identity the green arm presents is the sealed one, carried through
-    /// the tunnel.
+
     #[test]
     fn a_proxied_dial_tunnels_first_then_presents_the_sealed_identity_over_tls() {
         worker().block_on(async {
@@ -3473,8 +3375,7 @@ mod transport_pin {
     }
 
     /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes: its
-    /// address, and, per connection once it is done, every byte it read (empty: the dialler left, or
-    /// failed its handshake, before writing any).
+
     async fn reporting_tls_far_end(
         leaf: &Leaf,
     ) -> (String, tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) {
@@ -3517,7 +3418,7 @@ mod transport_pin {
     }
 
     /// Open need 0 at `far` with a five-byte opening body and read to its first answer, waking on
-    /// the connection's own readiness: the connection, and the read's answer.
+
     async fn exchange_awaited(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
         let desc = OpenDesc {
             target: far,
@@ -3544,11 +3445,7 @@ mod transport_pin {
     }
 
     /// RED (the operator docs: a pin is written `sha256/<base64>`): a pin written in
-    /// the DOCUMENTED spelling is the served key's and reaches it, and so does its plain base64
-    /// alias; a pin of another key is refused in either spelling, after the handshake and before
-    /// any request byte reaches the far end. Compared as written, the documented spelling never
-    /// matched the observed key (plain base64), so every documented pin refused its own far end.
-    /// The facts report the observed key in the canonical spelling either way.
+
     #[test]
     fn a_pin_in_either_spelling_reaches_its_key_and_refuses_another_before_any_request_byte() {
         worker().block_on(async {
@@ -3608,7 +3505,7 @@ mod transport_pin {
     }
 
     /// A pin that names no SHA-256 digest (a stand-in such as `sha256/BASE=`, another tag, a digest
-    /// of another length) refuses the seal: it is never held as a string no key can match.
+
     #[test]
     fn a_pin_that_names_no_digest_refuses_the_seal() {
         worker().block_on(async {
@@ -3637,21 +3534,15 @@ mod transport_pin {
         });
     }
 
-    // ── THE SECURE LAYER'S TWINS, each over a real loopback handshake: the rows the deleted
-    // `tls/engine_tests.rs` held, proven against the connector's own outbound security ─────────
-
     /// What one connection told a [`naming_far_end`]: the server name its ClientHello offered, and
-    /// whether the handshake completed.
+
     type Named = tokio::sync::mpsc::UnboundedReceiver<(Option<String>, bool)>;
 
     /// How many connections a [`naming_far_end`] accepted.
     type Accepted = Arc<std::sync::atomic::AtomicUsize>;
 
     /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes. Per
-    /// connection it reports the name the ClientHello offered, read off the hello BEFORE the
-    /// handshake runs (so a handshake the dialler refuses reports its name too), and whether the
-    /// handshake completed; and it counts every connection it accepts. Its address, the reports,
-    /// the count.
+
     async fn naming_far_end(leaf: &Leaf) -> (String, Named, Accepted) {
         crate::tls::install_crypto_provider();
         let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
@@ -3697,7 +3588,7 @@ mod transport_pin {
     }
 
     /// The next report off a [`naming_far_end`], bounded so a far end that never reports fails the
-    /// test rather than hanging it.
+
     async fn next_report(named: &mut Named) -> (Option<String>, bool) {
         tokio::time::timeout(std::time::Duration::from_secs(10), named.recv())
             .await
@@ -3706,15 +3597,12 @@ mod transport_pin {
     }
 
     /// A connector serving one door whose targets ask for connection security under `name`,
-    /// trusting `anchor` on top of the public roots and judging every dial through `judge`, with
-    /// need 0 declared over it. Its wake raises the returned [`tokio::sync::Notify`], so a reader
-    /// waits on the connector's own wake and never on a clock.
+
     fn naming(
         name: &'static str,
         anchor: &[u8],
         judge: Arc<dyn crate::DialJudge>,
     ) -> (Connector, Arc<tokio::sync::Notify>) {
-        // The framer rides the address carrier, so one is loaded beside it.
         let view = Transports::new(vec![
             Entry {
                 door: Arc::new(TestDoor::identity("plain")),
@@ -3752,8 +3640,7 @@ mod transport_pin {
     }
 
     /// Open need 0 at `target` within `judged` (empty: no set stated) with a five-byte opening
-    /// body, and read to its first answer, waiting on the connector's wake between reads: the
-    /// connection, and the read's answer.
+
     async fn exchange_woken(
         c: &Connector,
         woken: &tokio::sync::Notify,
@@ -3784,14 +3671,7 @@ mod transport_pin {
     }
 
     /// THE REAL WRAP OFFERS THE CONFIGURED NAME AND HOLDS THE CERTIFICATE TO IT (the twin the
-    /// deleted `tls/engine_tests.rs::sni_stays_on_the_hostname_and_a_wrong_name_cert_is_refused`
-    /// held). The socket goes to the pinned loopback address while the name the target asks
-    /// security under is `pinned.test`: the far end serving a leaf for `pinned.test` reads that
-    /// name off the ClientHello, completes the handshake and answers, and the connection's facts
-    /// carry the name offered. RED TWIN: a far end at a pinned loopback address serving a leaf for
-    /// `other.test`, under a root the dialler trusts, still reads `pinned.test` off the hello and
-    /// is REFUSED at the handshake, the name check its cause: the certificate is held to the
-    /// configured name, never to the address the socket went to.
+
     #[test]
     fn the_real_wrap_offers_the_configured_name_and_refuses_a_certificate_for_another() {
         use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
@@ -3834,7 +3714,7 @@ mod transport_pin {
                 "the name check's own refusal: {}",
                 cause.text
             );
-            // The far end's handshake ends when the dialler leaves the refused connection.
+
             c.close(OWNER, id).expect("closed");
             assert_eq!(
                 next_report(&mut named).await,
@@ -3859,14 +3739,7 @@ mod transport_pin {
     }
 
     /// A JUDGED SECURE DIAL GOES ONLY WHERE THE GUARD JUDGED, AND KEEPS THE NAME (the twin the
-    /// deleted `tls/engine_tests.rs::a_judged_tls_dial_keeps_the_name_for_sni_and_host` held). A
-    /// need dials `judged.test` through the deployment's one guard, the name answering the loopback
-    /// far end's address. RED TWIN first: stated `within` an address set the guard judged that does
-    /// not hold that answer, the dial is REFUSED. Then the same dial within the set holding the
-    /// answer lands there: the ClientHello offers the name, the leaf minted for `judged.test` alone
-    /// verifies against it, and the far end answers. The far end's count, read once the landed
-    /// dial's handshake is reported, is one: the refused dial never reached it (accepts are taken
-    /// in arrival order, so a connection the refused dial made would have been counted first).
+
     #[test]
     fn a_judged_secure_dial_lands_only_where_the_guard_judged_and_keeps_the_name() {
         worker().block_on(async {
@@ -3916,11 +3789,7 @@ mod transport_pin {
     }
 
     /// A TRUST REFUSAL NAMES THE SECURITY STACK'S OWN CAUSE, AND THE TRUSTED TWIN IS REACHED (the
-    /// twin the deleted `tls/engine_tests.rs::a_tls_trust_refusal_renders_the_real_cause` held). A
-    /// far end whose leaf an unrelated root signed is REFUSED at connection security, and the
-    /// connection's cause is the stack's own words for an unknown issuer, never a vague closed
-    /// channel. GREEN TWIN: the same far end, dialled by a connector trusting the root that signed
-    /// its leaf, answers, and the answered connection has no cause.
+
     #[test]
     fn a_trust_refusal_names_its_cause_and_the_trusted_twin_is_reached() {
         use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
@@ -3965,12 +3834,7 @@ mod transport_pin {
 }
 
 /// RED (a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`, sealed per
-/// REGISTRATION): under a strict guard (private refused, nothing allowlisted) a provider-class
-/// need's open that names a registration holding a reach dials that registration's private
-/// destination, as an allowlist entry naming it would; a second registration at the SAME
-/// authority without one, an open naming no registration, and another need are all still refused
-/// (the class is unchanged); a reach never admits a cloud-metadata address; and a seal without it
-/// takes it back.
+
 #[test]
 fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
     worker().block_on(async {
@@ -4054,10 +3918,8 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
     });
 }
 
-// ── THE ADMISSION OF A PINNED TARGET: the verdict `need_admit` reports is the one every dial meets ──
-
 /// A connector serving `plain` (an entry that locates a target in plaintext) and `sec` (one that
-/// locates it over connection security), admitting literals as [`literal_connector`] does.
+
 fn plain_and_secure_connector() -> Connector {
     let view = Transports::new(vec![
         Entry {
@@ -4148,7 +4010,7 @@ fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
             let (_peer, _) = listening.accept().await.unwrap();
             c.close(OWNER, conn).unwrap();
         }
-        // The carrier branch must still meet the existing target and class judgements.
+
         for (id, target, class) in [
             (2, "bytes://127.0.0.1:1/path", crate::DEFAULT_CLASS),
             (3, "bytes://169.254.169.254:80", crate::DEFAULT_CLASS),
@@ -4168,9 +4030,7 @@ fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
 }
 
 /// RED (1.5.5: a request-log webhook target that is not `https://` was refused when the sink was
-/// configured): an open-web need pinned to a plaintext target is REFUSED at declare, so the host's
-/// admission (`need_admit`) answers what every dial of it already met, and the need opens nothing.
-/// It holds for a literal and for a name alike: the scheme rule needs no resolution.
+
 #[test]
 fn an_open_web_need_pinned_to_a_plaintext_target_is_refused_at_declare() {
     let c = plain_and_secure_connector();
@@ -4200,9 +4060,7 @@ fn an_open_web_need_pinned_to_a_plaintext_target_is_refused_at_declare() {
 }
 
 /// GREEN: the admission judges only what the dial would. An open-web need pinned to a secure target
-/// on an allowlisted literal is admitted, as is a name (no resolution happens at declare; its
-/// addresses stay the dial's), and a default-class need pinned to a plaintext loopback literal
-/// (operator infrastructure, the class a configured target is judged in) is admitted too.
+
 #[test]
 fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     let c = plain_and_secure_connector();
@@ -4231,10 +4089,7 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
 }
 
 /// RED (THE DESIGN §5: `open-web` is "public https only"; v1.5.5 refused a private open-web target
-/// and disabled the instance, `crates/busbar/src/observability.rs:214-240`): an open-web need whose
-/// config pins it to a private literal the allowlist does not name is REFUSED at declare, over a
-/// secure connection too. Its configured target does not make it operator infrastructure (the
-/// class rule itself is `guard_tests::a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address`).
+
 #[test]
 fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
     let c = plain_and_secure_connector();
@@ -4250,7 +4105,7 @@ fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
 }
 
 /// RED: a pinned literal the guard refuses (a cloud metadata address, which no class and no
-/// configured target lifts) is refused at declare, over connection security too.
+
 #[test]
 fn a_pinned_metadata_literal_is_refused_at_declare() {
     let c = plain_and_secure_connector();
@@ -4310,11 +4165,7 @@ fn bound_as(handle: u64) -> busbar_contract::conn::ConnAuth {
 }
 
 /// EACH MEMBER'S BINDING IS ITS OWN, even at an origin it shares (predev `creds.rs`
-/// `Lease::header_for`: a lease minted for one agent is refused on a hop to another; an agent
-/// with no credential is dialled with none): two members at one origin each answer their own
-/// binding, a member that bound none answers none (never its neighbour's), a request naming no
-/// member answers none, and a member's binding reaches no other origin. RED: the table held one
-/// binding per origin, the last member bound there answering for every request to it.
+
 #[test]
 fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbours() {
     let c = Connector::default();
@@ -4353,11 +4204,7 @@ fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbour
 }
 
 /// A REQUEST NAMING NO MEMBER GETS NO BINDING, even where EXACTLY ONE member is bound at its origin
-/// (no origin fallback; a request that is no member's is dialled with no credential): the
-/// connector keys a binding by (instance, need, member, target origin), so the one member's own
-/// request answers its binding and a memberless request to the same origin answers none, its
-/// request carrying no `authorization`. RED: an origin fallback (answer the binding when a single
-/// member holds one at the origin) lends that member's credential to a request that is not its own.
+
 #[test]
 fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_origin() {
     let c = Connector::default();
@@ -4383,10 +4230,7 @@ fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_or
 }
 
 /// THE POOL IS KEYED BY WHO DIALLED AND WHAT THE DIAL TRUSTED (THE DESIGN §5, §8: the connector is
-/// the only holder of trust roots and mTLS identity; a `ConnId` belongs to the instance that opened
-/// it). A far end on loopback that answers every three bytes it reads with one one-byte message and
-/// the exchange's end (`xe`, the `messages` entry's script) and keeps each connection open: its
-/// address, how many connections it accepted, and how many of them the dialler has closed.
+
 async fn keeping_far_end() -> (
     String,
     Arc<std::sync::atomic::AtomicUsize>,
@@ -4416,7 +4260,7 @@ async fn keeping_far_end() -> (
 }
 
 /// A connector serving the scripted `messages` framer over a `carrier`, keeping finished lines idle
-/// for `idle`.
+
 fn pooled_messages(idle: std::time::Duration) -> Connector {
     let view = Transports::new(vec![
         Entry {
@@ -4447,11 +4291,11 @@ fn pooled_messages(idle: std::time::Duration) -> Connector {
 }
 
 /// What one pooled exchange read: its bytes, whether it completed (its line goes back to the pool
-/// once closed), and the error that ended it, if one did.
+
 type Exchanged = (Vec<u8>, bool, Option<ConnError>);
 
 /// Open `owner`'s `need` at `far` with `body`, read its answer (to the exchange's end where
-/// `to_end`, else its first byte), and close it.
+
 async fn pooled_exchange(
     c: &Connector,
     (owner, need): (InstanceId, u32),
@@ -4501,10 +4345,7 @@ async fn pooled_exchange(
 }
 
 /// RED (THE DESIGN §5 "a `ConnId` belongs to the plugin instance that opened it"; §8 the connector
-/// holds each need's trust): a line an exchange finished on is lent again only to an open of the
-/// SAME instance's SAME need. Another need of the instance, and another instance, each dial their
-/// own; the need's own next open rides the kept line. Keyed by the destination alone, the second
-/// need's open rode the first need's line (secured, where it was, under the first need's trust).
+
 #[test]
 fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
     worker().block_on(async {
@@ -4549,8 +4390,7 @@ fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
 }
 
 /// A forgotten instance's lines and listener go with it. The idle line its exchange finished on is
-/// closed at once, never left on the pool for the idle reaper, and its listener leaves the table.
-/// GREEN twin: a neighbour's kept line stays open and is lent to its next open.
+
 #[test]
 fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_kept() {
     worker().block_on(async {
@@ -4610,10 +4450,7 @@ fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_ke
 }
 
 /// RED (`limits.pool_idle_timeout_secs`, the pool's own contract: "an idle connection reaped once
-/// it has sat" that long): an idle line whose time ran out is closed when the pool is next used,
-/// whatever place that use opens to. Expired lines were reaped only when an open or a release
-/// touched their own place again, so a place dialled once kept its socket open for the life of
-/// the process.
+
 #[test]
 fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_next() {
     worker().block_on(async {
@@ -4646,7 +4483,7 @@ fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_ne
 }
 
 /// The test carrier, with a `dial` that HANGS once armed: it says it is inside the crossing, then
-/// does not come back until the test lets it.
+
 struct HangingDial {
     inner: TestDoor,
     gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -4683,10 +4520,7 @@ impl FramerDoor for HangingDial {
 }
 
 /// RED before a held connection's dial crossed with its judgement's lock let go (`BUSBAR-1.6.0.md`
-/// §11: no plugin code runs under a host lock): `settle` held that lock across the carrier's
-/// `dial` and the early writes' framing, so a write or a wait on the connection beside a dial that
-/// hung waited on the plugin for as long as it hung. Now both answer PENDING at once, and the wait
-/// is woken once the dial came to its end.
+
 #[test]
 fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
     let rt = worker();
@@ -4702,7 +4536,7 @@ fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
             inner: TestDoor::identity("bytes"),
             gate: std::sync::Mutex::new(None),
         });
-        // A judge that pends, answered by hand once the connection is open.
+
         let pending: Arc<std::sync::Mutex<Option<crate::Judged>>> =
             Arc::new(std::sync::Mutex::new(None));
         let slot = Arc::clone(&pending);
@@ -4784,7 +4618,7 @@ fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
 }
 
 /// The test carrier, with a `read` that HANGS once armed: it says it is inside the crossing, then
-/// does not come back until the test lets it.
+
 struct HangingRead {
     inner: TestDoor,
     gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -4821,10 +4655,7 @@ impl FramerDoor for HangingRead {
 }
 
 /// RED before a read had the connection's rest out of its lock (`BUSBAR-1.6.0.md` §11: no plugin
-/// code runs under a host lock): the rest's mutex was held across the read's whole drive, so a
-/// second read of the same connection beside one whose carrier read hung waited on the plugin for
-/// as long as it hung. Now the second answers PENDING at once, and is woken once the first read
-/// puts the rest back.
+
 #[test]
 fn a_read_beside_a_hung_carrier_read_never_waits_and_is_woken_once_it_is_back() {
     let rt = worker();
@@ -4835,7 +4666,7 @@ fn a_read_beside_a_hung_carrier_read_never_waits_and_is_woken_once_it_is_back() 
         tokio::spawn(async move {
             let (s, _) = l.accept().await.unwrap();
             let _ = accepted_tx.send(());
-            // Held open and silent: every read of the connection pends.
+
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             drop(s);
         });
@@ -4865,7 +4696,7 @@ fn a_read_beside_a_hung_carrier_read_never_waits_and_is_woken_once_it_is_back() 
         };
         let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
         let mut buf = [0_u8; 64];
-        // Driven by its own reads until the far end has the connection, and a read past that.
+
         loop {
             assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
             if accepted.try_recv().is_ok() {

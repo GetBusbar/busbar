@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The dated history and the lookup over it: appending never rewrites, the resolution rule takes
-//! the highest covering seq, a snapshot answers the same way forever, a hole is a refusal, and the
-//! current view of an empty history names no snapshot.
 
 use super::*;
 use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
@@ -14,7 +12,7 @@ fn card_at(micro: f64) -> RateCard {
 }
 
 /// A history with three entries: the opening one, an ordinary edit, and a back-dated amendment that
-/// overlaps both. Written once because every resolution case reads it.
+
 fn overlapping_history() -> History {
     let mut history = History::opening(card_at(1.0), 0);
     history.append(CardEntryDraft {
@@ -37,37 +35,28 @@ fn overlapping_history() -> History {
 }
 
 /// **THE RESOLUTION RULE.** Among the entries a snapshot can see whose interval covers an instant,
-/// the one with the HIGHEST SEQ wins — not the one that starts latest, and not the one that was
-/// dated latest.
-///
-/// The three-entry history is built so that every reading disagrees: at instant 120 the amendment
-/// (seq 2, dated 50) covers it and so does the ordinary edit (seq 1, dated 100). Resolving by date
-/// would pick seq 1; resolving by seq picks seq 2, which is the entry that was WRITTEN last and is
-/// therefore the operator's latest word.
+
 #[test]
 fn card_at_resolves_overlap_by_the_highest_covering_seq() {
     let history = overlapping_history();
     let view = history.current();
 
-    // Before the amendment's window: only the opening entry covers it.
     assert_eq!(view.card_at(10).expect("covered").0, HistorySeq(0));
-    // Inside the amendment's window and before the ordinary edit: entries 0 and 2 cover it.
+
     assert_eq!(view.card_at(60).expect("covered").0, HistorySeq(2));
-    // Inside the amendment's window AND the ordinary edit's: all three cover it, 2 wins.
+
     assert_eq!(view.card_at(120).expect("covered").0, HistorySeq(2));
-    // Past the amendment's exclusive end: entries 0 and 1 cover it, 1 wins.
+
     assert_eq!(view.card_at(150).expect("covered").0, HistorySeq(1));
     assert_eq!(view.card_at(1_000_000).expect("covered").0, HistorySeq(1));
 
-    // The interval's ends are inclusive-exclusive, exactly.
     assert_eq!(view.card_at(49).expect("covered").0, HistorySeq(0));
     assert_eq!(view.card_at(50).expect("covered").0, HistorySeq(2));
     assert_eq!(view.card_at(149).expect("covered").0, HistorySeq(2));
 }
 
 /// The opening entry is effective from instant ZERO, which is what makes a hole impossible for a
-/// migrated deployment: every instant a pre-migration row could carry is covered by it, including
-/// the ones that carry no instant finer than a UTC day and land at zero.
+
 #[test]
 fn the_opening_entry_covers_every_instant_including_zero() {
     let history = History::opening(card_at(1.0), 1_700_000_000_000);
@@ -89,9 +78,7 @@ fn the_opening_entry_covers_every_instant_including_zero() {
 }
 
 /// A back-dated amendment is visible AS a back-date, because the instant it prices from and the
-/// instant it was written are two fields. A configuration write has them equal; an amendment has
-/// the write strictly later. One field would have made a correction of the past indistinguishable
-/// from a price that was always there.
+
 #[test]
 fn a_back_dated_entry_is_visible_as_one() {
     let history = overlapping_history();
@@ -108,7 +95,7 @@ fn a_back_dated_entry_is_visible_as_one() {
 }
 
 /// A snapshot above the head sees the whole history rather than refusing: the refusal for a seq
-/// that does not exist yet belongs at the endpoint that took the parameter, not in the arithmetic.
+
 #[test]
 fn a_snapshot_above_the_head_sees_the_whole_history() {
     let history = overlapping_history();
@@ -118,8 +105,7 @@ fn a_snapshot_above_the_head_sees_the_whole_history() {
 }
 
 /// The current view of a history nothing has been appended to names no snapshot. Zero is the seq of
-/// a real opening entry, and a view that answered it for an empty history would put a snapshot on
-/// the face of a statement that no entry stands behind.
+
 #[test]
 fn the_current_view_of_an_empty_history_names_no_snapshot() {
     let empty = History::new();
@@ -141,8 +127,7 @@ fn the_current_view_of_an_empty_history_names_no_snapshot() {
 }
 
 /// **THE ONE CARD A CORRECTION'S WINDOW RESOLVES TO** (#79): the entry pricing every
-/// instant of the window, or nothing when a second entry resolves part of it or the window runs past
-/// the entry's end.
+
 #[test]
 fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
     let mut history = History::opening(card_at(2.0), 0);
@@ -193,8 +178,7 @@ fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
 }
 
 /// **WHERE A CORRECTION WOULD CUT INSIDE A ROW** (OWNER ruling #32, 2026-09-29). Rows are
-/// 1,000-wide buckets here, one per price era; everything before 5,000 may be stored. An edit at
-/// 2,500 appended on time opened an era there; an amendment back-dated to 3,200 did not (units from 3,200 accrued before it).
+
 #[test]
 fn correction_cut_names_a_boundary_inside_a_row() {
     let mut history = History::opening(card_at(2.0), 0);
@@ -216,26 +200,24 @@ fn correction_cut_names_a_boundary_inside_a_row() {
     });
     let view = history.current();
     let cut = |from, until| view.correction_cut(from, until, 5_000, 1_000);
-    // Only bucket starts guarantee a split in every stored row. An old serving entry may remain
-    // active across an on-time nominal configuration boundary while activation is unconfirmed.
+
     assert_eq!(cut(1_000, Some(2_000)), None);
     assert_eq!(cut(2_500, Some(3_000)), Some(2_500));
     assert_eq!(cut(0, None), None);
-    // Inside a stored row.
+
     assert_eq!(cut(1_500, Some(2_000)), Some(1_500));
     assert_eq!(cut(1_000, Some(1_500)), Some(1_500));
     assert_eq!(cut(2_700, None), Some(2_700));
-    // An era back-dated after its units were stored splits nothing.
+
     assert_eq!(cut(3_200, Some(4_000)), Some(3_200));
-    // A future wall timestamp supplies no proof that an old request cannot finish across it.
+
     assert_eq!(cut(5_200, Some(5_800)), Some(5_200));
     assert_eq!(cut(5_000, Some(6_300)), Some(6_300));
     assert_eq!(cut(5_000, Some(6_000)), None);
 }
 
 /// **AN ENTRY IS NAMED BY ITS KEY'S ID.** The id is the first 12 bytes of SHA-256 of the key, spelled
-/// as 24 hex characters; the pseudo-model prefix is that spelling and `U+001F`; `entry_at` answers
-/// the covering entry's id and card, and `card_of` finds the card again from the id alone.
+
 #[test]
 fn entries_are_named_by_the_id_of_their_key() {
     use crate::cost::{EntryId, EntryKey};
@@ -281,7 +263,6 @@ fn serving_entry_survives_later_config_but_accepts_a_wall_scoped_amendment() {
     let view = history.current();
     let seq = |id, wall_at| view.card_for_entry_era(id, wall_at).map(|(seq, _)| seq);
 
-    // These opening-era counts were served after the ordinary edit's nominal cutover.
     assert_eq!(seq(opening, 150), Some(HistorySeq::OPENING));
     assert_eq!(seq(config, 150), Some(HistorySeq(1)));
     assert_eq!(seq(opening, 49), Some(HistorySeq::OPENING));

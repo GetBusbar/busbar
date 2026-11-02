@@ -1,10 +1,3 @@
-//! Tests for `test_support`'s spelled event-stream encoder. Lifted out of the implementation file
-//! so its line count measures implementation; a direct child module, so `super::` still reaches
-//! the encoder.
-
-/// The mock's spelled event-stream encoder emits the exact wire bytes of a ConverseStream event:
-/// the prelude (total 122, headers 81, prelude CRC32), the three type-7 string headers, the
-/// payload, and the message CRC32. A layout or CRC slip breaks this before any plane suite runs.
 #[test]
 fn eventstream_frame_spells_a_crc_valid_converse_stream_event() {
     let payload = br#"{"stopReason":"end_turn"}"#;

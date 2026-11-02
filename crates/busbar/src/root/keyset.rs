@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DEPLOYMENT KEYSET: where the one ed25519 key that signs the audit chain comes from (spec
-//! #82(a); OWNER Q71(3) one keyset; BUSBAR-1.6.0.md THE DESIGN, §2 and PB-13;
-//! architect ruling 2026-09-26 "#82(a) key source", flagged to the owner as Q78).
-//!
-//! The configured Store owns the deployment keyset. Every node reads the same key and seals its
-//! fingerprint in its journal. A Store that cannot produce a chain's sealed fingerprint refuses
-//! the boot. Bare-shipper helpers have an ephemeral key. `data_dir` never selects a local cache.
-
 use std::path::Path;
 
 use busbar_contract::caps::{DurableWrite, Grant, StepName};
@@ -18,20 +10,14 @@ use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, RecordClass};
 
 use crate::root::durability::Durability;
 
-/// THE LABEL the deployment keyset derives the caller-reference material under (row 159 H2): with
-/// no `auth.signing_key`, a verified principal's reference is keyed by the deployment keyset, so it
-/// is one value on every node of the deployment and across restarts, and never empty.
 pub const CALLER_REF_MATERIAL: &[u8] = b"busbar deployment keyset: caller-ref material v1";
 
-/// The fingerprint a `Bootstrap` seals: SHA-256 over the public key's 32 bytes. The key identifier
-/// a signed record names is this digest's first eight bytes, so the two can never disagree.
 #[must_use]
 pub fn fingerprint_of(key: &AuditVerifyingKey) -> [u8; 32] {
     let raw = hex::decode(key.public_key_hex()).unwrap_or_default();
     busbar_contract::abi::sdk::digest::sha256(&raw)
 }
 
-/// [`fingerprint_of`] a signing key's public half.
 #[must_use]
 pub fn fingerprint_of_signer(key: &AuditSigningKey) -> [u8; 32] {
     let public = AuditVerifyingKey::from_hex(&key.public_key_hex())
@@ -92,7 +78,6 @@ impl std::fmt::Display for KeysetError {
     }
 }
 
-/// A `Bootstrap` record's body: the sealed fingerprint, then the key identifier for a reader.
 #[must_use]
 pub fn bootstrap_body(fingerprint: &[u8; 32], key_id: &str) -> Vec<u8> {
     let mut body = BodyWriter::new();
@@ -100,13 +85,11 @@ pub fn bootstrap_body(fingerprint: &[u8; 32], key_id: &str) -> Vec<u8> {
     body.finish()
 }
 
-/// The fingerprint a `Bootstrap` record's body seals, or `None` for a body that is not one.
 #[must_use]
 pub fn bootstrap_fingerprint(body: &[u8]) -> Option<[u8; 32]> {
     BodyReader::new(body).bytes()?.try_into().ok()
 }
 
-/// Mint a fresh keyset as 64 hex characters. The raw random bytes are overwritten before returning.
 fn mint_seed_hex() -> Result<String, KeysetError> {
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).map_err(|_| KeysetError::NoEntropy)?;
@@ -116,12 +99,6 @@ fn mint_seed_hex() -> Result<String, KeysetError> {
     Ok(text)
 }
 
-/// The fingerprint the newest `Bootstrap` on the verified chain sealed, if any.
-///
-/// # Errors
-///
-/// The chain could not be read back or verified. That is a refusal, never a chain with no Bootstrap:
-/// taken for one, it sealed a second `Bootstrap` over the deployment's first (audit R1#3).
 fn sealed_fingerprint(durability: &Durability) -> Result<Option<[u8; 32]>, KeysetError> {
     let records = match durability.chain() {
         Ok(Ok(records)) => records,
@@ -143,13 +120,6 @@ fn sign_with(durability: &mut Durability, key: AuditSigningKey) {
     durability.record = std::mem::take(&mut durability.record).signing_with(key);
 }
 
-/// Bind the deployment keyset to this node's audit chain. `data_dir` is accepted for compatibility
-/// and never read: a Store-backed journal always uses the Store; a helper key is ephemeral.
-///
-/// # Errors
-///
-/// The chain or keyset could not be read, the Store does not yield the sealed fingerprint, a
-/// Bootstrap could not be appended, or the operating system provided no entropy.
 pub fn bind(
     durability: &mut Durability,
     _data_dir: Option<&Path>,
@@ -169,9 +139,6 @@ pub fn bind(
     Ok(KeysetSource::Ephemeral)
 }
 
-/// [`bind`] over the configured store: the deployment keyset the store
-/// keeps, minted into it by the deployment's first boot, and a `Bootstrap` sealing its fingerprint
-/// on this node's chain the first time this chain is bound.
 fn bind_in_store(
     durability: &mut Durability,
     calls: &dyn busbar_contract::store_calls::StoreCalls,
@@ -201,8 +168,6 @@ fn bind_in_store(
             fingerprint: prior.expect("KeysetMissing is answered only over a sealed Bootstrap"),
         }),
         BootstrapVerdict::Mint => {
-            // This chain has not sealed the deployment's key yet: the key another node (or a
-            // predecessor whose chain the store did not keep) put in the store, or one minted now.
             let key = match held {
                 Some(key) => key,
                 None => {
@@ -230,11 +195,6 @@ fn bind_in_store(
     }
 }
 
-/// [`bind`] for a node with no store and no data directory: the keyset is ephemeral (PB-13).
-///
-/// # Errors
-///
-/// [`KeysetError::NoEntropy`] only.
 #[cfg(test)]
 pub fn bind_ephemeral(durability: &mut Durability) -> Result<KeysetSource, KeysetError> {
     let token = crate::root::kernel::new_kernel().durability_token();

@@ -2,29 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE WALK: the one stepper that answers, attempt by attempt, which member is next or what the
-//! pool's terminal says instead.
-//!
-//! It owns the walk's decisions and no others: whether there is still time, which member is next,
-//! what a refusal for size does to the candidate set, which terminal runs when the pool is spent,
-//! and when the walk is over. The sending is the caller's: it asks [`Walk::next`] for a member,
-//! runs the attempt, and asks again. The ordering is the order's, the admission is the breaker's,
-//! and the terminals' own bodies are in [`crate::exhaustion`].
-//!
-//! Three properties of it are load-bearing and each is one line below.
-//!
-//! The deadline is checked BEFORE every step, unconditionally, including one that starts a
-//! streamed answer. It is the whole walk's budget, and a request that has spent it is refused with
-//! the timeout words rather than being given one more member.
-//!
-//! The walk takes `max_hops` PLUS ONE members from its own pool. The cap counts hops, and the
-//! first attempt is not a hop: a pool that permits three hops attempts four members.
-//!
-//! There is ONE pick, `Walk::pick`, and it serves the walk's own pool and every pool it spills
-//! into; session affinity shapes the first and never the second.
-//!
-//! The stepper never awaits under its caller's lock: the one bounded wait (the queue terminal) is
-//! answered as [`Step::Wait`], parked with [`Walk::park`], awaited with [`Parked::wait`] and handed
-//! back with [`Walk::waited`].
 
 use std::collections::HashMap;
 
@@ -38,7 +15,7 @@ use crate::select::{pick_among, PickInput, RequestCtx};
 use crate::wire::Shed;
 
 /// Everything the walk reads, borrowed for one step. Shared across every unit of the generation;
-/// the mutable state of one unit is its [`Walk`].
+
 pub struct WalkPorts<'p> {
     /// The breaker unit.
     pub breaker: &'p dyn Breaker,
@@ -53,13 +30,10 @@ pub struct WalkPorts<'p> {
 }
 
 /// THE SHAPE A UNIT'S HOOKS PUT ON ITS PICKS (the design's route pump, "Hooks": the routing-stage policy
-/// keeps and orders the routed pool's members; a required restrict holds a pool the walk spills
-/// into): each pick's admissible members, the ones kept, and the order the walk prefers among them
-/// (empty = the weighted floor's own). `None` = a required restriction no member satisfies: the
-/// walk answers [`Shed::restrict_no_lane`] from there.
+
 pub trait Shape {
     /// `members` of a pick, as the unit's hooks leave them: the walk's own pool (`primary`) or a
-    /// pool it spills into.
+
     fn shape(
         &self,
         members: Vec<Member>,
@@ -68,7 +42,7 @@ pub trait Shape {
 }
 
 /// The walk's whole budget over `pool`, seconds: the pool's request timeout, `0` for a pool that is
-/// not configured.
+
 #[must_use]
 pub fn budget_secs(pools: &HashMap<String, Pool>, pool: &str) -> u64 {
     pools.get(pool).map_or(0, |p| p.failover.timeout_secs)
@@ -132,7 +106,7 @@ pub enum Step {
 }
 
 /// A parked wait: the members passed over AT CAPACITY on the last pick, the bound, and when it
-/// started.
+
 pub struct Parked<'p> {
     /// The pool's name, as the walk keys it.
     name: String,
@@ -145,7 +119,7 @@ pub struct Parked<'p> {
 }
 
 /// What a wait came back with: the member that freed a slot, its permit and the probe its breaker
-/// handed over, or nothing.
+
 pub struct Waited<'p> {
     name: String,
     pool: &'p Pool,
@@ -181,9 +155,7 @@ impl Walk {
     }
 
     /// A walk with no pool to walk, bounded by `budget_secs` from now: one health probe's. Its one
-    /// member is the caller's to take, never picked here, so every step answers the shed a probe
-    /// that brought no answer ends on (it has nowhere to fail over to), or the request timeout once
-    /// the bound has passed.
+
     #[must_use]
     pub fn pinned(ports: &WalkPorts<'_>, budget_secs: u64) -> Self {
         Self {
@@ -205,7 +177,7 @@ impl Walk {
     }
 
     /// The pool the walk is in and whether it is the walk's own (`true`) rather than a spill;
-    /// `None` once every path is spent.
+
     #[must_use]
     pub fn walking(&self) -> Option<(&str, bool)> {
         match &self.phase {
@@ -221,7 +193,7 @@ impl Walk {
     }
 
     /// A refusal for size from `failed` of `pool`: every ADMISSIBLE member whose window is at or
-    /// below the one that refused would refuse too, so the walk excludes them.
+
     pub fn refused_for_size(&mut self, ports: &WalkPorts<'_>, pool: &str, failed: &Member) {
         if let Some(pool) = ports.pools.get(pool) {
             exclude_smaller_windows(&pool.admissible_members(), failed, &mut self.ctx);
@@ -287,12 +259,7 @@ impl Walk {
                     let Some(pool) = ports.pools.get(&name) else {
                         return Step::Shed(pool_shed(ports, &name, &[], token));
                     };
-                    // The terminals that read the pool's own members (the shed's wait, the last
-                    // resort, the queue's shed) read the ones the unit's hooks kept, as the pool's
-                    // picks did: a required restriction holds through the terminal, as v1.5.5's
-                    // restricted `cands` did (`crates/busbar/src/proxy/engine/mod.rs:1085`,
-                    // `:1298-1300`; `engine/walk.rs:100`, `:202`, `:1126-1130`, `:1142-1146`), and
-                    // as hook behaviour must (docs/design/BUSBAR-1.6.0.md, decision 63).
+
                     let kept = |walk: &mut Self| {
                         walk.shaped(pool, shape, primary)
                             .map(|(members, _)| members)
@@ -307,8 +274,6 @@ impl Walk {
                         OnExhausted::FallbackPool(target) => {
                             if self.ctx.is_pool_visited(target) || !ports.pools.contains_key(target)
                             {
-                                // The loop guard, or a target never configured: the shed with the
-                                // empty-set floor.
                                 let secs = retry_after_secs(
                                     ports.breaker,
                                     &[],
@@ -326,7 +291,7 @@ impl Walk {
                                 Ok(members) => members,
                                 Err(shed) => return Step::Shed(shed),
                             };
-                            // A least-bad dispatch that brings no answer is the shed.
+
                             let shed = pool_shed(ports, &name, &members, token);
                             self.phase = Phase::Shed(shed.clone());
                             return match least_bad(ports, pool, &members, token) {
@@ -353,12 +318,7 @@ impl Walk {
     }
 
     /// THE ONE PICK, over `pool`'s members this unit has not tried: the walk's own pool
-    /// (`primary`, with the unit's affinity) and every pool it spills into (degraded).
-    ///
-    /// # Errors
-    ///
-    /// The unit's hooks hold the pool to a restriction no member satisfies: that shed, which every
-    /// step from here answers.
+
     fn pick(
         &mut self,
         ports: &WalkPorts<'_>,
@@ -404,13 +364,7 @@ impl Walk {
     }
 
     /// `pool`'s admissible members as the unit's hooks `shape` them for a pick of the walk's own
-    /// pool (`primary`) or a pool it spilled into, and the order they prefer.
-    ///
-    /// # Errors
-    ///
-    /// The hooks hold the pool to a restriction no member satisfies: [`Shed::restrict_no_lane`],
-    /// which every step from here answers, as v1.5.5 failed closed on it
-    /// (`crates/busbar/src/proxy/engine/mod.rs:1076-1082`, `engine/walk.rs:981-995`).
+
     fn shaped(
         &mut self,
         pool: &Pool,
@@ -450,16 +404,7 @@ impl Walk {
     }
 
     /// Park the queue terminal's wait: the members the last pick passed over AT CAPACITY (a held
-    /// slot can drop; nothing else waiting can cure), and the bound, the lesser of the pool's
-    /// setting and what the walk has left.
-    ///
-    /// Waiting only helps if some member was passed over AT CAPACITY. When every exclusion was
-    /// dead, out of budget, suppressed or a lost probe race, nothing will free a slot, so the
-    /// request is never parked: the shed comes now and answers every step from here, as 1.5.5's
-    /// pre-check did (v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:191-202`).
-    ///
-    /// # Errors
-    /// The shed: for a wait over a pool the walk does not have, or one with nothing to wait for.
+
     pub fn park<'p>(
         &mut self,
         ports: &WalkPorts<'p>,
@@ -492,10 +437,7 @@ impl Walk {
     }
 
     /// The wait is over: a member it won is taken (degraded), and from here every step
-    /// answers the pool's shed. `Err` is that shed, when the wait won nothing.
-    ///
-    /// # Errors
-    /// The pool's shed, when no slot freed within the bound.
+
     pub fn waited(
         &mut self,
         ports: &WalkPorts<'_>,
@@ -513,10 +455,7 @@ impl Walk {
 
 impl<'p> Parked<'p> {
     /// THE BOUNDED WAIT for a slot on a member passed over AT CAPACITY, then the breaker re-asked
-    /// on the member that freed one; nothing when no slot frees within the bound. The depth gauge
-    /// counts the waiter in for the length of the wait and out on EVERY exit, a dropped future
-    /// included (a caller that went away while parked), as 1.5.5's RAII depth did (v1.5.5
-    /// `crates/busbar/src/proxy/engine/walk.rs:212-214`).
+
     pub async fn wait(mut self, ports: &WalkPorts<'_>) -> Waited<'p> {
         let pool = self.pool;
         let members = pool.admissible_members();
@@ -563,8 +502,7 @@ impl<'p> Parked<'p> {
 }
 
 /// One parked waiter's place in the depth gauge, given back on drop. The increment and the
-/// decrement sit either side of an await, and a future dropped part-way runs no code between them;
-/// tying the decrement to a drop makes the balance hold on every exit there is.
+
 struct QueuedGuard<'a> {
     telemetry: &'a dyn Telemetry,
     pool: &'a str,
@@ -585,7 +523,7 @@ impl Drop for QueuedGuard<'_> {
 }
 
 /// The shed for `pool`: refuse, with the wait its `members` justify (the ones the unit's hooks
-/// kept; none for a pool the walk does not have).
+
 fn pool_shed(ports: &WalkPorts<'_>, pool: &str, members: &[Member], token: &Pass<Route>) -> Shed {
     Shed::overloaded(retry_after_secs(
         ports.breaker,
@@ -597,7 +535,7 @@ fn pool_shed(ports: &WalkPorts<'_>, pool: &str, members: &[Member], token: &Pass
 }
 
 /// Exclude every member of `members` (the pool's ADMISSIBLE members) whose window is at or below
-/// the one that just refused the request.
+
 pub fn exclude_smaller_windows(members: &[Member], failed: &Member, ctx: &mut RequestCtx) {
     let Some(failed_limit) = failed.context_max else {
         return;

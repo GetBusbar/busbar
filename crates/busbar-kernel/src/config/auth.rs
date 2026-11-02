@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `auth:` / `identity-providers:` config SHAPES: the wire structs, the resolved auth block and
-//! its chain entries, the role-binding grant, the token-mint policy, and the built-in provider
-//! names. Plain data with serde derives and pure accessors — nothing here loads a file, resolves a
-//! secret, or touches the running `App`. The resolver that joins chain NAMES to definitions
-//! (`resolve_auth`) stays in busbar-core, which re-exports every item here at its historical
-//! `config::` path.
-
 use serde::{Deserialize, Serialize};
 
 use busbar_contract::secret_ref::SecretRef;
@@ -34,11 +27,9 @@ use busbar_contract::secret_ref::SecretRef;
 /// The built-in `keys` (data-plane signed-key verifier) and the operator credential
 /// are referenced BARE with no definition at all; a definition entry exists only when the provider
 /// needs config (e.g. the operator credential carrying its `token:` secret ref).
-// `Serialize` projects the entry back to a raw definition document. The projection is
-// config-internal and round-trips straight back into this same struct; it reaches no reader and no
-// HTTP response, which is the distinction the settings-leak lint's category (c) turns on.
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)] // a typo'd key must fail boot, never silently disable a ceiling.
+#[serde(deny_unknown_fields)]
 pub struct IdentityProviderCfg {
     /// The module backing this provider: the built-in `keys` / operator credential, or a `kind: auth`
     /// plugin name/alias resolved through the validated plugin registry. REQUIRED, non-empty.
@@ -77,17 +68,9 @@ pub struct IdentityProviderCfg {
     pub browser_login: Option<BrowserLoginCfg>,
     /// The module's own opaque settings (pushed to the auth plugin verbatim).
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    // `settings:` the operator WROTE. Every admin read of it serves
-    // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first. The struct now derives `Serialize`, and that
-    // serialization has exactly ONE consumer: the overlay's per-entry merge, which projects the
-    // base entry to JSON, patches it, and parses it straight back into this same struct.
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The top-level `identity-providers:` map: provider NAME → [`IdentityProviderCfg`]. Insertion-ordered
-/// so the hosted-login button order is the operator's config order.
 pub type IdentityProviders = indexmap::IndexMap<String, IdentityProviderCfg>;
 
 /// A RESOLVED auth-chain entry: one `auth.chain:` / `auth.admin_auth:` NAME joined to the
@@ -108,16 +91,10 @@ pub struct AuthChainEntry {
     /// The operator credential's token, from its definition.
     pub token: Option<SecretRef>,
     /// The module's own opaque settings (pushed to an auth plugin verbatim).
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    // `settings:` the operator WROTE. Every admin read of it serves
-    // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
 impl AuthChainEntry {
-    /// A bare, definition-less built-in entry (`chain: [keys]`, or the operator credential's bare
-    /// name in `admin_auth:`).
     pub fn bare(module: impl Into<String>) -> Self {
         let module = module.into();
         Self {
@@ -176,8 +153,6 @@ pub struct RoleBindingCfg {
     pub plane_grants: std::collections::BTreeMap<String, Vec<String>>,
 }
 
-/// Read the keys a role binding names beyond its named fields: each must be a plane grant field
-/// (`allowed_{kind}s`) holding a list of names, and anything else is refused as an unknown field.
 fn plane_grant_fields<'de, D>(
     de: D,
 ) -> Result<std::collections::BTreeMap<String, Vec<String>>, D::Error>
@@ -208,15 +183,8 @@ where
     Ok(grants)
 }
 
-/// The `verbs:` spelling that grants EVERY admin verb — exactly `admin_scope: full` (#77(9)).
 pub const ALL_ADMIN_VERBS: &str = "*";
 
-/// THE UNGOVERNED ROLE: `role_bindings.<provider>."*"` binds the principals 1.5.5 admitted with no
-/// grant — a principal that asserts no roles, or, when the provider's table binds no other role,
-/// every principal the provider identifies. It grants what its binding states, as any role does;
-/// a principal whose asserted roles a named binding of the table grants is judged by those alone,
-/// and one asserting only roles the table does not name is still refused. `busbar
-/// --migrate-config` writes it to keep a 1.5.5 deployment's access, with a warning.
 pub const UNGOVERNED_ROLE: &str = "*";
 
 /// One role binding's `verbs:` grant, read off the value the operator wrote.
@@ -229,9 +197,6 @@ pub enum VerbGrant {
 }
 
 impl RoleBindingCfg {
-    /// This binding's DATA-PLANE grant over every scope kind, intent carried intact: no grant field
-    /// = everything (`None`); otherwise exactly the scopes its `allowed_pools` and `allowed_{kind}s`
-    /// fields name, across kinds ([`crate::governance::grant_scopes`]).
     pub fn scope_grant(&self) -> Option<Vec<busbar_contract::records::ScopeRef>> {
         let plane = (!self.plane_grants.is_empty()).then(|| {
             self.plane_grants
@@ -252,10 +217,6 @@ impl RoleBindingCfg {
         crate::governance::grant_scopes(self.allowed_pools.clone(), plane)
     }
 
-    /// This binding's `verbs:` grant: `None` when the key is absent; `Some(Err(shape))` when the
-    /// value is neither [`ALL_ADMIN_VERBS`] nor a list of names (`shape` says what it was instead,
-    /// for the validation message). Whether each NAME is a verb is the closed table's to say, at
-    /// validation ([`crate::admin::seam::admin_verb_rung`]).
     pub fn verb_grant(&self) -> Option<Result<VerbGrant, String>> {
         let value = self.verbs.as_ref()?;
         Some(match value {
@@ -274,7 +235,6 @@ impl RoleBindingCfg {
     }
 }
 
-/// `role_bindings:` - module name -> role name -> grant.
 pub type RoleBindings =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>;
 
@@ -304,9 +264,6 @@ pub enum BindingMode {
 }
 
 impl BindingMode {
-    /// The WIRE spelling (kebab-case), matching both the `serde(rename_all)` deserialize and the
-    /// `VirtualKey.binding_mode` string a minted key records. The single source of truth a runtime
-    /// comparison (a mint request's mode vs a policy's allowed set) goes through.
     pub fn as_str(self) -> &'static str {
         match self {
             BindingMode::TimeBound => "time-bound",
@@ -375,8 +332,7 @@ pub struct AuthPolicyCfg {
 /// plugin is lent at `open` for its own code→token exchange (the host keeps none of it; see
 /// `client_secret`). `deny_unknown_fields`: a typo here (e.g. `client_secrets:`) must fail boot, not
 /// silently disable the button.
-// `Serialize` for the same single reason `IdentityProviderCfg` has it: it is a nested field of one,
-// so the overlay's per-entry merge projection needs it. Config-internal, never a reader-facing view.
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserLoginCfg {
@@ -406,15 +362,9 @@ pub struct AuthMethodCfg {
     /// Browser-login parameters; `Some` ⇒ this provider renders a button on the hosted login page.
     pub browser_login: Option<BrowserLoginCfg>,
     /// The module's own opaque settings, pushed to the module verbatim (issuer, audience, …).
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    // `settings:` the operator WROTE. Every admin read of it serves
-    // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The resolved hosted-login methods — insertion-ordered (operator order = login-page button order),
-/// keyed by PROVIDER NAME.
 pub type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 
 /// The WIRE shape of the `auth:` block (1.5.3). `chain:` / `admin_auth:` are lists of bare NAMES
@@ -451,8 +401,6 @@ pub struct AuthDeployCfg {
 }
 
 impl Default for AuthDeployCfg {
-    /// The all-omitted `auth:` block: open front door (empty data chain) + the default
-    /// operator-credential admin chain, matching the per-field serde defaults exactly.
     fn default() -> Self {
         Self {
             signing_key: None,
@@ -501,7 +449,6 @@ pub struct AuthCfg {
 }
 
 impl AuthCfg {
-    /// Create a default (open front door, default admin chain) AuthCfg for initialization.
     pub fn default_none() -> Self {
         Self {
             signing_key: None,
@@ -514,9 +461,6 @@ impl AuthCfg {
         }
     }
 
-    /// TEST-SUPPORT constructor: the default (open, default-admin) posture with ONLY the data-plane
-    /// `chain` overridden — the shape the relocated hook-seam tests need. Kept on the test-support
-    /// surface so a plane's tests build the posture through one seam rather than a struct literal.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_chain(chain: Vec<AuthChainEntry>) -> Self {
         Self {
@@ -525,8 +469,6 @@ impl AuthCfg {
         }
     }
 
-    /// The operator-credential secret reference (the `token:` of the first entry backed by the
-    /// [`operator_provider`]), if configured.
     pub fn admin_token_ref(&self) -> Option<&SecretRef> {
         self.admin_auth
             .iter()
@@ -535,18 +477,6 @@ impl AuthCfg {
             .and_then(|e| e.token.as_ref())
     }
 
-    /// Whether a USABLE ADMIN MINT PATH exists — the STRUCTURAL precondition for putting the `keys`
-    /// verifier in `auth.chain` (a busbar-MINTED credential can only be issued through an admin
-    /// endpoint, so if nothing can mint one every data-plane request would reject). Checked at
-    /// validate/boot, which runs BEFORE secrets resolve, so this is purely structural:
-    /// - `admin_auth` is explicitly OPEN (`[]`) → anyone can mint (dev). TRUE — the caller WARNs.
-    /// - an operator-credential entry carries a `token:` secret ref → the operator credential can
-    ///   mint.
-    /// - an external admin module names `max_admin_scope: full` → an admin IdP can mint (1.5.2 scope
-    ///   collapse retired the narrower `mint` ceiling; `full` is now the only mutation grant).
-    ///
-    /// Does NOT resolve the token or consult `role_bindings` (neither is available here); a ceiling of
-    /// `full` is the operator's explicit structural declaration that minting is reachable.
     pub fn usable_mint_path(&self) -> bool {
         if self.admin_auth.is_empty() {
             return true;
@@ -559,24 +489,14 @@ impl AuthCfg {
     }
 }
 
-/// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 pub const KEYS_MODULE: &str = "keys";
-/// The operator credential's `module:` word, under the name the admin surface reads it by (the
-/// OpenAPI description of `admin_auth`): the same function as [`operator_provider`].
+
 pub use busbar_kernel_identity::operator::provider as operator_module;
-/// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it (the `auth.admin_auth:` default,
-/// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook name),
-/// and the principal id it identifies the operator as. Frozen config text the composition root's
-/// migration table holds and hands in with its linked auth rows (ARCHITECT 2026-09-30,
-/// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173); the kernel never spells it. Which module answers it is
-/// the auth axis's business.
+
 pub use busbar_kernel_identity::operator::{
     principal_id as operator_principal_id, provider as operator_provider,
 };
 
-/// Whether `module` names THE OPERATOR CREDENTIAL'S PLUGIN, by its identity rather than one spelling
-/// (ARCHITECT C'): the [`operator_provider`] key, the canonical name its linked row answers to, or a
-/// former name the root migration table gives that key — every name the registry resolves to that row.
 pub fn names_operator(module: &str) -> bool {
     let op = operator_provider();
     busbar_kernel_identity::operator::names(op, module)
@@ -586,33 +506,20 @@ pub fn names_operator(module: &str) -> bool {
                 .any(|f| f == module))
 }
 
-/// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
-/// `identity-providers:` definition at all: the signed-key verifier and the operator credential. A
-/// definition entry for one of these exists only when it needs config — the operator credential
-/// carrying its `token:` secret ref is the one real case.
 pub fn builtin_identity_providers() -> [&'static str; 2] {
     [KEYS_MODULE, operator_provider()]
 }
 
-/// Whether a provider's `module:` names a BUILT-IN: one of [`builtin_identity_providers`], or the
-/// operator credential's plugin by any other name it answers to ([`names_operator`]).
 pub fn is_builtin_identity_module(module: &str) -> bool {
     builtin_identity_providers().contains(&module) || names_operator(module)
 }
 
-/// The MOST RESTRICTIVE admin ceiling — the default for a provider whose definition omits
-/// `max_admin_scope:`. "Most restrictive" is `read-only`, matching the pre-1.5.3 behavior
-/// exactly (the retired chain-entry field defaulted the same way); the operator credential is EXEMPT
-/// (full by definition), which is why `resolve_auth` applies this only to the other providers.
 pub use busbar_contract::DEFAULT_MAX_ADMIN_SCOPE;
 
-/// The serde default for `auth.admin_auth:` - the [`operator_provider`], referenced bare (the single
-/// operator admin token; byte-identical to the pre-chain behavior).
 pub fn default_admin_auth_names() -> Vec<String> {
     vec![operator_provider().to_string()]
 }
 
-/// The RESOLVED form of [`default_admin_auth_names`].
 pub fn default_admin_auth() -> Vec<AuthChainEntry> {
     vec![AuthChainEntry::bare(operator_provider())]
 }

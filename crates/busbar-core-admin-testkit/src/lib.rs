@@ -1,16 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Dev-only orchestration over the admin service's real seams.
-
 mod restart;
 
 pub use restart::with_forced_unsupervised;
 
-/// Every component schema a registered plane's `openapi_schemas` contributes, as
-/// `(plane key, schema name, schema)`, each plane folded over the two generators `openapi_doc` hands
-/// every contributor, configured as it configures them (the composition root's admin tests hold
-/// them to the committed document with the door planes registered).
 #[cfg(feature = "openapi-schema")]
 pub fn plane_component_schemas() -> Vec<(&'static str, String, serde_json::Value)> {
     let generator = |serialize: bool| {

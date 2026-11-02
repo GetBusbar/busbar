@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A sealed record survives the journal: `audit.v4` keeps the whole record, and reading it back
-//! gives the record that was sealed — the same digest, the same signature, still verifying.
-
 use crate::test_support::tokens::pass;
 use busbar_contract::caps::{Audit as AuditStep, MeterClassId};
 
@@ -11,7 +8,6 @@ use busbar_kernel_audit::journal::{from_journal_body, journal_body, JOURNAL_TAG}
 use busbar_kernel_audit::record::{AuditBreakKind, AuditChain};
 use busbar_kernel_audit::sign::AuditSigningKey;
 
-/// The classes the fixture's lines name, as a node's registered vocabulary would resolve them.
 fn declared(name: &str) -> Option<MeterClassId> {
     ["tokens_in", "tokens_out"]
         .into_iter()
@@ -19,7 +15,6 @@ fn declared(name: &str) -> Option<MeterClassId> {
         .map(MeterClassId::new)
 }
 
-/// The node the fixture's records are sealed by.
 const SEALING_NODE: u64 = 13;
 
 fn sealed(n: u64) -> Vec<busbar_kernel_audit::record::AuditRecord> {
@@ -72,7 +67,6 @@ fn a_body_that_is_not_an_audit_record_is_none_and_a_torn_one_is_an_error() {
     assert!(from_journal_body(&longer, &declared).is_err());
 }
 
-/// A CLASS THE VOCABULARY DOES NOT HOLD IS AN ERROR, never a line dropped: the reader names it.
 #[test]
 fn a_class_nobody_declares_here_is_an_error_naming_it() {
     let body = journal_body(&sealed(1)[0]).expect("the body fits");
@@ -80,13 +74,11 @@ fn a_class_nobody_declares_here_is_an_error_naming_it() {
     assert!(err.contains("tokens_out"), "{err}");
 }
 
-/// AN EDIT TO A RECORD ON DISK decodes to a record whose digest no longer matches: the chain walk
-/// names it.
 #[test]
 fn an_edited_journal_body_decodes_to_a_record_the_chain_walk_refuses() {
     let records = sealed(1);
     let mut body = journal_body(&records[0]).expect("the body fits");
-    // The first usage line's quantity (120) is a big-endian u64 somewhere in the body; edit it.
+
     let needle = 120u64.to_be_bytes();
     let at = body
         .windows(8)
@@ -101,11 +93,6 @@ fn an_edited_journal_body_decodes_to_a_record_the_chain_walk_refuses() {
     );
 }
 
-/// AN OUTCOME TAG THAT DOES NOT RE-RENDER IS REFUSED, never mapped to a different reason — the
-/// BODY half. The decoder reads a sealed outcome back and accepts it only when it renders
-/// byte-equal to the tag the record carries; the decoder's own refusals (a reason nobody spells that
-/// way, a padded number, a near-miss spelling) are pinned beside it in the audit crate under the
-/// same name. This half seals a record and checks that the body carrying a forged tag is refused too.
 #[test]
 fn an_outcome_tag_that_does_not_re_render_is_refused_never_remapped_in_a_sealed_body() {
     let body = journal_body(&sealed(1)[0]).expect("the body fits");

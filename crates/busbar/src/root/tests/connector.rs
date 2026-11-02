@@ -1,19 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE CONNECTOR: built from this build's linked transport doors, installed once, and the same
-//! instance whoever asks for it; a second install is refused. Every path that dials or declares
-//! takes this instance (`root::connector::the()`), never a connector of its own.
-
 use super::*;
 
-/// The strict default guard, as a deployment that states nothing builds it.
 fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
     process::dest_judge(&Destinations::default()).expect("the default")
 }
 
-// The one connector is built from this build's linked transport doors; a build that links none
-// (`--no-default-features`) has no connector to build, so this cell gates on the transport-door axis.
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn the_process_has_one_connector_and_every_path_takes_it() {
@@ -44,8 +37,6 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
     assert!(Arc::ptr_eq(the(), &built));
 }
 
-/// A bad `advanced.allow_destinations` entry refuses the guard's build (the boot and `--validate`
-/// refusal), naming the key and the entry.
 #[test]
 fn a_bad_allowlist_entry_refuses_the_guard() {
     let d = Destinations {
@@ -59,23 +50,14 @@ fn a_bad_allowlist_entry_refuses_the_guard() {
     );
 }
 
-// ── THE METADATA CARVE-OUTS, AS A DEPLOYMENT WRITES THEM ──
-// A provider's `allow_metadata_hosts` admits a metadata address only in the provider class and only
-// for that provider's own URL host; no other class admits metadata through any carve-out (the 1.5.5
-// `security` keys included), and operator infrastructure refuses it whatever the carve-outs say.
-// The lists are re-read at every config commit, as 1.5.5 and train/1 re-read them.
-
 use busbar_contract::abi::host::conn::connector::{
     EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
     EGRESS_PROVIDER,
 };
 use busbar_contract::abi::host::service::DEST_METADATA;
 
-/// The AWS/GCP/Azure IMDS address every carve-out below names.
 const IMDS: &str = "169.254.169.254";
 
-/// A resolved deployment: `providers` as `(name, base_url, allow_metadata_hosts)`, every one in
-/// the catalog, and `security` (YAML, or empty for none).
 fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
     let mut defs = std::collections::HashMap::new();
     let mut yaml = String::from("store: {module: memory}\nmodels: {}\nproviders:");
@@ -98,7 +80,6 @@ fn imds() -> Vec<std::net::IpAddr> {
     vec![IMDS.parse().unwrap()]
 }
 
-/// The verdict `judge` answers for `host` answering the IMDS address under `class`.
 fn metadata_verdict(judge: &dyn DestJudge, host: &str, class: u32) -> Option<u64> {
     judge
         .judge_answer(host, &imds(), class)
@@ -106,8 +87,6 @@ fn metadata_verdict(judge: &dyn DestJudge, host: &str, class: u32) -> Option<u64
         .map(|r| r.verdict)
 }
 
-/// RED: a provider's carve-out does not admit the metadata address for a default-class or
-/// open-web dial, its own host included; nor does the global 1.5.5 carve-out.
 #[test]
 fn a_provider_carve_out_does_not_admit_metadata_for_a_default_or_open_web_dial() {
     let cfg = deployment(
@@ -131,8 +110,6 @@ fn a_provider_carve_out_does_not_admit_metadata_for_a_default_or_open_web_dial()
     }
 }
 
-/// RED: a provider's carve-out admits the metadata address for that provider's own URL host, in
-/// the provider class, and for no other provider's host.
 #[test]
 fn a_provider_carve_out_does_not_admit_metadata_for_another_provider_host() {
     let cfg = deployment(
@@ -157,8 +134,6 @@ fn a_provider_carve_out_does_not_admit_metadata_for_another_provider_host() {
     }
 }
 
-/// RED: operator infrastructure (and loopback-allowed) refuse metadata even when every 1.5.5 key
-/// carves it out: a provider's carve-out, the global carve-out and `allow_all_metadata`.
 #[test]
 fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
     let cfg = deployment(
@@ -183,13 +158,8 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
     }
 }
 
-/// RED: the metadata lists are re-read at every config commit: the process's guard admits a
-/// carve-out the boot config states, and once a reload that removes it commits, the next dial is
-/// refused.
 #[test]
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
-    // Every app build reads the plane registry, so holding it isolated keeps every other test's
-    // commit out of this one's window.
     let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
         busbar_kernel_testkit::test_support::neutral_fallback_plane(),
     ]);
@@ -199,8 +169,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
          advanced:\n  allow_destinations: [\"127.0.0.1\", \"::1\"]\n",
     );
     let judge = dest_judge(&boot);
-    // The boot path's own step: the root's rules hold the guard, and every build judged by them
-    // raises its commit to it.
+
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> = Arc::new(
         crate::root::door_steps::Rules::hearing(judge.clone() as Arc<dyn DestJudge>),
     );
@@ -218,11 +187,6 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     );
 }
 
-/// security.md: `advanced.allow_destinations` is read at boot and a change needs a restart. The
-/// metadata lists are re-read at each config commit (the test above), the allowlist is not: a
-/// reload that REMOVES an entry leaves the process's guard admitting what the boot config admitted,
-/// and a reload that ADDS one admits nothing new. Both directions are held, so neither a silent
-/// loosening nor a silent tightening can happen without a restart.
 #[test]
 fn a_reload_that_changes_the_allowlist_changes_nothing() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
@@ -238,7 +202,6 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
             .map(|r| r.verdict)
     };
 
-    // Boot names one host; the reload drops it and names another.
     let boot = deployment(&[], "advanced:\n  allow_destinations: [model-a.internal]\n");
     let judge = dest_judge(&boot);
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> = Arc::new(
@@ -268,11 +231,6 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
     );
 }
 
-/// RED: a deployment
-/// whose provider has no `advanced.allow_destinations` entry is refused the private address its
-/// name answers with on a provider dial (its own configured host included); once the allowlist
-/// names it, the same dial is admitted. Operator infrastructure reaches the private address with
-/// no entry, and refuses metadata even with every carve-out.
 #[test]
 fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
@@ -313,18 +271,6 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     );
 }
 
-/// RED against the pinned mint plugin before busbar-auth-oauth#43, whose mint needs were
-/// operator infrastructure (security item 3; security.md:158/169: provider upstreams, "their
-/// `base_url` and `token_url` included", are refused a private address unless allowlisted, which
-/// BUSBAR-3025 warns of at `--validate`): every outbound need a linked auth plugin's Statement
-/// declares, judged in the class the connector judges it in (`guard::judged_class`: a need whose
-/// config names its target is lifted out of the default class only), is REFUSED a private address
-/// by the strict guard, ADMITTED once `advanced.allow_destinations` names the host, and refused
-/// cloud metadata. Its class keeps 1.5.5's plaintext to a private token endpoint (neither `open-web`
-/// nor `loopback-allowed`, which refuse it). Read off every linked auth row's own Statement, never a
-/// plugin's name. It rides EVERY linked auth row (`linked_every_auth`, build.rs), so the mint
-/// plugin's needs are among them and the cell always proves one; a build missing an auth row does
-/// not run it. Superseded: `every_linked_auth_plugins_outbound_needs_are_operator_infrastructure`.
 #[cfg(linked_every_auth)]
 #[test]
 fn every_linked_auth_plugins_outbound_need_is_refused_a_private_address_unless_allowlisted() {
@@ -381,14 +327,6 @@ fn every_linked_auth_plugins_outbound_need_is_refused_a_private_address_unless_a
     );
 }
 
-/// RED: a plane's upstream need whose settings name a PROGRAM is dialled by
-/// the one connector over a linked transport door that frames a program's pipes LINE BY LINE (the
-/// line row's door, found by what it does, never by name): the connector spawns the program
-/// (operator-infrastructure class; no shell, only its stated environment), its first line is one
-/// frame with the newline stripped, a message written is one line to its stdin, and it is killed
-/// on close.
-// Every linked wire is composed: a build that leaves one unlinked is a different composition
-// (`linked_every_transport`, emitted by build.rs).
 #[cfg(linked_every_transport)]
 #[test]
 fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
@@ -420,7 +358,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             (busbar_contract::conn::PROGRAM_ENV_KEY): {"DECLARED": "yes"},
         }))
         .expect("a program");
-        // The next frame on `conn`, read through the table.
+
         let frame = |conn: ConnId| {
             let c = &c;
             async move {
@@ -457,11 +395,11 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
                 deny_response_headers: Vec::new(),
             };
             let (owner, id) = (InstanceId(7), NeedId(n));
-            // A door that frames over another layer carries no program: refused at declare.
+
             if c.declare_program(owner, id, &need, &program).is_err() {
                 continue;
             }
-            // A door that will not begin a framing over a program's pipes refuses the open.
+
             let Ok(conn) = c.open(owner, id, &OpenDesc::default()) else {
                 continue;
             };

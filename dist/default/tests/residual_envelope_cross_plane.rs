@@ -1,29 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RESIDUAL ENVELOPE, asserted against the REAL linked planes: a plane claims a path only when
-//! the operator's configuration mounts it.
-//!
-//! MOVED HERE from `crates/busbar-kernel/tests/` (kind-isolation: core names zero plane
-//! types, its tests included): the cell needs a
-//! plane that mounts a path, and every such plane is now served through its door, which the
-//! composition root links and the kernel does not.
-//!
-//! The planes come from the test-linked table (`tests/linked/mod.rs`); this file names none of
-//! them. The table of which dialect answers which residual path shape is the catch-all plane's
-//! subject and lives with that plane (its own crate's residual-dialect suite); the error-shaping mechanics the
-//! table feeds stay pinned in `src/tests/tests.rs`.
-
 mod linked;
 
 use busbar_kernel_testkit::test_support::{oversized_413_body, TestApp};
 
-/// A PLANE CLAIMS A PATH ONLY WHEN THE OPERATOR MOUNTED IT. With none of a plane's sections in the
-/// configuration there is no such plane, so the path its key spells is an ordinary unclaimed path on
-/// the residual and is answered as one. The merge must not turn an unmounted plane into one that
-/// claims paths by URL shape. Driven for EVERY linked plane that mounts (the fallback plane is the
-/// residual itself); the mounted twin is
-/// `crates/busbar/tests/plane_integration.rs::oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect`.
 #[tokio::test]
 async fn an_unmounted_plane_claims_no_path_by_url_shape() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -38,7 +19,7 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
     );
     for decl in mounting {
         let path = format!("/{}", decl.key);
-        // No section of this plane is configured: `TestApp::new()` carries none.
+
         let app = TestApp::new().build();
 
         let v = oversized_413_body(app, &path).await;

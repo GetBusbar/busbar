@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Cancellation remains possible until the owner selects this opening, including while an
-//! earlier opening crosses. Selection and cancellation share the line's lock; plugin crossings,
-//! secret wiping and payload retirement do not.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
@@ -176,7 +174,6 @@ fn cancelled_queued_openings_never_cross_and_live_neighbors_open_once_in_fifo_or
                 .await
                 .unwrap();
 
-            // The original holder owns the real connection inside a carrier read.
             let (read_in, read_entered) = mpsc::channel();
             let (read_release, read_held) = mpsc::channel();
             *carrying.gate.lock().unwrap() = Some((read_in, read_held));
@@ -207,7 +204,6 @@ fn cancelled_queued_openings_never_cross_and_live_neighbors_open_once_in_fifo_or
             cancel(&line, before_return, 5);
             assert!(framing.bodies.lock().unwrap().is_empty());
 
-            // The next opening is selected and crosses. Its later neighbors remain cancellable.
             let (encode_in, encode_entered) = mpsc::channel();
             let (encode_release, encode_held) = mpsc::channel();
             *framing.encode.lock().unwrap() = Some((encode_in, encode_held));
@@ -233,7 +229,6 @@ fn cancelled_queued_openings_never_cross_and_live_neighbors_open_once_in_fifo_or
             assert!(line.state().opening.is_empty());
             assert!(line.state().refused.is_empty());
 
-            // The far end received only the selected request and the two live neighbors.
             let expected = b"selectedlive-firstlive-second";
             let mut received = vec![0; expected.len()];
             tokio::time::timeout(LONG, peer.read_exact(&mut received))

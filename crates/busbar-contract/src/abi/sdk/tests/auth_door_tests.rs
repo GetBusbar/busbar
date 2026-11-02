@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `auth_verify_door!` over a safe test plugin, driven through its real table: open, every verdict,
-//! the short-buffer answer, refresh's flushed count, the ops it does not serve, close. Each answer is
-//! judged by the kind's own validator (`check_identify`).
 
 use std::mem::size_of;
 use std::ptr;
@@ -29,16 +27,13 @@ mod plugin {
     use crate::abi::sdk::door::{abi_str, statement};
 
     /// Identifies `good` (naming it as the identity's credential), rejects `bad`, passes anything
-    /// else; the `x-alt` line stands in for the credential, and is named to strip whatever the
-    /// verdict. `body` identifies only a request at `HeadBody` on connection 7, unit 9, whose body
-    /// is `signed`. Its settings must be `"ok"`.
+
     pub struct Judge {
         pub flushes: std::sync::atomic::AtomicU64,
     }
 
     impl VerifyPlugin for Judge {
         fn validate(settings: &[u8]) -> Result<(), Refusal> {
-            // Its `open` needs its secret: the settings are judged alone.
             if settings != b"\"ok\"" {
                 return Err(Refusal::failed("settings: not this plugin's"));
             }
@@ -56,7 +51,6 @@ mod plugin {
         }
 
         fn verify(&self, r: &VerifyView<'_>) -> Answer {
-            // Named whatever the verdict, from a `const` list: no verify allocates it.
             const STRIPS: &[Strip] = &[strip_field("x-alt")];
             let verdict = match r.credential().or_else(|| r.line("X-Alt")) {
                 Some(b"mutable") => Verdict::Identity(VerifiedIdentity {
@@ -89,7 +83,7 @@ mod plugin {
                 }
                 Some(b"body") => Verdict::reject("the body is not the signed one"),
                 Some(b"bad") => Verdict::reject(format!("credential {} is not known", "#7")),
-                // Asks the kernel to admit this identity once per key.
+
                 Some(b"once") => Verdict::Identity(VerifiedIdentity {
                     subject: "hook".into(),
                     replay: Some(Box::new(crate::auth_calls::Replay {
@@ -167,7 +161,6 @@ mod plugin {
 }
 
 fn ops() -> &'static Ops {
-    // The macro's door and table are `'static` consts.
     let d: &Door = plugin::door();
     // SAFETY: as above; the door's ops are an auth table.
     unsafe { &*d.ops.cast::<Ops>() }
@@ -426,7 +419,7 @@ fn every_verdict_crosses_the_table_and_passes_the_kinds_check() {
 }
 
 /// THE REPLAY KEY: an identity that asks to be admitted once per key writes the key into the host's
-/// buffer (a span the kind's check bounds) and its TTL; one that does not leaves the span ABSENT.
+
 #[test]
 fn a_replay_key_crosses_as_a_bounded_span_with_its_ttl() {
     let (_, opened) = open(b"\"ok\"");
@@ -444,14 +437,14 @@ fn a_replay_key_crosses_as_a_bounded_span_with_its_ttl() {
         "no replay asked, span absent"
     );
     assert_eq!(out.identity.replay_ttl_secs, 0);
-    // RED: a replay span past the host's buffer is the kind's FAULT, never read.
+
     let (o, mut out, input) = verify(opened.instance, Some(b"once"), None, &mut host);
     out.identity.replay_key = Span {
         offset: 60,
         len: 10,
     };
     assert!(check(o, &out, &input, &host).is_err());
-    // RED: a replay TTL with no replay key is refused (the key is Missing), never half-read.
+
     let (o, mut out, input) = verify(opened.instance, Some(b"good"), None, &mut host);
     out.identity.replay_ttl_secs = 30;
     assert_eq!(
@@ -466,7 +459,7 @@ fn an_identity_that_does_not_fit_is_the_short_answer_and_writes_nothing() {
     let mut host = Host::new(4, 1);
     let (o, out, input) = verify(opened.instance, Some(b"good"), None, &mut host);
     assert_eq!(o, Outcome::Failed);
-    // alice, Alice, ops, dev, the credential `good` and the strip name `x-alt`.
+
     assert_eq!(
         (out.needed_bytes, out.needed_groups),
         (5 + 5 + 3 + 3 + 4 + 5, 2)
@@ -474,7 +467,6 @@ fn an_identity_that_does_not_fit_is_the_short_answer_and_writes_nothing() {
     check(o, &out, &input, &host).expect("a legal short answer");
     assert_eq!(host.buf, vec![0; 4], "a short answer writes nothing");
 
-    // One dimension short, the other fitting: still the short answer, both at full size.
     let mut host = Host::new(64, 1);
     let (o, out, input) = verify(opened.instance, Some(b"good"), None, &mut host);
     assert_eq!(
@@ -518,7 +510,7 @@ fn a_short_verdict_reference_is_instance_and_ticket_bound_and_expires_on_release
             Outcome::Failed
         );
         assert_ne!(short.head.lease, 0);
-        // Copy the negotiated reference while its lease is live, exactly as the host does.
+
         let reference = unsafe {
             std::slice::from_raw_parts(short.head.extensions.ptr, short.head.extensions.len)
         }
@@ -663,8 +655,7 @@ fn the_ops_it_does_not_serve_are_refused_and_the_tail_states_inbound_only() {
 }
 
 /// THE STRIPS AND THE DECISION (THE DESIGN, "Auth points and guest lists", step 3): every verdict
-/// names the credential line to strip, as a bounded span the kind's check reads; the decision is
-/// CONTINUE for an identity or a pass and STOP for a reject; the credential rides the identity only.
+
 #[test]
 fn every_verdict_names_its_strips_and_a_decision() {
     let (_, opened) = open(b"\"ok\"");
@@ -773,14 +764,14 @@ fn strips_that_do_not_fit_are_the_short_answer() {
     );
     check(o, &out, &input, &host).expect("a legal short answer");
     assert_eq!(host.buf, vec![0; 64], "a short answer writes nothing");
-    // RED: a needed_strip past the hard maximum is FAULT.
+
     let mut over = out;
     over.needed_strip = crate::abi::auth::FIELDS_HARD_MAX + 1;
     assert_eq!(
         check(o, &over, &input, &host),
         Err(fault(Rule::OverMax, "verify.strip"))
     );
-    // RED: a needed_strip on READY is FAULT.
+
     let mut host = Host::new(64, 4);
     let (o, mut out, input) = verify(opened.instance, Some(b"bad"), None, &mut host);
     out.needed_strip = 1;
@@ -791,7 +782,7 @@ fn strips_that_do_not_fit_are_the_short_answer() {
 }
 
 /// THE VIEW AT A POINT: the plugin reads the point, the connection, the unit and, at `HeadBody`
-/// only, the body the host lent (THE DESIGN, "Auth points and guest lists", steps 1 and 7).
+
 #[test]
 fn the_view_reads_the_point_the_conn_the_unit_and_the_body() {
     let (_, opened) = open(b"\"ok\"");
@@ -806,7 +797,7 @@ fn the_view_reads_the_point_the_conn_the_unit_and_the_body() {
     );
     assert_eq!((o, out.verdict), (Outcome::Ready, VERDICT_IDENTITY));
     check(o, &out, &input, &host).expect("check");
-    // RED: the same request at `Head` (no body lent), or over another body, is not identified.
+
     for (point, body) in [(POINT_HEAD, None), (POINT_HEAD_BODY, Some(&b"forged"[..]))] {
         let (o, out, _) = verify_at(opened.instance, Some(b"body"), None, point, body, &mut host);
         assert_eq!((o, out.verdict), (Outcome::Ready, VERDICT_REJECT));
@@ -814,7 +805,7 @@ fn the_view_reads_the_point_the_conn_the_unit_and_the_body() {
 }
 
 /// THE OPERATOR CREDENTIAL'S TAIL: `with_operator` adds `FACT_OPERATOR` to the facts the tail already
-/// states and names the principal; `verify_tail` alone states neither (an empty principal).
+
 #[test]
 fn with_operator_states_the_fact_and_the_principal() {
     use crate::abi::auth::{AuthPoints, FACT_CACHEABLE, FACT_OPERATOR};
@@ -838,8 +829,7 @@ fn with_operator_states_the_fact_and_the_principal() {
 }
 
 /// RED (open160 WH1/ADM1): the verify kit's `validate` answered READY whatever the settings, so
-/// `busbar --validate` accepted a webhook-signature or admin-tokens configuration that boot's
-/// `open` then refused. `validate` now refuses what `open` refuses, in the plugin's own words.
+
 #[test]
 fn red_validate_refuses_the_settings_open_refuses() {
     let validate = |settings: &[u8]| {
@@ -870,7 +860,7 @@ fn red_validate_refuses_the_settings_open_refuses() {
 }
 
 /// RED (open160 A9): an op the verify door does not serve answered REFUSED with no text, so the
-/// host's log could not say what was refused.
+
 #[test]
 fn red_an_unserved_op_is_refused_saying_why() {
     let (_, opened) = open(b"\"ok\"");
@@ -901,8 +891,7 @@ fn head_text(head: &OutHead) -> String {
 }
 
 /// GREEN (open160 A1): a REJECT names its reason in the answer's head, an owned text kept by the
-/// instance; the verdict and the decision are the kind's as before, and the kind's check accepts
-/// the answer. An identity and a pass name none.
+
 #[test]
 fn a_reject_names_its_reason_and_nothing_else_does() {
     let (_, opened) = open(b"\"ok\"");
@@ -923,7 +912,7 @@ fn a_reject_names_its_reason_and_nothing_else_does() {
 }
 
 /// GREEN (open160 A8): a plugin refuses a reload in its own dynamic words, with its own outcome;
-/// the instance keeps serving.
+
 #[test]
 fn a_refresh_the_plugin_refuses_answers_its_words() {
     let (_, opened) = open(b"\"ok\"");
@@ -951,7 +940,7 @@ fn a_refresh_the_plugin_refuses_answers_its_words() {
 }
 
 /// GREEN (open160 A11): a `verify` reports a declared diagnostic through its op, in the reply's
-/// envelope, whatever it answers.
+
 #[test]
 fn a_verify_reports_its_diagnostic_through_the_op() {
     let (_, opened) = open(b"\"ok\"");

@@ -131,8 +131,7 @@ impl FramerDoor for Branching {
                         };
                         if let Some((stream, value)) = generated {
                             output.expanded = true;
-                            // Exactly one more than this actual host loan can hold. The finite
-                            // fixture needs no invented capacity or endless YIELD_MORE behavior.
+
                             for _ in 0..=input.sink.pieces_cap {
                                 output.pieces.push_back((stream, value.to_vec()));
                             }
@@ -319,14 +318,7 @@ fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_publis
     );
     assert!(caller.output.lock().unwrap().emitted.last().unwrap().more);
     assert!(upstream.output.lock().unwrap().emitted.last().unwrap().more);
-    // An exact finite trace, with capacities taken from the host loans rather than chosen by
-    // the fixture:
-    // 1. A Emit(start) takes the input whole, answers C_A LINEs + MORE and holds one last LINE.
-    // 2. Publishing only A1 starts B Emit(a), which answers C_B LINEs + MORE and holds one last
-    //    LINE. A2..A_C_A still precede any new A output; none of B's output has been delivered.
-    // 3. B1 carries `b`, fresh Emit bytes for A. A still owes its empty-input same-op recall.
-    // 4. Eagerly recall A instead: that final old LINE needs retained publication custody while
-    //    B's whole batch remains. Copying ABI buffers freed the loan, not the publication data.
+
     let a_output = caller.output.lock().unwrap();
     let b_output = upstream.output.lock().unwrap();
     assert_eq!(a_batch.len(), a_output.emitted[0].capacity - 1);
@@ -338,22 +330,14 @@ fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_publis
         .iter()
         .all(|g| g.bytes.as_slice() == UPSTREAM_FRAME));
     drop((a_output, b_output));
-    // Both source publication batches remain undelivered. A producer paused at that barrier
-    // cannot drain more output without retaining another completed batch; accepting feedback
-    // is fresh input while its same-op recall remains owed. The C buffers have been copied,
-    // so45-48 permits an eager recall, but that alone supplies no bounded publication queue.
-    // The script is finite: B branches only once, and its feedback yields only caller CHANNELs.
+
     drop((b_batch, a_batch, b_turn, a_turn));
     assert_eq!(caller.finished.load(Ordering::SeqCst), 1);
     assert_eq!(upstream.finished.load(Ordering::SeqCst), 1);
 }
 
 /// Each real framer crossing answers at most two short pieces and completes immediately. The
-/// finite causal chain, rather than any single operation's recalls, grows the FIFO frontier.
-/// Even relaxing FIFO to depth-first traversal retains one sibling per causal level. Before the
-/// first terminal, every completed crossing consumes one frame and answers two: no traversal
-/// reaches depth zero in fewer than `depth + 1` crossings. This uses the eager public API as a
-/// completion control; it supplies no production queue or proposed publication schedule.
+
 #[test]
 fn distinct_finite_emits_outgrow_two_retained_slots_without_using_the_recall_budget() {
     for fifo in [true, false] {

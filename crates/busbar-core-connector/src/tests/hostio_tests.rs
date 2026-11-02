@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host's I/O (`io.*`): it reaches only what was admitted for the op that asks, a handle is its
-//! maker's alone, and the bytes move both ways over a real socket and a real program.
 
 use std::future::poll_fn;
 use std::task::Poll;
@@ -253,12 +252,12 @@ fn ticket(n: u32) -> Ticket {
 fn nothing_is_opened_bound_or_spawned_that_was_not_admitted() {
     worker().block_on(async {
         let io = HostIo::new();
-        // RED: no admission at all.
+
         assert!(matches!(
             io.open(OWNER, ticket(1), "127.0.0.1:9"),
             Err(IoRefusal::Refused(_))
         ));
-        // RED: another address than the one admitted.
+
         io.admit(ticket(1), Admission::Dial(vec!["127.0.0.1:8".into()]));
         assert!(matches!(
             io.open(OWNER, ticket(1), "127.0.0.1:9"),
@@ -283,7 +282,7 @@ fn nothing_is_opened_bound_or_spawned_that_was_not_admitted() {
 }
 
 /// A released handle is never made again: its slot holds the next handle under a new generation,
-/// and the old one still answers "no such handle" for its maker and every other caller.
+
 #[test]
 fn a_released_handle_is_never_made_again() {
     worker().block_on(async {
@@ -333,7 +332,7 @@ fn an_admitted_dial_moves_bytes_both_ways_and_a_handle_is_its_makers_alone() {
         assert_eq!(&buf[..n], b"pong");
         let peer_at = io.ends(OWNER, h).unwrap().peer;
         assert_eq!(peer_at, at);
-        // RED: another owner reaches nothing of it.
+
         assert!(io.close(OWNER + 1, h).is_err());
         let mut buf = [0_u8; 1];
         let waker = std::task::Waker::noop();
@@ -390,10 +389,7 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
 }
 
 /// RED (a program carrier's end, coordinator ruling (A)): `io.ends` on a program's handle answers the program's
-/// OWN exit, read without waiting, so a program whose descendant still holds its output is seen to
-/// have ended while a read of the pipe still pends. Here the program exits with code 3 and leaves a
-/// `sleep` holding its output. RED before: `ends` answered a program `(0, "")` and nothing of its
-/// exit, so the end was only ever seen at the pipe's end, which the descendant withholds.
+
 #[test]
 fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output() {
     worker().block_on(async {
@@ -436,7 +432,7 @@ fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output()
             "the program's own exit was not answered"
         );
         assert_eq!((ends.port, ends.peer.as_str()), (0, ""));
-        // The descendant still holds the output: a read of the pipe pends, not ends.
+
         let mut buf = [0_u8; 16];
         let waker = std::task::Waker::noop();
         let read = io.read(OWNER, h, &mut buf, waker);
@@ -483,9 +479,7 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
 }
 
 /// THE HELD ENVIRONMENT: the carrier hands the host's `io.spawn` the program's WRITTEN environment
-/// only; the admitted program's references were resolved at config time and are held, so the value
-/// exists in the host's records and the child's environment and nowhere the carrier reaches. A
-/// reference that did not resolve spawns nothing.
+
 #[test]
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
@@ -520,8 +514,6 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             ]
         );
 
-        // RED: a reference that does not resolve spawns nothing, and its refusal names the
-        // reference, never a value.
         let unresolved = Program {
             env_refs: vec![(
                 "MISSING".to_owned(),
@@ -547,13 +539,7 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
 }
 
 /// A SPAWN RESOLVES NOTHING. A spawn serves a request (a member's first lease, a respawn, a program
-/// need's every open), so the program's references resolve ONCE, at the load, and every spawn after
-/// it loads what is held: two spawns, still one resolution. RED before: `io.spawn` resolved every
-/// reference at every spawn.
-///
-/// And A ROTATED SECRET REACHES THE FIRST NEW CHILD AFTER THE NEXT REFRESH: the variable changed,
-/// the next spawn still hands the value the load resolved; after the refresher's pass the next
-/// spawn hands the new one. A reference gone at a refresh refuses every spawn after it.
+
 #[test]
 fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_refresh() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_ROTATED";
@@ -614,7 +600,7 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
 }
 
 /// RED (transport ABI defect 2): `reap` releases every handle its owner still holds, as `close`
-/// releases one: the listener it bound stops listening. Another owner's handles stay.
+
 #[test]
 fn reap_releases_every_handle_of_its_owner_and_no_other() {
     worker().block_on(async {
@@ -643,8 +629,7 @@ fn reap_releases_every_handle_of_its_owner_and_no_other() {
 }
 
 /// Linux can stop a listening socket while a fork holds its close-on-exec descriptor before
-/// exec. Other kernels can refuse listener shutdown; their ordinary descriptor close remains
-/// covered by the unconditional reap test above, without claiming revocation of copied handles.
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_open() {
@@ -657,12 +642,11 @@ fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_ope
             let Kind::Listener(listener) = &entry.kind else {
                 panic!("listen returned a different handle kind");
             };
-            // A duplicate refers to the same socket as an inherited descriptor, without starting
-            // a child or depending on the interval between fork and exec.
+
             let inherited = listener.get_ref().try_clone().unwrap();
             let original = std::sync::Arc::downgrade(&entry);
             drop(entry);
-            // The listener was reachable before retirement; this is not an unused port.
+
             drop(tokio::net::TcpStream::connect(&at).await.unwrap());
             match retirement {
                 "reap" => io.reap(OWNER),
@@ -679,7 +663,7 @@ fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_ope
                 tokio::net::TcpStream::connect(&at).await.is_err(),
                 "{retirement} left the copied socket listening at {at}"
             );
-            // Keep the duplicate open through the refusal check, just as a child before exec can.
+
             drop(inherited);
         }
     });

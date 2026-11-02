@@ -1,34 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! AUTH-CHAIN seam tests over the kernel's own pipeline: `plugins_preflight` + `AuthMiddleware::new`
-//! as boot runs them, and the chain's walk on the request path. They prove:
-//!
-//! * a role a chain position asserts resolves through `role_bindings.<provider>` to an admin scope,
-//!   capped by the provider's `max_admin_scope`;
-//! * a MISSING plugin at boot → a LOUD failure (never a silently-open front door);
-//! * `plugins.enabled: false` + a configured auth plugin → boot refuses (`plugins_preflight`);
-//! * a door's outstanding `verify` never parks the reactor: the request path submits it and awaits
-//!   it.
-//!
-//! The kernel's tests name no auth plugin (R-FIX3) and no loader (THE DESIGN l.322): a chain
-//! position here is an in-process test module (`auth::stand_in`), and the rows a plugins directory
-//! admits are the registry double's (`test_support::rows`). The FULL-CHAIN proofs over the REAL
-//! token-verifying module (GetBusbar/busbar-auth-oidc, R-FIX2: a signed JWT through the dropped-in
-//! door, a secret-ref setting delivered to it, the admin chain rebuilt on reload, the
-//! login-capability gate) live with the composition root, which links it:
-//! `crates/busbar/tests/auth_plugin_chain.rs`; an UNTRUSTED auth plugin the loader's scan skips is
-//! refused there too (`crates/busbar/tests/auth_plugin_chain_trust.rs`).
-//!
-//! Mirrors the store-plugin pre-flight tests (`crate::tests`), reusing their plugin-dir and row
-//! helpers.
-
 use crate::auth::{AuthMiddleware, ChainVerdict};
 use crate::config::{AuthCfg, AuthChainEntry, PluginsCfg};
 use crate::tests::{dropped, tmp_plugin_dir};
 use std::path::Path;
 
-/// An enabled plugins config over `dir` that permits unsigned rows.
 fn plugins_cfg_allow_unsigned(dir: &Path) -> PluginsCfg {
     let mut cfg = PluginsCfg {
         enabled: true,
@@ -39,7 +16,6 @@ fn plugins_cfg_allow_unsigned(dir: &Path) -> PluginsCfg {
     cfg
 }
 
-/// An `auth.chain` naming exactly the given plugin module (with an optional `settings` map).
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);
     entry.settings = settings;
@@ -49,8 +25,6 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
     }
 }
 
-/// An in-process chain position that identifies the credential `alice` as `oidc:alice` holding the
-/// role `platform` (the shape of a token-verifying module's verdict), and passes anything else.
 struct PlatformRole;
 impl busbar_contract::auth::AuthModule for PlatformRole {
     fn name(&self) -> &'static str {
@@ -69,21 +43,15 @@ impl busbar_contract::auth::AuthModule for PlatformRole {
     }
 }
 
-/// IDENTITY → POLICY hop under a PROVIDER name: a role a chain position asserts resolves through
-/// `role_bindings.<provider>` to an admin scope, CAPPED by the provider's `max_admin_scope`. Proves
-/// role_bindings resolution + the module ceiling both work when `<module>` is a provider the chain
-/// names (the role the REAL token-verifying module asserts from a signed token is proven by
-/// `crates/busbar/tests/auth_plugin_chain.rs::auth_plugin_loads_and_identifies_through_middleware`).
 #[test]
 fn auth_plugin_role_binding_and_scope_cap_apply() {
     use busbar_contract::authz::Scope;
     crate::snapshot::init();
 
     let mut cfg = chain_with("idp", serde_json::Map::new());
-    // The chain entry caps this module at `read-only`, below the `full` the role would otherwise
-    // grant (1.5.2 scope collapse retired the intermediate `mint`/`hooks-register` ceilings).
+
     cfg.chain[0].max_admin_scope = Some("read-only".into());
-    // role_bindings NESTED BY THE PROVIDER NAME (`idp`): the `platform` role → full.
+
     let mut roles = std::collections::BTreeMap::new();
     roles.insert(
         "platform".to_string(),
@@ -94,7 +62,6 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     );
     cfg.role_bindings.insert("idp".into(), roles);
 
-    // The chain position the provider `idp` names, in process.
     let mw = AuthMiddleware::from_doors_for_test(vec![(
         "idp".to_string(),
         std::sync::Arc::new(crate::auth::stand_in::InProcessAuth::new(Box::new(
@@ -111,7 +78,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         }
         other => panic!("expected Identify, got {other:?}"),
     };
-    // The role resolves to `full` in role_bindings.idp.platform...
+
     let bound = crate::auth::admin_scope_for(
         &crate::test_support::TestApp::new()
             .role_bindings(cfg.role_bindings.clone())
@@ -124,9 +91,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         busbar_contract::authz::Grants::of(Scope::Full),
         "role binds full under the provider name"
     );
-    // Consume the configured ceiling through both production seams: the boot projection and the
-    // admin chain's credential -> provider -> binding -> ceiling resolution. Full is the positive
-    // control: merely ignoring the configured map would default this provider to read-only.
+
     for (configured, expected) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
         cfg.chain[0].max_admin_scope = Some(configured.into());
         let mut app = crate::test_support::TestApp::new()
@@ -147,12 +112,10 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     }
 }
 
-/// FAIL-CLOSED: a configured auth plugin with NO matching tarball is a loud boot error at both
-/// gates — never silently skipped.
 #[test]
 fn missing_auth_plugin_is_loud_boot_failure() {
     let dir = tmp_plugin_dir("auth-plugin-missing");
-    // A DIFFERENT (store) plugin present, so the dir is non-empty but the auth ref is absent.
+
     crate::test_support::rows::drop_in(
         &dir,
         vec![dropped(
@@ -182,14 +145,12 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         err.contains("no plugin matching") && err.contains("is installed in"),
         "explains it is unresolved: {err}"
     );
-    // The two-part diagnosis — subsystem enabled? / tarball in the folder? + the fetch/drop
-    // remediation.
+
     assert!(
         err.contains("enabled") && err.contains("plugins.fetch"),
         "gives the two-part enabled?/in-folder? diagnosis: {err}"
     );
 
-    // The middleware's own resolution is equally loud, over the registry the directory builds.
     let registry = crate::plugins_preflight(
         None,
         None,
@@ -213,8 +174,6 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// FAIL-CLOSED: `plugins.enabled: false` with a configured auth plugin refuses boot naming the flag
-/// — the plugin subsystem being off must never leave a configured front-door module silently absent.
 #[test]
 fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let dir = tmp_plugin_dir("auth-plugin-disabled");
@@ -241,16 +200,13 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The builtin `keys` module is engine-handled and never treated as a plugin — a `[keys]` chain
-/// needs no plugin subsystem and loads fine with plugins disabled (regression guard for the
-/// plugin-ref filter).
 #[test]
 fn keys_module_is_not_a_plugin_ref() {
     let cfg = AuthCfg {
         chain: vec![AuthChainEntry::bare(crate::config::KEYS_MODULE)],
         ..AuthCfg::default_none()
     };
-    // No plugins dir, plugins disabled: keys must not be treated as a plugin ref.
+
     let plugins = PluginsCfg::default();
     let registry = crate::plugins_preflight(
         None,
@@ -271,23 +227,11 @@ fn keys_module_is_not_a_plugin_ref() {
     assert!(mw.chain_names().is_empty(), "keys is not a boxed module");
 }
 
-// ── THE AUTH CHAIN MUST NOT RUN ON THE REACTOR ───────────────────────────────────
-//
-// A `kind: auth` plugin's `verify` may do network I/O (the OIDC module fetches JWKS over HTTPS).
-// `auth_middleware` is an `async fn` on a Tokio worker, so a chain that WAITED on the plugin on that
-// worker would hand it the worker: a slow identity provider would park one worker per in-flight
-// request until the runtime polled nothing at all — not other requests, not the admin plane, and
-// not `/healthz` (exempt from the chain, but it still needs a worker thread to run). The node would
-// fail its liveness probe. On the door, the request path SUBMITS each `verify` and AWAITS it.
-
-/// A door whose `verify` answers only after `hold`, from a thread of its own (the dispatcher worker
-/// the plugin runs on). It signals the moment it is asked, so the test never has to guess at timing.
 struct SlowDoor {
     entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
     hold: std::time::Duration,
 }
 
-/// A `verify` the plugin answers later.
 struct Later(tokio::sync::oneshot::Receiver<busbar_contract::auth_calls::VerifyAnswer>);
 
 impl std::future::Future for Later {
@@ -339,12 +283,6 @@ impl busbar_contract::auth_calls::AuthCalls for SlowDoor {
     }
 }
 
-/// While a door's `verify` is outstanding, the request path holds no worker: the probe below is
-/// scheduled on the one worker while the plugin is still answering.
-///
-/// A one-worker runtime is not a contrived shape — busbar sizes its runtime from
-/// `available_parallelism()` and the docs recommend 1-2 workers for sidecar deployments. It is
-/// simply the smallest configuration in which "a worker is parked" is decidable.
 #[test]
 fn a_slow_auth_door_does_not_park_the_reactor() {
     let (tx, entered) = std::sync::mpsc::channel();
@@ -376,9 +314,6 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("the door must actually have been asked");
 
-    // Can the runtime still schedule anything while the plugin answers? Signalled over a STD
-    // channel with a std timeout deliberately: a dead reactor has a dead timer driver, so a
-    // `tokio::time::timeout` would hang instead of failing.
     let (ptx, probe) = std::sync::mpsc::channel();
     rt.spawn(async move {
         let _ = ptx.send("healthz ok");
@@ -391,11 +326,6 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
     );
 }
 
-/// "Busbar resolves them … overwriting its own copies with zeroes once the plugin has them"
-/// (security.md:318). The chain resolves a position's declared secret settings into the bag it
-/// hands `open` and holds until `open` answers (`AuthMiddleware::new`; the admin chain, the store,
-/// the hooks and the hosted login hold the same bag): that bag is a holder that wipes every
-/// resolved string when it drops, so busbar's copy is gone as soon as the chain lets go of it.
 #[test]
 fn chain_open_wipes_the_resolved_settings() {
     fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
@@ -428,9 +358,9 @@ fn chain_open_wipes_the_resolved_settings() {
         serde_json::json!("chain-open-secret"),
         "the plugin is handed the resolved value"
     );
-    // The type wipes itself on drop (what `open`'s caller drops once `open` answers) ...
+
     wiped_when_dropped(&resolved);
-    // ... and the wipe it runs leaves no byte of any resolved string behind.
+
     zeroize::Zeroize::zeroize(&mut resolved);
     assert!(
         !resolved

@@ -1,67 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The Admin API v1 CONTRACT — transport-agnostic types shared by every adapter. Moved here from the
-//! kernel's `admin::v1::contract` (P2 D4, ARCHITECT Q-D4-ADMIN (b) 2026-10-04): the kernel keeps only
-//! the admin gate's half (`busbar_kernel::admin::gate`: the scope matrix, the paths it keys off and
-//! the neutral envelope for the answers it gives itself), re-exported below.
-//!
-//! This is the frozen surface expressed in Rust: the operation VIEWS (what a read returns), the
-//! stable ERROR taxonomy (`AdminError` → stable `code` + HTTP status), and the authorization SCOPE
-//! model. It knows nothing about HTTP, JSON, or GraphQL — a transport adapter (`super::transport`)
-//! projects these into a wire format, and the service (`super::service`) produces them. Because the
-//! contract lives here as typed Rust, a second transport reuses it verbatim and `openapi.json` can be
-//! generated from the same structs.
-//!
-//! ADDITIVE-ONLY: fields may be ADDED to a view; an error `code` string is
-//! never removed or repurposed once shipped. Serde `Serialize` derives give the JSON projection for
-//! free; a non-JSON transport maps the same fields differently.
-
 use serde::Serialize;
 
-// The per-endpoint error DECLARATION `openapi.json` is a projection of. Always compiled:
-// the generator reads it under `openapi-schema`, the class-level drift test reads it under `test`,
-// and the emission recorder tags responses with it in a test build.
 pub mod taxonomy;
 
-/// The admin gate's half of the contract, which the KERNEL answers before any admin handler runs —
-/// the native-API root, the v1 prefix, the paths the scope matrix and the mutation-rate classifier
-/// key off, and the scope matrix itself — re-exported from `busbar_kernel::admin::gate` so every
-/// in-admin caller (the router nest, the OpenAPI doc) names one definition.
 pub use busbar_kernel::admin::gate::{
     required_scope, ADMIN_PREFIX, API_ROOT, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE,
     PATH_PLUGINS_INSPECT,
 };
-/// `/hooks`, matched in more than one place.
+
 pub const PATH_HOOKS: &str = "/hooks";
-/// `/groups`, matched in more than one place.
+
 pub const PATH_GROUPS: &str = "/groups";
 
-/// Shared pagination limit policy for the admin
-/// lists: `?limit=` hard cap and default page size, used by the keys list (admin.rs) and the
-/// audit list (json.rs).
 pub const LIST_LIMIT_MAX: usize = 1000;
 pub const LIST_LIMIT_DEFAULT: usize = 200;
-/// The versions list's DELIBERATELY smaller default page (100, not the shared 200): each item
-/// carries full config-version metadata, heavier than a key/audit row. The hard cap is still the
-/// shared `LIST_LIMIT_MAX`.
+
 pub const VERSIONS_LIMIT_DEFAULT: usize = 100;
 
-/// The GENERIC authorization lattice — RELOCATED to `busbar_contract::authz` (1.6.0 authz split):
-/// it names zero admin-specific vocabulary, so every non-admin core consumer (router, auth,
-/// config, config_validate) can name it without reaching into the admin surface. Re-exported here
-/// so every in-admin caller (and the admin-worded parts below that build on it) is unchanged.
-///
-/// 1.5.2 COLLAPSED the former four-variant diamond (the delegated `HooksRegister`/`Mint` sibling
-/// scopes) down to these two: every read is `ReadOnly`, every mutation is `Full`. The delegated
-/// mint path is now the token-exchange seam (`POST /auth/token`), not a narrow admin scope.
 pub use busbar_contract::authz::{Grants, Scope};
-
-// `parse_ceiling` (the `max_admin_scope:` ceiling-token check) RELOCATED to
-// `busbar_kernel::config::parse` (1.6.0 de-vocab): its callers — `config_validate`'s chain-entry rule and
-// `config::named_map`'s write path — are both neutral config surfaces, not the admin HTTP API.
-// Byte-identical rename: the admin-worded error TEXT is unchanged, only the Rust binding path
-// moved.
 
 /// The stable v1 error taxonomy. Each variant maps to a fixed `code` (the machine-stable branch key
 /// tooling switches on — NEVER `message`) and an HTTP status the JSON-REST adapter uses. A non-HTTP
@@ -120,12 +78,9 @@ pub enum AdminError {
     UnpricedClass { lane: String, class: Option<String> },
 }
 
-// The variants the KERNEL also answers itself (the admin gate, the router fallback, the plane-driver
-// serve) read their frozen words from the kernel's neutral envelope, so the two cannot drift.
 use busbar_kernel::admin::gate::ApiError;
 
 impl AdminError {
-    /// The plain "no such thing" — message `"<what> not found"`.
     pub fn not_found(what: impl Into<String>) -> Self {
         AdminError::NotFound {
             what: what.into(),
@@ -133,8 +88,6 @@ impl AdminError {
         }
     }
 
-    /// A not-found WITH a reason — message `"<what> not found (<why>)"`. For the cases where the
-    /// absence is a property of the server's configuration rather than of the request.
     pub fn not_found_because(what: impl Into<String>, why: &'static str) -> Self {
         AdminError::NotFound {
             what: what.into(),
@@ -142,7 +95,6 @@ impl AdminError {
         }
     }
 
-    /// The FROZEN stable code. Tooling branches on this string; it never changes for a shipped variant.
     pub fn code(&self) -> &'static str {
         match self {
             AdminError::NotFound { .. } => "not_found",
@@ -159,7 +111,6 @@ impl AdminError {
         }
     }
 
-    /// The HTTP status the JSON-REST adapter returns for this error. A non-HTTP transport ignores it.
     pub fn http_status(&self) -> u16 {
         match self {
             AdminError::NotFound { .. } => 404,
@@ -176,7 +127,6 @@ impl AdminError {
         }
     }
 
-    /// The human-facing message. Caller-safe only — internal store/plugin detail never lands here.
     pub fn message(&self) -> String {
         match self {
             AdminError::NotFound {
@@ -211,11 +161,6 @@ impl AdminError {
     }
 }
 
-/// Convert the neutral [`busbar_kernel::config::transaction::TxnError`] `config_transaction`'s own
-/// machinery raises (a persist failure or a `spawn_blocking` join panic) into this transport's
-/// wire error — the EXACT mapping the hand-coded `AdminError::Validation`/`AdminError::Internal`
-/// construction made before `config_transaction` was generic (1.6.0 de-alias, stage 2a). Byte-
-/// identical: same variant, same message, same `code`/status.
 impl From<busbar_kernel::config::transaction::TxnError> for AdminError {
     fn from(e: busbar_kernel::config::transaction::TxnError) -> Self {
         match e {
@@ -350,7 +295,7 @@ pub struct PoolMemberStatusView {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ModelView {
     pub model: String,
-    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
+
     #[serde(rename = "provider")]
     pub upstream: String,
 }
@@ -360,7 +305,6 @@ pub struct ModelView {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ProviderView {
-    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
     #[serde(rename = "provider")]
     pub upstream: String,
     pub model_count: usize,
@@ -430,14 +374,6 @@ pub struct HookView {
     /// for an operator diffing what they wrote against what busbar parsed. It is NOT the effective
     /// answer on its own: empty means "fall back", and what it falls back TO is `at:` if set and the
     /// four core stages otherwise. For the effective answer read `fires_at`.
-    // DECLARED AFTER `global`, NOT beside `at`: 1.5.5's `HookView` has no `phase`/`fires_at`/
-    // `groups` at all, so this field (and the two below) is placed after every field 1.5.5 had, in
-    // 1.5.5's own order, so schemars' generated `required` array — and every 1.6.0-additive view's
-    // serialized field order — is a PREFIX-preserving superset of 1.5.5's, not merely a
-    // same-membership reordering of it (the shadow oracle's `additive` proof walks a JSON array
-    // positionally, and an inserted-before-the-end element fails that walk even though nothing
-    // about the field itself changed). Plain comment, not doc: this is engineering rationale for
-    // maintainers, not served API documentation, so it must never reach schemars' description.
     pub phase: Vec<&'static str>,
     /// The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never
     /// empty. This is the field that answers "when does this hook run", and it is computed by
@@ -452,9 +388,6 @@ pub struct HookView {
     pub groups: Vec<String>,
 }
 
-/// The shared named-DEFINITION read VIEW — relocated to the neutral substrate
-/// (`busbar_kernel::api`) as pure serde data (no `Scope`, no core reach) so a plane crate names
-/// it directly; re-exported here so every in-core (and agent-style plane) caller is unchanged.
 pub use busbar_kernel::api::NamedDefView;
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
@@ -508,7 +441,6 @@ pub struct LimitView {
 }
 
 impl LimitView {
-    /// Project a config `LimitCfg` into its explicit read shape.
     pub fn from_cfg(l: &busbar_kernel::config::LimitCfg) -> Self {
         LimitView {
             metric: l.metric.as_str(),
@@ -525,7 +457,6 @@ impl LimitView {
 }
 
 impl GroupView {
-    /// Project a named `groups:` config entry into its read shape.
     pub fn from_cfg(name: &str, cfg: &busbar_kernel::config::GroupCfg) -> Self {
         GroupView {
             name: name.to_string(),
@@ -714,10 +645,6 @@ pub struct PluginView {
 }
 
 impl PluginView {
-    /// A COMPILED-IN or EXTERNAL plugin row (no manifest metadata) — the historical shape. The
-    /// dynamic-library fields (`version`/`publisher`/`interface_version`/`trust`/`valid`/`error`/
-    /// `schema_url`/`schema_error`) are `None` and skip serialization, so the wire is byte-identical
-    /// to before this addition.
     pub fn basic(
         name: String,
         r#type: &'static str,
@@ -837,9 +764,6 @@ pub struct AuthView {
 /// A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
 /// Generic over the item view so every list endpoint shares one shape.
 #[derive(Debug, Clone, Serialize)]
-// The generic list envelope. `rename = "Page_{T}"` interpolates the item type into the schema
-// name so each instantiation (`Page_HookView`, `Page_ModelView`, …) is a DISTINCT
-// `#/components/schemas/` entry — otherwise every `Page<T>` would collide on the bare name `Page`.
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "openapi-schema", schemars(rename = "Page_{T}"))]
 pub struct Page<T> {
@@ -848,7 +772,6 @@ pub struct Page<T> {
 }
 
 impl<T> Page<T> {
-    /// A single-page result (no further pages). The topology reads are small and unpaginated today.
     pub fn single(items: Vec<T>) -> Self {
         Self {
             items,
@@ -857,10 +780,6 @@ impl<T> Page<T> {
     }
 }
 
-/// The pagination cursor is OPAQUE by contract — clients must round-trip it verbatim, never parse it.
-/// Under the hood it is just the hex of a tagged byte offset (`o:<n>`); the encoding is an
-/// implementation detail that can change to a keyset cursor later without a wire break. Dependency-free
-/// (no base64 crate) — hex keeps it URL-safe.
 pub fn encode_offset_cursor(offset: usize) -> String {
     use std::fmt::Write;
     format!("o:{offset}")
@@ -871,15 +790,7 @@ pub fn encode_offset_cursor(offset: usize) -> String {
         })
 }
 
-/// Decode an opaque `?cursor=` back to its byte offset. Returns `None` for any malformed/foreign
-/// cursor so the transport can answer `invalid_request` rather than silently ignoring it.
 pub fn decode_offset_cursor(cursor: &str) -> Option<usize> {
-    // (`||` here vs `&&`) is a genuine EQUIVALENT mutant, not a coverage gap: an odd-length
-    // cursor always leaves a trailing 1-byte remainder for `step_by(2)`'s last chunk, so
-    // `cursor.get(i..i+2)` returns `None` there regardless of this early check; an empty cursor
-    // decodes to `bytes = Some(vec![])` -> `s = ""` -> `strip_prefix("o:")` fails on "" too. Both
-    // branches this guard exists to short-circuit are ALSO rejected by the decode below, so the
-    // guard is a fast path, not the thing that makes either case safe.
     if cursor.is_empty() || !cursor.len().is_multiple_of(2) {
         return None;
     }
@@ -924,33 +835,8 @@ pub struct EffectiveConfigView {
     pub reload_to_apply: Vec<String>,
 }
 
-/// Fleet METERING read (`GET /api/v1/admin/usage`) — the FinOps surface. Design principle:
-/// busbar exposes the RAW INPUTS of cost, not just its own number. Every row carries the full token
-/// SPLIT (input / output / cache-read / cache-creation — each prices differently), so a consumer
-/// with its own (special/negotiated) price catalog reconstructs cost independently; `spend_micros`
-/// is busbar's DERIVED estimate from the operator's configured global prices, computed at read time
-/// (raw counts are what's stored — a price change re-prices history consistently).
-///
-/// Time base — THE PINNED SHAPE RULING: a usage response is ALWAYS exactly
-/// ONE fixed UTC-day metering bucket (`window`). `?window=<bucket-start-epoch>` selects a PAST
-/// bucket (default: the current one); a multi-window series is the CLIENT fetching N buckets — or
-/// a future additive `?from=&to=` returning an ARRAY OF THIS SAME PER-BUCKET SHAPE, never a
-/// differently-shaped merged view. Billing periods aggregate client-side from day buckets (raw
-/// counts are stored, so the math is exact). Deliberately decoupled from per-key budget windows so
-/// per-model aggregation across keys is well-defined; budget ENFORCEMENT state lives on
-/// `GET /keys/{id}/usage`, not here. Empty aggregations when governance is disabled. No secrets —
-/// key ids/names only, never a token.
-///
-/// LEDGER RULE (one loud contract sentence): `spend_micros` is a MUTABLE ESTIMATE — derived at
-/// read time from the operator's CURRENT prices, so a price change re-prices history. Never store
-/// it as a ledger charge; bill from the raw token split.
-/// The denomination reported alongside every `spend_micros` in the admin usage response. A SINGLE
-/// source of truth so a future removal (returning to the currency-agnostic stance) is one line.
-/// Emitted ONLY on `GET /api/v1/admin/usage` (the `currency` field of `UsageView`), never on the
-/// per-key views (those stay currency-agnostic raw-split ledgers).
 pub const USAGE_CURRENCY: &str = "USD";
 
-/// Serialize helper: `UsageView::currency` is a fixed contract constant, not a stored field.
 fn serialize_usage_currency<S: serde::Serializer>(_: &(), s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(USAGE_CURRENCY)
 }
@@ -1043,7 +929,7 @@ pub struct UsageBreakdown {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ModelUsageView {
     pub model: String,
-    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
+
     #[serde(rename = "provider")]
     pub upstream: String,
     #[serde(flatten)]
@@ -1077,9 +963,6 @@ pub struct AdminAuthView {
     pub modules: Vec<String>,
 }
 
-/// The served description of [`BuildInfo::hook_plugins`]: 1.5.5's text byte for byte, its example
-/// read off the list the info read reports (`v1::service::hook_plugins_compiled_in`), so this
-/// contract spells no hook plugin.
 #[cfg(feature = "openapi-schema")]
 fn hook_plugins_description() -> String {
     format!(
@@ -1088,8 +971,6 @@ fn hook_plugins_description() -> String {
     )
 }
 
-/// The served description of [`AdminAuthView::modules`]: 1.5.5's text byte for byte, its example
-/// read off the operator credential's frozen provider row, so the kernel spells no auth module.
 #[cfg(feature = "openapi-schema")]
 fn modules_description() -> String {
     format!(

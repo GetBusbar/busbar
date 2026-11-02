@@ -18,9 +18,7 @@ pub struct SensitiveFields(Vec<String>);
 
 impl SensitiveFields {
     /// Normalize the host's credential field names, independently of whether sealing is offered.
-    ///
-    /// # Errors
-    /// A name is neither an HTTP header token nor the request target's `:path` field.
+
     pub fn new(names: Vec<String>) -> Result<Self, &'static str> {
         let mut normalized = Vec::new();
         for name in names {
@@ -45,9 +43,7 @@ impl SensitiveFields {
     }
 
     /// Decode the complete known entry; absent metadata preserves the legacy unmarked request.
-    ///
-    /// # Errors
-    /// An unknown version, invalid name, truncation, or trailing bytes.
+
     pub fn from_extensions(bytes: &[u8]) -> Result<Option<Self>, &'static str> {
         extensions::get(bytes, EXT_SENSITIVE_FIELDS)
             .map(Self::decode)
@@ -55,9 +51,7 @@ impl SensitiveFields {
     }
 
     /// Encode a host input extension. An unmarked request needs no entry.
-    ///
-    /// # Errors
-    /// A name or count exceeds its u32 length encoding.
+
     pub fn extensions(&self) -> Result<Vec<u8>, &'static str> {
         if self.0.is_empty() {
             return Ok(Vec::new());

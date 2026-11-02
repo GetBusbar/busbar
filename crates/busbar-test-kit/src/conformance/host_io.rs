@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SUITE'S HOST I/O: the `io.*` a carrier is served in the conformance suite, over the OS's own
-//! sockets and processes, so a carrier's both legs move REAL bytes (`BUSBAR-1.6.0.md` THE DESIGN
-//! §11.4: the same table, compiled in and dropped in). It is the host's side: it admits what the
-//! script admits for a dial, a bind or a spawn and nothing else, and wakes a pending op's ticket when
-//! its handle may make progress — a socket's readiness found by the script's own [`SuiteIo::pump`],
-//! a program's output by the thread that reads it. A test host: it never ships (the connector is
-//! the process's host).
-
 use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -21,7 +13,6 @@ use busbar_contract::abi::host::io::{DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 
-/// The refusal of what the script did not admit.
 pub const NOT_ADMITTED: &str = "the host did not admit this for the dial that asked";
 
 /// What the script admitted for an op's ticket.
@@ -81,7 +72,6 @@ fn failed(e: &std::io::Error) -> IoRefusal {
 
 fn program_exit(status: ExitStatus) -> u32 {
     if let Some(code) = status.code() {
-        // Windows exposes its native 32-bit process status through i32; retain those bits.
         return code as u32;
     }
     #[cfg(unix)]
@@ -93,12 +83,10 @@ fn program_exit(status: ExitStatus) -> u32 {
     }
     #[cfg(not(unix))]
     {
-        // Platforms without Unix signals have no signal number to append.
         128
     }
 }
 
-/// A zero-timeout readiness query does not consume input or send probe bytes.
 #[cfg(unix)]
 fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
     use std::os::fd::AsRawFd;
@@ -113,11 +101,10 @@ fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
     };
     // SAFETY: one live pollfd, a socket borrowed for this nonblocking call, and no callbacks.
     let ready = unsafe { libc::poll(&mut fd, 1, 0) };
-    // A polling error also wakes the operation so its actual read/write can report the error.
+
     ready < 0 || (ready > 0 && fd.revents != 0)
 }
 
-/// Winsock's zero-timeout query has the same non-consuming readiness semantics.
 #[cfg(windows)]
 fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
     use std::os::windows::io::AsRawSocket;
@@ -133,30 +120,25 @@ fn socket_ready(stream: &TcpStream, direction: u32) -> bool {
     };
     // SAFETY: one initialized WSAPOLLFD borrows a live socket for this nonblocking call.
     let ready = unsafe { WSAPoll(&mut fd, 1, 0) };
-    // Closure/error events wake the operation. On SOCKET_ERROR, its actual read/write reports
-    // the Winsock error through std::net; interpreting it as last_os_error would be incorrect.
+
     ready < 0 || (ready > 0 && fd.revents != 0)
 }
 
 impl SuiteIo {
-    /// Admit `what` for the op on `ticket`.
     pub fn admit(&self, ticket: Ticket, what: Admit) {
         lock(&self.inner).admitted.insert(ticket, what);
     }
 
-    /// The handle the last op on `ticket` made (`open`, `listen`, `accept`, `spawn`).
     #[must_use]
     pub fn made(&self, ticket: Ticket) -> Option<u64> {
         lock(&self.inner).made.get(&ticket).copied()
     }
 
-    /// How many handles are held.
     #[must_use]
     pub fn held(&self) -> usize {
         lock(&self.inner).handles.len()
     }
 
-    /// Whether no handle except the script's own listener remains.
     pub(super) fn holds_only(&self, listener: Option<u64>) -> bool {
         lock(&self.inner)
             .handles
@@ -183,7 +165,6 @@ impl SuiteIo {
         id
     }
 
-    /// Run `f` on `owner`'s handle `id`.
     fn on<R>(
         &self,
         owner: u64,
@@ -202,7 +183,6 @@ impl SuiteIo {
         lock(&self.inner).waiting.push((id, direction, waker));
     }
 
-    /// Wake socket waiters whose requested direction is ready (including errors and closure).
     pub fn pump(&self) {
         let mut inner = lock(&self.inner);
         let waiting = std::mem::take(&mut inner.waiting);
@@ -212,7 +192,7 @@ impl SuiteIo {
             let ready = match inner.handles.get(&id).map(|(_, h)| h) {
                 Some(Handle::Stream(s)) => socket_ready(s, direction),
                 Some(Handle::Listener(_)) | None => true,
-                // A program's output wakes its reader from the thread that reads it.
+
                 Some(Handle::Program { .. }) => {
                     retired_wakes.push(waker);
                     continue;
@@ -231,7 +211,6 @@ impl SuiteIo {
         }
     }
 
-    /// Wait (up to five seconds) until handle `id` has bytes to read, or its end.
     pub fn wait_readable(&self, id: u64) {
         let until = Instant::now() + Duration::from_secs(5);
         while Instant::now() < until {
@@ -250,7 +229,6 @@ impl SuiteIo {
                 }
             };
             if ready {
-                // Let the rest of a short write land with it.
                 std::thread::sleep(Duration::from_millis(20));
                 return;
             }
@@ -379,7 +357,6 @@ impl IoHost for SuiteIo {
     }
 
     fn ready(&self, owner: u64, id: u64, dir: u32, _waker: &Waker) -> Poll<IoResult<()>> {
-        // A connect here completes inside `open`; a program's pipes are open from the spawn.
         let _ = dir == DIR_READ || dir == DIR_WRITE;
         Poll::Ready(self.on(owner, id, |_| Ok(())))
     }
@@ -487,7 +464,7 @@ impl IoHost for SuiteIo {
                 peer: s.peer_addr().map_err(|e| failed(&e))?.to_string(),
                 exit: None,
             }),
-            // The program itself, without waiting: a descendant holding its output hides nothing.
+
             Handle::Program { child, .. } => Ok(Ends {
                 exit: child.try_wait().map_err(|e| failed(&e))?.map(program_exit),
                 ..Ends::default()

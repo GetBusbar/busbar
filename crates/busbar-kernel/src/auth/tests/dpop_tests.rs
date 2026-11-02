@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! RFC 9449 AT THE DOOR, the half this crate can prove without an authorization server: what a
-//! bearer that was never DPoP-bound gets (exactly what it got before), what a DPoP presentation gets
-//! when no `oauth_as:` plane is configured (exactly what 1.5.5 gave it: the header is not a
-//! credential carrier), and that a DPoP-BOUND token presented as a bearer is refused where an
-//! authorization server runs and admitted as 1.5.5 admitted it where none does. The proof
-//! verification itself runs through the authorization-server seam, so its tests live with the
-//! plane (`busbar-core-oauth2`'s `fapi2_tests`).
-
 use base64::Engine as _;
 
 use super::is_dpop_bound;
@@ -16,8 +8,6 @@ use crate::test_support::TestApp;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-/// A JWS-shaped token over `claims`. Never signature-checked here: the test IdP stand-in identifies
-/// any non-empty credential, which is the chain a real IdP plugin would stand in.
 fn jwt(claims: serde_json::Value) -> String {
     format!(
         "{}.{}.c2ln",
@@ -46,15 +36,10 @@ fn only_a_token_carrying_cnf_jkt_is_dpop_bound() {
     )));
 }
 
-/// `(status, body)` of `GET /stats` with `headers`, on a deployment whose chain identifies any
-/// credential and that runs NO authorization server.
 async fn stats(headers: &[(&str, String)]) -> (u16, String) {
     served(reqwest::Method::GET, "/stats", headers, false).await
 }
 
-/// `(status, body)` of `method path` with `headers`, on a deployment whose chain identifies any
-/// credential and that runs an authorization server when `authorization_server` (an opaque
-/// stand-in handle: the door reads only that one is configured before it refuses a bound bearer).
 async fn served(
     method: reqwest::Method,
     path: &str,
@@ -81,9 +66,6 @@ async fn served(
     out
 }
 
-/// THE BEARER PATH DOES NOT MOVE for a token that was never DPoP-bound: an unbound JWT and an opaque
-/// token are admitted exactly as before, and the refusal for a missing credential is the same bytes
-/// it was.
 #[tokio::test]
 async fn an_unbound_bearer_is_judged_exactly_as_before() {
     let (status, _) = stats(&[(
@@ -96,8 +78,6 @@ async fn an_unbound_bearer_is_judged_exactly_as_before() {
     assert_eq!(status, 200, "an opaque bearer is admitted");
 }
 
-/// WITH NO AUTHORIZATION SERVER, `Authorization: DPoP` is what it was in 1.5.5: not a credential
-/// carrier. The response is byte-identical to the same request carrying no credential at all.
 #[tokio::test]
 async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
@@ -114,9 +94,6 @@ async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() 
     );
 }
 
-/// RFC 9449 s7.1: a DPoP-bound token is not a bearer token, where this deployment runs the
-/// authorization server that binds tokens. Presented as one there, it is refused with the refusal
-/// an invalid credential gets.
 #[tokio::test]
 async fn with_an_authorization_server_a_dpop_bound_bearer_is_refused() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
@@ -138,10 +115,6 @@ async fn with_an_authorization_server_a_dpop_bound_bearer_is_refused() {
     assert_eq!(status, 401, "whichever carrier presents it as a bearer");
 }
 
-/// WITH NO AUTHORIZATION SERVER a token carrying `cnf.jkt` is a bearer like any other, exactly as
-/// 1.5.5 judged it (THE DESIGN §2 PORT R7/R8: the default is 1.5.5's behaviour). RED: the door
-/// refused every bound bearer whatever the config, so an operator IdP token 1.5.5 admitted was a
-/// 401 here.
 #[tokio::test]
 async fn without_an_authorization_server_a_dpop_bound_bearer_is_admitted_as_1_5_5_did() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
@@ -151,17 +124,10 @@ async fn without_an_authorization_server_a_dpop_bound_bearer_is_admitted_as_1_5_
     assert_eq!(status, 200, "whichever carrier presents it as a bearer");
 }
 
-/// `(status, body)` of `POST /auth/token` with `headers`, on the deployment [`stats`] reads, with
-/// an authorization server (`oauth_as:`) when `serving_as`.
 async fn exchanged(serving_as: bool, headers: &[(&str, String)]) -> (u16, String) {
     served(reqwest::Method::POST, "/auth/token", headers, serving_as).await
 }
 
-/// RED (Q128 kernel part 10, MEDIUM): WHERE THIS DEPLOYMENT RUNS ITS OWN AUTHORIZATION SERVER, THE
-/// TOKEN EXCHANGE HOLDS THE SENDER CONSTRAINT the data plane holds. `POST /auth/token` runs the
-/// chain itself, past the middleware's RFC 9449 judgement, so a DPoP-bound token presented there as
-/// a bearer reached the mint and could be swapped for an unbound key. It is refused as an
-/// unauthenticated caller now; an unbound bearer still reaches the grant check exactly as before.
 #[tokio::test]
 async fn the_token_exchange_refuses_a_dpop_bound_token_presented_as_a_bearer() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
@@ -179,10 +145,6 @@ async fn the_token_exchange_refuses_a_dpop_bound_token_presented_as_a_bearer() {
     );
 }
 
-/// 1.5.5 PARITY (v1.5.5 `crates/busbar/src/auth/exchange.rs`, which reads no DPoP; its refusals at
-/// l.113-117): WITH NO AUTHORIZATION SERVER the exchange answers a 1.5.5-shaped request exactly as
-/// before, byte for byte, whatever the presented token's claims. A token carrying `cnf.jkt` and the
-/// same token's subject without it get the same answer.
 #[tokio::test]
 async fn without_an_authorization_server_the_exchange_answers_as_1_5_5_did() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));

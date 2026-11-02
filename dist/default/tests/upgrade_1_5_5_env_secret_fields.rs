@@ -1,36 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **A 1.5.5 CONFIG THAT READS AN EXPORT'S URL OR AUTH HEADER FROM THE ENVIRONMENT STILL BOOTS.**
-//!
-//! 1.5.5 resolved `{env: …}` (and `{file: …}`) in the exporters' settings, and its docs configure
-//! them that way: the OTLP sink's `url`, the request-log webhook's `url` and its
-//! `auth_header: { name, value }`. 1.6.0 resolves a reference only at a field the plugin declares,
-//! and refuses one anywhere else ("did not declare it as a secret"). A `url` is not a secret: the
-//! sinks declare it REFERENCE-CAPABLE (the Statement's extensions' `reference_fields`; a literal url
-//! passes as written, a reference resolves in place). The webhook's `auth_header.value` IS the
-//! credential: it is declared SECRET (`secret_refs`). A sink pinned before it declared those fields
-//! turns a working 1.5.5 deployment into one that will not start.
-//!
-//! Two proofs. The linked sinks' own Statements declare exactly that: `url` reference-capable and
-//! not secret on both, `auth_header.value` secret on the webhook. And the real binary, given a
-//! 1.5.5-shaped config whose `otlp` instance takes its `url` from the environment and whose
-//! `request-log-webhook` instance takes both its `url` and its auth header's `value` from the
-//! environment, accepts it under `--validate` with no undeclared refusal, boots and serves, and the
-//! OTLP collector at the address the environment named receives the request path's spans: the
-//! reference was resolved and the sink is served. (The webhook refuses loopback targets by policy,
-//! as 1.5.5 did, so its delivery is not observed here; its instance booting without a refusal is
-//! the part this guards.)
-//!
-//! RED at the export pins dev c892641d61 carries (otlp 3e1726f336 declares `url` SECRET, webhook
-//! b5240b33d1 declares nothing): the Statements are not the ones above, and `--validate` refuses the
-//! webhook's `auth_header.value` reference as undeclared.
-
 #![cfg(unix)]
-// The config serves `providers:`/`models:`, so the build must link the plane door that declares
-// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
 #![cfg(linked_section_pools)]
-// The sinks are linked export doors: the test is that axis's.
 #![cfg(linked_axis_export_doors)]
 
 mod common;
@@ -43,13 +15,10 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The key of the wire the data door rides.
 const WIRE: &str = "tcp";
 
-/// The refusal answered for a reference at a field the plugin did not declare.
 const UNDECLARED: &str = "did not declare it as a secret";
 
-/// The environment the config's references name, as a 1.5.5 operator would set it.
 const OTLP_URL: &str = "BUSBAR_T_OTLP_URL";
 const HOOK_URL: &str = "BUSBAR_T_HOOK_URL";
 const HOOK_TOKEN: &str = "BUSBAR_T_HOOK_TOKEN";
@@ -66,8 +35,6 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// The 1.5.5 shape: each exporter's `url`, and the webhook's auth header value, an `{env: …}`
-/// reference.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -113,7 +80,6 @@ models:
     .unwrap();
 }
 
-/// The binary with the config and every variable the config's references name.
 fn busbar(dir: &Path, collector: u16) -> Command {
     let mut cmd = Command::new(common::boot::exe());
     cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
@@ -134,7 +100,6 @@ fn said(out: &Output) -> String {
     )
 }
 
-/// THE WIRE UNDER THE DOOR, into `dir`'s plugins, where the build does not link it.
 fn drop_in_wire(dir: &Path) {
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
@@ -145,7 +110,6 @@ fn drop_in_wire(dir: &Path) {
     }
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -154,7 +118,6 @@ impl Drop for Reap {
     }
 }
 
-/// One HTTP/1.1 POST over a fresh connection: the status, or `None` before the listener is up.
 fn post(port: u16, path: &str, body: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -172,8 +135,6 @@ fn post(port: u16, path: &str, body: &str) -> Option<u16> {
     text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// What `statement` declares: its SECRET paths (`secret_refs`) and its REFERENCE-CAPABLE, not
-/// secret, paths (its extensions' `reference_fields`), as the host reads them off its rendering.
 fn declared(
     statement: &busbar_contract::abi::mechanism::door::Statement,
 ) -> (Vec<String>, Vec<String>) {
@@ -187,8 +148,6 @@ fn declared(
     (stated.secret_refs, reference)
 }
 
-/// A `url` is reference-capable, never secret (a literal url, 1.5.5's BOOT cells, passes as
-/// written); the webhook's `auth_header.value` is the credential, declared secret.
 #[test]
 fn the_export_sinks_declare_url_reference_capable_and_the_auth_header_value_secret() {
     let (none, url) = (Vec::<String>::new(), vec!["url".to_string()]);
@@ -212,7 +171,6 @@ fn a_1_5_5_config_reading_export_secrets_from_the_environment_boots_and_serves()
     write_configs(&dir, data_port, admin_port);
     drop_in_wire(&dir);
 
-    // VALIDATE: the 1.5.5 config is accepted, and no `{env: …}` is refused as undeclared.
     let out = busbar(&dir, collector_port)
         .arg("--validate")
         .output()
@@ -228,8 +186,6 @@ fn a_1_5_5_config_reading_export_secrets_from_the_environment_boots_and_serves()
         out.status
     );
 
-    // BOOT: the binary starts and serves model requests (their upstream refuses; the request
-    // path's spans open and close regardless).
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = Reap(
@@ -258,7 +214,6 @@ fn a_1_5_5_config_reading_export_secrets_from_the_environment_boots_and_serves()
         }
     }
 
-    // SERVED: the OTLP sink delivers to the address its `{env: …}` url named.
     let deadline = Instant::now() + Duration::from_secs(30);
     let heard = || common::otlp::spans(&common::otlp::requests(&seen, None)).len();
     while heard() == 0 {

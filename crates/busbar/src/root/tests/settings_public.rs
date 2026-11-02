@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The root's table of public settings: a plugin's public settings are found under every word it
-//! answers to, and nothing else is public. (The schema reading is the loader's, proven over a stub
-//! plugin there: `public_settings_tests`.)
-
 use super::*;
 use busbar_kernel::config::settings_public::PublicSettings as _;
 

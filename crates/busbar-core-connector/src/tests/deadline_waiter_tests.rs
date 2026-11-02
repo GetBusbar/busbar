@@ -24,7 +24,6 @@ fn open_pending(c: &Connector, request_ms: u64) -> ConnId {
 #[test]
 fn waiters_survive_write_no_ticket_and_repeated_polls_until_the_original_deadline() {
     worker().block_on(async {
-        // Exercise each independently owned clock through the actual public interest protocol.
         for (dial_ms, request_ms) in [(100, 0), (700, 100)] {
             let seen = Arc::new(Mutex::new(Vec::new()));
             let changed = Arc::new(tokio::sync::Notify::new());
@@ -130,7 +129,7 @@ fn closing_or_forgetting_cancels_a_registered_timer_even_while_a_poll_holds_its_
             assert!(due.wake.cancelled.load(Ordering::Acquire));
             assert!(due.wake.waiters.lock().unwrap().tickets.is_empty());
             assert!(due.timer.get().unwrap().lock().unwrap().is_none());
-            // A stale in-flight subscription cannot revive a retired interest.
+
             due.wake
                 .register(DeadlineInterest::Ticket(52), &c.waker(OWNER, 52));
             assert!(due.wake.waiters.lock().unwrap().tickets.is_empty());
@@ -181,8 +180,6 @@ struct DropProbe {
     dropped: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-// Drop checks the connection and waiter locks and counts the retired owner. Waker::noop
-// would remove both the lock-safety witness and the deduplication lifetime observation.
 #[allow(clippy::manual_noop_waker)]
 impl Wake for DropProbe {
     fn wake(self: Arc<Self>) {}
@@ -234,8 +231,7 @@ fn host_task_waiters_deduplicate_and_drop_outside_connection_and_waiter_guards()
             "the superseded task has only its deadline hold"
         );
         assert!(due.wake.waiters.lock().unwrap().tasks.is_empty());
-        // The outstanding resolver callback owns the answer and its latest reader waker.
-        // Release that external hold before checking that every probe has been destroyed.
+
         let callback = pending.lock().unwrap().take();
         drop(callback);
         drop(held);

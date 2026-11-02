@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The recovery probe's ownership, which is the whole of the previous release's probe-guard tests.
-//!
-//! Three claims, and the third is the one that is easy to get wrong. An armed guard that is
-//! dropped gives the probe back. A guard that was disarmed — because the dispatch it covers
-//! recorded its own outcome — gives nothing back. And every release is checked against the epoch
-//! captured at the win, so a guard dropped LATE, after a peer has won a newer probe on the same
-//! cell, cannot revert the peer's. The cases that route take the probe through the walk and hand
-//! it to the production far end's attempt, which owns it until it records an outcome.
-
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node};
 use busbar_contract::conn::ConnError;
@@ -64,9 +55,7 @@ fn a_late_guard_releases_only_its_own_epoch() {
             1_000,
         );
     }
-    // The release names the epoch this guard won, not whatever is live now, so the owner check on
-    // the other side can refuse it. That the epoch travels is the property; the refusal itself is
-    // the breaker unit's.
+
     assert_eq!(node.breaker.probe_releases()[0].2, 7);
 }
 
@@ -103,7 +92,7 @@ fn an_attempt_that_never_dispatched_gives_the_probe_back() {
             ..Health::default()
         },
     );
-    // The record cannot be made durable, so nothing is sent and nothing records an outcome.
+
     *node.journal.fail.lock().unwrap() = true;
 
     assert!(node.route("primary").shed().is_some());
@@ -162,11 +151,7 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
     let released = log
         .iter()
         .position(|e| matches!(e, super::harness::Recorded::ProbeReleased(..)));
-    // Unconditionally, not behind an `if let`: an attempt that won the probe and recorded nothing
-    // would leave the cell half-open — the member excluded from every pick after it — and skipping
-    // the assertion for the absence would report that as a pass.
-    // v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1764-1781`: a transport failure records its
-    // transient (which resolves the probe in the breaker) and releases nothing itself.
+
     let observed = observed.expect("a failed attempt tells the breaker what happened");
     assert!(
         released.is_none_or(|released| observed < released),
@@ -175,9 +160,6 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
     );
 }
 
-/// An answer the breaker records nothing for — the caller's own fault — resolves no probe, so the
-/// attempt gives back the one it won; 1.5.5 released it on exactly this exit (v1.5.5
-/// `crates/busbar/src/proxy/engine/mod.rs:1900-1912`; the request-too-large exit at `:2131-2138`).
 #[test]
 fn an_answer_that_records_nothing_gives_the_probe_back() {
     let mut node = Node::with_lanes(&["a"]);
@@ -213,18 +195,10 @@ fn an_answer_that_records_nothing_gives_the_probe_back() {
     );
 }
 
-// ── the shed paths that dispatch nothing ────────────────────────────────────────────────────────
-//
-// A pick can win the recovery probe and then never reach a dispatch: the far end resolves the
-// picked member against its sealed routes AFTER the pick, and a member with no route is not sent.
-// Nothing downstream records an outcome on such a path, so the probe has to come back when the
-// attempt is settled — otherwise the cell stays half-open and the member is excluded from every
-// later pick as a probe already in flight.
-
 #[test]
 fn a_walk_that_sheds_internally_gives_a_won_probe_back() {
     let mut node = Node::with_lanes(&["a"]);
-    // Destination 3 has no sealed route, so the far end sends nothing to it.
+
     node.pool("primary", vec![member(DestinationId::new(3), "ghost")]);
     node.breaker.set(
         DestinationId::new(3),
@@ -251,7 +225,7 @@ fn a_spill_that_sheds_internally_gives_a_won_probe_back() {
     node.tune("primary", |p| {
         p.on_exhausted = OnExhausted::FallbackPool("overflow".to_string());
     });
-    // The primary is suppressed with no probe on offer, so the walk spills.
+
     node.breaker.set(
         DestinationId::new(0),
         Health {
@@ -290,8 +264,7 @@ fn a_member_whose_probe_came_back_is_pickable_again() {
     );
 
     assert!(node.route("primary").shed().is_some());
-    // The cell is back to offering the probe rather than wedged with one in flight, so the next
-    // request can still reach the member.
+
     let members = vec![member(DestinationId::new(3), "ghost")];
     let mut ctx = node.request_ctx();
     assert!(

@@ -1,17 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! EXACTLY ONE PROBER PER MEMBER, proven on the real binary: a provider configured `health: { mode: active, interval_secs: 1 }`
-//! is probed once per tick by the kernel's probe unit on the provider-pool door's sealed egress
-//! (`root::serve::arm_probes`), as 1.5.5's one health loop probed each lane once per interval. A
-//! second prober (the retired engine's `spawn_probers` running beside the kernel's) doubles the
-//! count, and no prober at all leaves it at zero; this cell reads both failures.
-//!
-//! The count is of WORK, not of time: the upstream counts the probe requests it receives, and the
-//! window is many ticks long, so a slow tick costs a probe at the low end and never invents one at
-//! the high end.
 #![cfg(unix)]
-// Needs the plane that serves the `pools` map: a build without it has no member to probe.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -24,11 +14,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The configured probe interval, in seconds.
 const INTERVAL_SECS: u64 = 1;
-/// The probed member's catalog entry, `{upstream_port}` and `{interval_secs}` filled in per run.
+
 const PROVIDERS: &str = include_str!("../../../testing/root-fixtures/health-probe-providers.yaml");
-/// The counting window, in ticks of [`INTERVAL_SECS`].
+
 const WINDOW_TICKS: u64 = 6;
 
 #[test]
@@ -74,7 +63,6 @@ fn an_active_member_is_probed_once_per_tick() {
         read_log(&log_path)
     );
 
-    // The first probe opens the window, so the boot's own duration is never counted.
     let first = Instant::now() + Duration::from_secs(30);
     while probes.load(Ordering::SeqCst) == 0 && Instant::now() < first {
         std::thread::sleep(Duration::from_millis(20));
@@ -86,13 +74,12 @@ fn an_active_member_is_probed_once_per_tick() {
     let _ = child.kill();
     let _ = child.wait();
 
-    // RED (no prober): the member is never probed.
     assert!(
         at_open > 0 && in_window >= 2,
         "the active member was not probed: {at_open} before the window, {in_window} in it; log:\n{}",
         read_log(&log_path)
     );
-    // RED (two probers): a second loop beside the kernel's doubles the count past one per tick.
+
     assert!(
         in_window as u64 <= WINDOW_TICKS + 1,
         "{in_window} probes in {WINDOW_TICKS} ticks: more than one prober runs for the member; \
@@ -102,8 +89,6 @@ fn an_active_member_is_probed_once_per_tick() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
-
-// ── fixture ──────────────────────────────────────────────────────────────────────────────────────
 
 fn fixture_dir() -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -120,8 +105,6 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16) {
-    // The catalog entry, kept as data beside the other root fixtures: the dialect the mock speaks is
-    // the fixture's word, never the composition root's.
     std::fs::write(
         dir.join("providers.yaml"),
         PROVIDERS
@@ -152,8 +135,6 @@ models:
     .unwrap();
 }
 
-/// An upstream that counts every request it receives and answers each with a minimal chat
-/// completion. No client traffic is sent, so every request it sees is a probe.
 fn spawn_counting_upstream(count: Arc<AtomicUsize>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

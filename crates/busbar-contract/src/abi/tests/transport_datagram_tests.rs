@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RED arms for the datagram lane's validators (`check_datagram`, `check_terms`, `check_keying`):
-//! one per rule and arm, each failing if its check is removed.
 
 use std::mem::{size_of, zeroed};
 
@@ -42,7 +41,7 @@ fn route(offset: u64, len: u64, path: u32, lane: u32) -> DatagramRoute {
 }
 
 /// Terms a rendezvous answer carries: four credentials and a 32-byte fingerprint in 64 frame
-/// bytes.
+
 fn terms() -> RendezvousTerms {
     RendezvousTerms {
         role: HANDSHAKE_ANSWERS,
@@ -218,7 +217,7 @@ fn rendezvous_terms_are_absent_whole_or_complete_inside_the_frame() {
         check_terms(&advertised, 78),
         f(Rule::SpanOutOfBounds, "datagram.terms.candidates")
     );
-    // The answer's own check reaches the terms, against the frame bytes it wrote.
+
     let mut o = answer(0, 63);
     o.datagram.terms = terms();
     assert_eq!(

@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LAW 7 — CONFIG-GATED LOADING (docs/design/BUSBAR-1.6.0.md: "Core loads a plugin **iff** its
-//! configuration section is present … A plugin that loads (or costs anything) without its verb
-//! configured is a bug"; Part 0: the new planes are "purely additive and off by default").
-//!
-//! Items 39/40: every plane beyond the catch-all one is LINKED into the default build (Part 2 #17
-//! is locked), so the gate is config, never a feature flag. Before this, `boot::hydrate_all` / `boot::start_planes`
-//! folded EVERY linked plane's hooks and `appbuild` asked EVERY linked plane to `build` its slot, so
-//! a plane with no config section still restored, started and — given a `public_url:` — mounted and
-//! admitted. These drive the core folds over a probe plane that counts every hook it is handed: an
-//! unconfigured probe must be handed NOTHING, a configured one everything.
-
 mod linked;
 
 use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
@@ -24,7 +13,6 @@ static BUILT: AtomicUsize = AtomicUsize::new(0);
 
 const PROBE_SECTION: &str = "law7-probe";
 
-/// A linked plane that records every core call. Its section is `law7-probe`; nothing else names it.
 static PROBE: PlaneDecl = PlaneDecl {
     declaration: PlaneDeclaration {
         key: "law7probe",
@@ -83,8 +71,6 @@ static PROBE: PlaneDecl = PlaneDecl {
     door: None,
 };
 
-/// Run hydrate + start over an App whose configured plane sections are exactly `sections`, and
-/// return how many times the probe's two boot hooks ran.
 fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
     let _iso = TestRegistryIsolation::seeded(&[&PROBE]);
     let (h0, s0) = (
@@ -103,7 +89,6 @@ fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
     )
 }
 
-/// A 1.5.5 config names no plane section: a linked plane restores nothing and starts nothing.
 #[test]
 fn an_unconfigured_plane_hydrates_and_starts_nothing() {
     assert_eq!(
@@ -113,7 +98,6 @@ fn an_unconfigured_plane_hydrates_and_starts_nothing() {
     );
 }
 
-/// Positive control: the same plane with its section configured hydrates and starts exactly once.
 #[test]
 fn a_configured_plane_still_hydrates_and_starts() {
     assert_eq!(
@@ -123,12 +107,8 @@ fn a_configured_plane_still_hydrates_and_starts() {
     );
 }
 
-/// The per-generation build: an unconfigured plane is never asked to build its slot, so it claims,
-/// admits and mounts nothing; configured, it builds and its slot is present. The fallback plane is
-/// never gated.
 #[test]
 fn only_a_configured_plane_builds_its_slot() {
-    // The test-linked fallback plane, read back from the registry BEFORE the isolation seeds it.
     let fallback = linked::fallback();
     let _iso = TestRegistryIsolation::seeded(&[fallback, &PROBE]);
     let build = |sections: &[&'static str]| {
@@ -157,9 +137,6 @@ fn only_a_configured_plane_builds_its_slot() {
     );
 }
 
-/// `resolve` derives the configured set from the document itself: a 1.5.5-shaped config (no plane
-/// section) configures none; each plane section — and the endpoint door the `tools:` plane declares
-/// it owns (read back from its declaration) — configures its own.
 #[test]
 fn resolve_reads_the_configured_plane_sections_off_the_config() {
     let tools_plane = linked::owning("tools");

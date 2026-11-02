@@ -2,36 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PER-WORKER POOLS (`BUSBAR-1.6.0.md` THE DESIGN, connections: the connector owns "per-worker
-//! pools"). A dialled connection whose exchange finished whole is kept, and the next open to the
-//! same place takes it instead of dialling: the second request rides the first one's connection (on
-//! HTTP/2, the next stream of it), as 1.5.5's egress client sent it.
-//!
-//! The shape is 1.5.5's (`UpstreamClients` at v1.5.5, `crates/busbar/src/state.rs`): N shards, N the
-//! machine's parallelism rounded up to a power of two and capped at 16, each worker thread assigned
-//! one shard on first use and keeping it; the per-host idle budget
-//! (`limits.pool_max_idle_per_host`) divided across the shards, never below one; an idle
-//! connection reaped once it has sat `limits.pool_idle_timeout_secs`. The most recently idled
-//! connection is taken first (hyper-util's pool).
-//!
-//! A connection that MULTIPLEXES (an `h2` connection, agreed in the handshake or by prior
-//! knowledge) is shared while it is in use: a concurrent open to the same place on the same shard
-//! rides it as its next stream (1.5.5's pooled h2 client). An HTTP/1.1 connection carries one
-//! exchange at a time and is lent again only once idle.
-//!
-//! A pooled connection is keyed by everything its dial was judged and secured for: the instance and
-//! the need that dialled it (THE DESIGN §5, a connection belongs to the instance that opened it; §8,
-//! the connector holds each need's trust), the entry, the authority, the security and the name
-//! offered, the egress class it was judged under, the very client config it was secured with (a
-//! need declared again under another operator CA is dialled afresh under its new trust), and the
-//! very seal of trust anchors it was held to (a destination sealed again is dialled afresh under
-//! its new seal). A dial
-//! stated `within` an address set is never pooled (its landing rule is per open). An idle
-//! connection is lent only after it has read what the far end sent while it sat idle, so one the far
-//! end closed or said goodbye on is closed here, never handed out.
-//!
-//! An idle connection whose time ran out is closed the next time the pool is used, whatever place
-//! that use is for: every shard is swept once the earliest idle deadline has passed (hyper-util's
-//! idle reaper, which 1.5.5's pool ran on an interval).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -142,7 +112,6 @@ pub(crate) struct Pools {
     /// The instant the pools were made: what [`Self::reap_due`] counts from.
     epoch: Instant,
     /// When the earliest idle line's time runs out, in nanoseconds since [`Self::epoch`]
-    /// (`u64::MAX`: no line is idle): the next use of the pool at or past it sweeps every shard.
     reap_due: AtomicU64,
 }
 
@@ -189,8 +158,7 @@ impl Pools {
     }
 
     /// Bootstrap recovery replaces the posture without replacing the connector or its active
-    /// connections. Retire the old cache: held lines stay with their holders, and idle lines
-    /// close only after every host lock has been released.
+
     pub(crate) fn reconfigure(&self, posture: PoolPosture) {
         let mut gone = Vec::new();
         {
@@ -224,8 +192,7 @@ impl Pools {
     }
 
     /// THE IDLE REAPER: once the earliest idle deadline has passed, every shard is swept and each
-    /// idle line whose time ran out is dropped from the pool and closed (when nobody holds it),
-    /// whatever place the use that found it due is for. Called holding no shard.
+
     fn reap_if_due(&self, now: Instant) {
         let posture = self.posture.read().expect("pool posture");
         let at = self.since_epoch(now);
@@ -236,7 +203,6 @@ impl Pools {
                 .compare_exchange(due, u64::MAX, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
         {
-            // Not due yet, or another use is sweeping (or a line idled since): its time stands.
             return;
         }
         let timeout = posture.idle_timeout;
@@ -285,12 +251,12 @@ impl Pools {
             static SHARD: std::cell::OnceCell<usize> = const { std::cell::OnceCell::new() };
         }
         let idx = SHARD.with(|s| *s.get_or_init(|| NEXT_THREAD.fetch_add(1, Ordering::Relaxed)));
-        // Mask, not modulo: the count is a power of two.
+
         idx & (self.shards.len() - 1)
     }
 
     /// Hold a line just dialled for `key` on `shard`: in use by its first exchange, and, once it
-    /// multiplexes, shared with concurrent opens to the same place.
+
     pub(crate) fn hold(&self, shard: usize, key: PoolKey, line: &Arc<Line>) {
         let posture = self.posture.read().expect("pool posture");
         if posture.max_idle_per_host == 0 {
@@ -309,12 +275,7 @@ impl Pools {
     }
 
     /// A line for `key` on `shard`, LENT (its holder counted): a live multiplexing one, in use or
-    /// idle, first; else the most recently idled one that is still fresh. Every stale, spent or dead
-    /// line met on the way is dropped from the pool, and closed when nobody holds it.
-    ///
-    /// An idle line is read for freshness with NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
-    /// runs under a host lock; reading it drives its connection): its entry stays claimed while
-    /// it is read, so retirement can remove it, and it is lent only if that entry survives.
+
     pub(crate) fn lend(&self, shard: usize, key: &PoolKey) -> Option<Arc<Line>> {
         if !self.keeps() {
             return None;
@@ -322,7 +283,7 @@ impl Pools {
         let now = Instant::now();
         self.reap_if_due(now);
         let mut spent = Vec::new();
-        // Newest first, as hyper-util's idle list pops: the walk resumes below a line read stale.
+
         let mut below = usize::MAX;
         let lent = loop {
             let (at, idle) = {
@@ -387,7 +348,7 @@ impl Pools {
                             idle.lend();
                             break Some(idle);
                         }
-                        // `idle` still owns the line: removing the entry cannot drop its driver.
+
                         entries.remove(i);
                     }
                     if entries.is_empty() {
@@ -407,8 +368,7 @@ impl Pools {
     }
 
     /// `line`'s last holder for `key` on `shard` left (`users() == 0`): kept idle when it can carry
-    /// another exchange (past the shard's budget the oldest idle one is closed), else dropped and
-    /// closed. A line a holder still holds is left as it is.
+
     pub(crate) fn release(&self, shard: usize, key: &PoolKey, line: &Arc<Line>) {
         let applied = self.posture.read().expect("pool posture");
         let posture = *applied;
@@ -425,8 +385,6 @@ impl Pools {
                 return;
             }
             let Some(entries) = map.get_mut(key) else {
-                // Every dial is held before release. Missing membership means it was removed
-                // (including by instance retirement), so this last holder must close it.
                 drop(map);
                 drop(applied);
                 line.close();
@@ -443,7 +401,7 @@ impl Pools {
                 (Some(i), false) => spent.push(entries.remove(i).line),
                 (None, _) => spent.push(Arc::clone(line)),
             }
-            // The idle time ran out, or past the budget: the oldest idle lines go.
+
             let timeout = posture.idle_timeout;
             entries.retain(|e| {
                 let expired = e
@@ -485,7 +443,7 @@ impl Pools {
     }
 
     /// `owner` is gone: every line dialled for it leaves the pool, and each nobody holds is
-    /// closed now, never left for the idle reaper. Another instance's lines are untouched.
+
     pub(crate) fn forget(&self, owner: InstanceId) {
         let mut gone = Vec::new();
         for shard in &*self.shards {
@@ -505,7 +463,7 @@ impl Pools {
     }
 
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when
-    /// nobody holds it.
+
     pub(crate) fn drop_line(&self, shard: usize, key: &PoolKey, line: &Arc<Line>) {
         {
             let mut map = self.shards[shard].lock().expect("pool");

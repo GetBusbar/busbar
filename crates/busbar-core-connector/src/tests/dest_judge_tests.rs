@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `dest.judge` AND THE DIAL, THROUGH THE KERNEL, OVER THE ONE GUARD: the kernel's host services
-//! with the deployment's judge installed, as the root installs it, and a resolver the test answers
-//! by hand. These held the kernel's own rules before; the rules are the guard's now, and the kernel
-//! only asks.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -65,7 +62,7 @@ fn recorder() -> (Arc<Mutex<Option<Stored>>>, Later) {
 }
 
 /// 1.5.5 REFUSAL TIMING: a refusal the name decides answers at once, before any resolution, with the
-/// verdict the one judge gives.
+
 #[test]
 fn dest_judge_refuses_what_the_name_decides_at_once() {
     let r = Arc::new(HandResolver::default());
@@ -94,9 +91,7 @@ fn dest_judge_refuses_what_the_name_decides_at_once() {
 }
 
 /// Every loopback and private SPELLING is refused without resolving, for a class without private
-/// addressing: `?`, `#` and `\` end the authority, a trailing root dot and a percent-encoded name are
-/// read the way the dialling stack reads them. RED on the reader that ended the authority only at
-/// `/`, which judged each of these an unresolved name and allowed it.
+
 #[test]
 fn dest_judge_refuses_every_loopback_spelling_without_resolving() {
     let r = Arc::new(HandResolver::default());
@@ -120,7 +115,7 @@ fn dest_judge_refuses_every_loopback_spelling_without_resolving() {
 }
 
 /// Asked to resolve, a name pends and the address judgement decides the answer; not asked, the
-/// name's own judgement is the verdict and nothing resolves.
+
 #[test]
 fn dest_judge_resolves_only_when_asked_and_judges_what_answered() {
     let r = Arc::new(HandResolver::default());
@@ -178,9 +173,7 @@ fn addresses(s: &Stored) -> Vec<String> {
 }
 
 /// THE JUDGED ADDRESSES: asked to resolve and admitted, `dest.judge`
-/// writes every address its one judgement judged, one span each, the pin first, from the SAME
-/// resolution (no second lookup); an IP literal names itself; a refusal and a judgement that did
-/// not resolve name none. RED on the judge that answered the verdict alone.
+
 #[test]
 fn dest_judge_writes_the_addresses_it_judged() {
     let r = Arc::new(HandResolver::default());
@@ -252,9 +245,7 @@ fn an_egress_class_the_guard_does_not_know_is_refused() {
 }
 
 /// THE JUDGE A DIAL READS: the address it answers is exactly the one the judgement pinned. A name
-/// pends and the pin arrives with the answer; an IP literal is its own pin and asks no resolver; a
-/// refusal the name decides answers at once; an answered address the rules refuse is refused with
-/// the verdict `dest.judge` gives.
+
 #[test]
 fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
     let r = Arc::new(HandResolver::default());
@@ -313,10 +304,7 @@ fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
 }
 
 /// 1.5.5's OVERRIDES, ON THE ONE JUDGE: under `security.allow_all_metadata` the metadata guard is
-/// off for `dest.judge` and for the connector's dial alike (both are `judge_dial`): a metadata
-/// literal is admitted and pinned, a metadata name is resolved and its metadata answer pinned.
-/// RED on the judge that lifted only the denylist and kept the address guard's own metadata refusal.
-/// The overrides are a provider dial's only: every other class refuses.
+
 #[test]
 fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     let r = Arc::new(HandResolver::default());
@@ -363,8 +351,7 @@ fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
 }
 
 /// A CARVE-OUT lifts exactly what it names: `allow_metadata_hosts: [169.254.169.254]` admits that
-/// address (literal, or answered for a name) and nothing else on the list, for a provider dial;
-/// every other class refuses it.
+
 #[test]
 fn a_metadata_carve_out_admits_only_what_it_names() {
     let r = Arc::new(HandResolver::default());
@@ -425,8 +412,7 @@ fn without_an_override_metadata_stays_refused_on_the_dial() {
 }
 
 /// ON THE DIAL: every resolved address is judged by the same lists the configuration check
-/// reads, operator-blocked addresses included. A name answering an address in
-/// `security.blocked_metadata_hosts` is refused on the dial, exactly as the literal is.
+
 #[test]
 fn an_operator_blocked_answer_is_refused_on_the_dial() {
     let r = Arc::new(HandResolver::default());
@@ -456,11 +442,7 @@ fn an_operator_blocked_answer_is_refused_on_the_dial() {
 }
 
 /// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN: under a
-/// deployment that does NOT block private addresses, `DEST_REFUSE_PRIVATE` refuses a private
-/// literal, a loopback name and a name answering a private address all the same; with
-/// `DEST_EXPLAIN` a refusal an address decided names it (a cloud-metadata answer included), a
-/// failed resolution names the resolver's reason, and a refusal the name alone decided names
-/// nothing. Not asked to explain, nothing is written on a refusal.
+
 #[test]
 fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
     let r = Arc::new(HandResolver::default());
@@ -475,7 +457,7 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
     )));
     let strict = svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN;
     let open_web = busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
-    // The deployment alone admits a private literal; the caller's flag refuses it, at once.
+
     for (flags, want) in [
         (svc::DEST_RESOLVE, svc::DEST_ALLOWED),
         (strict, svc::DEST_INTERNAL),
@@ -491,7 +473,7 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
         got.bytes.is_empty(),
         "the name alone decided it: nothing named"
     );
-    // A name answering a private address, a metadata address, and no answer at all.
+
     let answered = |answer: Result<Vec<std::net::IpAddr>, String>, flags: u32| {
         let (slot, later) = recorder();
         assert!(matches!(
@@ -530,9 +512,7 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
 }
 
 /// RED: the deployment's one judge, asked for a dial a need holds a PRIVATE REACH to
-/// (`DestJudge::judge_reaching`), admits a private address (a literal, and a name's private answer)
-/// in the provider class, which refuses both without it; a cloud-metadata address is refused either
-/// way, a reach being a host entry, never an IP one.
+
 #[test]
 fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
     use busbar_kernel::host_services::DestJudge;
@@ -563,7 +543,7 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
         judge.judge_reaching(metadata, P, never()),
         Some(Err(r)) if r.verdict == svc::DEST_METADATA
     ));
-    // A name whose answer is private: admitted under the reach once it resolves.
+
     let got = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&got);
     assert!(judge
@@ -582,12 +562,7 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
 }
 
 /// RED, the SSRF guard bypass through a plugin's argument guard: `dest.judge` asked
-/// about the exact host strings that guard passes it (a bare host, an IPv6 literal bracketed,
-/// never resolved; `DEST_REFUSE_PRIVATE` for a registration granted no private reach, none for one
-/// granted it) answers each odd spelling with the verdict of the plain ASCII host a URL client
-/// dials it as. On the guard that compared hosts only ASCII-lowercased, `ｌｏｃａｌｈｏｓｔ` and
-/// `①⑥⑨.②⑤④.①⑥⑨.②⑤④` were DEST_ALLOWED and the upstream fetched loopback and the metadata
-/// address.
+
 #[test]
 fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
     let r = Arc::new(HandResolver::default());
@@ -598,33 +573,33 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
         got.value
     };
     let rows = [
-        // Full-width `ｌｏｃａｌｈｏｓｔ`.
+
         (
             "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}",
             "localhost",
             svc::DEST_INTERNAL,
         ),
-        // Circled digits `①②⑦.0.0.1`.
+
         (
             "\u{2460}\u{2461}\u{2466}.0.0.1",
             "127.0.0.1",
             svc::DEST_INTERNAL,
         ),
-        // Circled digits `①⑥⑨.②⑤④.①⑥⑨.②⑤④`.
+
         (
             "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
             "169.254.169.254",
             svc::DEST_METADATA,
         ),
-        // The ideographic full stop: `LOCALHOST。`.
+
         ("LOCALHOST\u{3002}", "localhost", svc::DEST_INTERNAL),
-        // Full-width `０ｘ７ｆ．１` beside `0x7f.1`.
+
         (
             "\u{ff10}\u{ff58}\u{ff17}\u{ff46}\u{ff0e}\u{ff11}",
             "0x7f.1",
             svc::DEST_OBFUSCATED,
         ),
-        // Full-width `０１７７００００００００１` beside `017700000001`.
+
         (
             "\u{ff10}\u{ff11}\u{ff17}\u{ff17}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff11}",
             "017700000001",
@@ -640,7 +615,7 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
                 "`{odd}` beside `{plain}`"
             );
         }
-        // The `://` spelling of the same destination, as an argument guard's undeclared-URL path carries it.
+
         let url = |h: &str| format!("https://{h}/latest/meta-data/");
         assert_eq!(
             judge(&url(odd), svc::DEST_REFUSE_PRIVATE),
@@ -648,11 +623,11 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
             "`{odd}` as a URL"
         );
     }
-    // A host `url` dials as `0.0.0.0` that the address reader reads as a name is unjudgeable.
+
     for host in ["0x", "1.0x", "https://0x/"] {
         assert_eq!(judge(host, 0), svc::DEST_NO_HOST, "{host}");
     }
-    // GREEN control: a public IDN name is admitted, as its punycode name is.
+
     for host in ["b\u{fc}cher.example", "xn--bcher-kva.example"] {
         assert_eq!(
             judge(host, svc::DEST_REFUSE_PRIVATE),
@@ -664,10 +639,7 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
 }
 
 /// RED, the percent-escape the guard did not decode: `dest.judge` asked about a bare host
-/// holding a `%` escape, without `DEST_RESOLVE` (the argument guard's own question), answers
-/// `DEST_NO_HOST`, at once, nothing resolved. `%6c%6fcalhost` was `DEST_ALLOWED`: the guard read
-/// it as an unknown name, and a client that decodes it dials `localhost`. The `://` spelling, which
-/// the one URL reader decodes, is judged as the host it decodes to, as before.
+
 #[test]
 fn dest_judge_refuses_a_bare_host_holding_a_percent_escape() {
     let r = Arc::new(HandResolver::default());

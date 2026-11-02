@@ -1,8 +1,3 @@
-//! A per-thread allocation counter, installed only by binaries that declare [`Counting`] as their
-//! global allocator. An optional scoped observer checks initialized payload prefixes at deallocation;
-//! it never scans spare capacity, padding, or unrelated allocations. A separate metadata-only
-//! observer can witness the lifetime of one allocation selected by its exact layout size.
-
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -53,10 +48,6 @@ pub struct AllocationLifetimeProbe {
 }
 
 impl AllocationLifetimeProbe {
-    /// Observe allocations whose complete `Layout::size()` equals `size` on this thread.
-    ///
-    /// # Panics
-    /// Panics if `size` is zero or another lifetime probe is already active on this thread.
     #[must_use]
     pub fn start_exact_size(size: usize) -> Self {
         assert!(
@@ -77,7 +68,6 @@ impl AllocationLifetimeProbe {
         }
     }
 
-    /// Disarm the observer and return only allocator metadata for this window.
     #[must_use]
     pub fn finish(self) -> AllocationLifetimeObservations {
         LIFETIME.with(|lifetime| lifetime.take().expect("active lifetime probe").observations)
@@ -90,8 +80,6 @@ impl Drop for AllocationLifetimeProbe {
     }
 }
 
-// These allocator callbacks use only Copy state in const-initialized TLS. They neither allocate
-// bookkeeping nor dereference an allocation; addresses stay private and are compared only.
 fn lifetime_allocated(address: usize, size: usize) {
     if address == 0 {
         return;
@@ -168,7 +156,6 @@ pub struct Counting {
 }
 
 impl Counting {
-    /// The counter, for a `#[global_allocator]` static.
     #[must_use]
     pub const fn new() -> Self {
         Self { _private: () }
@@ -252,7 +239,6 @@ impl InitializedPayloadProbe {
         })
     }
 
-    /// End observation and return the registered payloads and their destruction results.
     #[must_use]
     pub fn finish(self) -> PayloadObservations {
         let state =
@@ -377,8 +363,7 @@ fn read_payload(memory: &File, payload: &mut ObservedPayload) {
             payload.read_error = Some(std::io::ErrorKind::InvalidInput);
             return;
         };
-        // The kernel copies the registered range into initialized stack storage. No Rust reference
-        // or load is formed from the allocation passed to GlobalAlloc::dealloc.
+
         match memory.read_at(&mut chunk[..count], offset) {
             Ok(0) => {
                 payload.read_error = Some(std::io::ErrorKind::UnexpectedEof);
@@ -465,23 +450,19 @@ unsafe impl GlobalAlloc for Counting {
     }
 }
 
-/// Allocations counted on THIS thread since it started or last [`reset`].
 #[must_use]
 pub fn allocations() -> u64 {
     ALLOCS.with(Cell::get)
 }
 
-/// Zero this thread's counter, returning what it held.
 pub fn reset() -> u64 {
     ALLOCS.with(|c| c.replace(0))
 }
 
-/// How many allocations `f` made on this thread.
 pub fn allocations_of(f: impl FnOnce()) -> u64 {
     allocations_with(f).0
 }
 
-/// How many allocations `f` made on this thread, and what it returned.
 pub fn allocations_with<R>(f: impl FnOnce() -> R) -> (u64, R) {
     let before = allocations();
     let r = f();
@@ -489,6 +470,6 @@ pub fn allocations_with<R>(f: impl FnOnce() -> R) -> (u64, R) {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)] // REVIEWED: scoped registration of initialized owned test payloads
+#[allow(unsafe_code)]
 #[path = "tests/alloc_counter_tests.rs"]
 mod tests;

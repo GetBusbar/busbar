@@ -1,25 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TRANSPORT KIND: `abi/transport/`. Every answer is judged by its kind's own check:
-//!
-//! * carrier: `listen` by `check_listen` (`addr_cap` from `ListenIn`), `accept` by `check_accept`
-//!   (`peer_cap` from `AcceptIn`), `read` by `check_io` (`cap` from `ReadIn`), `write` by
-//!   `check_io` (the `len` offered in `WriteIn`), `arrival` by `check_arrival` (`peer_cap` from
-//!   `ArrivalIn`);
-//! * framer: `locate` by `check_locate` (`authority_cap`/`name_cap`/`alpn_cap` from `LocateIn`), and every op
-//!   answering a `FramerOut` (`begin`, `ingest`, `emit`, `encode`, `refuse`, `finish`, `detach`,
-//!   `adopt`, `timer`) by `check_framer`, its pieces over the host's `sink.pieces` and every cap
-//!   from the op's `sink`;
-//! * a READY `cancel` by `check_cancel` on its disposition.
-//!
-//! `dial` (a connection token), `flush` and `shut` (a bare `OutHead`) have no per-answer rule
-//! beyond the mechanism's: a token is a name, not a result.
-//!
-//! SHORT ANSWERS: only `arrival` and `locate` have the short path. `listen` and `accept` have none
-//! (the host's cap is at least `MAX_ADDR`), `read`/`write` partial I/O is not short, and a
-//! framer's full sink is backpressure (`YIELD_MORE`), never short.
-
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
 use busbar_contract::abi::mechanism::check::{reported, Fault};
 use busbar_contract::abi::mechanism::door::Statement;
@@ -41,9 +22,6 @@ use busbar_contract::abi::transport::{
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
-/// The transport tail's last frozen size, before the fault table was appended (THE KIND TAIL
-/// GROWTH RULE, `abi::mechanism::door::tail_read_len`): a tail that predates the fault table loads
-/// and reads it as absent, and is then judged by [`check_fault_cover`] like any other.
 const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_rows);
 
 /// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
@@ -102,12 +80,6 @@ pub struct TransportFacts {
     pub adopts_session: bool,
 }
 
-/// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
-/// `validate` or `open` runs), checked as a bind checks it.
-///
-/// # Errors
-///
-/// The door, its Statement or its transport tail is refused.
 pub fn stated(
     door_fn: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
@@ -116,7 +88,6 @@ pub fn stated(
     tail_facts(&st)
 }
 
-/// A plugin string, interned.
 fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
     if s.len == 0 {
         return Ok("");
@@ -131,7 +102,6 @@ fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
         .map_err(|_| format!("the transport tail's {field} is not UTF-8"))
 }
 
-/// The transport's tail, read from the Statement and checked.
 fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     // SAFETY: `TransportTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid);
     // a non-NULL kind tail is `'static` plugin data of its stated size.
@@ -153,8 +123,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         };
         check_claim_facts(keys).map_err(broke)?;
     }
-    // The scheme NAMES are the Statement's alone (signed, and byte-compared at admit); the tail has
-    // one row per name.
+
     busbar_contract::abi::transport::check::check_claim_rows(st.claims_len, &tail)
         .map_err(broke)?;
     let names: &[AbiStr] = if st.claims_len == 0 {
@@ -206,7 +175,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         .iter()
         .map(|c| owned(*c, "claim"))
         .collect::<Result<_, _>>()?;
-    // Row `i` describes `claims[i]` (`check_claim_rows` held the counts equal).
+
     let lines = claims
         .iter()
         .zip(rows)
@@ -225,8 +194,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         .filter(|(_, row)| row.session == 1)
         .map(|(name, _)| *name)
         .collect();
-    // THE TWO TABLES: the status class (the fee decision's leg) and the fault reading (the
-    // breaker's). A claim that classes its answers reads them for the breaker too.
+
     let status: &[StatusRow] = if tail.status_rows_len == 0 {
         &[]
     } else {
@@ -277,14 +245,6 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     })
 }
 
-/// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement through the same door and tail
-/// checks a load runs, without binding or opening it: the boot seal registers every scheme an entry
-/// claims under its own key (`BUSBAR-1.6.0.md` TRANSPORT-STACK: ONE ENTRY PER PLUGIN, the schemes
-/// are its claims).
-///
-/// # Errors
-///
-/// The door, its Statement or its transport tail is refused.
 pub fn linked_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
@@ -333,9 +293,6 @@ impl Kind for Transport {
         Ok(Some(Box::new(tail_facts(st)?)))
     }
 
-    /// The class the op's contract states ([`transport::CONTRACTS`]): a carrier's I/O runs under
-    /// the connection's deadline, a framer's ticketed op (`begin`, `ingest`, `emit`) under the
-    /// stream's, so an auth call it makes that pends is held to the stream's deadline.
     fn ticketed_class(s: u32) -> busbar_contract::abi::mechanism::call::DeadlineClass {
         transport::CONTRACTS.iter().find(|c| c.slot == s).map_or(
             busbar_contract::abi::mechanism::call::DeadlineClass::Connection,
@@ -367,12 +324,6 @@ impl Kind for Transport {
         }
     }
 
-    /// A `begin` is admitted only with a declared scheme ([`check_begin_scheme`]: a zero never
-    /// grants), a well-formed binding ([`check_binding`]) and, on the dial
-    /// side, the binding's auth handle verified for THIS framer at the published generation
-    /// (`super::super::auth_handle`): a handle of another owner, of another generation or forged
-    /// is REFUSED before the crossing. An `emit` whose opening body length breaks
-    /// [`check_emit_body_len`] is the host's own fault, and never crosses.
     fn admit(
         s: u32,
         input: *const busbar_contract::abi::mechanism::call::InHead,
@@ -459,8 +410,7 @@ impl Kind for Transport {
             slot::DETACH | slot::TIMER => framer(a, a.input::<FramingIn>()?.sink),
             slot::ADOPT => framer(a, a.input::<AdoptIn>()?.sink),
             life::CANCEL => check_cancel(a.outcome, a.out::<CancelOut>()?.disposition),
-            // `dial`, `flush`, `shut` and the other lifecycle answers: no per-answer rule beyond
-            // the mechanism's.
+
             _ => Ok(()),
         }
     }
@@ -482,7 +432,6 @@ impl Kind for Transport {
     }
 }
 
-/// A framer answer: its pieces over the host's `sink.pieces`, every cap from the op's `sink`.
 fn framer(a: &Answer, sink: FramerSink) -> Result<(), Fault> {
     let o = a.out::<FramerOut>()?;
     let pieces_cap = sink.pieces_cap as u64;
@@ -504,7 +453,7 @@ fn framer(a: &Answer, sink: FramerSink) -> Result<(), Fault> {
         sink.frame_cap as u64,
         pieces_cap,
     )?;
-    // Only a field block's bytes are read here; payload never is.
+
     if pieces
         .iter()
         .any(|p| p.flags & transport::PIECE_FIELDS != 0)

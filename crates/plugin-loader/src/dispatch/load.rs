@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE LOADER PATH for both origins (`BUSBAR-1.6.0.md` THE DESIGN, §11.4: compiled in or dropped
-//! in, the same table).
-//!
-//! [`load_dropped`] checks the manifest's mechanism version BEFORE `dlopen`, opens the library,
-//! finds [`DOOR_SYMBOL`] and runs [`validate`]; [`load_linked`] runs the SAME [`validate`] on a
-//! compiled-in row's door. Both answer the same [`Plugin`]. The door is refused — never guessed,
-//! never a panic — for: a wrong magic, a mechanism or kind ABI version older OR newer than the
-//! host's, an unknown kind or another kind than `K`, a door that does not reach its table, a NULL table,
-//! a table whose `slots`/`size` differ from the host's table of `K`, any NULL slot, a Statement
-//! that is missing, short, disagrees with the door or points at NULL arrays, or a door whose kind
-//! layout fingerprint is not the host's (status row 188).
-
 use std::fmt;
 use std::mem::size_of;
 use std::path::Path;
@@ -48,15 +36,6 @@ pub struct ManifestFacts {
 }
 
 impl ManifestFacts {
-    /// The facts at the head of a Statement rendering
-    /// ([`rendering`](busbar_contract::abi::mechanism::rendering)): its magic, then the mechanism
-    /// version, the kind and the kind's ABI version.
-    ///
-    /// # Errors
-    ///
-    /// [`LoadError::Rendering`] for an incomplete or malformed rendering, or one naming no kind;
-    /// a rendering an older pack tool made names the repack. The whole rendering is read before
-    /// any plugin code may run, including the need retention policy.
     pub fn read(rendering: &[u8]) -> Result<Self, LoadError> {
         let facts = read(rendering)
             .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?;
@@ -83,12 +62,6 @@ pub struct LinkedRow {
 }
 
 impl LinkedRow {
-    /// The row a compiled-in door states: its Statement, rendered once, without opening the plugin
-    /// (no `validate` or `open` runs; the door function only answers its `'static` data).
-    ///
-    /// # Errors
-    ///
-    /// Whatever [`rendering_of`] refuses.
     pub fn of(door: DoorFn) -> Result<Self, LoadError> {
         Ok(Self {
             statement: rendering_of(door)?,
@@ -96,23 +69,10 @@ impl LinkedRow {
         })
     }
 
-    /// [`LinkedRow::of`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows
-    /// 159 and 194). #1469 makes `of` take the `MacroDoor` alone and keeps this name beside it, so
-    /// `LinkedRow::of_macro(plugin::MACRO_DOOR)` compiles before and after.
-    ///
-    /// # Errors
-    ///
-    /// Whatever [`rendering_of`] refuses.
     pub fn of_macro(door: busbar_contract::abi::sdk::door::MacroDoor) -> Result<Self, LoadError> {
         Self::of(door.door_fn())
     }
 
-    /// [`LinkedRow::of`] over a [`LoadedDoor`]: a `MacroDoor`, or a test's or the published
-    /// suite's restated door (status rows 159 and 194). #1469's name and signature, here first.
-    ///
-    /// # Errors
-    ///
-    /// As [`LinkedRow::of`].
     pub fn of_loaded(door: LoadedDoor) -> Result<Self, LoadError> {
         Self::of_raw(door.door)
     }
@@ -146,9 +106,6 @@ impl From<busbar_contract::abi::sdk::door::MacroDoor> for LoadedDoor {
     }
 }
 
-/// A SEALED door function (status row 195): a [`DoorFn`] answers a `&'static Door`, which only the
-/// contract's `unsafe` door constructor builds, so holding one is holding a door some `unsafe`
-/// vouched for.
 impl From<DoorFn> for LoadedDoor {
     fn from(door: DoorFn) -> Self {
         Self { door: raw(door) }
@@ -157,7 +114,7 @@ impl From<DoorFn> for LoadedDoor {
 
 /// A sealed door function as the raw one the loader enters ([`enter_door`]): the same `extern "C"`
 /// function, typed as a `dlsym` answer is.
-#[doc(hidden)] // TEST SEAM: busbar-test-kit
+#[doc(hidden)]
 pub const fn raw(door: DoorFn) -> RawDoorFn {
     // SAFETY: `&'static Door` and `*const Door` are ABI-compatible (one pointer; the reference is
     // never NULL), so calling the function through either type is the same call; the loader only
@@ -166,9 +123,6 @@ pub const fn raw(door: DoorFn) -> RawDoorFn {
 }
 
 impl LoadedDoor {
-    /// The door function itself, admitted: what a compiled-in row's tables hold once its door is
-    /// admitted ([`open_linked`]). Holding or handing on a door function is safe; every entry into
-    /// it runs the loader's checks.
     #[must_use]
     pub const fn door_fn(self) -> RawDoorFn {
         self.door
@@ -245,8 +199,6 @@ pub fn admit_linked(door: DoorFn) -> Result<LoadedDoor, LoadError> {
     unsafe { open_linked(raw(door)) }
 }
 
-/// [`validate_door`] over the kind the door itself states: the door checks every origin runs,
-/// for a door no caller has asked of one kind.
 pub(crate) fn validate_any(p: *const Door) -> Result<Validated, LoadError> {
     use super::kinds::{
         auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
@@ -264,53 +216,28 @@ pub(crate) fn validate_any(p: *const Door) -> Result<Validated, LoadError> {
     }
 }
 
-/// [`rendering_of`] over a [`LoadedDoor`] (#1469's name and signature, here first).
-///
-/// # Errors
-///
-/// The refusal the door or its Statement earns.
 pub fn rendering_of_loaded(door: LoadedDoor) -> Result<Vec<u8>, LoadError> {
     rendering_of_raw(door.door)
 }
 
-/// [`rendering_of`] over a `MACRO_DOOR` (status rows 159 and 194), as [`LinkedRow::of_macro`]: the
-/// name #1469 keeps beside its `rendering_of(MacroDoor)`.
-///
-/// # Errors
-///
-/// The refusal the door or its Statement earns.
 pub fn rendering_of_macro(
     door: busbar_contract::abi::sdk::door::MacroDoor,
 ) -> Result<Vec<u8>, LoadError> {
     rendering_of(door.door_fn())
 }
 
-/// A compiled-in door's Statement, checked as [`rendering_of`] checks it, for a kind's own reader
-/// of its tail (`kinds::transport::stated`).
-///
-/// # Errors
-///
-/// The refusal the door or its Statement earns.
 pub(crate) fn statement_of(door_fn: RawDoorFn) -> Result<Statement, LoadError> {
     let (door, _) = read_door(enter_door(door_fn), None)?;
     statement(&door)
 }
 
-/// THE RENDERING a door's Statement makes, for any kind: the door's head checks (magic, mechanism,
-/// size, a known kind at this host's ABI version for it) and the Statement's, then
-/// [`render`]. The pack tool signs it into a dropped plugin's manifest; [`LinkedRow::of`] states it
-/// for a compiled-in one.
-///
-/// # Errors
-///
-/// The refusal the door or its Statement earns.
 pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
     rendering_of_raw(raw(door_fn))
 }
 
 /// [`rendering_of`] over a raw door function: a `dlsym` answer, or a door the loader already
 /// holds.
-#[doc(hidden)] // TEST SEAM: busbar-test-kit
+#[doc(hidden)]
 pub fn rendering_of_raw(door_fn: RawDoorFn) -> Result<Vec<u8>, LoadError> {
     let (door, _) = read_door(enter_door(door_fn), None)?;
     let st = statement(&door)?;
@@ -323,7 +250,7 @@ pub fn rendering_of_raw(door_fn: RawDoorFn) -> Result<Vec<u8>, LoadError> {
 /// both origins. The door function is plugin code like any slot, so it runs where every other
 /// per-load crossing runs; a call already on a worker stays there. A door function that panicked
 /// answers NULL ([`LoadError::NullDoor`]).
-#[doc(hidden)] // TEST SEAM: busbar-test-kit
+#[doc(hidden)]
 pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
     let call = || {
         crate::ffi_thread::debug_assert_permanent("the door function");
@@ -335,14 +262,6 @@ pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
     crate::ffi_thread::on_plugin_thread(call).unwrap_or(std::ptr::null())
 }
 
-/// THE PACK-TIME RENDERING: `path`'s door, if the library exports one, rendered
-/// ([`rendering_of`]) for the pack tool to sign into the manifest. `None` for a library with no
-/// door (a pre-1.6.0 artifact keeps today's handling). Runs on the publisher's machine, never in the
-/// engine's boot: the engine reads the signed rendering and opens the library only at admit.
-///
-/// # Errors
-///
-/// [`LoadError::Open`] when the library does not load; the door's or Statement's refusal.
 pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
@@ -356,14 +275,6 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
     rendering.map(Some)
 }
 
-/// Where the door `path`'s library exports, and its ops table, live in this process while the
-/// library is open: `(door, ops)` addresses, read with the library loaded (it is unloaded after,
-/// on the reaper). `None` when it exports no door. The published conformance suite proves with
-/// them that its dropped-in door is an image of its own, never the linked door it is compared
-/// against (`conformance::both_ways`).
-///
-/// # Errors
-/// `dlopen` failed.
 pub fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
@@ -562,7 +473,6 @@ pub enum LoadError {
     Entropy(String),
 }
 
-/// What every refusal of a plugin built against an older contract tells the operator to do.
 pub const REBUILD: &str = "rebuild the plugin against the 1.6.0 SDK";
 
 impl fmt::Display for LoadError {
@@ -688,23 +598,20 @@ impl fmt::Display for LoadError {
 
 impl std::error::Error for LoadError {}
 
-/// A door that passed [`validate`]: copies of its `'static` data and its slots.
 pub(crate) struct Validated {
     pub(crate) kind: KindCode,
     pub(crate) statement: Statement,
     pub(crate) slots: Box<[Op]>,
-    /// The door's optional `ready` (its append-only tail); `None` = it has none.
+
     pub(crate) ready: Option<Op>,
 }
 
-/// The loaded library, unloaded on the loader's worker when the last instance handle drops.
 pub(crate) struct Lib(Option<Library>, Option<crate::stage::Staged>);
 
 impl Drop for Lib {
     fn drop(&mut self) {
         let staged = self.1.take();
         if let Some(lib) = self.0.take() {
-            // The staged backing (a verified-bytes load) is released only after the unload.
             reap(Box::new(move || {
                 crate::dlclose_on_worker(lib);
                 drop(staged);
@@ -713,26 +620,12 @@ impl Drop for Lib {
     }
 }
 
-/// An unload, as the reaper runs it.
 pub(crate) type Unload = Box<dyn FnOnce() + Send>;
 
-/// THE REAPER: every library unload (plugin `.fini_array` code) runs on a reaper thread of its own,
-/// fire and forget. Never on a request worker, never on the watchdog, never under a worker's lock
-/// and never inside another op's crossing record, so an unload that hangs wedges only its own
-/// reaper: no innocent instance is faulted, no caller waits, and no LATER unload waits behind it (a
-/// single shared reaper let one hanging `.fini_array` hold every later library — and its staged
-/// image — loaded for the life of the process). A reaper the OS will not spawn leaks the library
-/// rather than run its unload on the caller's thread.
-///
-/// A HUNG UNLOAD IS OBSERVABLE, NEVER FORCED: each reaper is counted live until its unload returns
-/// ([`live_reapers`], reported in `DispatchStats::live_reapers`), and a watch beside it warns once
-/// when the unload has not returned within the lifecycle budget. Nothing caps or cancels it — a
-/// leaked library is safer than a forced unload.
 pub(crate) fn reap(unload: Unload) {
     reap_within(unload, super::Budgets::default().lifecycle);
 }
 
-/// [`reap`], warning when the unload outlives `bound`.
 pub(crate) fn reap_within(unload: Unload, bound: std::time::Duration) {
     use std::sync::atomic::Ordering::SeqCst;
     let handed = std::sync::Arc::new(std::sync::Mutex::new(Some(unload)));
@@ -758,7 +651,7 @@ pub(crate) fn reap_within(unload: Unload, bound: std::time::Duration) {
         std::mem::forget(unload);
         return;
     }
-    // The watch: it outlives nothing but its own wait, so a hung unload leaves one thread, its own.
+
     let _ = std::thread::Builder::new()
         .name(REAPER_WATCH_THREAD.into())
         .spawn(move || {
@@ -774,31 +667,22 @@ pub(crate) fn reap_within(unload: Unload, bound: std::time::Duration) {
         });
 }
 
-/// Reapers whose unload has not returned, process-wide.
 pub(crate) fn live_reapers() -> u64 {
     LIVE_REAPERS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 static LIVE_REAPERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The reaper thread's name.
 pub(crate) const REAPER_THREAD: &str = "busbar-dispatch-reaper";
 
-/// The reaper watch's thread name.
 const REAPER_WATCH_THREAD: &str = "busbar-dispatch-reaper-watch";
 
-/// TEST WITNESS: unloads the reapers finished.
 #[cfg(test)]
 pub(crate) static UNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// TEST WITNESS: hung unloads the watch warned of.
 #[cfg(test)]
 pub(crate) static HUNG_WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// THE DROPPED-IN DOOR: `path`'s signed manifest rendering `stated` — its head facts, checked before
-/// `dlopen` — then `dlopen`, then [`DOOR_SYMBOL`], then [`validate`], then the door's own Statement
-/// rendered and compared with `stated` byte for byte. A mechanism version the host does not speak is
-/// refused before the library is opened.
 pub fn load_dropped<K: Kind>(
     path: &Path,
     stated: &[u8],
@@ -810,9 +694,6 @@ pub fn load_dropped<K: Kind>(
     bind_library::<K>(Lib(Some(lib), None), stated, bind)
 }
 
-/// [`load_dropped`] over a dropped plugin's VERIFIED library bytes (the bytes its signed manifest's
-/// `sha256` names): staged by the loader's one staging path and opened from exactly those bytes.
-/// `display` labels a refusal.
 pub fn load_dropped_bytes<K: Kind>(
     bytes: &[u8],
     display: &str,
@@ -825,7 +706,6 @@ pub fn load_dropped_bytes<K: Kind>(
     bind_library::<K>(Lib(Some(lib), Some(staged)), stated, bind)
 }
 
-/// The door of an opened library, admitted against `stated`.
 fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K>, LoadError> {
     let door = {
         let l = lib.0.as_ref().expect("an opened library");
@@ -837,7 +717,6 @@ fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K
     Plugin::bind(admitted::<K>(door, stated)?, Some(lib), bind)
 }
 
-/// The stated rendering's head facts against the host's, before anything is opened.
 fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
     let facts = ManifestFacts::read(stated)?;
     if facts.mechanism_version != MECHANISM_VERSION {
@@ -861,19 +740,12 @@ fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
     Ok(())
 }
 
-/// What a staged library turned out to be.
 pub(crate) enum Staging<K: Kind> {
-    /// A memory-ABI plugin, admitted through its door.
     Door(Plugin<K>),
-    /// No door: not a memory-ABI plugin. There is no other lane (row 84 deleted the HOT load
-    /// paths), so the library and its backing are released here and the caller refuses it.
+
     NotADoor,
 }
 
-/// THE DROPPED-IN DOOR OF A STAGED LIBRARY: `lib` (already `dlopen`ed from its signed tarball's
-/// verified bytes, `staged` its backing) through [`DOOR_SYMBOL`] and the same [`validate`], its
-/// door's Statement compared with the `stated` rendering its signed manifest carries — a door whose
-/// manifest states none is refused. The backing lives as long as the instance, image first.
 pub(crate) fn load_staged<K: Kind>(
     lib: Library,
     staged: crate::stage::Staged,
@@ -896,13 +768,10 @@ pub(crate) fn load_staged<K: Kind>(
     )?))
 }
 
-/// THE LINKED DOOR: a compiled-in row's [`RawDoorFn`], through the same [`validate`] and the same
-/// comparison of the door's Statement with the one the row states.
 pub fn load_linked<K: Kind>(row: &LinkedRow, bind: Bind) -> Result<Plugin<K>, LoadError> {
     Plugin::bind(admitted::<K>(row.door, &row.statement)?, None, bind)
 }
 
-/// [`validate`], then the door's Statement rendered and compared with the `stated` rendering.
 fn admitted<K: Kind>(door: RawDoorFn, stated: &[u8]) -> Result<Validated, LoadError> {
     check_facts::<K>(stated)?;
     let v = validate::<K>(door)?;
@@ -914,17 +783,12 @@ fn admitted<K: Kind>(door: RawDoorFn, stated: &[u8]) -> Result<Validated, LoadEr
     Ok(v)
 }
 
-/// The door checks, in the order the mechanism states them. Shared by both origins.
 pub(crate) fn validate<K: Kind>(door_fn: RawDoorFn) -> Result<Validated, LoadError> {
     validate_door::<K>(enter_door(door_fn))
 }
 
-/// Where the door's append-only `ready` tail starts: the least size a door states.
 const READY_AT: usize = Door::ready_at();
 
-/// The door's head checks, in the mechanism's order: not NULL, the magic, the mechanism version, a
-/// size that reaches `ops` (the append-only `ready` tail is optional), a kind the host has, the kind `want` asks for (any, for `None`), and
-/// that kind's ABI version.
 pub(crate) fn read_door(
     p: *const Door,
     want: Option<KindCode>,
@@ -944,7 +808,7 @@ pub(crate) fn read_door(
             host: MECHANISM_VERSION,
         });
     }
-    // APPEND-ONLY: a door must reach `ops`; the `ready` tail is read only when `size` covers it.
+
     if (size as usize) < READY_AT {
         return Err(LoadError::DoorSize {
             door: size,
@@ -968,11 +832,9 @@ pub(crate) fn read_door(
     Ok((door, kind))
 }
 
-/// [`validate`] on the pointer a door function answered.
 pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadError> {
     let (door, kind) = read_door(p, Some(K::CODE))?;
-    // Read first, judged after the table: an op the kind makes optional by what the Statement
-    // states may be NULL only when the Statement reads.
+
     let stated = statement(&door);
     let by_statement = |i| {
         stated
@@ -989,9 +851,6 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
     })
 }
 
-/// THE ABSENT OP: what the host calls for an optional kind op a door left NULL. It answers READY,
-/// writing nothing but `outcome` into the host's `out` head: a pass, read as the kind states for an
-/// absent op (no refusal, no destination).
 extern "C" fn absent(
     _: *mut std::ffi::c_void,
     _: *const std::ffi::c_void,
@@ -1009,9 +868,6 @@ extern "C" fn absent(
     RawOutcome::of(Outcome::Ready)
 }
 
-/// The table: `slots` and `size` equal to the host's table of `K`, every slot non-NULL but the
-/// kind's optional ones (and those `by_statement` makes optional, [`Kind::optional_by_statement`]),
-/// which are the host's [`absent`] op when left NULL.
 fn table<K: Kind>(
     ops: *const OpsHead,
     by_statement: impl Fn(u32) -> bool,
@@ -1048,7 +904,7 @@ fn table<K: Kind>(
             // SAFETY: `size` equals the host's table, which holds `slots` contiguous slots here.
             match unsafe { first.add(i as usize).read_unaligned() } {
                 Some(op) => Ok(op),
-                // An OPTIONAL kind op left NULL is absent: the host's own pass answers it.
+
                 None if K::optional_slot(i) || by_statement(i) => Ok(absent as Op),
                 None => Err(LoadError::NullSlot(i)),
             }
@@ -1116,10 +972,6 @@ pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {
     Ok(st)
 }
 
-/// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS PATHS `st`'s extensions state
-/// (`EXT_REFERENCE_FIELDS`, lead ruling item 7a), judged at load for either origin: a value that is
-/// not a JSON list of paths is refused, and so is a path the Statement's `secret_refs` also names (a
-/// field is secret or reference-capable, never both).
 pub(crate) fn reference_fields(st: &Statement) -> Result<Vec<String>, LoadError> {
     // SAFETY: a door's Statement is `'static` plugin data; its extensions blob holds its stated
     // length (a NULL one reads as none).
@@ -1146,11 +998,6 @@ pub(crate) fn reference_fields(st: &Statement) -> Result<Vec<String>, LoadError>
     }
 }
 
-/// THE KIND LAYOUT (status row 188): the door states the layout fingerprint of its kind's shapes as
-/// it was built ([`Door::layout`]), and the host reads every struct crossing that kind's table at
-/// its own layout, so a door stating another number (one built against another contract, or one
-/// that predates the word and states `0`) is refused here, for every kind and both origins, never
-/// loaded and misread. The Statement is read first only to name the plugin.
 fn kind_layout(door: &DoorParts, st: &Statement) -> Result<(), LoadError> {
     let Some(kind) = KindCode::from_raw(door.kind) else {
         return Err(LoadError::UnknownKind(door.kind));
@@ -1169,13 +1016,8 @@ fn kind_layout(door: &DoorParts, st: &Statement) -> Result<(), LoadError> {
     })
 }
 
-/// A Statement's kind tail, at admit: its head states at least itself, a plane's tail states the
-/// host's [`ANSWER_LAYOUT`], and a transport's tail is a whole [`TransportTail`] whose frame piece
-/// is the host's [`FramePiece`], with exactly one claim row per scheme the Statement names (the
-/// names are the Statement's alone).
 pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     if st.kind_tail.is_null() {
-        // A transport that names claims has a row per name, so it has a tail.
         if st.kind == KindCode::Transport as u32 && st.claims_len != 0 {
             return Err(LoadError::KindTail(
                 "a transport names claims but states no tail for their rows".into(),
@@ -1197,9 +1039,7 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     if st.kind != KindCode::Transport as u32 {
         return Ok(());
     }
-    // THE PIECE STRIDE FIRST: a framer writes `FramerSink::pieces` at its own `FramePiece` size, so
-    // a transport built against another piece layout is refused here, never loaded and misread. A
-    // tail too short to state the word predates it and states none (`0`).
+
     let word = std::mem::offset_of!(TransportTail, frame_piece_size);
     let stated = if tail.size as usize >= word + size_of::<u32>() {
         // SAFETY: the tail states it covers the word; a kind tail is `'static` plugin data.
@@ -1232,10 +1072,6 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
         .map_err(|f| LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule)))
 }
 
-/// THE PLANE'S ANSWER LAYOUT: the host reads every `out` a plane writes at its own layout, so a
-/// plane whose tail states another [`ANSWER_LAYOUT`] (one built against another contract) is
-/// refused here, never loaded and misread. A tail too short to state the word predates it and
-/// states none (`0`); the rest of the tail is judged at bind.
 fn plane_layout(st: &Statement, size: u32) -> Result<(), LoadError> {
     let word = std::mem::offset_of!(PlaneTail, answer_layout);
     let stated = if size as usize >= word + size_of::<u32>() {

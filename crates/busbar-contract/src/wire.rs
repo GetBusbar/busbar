@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Frames as a PLANE holds them, and the transport wire vocabulary it reads them against.
-//!
-//! Everything here belongs to the transport axis, and most of it now lives one crate down, in the
-//! transport contract, where a plane author never has to read it. What is spelled here is the part
-//! a plane genuinely touches — the frame, the bounded cursor it reads frames through, and the
-//! envelope it hands back — because each of those borrows the arena and the bounded collections the
-//! contract owns. The rest is named, so `busbar_contract::wire` still means what it meant.
 
 pub use crate::transport::wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
@@ -55,11 +49,7 @@ impl<'u> FrameCursor<'u> {
     }
 
     /// The next unconsumed frame, without consuming it.
-    ///
-    /// Answers nothing once the ceiling is reached, for the same reason [`next_frame`] stops:
-    /// a frame a plane cannot consume is not a frame it should be shown.
-    ///
-    /// [`next_frame`]: FrameCursor::next_frame
+
     #[must_use]
     pub fn peek(&self) -> Option<&'u Frame> {
         let frame = self.frames.get(self.position)?;
@@ -67,13 +57,7 @@ impl<'u> FrameCursor<'u> {
     }
 
     /// Consume and return the next frame, or nothing once the ceiling is reached.
-    ///
-    /// The ceiling is [`MAX_CURSOR_BYTES`], and stopping at it is what makes the bound above true
-    /// rather than aspirational: the cursor used to count what a plane had consumed and hand over
-    /// every frame regardless, so a plane that kept calling was handed as much as the connection
-    /// had produced. A cursor that has stopped answers `None`, which is the same thing a plane
-    /// sees at the end of the frames it was given — so no plane needs to learn a new answer, and
-    /// the arrival gate's cursor-budget refusal is what the connection sees.
+
     pub fn next_frame(&mut self) -> Option<&'u Frame> {
         let frame = self.frames.get(self.position)?;
         if !self.within_ceiling(frame) {

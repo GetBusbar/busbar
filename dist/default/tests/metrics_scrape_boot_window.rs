@@ -1,31 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE COLD-WORKER SCRAPE, proven on the real binary: a `/metrics` scrape that lands in the short
-//! boot window before the process-wide Prometheus recorder finishes installing must never answer
-//! `200` with an EMPTY body. It must either answer `200` with the FULL, closed `# HELP`/`# TYPE`
-//! set, or REFUSE the scrape (a non-`200`, retriable status) — never something in between.
-//!
-//! Why the window exists at all: `metrics::configure` starts the recorder install
-//! (`PrometheusBuilder::install_recorder`, a one-time ~200ms clock calibration) on a background
-//! thread rather than blocking boot on it, so a listener bind is never held hostage by a metrics
-//! library's warm-up cost. On the thread-per-core data plane EVERY worker's own SO_REUSEPORT
-//! listener starts accepting the instant ITS bind completes, independent of that background
-//! install. A high worker count (set below) maximizes the odds that at least one of this test's
-//! rapid-fire scrapes, fired the moment the port first answers anything, lands on a connection
-//! accepted before the install finished.
-//!
-//! Driving the shipped binary (not an in-process router) is the point: the recorder is a SINGLE
-//! process-wide `OnceLock`, not one per worker, so the only way to observe the real boot-window
-//! race is to race the real boot of the real process across its real SO_REUSEPORT sockets.
 #![cfg(unix)]
-// The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
-// no wire codec compiled in and fails closed at boot, which is correct product behavior, not the
-// seam under test here.
 #![cfg(linked_section_pools)]
-// The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
-// that links no export door (the single-plane rows link only the exports axis) refuses that module at
-// boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.
 #![cfg(linked_axis_export_doors)]
 
 mod common;
@@ -38,16 +15,10 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Workers pinned high enough that the kernel's SO_REUSEPORT fan-out has real odds of routing an
-/// immediate connection to a listener whose thread only just bound, well before the shared
-/// recorder install (started once, at config-load time, well before any worker binds) completes.
 const WORKER_THREADS: usize = 8;
-/// How long, after the FIRST scrape gets any response at all, to keep firing scrapes on fresh
-/// connections. Generous relative to the ~200ms one-time recorder-install cost the module
-/// documents, so the window is covered even on a loaded CI box.
+
 const RACE_WINDOW: Duration = Duration::from_millis(1500);
-/// Concurrent scraping threads during the race window — more sockets in flight raises the odds
-/// SO_REUSEPORT hands at least one to a still-cold worker.
+
 const RACE_CONCURRENCY: usize = 16;
 
 fn fixture_dir() -> PathBuf {
@@ -74,9 +45,6 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// A high worker count + a scrape sink under `export:` + an OPEN auth chain (so `/metrics`, declared
-/// `RouteAuth::Key`, is reachable with no bearer at all — see `AuthChain::run_chain_with`'s
-/// `chain.is_empty() && !keys_in_chain` open-front-door arm) — nothing else is topology-specific.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -111,7 +79,7 @@ models:
 
 struct Scrape {
     status: u16,
-    /// The `content-type` value the answer carried (empty when absent).
+
     content_type: String,
     body: String,
 }
@@ -138,10 +106,6 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
             .expect("spawn busbar"),
     );
 
-    // Do NOT wait for a "listening" log line first: that line is written from inside a per-core
-    // worker thread AFTER its own bind, which is exactly the moment we want to race. Instead poll
-    // raw connections directly, and treat the FIRST one that gets any HTTP response at all as the
-    // start of the race window.
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut first: Option<Scrape> = None;
     while Instant::now() < deadline {
@@ -164,8 +128,6 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
         )
     });
 
-    // The race: hammer /metrics on fresh connections from many threads for RACE_WINDOW, starting
-    // now — as early as possible relative to boot.
     let collected: Arc<Mutex<Vec<Scrape>>> = Arc::new(Mutex::new(vec![first]));
     let race_deadline = Instant::now() + RACE_WINDOW;
     let handles: Vec<_> = (0..RACE_CONCURRENCY)
@@ -188,8 +150,6 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
         .into_inner()
         .unwrap_or_else(|e| e.into_inner());
 
-    // Let the process fully settle, then take one more scrape as the REFERENCE full exposition —
-    // the closed `# HELP`/`# TYPE` metadata every genuinely-`200` scrape must match exactly.
     std::thread::sleep(Duration::from_millis(500));
     let reference = wait_for_full_scrape(data_port, Duration::from_secs(10)).unwrap_or_else(|| {
         panic!(
@@ -206,10 +166,7 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
          exposition:\n{}",
         reference.body
     );
-    // THE 1.5.5 SHAPE: the settled exposition carries the scrape-time lane families the configured
-    // model's lane renders (RED: a door served without the fallback plane's tables, which scraped
-    // no lane at all), and every `# HELP` / `# TYPE` line of a family 1.5.5 also exposed is the 1.5.5
-    // golden's line, byte for byte (`ops.scrape|metrics|key`).
+
     for family in LANE_FAMILIES {
         assert!(
             reference_names.contains(*family),
@@ -231,10 +188,6 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     let _ = child.kill();
     let _ = child.wait();
 
-    // The invariant, checked against EVERY scrape collected during the race window (plus the
-    // bootstrap probe): a `200` must carry the FULL closed HELP/TYPE set — never an empty or
-    // partial body — and anything short of that must be REFUSED (a non-`200`, so a client can
-    // tell "not ready" from "nothing to report").
     let mut violations = Vec::new();
     for s in &collected {
         if s.status == 200 {
@@ -246,7 +199,6 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
                 ));
             }
         }
-        // Non-200 is always acceptable here: it is a refusal, not a silent empty success.
     }
     assert!(
         violations.is_empty(),
@@ -259,15 +211,12 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The scrape-time lane families a configured model's lane renders on every scrape, pool or none
-/// (`busbar_kernel::snapshot`: the direct-model loop emits these three for every routed model).
 const LANE_FAMILIES: &[&str] = &[
     "busbar_lane_state",
     "busbar_lane_available",
     "busbar_lane_inflight",
 ];
 
-/// Every `# HELP` and `# TYPE` line of an exposition, in order.
 fn meta_lines(body: &str) -> Vec<String> {
     body.lines()
         .filter(|l| l.starts_with("# HELP ") || l.starts_with("# TYPE "))
@@ -275,8 +224,6 @@ fn meta_lines(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// Validate the reference independently: a HELP-only exposition is not a complete reference.
-/// Preserve the full lines so changed descriptions and TYPE values also fail the race verdict.
 fn complete_metadata(body: &str) -> Result<BTreeSet<String>, String> {
     let mut lines = BTreeSet::new();
     let mut help = BTreeSet::new();
@@ -320,13 +267,10 @@ fn metadata_comparison_refuses_missing_changed_and_duplicate_types() {
     assert!(complete_metadata("").is_err());
 }
 
-/// The family a `# HELP` / `# TYPE` line names.
 fn meta_name(line: &str) -> &str {
     line[7..].split(' ').next().unwrap_or("")
 }
 
-/// The 1.5.5 golden's `# HELP` / `# TYPE` lines, read from the shadow-oracle cell that scraped a
-/// served 1.5.5 node (`ops.scrape|metrics|key`), so the claim is the golden's and is never re-typed.
 fn golden_meta_lines() -> Vec<String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../testing/shadow-oracle/golden/1.5.5/cells/ops.scrape__metrics__key.json");
@@ -346,12 +290,6 @@ fn golden_meta_lines() -> Vec<String> {
     lines
 }
 
-/// ORACLE ROW 86 (`/metrics` must match 1.5.5; golden cells `ops.scrape|metrics|key`,
-/// the raw-exposition export cell, `neutrality|metrics-series`): the process dispatcher's internal `bb_*`
-/// counters are NOT on the customer scrape. 1.5.5 served no `bb_deadline_without_wake_total` and no
-/// `bb_plugin_quarantined_total` family; the dispatcher keeps both as its own counts
-/// (`DispatchStats`, read by the plugin conformance suite), never as exposition families. RED on
-/// dev: both families carried `# HELP` / `# TYPE` lines and a sample (13 -> 15 families).
 #[test]
 fn the_dispatchers_bb_counters_are_not_on_the_customer_scrape() {
     let dir = fixture_dir();
@@ -397,8 +335,6 @@ fn the_dispatchers_bb_counters_are_not_on_the_customer_scrape() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Extract the set of `# HELP <name> ...` metric names from a Prometheus exposition — the closed
-/// set `describe()` registers, independent of which series happen to have been emitted yet.
 fn help_names(body: &str) -> BTreeSet<String> {
     body.lines()
         .filter_map(|l| l.strip_prefix("# HELP "))
@@ -407,8 +343,6 @@ fn help_names(body: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Poll `GET /metrics` until it answers `200` with a non-empty body carrying at least one `# HELP`
-/// line, or `budget` elapses.
 fn wait_for_full_scrape(port: u16, budget: Duration) -> Option<Scrape> {
     let deadline = Instant::now() + budget;
     loop {
@@ -424,8 +358,6 @@ fn wait_for_full_scrape(port: u16, budget: Duration) -> Option<Scrape> {
     }
 }
 
-/// One raw `GET /metrics` over a fresh connection. `None` only when the connection itself could
-/// not be made/read (the server is not up yet) — a real HTTP response of any status is `Some`.
 fn try_scrape(port: u16) -> Option<Scrape> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
@@ -479,14 +411,6 @@ fn read_to_string(path: &Path) -> String {
     s
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_metrics_admitted_in_open_relay_mode`
-/// 1.5.5: under an open auth chain (`chain: []`) a `GET /metrics` with
-/// no credential is admitted: `200`, a `content-type` that starts `text/plain` (the Prometheus text
-/// exposition), and a body that carries a series (the legacy test seeded the request counter in
-/// process; a spawned node with no traffic yet renders its scrape-time lane series, `busbar_lane_state`).
-///
-/// RED: the open-chain scrape is refused, answers another content type (a JSON or empty-typed
-/// body a Prometheus scraper rejects), or the exposition lacks the request counter.
 #[test]
 fn test_metrics_admitted_in_open_relay_mode() {
     let dir = fixture_dir();

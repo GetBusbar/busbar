@@ -2,37 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A plane's SERVED SURFACE, as data a transport can mount without knowing what it is.
-//!
-//! ## The hole this fills
-//!
-//! A plane already declares what it CLAIMS — `PlaneMeta::CLAIMS` is a list of selectors, and the
-//! kernel uses it to decide which plane a request belongs to. That is enough to route a request and
-//! nowhere near enough to SERVE one. A transport that has to mount a protocol needs to know the
-//! things a claim deliberately leaves out: which operation a target names, what the request method
-//! is, whether the answer is one document or a run of them, what media type goes on each direction,
-//! and — for the binding where the target carries no path at all — which service descriptor and
-//! method spell the call.
-//!
-//! Every one of those was, until now, written inside a protocol's own server. That is what made a
-//! wire protocol a crate: not the bytes, which are the plane's, but the fifteen or so facts about
-//! how the bytes are addressed, which had nowhere to be declared. They are declared here, generically,
-//! and the transports below read them without naming a protocol.
-//!
-//! ## Plane-agnostic, and that is a rule rather than an aspiration
-//!
-//! Nothing in this module names a protocol, a dialect or a plane. Every string is the DECLARER's:
-//! a binding name, a path template, a request method, a service descriptor. The vocabulary is the
-//! same shape for a protocol whose operations are named by their target, for one whose operations
-//! are named by a member of the request document, and for one whose operations are named by a
-//! service descriptor — because those three are the only ways an operation has ever been addressed,
-//! and a fourth would be a new [`Dispatch`] arm rather than a new crate.
-//!
-//! ## Where the strings come from
-//!
-//! From the declaring plane's own constants, not from here and not from the transport. A path
-//! template written twice is two paths that will disagree, and the one that disagrees quietly is the
-//! one that answers 404 to a conformant client. The declaration is the single copy; the transport
-//! matches against it and the plane's claims are built from it.
 
 /// Whether an operation's answer is one document or a run of them.
 ///
@@ -209,19 +178,11 @@ pub struct Capture<'t> {
 }
 
 /// The most captures one path template may declare.
-///
-/// A fixed ceiling rather than a growing vector: this runs once per arriving request, and a
-/// template deep enough to exceed it is one no protocol in the tree writes.
+
 pub const MAX_CAPTURES: usize = 8;
 
 /// Match one request target against one path template.
-///
-/// The grammar is small and closed: a template is `/`-separated segments, a segment is either a
-/// literal or `{name}`, and a capture matches exactly one non-empty segment. Query and fragment are
-/// cut from the target before matching, because neither is part of the path and a protocol that
-/// wanted one would declare it as its own fact.
-///
-/// Returns the captures in declaration order, or `None` when the target is not this template.
+
 #[must_use]
 pub fn match_target<'t>(template: &'t str, target: &'t str) -> Option<Vec<Capture<'t>>> {
     let path = target.split(['?', '#']).next().unwrap_or(target);
@@ -233,10 +194,6 @@ pub fn match_target<'t>(template: &'t str, target: &'t str) -> Option<Vec<Captur
             (None, None) => return Some(captures),
             (Some(w), Some(g)) => {
                 if let Some(name) = w.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-                    // A capture matches ONE non-empty segment. An empty one would let
-                    // `/tasks//configs` match `/tasks/{id}/configs` and reach a handler with no
-                    // identifier at all, which is the shape that turns a missing argument into a
-                    // scan of everything.
                     if g.is_empty() || captures.len() == MAX_CAPTURES {
                         return None;
                     }
@@ -251,10 +208,7 @@ pub fn match_target<'t>(template: &'t str, target: &'t str) -> Option<Vec<Captur
 }
 
 /// Find the operation a request target and method address, in the surface's own order.
-///
-/// The order is the declarer's and is not re-derived: most-specific-first is how a protocol says
-/// which of two overlapping templates wins, and the first match is therefore the answer. Returns the
-/// operation, the dispatch that matched and the captures it yielded.
+
 #[must_use]
 pub fn resolve_target<'s>(
     surface: &'s WireSurface,

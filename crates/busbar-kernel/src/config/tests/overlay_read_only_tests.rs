@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-//! Operator input mount permissions do not select or disable the Store-backed overlay.
+
 use super::*;
 #[test]
 fn missing_or_readonly_input_paths_never_probe_or_degrade_store_management() {

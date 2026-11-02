@@ -2,16 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The seams this unit is bound to, and nothing behind them.
-//!
-//! The egress unit owns the pool and the walk. It does NOT own the breaker's state machine, the
-//! durable record that has to land before a dial, or the concurrency permits the pool hands out.
-//! Each of those is another unit's, and each enters here as one small trait.
-//!
-//! Every trait in this module is marked `// contract:` at its definition. That marker means the
-//! same thing everywhere it appears in this crate: the shape is settled and the walk is written
-//! against it, but the implementation belongs to another crate and the integrator binds it. A
-//! marker is not a placeholder for a decision that has not been made — it is the record of a
-//! decision made in a different unit.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -19,19 +9,10 @@ use std::pin::Pin;
 use busbar_contract::caps::{Pass, Route};
 
 /// Which member of the verified set a call is about.
-///
-/// This is a position in the pool's member list, which is what the previous release's selection,
-/// exclusion and breaker calls all keyed on. Keeping the same key is what makes the pick order
-/// comparable hop for hop against the release that shipped.
-///
-/// The contract crate defines it, and the breaker unit names the same one, so the two units that
-/// key on a pool member key on the same object at the same width. There is nothing left to narrow.
 pub use busbar_contract::DestinationId;
 
 /// The one boxed future this crate's ports return.
-///
-/// Same reasoning as the transport axis in the contract crate: an asynchronous trait method has to
-/// box its future, and one box per port call is the price of the seam being a trait at all.
+
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Why a member cannot take a request right now.
@@ -75,8 +56,6 @@ impl Unavailable {
 }
 
 /// What a successful admission hands over, what one attempt meant to the destination's breaker,
-/// and what the classifier made of one upstream answer: the breaker unit's own types, so the two
-/// sides of the [`Breaker`] port speak one vocabulary and nothing maps between them.
 pub use busbar_kernel_breaker::port::Classified;
 pub use busbar_kernel_breaker::{Admit, Outcome};
 
@@ -106,27 +85,13 @@ pub struct UpstreamStatus {
 }
 
 /// Where a classified failure sends the request next: the contract's disposition, which the
-/// breaker unit answers in and this walk acts on. Exhaustive on purpose — a new disposition breaks
-/// the build here rather than falling through some default arm on the request path — and one
-/// type on both sides of the [`Breaker`] port, so the integrator no longer re-spells it.
 pub use busbar_contract::upstream::Disposition;
 
 /// `// contract:` the breaker unit, as this unit needs it.
-///
-/// Bound by the integrator to `busbar-unit-breaker`. `ready`, `admissible`, and `unavailable`
-/// are side-effect-free peeks at destination and cell facts: the order filters on the first two,
-/// and health-only exhaustion is explained by the last without attempting admission.
-///
-/// The division of labour is the design's: this unit decides WHO is asked first, the breaker
-/// decides WHO IS ALLOWED. Nothing in the order may mutate a cell — that is what keeps the order
-/// from being a second selection loop — so these peeks must not transition anything.
+
 pub trait Breaker: Send + Sync {
     /// Mutating admission: win or lose the single-flight probe on this cell. This is the ONE call
-    /// in the walk that can change a cell's state before the request is sent.
-    ///
-    /// # Errors
-    /// Returns why the member cannot take the request, for the exclusion record the exhaustion
-    /// terminal reads.
+
     fn try_admit(
         &self,
         pool: &str,
@@ -135,10 +100,7 @@ pub trait Breaker: Send + Sync {
     ) -> Result<Admit, Unavailable>;
 
     /// Side-effect-free reason this member cannot admit now, or `None` if it is ready.
-    ///
-    /// Reads the same destination and cell facts as admission without creating a cell,
-    /// transitioning its state, winning a probe, or taking capacity. Used only to explain a
-    /// pick exhausted entirely by the order's health filter.
+
     fn unavailable(
         &self,
         pool: &str,
@@ -148,24 +110,15 @@ pub trait Breaker: Send + Sync {
     ) -> Option<Unavailable>;
 
     /// Side-effect-free: could this cell take a request right now? The order's own filter, and the
-    /// same predicate the weighted walk applies before its credit walk.
-    ///
-    /// `token` is threaded through for the same reason `observe`'s is (see its own doc): this
-    /// peek is answered from the breaker unit's own sealed `state(.., token)`, and outside a test
-    /// module nothing but the loop's own route step can mint one.
+
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool;
 
     /// Side-effect-free: is this destination usable at all — not administratively down, and with
-    /// lifetime budget left? This is a property of the destination, not of one pool's cell, which
-    /// is why it takes no pool. It answers from the destination's lifetime budget alone, never from
-    /// the breaker unit's sealed `state`/`observe`, so it takes no token.
+
     fn admissible(&self, destination: DestinationId) -> bool;
 
     /// Side-effect-free: how many whole seconds of genuine cooldown this cell has left, or zero.
-    ///
-    /// `token` is threaded through for the same reason `observe`'s is (see its own doc): this
-    /// peek is answered from the breaker unit's own sealed `state(.., token)`, and outside a test
-    /// module nothing but the loop's own route step can mint one.
+
     fn cooldown_remaining(
         &self,
         pool: &str,
@@ -175,21 +128,11 @@ pub trait Breaker: Send + Sync {
     ) -> u64;
 
     /// Turn one upstream answer into a disposition and a breaker outcome.
-    ///
-    /// What a code means — transient, a refused key, the caller's own mistake — is the transport's
-    /// declared fault table, read into [`UpstreamStatus::fault`] before this port is reached; the
-    /// breaker unit maps that reading to a disposition. This unit passes the answer through and
-    /// acts on what comes back; it holds no table and no literal from one.
+
     fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified;
 
     /// Record what one attempt meant. Returns true only on a fresh logical trip — the one signal a
-    /// trip counter should increment on, never a re-trip of an already-open cell.
-    ///
-    /// `token` is the capability token that proves the loop is at the route step for this unit
-    /// right now (per `busbar-caps`'s `&Pass<Route>`, mirroring the breaker unit's own sealed
-    /// `Breaker::observe`) — a unit may only act at the step its token names, and the token is the
-    /// proof of that rather than a convention. This unit's `route` entry point already receives one; every
-    /// call down through the walk to this port threads the same borrow.
+
     fn observe(
         &self,
         pool: &str,
@@ -200,9 +143,7 @@ pub trait Breaker: Send + Sync {
     ) -> bool;
 
     /// [`Self::observe`] of an outcome the PLANE read, with the reason its reading states: the
-    /// plane's own neutral words (an exhausted account, a refused credential), carried verbatim as
-    /// the record's reason, never parsed and never made from the answer's code. `None` = none
-    /// stated. The default records the outcome alone.
+
     fn observe_stated(
         &self,
         pool: &str,
@@ -217,8 +158,7 @@ pub trait Breaker: Send + Sync {
     }
 
     /// A non-success answer judged and recorded: [`Self::classify`], then [`Self::observe`] of the
-    /// outcome it names on `pool`'s cell. Returns the classification and whether the record was a
-    /// fresh trip. The attempt the walk's caller runs judges every answer here.
+
     fn judge(
         &self,
         pool: &str,
@@ -233,27 +173,23 @@ pub trait Breaker: Send + Sync {
     }
 
     /// Side-effect-free: whether the breaker suppresses `destination` in ANY cell — the health
-    /// prober's `dead`-mode trigger (1.5.5 `lane_needs_probe`).
+
     fn suppressing(&self, destination: DestinationId, now: u64) -> bool;
 
     /// A health probe's answer, already classified, recorded on EVERY cell of `destination`: a
-    /// probe tests the shared upstream, so a success recovers a suppressed member everywhere and a
-    /// client fault records nothing (1.5.5 `health.rs`).
+
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>);
 
     /// Release a probe that was won but never dispatched. Owner-checked against the epoch that was
-    /// captured at the win, so a late release cannot revert a newer probe.
+
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64);
 
     /// Spend one unit of the destination's lifetime request budget. True when the spend happened
-    /// or the destination is unbounded; false when it was already spent out.
-    ///
-    /// The design pins the moment: one unit is spent AFTER the upstream's success is read, never
-    /// at selection, and it is reversed only on the endings the previous release reversed it on.
+
     fn spend_budget(&self, destination: DestinationId) -> bool;
 
     /// Give back one unit spent by a delivery that then failed to complete. The refund is
-    /// unconditional on this side, so a caller must only call it for a spend that happened.
+
     fn refund_budget(&self, destination: DestinationId);
 }
 
@@ -279,28 +215,21 @@ impl Permit {
 }
 
 /// `// contract:` what a permit store puts behind a [`Permit`]. Dropping the handle must free the
-/// slot; nothing in this crate calls a release verb.
+
 pub trait PermitHandle: std::fmt::Debug + Send + Sync {
     /// Which member the slot is on.
     fn destination(&self) -> DestinationId;
 }
 
 /// `// contract:` the pool's permit store, bound by the integrator.
-///
-/// The design gives the pool to this unit, but the permits themselves are node-local runtime state
-/// that outlives any one request, so they live behind this seam rather than inside the walk.
+
 pub trait Capacity: Send + Sync {
     /// Take a slot on this member if one is free. Never blocks: the pick path holds no unbounded
-    /// await, which is what keeps the wait terminal the only place this unit ever parks.
+
     fn try_acquire(&self, destination: DestinationId) -> Option<Permit>;
 
     /// Wait for a slot to free on any of these members, in arrival order, resolving to `None` only
-    /// when every one of their queues is closed.
-    ///
-    /// This is the ONE blocking await in the unit and it is used from exactly one place, the wait
-    /// terminal, which races it against a bounded deadline. The store hands one freed slot to one
-    /// waiter — no lost wakeup, no thundering herd — which is why the terminal can re-check the
-    /// breaker on the winner instead of re-entering selection.
+
     fn acquire_any<'a>(
         &'a self,
         destinations: &'a [DestinationId],
@@ -325,21 +254,14 @@ pub struct Dispatched {
 }
 
 /// `// contract:` the write-ahead journal, as the attempt needs it.
-///
-/// The design is explicit about the ordering: the delta record is durable BEFORE the dial. That is
-/// the whole reason this is a seam and not a fire-and-forget — a dispatch this unit cannot prove
-/// it recorded is a dispatch that must not happen, so the write is fallible and its failure ends
-/// the attempt before any byte leaves.
+
 pub trait Journal: Send + Sync {
     /// Record that a dispatch is about to happen, and do not return until it is durable.
-    ///
-    /// # Errors
-    /// Returns the durability marker when the record cannot be made durable. The attempt then
-    /// sends nothing.
+
     fn dispatched(&self, record: &Dispatched) -> Result<(), DurabilityUnavailable>;
 
     /// Record that a dispatch which was journaled never produced an answer. The design requires an
-    /// abandoned attempt to be explicit rather than inferred from a missing settle.
+
     fn abandoned(&self, record: &Dispatched);
 }
 
@@ -356,25 +278,18 @@ impl std::fmt::Display for DurabilityUnavailable {
 impl std::error::Error for DurabilityUnavailable {}
 
 /// `// contract:` the node's clock and its only sleep.
-///
-/// Time is an input, not an ambient fact. Every deadline in this unit is computed from `now_secs`
-/// or `now_millis` and every wait is this `sleep`, so a test drives the whole walk — including the
-/// bounded wait terminal — on one thread with no timer wheel, and the determinism of the pick
-/// order does not depend on how fast the machine is.
+
 pub trait Clock: Send + Sync {
     /// Whole seconds since the epoch. Every deadline in the walk is second-granular, exactly as
-    /// the previous release's was.
+
     fn now_secs(&self) -> u64;
 
     /// Milliseconds since an arbitrary fixed point, for the one wait that needs sub-second
-    /// precision: a wait bounded by a few hundred milliseconds is unrepresentable in whole
-    /// seconds, and a budget close to a second boundary would collapse to zero.
+
     fn now_millis(&self) -> u128;
 
     /// Microseconds since the same fixed point, for a latency sample: 1.5.5 measured an
-    /// attempt's latency in fractional milliseconds, so a sub-millisecond answer still records
-    /// (an integer `0` is the EWMA's "no sample"). A clock without the precision answers its
-    /// milliseconds scaled.
+
     fn now_micros(&self) -> u128 {
         self.now_millis().saturating_mul(1000)
     }
@@ -395,21 +310,20 @@ pub struct StatedLabels {
 }
 
 /// `// contract:` the counters the walk moves. Every method is an observation and none may fail,
-/// block, or change what the walk does next.
+
 pub trait Telemetry: Send + Sync {
     /// One upstream attempt was started against this member.
     fn upstream_attempt(&self, pool: &str, destination: DestinationId);
 
     /// A served attempt's time to the upstream's response head, in milliseconds (the destination's
-    /// latency signal, a bounded proxy that never waits out a streamed body).
+
     fn upstream_latency(&self, _destination: DestinationId, _ms: f64) {}
 
     /// One attempt failed, with the disposition label the previous release used.
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str);
 
     /// [`Telemetry::upstream_attempt`] for an attempt whose plane stated its counter labels
-    /// (`stated`): an implementation that bounds them takes the ones within its bound; by default
-    /// they are not taken.
+
     fn upstream_attempt_stated(
         &self,
         pool: &str,
@@ -421,7 +335,7 @@ pub trait Telemetry: Send + Sync {
     }
 
     /// [`Telemetry::upstream_failure`] for an attempt whose plane stated its counter labels, as
-    /// [`Telemetry::upstream_attempt_stated`] takes them.
+
     fn upstream_failure_stated(
         &self,
         pool: &str,
@@ -440,16 +354,12 @@ pub trait Telemetry: Send + Sync {
     fn breaker_trip(&self, pool: &str, destination: DestinationId);
 
     /// A request parked in the wait terminal, or left it. The gauge is a depth, so the two calls
-    /// must be balanced on every exit including a dropped future.
+
     fn queued(&self, pool: &str, delta: i64);
 }
 
 /// The disposition labels, verbatim.
-///
-/// These are metric label values, so they are part of the observable surface and reworded only
-/// with the dashboards that read them. Three are the contract's disposition table's own; the
-/// per-attempt cap is not a disposition — it fires before the upstream has answered — and is
-/// spelled here.
+
 pub mod disposition {
     use busbar_contract::upstream::Disposition;
     /// A transient upstream failure.

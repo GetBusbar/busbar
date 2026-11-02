@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The secret answer validator: one RED test per arm, each asserting its exact rule and field and
-//! failing if its check is removed, and the GREEN answers per outcome.
 
 use super::*;
 use crate::abi::mechanism::call::{AbiStr, Blob, Envelope, OutHead, RawOutcome, BLOB_SECRET};
@@ -58,7 +57,7 @@ fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
 }
 
 /// RED (S3): a READY answer that names no material: a secret resolved to nothing is no secret,
-/// and the host would hand an empty credential on (fail-closed: refused, never resolved empty).
+
 #[test]
 fn ready_with_no_secret_faults() {
     assert_eq!(
@@ -143,7 +142,7 @@ fn failed_with_unset_error_kind_faults() {
 }
 
 /// RED: `error_kind` past the known `0..=5` range, even on an otherwise well-formed FAILED
-/// answer.
+
 #[test]
 fn error_kind_out_of_range_faults() {
     let mut out = base_out();
@@ -296,7 +295,7 @@ fn needed_at_the_secret_cap_passes() {
 }
 
 /// THE GENERATED RED TABLE: one RED per (field, rule) `check_resolve`'s declaration states, each
-/// answering exactly its rule and field; the cross-field rules are the hand cases above.
+
 #[test]
 fn every_declared_field_rule_is_red() {
     assert_eq!(RESOLVE_RULES.len(), 4);
@@ -312,8 +311,7 @@ fn every_declared_field_rule_is_red() {
 }
 
 /// THE KIND'S ANSWER CHECK: the frames are read at their structs (a short `in`, then a short
-/// `out`, is FOREIGN), `resolve` is judged against the buffer its `in` lent, and a slot with no
-/// answer check passes.
+
 #[test]
 fn check_answer_reads_the_frames_then_judges_resolve() {
     use crate::abi::mechanism::call::InHead;
@@ -359,7 +357,7 @@ fn check_answer_reads_the_frames_then_judges_resolve() {
         judge(&input, &out, is, os),
         red(Rule::UnknownCode, "resolve.error_kind")
     );
-    // READY material outside the lent buffer is foreign: the buffer comes from the `in`.
+
     out.error_kind = ERROR_KIND_UNSET;
     out.secret = Blob {
         ptr: buf[1..].as_ptr(),

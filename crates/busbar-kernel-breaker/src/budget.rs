@@ -1,16 +1,9 @@
 //! The per-destination LIFETIME request budget: a `total`-window cap scoped to the destination, not
-//! the principal.
-//!
-//! Spent AFTER the upstream's successful answer head (never on what the caller is answered), and
-//! reversed only when the answer's body then fails to transfer intact — a compensating refund, not
-//! a general-purpose credit. An exhausted destination is excluded from the walk (never "ordered
-//! last"); see [`crate::LaneState::BudgetExhausted`].
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A destination's lifetime request budget. `-1` (or any negative value) means unlimited — spend
-/// and refund are then no-ops that always report success, matching a destination configured with no
-/// `max_requests` cap.
+
 pub struct LifetimeBudget {
     remaining: AtomicI64,
     limited: bool,
@@ -26,9 +19,7 @@ impl LifetimeBudget {
     }
 
     /// A budget capped at `max_requests`. A negative cap is the unlimited sentinel (1.5.5's `-1`,
-    /// see the type's doc) and builds [`Self::unlimited`]: a cap below zero has no unit to spend
-    /// from, and a limited budget holding one would be refused at every spend while reading as
-    /// not exhausted.
+
     pub fn limited(max_requests: i64) -> Self {
         if max_requests < 0 {
             return Self::unlimited();
@@ -49,7 +40,7 @@ impl LifetimeBudget {
     }
 
     /// Carry a remaining figure across a rebuild. A no-op on an unlimited budget, which has no
-    /// figure to carry; never below zero, which no spend could have left it at.
+
     pub fn restore(&self, remaining: i64) {
         if self.limited {
             self.remaining.store(remaining.max(0), Ordering::Relaxed);
@@ -57,13 +48,7 @@ impl LifetimeBudget {
     }
 
     /// Atomically consume one unit. Returns `false` when the budget was already exhausted (the
-    /// spend was a no-op — the budget is never driven negative).
-    ///
-    /// A compare-and-swap loop makes the "is there budget" check and the decrement atomic: under a
-    /// concurrent burst, a plain `fetch_sub` would let every one of `N` concurrently-admitted
-    /// requests decrement before any of them observed the budget hit zero, overspending by up to
-    /// `N`. The loop instead lets exactly the requests that observe a strictly positive budget
-    /// spend, and the `(N+1)`th spender loses the CAS once the budget hits zero.
+
     #[must_use]
     pub fn spend(&self) -> bool {
         if !self.limited {
@@ -87,9 +72,7 @@ impl LifetimeBudget {
     }
 
     /// Return one previously-spent unit — the inverse of a single [`Self::spend`], used to
-    /// compensate a spend charged optimistically on the answer's head when the body then failed
-    /// to transfer. Always paired with a prior successful spend on the same request, so a plain
-    /// increment can never push the budget above its configured ceiling.
+
     pub fn refund(&self) {
         if !self.limited {
             return;

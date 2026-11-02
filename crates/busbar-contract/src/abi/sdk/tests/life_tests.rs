@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The generic lifecycle through the real trampoline: one door built with `lifecycle: life(L)`,
-//! every slot answering what [`Life`] states, leases held until `release` and an unknown lease
-//! REFUSED, the refresh metric riding the envelope, a failure's owned text and a body's envelope
-//! kept by THE INSTANCE THAT ANSWERED (never by the thread: two instances interleaved on one thread
-//! each read their own), and an instance-less failure's text written into the host's lent reason
-//! buffer.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -46,7 +41,6 @@ impl Life for Echo {
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         if let Some(why) = settings.strip_prefix(b"worded:") {
-            // An owned text, as a 1.5.5 plugin's words often are.
             return Err(Refusal::failed(format!(
                 "echo: invalid settings: {}",
                 String::from_utf8_lossy(why)
@@ -152,8 +146,6 @@ impl SafeSlot for Resolve {
             return Outcome::Fault;
         };
         if h.life().0.starts_with(b"probe:") {
-            // The per-instance probe: a metric counting this instance's name, then a failure
-            // saying it, both in memory the SDK allocated for this answer.
             let name = String::from_utf8_lossy(&h.life().0).into_owned();
             let n = u32::try_from(name.len()).unwrap_or(u32::MAX);
             assert!(out.metric(n, METRIC_ADD, f64::from(n)));
@@ -162,15 +154,10 @@ impl SafeSlot for Resolve {
             )));
         }
         if h.life().0 == b"str" {
-            // The leased-string probe: the answer's text, held under `head.lease`.
             out.lease_str(|o| &o.head.error, h.leases(), "a leased answer".to_string());
             return Outcome::Ready;
         }
         if h.life().0 == b"park" {
-            // The parking probe, answering in `error_kind`. With no ticket: how many tickets hold
-            // parked state. In a RESUME: whether its op's `u64` came back (another type never
-            // does: FAULT if it did). Fresh on a ticket, by `deadline_class`: park and pend (0),
-            // park and FAIL (1), or pend having parked nothing (2).
             if input.head.ticket.is_none() {
                 out.set(|o| &o.error_kind, i.parked_count() as u32);
                 return Outcome::Ready;
@@ -195,7 +182,7 @@ impl SafeSlot for Resolve {
                 _ => Outcome::Pending,
             };
         }
-        // The value goes into the host's buffer, never leased (the credential chip, row 6).
+
         crate::abi::sdk::cred::resolved(
             input,
             &mut out,
@@ -299,7 +286,6 @@ fn open(settings: &[u8], secrets: &[Blob]) -> (Outcome, *mut c_void, String) {
 }
 
 fn resolve(inst: *mut c_void) -> (Outcome, Vec<u8>, u64, u32) {
-    // The host lends the buffer a READY value is written into (row 6).
     let mut buf = [0u8; 64];
     let mut input: ResolveIn = zeroed();
     input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
@@ -374,8 +360,7 @@ fn open_holds_the_kinds_state_and_a_refused_open_answers_its_text() {
 }
 
 /// THE DRAIN: `close` runs the kind's [`Life::close`] on the instance it closes, with the host
-/// tables `open` handed it (none here), before the SDK drops the state. RED: a `close` that only
-/// drops the state never lets the instance close the host handles it holds.
+
 #[test]
 fn close_runs_the_kinds_close_on_its_instance() {
     let (_, inst, _) = open(b"closing-probe", &[]);
@@ -397,7 +382,7 @@ fn close_runs_the_kinds_close_on_its_instance() {
 #[test]
 fn every_lifecycle_slot_answers_the_kinds_value() {
     let (_, inst, _) = open(b"abcd", &[]);
-    // tick
+
     let mut ti: TickIn = zeroed();
     ti.head = in_head::<TickIn>(slot::TICK);
     ti.now_ns = 100;
@@ -405,7 +390,7 @@ fn every_lifecycle_slot_answers_the_kinds_value() {
     to.head = out_head::<TickOut>();
     assert_eq!(call(table().head.tick, inst, &ti, &mut to), Outcome::Ready);
     assert_eq!(to.next_tick_ns, 104);
-    // retire
+
     let mut gi: GenIn = zeroed();
     gi.head = in_head::<GenIn>(slot::RETIRE);
     gi.generation = 5;
@@ -416,7 +401,7 @@ fn every_lifecycle_slot_answers_the_kinds_value() {
         Outcome::Ready
     );
     assert_eq!(RETIRED.load(Ordering::SeqCst) - before, 5);
-    // drive: the kind's value
+
     let mut di: DriveIn = zeroed();
     di.head = in_head::<DriveIn>(slot::DRIVE);
     let mut dout = out_head::<OutHead>();
@@ -424,7 +409,7 @@ fn every_lifecycle_slot_answers_the_kinds_value() {
         call(table().head.drive, inst, &di, &mut dout),
         Outcome::Refused
     );
-    // cancel: the kind's disposition
+
     let mut ci: CancelIn = zeroed();
     ci.head = in_head::<CancelIn>(slot::CANCEL);
     let mut co: CancelOut = zeroed();
@@ -438,7 +423,7 @@ fn every_lifecycle_slot_answers_the_kinds_value() {
 }
 
 /// RED (secret ABI defect 13, transport 9): a release of a lease the instance does not hold, or
-/// with no instance, is REFUSED naming why. Before, it was a bare REFUSED with no text.
+
 #[test]
 fn an_unknown_lease_is_refused_in_words() {
     let said = |inst: *mut c_void| {
@@ -481,7 +466,7 @@ fn a_resolved_secret_takes_no_lease_and_a_leased_answer_is_held_until_release() 
 }
 
 /// RED: a leased string outlives the call and a refresh generation, and lives until its release;
-/// a second release of it is REFUSED (its storage is gone).
+
 #[test]
 fn a_leased_string_is_read_back_across_a_refresh_generation_until_its_release() {
     let (_, inst, _) = open(b"str", &[]);
@@ -557,15 +542,12 @@ fn metrics(out: &ResolveOut) -> Vec<(u32, f64)> {
 }
 
 /// RED on a per-thread slot: TWO INSTANCES OF ONE PLUGIN, INTERLEAVED ON ONE THREAD, each read
-/// their own answer after the other has answered. A per-thread envelope is emptied and refilled
-/// by the second call, so the first answer's metrics would name the second instance's; a
-/// per-thread error slot would free the first text when the second failure replaced it.
+
 #[test]
 fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
     let (_, alpha, _) = open(b"probe:alpha", &[]);
     let (_, bravo, _) = open(b"probe:bravo-bravo", &[]);
-    // Distinct live ticket slots retain all three replies until their instances close. An
-    // unticketed call's previous answer expires at its next crossing on this thread.
+
     let (oa, a) = probe(alpha, 11);
     let (ob, b) = probe(bravo, 17);
     let (oa2, a2) = probe(alpha, 12);
@@ -573,7 +555,7 @@ fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
         (oa, ob, oa2),
         (Outcome::Failed, Outcome::Failed, Outcome::Failed)
     );
-    // The envelopes first: reading them is sound whatever holds them.
+
     assert_eq!(
         metrics(&a),
         vec![(11, 11.0)],
@@ -589,7 +571,7 @@ fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
         a.head.envelope.metrics, b.head.envelope.metrics,
         "one envelope each"
     );
-    // Then the texts: each held by its own instance.
+
     assert_eq!(
         text(a.head.error),
         "probe:alpha failed, in words its own instance keeps"
@@ -603,7 +585,7 @@ fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
         a.head.error.ptr, a2.head.error.ptr,
         "each answer keeps its own text"
     );
-    // Closing one instance leaves the other's answers readable.
+
     assert_eq!(close(alpha), Outcome::Ready);
     assert_eq!(metrics(&b), vec![(17, 17.0)]);
     assert_eq!(
@@ -644,9 +626,7 @@ fn open_lent(settings: &[u8], buf: Option<&mut [u8]>) -> (Outcome, OpenOut) {
 }
 
 /// An instance-less failure (`validate`, a failed `open`) has no instance to keep an owned text:
-/// it goes into the reason buffer the host lent the call, cut on a char boundary to its capacity
-/// (`open` states the length in `err_len`), byte for byte the plugin's words. Only when the host
-/// lent no buffer is the fixed text answered.
+
 #[test]
 fn an_instance_less_owned_text_rides_the_hosts_lent_buffer_and_only_else_a_fixed_text() {
     let mut vbuf = [0_u8; 64];
@@ -667,14 +647,12 @@ fn an_instance_less_owned_text_rides_the_hosts_lent_buffer_and_only_else_a_fixed
     assert_eq!(&obuf[..out.err_len], b"echo open failed: x");
     assert_eq!(text(out.head.error), "echo open failed: x");
 
-    // Cut to the capacity on a char boundary: `é` is two bytes and the cut falls inside one.
     let mut small = [0_u8; 19];
     let (_, out) = open_lent("boom: é".as_bytes(), Some(&mut small[..]));
     assert_eq!(out.err_len, 18);
     assert_eq!(&small[..18], b"echo open failed: ");
     assert_eq!(small[18], 0, "nothing past the cut is written");
 
-    // No buffer lent: the fixed text, for both.
     let (o, out) = validate_lent(b"worded:x", None);
     assert_eq!(o, Outcome::Failed);
     assert_eq!(text(out.error), crate::abi::sdk::out::NO_REASON_BUFFER);
@@ -683,7 +661,6 @@ fn an_instance_less_owned_text_rides_the_hosts_lent_buffer_and_only_else_a_fixed
     assert_eq!(out.err_len, 0);
     assert_eq!(text(out.head.error), crate::abi::sdk::out::NO_REASON_BUFFER);
 
-    // A 'static text is named where it lives, buffer or not.
     let (o, out) = validate_lent(b"[1]", Some(&mut vbuf[..]));
     assert_eq!(o, Outcome::Failed);
     assert_eq!(text(out.error), "settings: must be a JSON object");
@@ -962,7 +939,7 @@ fn a_recycled_ticket_never_resumes_a_finished_ops_parked_state() {
         generation: 3,
     };
     let (_, inst, _) = open(b"park", &[]);
-    // Parked, then a FAILED answer: the op is over, so the SDK drops it with the answer.
+
     assert_eq!(resolve_as(inst, t, 0, 1).0, Outcome::Failed);
     assert_eq!(
         resolve_on(inst, Ticket::NONE),
@@ -974,8 +951,7 @@ fn a_recycled_ticket_never_resumes_a_finished_ops_parked_state() {
         (Outcome::Ready, 0),
         "the next op's RESUME on the ticket must not see the failed op's state"
     );
-    // Parked and pending, then a fresh (non-RESUME) op on the same ticket, the recycled ticket's
-    // next request: it drops the old state on entry, so its own RESUME finds nothing.
+
     assert_eq!(resolve_as(inst, t, 0, 0).0, Outcome::Pending);
     assert_eq!(resolve_on(inst, Ticket::NONE), (Outcome::Ready, 1));
     assert_eq!(resolve_as(inst, t, 0, 2).0, Outcome::Pending);
@@ -1006,8 +982,7 @@ fn raised(head: &OutHead) -> Vec<(u32, u8, String)> {
 }
 
 /// RED (BIND-AUDIT): what the instance an `open` or `refresh` built raises ([`Life::flagged`])
-/// rides that reply's envelope as its one declared diagnostic, for the host to audit on the
-/// plugin's behalf; an instance that raises nothing answers a bare envelope.
+
 #[test]
 fn an_open_and_a_refresh_carry_what_the_instance_raises() {
     let warn = crate::abi::mechanism::call::SEVERITY_WARN;
@@ -1065,8 +1040,7 @@ fn a_resumed_open_failure_keeps_its_owned_reason_in_the_hosts_buffer() {
             out.instance.is_null(),
             "the failed partial instance was freed"
         );
-        // Check buffer ownership before reading any plugin-supplied pointer. An error in a
-        // freed instance's kept ring must fail this assertion without dereferencing that ring.
+
         assert_eq!(
             out.err_len,
             settings.len(),

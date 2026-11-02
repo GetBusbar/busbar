@@ -42,13 +42,8 @@ use busbar_kernel_testkit::test_support::TestApp;
 
 use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 
-/// The issuer every test here configures. An origin root rather than a tenant path, because the
-/// path-prefixed derivation already has its own coverage in `config_tests` and repeating it here
-/// would make these tests fail for that reason instead of their own.
 const ISSUER: &str = "https://as.example.com";
 
-/// An `oauth_as:` block as an operator would write it. There is deliberately nothing to vary:
-/// ONE config produces the whole mounted set — `/register` included, unconditionally.
 fn cfg() -> OauthAsCfg {
     OauthAsCfg {
         issuer: ISSUER.to_string(),
@@ -62,14 +57,8 @@ fn cfg() -> OauthAsCfg {
     }
 }
 
-/// EVERY path this plane serves, derived from the validated identity the mount derives its own from.
-///
-/// EXHAUSTIVE DESTRUCTURE, NO `..`. If you are here because the compiler stopped you, the question
-/// is "does this field name an HTTP path this plane mounts?" — and if the answer is yes it belongs in
-/// the returned vector, because everything below is only as complete as this list.
 fn inventory(id: &AsIdentity) -> Vec<String> {
     let AsIdentity {
-        // ── PATHS: the mounted surface, and the whole of it ──
         metadata_path,
         authorize_path,
         token_path,
@@ -78,25 +67,22 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         revocation_path,
         jwks_path,
         consent_path,
-        // Mounted UNCONDITIONALLY: registration is one of the three always-on mechanisms, so the
-        // single most dangerous path on this plane is inside every assertion below by construction.
+
         register_path,
-        // Mounted ONLY under the FAPI 2.0 posture: RFC 9126 PAR is part of that profile and of
-        // nothing else, so the plain server serves no `/par` at all.
+
         par_path,
-        // ── NOT PATHS: identity, policy and key material. None of these adds a route. ──
+
         issuer: _,
-        // The path COMPONENT of the issuer, which is a prefix the six paths above already carry;
-        // it is not itself served.
+
         issuer_path: _,
         default_grant: _,
         access_token_ttl: _,
         refresh_token_ttl: _,
         key_id: _,
         signing_key: _,
-        // The posture switch: not a path, but it decides whether `par_path` is one.
+
         fapi2,
-        // Operator-provisioned clients: data the store answers lookups from, never a route.
+
         clients: _,
     } = id;
 
@@ -117,28 +103,13 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
     paths
 }
 
-/// The CORE ROUTE TABLE of the served router, built by the same function production builds it with.
-///
-/// `base_data_router` rather than a hand-rolled router: a table assembled here could describe a
-/// surface no deployment serves, and then every assertion below would be about a fiction.
 fn served_paths(app: &busbar_kernel::state::App) -> std::collections::BTreeSet<String> {
-    // `base_data_route_table_view`, not a hand reach into `app.plugin_routes`/`app.plane_slots`/
-    // `app.oauth_as` (those fields are `pub(crate)` to busbar-core and this crate is outside it):
-    // the curated `pub` test-support seam built for exactly this — an extracted plane's own ingress
-    // tests reading the mounted surface through the SAME `router::base_data_router` production
-    // calls, without core widening its sealed router types.
     busbar_kernel_testkit::routes::base_data_route_table_view(app)
         .into_iter()
         .map(|(path, _auth)| path)
         .collect()
 }
 
-/// THE CLAIM. With no `oauth_as:` block, not one path of the authorization server is served.
-///
-/// The inventory is derived from a validated identity that no `App` in this test ever holds: the
-/// point is to ask the unconfigured router about the paths a CONFIGURED one would serve, which is
-/// the question an operator is really asking when they ask what the block costs them when it is
-/// absent.
 #[test]
 fn without_the_config_block_the_plane_serves_nothing() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -159,9 +130,6 @@ fn without_the_config_block_the_plane_serves_nothing() {
         );
     }
 
-    // The well-known document by PREFIX as well as by exact path, because it is the one route a
-    // client discovers rather than guesses: an authorization server that leaks its existence leaks
-    // it here first, and a renamed suffix would slip past the exact-match loop above.
     for path in &served {
         assert!(
             !path.starts_with("/.well-known/oauth-authorization-server"),
@@ -170,12 +138,6 @@ fn without_the_config_block_the_plane_serves_nothing() {
     }
 }
 
-/// THE FLOOR that stops the test above being vacuous, and the anti-omission guard in one.
-///
-/// The set of routes the config block ADDS must equal [`inventory`] exactly — not contain it, not be
-/// contained by it. Equality is what makes this a guard rather than a smoke test: a surplus means a
-/// route is mounted that the gating assertion never checks for, and a shortfall means the mount is
-/// gone and the gating assertion is passing for the wrong reason.
 #[test]
 fn the_inventory_is_exactly_what_the_mount_registers() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -205,8 +167,7 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
         !expected.is_empty(),
         "an empty inventory would make the gating test pass by asserting nothing"
     );
-    // THE UNCONDITIONAL MOUNT: an AS plane without its registration endpoint is a shortfall this
-    // test names.
+
     assert!(
         expected.contains("/register"),
         "`/register` is mounted whenever the plane is: registration is one of the three always-on \
@@ -219,11 +180,6 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
     );
 }
 
-/// THE FAPI 2.0 POSTURE ADDS EXACTLY ONE ROUTE, `/par`, and the inventory still equals the mount.
-///
-/// RFC 9126 PAR belongs to the profile and to nothing else, so the plain server serves no `/par`
-/// (the inventory test above, `fapi2` off, would name it as a surplus) and the posture adds that one
-/// path and removes none: every plain endpoint keeps serving under the profile.
 #[test]
 fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -254,9 +210,6 @@ fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
     );
 }
 
-/// The layer where this property actually dies. Nothing can mount a plane that was never built, so
-/// the realistic regression is not a stray `.route()` — it is a default on the config, and the
-/// config is where the block is either present or absent.
 #[test]
 fn an_absent_block_resolves_to_no_authorization_server() {
     let deploy: busbar_kernel::config::DeployCfg =
@@ -271,11 +224,6 @@ fn an_absent_block_resolves_to_no_authorization_server() {
          authorization server for a host it does not own."
     );
 
-    // And the same resolve WITH the block does produce one, so the assertion above is about the
-    // block's absence rather than about `resolve` having quietly stopped reading the field at all.
-    // Through the document entry point: `oauth_as:` is a 1.6.0-additive key, LIFTED off the
-    // document before the frozen structs parse, so a bare `from_value` never sees it.
-    // `resolve` hands the opaque block to its owner through the seam, so the seam is installed.
     crate::testkit::install_test_seam();
     let deploy: busbar_kernel::config::DeployCfg =
         busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
@@ -294,8 +242,6 @@ fn an_absent_block_resolves_to_no_authorization_server() {
     assert_eq!(identity.issuer(), ISSUER);
 }
 
-/// `App::oauth_as` and the mounted surface are the same choice, and the router must not be able to
-/// disagree with the state it was built from.
 #[test]
 fn the_mounted_surface_and_the_app_state_cannot_disagree() {
     busbar_kernel_testkit::test_support::metrics::init();

@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! NO WORKFLOW SIGNS OR PACKS A PLUGIN (security P0, 2026-10-28). The 1.5 plugin-signing seed was the
-//! `BUSBAR_SIGN_KEY` GitHub organisation secret, readable by every repository, and the workflow
-//! that used it packed an UNSIGNED tarball whenever the secret was absent. A first-party plugin is
-//! released by the release pipeline (#1713), never by a GitHub workflow: no workflow under
-//! `.github/workflows/` reads that secret, declares it, builds the packer or packs a plugin.
 
 use std::path::PathBuf;
 
@@ -16,7 +12,6 @@ const REFUSED: &[(&str, &str)] = &[
     ("secrets.BUSBAR_SIGN_KEY", "reads the plugin-signing secret"),
     ("--bin busbar-plugin-pack", "builds the plugin packer"),
     ("pack --lib", "packs a plugin tarball"),
-    // W27 (security.astro:8-9): no GitHub workflow publishes or provenance-signs a release either.
     ("gh release create", "publishes a GitHub release"),
     ("gh release upload", "uploads release assets to GitHub"),
     (
@@ -58,7 +53,7 @@ fn no_workflow_signs_or_packs_unsigned_plugins() {
             if code.starts_with('#') {
                 continue;
             }
-            // `BUSBAR_SIGN_KEY:` as a YAML key: a declared workflow secret, or an env binding.
+
             if code.starts_with("BUSBAR_SIGN_KEY:") {
                 found.push(format!(
                     "{rel}:{}: declares the plugin-signing secret",

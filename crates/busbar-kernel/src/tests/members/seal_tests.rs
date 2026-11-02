@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! #65: the kernel's seal reaches the kernel and nothing else (`crate::seal`).
-//!
-//! Two witnesses. The first is the real one, in the integration test
-//! `tests/seal_release_path.rs` (the library built without `cfg(test)`, where the release path is
-//! the only one): the seal it hands the kernel opens, and the box `KernelSeal::deliver` hands any
-//! OTHER caller does not open as a seal. The second, here, builds the mechanism's exact shape with
-//! `rustc` — a contract crate that declares the root symbol, a kernel crate that defines it beside
-//! its `#[inline(never)]` minter, and a program that links both — and proves the property the
-//! design leans on: the honest program links and
-//! gets its seal, and a program that defines the root symbol itself, to catch the seal on its way
-//! to the kernel, does NOT link.
-
 const CONTRACT: &str = r#"
 pub struct Seal(());
 impl Seal {
@@ -113,7 +101,6 @@ fn a_second_definition_of_the_kernels_root_symbol_does_not_link() {
         )
     };
 
-    // POSITIVE CONTROL: the honest program links, runs, and the kernel opens its seal.
     let honest = program("honest");
     assert!(
         honest.status.success(),
@@ -128,7 +115,6 @@ fn a_second_definition_of_the_kernels_root_symbol_does_not_link() {
         "the honest program must run and open its seal: {ran:?}"
     );
 
-    // THE PROPERTY: a program that defines the root symbol to catch the seal does not link.
     let forger = program("forger");
     let stderr = String::from_utf8_lossy(&forger.stderr).to_lowercase();
     let _ = std::fs::remove_dir_all(&dir);

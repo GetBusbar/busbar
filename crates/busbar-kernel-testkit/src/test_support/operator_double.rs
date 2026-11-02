@@ -1,28 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OPERATOR-CREDENTIAL DOUBLE: the `kind: auth` door a test binary links onto the auth axis in
-//! place of whichever operator-credential plugin the composition root links (BUSBAR-1.6.0.md
-//! l.179-181: "Kernel tests use kind-neutral doubles ... The cleanliness crates (§8) obey the same
-//! rule").
-//!
-//! It states itself under the external test kit's explicit operator words.
-//! and answers the operator credential's contract, nothing more: opened with the configured token's
-//! SHA-256 digest (64 hex characters, as the operator `token:` resolves), it identifies the
-//! operator principal when a bearer or an `x-admin-token` line hashes to that digest, refuses a
-//! credential addressed to it that does not, and passes one shaped like a JWS (another verifier's).
-//! The carriers are stripped whatever the verdict. Its Statement name is its own, never a plugin's.
-//!
-//! [`install`] links it as the operator credential's test registry row; the first install stands.
-//!
-//! IN PROCESS: a test build has no loader to cross the door with (BUSBAR-1.6.0.md THE DESIGN l.322),
-//! so the test kit's auth axis (`test_support::outbound_auth::stand_in`) answers this row with
-//! [`OperatorCalls`], the same [`VerifyPlugin`] called directly: its `open` judges the settings,
-//! its verdict is the same [`judge`] over the request's lines, and it states what the door's
-//! Statement states (the stand-in provider's name, [`FACT_OPERATOR`] and the principal id, the two
-//! carriers, the head point). That the door renders and answers the same through the loader is the
-//! loader's and the root's to prove (`crates/plugin-loader`, `crates/busbar/tests`).
-
 use busbar_contract::abi::auth::FACT_OPERATOR;
 use busbar_contract::abi::auth::{AuthPoints, AuthTail};
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
@@ -35,28 +13,22 @@ use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest, Verifying};
 use busbar_contract::redacted::{constant_time_eq, sha256_hex};
 
-/// The stand-in operator words the double answers to.
 const WORDS: busbar_kernel_identity::operator::OperatorWords =
     busbar_kernel_identity::operator::OperatorWords {
         provider: "test-operator-double",
         principal_id: "admin",
     };
 
-/// Explicit fixture metadata, kept separate from installing a linked credential door.
 pub(crate) fn words() -> busbar_kernel_identity::operator::OperatorWords {
     WORDS
 }
 
-/// The bearer carrier.
 const AUTHORIZATION: &str = "authorization";
-/// The operator's own header carrier (1.5.5's admin header).
+
 const OPERATOR_HEADER: &str = "x-admin-token";
 
-/// The lines every verify names for the transport to strip.
 const STRIPS: &[Strip] = &[strip_field(AUTHORIZATION), strip_field(OPERATOR_HEADER)];
 
-/// A line's value as the admin door reads it (`HeaderValue::to_str`: visible ASCII and tab), or
-/// `None` for one that does not read as text, which the door treats as absent.
 fn text(value: &[u8]) -> Option<&str> {
     value
         .iter()
@@ -65,14 +37,11 @@ fn text(value: &[u8]) -> Option<&str> {
         .flatten()
 }
 
-/// The token of a `Bearer <token>` line, or `None` for any other scheme or an empty token
-/// (`admin_carriers`' bearer reading).
 fn bearer_token(value: &[u8]) -> Option<&str> {
     let (scheme, token) = text(value)?.split_once(' ')?;
     (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
 }
 
-/// Three non-empty dot-separated segments: a signed token another verifier owns.
 fn jws_shaped(candidate: &str) -> bool {
     let mut segments = candidate.split('.');
     matches!(
@@ -81,8 +50,6 @@ fn jws_shaped(candidate: &str) -> bool {
     )
 }
 
-/// The verdict over the two carriers: both compared (no short-circuit), the operator on a match, a
-/// refusal for a non-JWS credential that missed, a pass otherwise.
 fn judge(digest: &str, bearer: Option<&str>, header: Option<&str>) -> Verdict {
     if bearer.is_none() && header.is_none() {
         return Verdict::Pass;
@@ -133,11 +100,7 @@ impl VerifyPlugin for OperatorDouble {
 }
 
 impl OperatorDouble {
-    /// The answer over the request's field lines, `line` reading one by name (ASCII
-    /// case-insensitive, as presented): the door's `verify` and the in-process [`OperatorCalls`]
-    /// both answer through it.
     fn answer<'a>(&self, line: impl Fn(&str) -> Option<&'a [u8]>) -> Answer {
-        // `admin_carriers`' reading: a present-but-blank (or non-text) `x-admin-token` is absent.
         let header = line(OPERATOR_HEADER)
             .and_then(text)
             .filter(|t| !t.is_empty());
@@ -157,7 +120,6 @@ const CARRIERS: &[MarkWord] = &[carrier(AUTHORIZATION), carrier(OPERATOR_HEADER)
 
 const TAIL: &AuthTail = &with_operator(verify_tail(0, AuthPoints::HEAD), WORDS.principal_id);
 
-/// The double's Statement: the stand-in provider's name, its two carriers, the operator tail.
 const STATEMENT: Statement = with_tail(
     Statement {
         mark_words: CARRIERS.as_ptr(),
@@ -169,26 +131,20 @@ const STATEMENT: Statement = with_tail(
 
 busbar_contract::auth_verify_door!(OperatorDouble, STATEMENT);
 
-/// Link the double as the operator credential's test registry row, under the stand-in words. The
-/// first install stands (the axis is process-wide).
 pub fn install() {
     crate::test_support::install_operator_auth_row_as(WORDS, door);
 }
 
-/// The carriers the double's Statement states, in order (its [`carrier`] word marks).
 #[must_use]
 pub(crate) fn carriers() -> Vec<String> {
     vec![AUTHORIZATION.to_string(), OPERATOR_HEADER.to_string()]
 }
 
-/// The principal id the double's Statement states as the operator credential's
-/// ([`with_operator`]).
 #[must_use]
 pub(crate) fn principal() -> &'static str {
     WORDS.principal_id
 }
 
-/// Whether `door` is this double's door (the fn pointer the test kit links; compared by address).
 #[must_use]
 pub(crate) fn is_door(candidate: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
     std::ptr::fn_addr_eq(
@@ -197,13 +153,6 @@ pub(crate) fn is_door(candidate: busbar_contract::abi::mechanism::door::DoorFn) 
     )
 }
 
-/// THE DOUBLE IN PROCESS: one instance opened over `settings` (the operator token's digest, as a
-/// JSON string), answering on the auth port with no crossing. `open` is the double's own
-/// [`VerifyPlugin::open_refusing`], its refusal in the loader's words for a door that refused its open
-/// (`auth plugin '<module>': <the plugin's text>`, `crates/plugin-loader/src/auth_axis.rs`).
-///
-/// # Errors
-/// The settings are not a SHA-256 digest.
 pub(crate) fn open_in_process(
     module: &str,
     settings: &serde_json::Value,
@@ -219,10 +168,6 @@ pub(crate) fn open_in_process(
 pub(crate) struct OperatorCalls(OperatorDouble);
 
 impl OperatorCalls {
-    /// The double's answer over `request`'s lines, revealed under the kernel's seal (as the loader's
-    /// dispatcher, lent that seal, reveals them to the door), lowered to the auth port's answer
-    /// exactly as the loader reads a door's: the verdict (with the continue-or-stop it implies) and
-    /// the strips.
     fn answer(&self, request: &VerifyRequest) -> VerifyAnswer {
         let seal = crate::seal::lend();
         let Answer {
@@ -279,13 +224,11 @@ impl AuthCalls for OperatorCalls {
         Box::new(Settled(Some(self.answer(&request))))
     }
 
-    /// The double caches nothing: a refresh drops no entry ([`VerifyPlugin::refresh`]'s default).
     fn refresh(&self) -> Result<u64, String> {
         Ok(0)
     }
 }
 
-/// A verify answered on the spot (the double never pends).
 struct Settled(Option<VerifyAnswer>);
 
 impl std::future::Future for Settled {

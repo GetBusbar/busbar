@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BOOT (`BUSBAR-1.6.0.md` THE DESIGN, §3): the composition root's boot stages, reaching the
-//! plugin loader through [`super::loader`] (the one module that names it). Stage 0 Plan reads what the configuration USES; stage 1 Discover reads
-//! each plugin's facts off its Statement (a signed manifest's rendering; nothing is opened); stage 2
-//! Select picks the plugins the configuration uses (BUSBAR-1.6.0.md §2, §4 Law 7). `--validate` runs these three
-//! stages without opening an application Store. Native grammar and plugin checks cross the
-//! shared archive-pin gate before staging; ordinary registry discovery remains manifest-only.
-//!
-//! Stage 4 Book ([`book`]) opens the store, replays the WAL, seals the opening and binds the
-//! keyset, at boot only. The configured `plugins.dir` scan ([`dropped_from_config`]), the door
-//! planes' and dropped transports' one load ([`load_door_planes`], [`dropped_transports`]) live here
-//! too. The rest of boot — register and seal —
-//! moves here as BOOT-LOOP 8.
-
 use std::sync::Arc;
 
 use super::linked::{linked_exports, Linked};
@@ -60,16 +47,11 @@ fn remember_native_images(registry: &PluginRegistry, plugins: &PluginsCfg) {
     remembered.extend(fresh);
 }
 
-/// Root policy is installed before initial discovery, CLI validation, or any native grammar probe.
-/// All seven kinds and the migration/checker lanes cross the loader's same pre-staging frontier.
 pub fn install_native_load_guard() -> Result<(), &'static str> {
     super::loader::install_native_load_guard(authorize_native_image)
 }
 
 fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
-    // Clone metadata before upgrading allocations or consulting the Store: no callback or Store
-    // wait runs under the registry lock. Pointer+length binds this proof to this retained image,
-    // including when another registry has the same filename or a file was replaced after scan.
     let snapshots = NATIVE_IMAGES
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -90,9 +72,6 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
             &image.plugins.first_party_floors,
         )
     } else {
-        // Before Store recovery, every registry used by a shipping native caller was built from
-        // operator input (base boot/validation or an explicit migration document), never overlay.
-        // An unknown image/context above refuses; no filename or callback supplies a default pin.
         busbar_kernel::appbuild::validate_bootstrap_archive(
             &image.row.name,
             &image.row.file,
@@ -102,9 +81,6 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
     }
 }
 
-/// The base Store is the deployment's stable security authority across recovered generations.
-/// Bootstrap must still authenticate its own Store/secret/transport dependencies before this
-/// authority is readable. Keeping this handle never opens a second Store during validation.
 struct PluginFloorAuthority {
     calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
     host: String,
@@ -112,7 +88,6 @@ struct PluginFloorAuthority {
 
 static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::OnceLock::new();
 
-/// Bind the already-opened bootstrap Store before any further native plugin loading.
 pub fn bind_plugin_floor(
     calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
 ) -> Result<(), String> {
@@ -148,8 +123,6 @@ fn hold_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Result<(), 
     Ok(())
 }
 
-/// The early manifest inventory predates Store recovery. Judge its exact retained bytes under
-/// the recovered rollback pins before the connector, planes or exports can open those images.
 pub fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
     if let Some(registry) = REGISTRY.get() {
         hold_plugin_floor(registry, plugins)?;
@@ -157,17 +130,6 @@ pub fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
     Ok(())
 }
 
-/// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the
-/// plugin registry is built here, in the composition root, and nowhere else — the kernel's preflight
-/// receives it through the root's rows (the kernel preflight's `RegistryBuild`), and the root's own
-/// dropped-plugin scan runs the same build. The linked rows alone, or the `plugins:` block's trust
-/// resolved ([`trust_policy`]) and its directory scanned with the first-party floor armed and
-/// raised; each step is noted to `note`. Nothing is opened.
-///
-/// # Errors
-///
-/// `plugins.trust is invalid: …`, an invalid tarball, manifest or conflict, or a linked row the
-/// admission refuses.
 pub fn registry(
     linked: Vec<LinkedPlugin>,
     plugins: Option<&PluginsCfg>,
@@ -188,8 +150,7 @@ fn registry_with_floor(
         Some(p) => Some(Scan {
             policy: trust_policy(p, env!("CARGO_PKG_VERSION"))
                 .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
-            // Application security state belongs to the Store. Before it is readable,
-            // exact operator archive pins authorize only the required bootstrap images.
+
             data_dir: None,
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
@@ -198,35 +159,18 @@ fn registry_with_floor(
     if let Some(plugins) = plugins {
         remember_native_images(&registry, plugins);
     }
-    // `registry` contains verified bytes only. Check before any caller can probe/open a hook,
-    // resolve a secret, or bind another kind; a late Book refusal cannot undo native code.
+
     if check_floor {
         if let Some(plugins) = plugins {
             check_plugin_floor(&registry, plugins)?;
         }
     }
-    // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
-    // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
-    // `--validate` and every dry run share, and a dry run keeps the running node's secret plugins
-    // (BUSBAR-1.6.0.md l.456-457).
+
     super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
 }
 
-/// STAGE 3's SECRET ADMISSION (BUSBAR-1.6.0.md §3, 3a/3e; the kernel's `RootInstall::secret_admit`):
-/// the dropped-in secret plugins that state a door join the secret axis (the root's, over the one
-/// dispatcher), replacing the last set; a 1.5.x one with no door stays on the cold lane (M6). The
-/// app build calls it through the install record with the rows the kernel holds, read back as the
-/// registry this root built them as (a test build's rows double admits nothing); boot's scan calls
-/// [`admit_dropped_secrets`] on its own registry. The registry build ([`registry`]) never does.
-///
-/// # Errors
-///
-/// A stated rendering that does not read back, or a dropped-in secret plugin that claims a word
-/// another plugin answers to, naming both.
 pub fn admit_secrets(rows: &Arc<dyn PluginRows>, plugins: &PluginsCfg) -> Result<(), String> {
-    // This is actual app construction, not a dry-run registry scan. Keep the new floor before
-    // handing its candidates to the secret axis or opening later application kinds.
     hold_plugin_floor(rows.as_ref(), plugins)?;
     match super::loader::rows::registry_arc(Arc::clone(rows)) {
         Some(registry) => admit_dropped_secrets(&registry),
@@ -234,22 +178,10 @@ pub fn admit_secrets(rows: &Arc<dyn PluginRows>, plugins: &PluginsCfg) -> Result
     }
 }
 
-/// [`admit_secrets`] over a registry this root built.
-///
-/// # Errors
-///
-/// As [`admit_secrets`].
 pub fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
     super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
-/// THE REGISTRY BUILD THE KERNEL RECEIVES (`RootInstall::registry_build`): [`registry`] over the
-/// kernel's linked rows ([`linked_row`]), each loader note handed on in the kernel's words, and the
-/// registry handed back as the contract's `PluginRows` view (the kernel names no loader type).
-///
-/// # Errors
-///
-/// As [`registry`].
 pub fn registry_rows(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
@@ -280,9 +212,6 @@ pub fn registry_rows(
     Ok(Arc::new(registry))
 }
 
-/// The registry row one of the kernel's linked rows states: a STORE under its canonical name,
-/// answering also to its key; an AUTH row likewise — each answering also to the former names the
-/// root migration table gives that key ([`answering_former_names`]).
 #[must_use]
 pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     match *row {
@@ -295,9 +224,6 @@ pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     }
 }
 
-/// THE REGISTRY OF THIS BUILD'S LINKED ROWS ALONE (the kernel's `preflight::linked_rows`): what an
-/// axis answers over when the rows it is handed are not a registry this root built (a test build's
-/// rows double), and what the one-version rule compares an upload against.
 #[must_use]
 pub fn linked_registry() -> PluginRegistry {
     let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
@@ -313,27 +239,12 @@ pub fn linked_registry() -> PluginRegistry {
         .expect("the build's linked plugin declarations must not conflict")
 }
 
-/// `row`, answering also to the former names the root migration table declares for its alias
-/// (`former.<alias>`, from plugins.yaml `former_names:`): a linked plugin answers the names its
-/// earlier releases carried exactly as its dropped-in copy's signed manifest does.
 #[must_use]
 pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
     let former = busbar_kernel::config::migration_table::former_names(&row.manifest.alias);
     row.with_former_names(former)
 }
 
-/// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
-/// publishers and opt-ins and the per-name floors (`min_versions`, the rollback pins), through the
-/// loader's `TrustPolicy::from_config`. `binary_version` is carried for diagnostics only. The
-/// automatic first-party floor is the registry build's to arm. THE ONE BUILDER: the root hands this
-/// same function to the kernel's plugin admission (`root::admission::ADMISSION`, installed by
-/// `root::linked::register_stores`), and
-/// every snapshot carries it to the admin surface, which judges a plugin under nothing else.
-///
-/// # Errors
-///
-/// A reserved or malformed publisher; in a `test-harness` build, a malformed
-/// `HARNESS_FIRST_PARTY_KEY_ENV`.
 pub fn trust_policy(
     cfg: &PluginsCfg,
     binary_version: &str,
@@ -361,25 +272,9 @@ pub fn trust_policy(
     Ok(policy)
 }
 
-/// THE TEST HARNESS'S FIRST-PARTY KEY SEAM (ARCHITECT ruling, busbar #700, 2026-10-10): a
-/// `test-harness` build of the binary takes its first-party key from this variable when it is set,
-/// in place of the embedded release key, whose private half no test holds. That is how a child
-/// `busbar` process under test admits a plugin a test signed first-party: a plugin whose needs sit
-/// in a first-party egress class (`BUSBAR-1.6.0.md` §5), such as the dropped-in OIDC module this
-/// crate's end-to-end battery drives. The seam exists only under `cfg(feature = "test-harness")`,
-/// which no release build enables (`crates/busbar/Cargo.toml`, `test-harness`; asserted by
-/// `root::tests::boot::the_release_feature_set_excludes_test_harness`). Without the feature, no code
-/// path reads the variable, and the embedded key stays the only first-party key.
 #[cfg(feature = "test-harness")]
 pub const HARNESS_FIRST_PARTY_KEY_ENV: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
-/// The harness first-party key that `raw` (the value of [`HARNESS_FIRST_PARTY_KEY_ENV`]) names:
-/// `None` when the variable is unset or empty, so the embedded release key stands.
-///
-/// # Errors
-///
-/// A value that is not a 64-hex ed25519 public key. A harness that sets the variable meant it, so
-/// a typo is refused rather than silently ignored.
 #[cfg(feature = "test-harness")]
 pub fn harness_first_party_key(
     raw: Option<&str>,
@@ -392,14 +287,6 @@ pub fn harness_first_party_key(
     }
 }
 
-/// THE ROOT'S PLUGINS FETCH (the kernel preflight's `PluginsFetch`): every `plugins.fetch` target
-/// through the loader's fetch (cache-by-pin, verify-before-write, atomic write) into `dir`, and only
-/// ever through the SSRF-guarded download over the one connector
-/// ([`super::plugin_fetch::downloader`], the operator's metadata denylist `blocked` extending it).
-///
-/// # Errors
-///
-/// Every problem, at boot (`fatal_on_miss`).
 pub fn plugins_fetch(
     dir: &std::path::Path,
     targets: &[FetchTarget],
@@ -426,24 +313,18 @@ pub fn plugins_fetch(
         .collect())
 }
 
-/// The configuration file this process boots from (`--config`, or its default).
 fn config_path() -> std::path::PathBuf {
     std::path::PathBuf::from(crate::root::cli::resolve_config_path(
         crate::root::cli::config_path_flag().as_deref(),
     ))
 }
 
-/// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
-/// references stay raw; environment references are interpolated leniently, as the boot's early
-/// reads do). An unreadable file uses nothing: the boot's own load reports why.
 pub fn plan(path: &std::path::Path) -> Uses {
     document(path)
         .map(|doc| Uses::of(doc.value()))
         .unwrap_or_default()
 }
 
-/// The raw document at `path` (secret references raw, environment interpolated leniently), with the
-/// text its position map is read off; `None` when it does not read.
 pub fn document(path: &std::path::Path) -> Option<Document> {
     let raw = std::fs::read_to_string(path).ok()?;
     let text = busbar_kernel::config::interpolate_env_with(
@@ -455,14 +336,6 @@ pub fn document(path: &std::path::Path) -> Option<Document> {
     Document::parse(text).ok()
 }
 
-/// STAGE 3g, THE DEAL AND ITS VALIDATION HALF (`BUSBAR-1.6.0.md` §3): each seat is dealt its own
-/// section (an instance the document writes none for is dealt none) and `validate` asked of its
-/// instance with the section's JSON; the first refusal, naming the operator's file position in
-/// 1.5.5's form (`config.yaml: invalid YAML: <path>: <reason> at line L column C`).
-///
-/// # Errors
-///
-/// The first refusal.
 pub fn validate_dealt<'s>(
     doc: &Document,
     seats: impl IntoIterator<Item = (&'s str, Seat<'s>)>,
@@ -472,9 +345,7 @@ pub fn validate_dealt<'s>(
         let Some(section) = doc.deal(seat) else {
             continue;
         };
-        // A plane's verb sections, keyed by their top-level names, carry a secret reference at every
-        // credential position `${VAR}` filled: a plane never receives secret bytes (THE DESIGN §6).
-        // An instance's own settings are a non-plane plugin's, which may hold the secrets they name.
+
         let settings = match seat {
             Seat::Verbs(_) => {
                 busbar_kernel::config::filled::plane_bound(&[], section.settings.clone())
@@ -492,8 +363,6 @@ pub fn validate_dealt<'s>(
     Ok(())
 }
 
-/// The lifecycle `validate` of one bound door, over `settings` (JSON): its reason when it does not
-/// answer READY.
 fn validate_door(door: &DoorPlane, settings: &[u8]) -> Result<(), String> {
     use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, ValidateIn};
@@ -519,18 +388,10 @@ fn validate_door(door: &DoorPlane, settings: &[u8]) -> Result<(), String> {
     ))
 }
 
-/// STAGE 1, DISCOVER (the dropped-in half): every admitted plugin in `registry` whose signed
-/// manifest states a Statement, read off that rendering. A 1.6.0 plugin states one; a manifest that
-/// states none keeps today's handling.
-///
-/// # Errors
-///
-/// A stated rendering that does not read back, naming the plugin.
 pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
     discovered(registry, |_| true)
 }
 
-/// The linked and admitted dropped-in candidates whose inbound needs boot can serve.
 pub fn listener_candidates(linked: &Linked) -> Result<Vec<Candidate>, String> {
     listener_candidates_from(linked, dropped_registry())
 }
@@ -540,9 +401,7 @@ fn listener_candidates_from(
     registry: Option<&PluginRegistry>,
 ) -> Result<Vec<Candidate>, String> {
     let mut candidates = registry.map(discover).transpose()?.unwrap_or_default();
-    // Plane doors and export sinks are loaded from the immutable boot registry and retained.
-    // A same-name upload does not replace their code or Statement. Hooks reopen from the
-    // candidate registry, so their declarations follow that candidate instead.
+
     candidates.retain(|candidate| !matches!(candidate.kind, KindCode::Plane | KindCode::Export));
     candidates.extend(
         dropped_registry()
@@ -597,8 +456,6 @@ pub struct ListenerNeeds {
     pub needs: Vec<ListenerNeed>,
 }
 
-/// Project only listener settings from the resolved candidate configuration. No plugin's other
-/// settings or resolved credentials are retained in this plan.
 pub fn configured_listener_needs(
     cfg: &busbar_kernel::config::RootCfg,
     sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
@@ -612,7 +469,6 @@ pub fn configured_listener_needs(
     )
 }
 
-/// Root bindings use the effective resolved settings, including defaults.
 pub fn configured_root_binds(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<Vec<InboundBind>, String> {
@@ -627,8 +483,6 @@ pub fn configured_root_binds(
     ))
 }
 
-/// Read the same candidate registry that opened the App's hooks and auths. New or replaced
-/// Statements cannot inherit the boot catalog's older listener declarations.
 pub fn candidate_listener_needs(
     app: &busbar_kernel::state::App,
     sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
@@ -762,9 +616,6 @@ fn listener_projection(
     listener_needs(&doc, &candidates, &selected, root)
 }
 
-/// Collect the listeners with their consumers before any socket opens. The explicit `listen`
-/// selector uses the effective root data bind only when the instance has no relative `listen`
-/// setting. A present malformed relative block is still refused by the ordinary bind parser.
 pub fn listener_needs(
     doc: &serde_json::Value,
     candidates: &[Candidate],
@@ -829,9 +680,7 @@ pub fn listener_needs(
                 physical.needs[index].direction = DIRECTION_OUTBOUND;
             }
         }
-        // Parse each declaration independently, then consolidate compatible physical binds.
-        // The loader's ordinary collector deliberately rejects collisions; here a declaration
-        // naming an existing listener contributes a line instead of opening that address twice.
+
         for index in 0..physical.needs.len() {
             if physical.needs[index].direction != DIRECTION_INBOUND {
                 continue;
@@ -925,7 +774,6 @@ pub fn listener_needs(
     })
 }
 
-/// [`discover`] over the admitted plugins whose manifest kind `keep` accepts.
 fn discovered(
     registry: &PluginRegistry,
     keep: impl Fn(&str) -> bool,
@@ -941,20 +789,15 @@ fn discovered(
     Ok(out)
 }
 
-/// What stages 0-2 found, for `--validate`'s report.
 pub struct Stages {
-    /// The discovered plugins.
     pub candidates: Vec<Candidate>,
-    /// The instances selected over them.
+
     pub selected: Vec<Selected>,
-    /// THE ONE LIST OF LISTENERS (boot stage 3f's input): the root's own, then every selected
-    /// instance's inbound listener, each with its bind.
+
     pub inbound: Vec<InboundBind>,
 }
 
 impl Stages {
-    /// One report line per discovered plugin: its stated facts and whether the configuration uses
-    /// it.
     pub fn lines(&self) -> Vec<String> {
         self.candidates
             .iter()
@@ -998,13 +841,6 @@ fn kind_word(k: KindCode) -> String {
     format!("{k:?}").to_ascii_lowercase()
 }
 
-/// `--validate`'s STAGES 0-2 over the configuration at `path` and the dropped-in plugins the
-/// preflight admitted: Plan, Discover, Select — see [`stages`]. `root` are the host's own listeners
-/// ([`root_binds`]). Nothing is opened.
-///
-/// # Errors
-///
-/// The first refusal.
 pub fn validate(
     path: &std::path::Path,
     registry: &PluginRegistry,
@@ -1026,10 +862,6 @@ pub struct RootListens<'a> {
     pub admin_listen: &'a str,
 }
 
-/// THE ROOT'S OWN LISTENERS AS BINDS, the head of the one list: the data door at `listen` with the
-/// raw `tls` block, and the admin surface at `admin_listen` with the raw `admin_tls` block. They
-/// keep 1.5.5's bound: no connection cap. An address is a socket address or a name it resolves to
-/// (its first address, as 1.5.5's listener bound); one that resolves to none binds nothing here.
 #[must_use]
 pub fn root_binds(doc: &serde_json::Value, root: &RootListens<'_>) -> Vec<InboundBind> {
     [
@@ -1053,15 +885,6 @@ pub fn root_binds(doc: &serde_json::Value, root: &RootListens<'_>) -> Vec<Inboun
     .collect()
 }
 
-/// STAGES 0 and 2 over `doc` and the discovered `candidates`: Select; the one list of listeners,
-/// `root` first, then every selected instance's inbound listener read from its settings — two
-/// listeners on one address are refused here, before anything binds; and the loader's version refusal for every
-/// SELECTED plugin whose Statement states a mechanism or kind ABI version other than this host's,
-/// naming the rebuild (BUSBAR-1.6.0.md §11.8).
-///
-/// # Errors
-///
-/// The first refusal.
 pub fn stages(
     doc: &serde_json::Value,
     candidates: Vec<Candidate>,
@@ -1100,18 +923,6 @@ pub fn stages(
     })
 }
 
-/// THE PLUGINS DROPPED INTO THE CONFIGURED `plugins.dir`, scanned ONCE before any axis is installed —
-/// so before the configuration is parsed, which needs those axes — and kept for the process, whose
-/// dropped-in planes and export modules are opened from it. Only the kernel-owned `plugins:` block is
-/// read, off the same file and environment interpolation the boot load uses; the trust policy and
-/// the persisted first-party floors are resolved as the preflight resolves them. No `plugins:`
-/// block, `enabled: false`, or no readable file: `None`, and the directory is not read. A scan the
-/// loader refuses is `None` here too — the plugins preflight reads the same directory under the same
-/// policy later in boot and refuses it there with every problem named.
-///
-/// The build's LINKED export sinks ([`Linked::export_doors`], K9b) are registered into the same registry
-/// ahead of the directory's rows, through the one admission (`PluginRegistry::link`) — so the export
-/// axis holds both doors' rows, and a build that links a sink has an axis with no `plugins:` block.
 pub fn dropped_from_config(
     linked: &Linked,
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
@@ -1128,21 +939,15 @@ pub fn dropped_from_config(
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
     });
-    // Kept for the process — the export axis and the diagnostics axis read it for as long as it
-    // serves — in the one registry slot boot fills.
+
     Some(REGISTRY.get_or_init(|| registry))
 }
 
-/// The one plugin registry [`dropped_from_config`] builds, held for the process.
 pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
-/// Only the operator's pre-Store `plugins:` input can authorize an early grammar probe.
-/// Captured before recovery; a Store overlay can never supply this bootstrap authority.
 static BASE_BOOTSTRAP_PLUGINS: std::sync::OnceLock<PluginsCfg> = std::sync::OnceLock::new();
 
-/// Guard the actual early dropped-plane bind. It runs before complete config parsing because
-/// that plugin owns its grammar. Missing initialization is a refusal, never permission to load.
 pub(crate) fn authorize_early_plugin(name: &str) -> Result<(), String> {
     let registry = REGISTRY
         .get()
@@ -1157,14 +962,10 @@ pub(crate) fn authorize_early_plugin(name: &str) -> Result<(), String> {
     )
 }
 
-/// The plugin registry [`dropped_from_config`] built and kept, once it has (no rescan). The door
-/// composition reads it to seal each door-plane member's egress over the dropped-in auth plugins
-/// (`root::door_steps::OutboundAuths`).
 pub fn dropped_registry() -> Option<&'static crate::root::loader::PluginRegistry> {
     REGISTRY.get()
 }
 
-/// The configured `plugins.dir`'s admitted rows (see [`dropped_from_config`]).
 fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
@@ -1201,10 +1002,6 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     Some(registry)
 }
 
-/// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
-/// plane that states itself through a door is discovered here and bound by [`load_door_planes`] once
-/// the process's dispatcher is built. A trusted plane that will not state itself, or has no door,
-/// refuses the boot, as a linked plane's would.
 pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::PluginRegistry>) {
     let set = match dropped {
         Some(registry) => registry.open_planes(linked.plane_doors),
@@ -1217,9 +1014,6 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
     let _ = DOOR_CANDIDATES.set(set.doors);
 }
 
-/// The declaring sections of the discovered door planes the boot never bound (Law 7: the boot
-/// configuration writes none of their sections). Like a bound plane left unopened, each is
-/// restart-to-apply (`door_steps::Rules::hold_unopened`); the fallback plane is never one.
 #[must_use]
 pub fn unbound_sections() -> Vec<&'static str> {
     let bound = door_planes();
@@ -1237,24 +1031,14 @@ pub fn unbound_sections() -> Vec<&'static str> {
         .collect()
 }
 
-/// The `base_url` of every resolved provider (its catalog definition merged with the document's
-/// deployment), noted by `main` before bootstrap and again after Store recovery, before opening
-/// the effective dropped-in transports ([`transport_uses`]).
 static PROVIDER_URLS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
 
-/// Note the resolved providers' `base_url`s before opening bootstrap or effective transports.
 pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
     let next = urls.into_iter().collect();
     let previous = std::mem::replace(&mut *PROVIDER_URLS.write().expect("provider URLs"), next);
     drop(previous);
 }
 
-/// WHAT SELECTS A DROPPED-IN TRANSPORT (Law 7; `BUSBAR-1.6.0.md` §4, "a transport loads iff a
-/// configured URL uses a scheme it claims"): the URL schemes the configuration file uses, and those
-/// of the resolved providers' `base_url`s, which a catalog definition carries when the document
-/// does not. And every scheme a linked transport claims: a dropped-in transport claiming one is a
-/// second owner of it, opened so the seal refuses the boot as it refuses a second linked row with
-/// that key (two transports claiming one scheme refuse boot).
 fn transport_uses() -> Uses {
     let urls = PROVIDER_URLS.read().expect("provider URLs").clone();
     transport_uses_for(&config_path(), &urls)
@@ -1271,9 +1055,6 @@ pub(crate) fn transport_uses_for(path: &std::path::Path, urls: &[String]) -> Use
     uses
 }
 
-/// Check the exact transport selection that the bootstrap connector will open. An unused
-/// dropped transport needs no bootstrap pin; every selected native image does, including
-/// transports selected by a provider scheme or by a conflicting linked claim.
 pub fn check_bootstrap_transports(plugins: &PluginsCfg) -> Result<(), String> {
     let Some(registry) = REGISTRY.get() else {
         return Ok(());
@@ -1295,29 +1076,15 @@ pub fn check_bootstrap_transports(plugins: &PluginsCfg) -> Result<(), String> {
     busbar_kernel::appbuild::validate_bootstrap_artifacts(registry, &selected, plugins)
 }
 
-/// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
 pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
     std::sync::OnceLock::new();
 
-/// The door planes [`load_door_planes`] bound, held for the process.
 static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
 
-/// A plane bound through its door, shared (a `Plugin` is `!Clone`, THE DESIGN C.1): the boot's
-/// list, each generation's plane instance and its config-apply holder share the one instance.
 pub type DoorPlane = std::sync::Arc<
     crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>,
 >;
 
-/// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
-/// ([`crate::root::dispatch::boot`]): every plane [`discover_planes`] discovered, linked and
-/// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
-/// under the configured `plugins.logs`, each declaring its needs on the process's one connection
-/// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
-///
-/// LAW 7: only a plane the configuration uses is bound — one that owns a section among `sections`,
-/// the keys the boot composes its door planes over (the document's plane sections and the
-/// kernel-owned sections it hands them, `pools` whenever `models` is), so a plane is bound exactly
-/// when the composition can open it.
 pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
     let uses = Uses {
@@ -1325,7 +1092,7 @@ pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
         ..Uses::default()
     };
     let used = crate::root::loader::boot::used_planes(&uses, doors);
-    // The process's ONE connection table: a plane that declares a need is declared on it.
+
     let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();
     let bound = crate::root::loader::boot::load_planes(
@@ -1343,7 +1110,7 @@ pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     .into_iter()
     .map(|(instance, plane)| (instance, std::sync::Arc::new(plane)))
     .collect::<Vec<(String, DoorPlane)>>();
-    // Stage 3g: every bound door validates the section dealt to it before anything opens.
+
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
     if let Some(doc) = document(std::path::Path::new(&path)) {
@@ -1367,7 +1134,6 @@ pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     let _ = DOOR_PLANES.set(bound);
 }
 
-/// The configured `plugins.logs` ([`scan_configured`] reads it), or its defaults.
 static LOGS: std::sync::OnceLock<crate::root::loader::dispatch::PluginLogConfig> =
     std::sync::OnceLock::new();
 
@@ -1379,10 +1145,6 @@ pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLog
     })
 }
 
-/// FOLLOW A CONFIG APPLY'S `plugins.logs` (THE DESIGN §11.2: a plugin's level and its file's
-/// rotation change through an apply): `logs`, and every sink opened from it or a clone of it, take
-/// the applied words, live sinks at their next line. Words that do not resolve keep the ones in
-/// force (the apply's pre-flight refuses them first).
 pub(crate) fn follow_plugin_logs(
     logs: &crate::root::loader::dispatch::PluginLogConfig,
     plugins: &busbar_kernel::config::PluginsCfg,
@@ -1400,19 +1162,10 @@ pub(crate) fn follow_plugin_logs(
     }
 }
 
-/// Every plane bound through its door, by instance name (empty until [`load_door_planes`] runs).
 pub fn door_planes() -> &'static [(String, DoorPlane)] {
     DOOR_PLANES.get().map_or(&[], Vec::as_slice)
 }
 
-/// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
-/// scanned): the current opened inventory, first the bootstrap dependencies and then the
-/// effective instances after Store recovery. The boot seal folds that snapshot beside the linked
-/// wires (`crate::root::registry::compose`). Each image is a memory-ABI door opened through the
-/// one dispatcher and served over the host's sockets (`crate::root::doors`, opened with the
-/// deployment's `settings`). Bootstrap declarations and pending IO retain their captured doors
-/// when the inventory is replaced. A trusted transport
-/// that will not LOAD, or that exports no door, refuses the boot, as a linked plane's would.
 pub fn dropped_transports(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> crate::root::registry::Dropped {
@@ -1427,18 +1180,14 @@ pub fn dropped_transports(
         let mut wires = WIRES.lock().expect("transport inventory");
         wires.get_or_insert_with(|| opened.clone()).clone()
     };
-    // A concurrent reader may have installed the inventory first. Discard this reader's fresh
-    // doors only after releasing the inventory lock: their close callbacks may re-enter hosts.
+
     drop(opened);
     retained
 }
 
-/// The current boot inventory. Snapshots own their doors, so publishing effective settings can
-/// release the obsolete inventory while bootstrap needs and pending IO retain their own doors.
 static WIRES: std::sync::Mutex<Option<crate::root::registry::Dropped>> =
     std::sync::Mutex::new(None);
 
-/// Prepare fresh dropped-in instances without changing the inventory serving bootstrap needs.
 pub(crate) fn open_dropped_transports(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Result<crate::root::registry::Dropped, String> {
@@ -1479,7 +1228,6 @@ pub(crate) fn open_dropped_transports(
     })
 }
 
-/// Publish the inventory only after every effective transport opened and its view validated.
 pub(crate) fn publish_dropped_transports(dropped: crate::root::registry::Dropped) {
     publish_transport_inventory(&WIRES, dropped);
 }
@@ -1492,22 +1240,6 @@ fn publish_transport_inventory(
     drop(previous);
 }
 
-/// THE BOOT JOURNAL, COMPOSED — the extracted seam [`book`] calls, wired against a store lane so its
-/// behaviour can be proved without a bound listener or a loaded plugin behind it.
-///
-/// **The journal is KEPT BY THE CONFIGURED STORE** (ARCHITECT 2026-10-07 H3 ruling (a)-(c)): each
-/// record goes through `lane`, the host's bounded write-behind lane, to the store's v3 `record_put`
-/// slot under the journal schema. The chain the store kept is always READ BACK
-/// first and the journal resumes it, so the audit records, the dated rate-card history and the
-/// amendment journal are what they were before the restart. `data_dir` never selects a local
-/// journal or keyset cache.
-///
-/// No money is opened here. The ledger is the store's usage and metering rows, the rows 1.5.5 left
-/// included, read as they are; there is no second book to seal opening balances into.
-///
-/// # Errors
-///
-/// The Store chain could not be read or verified, or the deployment keyset could not be bound.
 pub fn compose_book(
     lane: super::durability::JournalLane,
     data_dir: Option<std::path::PathBuf>,
@@ -1522,8 +1254,7 @@ pub fn compose_book(
         Some(&crate::root::kernel::ROOT_CARD),
     )
     .map_err(|e| format!("the boot journal could not be opened: {e}"))?;
-    // A corrupt journal segment was already logged and counted when the journal was built; this
-    // puts the durable record of it on the chain. A failed append is logged, never a refusal to boot.
+
     if let Err(lost) =
         durability.journal_quarantines(token, busbar_contract::caps::StepName::Meter, now)
     {
@@ -1532,9 +1263,7 @@ pub fn compose_book(
             "the journal could not record the quarantine boot recovery made"
         );
     }
-    // THE DEPLOYMENT KEYSET (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling
-    // 2026-09-26), the key the audit chain signs with. The Store keeps it for every boot and node;
-    // the chain seals its fingerprint. A legacy data_dir must not select a filesystem cache.
+
     super::keyset::bind(
         &mut durability,
         None,
@@ -1546,25 +1275,6 @@ pub fn compose_book(
     Ok(durability)
 }
 
-/// STAGE 4, BOOK (`BUSBAR-1.6.0.md` §3, the stage table: "open the store, replay the WAL, seal the
-/// opening, bind the keyset — at boot only"): THE PROCESS'S ONE BOOK, opened over the deployment's
-/// configured store with its balances sealed. Boot calls it once. Reload runs stages 1–3 and 5 and
-/// never Book (`BUSBAR-1.6.0.md` §3, and its round-2 ruling "Book stage and store are BOOT-ONLY"): a rebuilt
-/// generation carries the store it was handed, so a reload neither reopens the store nor seals a
-/// second opening.
-///
-/// The book's journal is kept by the configured store, `store` by name: its records go to the store's
-/// v3 record slots and every boot reads them back. A legacy data directory does not select a
-/// local journal, identity file, or keyset cache.
-///
-/// A configuration names its store (Q-STORE = (B), Appendix B 2026-09-27), so a boot that resolved
-/// none refuses; and a store that does not offer the record slots cannot keep a journal, so the
-/// boot refuses that too, naming the store and the slots.
-///
-/// # Errors
-///
-/// No store resolved, the store offers no record slots, its lane could not start, or
-/// [`compose_book`] refused.
 pub fn book(
     app: &busbar_kernel::state::App,
     store: &str,
@@ -1583,48 +1293,33 @@ pub fn book(
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    // The Store registry owns identity for every configuration. The host lease lets a restart
-    // resume its chain while two live processes never write under one identity. A legacy local
-    // node-id must not choose a different identity from the chain we now resume in the Store.
+
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let host = super::durability::host_identity();
     let calls = lane.calls();
     let taken = super::durability::take_node(calls.as_ref(), &host)
         .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
-    // THE FIRST-PARTY ANTI-DOWNGRADE FLOOR, held in the store for this host: the scan ran before
-    // the store opened, so a dropped-in first-party plugin below the mark the store keeps refuses
-    // the boot here, and the marks rise to what loaded.
+
     super::durability::hold_plugin_floor(
         calls.as_ref(),
         &host,
         app.hook_env.registry.as_ref(),
         &app.plugins_cfg.first_party_floors,
     )?;
-    // The lease is held on the lane to the store it is held in, the lane this book keeps: its
-    // checkpoint flush tick refreshes it and the clean shutdown releases it.
+
     if let Some(lease) = taken.lease {
         lane.hold_lease(lease);
     }
     let node = taken.id;
-    // THE RATE-CARD HISTORY IS KEPT IN THE STORE (MONEY-DESIGN section 3a): the book's rebuild loads it
-    // from `busbar.card.v1` under this node's durable id and migrates journalled cards into it.
+
     super::kernel::ROOT_CARD.keep_in_store(calls.clone(), node);
     let token = super::kernel::new_kernel().durability_token();
     let mut durability = compose_book(lane, data_dir, node, now, &token)?;
-    // The node amendment journal — the one the boot generation carries — is rebuilt from the chain
-    // before anything can seal onto it, so every stored content access survives the restart.
-    // A chain that will not read back refuses the boot
-    // here as it would have at the build.
+
     durability.restore_amendments(&app.amendments, &token)?;
-    // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the chain's operator breaks, read as
-    // deliberate.
+
     super::durability::report_operator_breaks(&durability);
-    // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
-    // material derives it from the deployment keyset just bound, so no verified principal is lent
-    // an empty reference and two principals never share one. A node with neither keeps this
-    // boot's random key, so its references differ from every other node's and from its own after
-    // a restart: a deployment that meant to bind a keyset reads that here. DEBUG, not INFO: the
-    // INFO+ boot lines are pinned by `tests/boot_lines_neutrality.rs`.
+
     if let Some(material) = durability
         .record
         .derived_secret(super::keyset::CALLER_REF_MATERIAL)
@@ -1638,10 +1333,9 @@ pub fn book(
         );
     }
     let durability = Arc::new(std::sync::Mutex::new(durability));
-    // Every amendment sealed from here on goes on the book it was rebuilt from.
+
     super::durability::bind_amendments(&durability, &app.amendments);
-    // The disaster-recovery verbs reach this book's journal and the store it is shipped to: one
-    // store behind the node, not one per seam (row 113, ruling (B); row 187).
+
     let verb_store = super::durability::node_verb_store(
         Arc::clone(&durability),
         super::kernel::new_kernel().durability_token(),
@@ -1653,7 +1347,6 @@ pub fn book(
     })
 }
 
-/// The boot's refusal of a store that offers no record slots: it cannot keep the journal.
 #[must_use]
 pub fn no_record_slots(store: &str) -> String {
     format!(

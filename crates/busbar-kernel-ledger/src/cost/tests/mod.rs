@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The pricing law under test.
-//!
-//! The three files below split by clause: rates and the pin, the stored posting and the tier, and
-//! the read-time derivation. The identity file is the one that ties the two readers together — the
-//! older release's derivation at a pinned card against the sum of the stored nano-units.
 
 use busbar_contract::caps::step::MeterClassId;
 use busbar_contract::caps::{QuantitySource, UsageLine};
@@ -13,7 +9,7 @@ use busbar_contract::caps::{QuantitySource, UsageLine};
 use crate::cost::{LaneClass, RateCard};
 
 /// A nano-unit total in whole MINOR units through the CHECKED projection (item 28): the one money
-/// type, which refuses a figure the served type cannot hold rather than pinning it at a ceiling.
+
 pub(crate) fn minor_nanos(nanos: u128) -> Result<i64, crate::cost::MoneyError> {
     crate::cost::Money::of_nanos(nanos).and_then(crate::cost::Money::minor_i64)
 }
@@ -52,7 +48,7 @@ pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
 }
 
 /// A card over one lane, priced in micro-units per token for the two reserved classes the older
-/// release's tests used.
+
 pub(crate) fn card(
     lane: &'static str,
     input_micro: f64,

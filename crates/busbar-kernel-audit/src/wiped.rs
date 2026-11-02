@@ -2,17 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE WIPED HMAC-SHA256: an HMAC whose every key-derived byte is zeroised before it returns.
-//!
-//! [`crate::sign::AuditSigningKey::derived_secret`] keys an HMAC with the audit seed. `ring`'s
-//! `hmac::Key` pads that key into a buffer it never clears and keeps the inner and outer block
-//! states in the key value, which is dropped unwiped; those states are enough to compute the HMAC
-//! under the seed for any label. THE DESIGN §6 (`BUSBAR-1.6.0.md` l.871, "auth material is
-//! zeroised") takes precedence over the one-crypto-backend rule for this one primitive, so the HMAC
-//! here is FIPS 198-1 over a FIPS 180-4 SHA-256 whose state, message schedule and block buffers are
-//! all wiped: the padded key, the inner and outer pads, the chaining state after each block and the
-//! inner digest.
-//!
-//! Nothing else in the workspace may hash with it: it exists for the seed-keyed derivation alone.
 
 use zeroize::Zeroize as _;
 
@@ -92,7 +81,7 @@ impl Sha256 {
 }
 
 /// One SHA-256 compression of `block` into `state` (FIPS 180-4 §6.2.2). The message schedule and
-/// the working variables are wiped before it returns.
+
 fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
     let mut w = [0u32; 64];
     for (i, chunk) in block.as_chunks::<4>().0.iter().enumerate() {
@@ -129,11 +118,7 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
 }
 
 /// HMAC-SHA256 of `message` under `key` (FIPS 198-1), with every key-derived byte wiped before it
-/// returns. `key` is at most one block: the one caller keys with a 32-byte seed.
-///
-/// # Panics
-///
-/// `key` is longer than 64 bytes, which no caller of this module passes.
+
 pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     assert!(
         key.len() <= BLOCK,
@@ -149,7 +134,7 @@ pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     inner.update(&pad);
     inner.update(message);
     inner.finish(&mut inner_digest);
-    // The outer pad from the inner one: 0x36 ^ 0x5c, so the key itself is never re-copied.
+
     for b in &mut pad {
         *b ^= 0x36 ^ 0x5c;
     }

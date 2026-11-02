@@ -14,56 +14,27 @@
 // for the composition root's one write into each axis: each linked crate contributes its own
 // declarations here, under its own Cargo feature, and nowhere else.
 
-// busbar contains ZERO `unsafe` code; enforce that as a compile-time guarantee so any future PR that
-// introduces an `unsafe` block fails to build rather than slipping in unreviewed.
 #![forbid(unsafe_code)]
 
-// Global allocator: jemalloc. The request hot path allocates and frees the request body a few times
-// per request (raw bytes → parsed JSON → re-serialized outbound), so RSS under load tracks
-// (peak concurrency × payload size). glibc's allocator almost never returns freed pages to the OS,
-// so after a big-payload burst the process stays pinned at its peak forever — memory reads as a
-// ratchet even though the live set has collapsed. jemalloc plus a background purge thread returns
-// dirty/muzzy pages after a short decay, so busbar PLATEAUS under sustained load and falls back to
-// idle when the load subsides. `#[global_allocator]` on a static needs no `unsafe`; the background
-// purge thread is enabled at startup in `main()` via a safe runtime call (`tikv_jemalloc_ctl::
-// background_thread`), so operators get it with zero configuration. NOT on windows-msvc: tikv-jemalloc-sys's
-// C build does not compile under native `cl.exe`, so MSVC (a shipped release target + CI gate) falls back
-// to the system allocator — the dep is target-gated in Cargo.toml and these two sites match.
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-// The engine. Everything below composes busbar-core; the module imports keep the boot code's
-// paths reading the way they did when these modules were this crate's own.
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 
-// `DEFAULT_CONFIG_PATH` and `ENV_PROVIDERS` left with the flag surface (`root::cli`): they are the
-// config/providers path precedence the scanners there answer for boot AND for every command.
 use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
 use busbar_kernel::{load_config_from_disk, LoadedConfig, ENV_CONFIG};
-// The root's own binds listen through the connector's listener (the one listener source).
+
 #[cfg(unix)]
 use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
 use busbar_core_connector::listen::{AcceptLimits, Listening};
-// Read only by the jemalloc idle-purge fallback below, which is itself
-// `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
-// unconditionally is an unused-import error there under `-D warnings`.
+
 #[cfg(not(target_env = "msvc"))]
 use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 
-/// THE BUILD-PROVENANCE STAMP, as one machine-parseable line. Every field is baked at compile time
-/// by `build.rs` and, for the production executable, the final rustc receipt wrapper. The wrapper
-/// records resolved LTO/codegen arguments and source identity; plain builds report an unverified
-/// receipt. `debug-assertions` comes from `cfg!(debug_assertions)` in this binary's own profile.
-///
-/// This is the piece that would have PREVENTED the ~20% "regression" incident: a non-PGO or
-/// non-release build self-reports `pgo=false` / `profile=debug` instead of masquerading as a code
-/// regression. The optimized release build (`scripts/pgo-build.sh`) asserts these values through
-/// `scripts/build-provenance-gate.sh`; no CI check runs that gate. Format is `key=value`
-/// space-separated, stable for grep/awk.
 pub(crate) fn build_info_line() -> String {
     format!(
         "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \
@@ -94,37 +65,21 @@ pub(crate) fn build_info_line() -> String {
     )
 }
 
-/// Print a clean startup error to stderr and exit non-zero. Used for misconfiguration and other
-/// boot-time failures so the operator sees a one-line message instead of a Rust panic backtrace.
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("[error] {}: {msg}", diagnostics::BOOT_FATAL_ERROR.banner());
     std::process::exit(1);
 }
 
-/// Operator option that quarantines persisted configuration overlays at boot.
 const OPTION_SAFE_MODE: &str = "--safe-mode";
 
-/// Whether `--safe-mode` was passed: quarantines the persisted overlay entirely (both
-/// `validate_config_command` and `run()` read this the same way, so it's factored once here rather
-/// than duplicated). Takes the arg iterator as a parameter (instead of calling `std::env::args()`
-/// itself) so it's unit-testable against a synthetic arg list.
 fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == OPTION_SAFE_MODE)
 }
 
-/// Whether a flag a plane declares was passed (its `Flags:` rows, `root::cli::help_rows`), the plane
-/// compiled in or dropped into `plugins.dir` alike (BUSBAR-1.6.0.md l.2179, Part 2 #2: the dropped-in
-/// planes are discovered by `register_planes`, before anything reads the command line): boot
-/// everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
-/// stdin/stdout (see `root::serve::lines`). The root names no flag of its own here: the plane states
-/// its spelling, and the root reads it off the plane's declared rows. A scanner like
-/// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
-/// serves rather than replacing the run.
 fn line_flag_passed(args: impl Iterator<Item = String>) -> bool {
     line_serve_requested(&root::cli::help_rows(), args)
 }
 
-/// [`line_flag_passed`] over the `Flags:` rows `planes` declare.
 fn line_serve_requested(
     planes: &[&[root::linked::CliHelpRow]],
     mut args: impl Iterator<Item = String>,
@@ -132,14 +87,8 @@ fn line_serve_requested(
     args.any(|a| root::cli::is_plane_flag(planes, &a))
 }
 
-/// Cap on the resolved data-plane worker count ([`resolve_worker_threads`] applies it to every
-/// source): each worker is an OS thread with its own runtime, listener and allocator arena, so an
-/// operator typo (`worker_threads: 10000`) is held to a count a host can carry.
 const MAX_WORKER_THREADS: usize = 128;
 
-/// Resolve a worker-thread-count env var, warning on an EXPLICITLY-SET but invalid value rather than
-/// silently ignoring it — an unset var is not warned (the normal default path). Module-level (not
-/// nested in `main()`) so it's unit-testable; see `tests/tests.rs`.
 #[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
     let mut warnings = Vec::new();
@@ -148,7 +97,6 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
     n
 }
 
-/// [`worker_threads_from_env`], its warning noted rather than printed.
 fn worker_threads_from_env_noting(name: &str, warnings: &mut Vec<String>) -> Option<usize> {
     match std::env::var(name) {
         Ok(v) => match v.trim().parse::<usize>() {
@@ -162,15 +110,10 @@ fn worker_threads_from_env_noting(name: &str, warnings: &mut Vec<String>) -> Opt
                 None
             }
         },
-        Err(_) => None, // unset — normal default path, no warning
+        Err(_) => None,
     }
 }
 
-/// Best-effort early read of `advanced.worker_threads` from config.yaml (1.5.3). Runs in `main()`
-/// BEFORE the tokio runtime is built, so it re-reads the config file (the authoritative load, with
-/// full error reporting, happens later in `run()`). A missing/unparseable config yields `None` — the
-/// caller falls through to the standard worker-thread default, and `run()` surfaces the real error.
-/// Lenient env interpolation so an unset `${VAR}` elsewhere in the file does not abort this probe.
 #[cfg(test)]
 fn worker_threads_from_config() -> Option<usize> {
     let mut warnings = Vec::new();
@@ -179,15 +122,13 @@ fn worker_threads_from_config() -> Option<usize> {
     n
 }
 
-/// [`worker_threads_from_config`], its warning noted rather than printed.
 fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize> {
     let config_path = root::cli::resolve_config_path(root::cli::config_path_flag().as_deref());
     let raw = std::fs::read_to_string(&config_path).ok()?;
     let mut unset = Vec::new();
     let interpolated =
         config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
-    // Only `advanced.worker_threads` is read: this runs as `main()`'s first act (the dispatcher is
-    // sized by it), before any plane is registered, so it must not parse the plane-owned sections.
+
     let doc: serde_yaml::Value = serde_yaml::from_str(&interpolated).ok()?;
     let worker_threads = match doc.get("advanced").and_then(|a| a.get("worker_threads")) {
         None | Some(serde_yaml::Value::Null) => None,
@@ -196,9 +137,6 @@ fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize
     match validate_worker_threads_config(worker_threads) {
         Ok(v) => v,
         Err(msg) => {
-            // Consistency with `worker_threads_from_env`, which WARNS on an invalid value rather than
-            // silently dropping it. Pre-tracing (`main()` runs this before the subscriber is built), so
-            // it goes to STDERR like the other boot diagnostics.
             warnings.push(format!(
                 "[warn] {}: {msg}",
                 diagnostics::WORKER_THREADS_INVALID.banner()
@@ -208,12 +146,6 @@ fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize
     }
 }
 
-/// THE DATA-PLANE WORKER COUNT, resolved once and purely: the deprecated `BUSBAR_WORKER_THREADS`
-/// (deprecation-warned when it parses) wins when set; else `advanced.worker_threads` in config.yaml
-/// (a best-effort early parse); else `TOKIO_WORKER_THREADS`; else one per effective core; capped at
-/// [`MAX_WORKER_THREADS`]. The warnings come back in the order they arise, for the caller to print
-/// where boot always printed them. `main()` resolves it first, so the process's one dispatcher is
-/// built full-size before any plugin binds.
 fn resolve_worker_threads() -> (usize, Vec<String>) {
     let mut warnings = Vec::new();
     let n = worker_threads_from_env_noting("BUSBAR_WORKER_THREADS", &mut warnings)
@@ -227,8 +159,6 @@ fn resolve_worker_threads() -> (usize, Vec<String>) {
         .or_else(|| worker_threads_from_config_noting(&mut warnings))
         .or_else(|| worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut warnings))
         .unwrap_or_else(|| {
-            // Fall back to 1 (not 2) when core detection fails, matching v1.3.0's `#[tokio::main]`
-            // behavior exactly. Only reachable on an exotic host where `available_parallelism` errors.
             std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1)
@@ -237,11 +167,6 @@ fn resolve_worker_threads() -> (usize, Vec<String>) {
     (n, warnings)
 }
 
-/// Validate a config-supplied `advanced.worker_threads`. `Some(0)` is invalid — a Tokio runtime needs
-/// at least one worker — and yields `Err(message)` so the caller can WARN consistently with
-/// `worker_threads_from_env`'s invalid-value diagnostic instead of silently dropping the operator's
-/// explicit `advanced.worker_threads: 0`. Every other value (a positive count, or `None`/unset) passes
-/// through unchanged. Module-level (not inlined) so it is unit-testable; see `tests/tests.rs`.
 fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, String> {
     match wt {
         Some(0) => Err(
@@ -253,166 +178,79 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
     }
 }
 
-// THE LINKED TABLES. `build.rs` emits them from `Cargo.toml` — `[package.metadata.busbar.linked]`
-// (cargo feature → plugin crate), `linked-axes` (crate → the registration axes it fills),
-// `linked-entry` and `root-units` (cargo feature → root module) — as `extern crate <crate> as _;` per
-// ENABLED feature, `LINKED` (one table per registration axis over each linked crate's `linked` entry
-// module, in manifest order), a `linked_*` cfg per root-bound seam an enabled entry drives, and
-// `ROOT_UNITS` (each enabled root module's `ROOT_UNIT`). This file names no plugin: which plugins a
-// build carries is data in the manifest, and a build with a feature off has no row for it, so every
-// axis below gets nothing from it — the deletion build (`--no-default-features`, or default minus one
-// feature) drops the crate edge and the registration together, exactly as the feature-gated line per
-// crate this replaced did.
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
-// `LINKED_HOOK_NAMES`: each linked hook row's name as the admin surface prints it (the manifest's
-// `linked-name` rows), carried on the root's install record (`root::linked::register_stores`) so the
-// admin crate names no hook plugin.
+
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
-/// Register the remaining protocol and root-unit seams. Protocol implementation declarations are
-/// test fixtures only; shipping planes communicate through their memory-ABI doors.
 fn register_protocols() {
     root::linked::register_protocols(&LINKED, ROOT_UNITS);
 }
 
-/// REGISTER THE PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane_driver::registry::install_planes`), over the plane doors,
-/// linked and dropped into the configured `plugins.dir`, discovered first
-/// (`root::boot::discover_planes`) and folded by one fold.
-/// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
-/// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
-/// every root unit's seal.
 fn register_planes() {
-    // The root migration table, before the first configuration read (the dropped-plugin scan below
-    // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
     root::migration_table::install();
-    // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
-    // auth axis, before anything resolves one.
+
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
         root::auth_bindings::operator_words(),
     );
-    // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
-    // modules the export axis just below — the same entries a linked plugin registers through.
+
     let dropped = root::boot::dropped_from_config(&LINKED);
-    // The outbound styles a provider's `auth:` may name: every linked and dropped-in auth row's,
-    // read off their Statements before the configuration is first parsed (arch-audit u29 F1).
+
     busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles());
     root::boot::discover_planes(&LINKED, dropped);
     root::linked::register_planes();
     root::linked::register_exports(dropped);
-    // The settings each plugin's schema declares public, before any configuration is read: every
-    // other plugin setting is sensitive (`busbar_kernel::config::settings_public`).
+
     root::settings_public::install(&LINKED, dropped);
 
-    // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
-    // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
-    // `install_planes` immediately above for the same reason: one composition root, one
-    // registration, before the first `App` is built. Its document fetch rides the one connector,
-    // read when a fetch needs it (`root::connector::AuthServerConns`).
     busbar_core_oauth2::install::<root::connector::AuthServerConns>();
-    // Register the admin API service's mount seam (`busbar_kernel::admin::seam`) — the composition
-    // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-core-oauth2`
-    // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
-    // through the seam whenever this (mandatory) sibling is linked, which is every real build.
+
     busbar_core_admin::install();
 
-    // THE ROOT UNITS' SEALS. Each reads what its unit composes against the axes installed above and
-    // against nothing else — it binds no listener, opens no store, reads no configuration and writes
-    // no line on success. A refusal is a boot refusal for the same reason a claim overlap is: a
-    // composition that disagrees with itself must not bind a listener, and finding that out on the
-    // first request would be finding it out from a customer.
     root::linked::seal(ROOT_UNITS);
 }
 
-/// FOLD THE LINKED PLANES' DIAGNOSTICS — the composition root's one fold of the diagnostics axis
-/// (`root::linked::register_diagnostics`), lent by value (`busbar_kernel::diagnostics::Catalogue`).
-/// The neutral `REGISTRY ∪ folded` catalogue makes these codes resolve through `by_code` and land in
-/// a rendered catalog. Folded BEFORE any reader is lent it; a build with a plane compiled out
-/// contributes nothing.
 fn register_diagnostics() -> busbar_kernel::diagnostics::Catalogue {
     root::linked::register_diagnostics(&LINKED)
 }
 
-/// The data-plane worker count and its warnings, resolved once at the top of `main()`.
 static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
     std::sync::LazyLock::new(resolve_worker_threads);
 
 fn main() {
-    // THE `log` BRIDGE, before anything can run a compiled-in plugin's door: that door's call
-    // capture installs the same `LogTracer` in this image on first use, so the host takes the one
-    // `log` logger slot first (`observability::init_log_bridge`). The subscriber goes up in `run()`.
     if let Err(e) = busbar_kernel::observability::init_log_bridge() {
         eprintln!("busbar: the `log` bridge is not installed: {e}");
     }
-    // THE PROCESS'S ONE DISPATCHER, first: full-size (one plugin worker per data worker) before any
-    // plugin of any kind binds — the planes and transports registered just below included — and
-    // handed to the transport doors (`root::doors`), which bind on it.
-    // It serves the kernel's host services through `LateServices`, installed once the config is
-    // composed (`root::serve::compose`, in `run()`).
+
     let late_services = root::serve::LateServices::new();
     root::boot::install_native_load_guard().unwrap_or_else(|error| die(error));
-    // THE HANDLE KEY (#74), drawn before the dispatcher exists: a process whose OS random source
-    // cannot answer refuses to boot rather than mint plugin handles under a weaker key.
+
     if let Err(e) = root::loader::dispatch::handle::arm() {
         eprintln!("busbar: {e}");
         std::process::exit(1);
     }
     let dispatcher = root::dispatch::boot(WORKERS.0, &late_services);
     root::doors::install_dispatcher(dispatcher);
-    // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
-    // set. This is the composition root's whole knowledge of the protocol crates: one line per
-    // linked dialect, handed to the registry seam before anything reads it. A dialect absent from
-    // the build (its feature off) is simply never registered, and a config that names it gets the
-    // unknown-protocol refusal — the deletion test's runtime half (scripts/proto-deletion-gate.sh).
+
     register_protocols();
-    // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
-    // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
-    // any reader — including the CLI flags — can run.
+
     register_planes();
-    // A linked transport row logs to its own plugin log file under the configured `plugins.logs`,
-    // read just above as `plugins.dir` was scanned (`root::boot::dropped_from_config`) and handed
-    // to the transport doors before any linked row binds.
+
     root::doors::install_plugin_logs(root::boot::plugin_logs());
-    // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
-    // lookup must see every linked plane's owned codes, so the catalogue is folded before any
-    // reader is lent it. Each linked entry contributes its owned diagnostics; a no-planes build
-    // folds nothing and the catalog is the neutral built-ins alone.
+
     let catalogue = register_diagnostics();
-    // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
-    // composes the transports a switched-over plane would serve through, and the http one carries
-    // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
-    // is built from has been read. It runs in `run()`, off the resolved limits, still before any
-    // listener is bound. Every axis above is installed by then, which is the ordering the seal
-    // needed from this slot in the first place.
-    // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
-    // and `--version` / `--validate` should never spin up a thread pool.
+
     if let Some(code) = root::cli::handle_cli_flags() {
         std::process::exit(code);
     }
-    // Enable jemalloc's background purge thread: freed dirty/muzzy pages are returned to the OS after
-    // a short idle decay, so RSS falls back to idle after a big-payload burst instead of ratcheting at
-    // the peak (the glibc behavior this replaces). Safe wrapper — no `unsafe`. Skipped on windows-msvc,
-    // which uses the system allocator (jemalloc dep is target-gated off msvc; see above).
-    //
-    // Best-effort and VERIFIED at runtime rather than assumed: some platforms/builds lack background-
-    // thread support (macOS keeps only foreground purge; jemalloc also flags it as potentially
-    // unavailable on musl — and the SHIPPED release is static musl). Read the flag back after writing and
-    // report it (at info — it is expected on macOS/musl, not a fault) if it did not enable, so the
-    // plateau-then-fall-back-to-idle behavior is an observed fact, not a silent assumption. Even when the background thread is absent, jemalloc's FOREGROUND decay purge
-    // still bounds RSS under load; only the proactive purge during full idle is lost.
-    //
-    // This runs in `main()` BEFORE the tracing subscriber is installed (that happens in `run()` after the
-    // runtime is built), so the diagnostic goes to STDERR via `eprintln!` — the same channel the other
-    // pre-subscriber boot messages use — rather than `tracing`, which would silently drop it. Silent on
-    // success; only the problem cases (did-not-enable / error) print.
+
     #[cfg(not(target_env = "msvc"))]
     {
         use tikv_jemalloc_ctl::background_thread;
         let enabled = match background_thread::write(true).and_then(|()| background_thread::read())
         {
-            Ok(true) => true, // enabled — RSS falls back to idle; nothing to report
+            Ok(true) => true,
             Ok(false) => {
                 eprintln!(
                     "[warn] jemalloc background purge thread did NOT enable on this target (no \
@@ -429,71 +267,25 @@ fn main() {
                 false
             }
         };
-        // WITHOUT background threads (static-musl release builds — jemalloc compiles them out under
-        // musl — and macOS dev builds), jemalloc's decay purge is FOREGROUND-only: it advances only
-        // on allocator activity. A fully idle process therefore never purges, so after a big-payload
-        // burst RSS ratchets at (roughly) the burst's dirty-page peak forever — observed as
-        // idle 8.7 MiB → burst 322 MiB → "idle" 56 MiB that never comes back down. The fallback
-        // below restores the return-to-idle property with ZERO unsafe code and ZERO hot-path cost.
+
         if !enabled {
             spawn_jemalloc_idle_purge_fallback();
         }
     }
-    // BUSBAR_PROFILE set → periodically dump the per-stage breakdown to stderr (every 20 s), so a
-    // live benchmark run reports stage timings without the in-process test driver. Measurement-only
-    // opt-in, absent from any production deployment; zero cost when the env is unset.
+
     if busbar_kernel::profile::enabled() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(20));
             busbar_kernel::profile::dump();
         });
     }
-    // Worker-thread count. `advanced.worker_threads` in config.yaml is the operator override; the
-    // DEFAULT is one worker per available core (`available_parallelism`, which respects CPU affinity,
-    // the cgroup cpuset and, on Linux, the cgroup CPU quota). Uncapped-by-default is what lets
-    // throughput scale with cores: v1.3.1–1.3.3 capped the pool
-    // at `min(cores, 4)`, which pinned the data plane to ~4 cores and made throughput plateau no matter
-    // how big the box (v1.3.0 itself was uncapped via `#[tokio::main]`; 1.4.0 restores that default
-    // explicitly). The request path is CPU-bound on JSON translate, so it genuinely uses the cores.
-    // Footprint-sensitive sidecars (the ~5 MB-idle case) should set `advanced.worker_threads: 1` (or 2):
-    // each worker carries a stack and its own allocator arena, so idle RSS grows with the count. Scale
-    // up by default, tune down (or to your CPU quota) deliberately.
-    // Resolve the worker-thread override, warning on an EXPLICITLY-SET but invalid value rather than
-    // silently ignoring it. v1.3.0 ran under `#[tokio::main]`, which fail-fast panicked on a bad
-    // `TOKIO_WORKER_THREADS`; 1.4.0 builds the runtime explicitly and would otherwise fall through to
-    // all-cores on a `0`/garbage value — a silent footprint surprise. An UNSET var is not warned (it is
-    // the normal default path). `TOKIO_WORKER_THREADS` is read as a back-compat fallback so an operator
-    // who pinned it on 1.3.0 keeps the same pool size. `eprintln!` because this runs
-    // before the tracing subscriber is installed.
-    // The resolved count is capped at [`MAX_WORKER_THREADS`] (see its doc for why).
-    // `advanced.worker_threads` in config.yaml is the home for this knob. The deprecated
-    // `BUSBAR_WORKER_THREADS` env var still works (deprecation-warned when it parses) and wins when
-    // set, so an existing pin is honored across the upgrade; else config.yaml; else the standard
-    // `TOKIO_WORKER_THREADS`; else one-per-core. The config read is a best-effort early parse (the
-    // real load + error reporting happens in `run()` after the runtime is up).
-    // Resolved at the top of `main()` ([`resolve_worker_threads`]) so the process's one dispatcher
-    // was built full-size before any plugin bound; its warnings print here, where they always did.
+
     let (worker_threads, warnings) = &*WORKERS;
     for w in warnings {
         eprintln!("{w}");
     }
     let worker_threads = *worker_threads;
-    // RUNTIME TOPOLOGY (1.6.0). ONE design at every core count: the data plane runs on N pinned
-    // single-threaded (`current_thread`) runtimes — one SO_REUSEPORT listener each, N = the
-    // `worker_threads` resolution above (config knob else env else effective cores, cgroup-quota-
-    // aware via `available_parallelism`) — and THIS small `current_thread` CONTROL runtime homes the
-    // admin plane and every singleton background task. There is no mode and no fallback: a 1-core
-    // box is the same topology with N = 1 (one data worker + the control thread — the same two
-    // threads the old shape effectively ran there). `enable_all` keeps a blocking pool so
-    // `spawn_blocking` keeps a home. `worker_threads` is deliberately NOT a control-runtime
-    // dimension — it is the data-plane worker count, exactly what the knob has always meant.
-    //
-    // Non-unix has no SO_REUSEPORT (no kernel fan-out across per-core listeners), so those builds
-    // keep the classic single work-stealing runtime — a compile-time platform shape, not a
-    // configuration: no knob selects it and no unix deployment can end up on it.
-    // Publish the data-plane worker count to core BEFORE anything builds: the egress client
-    // shards (and later per-worker state stripes) size themselves to it. A process-topology fact,
-    // exactly like the runtimes themselves — set once here, immutable, no config surface.
+
     busbar_kernel::topology::set_data_workers(worker_threads);
     let control_work = ControlWork::new();
     control_work.register();
@@ -542,7 +334,6 @@ impl ControlWork {
     }
 
     async fn drain(&self) {
-        // EOF on the line carrier also retires accepted work, without requiring another signal.
         let _ = self.shutdown_tx.send(true);
         let _ = tokio::time::timeout(
             busbar_kernel::detached::DETACHED_DRAIN_GRACE,
@@ -552,9 +343,6 @@ impl ControlWork {
     }
 }
 
-/// One destination seam throughout bootstrap: base policy opens the anchor, then the complete
-/// recovered boot policy replaces it before effective plugins open. Runtime commits retain the
-/// guard's established metadata-only update semantics.
 struct BootstrapDestJudge(std::sync::RwLock<Arc<dyn busbar_kernel::host_services::DestJudge>>);
 
 impl BootstrapDestJudge {
@@ -649,20 +437,10 @@ async fn run(
     catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
 ) {
-    // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`), resolving a
-    // plugin's reported codes against the catalogue folded above.
     root::observe::install(catalogue);
-    // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
-    // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
-    // and nothing retained. Nothing may install a recorder before that decision is read.
 
-    // Locate the two config files (env-overridable paths) and run the shared disk-load pipeline —
-    // the SAME pipeline `POST /api/v1/admin/config/reload` re-runs at runtime.
     let cli_config = root::cli::config_path_flag();
-    // 1.6.0 effective-source notice: only when the `--config` flag actually OVERRIDES a DIFFERENT
-    // `BUSBAR_CONFIG` the operator also set (never on a bare flag / equal values), so a config value
-    // that was ignored is explained rather than silent. Pre-subscriber, so it goes to stderr like the
-    // other boot diagnostics.
+
     if let Some(notice) = root::cli::config_override_notice(
         cli_config.as_deref(),
         std::env::var(ENV_CONFIG).ok().as_deref(),
@@ -691,9 +469,6 @@ async fn run(
         unset_env_vars: _,
     } = loaded;
 
-    // The operator's base Store is the permanent overlay anchor. Bootstrap only its network
-    // dependencies before recovery; no effective plane/export/hook is opened until security has
-    // been recovered. The connector is finalized from the recovered configuration below.
     let base_cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errors| die(format!("base config errors: {}", errors.join("; "))));
     config_validate::validate(&base_cfg)
@@ -748,10 +523,6 @@ async fn run(
             .flatten()
     };
 
-    // 1.6.0 effective-source notice for the PROVIDERS catalog: the confusing case is a config.yaml
-    // that declares `providers_file:` while the operator ALSO passed `--providers` — the flag wins, so
-    // name both rather than let the config value silently lose. Only fires when both are set (and
-    // differ); a bare `--providers` with no `providers_file:` in config is unambiguous and silent.
     if let Some(notice) = root::cli::providers_override_notice(
         root::cli::value_flag(std::env::args().skip(1), "--providers", None).as_deref(),
         deploy.providers_file(),
@@ -759,33 +530,14 @@ async fn run(
         eprintln!("[info] {notice}");
     }
 
-    // 1.5.0 full-config coverage: apply the overlay's `root` section (API-set single-value config —
-    // listen/tls/rate_card/store/security/limits/…) onto the base `DeployCfg` BEFORE `resolve`, so
-    // the limits projection + the exposed-admin-mTLS boot-guard re-derive over the merged shape. The
-    // hooks + groups overlay sections merge POST-resolve (below). `--safe-mode` clears `overlay_doc`,
-    // so the root overrides are quarantined too — the whole overlay is one on/off switch.
     if let Some(doc) = overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut deploy, doc);
     }
 
-    // The `advanced.response_headers:` toggles (BOTH default false), read here, at a BOOT-ONCE
-    // spot: `server_timing` is baked into router middleware state below (`build_split_routers_serving_doors`) and `route_policy` seeds a
-    // process-wide `OnceLock` (`proxy::configure_route_policy_headers`) neither of which a later
-    // config apply rebuilds — a live `PUT` is stored but restart-to-apply (see `reload_to_apply`).
     let response_headers_cfg = deploy.advanced.response_headers.clone();
-    // `x-busbar-route-policy` / `x-busbar-route-target` are a fingerprintable observable, same class
-    // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
-    // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
+
     busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
-    // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in scrape
-    // EXPORTER (its `export:` entry) — present ⇒ install the recorder (COLLECTION) with the operator's
-    // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the
-    // process. Called before the App/router is built so the `/metrics` plugin route (DISTRIBUTION, via
-    // the built-in exporter) sees a settled recorder decision.
-    // 1.5.3: `export:` is a NAMED-DEFINITION map, so the typed per-module projection is lowered here
-    // (and reused for `export::configure` below). Any error in it — unknown module, bad settings,
-    // duplicate singleton — is reported and FATAL a few lines down in `config::resolve`, which runs
-    // the same lowering; discarding the error list here just avoids reporting it twice.
+
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
     snapshot::configure(
         resolved_export
@@ -793,14 +545,11 @@ async fn run(
             .as_ref()
             .map(|p| Duration::from_secs(p.buffer_seconds)),
     );
-    // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
+
     let plugins_cfg = deploy.plugins.clone();
     root::boot::admit_recovered_plugins(&plugins_cfg)
         .unwrap_or_else(|error| die(format!("Store plugin-floor admission: {error}")));
 
-    // BOOT-TIME dead-pid sweep: remove any orphaned plugin staging directory a CRASHED prior busbar
-    // left behind (a clean shutdown removes its own; a dead pid's files are unlocked). Runs even
-    // when plugins are disabled — the orphan may predate a config change.
     let swept = root::loader::sweep_dead_staging();
     if swept > 0 {
         eprintln!(
@@ -808,20 +557,12 @@ async fn run(
         );
     }
 
-    // Install the tracing subscriber now (stderr fmt always; the `traces` record producer for the
-    // export sinks subscribed to it, the `otlp` module's among them) so all subsequent startup and
-    // request-path logging is captured.
-    // A plane's line-serve flag reserves stdout for the plane's channel, so its logs move to
-    // stderr — see `init_logging`'s `stdout_reserved`.
     if let Err(e) = busbar_kernel::observability::init_logging(line_flag_passed(std::env::args())) {
         eprintln!("busbar: tracing subscriber already initialized: {e}");
     }
 
-    // First line in the logs: which build is running. Operators need this to confirm a deploy /
-    // correlate logs to a release without shelling in to run `--version`.
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "busbar starting");
-    // 1.5.3 config-management posture (the boot invariant already held in `load_config_from_disk`):
-    // LOCKED ⇒ no overlay, mutations refused; MUTABLE ⇒ a writable overlay backend, mutations durable.
+
     if config_locked {
         tracing::info!(
             "config is LOCKED (config.locked: true): admin-API config mutations are refused; edit \
@@ -833,17 +574,12 @@ async fn run(
             "config is mutable; admin-API changes persist to the configured Store (restart durability follows that Store)"
         );
     }
-    // Stamp process start for the `GET /api/v1/admin/info` uptime read.
+
     busbar_core_admin::mark_start();
 
-    // Resolve deployment + definitions into resolved RootCfg (semantic validation runs inside
-    // build_app_from_config — the one construction path).
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
-    // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
-    // connection, built once here, before anything dials: the kernel's `dest.judge` asks it
-    // (composed below), and the connector dials by it. Its metadata lists are re-published at
-    // every config commit, this boot's own build included, through the root's rules that hold it.
+
     dest.replace(root::connector::dest_judge(&cfg));
     root::boot::note_provider_urls(
         cfg.providers
@@ -855,23 +591,14 @@ async fn run(
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     )
     .unwrap_or_else(|error| die(format!("effective connector boot configuration: {error}")));
-    // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
-    // boot, before any plugin is bound (`root::serve`).
-    // `records.secret` reads the App's governance through its swap handle, which exists once the App
-    // is built below; until then the read answers REFUSED (`root::credentials`).
-    // The BASE hook + group names (config-defined, pre-overlay): the admin API refuses to
-    // PUT-replace / DELETE one (edit config.yaml — the overlay can't durably shadow file config).
+
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
     let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
-    // Merge the persisted overlay (API-registered hooks + groups) onto the RESOLVED registry.
+
     if let Some(doc) = overlay_doc {
         config::overlay::merge_into(&mut cfg, doc);
     }
 
-    // Metadata-SSRF protection status (discoverability). When the nuclear `allow_all_metadata` is set
-    // the guard is OFF — that is a security-relevant degradation, so WARN. Otherwise report the count
-    // of blocked hosts (hardcoded denylist ∪ security.blocked_metadata_hosts) and point at the CLI
-    // flag that dumps the full list.
     if cfg.allow_all_metadata {
         tracing::warn!(
             diag = %diagnostics::METADATA_PROTECTION_DISABLED.banner(),
@@ -887,42 +614,17 @@ async fn run(
 
     let listen = cfg.listen.clone();
     let tls_cfg = cfg.tls.clone();
-    // The admin plane ALWAYS runs on its own listener (`admin_listen`, default loopback 127.0.0.1:8081)
-    // with its own optional TLS/mTLS — never on the data listener. The exposed-admin-requires-mTLS
-    // boot-guard has already run in `config::resolve`, so by here `admin_listen` is loopback, mTLS,
-    // or an explicit `admin_require_mtls: false` waiver.
+
     let admin_listen = cfg.admin_listen.clone();
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // THE MONEY THE ROOT-DRIVEN PLANE NODE PRICES WITH is not captured here and handed over once. It
-    // arrives through the engine's rate-apply seam, on the root's install record, raised by the ONE
-    // place a deployment's rates are resolved — which runs at boot AND on every live apply/reload. A
-    // reading taken here instead would be the boot's rates forever: the usage projection would
-    // reprice on an apply and this node's ledger would not, and the identity that says the two are
-    // one money would hold only until the operator changed a fee.
-    // THE COMPOSITION ROOT'S OWN SEAL, in the first slot where the values it composes exist: the
-    // limits are resolved (and the overlay merged onto them) one screen up, and no listener is bound
-    // for another few hundred lines. The transports it composes are built from THESE limits, the
-    // same `request_body_max_bytes` the line above hands the served door, so a plane's transport and
-    // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
-    // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
-    // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
-    // The resolved providers' URLs select the dropped-in transports the seal opens (Law 7).
+
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
-    // The transports dropped into `plugins.dir`, as the seal just loaded them: their offered auth
-    // points and upgrade lines join the linked rows' when the guest lists seal (compiled-in =
-    // dropped-in).
+
     let dropped_doors =
         root::boot::dropped_transports(&root::policy::client_settings(&cfg.limits)).doors;
-    // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
-    // transport door as a framer entry opened with the same settings the seal built the transports
-    // from, every dial judged by the one destination guard. Inbound listening and outbound egress
-    // both take it from `root::connector::the()`.
-    // The planes that state themselves through a door bind on the process's one dispatcher (built
-    // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
-    // one connector just built.
-    // Law 7: a plane binds only when the sections its composition reads are written.
+
     root::boot::load_door_planes(
         deploy
             .door_sections()
@@ -930,54 +632,32 @@ async fn run(
             .chain(root::door_steps::kernel_sections(&cfg).keys())
             .copied(),
     );
-    // THE EXPORT AXIS'S SINKS, opened once on the same dispatcher, each declaring its needs on the
-    // one connector just built — before the first app is built, so the routes they declare are in
-    // the boot route table (restart-to-apply, as every built-in PUSH sink is). A configured sink
-    // that will not open refuses the boot.
+
     export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
-    // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is armed BEFORE the
-    // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
-    // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
-    // at the moment it landed and none is ever rewritten. A build without those units runs none and
-    // is what it was, which is what the neutrality cells read.
+
     for step in ROOT_UNITS.iter().filter_map(|u| u.on_config) {
         step(&cfg.limits);
     }
-    // EACH LINKED PLUGIN'S PROVIDER, captured off the deployment's ORDINARY provider catalog before
-    // `cfg` moves into the build, and composed below once the resolver that turns a secret reference
-    // into a credential exists. A deployment that pins nothing captures nothing, so nothing about it
-    // changes.
+
     let composes: Vec<root::linked::Compose> = LINKED
         .compose
         .iter()
         .filter_map(|capture| capture(&cfg))
         .collect();
 
-    // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
-    // DESIGN §6 step 2), captured before `cfg` is consumed.
     let door_providers = root::door_steps::provider_routes(
         &cfg.providers,
         &config_validate::MetadataPosture::global(&cfg),
     );
-    // The kernel-owned sections a door plane's Statement may name beside its own (spec Part 1 §4),
-    // as the configuration resolved them, captured before `cfg` is consumed.
+
     let door_kernel_sections = root::door_steps::kernel_sections(&cfg);
-    // The model-serving pools the plane serving the `pools` map walks, with every bound the
-    // configuration states (`root::model_egress`).
+
     let door_model_pools = root::model_egress::ModelPools::of(&cfg);
-    // Each door plane's pools, by its section key: each door plane's section carries its own pools
-    // (DoorPools), captured before `cfg` is consumed.
+
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
-    // THE ROOT'S RULES every configuration is judged by before a generation is built from it
-    // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
-    // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
-    // planes name once the planes are composed (below), so an apply carrying one the boot would
-    // refuse is refused, its running generation untouched. They hold the destination guard, which
-    // hears every configuration commit through them.
     let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
-    // The plane doors the boot's configuration does not use, so the boot never loads them (Law 7):
-    // a running process refuses a first section of one (u67 BLOCK 2 item 2).
+
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_plan = Arc::new(root::serve::ListenerPlan::new(
         root::door_steps::listener_needs(&cfg).unwrap_or_else(|e| die(e)),
@@ -988,8 +668,6 @@ async fn run(
         .hold_listeners(Arc::clone(&listener_plan))
         .unwrap_or_else(|e| die(e));
 
-    // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
-    // kept in that store, and a store that cannot keep it is refused by name.
     let store_module = cfg
         .store
         .as_ref()
@@ -1002,19 +680,7 @@ async fn run(
     } else {
         None
     };
-    // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
-    // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
-    // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
-    // (that branch is gated on `prior.is_some()`) — the discarded closure is always `None`.
-    //
-    // blocking-ffi-lint: allow — BOOT. Two independent reasons, either sufficient: (1) `run()` is
-    // driven by `.block_on(run())` (this file, in `main()`), so it is polled on the MAIN thread, not
-    // on a Tokio worker — there is no worker to park; (2) this precedes the `tokio::join!` over
-    // `serve_listener` below, so neither listener has been bound, let alone is accepting.
-    //
-    // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
-    // the comment block that starts it and no further, so the session-credential capture that used to
-    // stand between the two silently ate this exemption and left the build itself flagged.
+
     let (boot_app, _boot_gov_rotate, boot_limits) =
         busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
@@ -1028,34 +694,18 @@ async fn run(
             boot_store,
         )
         .unwrap_or_else(|e| die(e));
-    // Stage the configured card before the book opens. Rates and limits are published only after
-    // the book has loaded and confirmed that card in its configured Store, before any serving.
+
     boot_limits.stage_boot();
     let app = Arc::new(boot_app);
 
-    // COMPOSE each captured provider: the plugin resolves its credential through the deployment's own
-    // secret resolver — the same seam every provider key is resolved through — so its routes serve
-    // instead of answering "no provider composed". The only line this can emit is a fail-closed
-    // warning when a reference the operator DID declare will not resolve.
     for compose in composes {
         compose(&*app.secret_resolver);
     }
 
-    // Record the BOOT snapshot as version 0 so the version history always has a rollback floor
-    // (the pre-any-mutation state).
     busbar_kernel::admin::seam::record_boot(&app);
 
-    // DURABLE STATE HYDRATION — the audit ring, the planes' task tables, per-call logs and
-    // demotion/spent-approval records, restored from the configured governance store
-    // BEFORE a listener is bound. One boot entry point (`busbar_kernel::boot::hydrate_all`)
-    // rather than four widened statics: the sinks (`AUDIT`, `TASKS`, `CALLS`) and their
-    // restore verbs stay crate-private in core, so nothing outside the engine can swap a sink
-    // out from under the hash chains. The narration (which restore is a hiccup, which is
-    // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable
-    // state cannot be restored REFUSES BOOT — `hydrate_all` propagates the plane hook's `Err`.
     busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
-    // THE LATE ATTACH (`root::serve::attach`): the kernel's host services gain the pool, the
-    // signer and the hydrated demotion record this first build made, once.
+
     let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .map(|d| &d.declaration)
@@ -1071,13 +721,9 @@ async fn run(
         &app.demotion_record,
         &planes,
     );
-    // THE DOOR PLANES, COMPOSED (`root::serve::compose_served`): opened, driven and ticked here, once,
-    // their money posted onto the process's one node, each member's egress sealed over the
-    // deployment's providers, the auth plugins that serve its style (the build's own rows, then
-    // the plugins directory's) and the one connector their needs were declared on.
+
     let door_auths = root::door_steps::process_auths();
-    // The kernel's own App (its lane store, its telemetry bank), through its swap handle once it exists (a config apply
-    // rebuilds the store), the boot App's until then.
+
     let door_live_handle: std::sync::Arc<
         std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>,
     > = std::sync::Arc::default();
@@ -1126,8 +772,6 @@ async fn run(
         deploy.public_url.as_deref(),
         &door_reach,
         Some({
-            // The hooks read the CURRENT generation's host: the App's swap handle once it exists,
-            // the boot App's until then.
             let (live, boot) = (
                 std::sync::Arc::clone(&door_live_handle),
                 std::sync::Arc::downgrade(&app),
@@ -1158,11 +802,7 @@ async fn run(
         .share_claim_doors(&mut served)
         .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
-    // THE DOOR PLANES THE BOOT LEFT UNOPENED OR NEVER BOUND (their section absent, Law 7): a door
-    // plane is bound and opened once, at boot, so an apply that first writes one's section is stored and validated but
-    // RESTART-TO-APPLY, reported in the apply's answer and given no slot until the next boot (the
-    // 1.5.5 precedent for what is mounted once at boot, `plugin_routes::paths_awaiting_restart`).
-    // Without governance no door plane is opened at all, at boot or after a restart: none is held.
+
     if app.governance.is_some() {
         root_rules.hold_unopened(
             served
@@ -1172,34 +812,14 @@ async fn run(
         );
     }
     served.spawn_ticks();
-    // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
-    // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
-    // business, and nothing about it is restored from disk here. The durable config that makes "fix
-    // the config and restart" the recovery path lives in the config-overlay persistence, not in a
-    // health snapshot. The config version-history ring is likewise RAM-only, re-seeded here
-    // at its boot floor (see `admin::seam::record_boot` above); durable cross-restart rollback would
-    // need a store seam, which does not exist over the plugin wire ABI today (see the 1.5.3 report).
+
     tracing::info!(
         "reliability state (breakers, cooldowns, latency, hard-down) starts fresh on boot and is \
          re-learned from live traffic"
     );
 
-    // START the export axis's opened sinks (every request-log sink is one): each states whether it
-    // takes deliveries this run and its in-flight admission — the moment the built-in request-log
-    // exporters were configured, so a sink that refuses its own target at start says so here.
     export::plugin::start().unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
 
-    // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
-    // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host
-    // (App-retype WEDGE 2f): the probers re-anchor on a `Weak<dyn EngineHost>` over it — never an
-    // `Arc<App>` — so the plane's health module names no core `App` type. We hand the SAME host to the
-    // `AppHandle` below (`set_snapshot_host`), which owns it for the boot generation and DROPS it on the
-    // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
-    // `Weak<App>` did when the boot snapshot drained.
-    // Built only when some linked entry re-anchors work on it: a build with none holds no host.
-    // The plane serving the `pools` map runs its health probes through its door as the K7 probe
-    // unit (`root::serve`'s probe target over the plane's sealed egress), so no linked row carries
-    // the `on-host` axis for it: one prober per lane, as 1.5.5 ran.
     let on_host = LINKED.on_host;
     let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app));
     if let Some(host) = &boot_host {
@@ -1208,46 +828,25 @@ async fn run(
         }
     }
 
-    // Build the two routers with the operator-configured ingress body cap + the inbound-concurrency
-    // layer (installed by default; `limits.max_inbound_concurrent: 0` opts out — no layer). The admin surface is built onto its
-    // OWN router (ABSENT from the data router) and served on `admin_listen` below; the data router
-    // serves the protocols. Both share one `app_handle`, so config-apply hot-swaps reach both planes.
-    // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
-    // resolve cert/key/CA references through it below.
     let tls_secret_resolver = app.secret_resolver.clone();
-    // THE PROCESS'S ONE BOOK IS OPENED BEFORE THE ROUTERS ARE BUILT (ARCHITECT Q-SW7, 2026-10-02):
-    // the door planes' data routes are the router's construction (Q-SW1) and their units settle onto
-    // this same one book, so it is opened from the boot `app` and opened once; nothing below opens
-    // another (the rationale for the book itself is at its uses below). A build that serves a door
-    // plane opens it too.
+
     let book = (cfg!(feature = "root-admin")
         || ROOT_UNITS.iter().any(|u| u.opens_book)
         || !served.planes.is_empty())
     .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));
-    // The book has loaded and confirmed the configured card. No listener or line carrier may
-    // serve a boot generation before this preparation succeeds.
+
     boot_limits.keep().unwrap_or_else(|e| die(e));
-    // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
-    // guest-list lines beside the kernel's own, onto the data router at its construction.
-    // Every config apply refreshes each served door plane onto the generation it installed
-    // (the ARCHITECT ruling on a served door plane's apply), bound on the handle once the routers are built.
+
     let door_appliers = served.appliers();
     let door_post = served.post.clone();
-    // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with a plane's line-serve flag passed and a
-    // served plane claiming the line carrier, the served planes are kept for the process's own
-    // stdin/stdout, and the data router is built with none of them (it is never bound in this mode).
-    // The line carrier is the one linked claim whose row opens on its first line; a build whose
-    // transports state two is refused here, before anything is served.
+
     if let Some(refusal) = root::serve::lines::refusal() {
         die(refusal);
     }
-    // The flag passed settles it: a launch that asked for the line carrier is served on
-    // it or refused by it (`serve_lines` refuses when no served plane claims the carrier), and never
-    // falls through to the listeners its supervisor did not ask for.
+
     let mut served = served;
     let line_served = line_flag_passed(std::env::args()).then(|| std::mem::take(&mut served));
-    // The completed candidate owns every prepared handler. A physical socket selects that same
-    // candidate for both admission and dispatch, including a route moved onto an existing bind.
+
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
     let admin_router = busbar_kernel::router::build_admin_router_on(
@@ -1275,17 +874,13 @@ async fn run(
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
-    // THE TICKET PRESS (row 132): `ticket.mint` mints through the live generation's governance,
-    // under its mint ceiling, once the swap handle exists.
+
     if let Some(kernel) = late_services.kernel() {
         kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
             std::sync::Arc::downgrade(&app_handle),
         )));
     }
-    // THE INBOUND AUTH HANDLE'S TABLES (THE DESIGN §6, "Auth points and guest lists", steps 4 and
-    // 8): the data listener's list at the boot generation, and a new generation at each apply.
-    // A transport calls its line's auth through the host auth handle on the transport doors'
-    // dispatcher: the kernel's inbound side serves it.
+
     let _ = root::inbound::install(root::doors::dispatcher());
     {
         let app = app_handle.load();
@@ -1317,12 +912,7 @@ async fn run(
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)
     }));
-    // A CONFIG APPLY REFRESHES THE PLANE SERVING THE `pools` MAP onto the new generation
-    // (`DoorAppliers::refresh_models`): the swapped-in App's projected configuration, its lane
-    // table and its secret seam. Which plane that is, is read at run time off each served plane's
-    // declared section, so a plane dropped into `plugins.dir` is refreshed exactly as the same plane
-    // compiled in is (BUSBAR-1.6.0.md l.2179: compiled in or dropped in, one loading path). No
-    // door plane served: no posting site, nothing to refresh.
+
     if let Some(post) = door_post {
         let (auths, live) = (
             std::sync::Arc::clone(&door_auths),
@@ -1375,13 +965,11 @@ async fn run(
             );
         }));
     }
-    // Every opened plugin instance's log sink follows the applied `plugins.logs` (THE DESIGN §11.2).
+
     app_handle.on_apply(Box::new(|app| {
         root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
     }));
-    // Every opened transport instance is refreshed with the applied limits, as boot opened it with
-    // them (`root::doors::refresh_live`): a plugin is a plugin, and every kind's `refresh` slot is
-    // called on an apply. A refresh binds nothing; a listener set change applies on restart.
+
     app_handle.on_apply(Box::new(|_| {
         let refused = root::doors::refresh_live(&root::policy::client_settings(
             &busbar_kernel::config::limits::installed().unwrap_or_default(),
@@ -1390,23 +978,13 @@ async fn run(
             tracing::warn!(error = %why, "a transport kept its settings across a config apply");
         }
     }));
-    // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
-    // live snapshot per ask): a long-lived response re-asks per frame.
+
     if let Some(kernel) = late_services.kernel() {
         let _attached = kernel.attach_standing(busbar_kernel::plane_driver::live_standing(
             app_handle.clone(),
         ));
     }
-    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
-    // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
-    // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
-    // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE JOURNAL (opened above, before the routers: Q-SW7). The node's units seal
-    // their audit records onto it and the administrative chain reads read it. It carries no money:
-    // the ledger is the store's usage counts, priced by the card in core.
 
-    // THE ROOT UNITS' JOURNAL STEP, once the journal is open and before either listener binds: the
-    // node is bound to the journal its units' audit records are sealed onto.
     if let Some(book) = &book {
         let app = app_handle.load();
         let ctx = root::linked::BookCtx { book, app: &app };
@@ -1415,14 +993,6 @@ async fn run(
         }
     }
 
-    // THE CARD IT PRICES AGAINST is already in place: the app build above resolved this deployment's
-    // rates and raised the rate-apply seam the hook installed before it, so the root's card holds the
-    // same configured `rate_card:` and `per_request_fee:` the usage projection derives its spend
-    // from. One configuration, two readings — and the next apply moves both, which is what makes the
-    // node's books and the projection's rows the same money rather than two numbers that agreed once.
-
-    // (The admin surface always opens the book, so `None` is a build without that surface's book —
-    // never one with the surface.)
     #[cfg(feature = "root-admin")]
     let admin_router = match &book {
         Some(book) => root::units_admin::mount_node(
@@ -1437,24 +1007,14 @@ async fn run(
         None => admin_router,
     };
 
-    // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
-    // probers depend on (they hold a `Weak`): the first config swap drops it and retires them. See the
-    // spawn_probers call above and `AppHandle::set_snapshot_host`.
     if let Some(host) = boot_host {
         app_handle.set_snapshot_host(host);
     }
-    // And bind the spawner every later swap re-attaches the probers with (item 552): the swap drops
-    // this generation's host and retires its probers, so without the binding the first admin
-    // mutation stops active health probing for the life of the process. The seam holds one.
+
     if let Some(&spawn) = on_host.first() {
         app_handle.attach_on_swap(spawn);
     }
 
-    // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections and let
-    // in-flight requests drain. The signal future is panic-free — a failed registration logs and
-    // parks forever (so a missing signal facility degrades to "no graceful shutdown", never a
-    // crash).
-    // ONE signal fans out to BOTH listeners (data + admin) so both planes drain together.
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     let worker_shutdown_rx = control_work.shutdown_rx.clone();
     {
@@ -1465,12 +1025,9 @@ async fn run(
             let _ = shutdown_level.send(true);
         });
     }
-    // The line-serve mode's own subscription, taken before the signal task below can send, so a
-    // signal that lands while boot finishes still stops the line carrier.
+
     let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
-    // Publish the sender so `POST /admin/restart` can trigger the SAME drain a signal does. A
-    // process-global is the honest home: restarting is a process-wide act, not a property of an
-    // `App` snapshot, and `AppHandle` is built before this channel exists.
+
     busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone());
     {
         let shutdown_tx = shutdown_tx.clone();
@@ -1480,48 +1037,16 @@ async fn run(
         });
     }
 
-    // WRITE-BEHIND BUDGET FLUSHER: the in-memory budget counters are authoritative on the request hot
-    // path (no SQLite await on admission); this background task periodically flushes accrued
-    // spend/requests to the durable store and runs one FINAL flush when the shutdown signal fires, so
-    // a graceful stop loses nothing (an ungraceful crash can lose at most one flush interval). Spawned
-    // once here (not on config apply/reload — the reused `Arc<GovState>` keeps its live cells and its
-    // already-running flusher). No-op when governance is disabled.
     if let Some(gov) = app_handle.load().governance.clone() {
-        // Handle intentionally dropped (not awaited): the flusher runs for the process lifetime and
-        // exits its own loop on the shutdown broadcast; nothing here needs to join it.
         std::mem::drop(busbar_kernel::governance::spawn_budget_flusher(
             gov,
             shutdown_tx.subscribe(),
         ));
     }
 
-    // START EVERY PLANE'S BACKGROUND WORK — a plane's refresh sweep, a plane's re-verification
-    // job — through ONE boot entry point that folds over the plane registry and calls each plane's
-    // declared `start` hook, in the registry's order (the order they have always started in). Each
-    // job MOVED into its plane's own hook beside the code it starts, so the sweeper types, the
-    // live-fetch transport and the identity resolver stay crate-private in their planes rather than
-    // being reached here by name. Spawned ONCE, here, rather than on apply, for the reason the flusher
-    // is: a second job against the same registry would double every fetch and race every ledger stamp.
-    // Fatal if a plane's outbound client identity does not resolve, exactly as before — the refusal text
-    // is the plane hook's, propagated through `start_planes`.
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
-    // THE LINE SERVE MODE (a plane's declared line-serve flag). The SAME boot ran above — config load, plugin
-    // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
-    // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
-    // it binds no listener at all (a child that opened ports would be a network server its
-    // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
-    // EOF on stdin ends the serve, and so does the shutdown signal the listener path drains on
-    // (SIGINT/SIGTERM, caught above for both modes): either one runs the listener path's own
-    // shutdown tail (`root::shutdown::tail`): the final budget/metering flush, the plane record
-    // write-behind and the journal's lane to the store, all drained before the process exits.
-    // The mode is served when a served door plane, compiled in or dropped in, claims the stdio
-    // transport. With none there is nothing to serve on stdin/stdout, and `serve_lines` refuses:
-    // nonzero exit, the sentence on stderr, no listener bound.
     if let Some(served) = line_served {
-        // The signal is handed to the serve, never raced against it: dropping the serve on the
-        // signal would end the units in flight unanswered and unsettled. The serve stops reading,
-        // drains them within the grace, and returns.
         let stop = recv_shutdown(line_shutdown.unwrap_or_else(|| shutdown_tx.subscribe()));
         let code = root::serve::lines::serve_lines(
             served,
@@ -1536,7 +1061,6 @@ async fn run(
         std::process::exit(code);
     }
 
-    // Resolve the data transport before either listener binds or reports readiness.
     let framer = listener_framer(
         &listen,
         root::listener::framed::DATA_SCHEME,
@@ -1578,21 +1102,8 @@ async fn run(
         ));
     }
 
-    // SERVE (one topology; see `main()`). On unix the DATA plane runs on N pinned
-    // `current_thread` runtimes — one SO_REUSEPORT listener per worker, kernel fanning connections
-    // across them with no task migration — while the ADMIN plane and every singleton background
-    // task spawned above stay on THIS control runtime. N = `data_workers` (the `worker_threads`
-    // resolution: config knob else env else cgroup-aware effective cores); N = 1 is the same
-    // design on a 1-core box, not a different path. Non-unix (no SO_REUSEPORT) serves both planes
-    // on the single work-stealing runtime `main()` built — the compile-time platform shape.
     #[cfg(unix)]
     {
-        // The WORKER-SHUTDOWN WATCH: the broadcast, refolded into a level (a `watch<bool>`) so
-        // detached work spawned at any moment — including after the signal — can still observe
-        // that shutdown has fired. Each data worker registers a clone
-        // (`busbar_kernel::detached::set_worker_shutdown`) beside its detached tracker, and a plane's
-        // task runner selects on it to write its CANCELLED terminal status within the drain grace
-        // instead of being aborted with a caller left polling forever.
         let binds = listener_plan.binds();
         let bound_at = |setting: &str, addr: &str| {
             binds
@@ -1607,12 +1118,7 @@ async fn run(
         };
         let data_at = bound_at("listen", &listen);
         let admin_at = bound_at("admin_listen", &admin_listen);
-        // The admin socket is BOUND before any data worker serves, as 1.5.5 bound both listeners
-        // before either served: once the data door's `/healthz` answers, a connection to the admin
-        // surface is queued, never refused (a client that waits on `/healthz` and then calls the
-        // admin API must not race the admin bind). It is served below, after the data workers start.
-        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
-        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
+
         let admin_via = root::connector::the().address_via();
         let admin_listener =
             Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
@@ -1646,10 +1152,7 @@ async fn run(
             None,
         )
         .await;
-        // The shutdown broadcast has fired (the admin serve returned), so every per-core data
-        // runtime is draining too. Join their threads off the async thread via `spawn_blocking`
-        // so this single control runtime keeps polling the background tasks' shutdown arms (the
-        // flusher's final flush, the tracer) while the data runtimes wind down.
+
         let _ = tokio::task::spawn_blocking(move || {
             for h in data_handles {
                 let _ = h.join();
@@ -1659,7 +1162,7 @@ async fn run(
     }
     #[cfg(not(unix))]
     {
-        let _ = data_workers; // sized the runtime in main(); no per-worker listeners here
+        let _ = data_workers;
         let data_listener = root::listener::SocketAdmits::new(bind_listener(&listen).await);
         let admin_listener = root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
         tokio::join!(
@@ -1694,26 +1197,17 @@ async fn run(
     })
     .await;
     control_work.drain().await;
-    // THE ONE SHUTDOWN TAIL (`root::shutdown::tail`), the same one the line-serve mode runs: the
-    // budget/metering write-behind flushed, then the plane records and the journal lane drained.
+
     let gov = app_handle.load().governance.clone();
     root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
-    // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
-    // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
-    // no side-car state file to flush).
 }
 
-/// The root's own listeners keep 1.5.5's bound: no connection cap (the 1024 default is a plugin
-/// listener's). The handshake bound is the configured `limits.tls_handshake_timeout_secs`, which
-/// the serving loop applies as it secures each connection.
 #[cfg(unix)]
 const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
     max_conns: usize::MAX,
     handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
 };
 
-/// Bind a listener or `die` with a clear, address-named message. Shared by the data and admin
-/// listeners so both fail fast and identically on a bad bind.
 #[cfg(not(unix))]
 async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
     tokio::net::TcpListener::bind(addr)
@@ -1721,9 +1215,6 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
 }
 
-/// THE DATA LISTENER'S FRAMER, found by facts on the process's one connector
-/// (`root::listener::framed::data_framer`): the framer serving the listener's scheme whose tail
-/// states it accepts. A missing transport is a startup error naming the configured listener.
 fn listener_framer(
     listen: &str,
     scheme: &str,
@@ -1749,8 +1240,6 @@ fn listener_framer(
     framer
 }
 
-/// One shutdown-broadcast subscription resolved into a plain future. Any receive outcome — a send,
-/// or a closed/lagged channel — means "shut down now", so every arm resolves the future.
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
     let level = busbar_kernel::detached::worker_shutdown();
     tokio::select! {
@@ -1759,47 +1248,22 @@ async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
     }
 }
 
-/// Spawn the DATA plane: `n` OS threads, each advisorily pinned to a distinct core via
-/// `core_affinity`, each running its own single-threaded (`current_thread`) tokio runtime that binds
-/// its OWN SO_REUSEPORT listener on the shared data `addr` and runs the SAME `serve_listener` accept
-/// loop over a clone of the (Arc-shared) `data_router`. The kernel load-balances accepted connections
-/// across the per-worker listeners, and each connection is then handled entirely on its own worker
-/// with no task migration. `n = 1` is the same design on a 1-core box — one worker, one listener.
-///
-/// Nothing here touches the request path or the app state: `data_router` is `Clone` (its `AppHandle`
-/// is an `Arc`), so every worker serves the SAME app snapshot and the SAME config-swap seam. Pinning
-/// is ADVISORY: if core enumeration is unavailable (some containers expose none) or `set_for_current`
-/// is refused (restricted cpuset), the workers run unpinned and SO_REUSEPORT still balances — the
-/// same code path, only placement differs. The admin plane and every singleton background task stay
-/// on the caller's control runtime — this function spawns ONLY data listeners. Returns the join
-/// handles; the caller awaits shutdown (the broadcast fans out to every per-worker `recv_shutdown`)
-/// and then joins them. Unix-only (SO_REUSEPORT); see the call site.
 #[cfg(unix)]
-#[allow(clippy::too_many_arguments)] // the seven it had, plus the wire under the door.
+#[allow(clippy::too_many_arguments)]
 fn serve_thread_per_core(
     n: usize,
     addr: String,
-    // `addr` as the one list resolved it: what each worker's connector listener binds.
+
     bind_at: String,
     data_router: Router,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
-    // The data listener's required framer, whose accept side serves each connection.
+
     framer: root::listener::framed::DataFramer,
 ) -> Vec<std::thread::JoinHandle<()>> {
-    // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
-    // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
-    // Validate the TLS material ONCE, here on the control thread, before any worker exists: every
-    // worker builds the same server config from the same files, so a bad cert or key must be
-    // reported exactly once and stop the boot (workers racing to `die` would each print it).
-    // Reconciliation + fail-closed (DECISIONS #40): the built-in axum/hyper listener always
-    // declares itself TLS-capable, so this can only fail on unresolvable/unparsable material —
-    // exactly the boot failure `build_server_config` always reported here.
     if tls_cfg.is_some() {
-        // `FailClosed`'s Display already names the listener (`TLS configuration error for '<addr>':
-        // <reason>`, 1.5.5's line); wrapping it again printed that prefix twice.
         let _ =
             busbar_core_connector::tls::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
                 .unwrap_or_else(|e| die(e.to_string()));
@@ -1807,9 +1271,7 @@ fn serve_thread_per_core(
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
         (0..n).map(|i| core_ids.get(i).copied()).collect();
-    // DEBUG, not INFO: this is a per-worker implementation fact, not something a 1.5.5-shaped config
-    // ever printed — an operator of such a config must see the SAME lines at INFO as 1.5.5 did (the
-    // neutrality binding, qa/parity-bindings.md).
+
     tracing::debug!(
         runtimes = cores.len(),
         pinned = core_ids.len().min(n),
@@ -1817,9 +1279,7 @@ fn serve_thread_per_core(
         "thread-per-core data plane: one SO_REUSEPORT listener per worker (admin + background \
          tasks stay on the control runtime)"
     );
-    // The connection-placement balancer (see `root::listener::ConnBalancer`): one handle per
-    // worker, fixing SO_REUSEPORT's few-connection imbalance at ACCEPT time (placement only, never
-    // migration).
+
     let mut balancers: Vec<Option<root::listener::ConnBalancer>> =
         root::listener::ConnBalancer::build(cores.len())
             .into_iter()
@@ -1840,23 +1300,14 @@ fn serve_thread_per_core(
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
                 if let Some(id) = core_id {
-                    // Best-effort pin; a false return (unsupported platform / restricted cpuset) leaves
-                    // the thread unpinned but still serving — the kernel still balances via SO_REUSEPORT.
                     core_affinity::set_for_current(id);
                 }
-                // This thread IS data-plane worker `i` for its whole lifetime: everything core
-                // stripes per worker (the egress client shard today; SWRR/breaker scratch in later
-                // stages) indexes by this id. Set after the pin, before the runtime serves.
+
                 busbar_kernel::topology::set_worker_id(i);
-                // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, plane
-                // task runners and watchers) — the post-drain grace below waits on it so a graceful
-                // stop gives such work a bounded window instead of an instant abort.
+
                 let detached = busbar_kernel::detached::DetachedTasks::new();
                 busbar_kernel::detached::set_worker_detached(detached.clone());
-                // The shutdown level, registered beside the tracker: detached work spawned on
-                // this worker captures it and can settle its own terminal state (a plane's task
-                // runner writes CANCELLED) inside the drain grace below instead of being aborted
-                // silently when the runtime drops.
+
                 busbar_kernel::detached::set_worker_shutdown(worker_shutdown);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -1865,11 +1316,6 @@ fn serve_thread_per_core(
                         die(format!("failed to build per-core data runtime {i}: {e}"))
                     });
                 rt.block_on(async move {
-                    // This worker's own SO_REUSEPORT listener, the connector's (the one listener
-                    // source, ARCHITECT ruling 2026-09-30). Each socket it admits is handed up
-                    // pre-TLS so the balancer can place it on another worker; the TLS handshake
-                    // runs after placement, in the serving loop (pinning at accept would change
-                    // 1.5.5's per-core placement).
                     let via = crate::root::connector::the().address_via();
                     let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {
@@ -1891,15 +1337,11 @@ fn serve_thread_per_core(
                         &listen,
                         recv_shutdown(shutdown_rx),
                         balancer,
-                        // ONE "busbar listening" line per LISTENER, matching 1.5.5, not one per
-                        // worker: only worker 0 logs it at INFO; every other worker's identical fact
-                        // logs at DEBUG (the per-worker detail an operator can still opt into).
                         i == 0,
                         Some(framer),
                     )
                     .await;
-                    // Connections are drained; give this worker's detached work its bounded
-                    // grace before the runtime drops (and aborts whatever remains).
+
                     let _ = tokio::time::timeout(
                         busbar_kernel::detached::DETACHED_DRAIN_GRACE,
                         detached.drained(),
@@ -1913,8 +1355,6 @@ fn serve_thread_per_core(
     handles
 }
 
-/// A private physical listener has the same detached-work ownership and shutdown grace as a
-/// root data worker. Its runtime binds and resolves security before serving its first request.
 #[allow(clippy::too_many_arguments)]
 fn serve_private_listener(
     addr: String,
@@ -1962,12 +1402,8 @@ fn serve_private_listener(
         .unwrap_or_else(|e| die(format!("cannot spawn listener worker: {e}")))
 }
 
-/// Serve one listener to graceful shutdown: the data transport's accepting framer, or the admin
-/// root's HTTP service. Connection security is prepared before either starts serving.
-/// `label` names the plane in log lines and error messages. Any serve error `die`s the process.
-#[allow(clippy::too_many_arguments)] // one more than the default threshold for `log_at_info`, the
-                                     // once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
-                                     // struct is a larger refactor this fix does not need.
+#[allow(clippy::too_many_arguments)]
+
 async fn serve_listener(
     listener: impl busbar_core_connector::listen::Admits,
     router: Router,
@@ -1975,16 +1411,11 @@ async fn serve_listener(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-    // The data workers' connection-placement balancer (`None` for the admin listener and
-    // non-unix builds — those accept exactly as before). See `root::listener::ConnBalancer`.
+
     balancer: Option<root::listener::ConnBalancer>,
-    // Whether THIS call logs "busbar listening" at INFO. `true` for the admin listener and for the
-    // single data listener on non-unix builds (both call this exactly once); on unix's
-    // thread-per-core data plane, `serve_thread_per_core` calls this once PER WORKER on the SAME
-    // listen address — only the first call logs at INFO (matching 1.5.5's once-per-listener line),
-    // the rest log the identical fact at DEBUG.
+
     log_at_info: bool,
-    // The data listener's required framer; `None` selects the admin listener's own service.
+
     framer: Option<root::listener::framed::DataFramer>,
 ) {
     let security = match tls_cfg {
@@ -1997,16 +1428,6 @@ async fn serve_listener(
             None
         }
         Some(tls) => {
-            // blocking-ffi-lint: allow — BOOT, once per listener, before that listener accepts.
-            // `serve_listener` is never spawned as a task: the admin call runs directly under
-            // `run()` on the control thread, and each per-worker data call is the FIRST thing its
-            // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
-            // is not yet serving anything. It also completes before `listener::serve_admitted`
-            // below is reached, so no connection on this listener can be waiting on it.
-            //
-            // Connection security wraps the accepted bytes before the framer or admin service;
-            // `prepare` fails closed if the material cannot be resolved/parsed (DECISIONS #40).
-            // Printed as `FailClosed` renders it — it already carries the label (see above).
             let security =
                 busbar_core_connector::tls::prepare(label, Some(&tls), &secret_resolver, true)
                     .unwrap_or_else(|e| die(e.to_string()));
@@ -2040,12 +1461,6 @@ async fn serve_listener(
     }
 }
 
-/// Resolve when the process receives a shutdown signal: SIGINT/ctrl_c everywhere, plus SIGTERM on
-/// unix and CTRL_CLOSE/CTRL_SHUTDOWN on Windows (the events an orderly non-interactive stop
-/// actually delivers on each platform). Awaited once, by the task that fans the stop out on the
-/// shutdown broadcast every listener and the line serve subscribe to. Never panics: a signal-handler
-/// registration error is logged and the corresponding branch parks forever, so the other branch
-/// still triggers shutdown and a registration failure can never abort a worker.
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
@@ -2073,20 +1488,6 @@ async fn shutdown_signal() {
         }
     };
 
-    // WINDOWS HAS NO SIGTERM, BUT IT DOES HAVE AN ORDERLY STOP, and `ctrl_c` alone does not hear it.
-    // `tokio::signal::ctrl_c` on Windows is CTRL_C_EVENT only — an interactive Ctrl+C. Every
-    // NON-interactive stop arrives as a different console control event: `docker stop` on a Windows
-    // container and a closing console send CTRL_CLOSE_EVENT, and a machine shutdown sends
-    // CTRL_SHUTDOWN_EVENT. With only the `ctrl_c` arm, all of those bypassed the graceful-shutdown
-    // future entirely and the process was killed with requests still in flight — the drain this
-    // function exists to trigger simply did not run, silently, on the platform's most common stop.
-    // Each arm degrades exactly like the unix one: a registration failure is logged and that branch
-    // parks, so it can never abort the others.
-    // Each event is registered INDEPENDENTLY, and that is the same fail-soft rule the unix arm
-    // states: one registration failing must cost only its own branch. Folding both into one
-    // sequential setup would let a failure on the SECOND discard the first one that had already
-    // succeeded, degrading a partial failure all the way to no coverage instead of to the coverage
-    // that was actually available.
     #[cfg(windows)]
     let terminate = async {
         let close = async {
@@ -2133,37 +1534,13 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received; draining in-flight requests");
 }
 
-/// How often the idle-purge fallback wakes to check for idleness (and how long a request-free window
-/// must be before it purges). 15 s keeps "RSS returns to idle within ~60 s of load stopping" with
-/// plenty of margin while never firing under any sustained traffic.
 #[cfg(not(target_env = "msvc"))]
 const IDLE_PURGE_SWEEP_SECS: u64 = 15;
 
-/// FALLBACK idle purge for targets where jemalloc's background purge threads are unavailable
-/// (static-musl release builds compile them out; macOS lacks them). jemalloc's decay purge is
-/// otherwise FOREGROUND-only — driven by allocator activity — so a fully idle process never returns
-/// its freed dirty pages to the OS and RSS ratchets at the last burst's peak (measured on this
-/// machine: an 8-worker burst left 595 MiB of freed-but-unpurged RSS parked indefinitely; one purge
-/// pass dropped it to 14.7 MiB). This thread watches the request-activity ticker and, after a full
-/// sweep window with ZERO requests, forces a one-shot purge of every INITIALIZED arena's dirty pages
-/// by writing `arena.<i>.dirty_decay_ms = 0` (jemalloc's documented "purge all unused dirty pages
-/// immediately" setting) and then restoring THAT ARENA'S OWN prior decay value — all through
-/// tikv-jemalloc-ctl's SAFE typed mallctl API (`AsName`/`Access`; no `unsafe` anywhere). See
-/// [`purge_idle_arenas`] for why the restore is per arena.
-///
-/// Per-arena (not the `MALLCTL_ARENAS_ALL` pseudo-index) because the ALL write EFAULTs the moment it
-/// hits an UNINITIALIZED arena (jemalloc creates arenas lazily; most of the default 4×ncpu set never
-/// initialize), poisoning the whole batch. Individual errors on uninitialized arenas are expected
-/// and skipped; `arenas.narenas` is re-read each pass so late-created arenas are covered.
-///
-/// Request behavior is untouched: the purge only ever fires in a window that served NO requests, the
-/// restore returns decay to exactly the configured value, and under load the thread does nothing but
-/// one atomic read per 15 s. Repeated purges on a long-idle process are no-ops (no dirty pages
-/// remain). Best-effort throughout — mallctl errors are skipped, never panicked on.
 #[cfg(not(target_env = "msvc"))]
 fn spawn_jemalloc_idle_purge_fallback() {
     use tikv_jemalloc_ctl::{Access, AsName};
-    // The configured default decay: read once as the probe that the decay controls are reachable.
+
     const ARENAS_DIRTY_DECAY_DEFAULT: &[u8] = b"opt.dirty_decay_ms\0";
     let spawned = std::thread::Builder::new()
         .name("busbar-idle-purge".into())
@@ -2199,19 +1576,6 @@ fn spawn_jemalloc_idle_purge_fallback() {
     }
 }
 
-/// ONE IDLE PURGE PASS: every initialized arena's dirty pages are purged (decay 0 ⇒ jemalloc purges
-/// all unused dirty pages during the set), then the arena's decay is put back to ITS OWN prior value.
-/// An arena that cannot be read (uninitialized — jemalloc creates arenas lazily) is skipped, and one
-/// already at 0 purges immediately on its own, so it is left alone.
-///
-/// PER-ARENA RESTORE, NEVER THE GLOBAL DEFAULT. The HUGE arena (the one oversize allocations — a
-/// staged plugin library, a large body — land in, created on first use) runs at decay 0, and
-/// jemalloc answers a POSITIVE decay written to it by starting a background thread for it. On a
-/// build with no background-thread support — exactly the builds this fallback exists for (macOS,
-/// static musl) — that call is jemalloc's `not_reached()`: a SIGTRAP in a debug build and undefined
-/// behaviour in a release one. Restoring `opt.dirty_decay_ms` (10 s) to every arena did exactly that
-/// the first idle window after any oversize allocation; restoring each arena's own value writes 0
-/// back to the huge arena, which starts nothing.
 #[cfg(not(target_env = "msvc"))]
 fn purge_idle_arenas() {
     use tikv_jemalloc_ctl::{Access, AsName};
@@ -2230,16 +1594,8 @@ fn purge_idle_arenas() {
     }
 }
 
-// THE COMPOSITION ROOT. The kernel, the units, the planes and the transports composed in one
-// place — the only place in the tree entitled to name all four. `main()` and `run()` call into it
-// to register the plane axis, seal the boot registry, open the boot book and mount the root-driven
-// surfaces.
 mod root;
 
-/// The stamp's derivation half, shared VERBATIM with `build.rs` (which `include!`s the same file).
-/// Mounted only under `cfg(test)` because the binary itself reads the stamp out of `env!` constants
-/// build.rs already baked — the functions are here so the decisions they encode can be asserted, not
-/// so main can call them. See `src/build_stamp.rs`.
 #[cfg(test)]
 mod build_stamp;
 

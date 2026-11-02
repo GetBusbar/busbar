@@ -1,30 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK DOUBLE: the kernel's own hook port — the contract's [`HookAxis`] / [`HookCalls`], the
-//! seam the composition root installs and the kernel names nothing behind — answered in process,
-//! so the kernel's hook-KIND tests (dispatch order, abstain, decide, the reply caps and clamps, the
-//! management envelopes, `on_error`) run with no plugin at all. OWNER 2026-10-03 (no test plugins:
-//! "real plugins are the proofs; test-plugin fixtures are deleted") and BUSBAR-CI-PLUGIN-AGNOSTIC
-//! (busbar's own tests are kind-generic): the double is not a plugin, not a `cdylib` and not a door.
-//! It answers through the frame the kernel built ([`DecideFrame::projection_json`] /
-//! [`DecideFrame::answer_decide`]), so every byte the kernel reads back crossed the same fixed `out`
-//! and host buffers a plugin's answer does, and the kernel's own lowering (`hooks::plugin`, `wire`)
-//! is what turns it into a decision.
-//!
-//! What a loaded hook's crossing machinery owns (the dispatcher's watchdog, its `max_inflight` cap)
-//! is the loader's, proven in `busbar-plugin-loader`'s own hook tests; the double honours the one
-//! part of it the port's contract states to its caller: every call is bounded by its `budget`,
-//! runs off the caller's worker, and a panic is a broken answer, never an unwind.
-//!
-//! An instance's behaviour is its `settings:` (all optional):
-//! `order` (the order `decide` prefers; absent = abstain), `reject_if_contains` (reject when a
-//! projected message carries the token; `reject_status`, default 403; `transform` answers 451),
-//! `restrict_tags`, `raw_decide_reply` / `raw_transform_reply` (a 1.5.5 reply answered verbatim),
-//! `sleep_ms` (in `decide`), `empty_management` (`status`/`describe` answer `{}`),
-//! `nack_configure`, `panic_decide` / `panic_transform`, `fail_decide` / `fail_transform` (the hook
-//! could not answer). `status` reports `test_decides_total` then `test_notifies_total`.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,7 +14,6 @@ use busbar_contract::abi::sdk::hook::{
 use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pending, Probed};
 use busbar_contract::hook_wire::{OP_DECIDE, OP_TRANSFORM};
 
-/// The Statement name every double instance answers with.
 pub const DOUBLE_NAME: &str = "hook-double";
 
 /// One instance's behaviour, read from its settings.
@@ -72,7 +47,6 @@ struct Behaviour {
     fail_transform: Option<String>,
 }
 
-/// One opened double instance's state: its behaviour and the two counters `status` reports.
 struct Gate {
     b: Behaviour,
     decides: AtomicU64,
@@ -80,8 +54,6 @@ struct Gate {
 }
 
 impl Gate {
-    /// Whether any projected message text carries the reject token (the opt-in `prompt`
-    /// projection: absent unless the kernel sent it).
     fn screens(&self, projection: &serde_json::Value) -> bool {
         let Some(token) = self.b.reject_if_contains.as_deref() else {
             return false;
@@ -94,7 +66,6 @@ impl Gate {
             })
     }
 
-    /// The 1.5.5 `decide` reply.
     fn decide(&self, projection: &serde_json::Value) -> Result<serde_json::Value, String> {
         self.decides.fetch_add(1, Ordering::Relaxed);
         if let Some(why) = &self.b.fail_decide {
@@ -122,7 +93,6 @@ impl Gate {
         })
     }
 
-    /// The 1.5.5 `transform` reply.
     fn transform(&self, projection: &serde_json::Value) -> Result<serde_json::Value, String> {
         if let Some(why) = &self.b.fail_transform {
             return Err(why.clone());
@@ -165,13 +135,10 @@ impl Gate {
     }
 }
 
-/// ONE OPENED DOUBLE INSTANCE'S CALLS.
 struct DoubleCalls {
     gate: Arc<Gate>,
 }
 
-/// Run `work` off the caller's worker, bounded by `budget`: its value, `TimedOut` past the budget,
-/// `Broken` when it panicked (the door's FAULT, as the hook seam reads it).
 pub(super) async fn bounded<T: Send + 'static>(
     budget: Duration,
     work: impl FnOnce() -> T + Send + 'static,
@@ -185,7 +152,6 @@ pub(super) async fn bounded<T: Send + 'static>(
     }
 }
 
-/// An unanswered call's [`Answered`], retyped.
 pub(super) fn unanswered<O>(a: Answered<std::convert::Infallible>) -> Answered<O> {
     match a {
         Answered::TimedOut => Answered::TimedOut,
@@ -194,10 +160,6 @@ pub(super) fn unanswered<O>(a: Answered<std::convert::Infallible>) -> Answered<O
     }
 }
 
-/// `decide`/`transform` over `frame`: `reply` runs off the caller's worker within `budget` and
-/// answers the verdict; `answer` lowers it into the frame (`Some(error)` for a hook that could not
-/// answer, `short` for an answer the frame's buffers cannot hold), and a short answer takes the one
-/// re-call on the frame `regrow` builds, as the loader's crossing does.
 pub(super) async fn verdict<V: Send + 'static, O>(
     frame: Arc<DecideFrame>,
     budget: Duration,
@@ -337,9 +299,6 @@ impl HookCalls for DoubleCalls {
     }
 }
 
-/// THE HOOK AXIS DOUBLE: the `module:` names in `rows` open double instances; every other module
-/// is the build's own linked rows (the stand-in axis over no dropped-in plugin), so the linked
-/// ranking words still answer beside the double.
 pub struct HookAxisDouble {
     rows: Vec<String>,
     linked: Arc<dyn HookAxis>,
@@ -354,7 +313,6 @@ impl std::fmt::Debug for HookAxisDouble {
 }
 
 impl HookAxisDouble {
-    /// A double answering `modules`, beside the build's linked rows.
     #[must_use]
     pub fn new(modules: &[&str]) -> Arc<Self> {
         let linked =
@@ -369,8 +327,6 @@ impl HookAxisDouble {
         self.rows.iter().any(|m| m == module)
     }
 
-    /// What a double instance states: a gate that may be granted the prompt read-write and the user
-    /// read-only (the kernel's grant meet decides what it is actually sent).
     fn facts() -> HookFacts {
         HookFacts {
             name: DOUBLE_NAME.to_string(),

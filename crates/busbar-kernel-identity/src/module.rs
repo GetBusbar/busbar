@@ -21,11 +21,7 @@ pub enum AuthOutcome {
 }
 
 /// A chain module.
-///
-/// `cacheable` defaults to **false**, and that default is load-bearing: an external module that
-/// never overrides it is re-verified on every single request, which is the safe answer for a
-/// verifier whose revocation posture nobody in this crate knows. A module opts in only when it can
-/// say what its verdict's lifetime means.
+
 pub trait AuthModule: Send + Sync {
     /// The module's own name, as it reports it.
     fn name(&self) -> &'static str;

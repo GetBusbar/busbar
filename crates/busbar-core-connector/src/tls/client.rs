@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The OUTBOUND half of connection security: the client side of the one TLS path.
-//!
-//! A dialled connection is secured host-side exactly as an accepted one is — a transport carries
-//! bytes, and core wraps them — so the host's outbound trust decisions ([`EgressTrust`]: extra trust
-//! anchors, a per-destination SPKI pin, a client identity for a mutual handshake) are applied HERE,
-//! never inside a transport. [`build_client_config`] turns that trust into a `rustls` client config,
-//! and [`TlsDial`] is the [`ConnectionSecurity`] wrap that runs the client handshake over a dialled
-//! stream for one server name. Nothing here crosses the plugin ABI: a transport sees only the opaque
-//! wrap, never a certificate, a key or a rustls type.
 
 use std::sync::Arc;
 
@@ -39,16 +31,7 @@ impl std::fmt::Display for BadClientIdentity {
 impl std::error::Error for BadClientIdentity {}
 
 /// The client TLS config an outbound connection is secured with, given the host's outbound trust.
-///
-/// The unset case is spelled FIRST and returns early down the exact branch every outbound connection
-/// has always taken — platform roots, no client auth — so a caller that decided nothing is provably
-/// unchanged rather than merely equal to what it was.
-///
-/// # Errors
-///
-/// A configured client identity whose private key does not parse, or whose chain the stack will not
-/// accept. Never a silent fallback to no client auth: a mutual peer would then see an anonymous
-/// client the operator configured to present an identity.
+
 pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, BadClientIdentity> {
     install_crypto_provider();
     if trust.is_unset() {
@@ -80,16 +63,7 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
 }
 
 /// The client config for a need whose `trust_from` names an operator CA (`pem`, the PEM the need's
-/// settings hold): the public roots with every certificate of `pem` added on top as an extra trust
-/// anchor (spec section 5, the host connector: "an extra trusted root added on top of the public
-/// roots, as in 1.5.5"). Never a replacement for the public roots, and chain and name validation
-/// stay on.
-///
-/// # Errors
-///
-/// `pem` holds no certificate, a section that does not parse, or a certificate the TLS stack will
-/// not take as a trust anchor. Never a silent fallback to the public roots alone: the need is
-/// refused, as an mTLS identity that fails to parse is.
+
 pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
     use rustls::pki_types::pem::PemObject as _;
     let certs = rustls_pki_types::CertificateDer::pem_slice_iter(pem)
@@ -112,8 +86,7 @@ pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
 }
 
 /// The verifier half of the client config, before the client-auth choice: platform roots plus any
-/// extra anchors, and — when the host pinned any keys — an SPKI-pin check layered over the ordinary
-/// chain verification.
+
 fn wants_client_cert(
     trust: &EgressTrust,
 ) -> rustls::ConfigBuilder<rustls::ClientConfig, rustls::client::WantsClientCert> {
@@ -133,9 +106,7 @@ fn wants_client_cert(
 }
 
 /// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
-/// NOT checked, only that it signed the handshake. The operator's explicit opt-in for one need
-/// (`UPGRADE_VERIFY_OFF`, 1.5.5's `rediss://…#insecure`), honoured for an operator-infrastructure
-/// need only (`Connector::upgrade_secure`); never a default.
+
 #[must_use]
 pub fn unverified_client_config() -> rustls::ClientConfig {
     let crypto = crate::tls::installed_crypto();
@@ -305,14 +276,7 @@ impl std::fmt::Display for BadAnchors {
 impl std::error::Error for BadAnchors {}
 
 /// SEAL `anchors` for dialling under `base` (the connector's client config, whose crypto provider
-/// parses the identity): the identity is parsed and its key checked against its leaf here, once,
-/// and the key pin read to its canonical spelling, so anchors the stack cannot hold refuse the seal
-/// (the boot), never a dial.
-///
-/// # Errors
-///
-/// The identity does not parse, its key is not its leaf's, or there is no client config to present
-/// it under; or the key pin names no SHA-256 digest.
+
 pub fn seal(
     base: Option<&rustls::ClientConfig>,
     anchors: &busbar_contract::transport::trust::Anchors,
@@ -396,22 +360,14 @@ impl rustls::client::ResolvesClientCert for Presenting {
 }
 
 /// THE FAR END'S KEY PIN off its leaf certificate's DER, in the one spelling
-/// (`busbar_contract::transport::trust::key_pin`); `None` when the certificate is not the DER this
-/// walk reads. Taken off a certificate the handshake's chain-and-name check already verified.
+
 #[must_use]
 pub fn peer_key_pin(leaf_der: &[u8]) -> Option<String> {
     subject_public_key_info(leaf_der).map(busbar_contract::transport::trust::key_pin)
 }
 
 /// THE SubjectPublicKeyInfo of a DER certificate, whole (tag and length included), or `None` when the
-/// bytes are not the DER this pin walk expects.
-///
-/// RFC 5280 section 4.1 read literally: `Certificate` is a `SEQUENCE` whose first member is
-/// `TBSCertificate`, itself a `SEQUENCE` whose members up to the key are `[0] version DEFAULT v1`,
-/// `serialNumber`, `signature`, `issuer`, `validity`, `subject`, then the SPKI. Nothing here
-/// interprets a field it walks past; the TLS stack has already validated the certificate this reads a
-/// key off. The pin is taken over the SPKI's whole encoding, so a pinning caller and any other tool
-/// compute the same digest for one key.
+
 fn subject_public_key_info(cert_der: &[u8]) -> Option<&[u8]> {
     /// `[0] EXPLICIT`, the optional context tag carrying `TBSCertificate.version`.
     const TAG_VERSION: u8 = 0xA0;
@@ -442,22 +398,22 @@ fn element(buf: &[u8]) -> Option<(u8, &[u8])> {
     let (len, header) = if first_len < 0x80 {
         (usize::from(first_len), 2usize)
     } else if first_len == 0x80 {
-        return None; // an indefinite length is BER, not DER
+        return None;
     } else {
         let count = usize::from(first_len & 0x7f);
         if count > 4 {
-            return None; // a length wider than any certificate needs
+            return None;
         }
         let bytes = rest.get(..count)?;
         if bytes.first() == Some(&0) {
-            return None; // a non-minimal length
+            return None;
         }
         let mut len = 0usize;
         for b in bytes {
             len = (len << 8) | usize::from(*b);
         }
         if len < 0x80 {
-            return None; // long form where the short form would have fit
+            return None;
         }
         (len, 2 + count)
     };
@@ -474,7 +430,6 @@ fn expect_sequence(buf: &[u8]) -> Option<&[u8]> {
 
 /// The contents of one whole DER element.
 fn contents(whole: &[u8]) -> Option<&[u8]> {
-    // Re-read the header length off the whole element to hand back its contents.
     let first_len = *whole.get(1)?;
     let header = if first_len < 0x80 {
         2
@@ -485,15 +440,14 @@ fn contents(whole: &[u8]) -> Option<&[u8]> {
 }
 
 /// THE CHANNEL-BINDING DIGEST of a DER certificate (RFC 5929 section 4.1, `tls-server-end-point`):
-/// the hash function of the certificate's `signatureAlgorithm`, or SHA-256 when that is MD5 or
-/// SHA-1, uses no single hash this reads (Ed25519), or is one `ring` has no digest for (SHA-224).
+
 #[must_use]
 pub fn end_point_digest(cert_der: &[u8]) -> &'static ring::digest::Algorithm {
     signature_hash(cert_der).unwrap_or(&ring::digest::SHA256)
 }
 
 /// The SHA-384 or SHA-512 a certificate's `signatureAlgorithm` names (RSASSA-PSS through its
-/// `hashAlgorithm` parameter), or `None`.
+
 fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
     /// ASN.1 OBJECT IDENTIFIER.
     const TAG_OID: u8 = 0x06;
@@ -507,7 +461,6 @@ fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
     const SHA384: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02];
     const SHA512: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03];
 
-    // An AlgorithmIdentifier's OID and what follows it (its parameters).
     fn algorithm(identifier: &[u8]) -> Option<(&[u8], &[u8])> {
         let body = contents(expect_sequence(identifier)?)?;
         let (tag, oid) = element(body)?;
@@ -521,14 +474,13 @@ fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
         }
     }
 
-    // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
     let body = contents(expect_sequence(cert_der)?)?;
     let (_, tbs) = element(body)?;
     let (oid, params) = algorithm(&body[tbs.len()..])?;
     if oid != RSA_PSS {
         return hash(oid);
     }
-    // RSASSA-PSS-params ::= SEQUENCE { hashAlgorithm [0] AlgorithmIdentifier DEFAULT sha1, ... }
+
     let (tag, first) = element(contents(expect_sequence(params)?)?)?;
     if tag != TAG_PSS_HASH {
         return None;
@@ -537,11 +489,7 @@ fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
 }
 
 /// The client-side connection-security wrap: runs the rustls client handshake built by
-/// [`build_client_config`] over a dialled stream, offering `server_name` (SNI, and the name the
-/// peer's certificate is verified against).
-///
-/// One per dial: the name is the destination's, so it is held here rather than passed through
-/// [`ConnectionSecurity::wrap`], whose one parameter is the stream.
+
 pub struct TlsDial {
     config: Arc<rustls::ClientConfig>,
     server_name: rustls::pki_types::ServerName<'static>,

@@ -1,51 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Declarative plugin FETCH (`plugins.fetch:`): download the signed tarballs an operator declared
-//! into `plugins.dir` BEFORE the loader scans it. This is an INTEGRITY + CACHE layer only — it never
-//! `dlopen`s or evaluates trust; the unchanged `scan_and_validate` signature check remains the
-//! sole trust gate. A new sealed first-party download additionally receives a refuse-only
-//! freshness check before write. Installed identical bytes retain boot semantics.
-//!
-//! ## Contract
-//! - **Cache-by-pin.** A `sha256`-pinned spec whose target file already hashes to the pin skips the
-//!   network entirely ([`FetchOutcome::Cached`]).
-//! - **Verify-before-write + atomic rename.** A download is hashed against the pin IN MEMORY; only on
-//!   a match are the bytes written to a temp file and atomically `rename`d into place. A hash
-//!   mismatch, a download error, or a write error NEVER leaves a partial or wrong file in `dir`.
-//! - **Boot fatal / reload warn.** `fatal_on_miss` (the caller's `prior.is_none()` boot/reload
-//!   discriminator) decides whether an unreachable/mismatched spec fails the whole call (`Err`) or is
-//!   recorded as a [`FetchOutcome::Warned`] so a running node keeps serving what it already has.
-//!
-//! ## Why the downloader is injected
-//! `plugin-loader` deliberately carries no HTTP client (and starts no tokio runtime). The engine
-//! crate owns the network stack AND the cloud-metadata SSRF denylist, so it passes a `download`
-//! closure that performs the GET under those guards. This keeps the fetch policy (cache / verify /
-//! atomic write / boot-vs-reload) pure and unit-testable with a fake downloader, and keeps SSRF
-//! enforcement in the one crate that has the denylist.
-
 use crate::sign::sha256_hex;
 use std::path::{Component, Path};
 
-/// Reject any `filename` that is not EXACTLY ONE normal path component before it is joined onto
-/// `plugins.dir`. A config-driven `filename` of `../../evil` (or an absolute `/etc/evil`, or a nested
-/// `a/b`) would otherwise ESCAPE `dir` at the `dir.join(&spec.filename)` sites — a config-driven
-/// arbitrary write. This is the SAME single-`Normal`-component guard [`crate::tarball::unpack`]
-/// applies to archive entries, lifted to the fetch path so both boundaries refuse traversal the same
-/// way. A single ordinary filename (`evil.tar.gz`) is the only shape accepted.
 fn filename_is_single_component(filename: &str) -> bool {
     let mut comps = Path::new(filename).components();
     matches!(comps.next(), Some(Component::Normal(_))) && comps.next().is_none()
 }
 
-/// The fetch URL as a log line may repeat it: `scheme://host[:port]/path`, with the authority's
-/// userinfo (`user:pass@`) removed and a non-empty query or fragment replaced by `<redacted>`. An
-/// operator may spell a fetch URL with either, and both are credentials; the host and path stay,
-/// because they are the diagnosis. A URL with neither comes back borrowed, byte for byte.
-///
-/// The authority ends at the first `/`, `?` or `#`, and the userinfo is everything before its LAST
-/// `@` (a password may carry an `@`). A `\` does not end the authority here, so a `\` before an `@`
-/// removes more, never less: this is a printer, not the reader that dials.
 fn printable_url(url: &str) -> std::borrow::Cow<'_, str> {
     let (scheme, rest) = match url.find("://") {
         Some(i) => url.split_at(i + 3),
@@ -104,14 +67,9 @@ pub enum FetchOutcome {
     Warned { url: String, error: String },
 }
 
-/// The injected download callback: URL in, tarball bytes out (or an error message). The engine wires
-/// this to its HTTP client under the SSRF denylist.
 pub type Downloader<'a> = dyn Fn(&str) -> Result<Vec<u8>, String> + 'a;
 
-/// Fetch every `spec` into `dir`. See the module doc for the full contract. On boot
-/// (`fatal_on_miss = true`) any problem aborts with `Err(messages)`; on reload it is collected as a
-/// [`FetchOutcome::Warned`] and the call still succeeds.
-#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[cold]
 #[inline(never)]
 pub fn fetch_plugins(
     dir: &Path,
@@ -123,8 +81,6 @@ pub fn fetch_plugins(
     let mut errors = Vec::new();
 
     for spec in specs {
-        // A problem is FATAL at boot (collected into `errors`) and a WARN at reload (recorded as a
-        // Warned outcome so serving continues). Either way `dir` is left untouched.
         let record_problem = |errors: &mut Vec<String>,
                               outcomes: &mut Vec<FetchOutcome>,
                               msg: String| {
@@ -133,8 +89,6 @@ pub fn fetch_plugins(
             if fatal_on_miss {
                 errors.push(error);
             } else {
-                // The URL as a log may repeat it (H10): no userinfo, no query, in either field,
-                // here and in the recorded outcome (which the kernel logs as its reload miss).
                 tracing::warn!(url = %shown, %error, "plugin fetch problem (reload); keeping the current artifact");
                 outcomes.push(FetchOutcome::Warned {
                     url: shown.into_owned(),
@@ -143,8 +97,6 @@ pub fn fetch_plugins(
             }
         };
 
-        // Refuse a filename that is not a single normal component BEFORE any join — otherwise a
-        // `../../evil` or absolute `filename` escapes `dir` at the probe/write sites below.
         if !filename_is_single_component(&spec.filename) {
             record_problem(
                 &mut errors,
@@ -160,8 +112,6 @@ pub fn fetch_plugins(
 
         let target = dir.join(&spec.filename);
 
-        // Cache-by-pin: a pinned target already hashing to the pin means the exact signed bytes are
-        // already on disk — never touch the network.
         if let Some(pin) = &spec.sha256 {
             if let Ok(existing) = std::fs::read(&target) {
                 if sha256_hex(&existing).eq_ignore_ascii_case(pin) {
@@ -173,7 +123,6 @@ pub fn fetch_plugins(
             }
         }
 
-        // Download.
         let bytes = match download(&spec.url) {
             Ok(b) => b,
             Err(e) => {
@@ -182,7 +131,6 @@ pub fn fetch_plugins(
             }
         };
 
-        // Verify-before-write: a mismatched download is NEVER written.
         if let Some(pin) = &spec.sha256 {
             let got = sha256_hex(&bytes);
             if !got.eq_ignore_ascii_case(pin) {
@@ -195,8 +143,6 @@ pub fn fetch_plugins(
             }
         }
 
-        // A refetch of identical installed bytes is not a new install. New bytes must pass
-        // install-time freshness, but this check never grants trust: the scan verifies the seal.
         let unchanged = std::fs::read(&target)
             .is_ok_and(|installed| sha256_hex(&installed) == sha256_hex(&bytes));
         if !unchanged {
@@ -207,8 +153,6 @@ pub fn fetch_plugins(
             }
         }
 
-        // Durable write via the single owner (`crate::durable`): temp -> fsync -> atomic rename ->
-        // parent fsync; no partial or wrong file ever appears at the target.
         match crate::durable::write(&dir.join(&spec.filename), &bytes).map_err(|e| e.to_string()) {
             Ok(()) => outcomes.push(FetchOutcome::Fetched {
                 filename: spec.filename.clone(),
@@ -224,8 +168,6 @@ pub fn fetch_plugins(
     }
 }
 
-/// Refuse expired first-party seals in new downloads without authenticating or granting them.
-/// Unsealed or unreadable archives are left to the scan's structural and trust checks.
 fn fresh(bytes: &[u8]) -> Result<(), crate::release_trust::SealRefusal> {
     let Ok(unpacked) = crate::tarball::unpack(bytes) else {
         return Ok(());

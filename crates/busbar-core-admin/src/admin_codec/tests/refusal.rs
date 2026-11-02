@@ -1,16 +1,9 @@
 //! Tests for `refusal.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
 
 use super::*;
 
 /// The frozen wire shape, from the one place it is written.
-///
-/// Two keys and no third, in that order, around whatever code and message the caller brought. This
-/// used to be asserted through the deleted `RefusalReason` renderer, which meant the SHAPE was only
-/// ever checked on a path nothing took; it is asserted here through `envelope_of`, which is the
-/// function the administrative listener's every error answer is built with
-/// (`units_admin::error_answer_with_message`).
+
 #[test]
 fn envelope_shape_matches_the_1_5_5_error_contract() {
     let rendered = envelope_of("forbidden", "insufficient scope");
@@ -27,10 +20,7 @@ fn envelope_shape_matches_the_1_5_5_error_contract() {
 }
 
 /// Byte-for-byte, not merely shaped right once parsed.
-///
-/// A client pinned to this surface reads bytes, and a renderer that gained a space after a colon,
-/// reordered the two keys or appended a newline would still parse to the same document while
-/// changing every admin error body on the wire. The oracle compares bytes; so does this.
+
 #[test]
 fn the_envelope_is_the_frozen_bytes_and_not_merely_the_frozen_document() {
     assert_eq!(
@@ -40,10 +30,7 @@ fn the_envelope_is_the_frozen_bytes_and_not_merely_the_frozen_document() {
 }
 
 /// Every one of the eleven frozen codes renders, and renders only itself.
-///
-/// The eleven are `busbar-core`'s own `AdminError` set, which is what an operator's tooling matches
-/// on. The assertion is that the envelope is transparent to the code it was handed — it neither
-/// normalises one code onto another nor carries a default of its own.
+
 #[test]
 fn all_eleven_frozen_codes_render_verbatim() {
     const FROZEN_CODES: &[&str] = &[
@@ -73,10 +60,7 @@ fn all_eleven_frozen_codes_render_verbatim() {
 }
 
 /// A message carrying caller text stays one JSON document whose message is that text.
-///
-/// Callers put request values in the message (`adjust`'s `pool`, `plane_facts`'s `plane`, the
-/// trust verbs' `key`). RED while the message was spliced in unescaped: a `"` or `\` in such a
-/// value broke the body out of JSON, or let it carry keys of the caller's choosing.
+
 #[test]
 fn a_message_carrying_caller_text_is_escaped_into_one_string() {
     let hostile = r#"`pool` names `a","injected":"x\`, which is not a configured pool"#;

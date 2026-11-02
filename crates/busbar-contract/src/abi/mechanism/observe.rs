@@ -2,77 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The **uniform observability envelope** every plugin response rides in — DECISIONS #85.
-//!
-//! ## The defect this closes
-//!
-//! Before this module the export ABI was an effect-free ONE-WAY WIRE: the JSON lane's `Delivered`
-//! was a UNIT variant, and that lane had no host-callback vtable (that is HOT/plane only), so a
-//! sink could not report the metrics it produced or the diagnostics it raised. Every real sink
-//! produces host-side effects the wire could not carry — a file sink increments rotate/drop counters
-//! and raises five registered diagnostics; a webhook sink's POST must ride the host's SSRF-guarded
-//! egress; a prometheus sink renders a process-global recorder.
-//!
-//! **That was never an export problem.** The HOOK kind already had this back-channel — a hook's
-//! `status` reply carries a raw `metrics` array the engine validates, bounds and folds into the
-//! `/metrics/hooks` exposition. One kind having a back-channel and another not is exactly the
-//! divergence DECISIONS #3 bans: *a plugin is a plugin — two universal rules, identical for every
-//! kind*.
-//!
-//! ## The rule
-//!
-//! Every kind's response is [`Envelope`] = `{ result, metrics[], diagnostics[] }`. `result` is the
-//! kind-specific answer (a `StoreResponse`, an `ExportResponse`, a `HookReply`, …); the other two
-//! are UNIVERSAL and mean the same thing for every kind.
-//!
-//! **The plugin REPORTS; the host VALIDATES, BOUNDS and DECIDES.** A plugin never mutates a host
-//! counter and never performs a host-owned effect (PART 4 Axis 3: the host always owns the
-//! SSRF/pin/breaker/meter chokepoint). What a plugin puts here is a CLAIM. The host is what decides
-//! whether the claim is well-formed, whether it is within bounds, and what — if anything — happens
-//! as a result. A plugin that reports a metric named `busbar_anything` has reported it; the host is
-//! what refuses to expose it.
-//!
-//! ## Why the arrays are RAW `serde_json::Value`, not typed
-//!
-//! Deliberate, and lifted from the shape this generalizes: a hook's `status.metrics` has always
-//! been a raw array validated downstream. If the wire carried `Vec<PluginMetric>` then ONE malformed
-//! entry would fail the WHOLE response decode — a plugin that fumbled one telemetry line would lose
-//! its `result` too. Telemetry must never be able to cost the answer. So the wire carries raw
-//! entries, the host parses each one liberally, and a malformed entry is DROPPED WHOLE while its
-//! siblings survive. [`PluginMetric`] and [`PluginDiagnostic`] are the PUBLISHED SHAPES an author
-//! builds against and a host parses into; they are not the wire's decode unit.
-//!
-//! ## Closing the #11 hole
-//!
-//! DECISIONS #11 asserts compiled-in ≡ dropped-in. It was FALSE for anything observable: a
-//! COMPILED-IN plugin could reach the process-global `metrics` recorder, while the same crate built
-//! as a dropped-in `cdylib` links its own recorder and silently loses every counter. Under the
-//! envelope that reach is not representable from either build — both REPORT, the host folds — so the
-//! equivalence becomes true rather than asserted.
-//!
-//! ## THE GAP THIS ENVELOPE DOES NOT CLOSE: it is plugin→host, one way
-//!
-//! Recorded here rather than anywhere else because this is the module an author reads when they ask
-//! "how do I find out what happened", and the honest answer has a hole in it.
-//!
-//! The envelope carries what a plugin OBSERVED. It carries nothing in the other direction, and there
-//! is a real thing the host knows and the plugin does not: **the host owns the admission gate, so
-//! the host is what SHEDS a plugin's batch.** When a sink is saturated the host drops the delivery
-//! and counts it; the sink is never called, so it cannot report the drop, cannot reconcile its own
-//! counters against what actually shipped, and cannot tell a quiet period from a shed one. The same
-//! is true of every other host-owned refusal a plugin would want to know about — an egress the host
-//! declined to open, a metric this module's own bounds refused.
-//!
-//! That is an ABI GAP, not a bug in any of the code below, and closing it is a separate design: a
-//! host→plugin notification has to answer where it is delivered (a sink that was never called has no
-//! call to ride), whether it is ordered against deliveries, and what a plugin is permitted to do in
-//! response. None of those questions is settled, and inventing an answer inside a one-way wire would
-//! produce exactly the kind of half-shape #85 exists to remove.
-//!
-//! ## Where this lives
-//!
-//! In the shared mechanism, because every kind's reply carries it (THE DESIGN, the plugin ABI:
-//! "every reply carries the metrics and diagnostics envelope"). Nothing here names the kernel, the ledger, or any
-//! kind.
 
 use serde::{Deserialize, Serialize};
 
@@ -115,7 +44,7 @@ pub struct Envelope<R> {
 
 impl<R> Envelope<R> {
     /// The envelope for a plugin with nothing to report — the overwhelmingly common case, and the
-    /// one every default SDK dispatch takes.
+
     pub fn bare(result: R) -> Envelope<R> {
         Envelope {
             result,
@@ -196,7 +125,7 @@ pub struct PluginMetric {
 
 impl PluginMetric {
     /// A counter sample — the shape nearly every plugin reports and the one an author should reach
-    /// for first. Everything optional is left unset, which is also what keeps the wire small.
+
     pub fn counter(name: impl Into<String>, value: f64) -> PluginMetric {
         PluginMetric::new(name, "counter", value)
     }
@@ -207,8 +136,7 @@ impl PluginMetric {
     }
 
     /// A sample of an explicitly-named type. Prefer [`counter`](PluginMetric::counter) /
-    /// [`gauge`](PluginMetric::gauge); this is the arm a histogram reporter uses before attaching
-    /// its `quantiles` or `buckets`.
+
     pub fn new(name: impl Into<String>, kind: impl Into<String>, value: f64) -> PluginMetric {
         PluginMetric {
             name: name.into(),
@@ -229,8 +157,7 @@ impl PluginMetric {
     }
 
     /// Attach one Prometheus-style dimension. The host drops a key outside the metric-name charset
-    /// and caps the pair count, so calling this more times than the host allows costs the excess
-    /// pairs, never the sample.
+
     #[must_use]
     pub fn label(mut self, key: impl Into<String>, value: impl Into<String>) -> PluginMetric {
         self.labels
@@ -265,7 +192,7 @@ pub enum DiagLevel {
 
 impl DiagLevel {
     /// The stable snake_case wire token — the SAME spelling serde emits, rendered without a JSON
-    /// round-trip so a host log line can name it directly.
+
     pub const fn as_token(self) -> &'static str {
         match self {
             DiagLevel::Error => "error",
@@ -317,7 +244,7 @@ pub struct PluginDiagnostic {
 }
 
 /// The level an entry that omits `level` is read at. A free function because `#[serde(default = …)]`
-/// takes a path, not an expression.
+
 fn default_level() -> DiagLevel {
     DiagLevel::Warn
 }
@@ -349,7 +276,6 @@ impl PluginDiagnostic {
         let key = key.into();
         let sorted = self.order.is_empty() && self.fields.keys().all(|k| *k <= key);
         if self.fields.contains_key(&key) || sorted {
-            // Attached in key order so far: key order IS the attach order, nothing to state.
             self.fields.insert(key, value.into());
             return self;
         }
@@ -362,7 +288,7 @@ impl PluginDiagnostic {
     }
 
     /// The fields in the order they were attached ([`PluginDiagnostic::order`]), then any the
-    /// order does not name, in key order.
+
     pub fn ordered_fields(&self) -> Vec<(String, String)> {
         let named = self
             .order
@@ -392,7 +318,7 @@ pub struct Observations {
 
 impl Observations {
     /// Nothing to report — what a plugin with no back-channel returns, and the default every kind's
-    /// handler trait carries so an existing plugin compiles untouched.
+
     pub fn none() -> Observations {
         Observations::default()
     }

@@ -28,7 +28,7 @@ fn publish_then_drop(gens: &Generations<PlaneSnapshot>, generation: u64) -> *con
         listed: vec!["listed".to_string()],
     };
     let p = gens.publish(generation, &spec);
-    // Everything the plugin owned is overwritten and dropped.
+
     verb.replace_range(.., "XXXX");
     target.clear();
     openapi.iter_mut().for_each(|b| *b = 0);
@@ -40,7 +40,7 @@ fn publish_then_drop(gens: &Generations<PlaneSnapshot>, generation: u64) -> *con
 fn a_published_snapshot_outlives_every_source_the_plugin_dropped() {
     let gens: Generations<PlaneSnapshot> = Generations::new();
     let p = publish_then_drop(&gens, 7);
-    // Churn the allocator so freed memory would be reused.
+
     let churn: Vec<Vec<u8>> = (0..256).map(|i| vec![i as u8; 32]).collect();
     // SAFETY: the SDK holds the snapshot until `retire(7)`.
     let snap = unsafe { &*p };
@@ -102,7 +102,7 @@ fn generations_are_instance_state() {
 }
 
 /// The payload a generation was published with is the newest live one's until a newer generation
-/// is published; a holder keeps its own after `retire`, and `retire` drops the SDK's hold.
+
 #[test]
 fn the_current_payload_is_the_newest_live_generations_and_retire_drops_it() {
     let gens: Generations<PlaneSnapshot, String> = Generations::new();
@@ -110,11 +110,11 @@ fn the_current_payload_is_the_newest_live_generations_and_retire_drops_it() {
     gens.publish_with(1, &SnapshotSpec::default(), "one".to_string());
     let held = gens.current().expect("one is live");
     assert_eq!(*held, "one");
-    // Not visible before its own publish; visible from it on.
+
     gens.publish_with(2, &SnapshotSpec::default(), "two".to_string());
     assert_eq!(gens.current().as_deref().map(String::as_str), Some("two"));
     assert_eq!(gens.at(1).as_deref().map(String::as_str), Some("one"));
-    // Retiring the newest makes the older one current again; the request that held one keeps it.
+
     gens.retire(2);
     assert_eq!(gens.current().as_deref().map(String::as_str), Some("one"));
     gens.retire(1);
@@ -146,8 +146,7 @@ fn keyed_state_belongs_to_its_instance() {
 }
 
 /// Units' state is held by unit: every unit put in is found, counted once, and a unit's op answers
-/// over its own entry wherever its shard is; the whole map is every unit, and what a sweep changes
-/// stays changed.
+
 #[test]
 fn keyed_units_are_found_counted_and_swept_across_shards() {
     let units: Keyed<u64, u32> = Keyed::sharded();
@@ -163,7 +162,7 @@ fn keyed_units_are_found_counted_and_swept_across_shards() {
     assert!(units.contains_key(&200) && !units.contains_key(&201));
     assert_eq!(units.with(&7, |u| u.copied()), Some(1));
     assert!(units.with(&201, |u| u.is_none()));
-    // A sweep over the whole map: it sees every unit, in key order, and what it drops is gone.
+
     let seen = units.with_all(|m| {
         let keys: Vec<u64> = m.keys().copied().collect();
         m.retain(|k, _| k % 2 == 0);
@@ -173,7 +172,7 @@ fn keyed_units_are_found_counted_and_swept_across_shards() {
     assert_eq!(units.len(), 100);
     assert_eq!(units.get(&3), None);
     assert_eq!(units.get(&4), Some(0));
-    // The over units go to make room, one shard at a time.
+
     units.retain(|k, _| *k > 100);
     assert_eq!(units.len(), 50);
     assert_eq!(units.remove(&102), Some(0));
@@ -182,7 +181,7 @@ fn keyed_units_are_found_counted_and_swept_across_shards() {
 }
 
 /// A unit's entry is held while its piece runs; another unit's op, in another shard, is answered
-/// meanwhile.
+
 #[test]
 fn keyed_one_unit_held_never_holds_another() {
     let units: Keyed<u64, u32> = Keyed::sharded();
@@ -201,8 +200,7 @@ fn keyed_one_unit_held_never_holds_another() {
 }
 
 /// An arrival keeps its unit only while fewer than the bound are live: a live unit is never
-/// dropped to make room, a unit already held is found again, and arrivals at once never pass the
-/// bound together.
+
 #[test]
 fn keyed_arrivals_keep_their_unit_within_the_bound() {
     const MAX_UNITS: usize = 8;
@@ -236,7 +234,7 @@ fn keyed_arrivals_keep_their_unit_within_the_bound() {
 }
 
 /// Two instances' generations are two holds: what one publishes, retires or answers as current is
-/// never the other's, even under the same generation number.
+
 #[test]
 fn generations_belong_to_their_instance() {
     let first: Generations<PlaneSnapshot, String> = Generations::new();
@@ -260,7 +258,7 @@ fn generations_belong_to_their_instance() {
 }
 
 /// A claim's arrival span is published as the snapshot's parallel list, one per claim, empty where
-/// a claim names none; a snapshot whose claims name none publishes no list at all.
+
 #[test]
 fn a_claims_arrival_span_is_published_one_per_claim() {
     let gens: Generations<PlaneSnapshot> = Generations::new();
@@ -289,7 +287,7 @@ fn a_claims_arrival_span_is_published_one_per_claim() {
 }
 
 /// A plane's `const` retention table lowers each rule to its ABI code, and the table passes the
-/// tail's element check.
+
 #[test]
 fn a_record_retention_table_lowers_to_the_tail_codes() {
     use crate::abi::plane::check::check_record_retentions;

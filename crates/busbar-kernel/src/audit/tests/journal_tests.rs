@@ -22,12 +22,6 @@ use busbar_contract::records::{
 };
 use std::sync::{Arc, Mutex};
 
-// ── A WRITABLE MOCK STORE ───────────────────────────────────────────────────────────────────────
-//
-// Holds appended bodies per parent, honours the append semantics the journal relies on, and can be
-// told to fail appends (the write-ordering axis) or to have one of its rows tampered (the tamper
-// axis) — the only two ways this file simulates a hostile backend.
-
 #[derive(Default)]
 struct MockStore {
     rows: Mutex<Vec<PlaneRecord>>,
@@ -41,10 +35,7 @@ impl MockStore {
     fn set_failing(&self, on: bool) {
         *self.fail_appends.lock().unwrap() = on;
     }
-    /// Corrupt the first stored NEUTRAL row's body so its chain no longer verifies, while leaving the
-    /// body a perfectly DECODABLE [`super::NeutralBody`] — so the resume reads it back as a real record
-    /// and the failure is a chain BREAK, not an unreadable row. Changes a digest-covered field
-    /// (`content`) and leaves the stored `hash` stale.
+
     fn tamper_first_neutral(&self) {
         let mut rows = self.rows.lock().unwrap();
         if let Some(r) = rows.first_mut() {
@@ -119,8 +110,7 @@ impl PlaneStore for MockStore {
     ) -> RecordStoreResult<bool> {
         Ok(true)
     }
-    /// The multi-use capability check. `false` — the fail-closed direction the neutral trait
-    /// defaults to — because this fixture keeps no capability rows to be live.
+
     fn plane_token_live(
         &self,
         _kind: &str,
@@ -131,12 +121,6 @@ impl PlaneStore for MockStore {
         Ok(false)
     }
 }
-
-// ── THE NEUTRAL PATH — a record whose durable body is `{seq, prev_hash, hash, content}` ───────────
-//
-// Mirrors the shape a plane reaches over the host vtable: `content` is an opaque pre-framed suffix and
-// the digest is `frame_prelude(..) ⧺ content` fed RAW (byte-identical to the host-side journal). The
-// scope is supplied by the caller, never read from the body — so the reframe callback captures it.
 
 /// A neutral record carrying an opaque `content` suffix. Its digest is the framed prelude followed by
 /// the suffix RAW — the SAME shape `audit::stream_registry::StreamRecord` uses.
@@ -161,7 +145,7 @@ impl ChainedRecord for NeutralRec {
         chain: "the neutral test chain",
         scope: "tenant",
     };
-    // Unused for framing: `digest_fields` frames the prelude itself and appends the suffix RAW.
+
     const FRAMING: Framing = Framing::LengthPrefixed;
     fn scope_of(&self) -> &str {
         &self.tenant
@@ -204,8 +188,6 @@ impl NeutralRecord for NeutralRec {
     }
 }
 
-/// The plane-side reframe for the neutral test: decode the journal's own `NeutralBody` back into a
-/// `NeutralRec`, taking the scope from the store parent (never the body).
 fn neutral_reframe(scope: &str, body: &[u8]) -> RecordStoreResult<NeutralRec> {
     let nb: super::NeutralBody = decode(body)?;
     Ok(NeutralRec {
@@ -229,9 +211,6 @@ fn write_neutral(j: &Journal<NeutralRec>, tenant: &str, content: &[u8]) -> Neutr
     .expect("append_scoped")
 }
 
-/// The neutral durable path survives a restart: two records appended via `append_scoped` (persisting
-/// the neutral `{seq, prev_hash, hash, content}` body) are read back by a fresh journal via
-/// `restore_scoped` — chain intact, sequence resumed at 3, zero breaks — and `verify_scoped` agrees.
 #[test]
 fn neutral_records_survive_a_restart_and_the_chain_verifies() {
     let store = Arc::new(MockStore::new());
@@ -267,15 +246,10 @@ fn neutral_records_survive_a_restart_and_the_chain_verifies() {
         None,
         "the persisted neutral chain verifies"
     );
-    // Retention runs through the neutral kind (this MockStore keeps everything → 0 purged).
+
     assert_eq!(j2.compact_scoped(KIND_NEUTRAL, u64::MAX).unwrap(), 0);
 }
 
-/// A single UNDECODABLE record on the neutral restore path is COUNTED and SKIPPED, never allowed to
-/// `?`-abort the whole rehydrate. Two good records are persisted, then a garbage body the reframe
-/// callback cannot decode is appended; `restore_scoped` reframes per-record, so the two good records
-/// still restore, the bad one lands in `unreadable`, and the surviving chain still verifies (the bad
-/// body is appended last, so seq 1 -> 2 stays intact).
 #[test]
 fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
     let store = Arc::new(MockStore::new());
@@ -285,7 +259,6 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
     write_neutral(&j1, "acme", b"|second");
     drop(j1);
 
-    // Wedge in a body the reframe decode cannot parse, under the same scope.
     store
         .append_plane_record(
             PlaneRecord {
@@ -304,9 +277,7 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
     use tracing_subscriber::layer::SubscriberExt as _;
     let j2: Journal<NeutralRec> = Journal::new(1024);
     j2.set_sink(store.clone());
-    // The skip must be LOUD, not merely counted: capture the ERROR diagnostics and assert the coded
-    // site diagnostic (`PLANE_JOURNAL_ROW_UNREADABLE`, BUSBAR-2046) actually FIRES on the bad row.
-    // A count with no guaranteed log sink is exactly the regression this pins.
+
     let cap = DiagCapture::default();
     let restored = {
         let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -337,16 +308,10 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
     );
 }
 
-/// A scope whose rows are ALL undecodable is NOT an `empty_scope`. RF3: an enumerated-but-empty
-/// scope (a wholesale deletion of one scope's evidence — the store returned nothing) is a DIFFERENT
-/// condition from a scope the store returned rows for that this build simply cannot decode. The
-/// former is an `empty_scope`; the latter is `unreadable` and must not be mislabelled as empty, so
-/// the two counts stay independent and an operator is not told "no evidence here" when the truth is
-/// "evidence present but unreadable".
 #[test]
 fn a_scope_with_only_undecodable_rows_is_unreadable_not_empty() {
     let store = Arc::new(MockStore::new());
-    // The store RETURNED rows for "acme" — two of them — but neither decodes.
+
     for seq in 1..=2 {
         store
             .append_plane_record(
@@ -383,8 +348,6 @@ fn a_scope_with_only_undecodable_rows_is_unreadable_not_empty() {
     );
 }
 
-/// Neutral write-ordering: a failed durable append does not burn a sequence on the neutral path
-/// either — the retry reuses the sequence the failed write did not consume.
 #[test]
 fn neutral_failed_write_does_not_burn_a_sequence() {
     let store = Arc::new(MockStore::new());
@@ -417,9 +380,6 @@ fn neutral_failed_write_does_not_burn_a_sequence() {
     assert_eq!(r.seq, 2, "the retry reuses the sequence");
 }
 
-/// TAMPER is reported and still restored: a corrupted stored row is named in `chain_breaks`, and the
-/// chain still resumes from its (broken) tail — refusing would let anyone who can write the store
-/// delete a scope's history by corrupting one byte.
 #[test]
 fn a_tampered_row_is_reported_and_still_restored() {
     let store = Arc::new(MockStore::new());
@@ -440,8 +400,6 @@ fn a_tampered_row_is_reported_and_still_restored() {
     assert_eq!(j2.next_seq("acme"), 3, "resumed from the tail, not refused");
 }
 
-/// The RAM default: with no sink, writes stay in RAM and a restore over an empty store finds nothing.
-/// The honest zero, not a papered-over one.
 #[test]
 fn no_sink_is_ephemeral() {
     let j: Journal<NeutralRec> = Journal::new(1024);
@@ -459,33 +417,27 @@ fn no_sink_is_ephemeral() {
     );
 }
 
-/// LRU + store-resume: with a cap of 2, writing to a third scope evicts the coldest, latches
-/// overflow, and the next write to the evicted scope RESUMES from its persisted tail rather than
-/// forking a second chain at seq 1.
 #[test]
 fn an_evicted_scope_resumes_from_the_store_not_from_seq_one() {
     let store = Arc::new(MockStore::new());
     let j: Journal<NeutralRec> = Journal::new(2);
     j.set_sink(store.clone());
     write_neutral(&j, "a", b"|1");
-    write_neutral(&j, "a", b"|1"); // a: seq 1,2  (most-recently-used)
+    write_neutral(&j, "a", b"|1");
     write_neutral(&j, "b", b"|1");
-    write_neutral(&j, "c", b"|1"); // inserting c evicts the coldest (b), overflow latches
+    write_neutral(&j, "c", b"|1");
     assert_eq!(j.len(), 2);
 
-    // `a` is still resident (it was used after b); write again — continues its own chain.
     assert_eq!(write_neutral(&j, "a", b"|9").seq, 3);
 
-    // Force `a` out: touch b then c again so a becomes coldest and is evicted.
-    write_neutral(&j, "b", b"|1"); // resumes b from store tail (b had seq 1) -> seq 2
-    write_neutral(&j, "c", b"|1"); // c -> seq 2; inserting pushed a out
+    write_neutral(&j, "b", b"|1");
+    write_neutral(&j, "c", b"|1");
     let ra2 = write_neutral(&j, "a", b"|8");
     assert_eq!(
         ra2.seq, 4,
         "the evicted scope resumed from its persisted tail (seq 3) and continued to 4"
     );
 
-    // The whole store verifies end to end.
     let j2: Journal<NeutralRec> = Journal::new(1024);
     let restored = j2
         .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
@@ -497,22 +449,18 @@ fn an_evicted_scope_resumes_from_the_store_not_from_seq_one() {
     );
 }
 
-/// RUNTIME resume-path tamper is SURFACED on the NEUTRAL path too (`append_scoped` → `resume_scoped`).
-/// Evict a scope, tamper its cold rows (kept DECODABLE so the failure is
-/// a chain break rather than an unreadable row), append to it again, and assert the break is recorded
-/// via `take_resume_breaks` while the append still lands.
 #[test]
 fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
     let store = Arc::new(MockStore::new());
     let j: Journal<NeutralRec> = Journal::new(1);
     j.set_sink(store.clone());
 
-    write_neutral(&j, "acme", b"|first"); // acme seq 1
-    write_neutral(&j, "other", b"|x"); // evicts acme, latches overflow
+    write_neutral(&j, "acme", b"|first");
+    write_neutral(&j, "other", b"|x");
     assert_eq!(j.len(), 1);
     assert!(j.take_resume_breaks().is_empty());
 
-    store.tamper_first_neutral(); // acme's cold row, still a valid NeutralBody
+    store.tamper_first_neutral();
 
     let resumed = write_neutral(&j, "acme", b"|second");
     assert_eq!(
@@ -528,13 +476,6 @@ fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
     );
 }
 
-/// AUDIT-INTEGRITY FIX: `append_scoped` hardcoded every row's `PlaneRecord::ts` to `0`, which defeats
-/// retention entirely — `purge_plane_records_before` drops any row with `r.ts < before`, so a `ts` of
-/// 0 makes every row look infinitely old and the FIRST retention sweep deletes the whole class
-/// regardless of how recently it was written. Proven over the kernel's store double, which carries
-/// the shipped RAM store's retention (not this file's in-RAM `MockStore`, whose
-/// `purge_plane_records_before` is a stub that always answers 0 and so cannot exercise this): a
-/// record appended just now must SURVIVE a retention sweep whose cutoff is safely in the past.
 #[test]
 fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     let store: Arc<dyn busbar_contract::records::RecordStore> =
@@ -544,7 +485,6 @@ fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     j.set_sink(plane_store);
     write_neutral(&j, "acme", b"|fresh");
 
-    // A cutoff safely BEFORE "now": a record written during this test must be newer than it.
     let cutoff = busbar_kernel::store::now().saturating_sub(3600);
     let purged = store
         .purge_plane_records(
@@ -569,12 +509,6 @@ fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     );
 }
 
-/// ITEM 274: `forget` dropped a scope's cached position WITHOUT latching `overflowed`, and both resume
-/// paths short-circuit to a fresh seq-1 chain while `overflowed` is false. On a `usize::MAX` stream —
-/// the cap `journal_register` hardcodes for every ABI-registered stream, whose LRU therefore never
-/// latches it — a forget-then-append minted a SECOND seq-1 row beside the store's seq 1..N, and every
-/// subsequent restore reported busbar's own write as a chain break. The append must instead resume from
-/// the persisted tail, and the store's chain must still verify end to end.
 #[test]
 fn a_forgotten_scope_on_an_uncapped_stream_resumes_from_the_store_not_seq_one() {
     let store = Arc::new(MockStore::new());
@@ -598,20 +532,12 @@ fn a_forgotten_scope_on_an_uncapped_stream_resumes_from_the_store_not_seq_one() 
         restored.chain_breaks
     );
 
-    // Without a sink there is no durable log to fork: a fresh chain stays the honest answer.
     let bare: Journal<NeutralRec> = Journal::new(usize::MAX);
     write_neutral(&bare, "acme", b"|one");
     bare.forget("acme");
     assert_eq!(write_neutral(&bare, "acme", b"|again").seq, 1);
 }
 
-/// **A CHAIN ANOTHER NODE ADVANCED IS CONTINUED, NOT FORKED.** Two nodes append to one scope over
-/// one store. The first node's cached position is stale once the second has written; the store
-/// refuses its append (a fork at a used sequence), and the next append must resume from the store's
-/// tail. The chain in the store verifies end to end.
-///
-/// RED while a refused write kept the stale position: the retry wrote the used sequence again and
-/// the stored chain broke (a store that refuses forks refused every append after, until restart).
 #[test]
 fn a_chain_another_node_advanced_is_continued_after_a_refused_write() {
     let store = Arc::new(MockStore::new());
@@ -620,10 +546,10 @@ fn a_chain_another_node_advanced_is_continued_after_a_refused_write() {
     let b: Journal<NeutralRec> = Journal::new(usize::MAX);
     b.set_sink(store.clone());
     write_neutral(&a, "acme", b"|one");
-    // Node b has not seen the scope: it resumes from the store and writes the next sequence.
+
     b.forget("acme");
     assert_eq!(write_neutral(&b, "acme", b"|two").seq, 2);
-    // Node a's cached position is stale; the store refuses its write as a fork.
+
     store.set_failing(true);
     assert!(a
         .append_scoped(

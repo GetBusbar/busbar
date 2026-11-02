@@ -26,19 +26,14 @@ use super::*;
 use crate::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
 use std::sync::Arc;
 
-/// The build's store fixture (reached by kind), as the published operations' backing.
 fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
     Arc::from(crate::both_ways::store_fixture::open("{}").expect("the store fixture opens"))
 }
 
-/// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
-/// constructor the composition root calls.
 fn adapter_over_published_schema() -> StoreAdapter {
     StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA)
 }
 
-/// The sealed cache: a first sighting is `None` and RESERVES the slot, a commit fixes the bytes,
-/// and a replay returns exactly those bytes — the whole point of the seam.
 #[test]
 fn the_verb_seam_replay_cache_reserves_then_replays_the_committed_bytes() {
     let adapter = adapter_over_published_schema();
@@ -97,7 +92,6 @@ impl TestClock {
     }
 }
 
-/// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
 fn adapter_at(clock: &TestClock) -> StoreAdapter {
     StoreAdapter::with_clock(backing(), PUBLISHED_STORE_SCHEMA, clock.shim_clock())
 }
@@ -106,7 +100,6 @@ fn replay_key(name: &str) -> (String, String) {
     ("set_operator_key".to_string(), name.to_string())
 }
 
-/// Inside the window the shim is a replay cache: the committed bytes come back.
 #[test]
 fn a_replay_inside_the_window_returns_the_committed_bytes() {
     let clock = TestClock::default();
@@ -124,9 +117,6 @@ fn a_replay_inside_the_window_returns_the_committed_bytes() {
     );
 }
 
-/// Past the window the slot is gone: it no longer answers, and it is no longer held. A cache with no
-/// ceiling would keep every response of every credential-minting verb the node ever served, for the
-/// life of the process — a map that grows with exactly the traffic it exists to serve.
 #[test]
 fn a_slot_past_the_window_is_neither_answered_nor_held() {
     let clock = TestClock::default();
@@ -168,8 +158,6 @@ fn a_slot_past_the_window_is_neither_answered_nor_held() {
     );
 }
 
-/// The published operations are not touched by the adapter: the store it hands out is the loaded
-/// plugin, and its rows are the plugin's.
 #[test]
 fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
     let adapter = adapter_over_published_schema();

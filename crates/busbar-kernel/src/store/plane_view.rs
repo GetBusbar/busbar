@@ -1,64 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE STORE SEAM — the narrowing adapter that lets a plane persist its own trust state
-//! WITHOUT ever holding a handle that can write the append-only audit chain.
-//!
-//! [`busbar_contract::records::RecordStore`] is ONE trait that carries two unrelated authorities at once: the durable
-//! governance AUDIT CHAIN (`append_audit`/`list_audit`/`list_audit_tail`) and the per-plane durable
-//! state (a plane's own kind-tagged rows, the demotion record, the spent-approval ledger). Handing a plane an `Arc<dyn Store>` to persist its rows would, by the same handle, let it
-//! append audit records and forge a record's `prev_hash`/`hash` — the one thing the chain exists to
-//! make impossible.
-//!
-//! [`PlaneStore`] is the narrower of the two. It declares ONLY the eight neutral kind-tagged
-//! PLANE-RECORD verbs (`upsert_plane_record`/`append_plane_record`/… over the [`PlaneRecord`](busbar_contract::records::PlaneRecord)
-//! envelope), and NONE of the audit-chain, credential, key, usage or metering methods.
-//!
-//! ## Neutral kind-tagged verbs, OPAQUE bodies
-//!
-//! The neutral verbs speak in an OPAQUE `body: Vec<u8>` carried on a [`PlaneRecord`](busbar_contract::records::PlaneRecord) whose every other
-//! field is a typed sidecar column. This crate names NO concrete plane record type: the mapping
-//! between a plane concept and its `kind`, and how a plane row is serialized into (and back out of)
-//! an opaque body, lives PLANE-SIDE now (each plane crate's own `to_plane_record`/`from_body`
-//! helpers). Core keeps only the neutral pieces every plane shares: the `KIND_*` tag constants and the
-//! generic `serde_json` [`encode`]/[`decode`] round-trip. The serde is `serde_json`, byte-for-byte the
-//! same the store plugins decode it with, so a body written through this seam reads back identically
-//! no matter which side of the plugin ABI persisted it.
-//!
-//! ## Digests are computed BEFORE they cross this seam
-//!
-//! Every hash-chained row a plane persists has its `prev_hash`/`hash` computed engine-side, in the
-//! chain types under [`crate::audit`], BEFORE the row reaches a store method. The store — and this
-//! wrapper — receives an already-sealed row and persists it verbatim; it never computes or recomputes
-//! a digest.
-
 use busbar_contract::records::{PlaneRecordRef, RecordStoreError, RecordStoreResult};
 
-// ── THE KIND TAG CONSTANTS (the neutral on-wire `PlaneRecord.kind` vocabulary) ───────────────────
-//
-// One constant per kind the KERNEL itself writes, so a consumer names a `kind` in exactly one place
-// and a typo is a missing symbol rather than a silently-inert string. These are the on-wire tags a
-// store branches on; they name no plane. A plane's own kinds are the plane's constants, declared in
-// its own crate, never here.
-
-/// The administrative AUDIT chain record kind — the neutral store tag the administrative mutation
-/// log's durable journal seam persists its hash-chained records under.
 pub const KIND_AUDIT: &str = "audit";
-/// The retired `usage.residual` row kind. Nothing writes it any more, but it stays a kernel kind
-/// ([`KERNEL_RECORD_KINDS`]) so no plane declaration or operator write ever lands rows under it.
+
 pub const KIND_RESIDUAL: &str = "usage_residual";
-/// The trust demotion record kind.
+
 pub const KIND_DEMOTION: &str = "demotion";
-/// The operator's trust decisions (the core-admin `/admin/trust` approve and revoke), one row per
-/// trust key, replayed at admit: core-neutral, every plane's.
+
 pub const KIND_TRUST_DECISION: &str = "trust_decision";
 
-/// EVERY KIND THE KERNEL KEEPS ITS OWN ROWS UNDER in the store's plane records. The kernel is the
-/// only writer of these rows: a plane keeps its own records on the host record leg, scoped by its
-/// instance label, and an operator's `plane_record_write` lands under [`plane_owned_kind`]. A plane
-/// may still DECLARE one of these (plane-mcp declares `demotion`, naming the plane whose instance
-/// the kernel's unprefixed 1.5.5 demotion rows replay to), but nothing written in a plane's name
-/// ever lands on them.
 pub const KERNEL_RECORD_KINDS: &[&str] = &[
     KIND_AUDIT,
     KIND_RESIDUAL,
@@ -67,32 +19,18 @@ pub const KERNEL_RECORD_KINDS: &[&str] = &[
     crate::governance::TICKET_RECORD_KIND,
 ];
 
-/// The label every plane-owned kind in the store's plane records begins with. It opens with a
-/// control character, which no kernel kind, plane key or declared kind holds, so a plane-owned kind
-/// is never a kernel kind (nor the authorization server's, which opens `"\u{1}oauth_as\u{1}"`).
 const PLANE_OWNED_LABEL: &str = "\u{1}plane\u{1}";
 
-/// THE STORE KIND OF THE ROWS PLANE `plane` KEEPS UNDER ITS DECLARED KIND `kind` in the store's
-/// plane records: `"\u{1}plane\u{1}<plane>\u{1}<kind>"`. Two planes declaring one kind keep two
-/// kinds' rows, and no plane's rows are a kernel kind's ([`KERNEL_RECORD_KINDS`]). `None` when
-/// either name is empty or holds a control character: only names without one keep the scope
-/// unambiguous.
 #[must_use]
 pub fn plane_owned_kind(plane: &str, kind: &str) -> Option<String> {
     let fit = |s: &str| !s.is_empty() && !s.chars().any(char::is_control);
     (fit(plane) && fit(kind)).then(|| format!("{PLANE_OWNED_LABEL}{plane}\u{1}{kind}"))
 }
 
-/// Serialize a typed plane row into an opaque [`PlaneRecord::body`](busbar_contract::records::PlaneRecord::body). `serde_json`, matching the store
-/// plugins' decode, so the bytes round-trip identically across the plugin ABI. Generic over any
-/// `Serialize`, so this names no plane type — the caller supplies whatever neutral or plane-owned row
-/// it is persisting.
 pub fn encode<T: serde::Serialize>(row: &T) -> RecordStoreResult<Vec<u8>> {
     serde_json::to_vec(row).map_err(|e| RecordStoreError(format!("plane body encode: {e}")))
 }
 
-/// Decode an opaque [`PlaneRecord::body`](busbar_contract::records::PlaneRecord::body) back into its typed plane row — the exact inverse of
-/// [`encode`]. A malformed body is a STORE ERROR the caller sees, never a silently-dropped read.
 pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<T> {
     serde_json::from_slice(body).map_err(|e| RecordStoreError(format!("plane body decode: {e}")))
 }
@@ -104,40 +42,30 @@ mod plane_view_tests;
 use busbar_contract::records::{PlaneSelector, RecordStore, Retention};
 use std::sync::Arc;
 
-/// The PLANE-FACING durable sink: exactly the eight neutral kind-tagged verbs of
-/// [`busbar_contract::records::RecordStore`], and provably none of its audit-chain / key / credential / usage authority.
-/// A plane persists its trust state through this and cannot reach [`RecordStore::append_audit`] because the
-/// method is not on the trait.
-///
-/// The method names and signatures MIRROR `Store`'s neutral verbs so a `Store` implementation
-/// forwards to them one-to-one (see [`PlaneStoreView`]); the mirroring is deliberate and is NOT a
-/// modification of `Store` — this is an additional, strictly-narrower trait owned by core.
 pub trait PlaneStore: Send + Sync + 'static {
-    /// See [`RecordStore::upsert_plane_record`] — the neutral upsert.
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
-    /// See [`RecordStore::get_plane_record`] — the neutral point read.
+
     fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>>;
-    /// See [`RecordStore::append_plane_record`] — the neutral append.
+
     fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
-    /// See [`RecordStore::list_plane_records`] — the neutral list (kind × selector).
+
     fn list_plane_records(
         &self,
         kind: &str,
         selector: &PlaneSelector,
     ) -> RecordStoreResult<Vec<Vec<u8>>>;
-    /// See [`RecordStore::list_plane_record_parents`] — the neutral parent enumeration.
+
     fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>>;
-    /// See [`RecordStore::purge_plane_records`] — the neutral retention purge, ever under the rule
-    /// the kind's owner declared ([`Retention`]): the one purge this seam carries.
+
     fn purge_plane_records(
         &self,
         kind: &str,
         before: u64,
         retention: Retention,
     ) -> RecordStoreResult<u64>;
-    /// See [`RecordStore::delete_plane_record`] — the neutral delete.
+
     fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()>;
-    /// See [`RecordStore::redeem_plane_token`] — the neutral single-use test-and-set.
+
     fn redeem_plane_token(
         &self,
         kind: &str,
@@ -145,8 +73,7 @@ pub trait PlaneStore: Send + Sync + 'static {
         expires_at: u64,
         now: u64,
     ) -> RecordStoreResult<bool>;
-    /// See [`RecordStore::plane_token_live`] — the neutral MULTI-USE capability check:
-    /// live while the record is present, still `Active`, and inside its deadline. Spends nothing.
+
     fn plane_token_live(
         &self,
         kind: &str,
@@ -156,19 +83,9 @@ pub trait PlaneStore: Send + Sync + 'static {
     ) -> RecordStoreResult<bool>;
 }
 
-/// The one bridge across the plane store seam: wraps the real [`busbar_contract::records::RecordStore`] and forwards
-/// each neutral verb to it, exposing ONLY [`PlaneStore`]. Boot builds one per configured store via
-/// [`PlaneStoreView::narrow`] and every plane state type holds the resulting `Arc<dyn PlaneStore>`,
-/// so a plane's durable writes reach the same backend the engine uses while its handle carries none
-/// of the audit-chain authority `Store` also holds.
-///
-/// No `Debug`: `dyn Store` is deliberately not `Debug` (a backend must not be obliged to render
-/// itself, where a credential could surface in a log), so neither is this.
 pub struct PlaneStoreView(Arc<dyn RecordStore>);
 
 impl PlaneStoreView {
-    /// Narrow a real store handle to a plane-facing one. The ONLY place an `Arc<dyn Store>` becomes
-    /// an `Arc<dyn PlaneStore>`; called once per configured store at boot.
     pub fn narrow(store: Arc<dyn RecordStore>) -> Arc<dyn PlaneStore> {
         Arc::new(Self(store))
     }

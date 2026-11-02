@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The audit unit's batteries that mint the kernel's tokens.
-
 mod amend_tests;
 mod digest_framing_tests;
 mod journal_tests;

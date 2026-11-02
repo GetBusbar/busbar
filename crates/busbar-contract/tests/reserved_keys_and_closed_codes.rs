@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The two closed lists this crate exists to pin: the fact keys the kernel reserves, and the codes
-//! a transport is allowed to end something with.
-//!
-//! Both were declarations nothing read back. `facts::RESERVED` was a list, `is_reserved` a lookup
-//! into it and `undeclared` the registration check built on the lookup — and no test named a single
-//! one of the six spellings, so a key renamed, dropped from the list, or answered for by a check
-//! that had quietly inverted its condition all still passed. A reserved key that stops being
-//! recognised is a value a plane reads and no boot check knows about, which is the exact failure the
-//! module says it exists to make impossible.
-//!
-//! The closed codes are the same claim on the other axis: each maps one-to-one onto a unit end, so
-//! the set has to be complete and each member has to render as itself. The exhaustive matches below
-//! are the totality half — a code added to any of these enums stops this file compiling until
-//! somebody says what it renders as — and the rendering assertions are the other half.
 
 use busbar_contract::transport::registry::{facts, status_ns};
 use busbar_contract::transport::{
@@ -22,13 +9,8 @@ use busbar_contract::transport::{
     TransportError, Unit0Trigger, WireStatus, WireStatusClass,
 };
 
-// ── the reserved fact keys ───────────────────────────────────────────────────────────────────────
-
 /// The six spellings, written out here rather than read off the constants.
-///
-/// A test that compared `facts::PATH` against `facts::PATH` would agree with itself for free: the
-/// point of the list is that three planes each guessed `"path"`, so the guess is what has to be
-/// pinned. These literals are that guess, recorded once.
+
 const SPELLINGS: [(&str, &str); 6] = [
     ("PATH", "path"),
     ("METHOD", "method"),
@@ -68,8 +50,7 @@ fn a_reserved_key_is_recognised_and_a_transports_own_key_is_not() {
     for (name, wire) in SPELLINGS {
         assert!(facts::is_reserved(wire), "{name} is not recognised");
     }
-    // The other side of the answer, without which "reserved" is a function that says yes to
-    // everything: a transport's own vocabulary is open, and none of it is the kernel's.
+
     for own in ["x-request-id", "Path", "path ", "", "peer_addr"] {
         assert!(
             !facts::is_reserved(own),
@@ -80,13 +61,11 @@ fn a_reserved_key_is_recognised_and_a_transports_own_key_is_not() {
 
 #[test]
 fn a_reserved_key_published_without_being_declared_is_the_one_that_comes_back() {
-    // The registration check: what a transport WRITES, against what it DECLARED.
     assert_eq!(
         facts::undeclared(&[facts::PATH], &[facts::PATH, facts::METHOD]),
         Some(facts::METHOD),
     );
-    // First in publication order, not first in RESERVED order — the answer names the key the
-    // registration actually tripped over.
+
     assert_eq!(
         facts::undeclared(&[], &[facts::SNI, facts::PATH]),
         Some(facts::SNI),
@@ -95,27 +74,22 @@ fn a_reserved_key_published_without_being_declared_is_the_one_that_comes_back() 
 
 #[test]
 fn a_declared_key_and_a_transports_own_key_both_pass_the_registration_check() {
-    // Declared: the transport said it publishes it, so publishing it is exactly what was promised.
-    // A check that had dropped the negation would refuse the one registration that is correct.
     assert_eq!(facts::undeclared(facts::RESERVED, facts::RESERVED), None);
     assert_eq!(
         facts::undeclared(&[facts::PATH, facts::PEER], &[facts::PEER, facts::PATH]),
         None,
     );
-    // Not reserved: none of this applies, however undeclared it is. A check reading the two
-    // conditions as an either/or would fail a transport for publishing its own vocabulary.
+
     assert_eq!(
         facts::undeclared(&[], &["x-request-id", "trace-parent"]),
         None
     );
-    // Nothing published at all: no first offender to name.
+
     assert_eq!(facts::undeclared(&[], &[]), None);
 }
 
 #[test]
 fn a_composition_refusal_says_which_transport_and_which_layer() {
-    // Each of the three is read by a human at boot, off a node that will not start. A refusal that
-    // rendered as nothing would leave the operator with an exit code.
     let unregistered = CompositionError::UnregisteredLayer {
         transport: "dgram",
         layer: "udp",
@@ -144,13 +118,8 @@ fn a_composition_refusal_says_which_transport_and_which_layer() {
     assert!(rendered.contains("two transports"), "{rendered}");
 }
 
-// ── the closed codes ─────────────────────────────────────────────────────────────────────────────
-
 /// Every transport failure, named one at a time.
-///
-/// The exhaustive match is the totality check: a failure added to the enum does not compile until it
-/// is named here, which is what "closed set, one-to-one onto a unit end" has to mean in code rather
-/// than in prose.
+
 fn every_transport_error() -> Vec<(TransportError, &'static str)> {
     use TransportError::*;
     let all = [
@@ -204,8 +173,6 @@ fn every_transport_failure_renders_as_itself_and_no_two_share_a_rendering() {
 
 #[test]
 fn a_transport_failure_is_an_error_a_caller_can_report() {
-    // `Display` is what a log line and a refusal both read; the `Error` impl is what lets one
-    // travel as a cause. A rendering that produced nothing would put an empty reason on both.
     let err: &dyn std::error::Error = &TransportError::HandoffMismatch;
     assert_eq!(err.to_string(), "HandoffMismatch");
     assert!(err.source().is_none());
@@ -221,7 +188,7 @@ fn every_decode_and_encode_failure_renders_as_itself() {
     ];
     for (code, name) in decodes {
         assert_eq!(code.to_string(), name);
-        // Totality: a fifth arm does not compile until it is answered for here.
+
         let _: bool = match code {
             Decode::Malformed
             | Decode::UnsupportedOperation
@@ -263,7 +230,7 @@ fn the_close_and_discard_vocabularies_are_complete_and_have_no_duplicates() {
         for b in &closes[..i] {
             assert_ne!(a, b, "a close reason is listed twice");
         }
-        // Totality: a ninth reason does not compile until it is named.
+
         let _: bool = match a {
             CloseReason::Normal
             | CloseReason::PeerClosed
@@ -302,9 +269,6 @@ fn the_close_and_discard_vocabularies_are_complete_and_have_no_duplicates() {
 
 #[test]
 fn the_frame_axes_a_transport_declares_are_each_closed() {
-    // Four small vocabularies the money path reads: which way the bytes went, what the upstream
-    // said, which frame said it, and how the bytes are delimited. Each is matched exhaustively, so
-    // none of them can grow an arm nobody answered for.
     for d in [Direction::Inbound, Direction::Outbound] {
         let _: bool = match d {
             Direction::Inbound | Direction::Outbound => true,
@@ -328,8 +292,7 @@ fn the_frame_axes_a_transport_declares_are_each_closed() {
             StatusAt::FirstFrame | StatusAt::Terminal => true,
         };
     }
-    // Load-bearing, not descriptive: a stream that loses sync loses the connection and a datagram
-    // that does not decode is one datagram.
+
     assert_ne!(Framing::Stream, Framing::Datagram);
     for f in [Framing::Stream, Framing::Datagram] {
         let _: bool = match f {
@@ -357,17 +320,12 @@ fn the_frame_axes_a_transport_declares_are_each_closed() {
 
 #[test]
 fn a_wire_status_answers_only_in_the_numbering_that_spelled_it() {
-    // `14` is `UNAVAILABLE` in a trailer numbering and is not a status at all in a status-line one.
-    // A reader handed the number alone matches it against the status-line bands, finds none, and
-    // calls a dead upstream the caller's fault — so no reserved numbering may coerce another's code
-    // into an answer.
     for &one in status_ns::RESERVED {
         let status = WireStatus::new(one, 503);
         assert_eq!(status.in_namespace(one), Some(503), "{one}");
         for &other in status_ns::RESERVED.iter().filter(|other| **other != one) {
             assert_eq!(status.in_namespace(other), None, "{one} read as {other}");
 
-            // The shared spelling, kept apart: one code in two numberings is two statuses.
             assert_ne!(WireStatus::new(one, 5), WireStatus::new(other, 5));
             assert_eq!(WireStatus::new(one, 5).in_namespace(other), None);
         }

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DATA LISTENER IS SERVED THROUGH ITS FRAMER'S ACCEPT SIDE (status row R3, "data listener
-//! served through the http transport"; `BUSBAR-1.6.0.md`, inbound listeners). Core never tests a
-//! plugin: the framer here is the test kit's accepting HTTP/1.1 fixture
-//! (`busbar_test_kit::root_door_fixtures::h1_accept`), found by its facts as the build's http
-//! transport is.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,8 +64,7 @@ fn h1_fixture_ingest_chunks_with_cap(
 #[test]
 fn h1_fixture_refuses_a_request_larger_than_the_lent_frame_capacity() {
     use busbar_contract::abi::mechanism::call::Outcome;
-    // The real allocation is 1024 bytes even on the old fixture, so its erroneous write is safe;
-    // only one byte is lent, which cannot hold this request's method and target.
+
     let got = h1_fixture_ingest_chunks_with_cap(&[b"GET / HTTP/1.1\r\n\r\n"], 1);
     assert_eq!(got[0].0, Outcome::Failed);
 }
@@ -333,7 +326,7 @@ async fn abort_before_first_poll_retires_the_inflow_while_its_sibling_stays_live
         terminal.failed = reset;
         conn.piece(terminal);
         assert_eq!(routed.load(std::sync::atomic::Ordering::SeqCst), 0);
-        // Joining the aborted task drops the future even though it was never first-polled.
+
         let joined = conn.tasks.join_next().await.unwrap();
         assert!(joined.unwrap_err().is_cancelled());
         let (stream, op) = conn
@@ -570,7 +563,6 @@ async fn a_session_that_drops_its_reader_ends_without_waiting_for_its_writer() {
     );
 }
 
-/// The accepting fixture with an explicit terminal answer at the refusal crossing.
 struct RefuseAnswer {
     inner: H1Accept,
     outcome: busbar_contract::abi::mechanism::call::Outcome,
@@ -842,9 +834,6 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         "retiring one stream leaves the connection live"
     );
 
-    // Hand in and admit a real unit, then abort its task before this current-thread test yields.
-    // Its retained table/App must leave with the stream, while another generation's sibling and
-    // the same framing remain alive.
     let hand_in = |conn: &mut super::Conn<tokio::io::DuplexStream>, stream| {
         scope
             .open_stream(
@@ -928,7 +917,6 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     conn.tasks.abort_all();
 }
 
-/// The data listener's framer as the boot finds it: the one answering [`DATA_SCHEME`].
 fn found(door: Arc<H1Accept>) -> Option<DataFramer> {
     let door: Arc<dyn FramerDoor> = door;
     data_framer(Arc::new(move |scheme: &str| {
@@ -936,7 +924,6 @@ fn found(door: Arc<H1Accept>) -> Option<DataFramer> {
     }))
 }
 
-/// Read one answer whose head states its body's length.
 async fn answer(s: &mut tokio::net::TcpStream) -> String {
     let mut got = Vec::new();
     let mut buf = [0_u8; 4096];
@@ -963,10 +950,6 @@ async fn answer(s: &mut tokio::net::TcpStream) -> String {
     }
 }
 
-/// RED (R3): a request on the data listener is framed by the framer's accept side, lent the
-/// listener's guest list (its one `none` line, with the host's handle), served by the data router
-/// in process, and its answer goes down through the framer: the head with its status on the emit,
-/// then the body, its length stated as the hyper loop stated it.
 #[tokio::test]
 async fn the_data_listener_is_served_through_its_framers_accept_side() {
     let _publishing = anonymous_policy().await;
@@ -1017,8 +1000,6 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
         .expect("serves");
 }
 
-/// A framer whose tail does not state that it accepts is not the data listener's: the build
-/// serves the listener as before.
 #[test]
 fn a_framer_that_does_not_accept_is_not_the_data_listeners() {
     assert!(found(Arc::new(H1Accept::new(false))).is_none());
@@ -1055,7 +1036,7 @@ async fn a_data_listener_without_an_accepting_framer_refuses_before_serving_http
         let _ = client
             .write_all(b"GET /probe HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\r\n")
             .await;
-        // Closing a refused listener may reset a socket that was queued before it ran.
+
         let _ = tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut response))
             .await
             .expect("the server refuses or answers the connection");
@@ -1114,9 +1095,6 @@ async fn the_admin_listener_still_serves_through_its_explicit_root_path() {
         .unwrap();
 }
 
-/// RED (the framed data listener bounds a silent connection, as the hyper loop's HTTP/1 header
-/// read bound did): a plain connection that sends nothing is closed once
-/// the first-byte bound (30 s, the hyper loop's header read bound) passes with no byte, even though its framer states no deadline.
 #[tokio::test(start_paused = true)]
 async fn a_silent_connection_is_closed_at_the_first_byte_bound() {
     let _publishing = anonymous_policy().await;
@@ -1384,8 +1362,7 @@ async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
         .await
         .expect("the first body is produced")
         .unwrap();
-    // This current-thread task resumes after the producer yields at its data acknowledgement:
-    // stream one's data is queued before opening stream three. No wall-clock sleep orders them.
+
     client.write_all(b"3").await.unwrap();
     let independent = tokio::time::timeout(Duration::from_secs(10), door.wait_for_second()).await;
     let before_release = door.emitted();

@@ -1,43 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE INBOUND AUTH HANDLE, KERNEL SIDE (`BUSBAR-1.6.0.md` THE DESIGN §6, "Auth points and guest
-//! lists", step 4 "Inbound", l.938-962; step 3 for the chain rule, l.921-926; step 7 for pending,
-//! l.973-978; Part 2 #65 and #74): what the kernel does when a listener's transport calls its line's
-//! auth (`auth.call`), hands a request in (`unit.hand_in`) or asks for a refusal (`unit.refuse`).
-//!
-//! * **The tables.** Per (listener owner, configuration generation) the kernel holds the sealed
-//!   [`GuestList`]: a line's id is its index in the list's order, and its auth handle's id is the
-//!   one the composition root minted for it ([`Listener::ids`]) from the shared ref-id space: never
-//!   `0`, and never with the top bit ([`BINDING_BIT`]) an outbound binding's id carries, so a line's
-//!   handle is never a binding's (#74; refused at [`Inbound::install`]). Beside it: the opened auths each line
-//!   names, the size gate's limit a `HeadBody` line holds the body to, the generation's [`App`]
-//!   (its mount table shapes the refusals) and the door routes' unit-less refusals.
-//! * **The unit table.** The kernel mints a request's unit on its FIRST `auth.call` (or at
-//!   `unit.hand_in` for a `none` line), before any verdict (l.949-950), with a fresh per-request
-//!   secret; the transport receives the unit's ref, MAC'd by the injected [`Seals::mac`] over
-//!   (secret, generation, owner, line, unit) (#74). Every subsequent call presents it and is verified:
-//!   a unit of another request, owner, generation or line is refused.
-//! * **The verdict is first-hand.** At each point the kernel calls, in list order, each undecided
-//!   auth of the line that needs the point (through [`AuthCalls::verify`]), and fixes the verdict
-//!   in list order by 1.5.5's chain rule: the first identity admits, a reject (or a verify that
-//!   answered no verdict) refuses, an overloaded verifier stops (the 503), all-pass refuses
-//!   (l.921-926; the data-plane walk's rule, `auth::chain_verdict_of` / `data_verdict_of`). The
-//!   identity and its credential stay HERE, on the unit; the credential is a redacted [`Secret`]
-//!   zeroised when the unit exits (l.946-948). The transport is answered only continue or stop and
-//!   the NAMES its auths named to strip (l.942-945); no kernel step names a credential line.
-//! * **The hand-in checks** (a) to (c) (l.953-958), each failure a stop.
-//! * **Every refusal is the kernel's** (l.962-964): no route is the listener's 1.5.5 no-route
-//!   answer and opens no unit; a method miss is the 405, an over-gate body the 413 (before any
-//!   verdict, l.940-941), each from the very builder the data router answers with today
-//!   ([`crate::router::fallback_error_response`]); a stop is the 401 of the line's claimant (the
-//!   door route's unit-less refusal) or the kernel's default, through the same function the auth
-//!   gate answers with (`auth::unauthorized_with_completion_taps`). A refused unit bills nothing
-//!   and draws no lease; it is reported to the [`RefusedSink`] and leaves the table (l.950-951).
-//!
-//! This module names no loader: the composition root glues it to the plugin loader's auth handle,
-//! injecting the MAC, the unit mint, the spawner and the refusal sink.
-
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -56,47 +19,37 @@ use busbar_contract::redacted::Secret;
 use crate::guest::{GuestList, Line, LineAuth, Matched};
 use crate::state::App;
 
-/// The refusal text of a call on a listener the kernel holds no list for at that generation.
 pub const NO_LIST: &str = "the kernel holds no guest list for this listener at this generation";
-/// The refusal text of a handle or line id that names no line of the list.
+
 pub const NO_LINE: &str = "the handle names no line of this listener's list";
-/// The refusal text of an `auth.call` on a line whose auth is `none`.
+
 pub const LINE_OPEN: &str = "the line's auth is none: it has no auth to call";
-/// The refusal text of an `auth.call` at a point the line's auth does not need.
+
 pub const POINT_UNNEEDED: &str = "the line's auth needs no call at this point";
-/// The refusal text of a peer-point `auth.call` that presents a unit, a body or any byte of a
-/// request: the peer point is before any head, and carries nothing (the Peer rule).
+
 pub const PEER_BYTES: &str = "a peer-point call presents no unit, no request and no body";
-/// The most connections whose `Peer` verdict the kernel holds at once. A verdict leaves when its
-/// framing ends ([`Inbound::framing_ended`]); a NEW framing's peer call at the bound is
-/// refused LOUDLY ([`PEER_TABLE_FULL`], an error event), and no live connection's verdict is ever
-/// evicted for it.
+
 pub const PEER_CONNECTIONS_MAX: usize = 65_536;
-/// The refusal text of a new framing's peer call while [`PEER_CONNECTIONS_MAX`] framings hold a
-/// verdict.
+
 pub const PEER_TABLE_FULL: &str =
     "the kernel holds the most connection verdicts it may; this connection's peer call is refused";
-/// The refusal text of a body past the line's size gate presented at the body point.
+
 pub const OVER_GATE: &str = "the body passes the line's size gate";
-/// The refusal text of a unit the kernel did not mint for this owner, generation and line.
+
 pub const UNIT_FOREIGN: &str = "the unit is not one the kernel minted for this request";
-/// The refusal text of a unit that could not be minted (no secret, or no MAC).
+
 pub const UNIT_UNMINTED: &str = "the kernel could not mint the request's unit";
-/// The refusal text of a call whose connection is not the one its framing's earlier calls named.
+
 pub const CONN_MISMATCH: &str =
     "the call names another connection than the one its framing's calls named";
-/// The refusal text of an unknown refusal cause.
+
 pub const CAUSE_UNKNOWN: &str = "the refusal names no cause the kernel answers";
 
-/// The refusal text of a listener table whose line ids break the ref-id space's rule.
 pub const IDS_REFUSED: &str =
     "a line's handle id is 0, carries the binding bit, repeats, or the ids do not cover the lines";
 
-/// The top bit of the ref-id space: every outbound binding's handle id carries it and no inbound
-/// line's does (the loader's `auth_handle::RefSpace`; one rule both ways, #74).
 pub const BINDING_BIT: u64 = 1 << 63;
 
-/// Whether `id` may name an inbound line's handle: not the absent handle, not a binding's.
 #[must_use]
 pub const fn is_line_id(id: u64) -> bool {
     id != 0 && id & BINDING_BIT == 0
@@ -118,7 +71,6 @@ pub struct Head {
 }
 
 impl std::fmt::Debug for Head {
-    // Never a field value: a field line may carry the credential.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Head")
             .field("method", &self.method)
@@ -174,7 +126,6 @@ impl Head {
         Some(head)
     }
 
-    /// Whether the head carries nothing: the peer point's view.
     fn is_empty(&self) -> bool {
         self.method.is_empty()
             && self.target.is_empty()
@@ -183,7 +134,6 @@ impl Head {
             && self.fields.is_empty()
     }
 
-    /// The target with its query, as a door route's refusal renders for it.
     fn path_and_query(&self) -> String {
         match &self.query {
             Some(q) => format!("{}?{q}", self.target),
@@ -235,7 +185,6 @@ pub struct Answer {
     pub strips: Vec<Strip>,
 }
 
-/// Where a pended `auth.call` answers: once, from any thread.
 pub type Done = Box<dyn FnOnce(Result<Answer, &'static str>) + Send>;
 
 /// `unit.hand_in`.
@@ -301,8 +250,6 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    /// The bytes of a response a kernel builder answered: its status, its fields, its whole body
-    /// (every refusal builder answers a body already in memory).
     #[must_use]
     pub fn of(resp: axum::response::Response) -> Self {
         use futures::FutureExt as _;
@@ -358,7 +305,6 @@ pub struct UnitTag {
 }
 
 impl std::fmt::Debug for UnitTag {
-    // Never the secret.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UnitTag")
             .field("generation", &self.generation)
@@ -369,14 +315,12 @@ impl std::fmt::Debug for UnitTag {
     }
 }
 
-/// The MAC over a [`UnitTag`] under the host's key; `None` when it cannot be drawn.
 pub type UnitMac = Arc<dyn Fn(&UnitTag) -> Option<u64> + Send + Sync>;
-/// The kernel's one unit mint (the node's): a fresh, never-zero unit key.
+
 pub type MintUnit = Arc<dyn Fn() -> u64 + Send + Sync>;
-/// Runs a pended `auth.call` to its end, off the caller's thread.
+
 pub type Spawn = Arc<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + Send + Sync>;
-/// Told every refusal the kernel answers: the audit of a refused unit (it bills nothing, draws no
-/// lease).
+
 pub type RefusedSink = Arc<dyn Fn(&RefusedUnit) + Send + Sync>;
 
 /// The two things the kernel's unit table is minted with, injected by the composition root.
@@ -417,7 +361,6 @@ pub struct Listener {
     pub scope: Option<ListenerScope>,
 }
 
-/// Resolve the selected claimant's admission using the listener's retained application state.
 pub type ListenerAdmission =
     Arc<dyn Fn(&App, &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> + Send + Sync>;
 
@@ -462,7 +405,6 @@ pub struct LineSpec {
 }
 
 impl Listener {
-    /// The line table a transport is lent: one [`LineSpec`] per line, in the list's order.
     #[must_use]
     pub fn specs(&self) -> Vec<LineSpec> {
         (0u32..)
@@ -525,7 +467,7 @@ pub(crate) struct AdmittedRequest {
     table: Arc<Table>,
     pub(crate) admitted: Option<Admitted>,
     pub(crate) credential: Option<Secret<String>>,
-    /// The admitted identity came from the signed pre-step, before ticket or chain priority.
+
     pub(crate) signed: bool,
     pub(crate) original: Head,
     pub(crate) strips: Vec<Strip>,
@@ -540,7 +482,6 @@ struct ReplayAdmission {
 }
 
 impl RequestAdmission {
-    /// The request-body ceiling from the listener generation that admitted this request.
     #[must_use]
     pub fn body_limit(&self) -> u64 {
         self.inner.table.listener.body_limit
@@ -616,8 +557,6 @@ fn same_request(left: &Head, right: &Head) -> bool {
         && fields(left) == fields(right)
 }
 
-// A later auth point may see stripping deferred, completed, or partway through. The retained
-// bytes must still come from the first head: a strip declaration permits deletion, not replacement.
 fn continuation_head(original: &Head, current: &Head, strips: &[Strip]) -> bool {
     if same_request(original, current) {
         return true;
@@ -699,7 +638,6 @@ struct RequestBinding {
     framing: Option<u64>,
 }
 
-/// One unit, as the kernel holds it.
 struct UnitState {
     table: Arc<Table>,
     owner: u64,
@@ -708,26 +646,26 @@ struct UnitState {
     binding: RequestBinding,
     secret: [u64; 2],
     head: Option<Head>,
-    /// The exact sanitized head accepted by a successful, single-use hand-in.
+
     handed_head: Option<Head>,
     claimed: bool,
     deadline: Option<std::time::Instant>,
     alive: Arc<std::sync::atomic::AtomicBool>,
     answers: Vec<Option<Judged>>,
-    /// The line's auth names, in list order.
+
     providers: Vec<String>,
-    /// Each position's identity, held until the verdict is fixed in list order.
+
     identities: Vec<Option<VerifiedIdentity>>,
     replays: Vec<Option<Arc<ReplayAdmission>>>,
     replay: Option<Arc<ReplayAdmission>>,
     strips: Vec<Strip>,
     admitted: Option<Admitted>,
-    /// The verified credential, zeroised when the unit leaves the table (its drop).
+
     credential: Option<Secret<String>>,
     signed: bool,
-    /// A selected signed reader still needs its body; no hand-in may use a peer identity yet.
+
     signed_pending: bool,
-    /// The governance key the `keys` arm resolved, held until the verdict is fixed.
+
     resolved: Option<Arc<crate::governance::VirtualKey>>,
 }
 
@@ -739,7 +677,6 @@ impl Drop for UnitState {
 }
 
 impl UnitState {
-    /// A state with no answer yet, over the line's ordered `providers`.
     fn open(
         owner: u64,
         generation: u64,
@@ -775,9 +712,6 @@ impl UnitState {
         }
     }
 
-    /// Once the verdict is fixed: on an identity, it and its credential (taken out of it) and the
-    /// key the `keys` arm resolved are held first-hand; on a refusal, every identity a following
-    /// position answered is dropped.
     fn settle(&mut self) {
         match self.fixed() {
             Some(Fixed::Admitted(i)) if self.admitted.is_none() => {
@@ -809,13 +743,10 @@ impl UnitState {
         }
     }
 
-    /// The verdict in list order: `None` while an earlier position is still undecided.
     fn fixed(&self) -> Option<Fixed> {
         self.fixed_at(false)
     }
 
-    /// A positive answer from a provider with a later request point is provisional at Peer.
-    /// Keep collecting later Peer providers: an earlier provider can still pass at Head.
     fn fixed_at(&self, peer: bool) -> Option<Fixed> {
         for (i, a) in self.answers.iter().enumerate() {
             if peer
@@ -832,18 +763,17 @@ impl UnitState {
                 Some(Judged::Overloaded) => return Some(Fixed::Overloaded),
             }
         }
-        // All-pass on a non-empty list is 401 (l.923-924).
+
         Some(Fixed::Denied)
     }
 }
 
-/// A listener's table with its door refusals indexed.
 struct Table {
     listener: Listener,
     doors: crate::core_routes::CoreRouteTable,
-    /// Handle id -> line.
+
     lines_by_id: HashMap<u64, u32>,
-    /// Auth providers whose peer verdict cannot decide a later request point.
+
     request_auths: HashSet<String>,
 }
 
@@ -869,7 +799,6 @@ struct PendingAdoption {
 }
 
 impl Table {
-    /// The line handle `id` names on this list.
     fn line_of(&self, id: u64) -> Option<u32> {
         self.lines_by_id.get(&id).copied()
     }
@@ -877,19 +806,17 @@ impl Table {
 
 type StreamGrants = HashMap<(u64, u64, u64), (u64, Arc<Table>)>;
 
-/// THE INBOUND HANDLE'S KERNEL SIDE: the tables, the unit table, and what the root injected.
 pub struct Inbound {
     tables: RwLock<HashMap<(u64, u64, u64), Arc<Table>>>,
-    /// Host-registered framing leg and its policy loan until Ready.
+
     framing_listeners: Mutex<HashMap<(u64, u64), FramingListener>>,
-    /// Host-granted request policy by (owner, framing, stream).
+
     stream_grants: Mutex<StreamGrants>,
     units: Mutex<HashMap<u64, UnitState>>,
     adoptions: Mutex<HashMap<(u64, u64), PendingAdoption>>,
-    /// The connection each framing's calls named, by (owner, framing).
+
     framing_conns: Mutex<HashMap<(u64, u64), u64>>,
-    /// Each framing's `Peer` verdict, by (owner, generation, framing), at most
-    /// [`PEER_CONNECTIONS_MAX`].
+
     peers: Mutex<HashMap<(u64, u64, u64), UnitState>>,
     seals: Seals,
     spawn: Spawn,
@@ -902,7 +829,6 @@ impl std::fmt::Debug for Inbound {
     }
 }
 
-/// A fresh per-request secret from the OS random source; `None` when it cannot answer.
 fn fresh_secret() -> Option<[u64; 2]> {
     let mut b = [0u8; 16];
     getrandom::fill(&mut b).ok()?;
@@ -913,13 +839,10 @@ fn fresh_secret() -> Option<[u64; 2]> {
     ])
 }
 
-/// `want` against `got`, the whole difference folded before it is judged.
 fn same(want: u64, got: u64) -> bool {
     std::hint::black_box(want ^ got) == 0
 }
 
-/// Whether any of `strips` is still in `head`: a field line case-insensitively, a query key
-/// case-sensitively (l.957-958).
 fn still_present(strips: &[Strip], head: &Head) -> bool {
     strips.iter().any(|s| match s.place {
         StripPlace::Field => head
@@ -938,8 +861,6 @@ fn still_present(strips: &[Strip], head: &Head) -> bool {
     })
 }
 
-/// The `verify` request one position is lent at `point`: the head as received, the body at the
-/// body point, with the default candidate selected by the host's configured carrier policy.
 fn verify_request(
     head: &Head,
     point: AuthPoint,
@@ -970,7 +891,6 @@ fn verify_request(
     }
 }
 
-/// Await a verifier under the operation's deadline on the serving runtime.
 async fn until_deadline<F: Future>(
     deadline: Option<std::time::Instant>,
     future: F,
@@ -994,34 +914,26 @@ enum Target {
     Peer((u64, u64, u64)),
 }
 
-/// Who answers a position.
 enum PositionKind {
-    /// An opened auth instance; `None` when the generation opened none for the name.
     Plugin(Option<Arc<dyn AuthCalls>>),
-    /// The kernel's own `keys` arm: a busbar-minted signed key verified against governance.
+
     Keys,
 }
 
-/// One position the walk may call.
 struct Position {
     index: usize,
     provider: String,
     kind: PositionKind,
 }
 
-/// What a position answered, as [`Inbound::record`] judges it.
 enum Judging<'a> {
-    /// No verdict: no auth opened for it, or the op's deadline passed (a deny).
     Nothing,
-    /// The `keys` arm, over the request's head, after the signed-request reader's answer when one
-    /// was asked.
+
     Keys(&'a Head, Option<SignedAnswer>),
-    /// An auth's `verify` answer.
+
     Answer(VerifyAnswer),
 }
 
-/// A host-held credential verifier's answer to a signed request (1.5.5's signed-ingress pre-step),
-/// with the credential kinds it reads.
 struct SignedAnswer {
     answer: VerifyAnswer,
     faulted: bool,
@@ -1029,12 +941,8 @@ struct SignedAnswer {
     provider: String,
 }
 
-/// Whether a request on `path` is answered by a dialect that signs its requests (the dialect's
-/// declared ingress auth, never a name), so the `keys` arm asks the host-held credentials'
-/// verifier first, as 1.5.5's gate did. Answered by the listener's [`Listener::signed_ingress`].
 pub type SignedIngress = Arc<dyn Fn(&App, &str) -> bool + Send + Sync>;
 
-/// The request's field lines as a header map (a value that is no header value is left out).
 struct FieldBytes(zeroize::Zeroizing<Vec<u8>>);
 
 impl AsRef<[u8]> for FieldBytes {
@@ -1060,8 +968,6 @@ pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
     headers
 }
 
-/// A line's auth names in the order the chain walks them (1.5.5's `walk`): every plugin position
-/// in list order, then the `keys` arm, which runs after them whatever its place in the list.
 fn ordered(names: &[String]) -> Vec<String> {
     let keys = crate::config::KEYS_MODULE;
     names
@@ -1072,10 +978,6 @@ fn ordered(names: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// THE `keys` ARM with the signed-request pre-step ahead of it, as 1.5.5's gate ran them: a
-/// verifier's identity is the governance key holding that credential (enabled, live, not revoked)
-/// or a deny; its pass falls through to the token path; a reject or no verdict denies; an
-/// overloaded verifier is the 503. The lines both named are named.
 fn signed_then_keys(
     app: &App,
     gov: Option<&crate::governance::GovState>,
@@ -1132,9 +1034,6 @@ fn signed_then_keys(
     (judged, identity, named, resolved)
 }
 
-/// THE `keys` ARM over one head (1.5.5's `keys_arm_verdict`, the data plane's engine arm): the
-/// candidate the default inbound style's carriers carry, verified against governance. Its
-/// carriers are every line the gate consumed in 1.5.5, named whatever its verdict (names only).
 fn keys_judged(
     app: &App,
     gov: Option<&crate::governance::GovState>,
@@ -1182,7 +1081,6 @@ fn keys_judged(
 }
 
 impl Inbound {
-    /// A kernel side with no tables yet.
     #[must_use]
     pub fn new(seals: Seals, spawn: Spawn, refused: RefusedSink) -> Arc<Self> {
         Arc::new(Self {
@@ -1199,13 +1097,6 @@ impl Inbound {
         })
     }
 
-    /// Install `listener` as `owner`'s list at `generation`, and keep only that generation and the
-    /// one before it for `owner` (requests already inside finish on the old one, l.981-983).
-    ///
-    /// # Errors
-    ///
-    /// [`IDS_REFUSED`] when the line ids do not name every line once from the line half of the
-    /// ref-id space ([`is_line_id`]): nothing is installed.
     pub fn install(
         &self,
         owner: u64,
@@ -1215,11 +1106,6 @@ impl Inbound {
         self.install_at(owner, 0, generation, listener)
     }
 
-    /// Install one host-registered listener's policy, independently of sibling listeners
-    /// served by the same transport instance.
-    ///
-    /// # Errors
-    /// The listener's line ids do not satisfy the same checks as [`Self::install`].
     pub fn install_at(
         &self,
         owner: u64,
@@ -1271,7 +1157,6 @@ impl Inbound {
         Ok(())
     }
 
-    /// The line table `owner` is lent at `generation`.
     #[must_use]
     pub fn specs(&self, owner: u64, generation: u64) -> Option<Vec<LineSpec>> {
         self.table(owner, generation).map(|t| t.listener.specs())
@@ -1289,15 +1174,12 @@ impl Inbound {
             .cloned()
     }
 
-    /// The line specifications of one registered listener.
     #[must_use]
     pub fn specs_at(&self, owner: u64, listener: u64, generation: u64) -> Option<Vec<LineSpec>> {
         self.table_at(owner, listener, generation)
             .map(|t| t.listener.specs())
     }
 
-    /// Prune unpinned historical lookup tables across all listeners after publication.
-    /// Active units keep their own policy Arc; an idle listener cannot retain a retired App.
     pub fn retire_before(&self, generation: u64) {
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
         let mut retired = Vec::new();
@@ -1313,8 +1195,6 @@ impl Inbound {
         drop(retired);
     }
 
-    /// Retire a listener registration without dropping its policy Apps under the table lock.
-    /// Active units retain their own policy until their normal lifetime ends.
     pub fn forget_listener(&self, owner: u64, listener: u64) {
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
         let mut retired = Vec::new();
@@ -1330,11 +1210,6 @@ impl Inbound {
         drop(retired);
     }
 
-    /// Bind a host-owned framing leg to its registered listener before crossing Begin/Adopt.
-    /// This is a trusted host method, never a field in a transport's service input.
-    ///
-    /// # Errors
-    /// Zero identities, a listener with no installed policy, or an attempt to rebind a leg.
     pub fn framing_started(
         &self,
         owner: u64,
@@ -1372,7 +1247,6 @@ impl Inbound {
         }
     }
 
-    /// Release the opening policy loan once the host finishes Begin/Adopt.
     pub fn framing_ready(&self, owner: u64, framing: u64) {
         let opening = self
             .framing_listeners
@@ -1383,10 +1257,6 @@ impl Inbound {
         drop(opening);
     }
 
-    /// Seal a live source against new admissions while its detached owner retains custody.
-    ///
-    /// # Errors
-    /// The source was never registered, already detached, or ended.
     pub fn framing_detached(&self, owner: u64, framing: u64) -> Result<(), &'static str> {
         let mut held = self
             .framing_listeners
@@ -1424,12 +1294,6 @@ impl Inbound {
         Ok((id, unit.generation, unit.line, unit.secret))
     }
 
-    /// Stage the unique claimed admission on an actual detached host framing. The old unit
-    /// loses service authority immediately; its complete state stays owned until READY or abort.
-    /// No plugin-supplied unit reference participates in this decision.
-    ///
-    /// # Errors
-    /// Missing/ambiguous admission, changed or ended source, reused destination, or MAC failure.
     pub fn framing_adopting(
         &self,
         source: busbar_contract::framing_scope::AdoptionSource,
@@ -1511,11 +1375,6 @@ impl Inbound {
         })
     }
 
-    /// Commit staged custody to the destination's confirmed, nonzero local framing token.
-    /// The original Table, App, identity, credential and replay decision move intact.
-    ///
-    /// # Errors
-    /// Either framing ended, the stage was consumed, or the destination already owns a token.
     pub fn framing_adopted(&self, owner: u64, framing: u64, conn: u64) -> Result<(), &'static str> {
         if conn == 0 {
             return Err(UNIT_FOREIGN);
@@ -1562,12 +1421,6 @@ impl Inbound {
         Ok(())
     }
 
-    /// Grant a stream the registered listener's exact published policy before host dispatch.
-    /// Repeating a grant at the same generation preserves its original policy pin.
-    ///
-    /// # Errors
-    /// [`NO_LIST`] for an unknown framing or unavailable policy; [`UNIT_FOREIGN`] for a
-    /// different generation on an already granted stream or a changed framing binding.
     pub fn grant_stream(
         &self,
         owner: u64,
@@ -1627,8 +1480,6 @@ impl Inbound {
         }
     }
 
-    /// A fresh registered request requires a host grant. Only Peer may borrow the opening
-    /// policy before Ready; authenticated continuations retain their unit's policy.
     fn request_table(
         &self,
         owner: u64,
@@ -1681,7 +1532,6 @@ impl Inbound {
         self.peers.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The secret, generation and line `owner`'s live unit `unit` was minted under.
     #[must_use]
     pub fn unit_secret(&self, owner: u64, unit: u64) -> Option<([u64; 2], u64, u32)> {
         self.units()
@@ -1690,18 +1540,11 @@ impl Inbound {
             .map(|u| (u.secret, u.generation, u.line))
     }
 
-    /// The identity `unit` was admitted under, first-hand; `None` before a verdict admits it.
     #[must_use]
     pub fn admitted(&self, unit: u64) -> Option<Admitted> {
         self.units().get(&unit).and_then(|u| u.admitted.clone())
     }
 
-    /// Claim the successful hand-in for a request emitted by this exact host framing and stream.
-    /// The emitted request must preserve the sanitized method, target, authority, query and
-    /// fields. Field names are case-insensitive; duplicate values keep their order.
-    ///
-    /// # Errors
-    /// Missing or ambiguous hand-in, changed request bytes, reuse, or an ended framing/stream.
     pub fn claim_request(
         &self,
         owner: u64,
@@ -1761,8 +1604,6 @@ impl Inbound {
         Ok(admission)
     }
 
-    /// `f` over the credential `unit` was verified from, held on the unit (the `caller-credential`
-    /// style's, §6.6); `None` when it holds none.
     pub fn with_credential<R>(&self, unit: u64, f: impl FnOnce(&Secret<String>) -> R) -> Option<R> {
         self.units()
             .get(&unit)
@@ -1770,16 +1611,11 @@ impl Inbound {
             .map(f)
     }
 
-    /// The unit leaves the table: its credential is zeroised (its drop).
     pub fn exit(&self, unit: u64) {
         let retired = self.units().remove(&unit);
         drop(retired);
     }
 
-    /// THE HOST'S END NOTIFICATION: the framing `framing` ended (the loader retired the ticket of
-    /// the connection side it drove). Its `Peer` verdict, at every generation and for every owner,
-    /// leaves the table, along with its opening loan, stream grants, units and connection name.
-    /// All retired policy and credential state is dropped after releasing the guards.
     pub fn framing_ended(&self, framing: u64) {
         let mut held = self
             .framing_listeners
@@ -1827,7 +1663,6 @@ impl Inbound {
         ));
     }
 
-    /// Release one host-ended stream's policy grant and request units outside all guards.
     pub fn stream_ended(&self, owner: u64, framing: u64, stream: u64) {
         let mut held = self
             .framing_listeners
@@ -1854,8 +1689,6 @@ impl Inbound {
         drop((retired_grant, retired_units));
     }
 
-    /// The connection a framing's calls name: the first call's, and every later call must name the
-    /// same ([`CONN_MISMATCH`]).
     fn same_conn(
         &self,
         owner: u64,
@@ -1878,8 +1711,7 @@ impl Inbound {
                 Err(CONN_MISMATCH)
             }
             std::collections::hash_map::Entry::Occupied(_) => Ok(()),
-            // request_table already verified an existing unit's original policy.
-            // Retiring its lookup row must not invalidate its established connection.
+
             std::collections::hash_map::Entry::Vacant(_) if !registered => Err(NO_LIST),
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert(conn);
@@ -1888,15 +1720,11 @@ impl Inbound {
         }
     }
 
-    /// How many connections hold a `Peer` verdict.
     #[must_use]
     pub fn peer_verdicts(&self) -> usize {
         self.peers().len()
     }
 
-    /// Mint a unit for `owner`'s `line` at `generation` on framing `framing`: its key, its fresh
-    /// secret, its MAC. The framing's `Peer` verdict, held for the same ordered auths, is the
-    /// unit's from the start (l.975-976: a `{Peer}`-only verdict is applied to every unit on it).
     fn mint(
         &self,
         owner: u64,
@@ -1939,8 +1767,7 @@ impl Inbound {
             }
         }
         state.settle();
-        // End and mint serialize at the framing registry. A policy cloned before teardown
-        // grants no authority to insert a unit after its framing or stream has ended.
+
         let held = self
             .framing_listeners
             .lock()
@@ -1970,7 +1797,6 @@ impl Inbound {
         Ok(UnitRef { id: unit, mac })
     }
 
-    /// Whether `r` is a unit this kernel minted for `owner`, at `generation`, for `line`.
     fn verified(
         &self,
         owner: u64,
@@ -2012,9 +1838,6 @@ impl Inbound {
         .is_some_and(|mac| same(mac, r.mac))
     }
 
-    /// `auth.call` on an inbound line: `Some` with the answer when it finished at once; `None` when
-    /// a verify must be awaited, and `done` answers it (the call pends on its own ticket, l.973-974;
-    /// past the call's deadline the walk stops, [`Call::deadline`]).
     pub fn auth_call(
         self: &Arc<Self>,
         call: Call,
@@ -2036,7 +1859,6 @@ impl Inbound {
         }
     }
 
-    /// The state a walk records into: a request's unit, or a connection's `Peer` verdict.
     fn with_state<R>(&self, target: Target, f: impl FnOnce(&mut UnitState) -> R) -> Option<R> {
         match target {
             Target::Unit(unit) => self.units().get_mut(&unit).map(f),
@@ -2044,8 +1866,6 @@ impl Inbound {
         }
     }
 
-    /// The checks before any auth is called, the unit minted or verified (or, at the peer point,
-    /// the connection's verdict opened), then the walk.
     fn prepare(
         self: &Arc<Self>,
         mut call: Call,
@@ -2058,8 +1878,7 @@ impl Inbound {
             stream: call.stream,
             framing: Some(call.framing),
         };
-        // Peer calls cannot continue a request unit. Resolve their listener policy first;
-        // the Peer rule below rejects any supplied unit before an auth can run.
+
         let peer = AuthPoint::from_bit(call.point) == Some(AuthPoint::Peer);
         let policy_unit = if peer { UnitRef::NONE } else { call.unit };
         let table = self.request_table(call.owner, call.generation, binding, policy_unit, peer)?;
@@ -2077,8 +1896,7 @@ impl Inbound {
             .filter(|p| points.has(*p))
             .ok_or(POINT_UNNEEDED)?;
         let providers = ordered(names);
-        // THE PEER POINT (l.973-978; the Peer rule): once per connection, before any head; no unit,
-        // and its answer is continue or stop alone, with no name beside it.
+
         let peer = point == AuthPoint::Peer;
         if peer && (!call.unit.is_none() || body.is_some() || !call.head.is_empty()) {
             return Err(PEER_BYTES);
@@ -2103,7 +1921,6 @@ impl Inbound {
             let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
             if !peers.contains_key(&key) && peers.len() >= PEER_CONNECTIONS_MAX {
-                // Bounded, and LOUD: no live connection's verdict is evicted for a new one.
                 tracing::error!(
                     owner = call.owner,
                     conn = call.conn,
@@ -2178,8 +1995,7 @@ impl Inbound {
                 },
             })
             .collect();
-        // The `keys` arm answers at the line's last per-request point: with the body when a
-        // host-held credential's verifier needs it, else at the head.
+
         let points = *points;
         let keys_point = if points.has(AuthPoint::HeadBody) {
             AuthPoint::HeadBody
@@ -2196,8 +2012,7 @@ impl Inbound {
             let candidate = original.as_ref().and_then(|head| {
                 crate::auth::inbound_candidate(&table.listener.app, &header_map(head))
             });
-            // Match the final gate's ticket priority using the registered route declaration.
-            // This establishes identity only; final admission still redeems once and rechecks it.
+
             let unfinished = me
                 .with_state(target, |u| {
                     first_request || u.signed_pending || u.fixed().is_none()
@@ -2307,8 +2122,6 @@ impl Inbound {
                         };
                         let (retired, strips) = me
                             .with_state(target, |u| {
-                                // Retire inherited peer results outside the unit lock. A ticket's
-                                // identity takes priority over every plugin position at this head.
                                 let retired = (
                                     u.admitted.take(),
                                     u.credential.take(),
@@ -2357,14 +2170,11 @@ impl Inbound {
                     })
                     .ok_or(UNIT_FOREIGN)?;
                 match undecided {
-                    // The verdict is fixed: nothing after it is called.
                     None => break,
                     Some(Some(_)) => continue,
                     Some(None) => {}
                 }
                 if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-                    // The op the call was made for is past its deadline: no verify runs, and the
-                    // position answers no verdict (a deny, fail closed).
                     me.record(target, p.index, &p.provider, Judging::Nothing, &table);
                     break;
                 }
@@ -2383,7 +2193,6 @@ impl Inbound {
                         continue;
                     }
                     PositionKind::Plugin(None) => {
-                        // A line naming an auth the generation did not open: fail closed.
                         me.record(target, p.index, &p.provider, Judging::Nothing, &table);
                         continue;
                     }
@@ -2432,8 +2241,6 @@ impl Inbound {
         .ok_or(UNIT_FOREIGN)
     }
 
-    // A decisive signed pre-step precedes plugin positions. Retire prior peer identity custody
-    // outside the lock, then let record() keep the resolved key and replay claim in the usual way.
     fn preflight_keys(&self, target: Target, index: usize) -> Result<(), &'static str> {
         let retired = self
             .with_state(target, |u| {
@@ -2458,10 +2265,6 @@ impl Inbound {
         Ok(())
     }
 
-    /// Record position `index`'s answer on `target` FIRST-HAND: its verdict by the data-plane chain
-    /// rule, the lines it named, and, once the verdict is fixed in list order on an identity, that
-    /// identity, its credential taken out of it, and for the `keys` arm the governance key it
-    /// resolved.
     fn record(
         &self,
         target: Target,
@@ -2496,7 +2299,6 @@ impl Inbound {
             }
             Judging::Answer(a) => {
                 let (judged, identity) = match a.verified {
-                    // The final admission gate claims replay only after every deny decision.
                     Verified::Identity(id) => (Judged::Identity, Some(id)),
                     Verified::Pass => (Judged::Pass, None),
                     Verified::Reject | Verified::Failed => (Judged::Denied, None),
@@ -2540,29 +2342,17 @@ impl Inbound {
             if resolved.is_some() {
                 u.resolved = resolved;
             }
-            // Peer positions retain their identities and credentials until each unit copies
-            // the relevant verdicts; a provisional mixed provider must not erase later ones.
+
             if matches!(target, Target::Unit(_)) {
                 u.settle();
             }
         });
     }
 
-    /// `unit.hand_in`: `(flow, unit)`. A `none` line's request (and any request handed in with no
-    /// unit) has its unit minted here, so a stop always names the unit it refuses. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`NO_LIST`] for a listener the kernel holds no list for; [`UNIT_FOREIGN`] for a presented
-    /// unit it did not mint for this owner; [`UNIT_UNMINTED`] when no unit could be minted.
     pub fn hand_in(&self, h: HandIn) -> Result<(u32, UnitRef), &'static str> {
         self.hand_in_with_deadline(h, None)
     }
 
-    /// Hand in a request with its actual host operation deadline for the final replay claim.
-    ///
-    /// # Errors
-    /// The same ownership and admission failures as [`Self::hand_in`].
     pub fn hand_in_with_deadline(
         &self,
         h: HandIn,
@@ -2616,13 +2406,12 @@ impl Inbound {
         Ok((flow, unit))
     }
 
-    /// The hand-in's checks (a) to (c) (l.953-958).
     fn admits(&self, table: &Table, h: &HandIn, unit: UnitRef) -> bool {
         let lines = table.listener.guests.lines();
         let Some(line) = lines.get(h.line as usize) else {
             return false;
         };
-        // (a) the handle is the line's own, and the line is the list's own match.
+
         if table.line_of(h.auth) != Some(h.line) {
             return false;
         }
@@ -2655,23 +2444,16 @@ impl Inbound {
                 return false;
             }
         }
-        // (b) unless the line's auth is none, a first-hand identity from that line's auth.
+
         if matches!(line.auth, LineAuth::Chain(..))
             && !matches!(u.fixed(), Some(Fixed::Admitted(_)))
         {
             return false;
         }
-        // (c) nothing the auths named is still present.
+
         !still_present(&u.strips, &h.head)
     }
 
-    /// `unit.refuse`: the refusal's bytes, from the builders the data router answers with today.
-    /// The unit, when there is one, is refused and leaves the table. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`NO_LIST`], [`NO_LINE`] for a line the list does not hold, [`UNIT_FOREIGN`] for a unit the
-    /// kernel did not mint for this owner and line, [`CAUSE_UNKNOWN`].
     pub fn refuse(&self, r: Refuse) -> Result<Refusal, &'static str> {
         use axum::http::StatusCode;
         let table = self.request_table(
@@ -2720,7 +2502,7 @@ impl Inbound {
                     .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded)))
             })
             .unwrap_or((None, false));
-        // The unit's own head first, then the request the transport hands with the refusal.
+
         let head = head.or(r.request);
         let path = head
             .as_ref()

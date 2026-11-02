@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Store-owned runtime configuration overlay. Operator config files remain read-only inputs.
 pub use super::overlay_store::OverlayStore;
 use super::{
     ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, OverlayCfg, RateEntryCfg, RootCfg, StoreCfg,
@@ -14,7 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 pub const NO_WRITABLE_OVERLAY_MSG: &str = "config mutation refused: this busbar has no writable Store-backed config overlay; edit config.yaml and reload a locked deployment";
-/// Legacy selector only. No file is created, read, probed or removed.
+
 pub const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
 #[derive(Debug, Clone)]
 pub struct OverlayResolution {
@@ -137,15 +136,6 @@ pub struct RootSettings {
 }
 
 impl RootSettings {
-    /// Whether NO root override is set (every field `None`) — drives the section-empty predicate and
-    /// the idempotent-reset short-circuit. Checked field-by-field (not via `PartialEq`) so the nested
-    /// config structs need no `PartialEq` derive.
-    ///
-    /// DRIFT GUARD, same idiom as `config::patch::tests::every_patch_mirrors_every_field_of_its_section`:
-    /// an EXHAUSTIVE destructure with NO `..`, so a field added to `RootSettings` fails to compile
-    /// until it is considered here. This predicate decides whether `persist_root` stores the section
-    /// at all, so a field missing from it would make a `PUT /config/settings` naming ONLY that field
-    /// compute "empty", store `None`, and return 200 — a SILENT DISCARD reported as a success.
     pub fn is_empty(&self) -> bool {
         let RootSettings {
             listen,
@@ -177,15 +167,6 @@ impl RootSettings {
             && routing.is_none()
     }
 
-    /// Splice the present overrides onto a base `DeployCfg`, IN PLACE. Applied BEFORE `resolve` so the
-    /// limits projection + the exposed-admin-mTLS boot-guard re-derive over the merged shape exactly
-    /// as for a hand-written config. Only `Some` fields overwrite; a `None` field leaves base config
-    /// untouched. `admin_require_mtls`/`per_request_fee` are non-optional on `DeployCfg`, so an unset
-    /// overlay override simply preserves the base value.
-    ///
-    /// DRIFT GUARD: EXHAUSTIVE destructure with NO `..` (same idiom as `is_empty`), so a field added
-    /// to `RootSettings` cannot be stored-but-never-applied by omission — the compiler forces it to
-    /// be spliced onto `DeployCfg` here (or bound `_` with a stated reason).
     pub fn apply_to_deploy(&self, deploy: &mut DeployCfg) {
         let RootSettings {
             listen,
@@ -226,9 +207,7 @@ impl RootSettings {
         if store.is_some() {
             deploy.store = store.clone();
         }
-        // PER-FIELD from here down. Assigning the whole section instead meant a partial `PUT`
-        // deserialized into a full struct of compiled defaults, so every field the operator did not
-        // name silently reverted — `config.yaml` values included.
+
         if let Some(v) = security {
             v.apply(deploy.security.get_or_insert_with(Default::default));
         }
@@ -238,10 +217,7 @@ impl RootSettings {
         if let Some(v) = advanced {
             v.apply(&mut deploy.advanced);
         }
-        // 1.5.3: the retired `metrics:` AND `observability:` overlay sections are gone — Prometheus
-        // metrics and OTLP traces are now named `export:` instances (`module: prometheus` /
-        // `module: otlp`), edited in config.yaml + applied via plugin reload (consistent with every
-        // other exporter), never through the single-value settings overlay.
+
         if let Some(v) = health {
             v.apply(&mut deploy.health);
         }
@@ -288,9 +264,6 @@ pub enum OverlaySection {
 }
 
 impl OverlaySection {
-    /// EVERY section, in wire order. The route's error message, the OpenAPI enum and the docs audit
-    /// all read THIS, so the valid set is stated ONCE: a new section cannot be live in the parser and
-    /// missing from what the API tells an operator, or from what the reference documents.
     pub fn all() -> Vec<OverlaySection> {
         let mut out = vec![
             OverlaySection::Groups,
@@ -306,15 +279,10 @@ impl OverlaySection {
         out
     }
 
-    /// Parse a URL path segment into a section, or `None` for an unknown name (the caller 400s). The
-    /// ONE place the valid section names live, so the route + the doc + the tests share one source.
     pub fn parse(s: &str) -> Option<Self> {
         OverlaySection::all().into_iter().find(|v| v.as_str() == s)
     }
 
-    /// The section's wire/label name (the path segment). For a named map this is the section KEY,
-    /// which is deliberately the same string as the config key and the CRUD path segment
-    /// (`export:` ⇄ `/export` ⇄ `/overlay/export`).
     pub fn as_str(self) -> &'static str {
         match self {
             OverlaySection::Hooks => Kind::Hook.root(),
@@ -325,9 +293,6 @@ impl OverlaySection {
         }
     }
 
-    /// The valid section names as a comma-separated, backticked list for an error message. Derived
-    /// from [`OverlaySection::all`] rather than written out, because the hand-written version of this
-    /// string is exactly what told operators `export` was not a section while it was becoming one.
     pub fn valid_names() -> String {
         OverlaySection::all()
             .iter()
@@ -414,16 +379,6 @@ impl Default for OverlayDoc {
 }
 
 impl OverlayDoc {
-    /// Wipe ONE section's entries + tombstones in place (the pure core of a per-section reset). The
-    /// remaining section is untouched, so merging this doc onto a freshly-resolved base config reverts
-    /// exactly the cleared section to `config.yaml` truth while the other section's overlay stays live.
-    ///
-    /// DRIFT GUARD, the idiom `RootSettings::is_empty` and `config::patch` already use: an EXHAUSTIVE
-    /// destructure with NO `..`, so a new field on `OverlayDoc` fails to compile until somebody has
-    /// said WHICH SECTION OWNS IT. A durable, API-writable overlay field that belongs to no section
-    /// is a slice of config an operator can change and cannot revert, which is exactly what
-    /// `named_maps` was: it shipped durable and API-writable while `OverlaySection` had four variants
-    /// and none of them was it.
     pub fn clear_section(&mut self, section: OverlaySection) {
         let OverlayDoc {
             hooks,
@@ -434,8 +389,7 @@ impl OverlayDoc {
             root,
             plugin_versions,
             named_maps,
-            // NOT a section: the overlay's own schema version describes the FILE, not any slice of
-            // config. It is rewritten by every persist and must survive every reset.
+
             version: _,
         } = self;
         match section {
@@ -454,19 +408,13 @@ impl OverlayDoc {
             OverlaySection::PluginVersions => {
                 plugin_versions.clear();
             }
-            // Only THIS map. `named_maps` is keyed by section, so a reset of `export` leaves
-            // `identity-providers` (and every future map) exactly as it was — the same isolation the
-            // hooks/groups sections have from each other.
+
             OverlaySection::NamedMap(s) => {
                 named_maps.remove(s.key());
             }
         }
     }
 
-    /// Whether a section carries NO overlay state (no API-applied entries AND no tombstones) — so a
-    /// reset of it is a clean no-op (the effective config already equals base for that section). Drives
-    /// the idempotent-success short-circuit: resetting an untouched section changes nothing and must
-    /// not bump the config version or re-run the boot pipeline.
     pub fn section_is_empty(&self, section: OverlaySection) -> bool {
         match section {
             OverlaySection::Hooks => {
@@ -475,8 +423,7 @@ impl OverlayDoc {
             OverlaySection::Groups => self.groups.is_empty() && self.deleted_groups.is_empty(),
             OverlaySection::Root => self.root.as_ref().is_none_or(RootSettings::is_empty),
             OverlaySection::PluginVersions => self.plugin_versions.is_empty(),
-            // `persist_named_map` removes a map's key entirely once its last entry goes, so an
-            // ABSENT key and a present-but-empty one both mean "no overlay state here".
+
             OverlaySection::NamedMap(s) => self
                 .named_maps
                 .get(s.key())
@@ -485,7 +432,6 @@ impl OverlayDoc {
     }
 }
 
-/// Convenience projection for diagnostics. Boot/reload use OverlayStore::read_required.
 pub fn read(store: &OverlayStore) -> Option<OverlayDoc> {
     store.read_required().ok().flatten()
 }
@@ -544,11 +490,11 @@ fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
         let Some(obj) = entry.as_object_mut() else {
             continue;
         };
-        // `plugin:` → `module:` (a persisted overlay that already carries `module:` wins).
+
         if let Some(plugin) = obj.remove("plugin") {
             obj.entry("module".to_string()).or_insert(plugin);
         }
-        // `at: <stage>` → `phase: [<stage>]`, unless a non-empty `phase:` is already authoritative.
+
         if let Some(at) = obj.remove("at") {
             let phase_present = obj
                 .get("phase")
@@ -572,12 +518,11 @@ fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
         }
     }
 }
-/// Replace the complete document through the same atomic Store generation protocol.
+
 pub fn write(store: &OverlayStore, doc: &OverlayDoc) -> Result<(), String> {
     store.update(|current| *current = doc.clone())
 }
-/// Build an overlay from a hook state (registry + global-hook names), no tombstones — a test helper
-/// (the live apply path builds the doc inline in `persist` so it can carry tombstones).
+
 #[cfg(test)]
 pub fn from_state(hooks: &HashMap<String, HookCfg>, global_hooks: &[String]) -> OverlayDoc {
     OverlayDoc {
@@ -588,13 +533,6 @@ pub fn from_state(hooks: &HashMap<String, HookCfg>, global_hooks: &[String]) -> 
     }
 }
 
-/// Apply the overlay's `root` section (the single-value config overrides) to a base `DeployCfg`
-/// BEFORE `resolve` — the pre-resolve half of the boot-merge. The hooks + groups sections merge
-/// POST-resolve (`merge_into`, the runtime registry is synthesized in `resolve`); the root section is
-/// DeployCfg-level input, so the limits projection + the exposed-admin-mTLS boot-guard re-run over
-/// the merged shape. A no-op when the overlay carries no root override. Kept a free fn (not folded
-/// into `merge_into`) precisely because it operates on a DIFFERENT input (DeployCfg, not RootCfg) at
-/// a DIFFERENT pipeline stage.
 pub fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     if let Some(root) = &doc.root {
         root.apply_to_deploy(deploy);
@@ -602,31 +540,13 @@ pub fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     apply_pre_resolve_sections(deploy, doc);
 }
 
-/// Apply the overlay's `plugin_versions` pins onto `deploy.plugins.min_versions` (1.5.0
-/// rollback-friendly versioning). Each pin OVERRIDES the base-config floor for THAT plugin name to the
-/// operator's explicitly-pinned version — so on the next (re)load the pinned (older) third-party
-/// artifact clears its (now-lowered) floor and re-loads, and no floor is silently RAISED. A pin only
-/// ever exists because a human took an explicit, authenticated, audited rollback action; the automatic
-/// boot/reload path merely honors the persisted decision. A pin for a plugin the base config never
-/// floored simply adds a (low) floor entry — harmless, since a floor at/below the artifact's version
-/// is a no-op.
-///
-/// The FIRST-PARTY floor override is now PER-PLUGIN, not a single global floor. Each pin adds
-/// BOTH a `min_versions` entry (the third-party floor path) AND a `first_party_floors[name]` entry (the
-/// first-party floor path in the loader's trust evaluation). The evaluation applies the per-name
-/// first-party floor ONLY to a plugin whose manifest is actually first-party, so pinning a third-party
-/// name is a harmless no-op on the first-party path (its `min_versions` entry does the work). The
-/// earlier single global `first_party_floor` set to the LOWEST pin across all pins lowered the floor for
-/// EVERY first-party plugin — so a rollback of plugin A could silently admit an unpinned old first-party
-/// plugin B. Scoping the override to the pinned name closes that.
 pub fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     for (name, pinned) in &doc.plugin_versions {
         deploy
             .plugins
             .min_versions
             .insert(name.clone(), pinned.clone());
-        // Scope the first-party floor override to THIS name alone. Harmless for a third-party
-        // pin: `evaluate` only consults `first_party_floors` for a verified first-party manifest.
+
         deploy
             .plugins
             .first_party_floors
@@ -634,16 +554,6 @@ pub fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc)
     }
 }
 
-/// Apply the overlay's `named_maps` sections onto a base `DeployCfg`, PRE-resolve — the durable half
-/// of the generic named-map admin CRUD. Runs at the same seam as the `root` / `plugin_versions`
-/// overrides (and for the same reason): `resolve` LOWERS these definition maps into the auth chains
-/// and the typed export projection, so an overlay entry that arrived after resolve would never reach
-/// the runtime at all.
-///
-/// A definition that no longer parses (a downgrade whose typed struct lost a field, a hand-edited
-/// overlay) is dropped with a LOUD error rather than aborting the whole boot: an unparseable exporter
-/// must not brick startup, and an unparseable identity provider that something still references fails
-/// LOUDLY anyway at `resolve` (the dangling-reference error), which is the actionable diagnostic.
 pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     use crate::config::named_map::NamedMapSection;
     for section in NamedMapSection::sections() {
@@ -651,10 +561,6 @@ pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
             continue;
         };
         for (name, def) in entries {
-            // WHOLE-ENTRY REPLACE, as 1.5.5 applied it (v1.5.5 crates/busbar/src/config/overlay.rs
-            // :887-904, parity, Q128 arch u29): the stored definition IS the entry, so a field the
-            // overlay entry does not name never leaks in from a same-named base entry, and an
-            // explicit `null` inside it reaches the typed parse exactly as the operator PUT it.
             if let Err(e) = section.insert(deploy, name, def) {
                 diag_error!(
                     CONFIG_OVERLAY_PATCH_UNPARSABLE,
@@ -677,27 +583,6 @@ pub struct UnparseableNamedDef {
     pub raw: serde_json::Value,
 }
 
-/// Every definition STORED in the overlay at `path` under `section` that this binary CANNOT parse —
-/// `name -> {error, raw}`, empty when everything parses (and when there is no overlay at all).
-///
-/// [`apply_named_maps_to_deploy`] drops such an entry with a `tracing::error!` and then
-/// omits it forever: the definition sits in the operator's overlay, is never applied, and NOTHING
-/// outside a boot log line says so — the admin read simply showed the name as absent, which is
-/// indistinguishable from "I never wrote it". This is the read-side signal that closes that: the
-/// admin named-map surface calls it and flags each such entry explicitly (`unparseable`), so an
-/// operator inspecting STATE discovers the drop. The entry is only ever REPORTED — never deleted,
-/// never rewritten; the operator's data stays exactly as they left it.
-///
-/// Derived at read time from the overlay file rather than remembered from the last apply, so it
-/// needs no diagnostics channel threaded through the seven rebuild sites and can never go stale
-/// against the overlay it describes.
-///
-/// SCOPE, stated precisely now that an overlay entry is a PATCH: this validates the stored patch in
-/// ISOLATION, without the base entry it would be merged onto, so a partial patch fails here even
-/// though it applies perfectly well. That does not produce a false report, because both callers ask
-/// this only about names that are NOT live, and a patch that merged successfully IS live. What a
-/// partial patch can produce is a less precise ERROR STRING for a name that genuinely failed for
-/// some other reason. The flag itself is correct either way.
 pub fn unparseable_named_map_entries(
     store: Option<&OverlayStore>,
     section: crate::config::named_map::NamedMapSection,
@@ -753,13 +638,7 @@ pub fn persist_named_map(
         }
     })
 }
-/// Merge an overlay into the RESOLVED config (the boot-merge, run AFTER `config::resolve` - the
-/// runtime hook registry is synthesized there from the inline refs, so the overlay layers on top
-/// of it). Overlay hooks are inserted into the registry (an overlay hook with a base hook's name
-/// WINS - the last-applied definition, which matches the live-apply semantics), overlay global
-/// names are unioned into `global_hooks`, and finally TOMBSTONES (`deleted`) are subtracted - so a
-/// hook the API deleted stays gone across a restart even if it was defined in base `config.yaml`.
-/// Tombstones are applied LAST so a delete always wins over a stale add.
+
 pub fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
     for (name, hook) in doc.hooks {
         cfg.hooks.insert(name, hook);
@@ -769,15 +648,11 @@ pub fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
             cfg.global_hooks.push(g);
         }
     }
-    // Groups section: same semantics as hooks — an overlay group with a base group's name wins, then
-    // group tombstones are subtracted LAST so an API deletion survives a restart even if base defined
-    // the group. The parent-chain validity (parents exist, acyclic, depth) is re-checked by
-    // `validate_groups` after the merge, exactly as for a hand-written config.
+
     for (name, group) in doc.groups {
         cfg.groups.insert(name, group);
     }
-    // Tombstones LAST: an API deletion removes the hook/group from the effective config even if base
-    // defined it.
+
     for name in &doc.deleted {
         cfg.hooks.remove(name);
         cfg.global_hooks.retain(|g| g != name);
@@ -799,8 +674,6 @@ mod version_gate_tests;
 #[path = "tests/overlay_tests.rs"]
 mod tests;
 
-/// A read-only config mount must not stop busbar from serving: the degrade-and-warn posture, and the
-/// line between it and the config errors that DO still refuse to boot.
 #[cfg(test)]
 #[path = "tests/overlay_read_only_tests.rs"]
 mod overlay_read_only_tests;

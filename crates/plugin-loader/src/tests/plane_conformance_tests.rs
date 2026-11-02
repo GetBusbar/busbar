@@ -1,23 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CONFORMANCE for `kind: plane` that names no fixture plane.
-//!
-//! The HOT-lane plane load is deleted (row 84), and with it the HOT decl's own gates (the vocabulary
-//! cap, the HOT kind gate). What stays proves the loader's plane-side gates (the plane kind's one ABI
-//! version, the refusal of a plane with no door) and the plane DOOR both ways ([`door`]), over the
-//! SDK-built plane door test plugin (`tests/fixtures/plane_door_plugin.rs`).
-
 use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
 
-// ── THE REGISTRY'S PLANE GATES (DECISIONS #26 S4) ────────────────────────────────────────────────
-//
-// A plane rides the same discovery/trust/conflict pipeline as every kind (`scan_and_validate` →
-// `PluginRegistry::open_planes`); these prove its plane-side gates, which need no real plane.
-
-/// A `kind: plane` manifest, at the plane kind's one version
-/// (`supported_abi("plane")`, `abi::plane::ABI_VERSION`), stating no Statement. `sha256`/`signature`
-/// are filled by the caller (via `sign`, or by hand for the unsigned case).
 fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),
@@ -41,7 +26,6 @@ fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     }
 }
 
-/// The DEFAULT posture-A policy: a first-party release key is held; NO unsigned/third-party opt-in.
 fn first_party_only_policy(release: &SigningKey) -> TrustPolicy {
     TrustPolicy {
         first_party_key: Some(release.verifying_key()),
@@ -71,9 +55,6 @@ fn write_plane_tarball(dir: &std::path::Path, file: &str, m: &Manifest, lib: &[u
     std::fs::write(dir.join(file), bytes).unwrap();
 }
 
-/// RED: a signed, trusted `kind: plane` plugin whose manifest states no Statement (what a HOT-lane
-/// `PlaneDecl` cdylib was) is refused at discovery, naming it and the door it lacks. Before the HOT
-/// plane load was deleted (row 84) the same plugin was opened over the HOT-tier ABI.
 #[test]
 fn a_plane_with_no_door_is_refused() {
     let release = SigningKey::from_bytes(&[1u8; 32]);
@@ -98,29 +79,15 @@ fn a_plane_with_no_door_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `supported_abi("plane")` gates a plane's manifest `abi_version` at the plane kind's one version
-/// (THE DESIGN §11.2, A.9: no range).
 #[test]
 fn plane_supported_abi_is_the_plane_kinds_one_version() {
     let range = crate::registry::supported_abi("plane");
     assert_eq!(range, &[busbar_contract::abi::plane::ABI_VERSION]);
-    // The other kinds still resolve; an unknown kind is still empty.
+
     assert!(!crate::registry::supported_abi("store").is_empty());
     assert!(crate::registry::supported_abi("nonsense").is_empty());
 }
 
-/// **THE PLANE DOOR, BOTH WAYS.** A minimal plane built with the SDK's `plugin_door!`
-/// (`tests/fixtures/plane_door_plugin.rs`) is loaded LINKED (its `door` function, through
-/// [`load_linked`](crate::dispatch::load_linked)) and DROPPED (the `plane_door_plugin` example
-/// `cdylib`, through [`load_dropped`](crate::dispatch::load_dropped)), and ONE script drives every
-/// plane op through the loader's plane kind, each answer judged by the kind's own check: `open`
-/// and `refresh` publish a snapshot, `arrive`, `on_piece` (caller, ATTEMPT, far end, a session's
-/// unsolicited output), `refusal`, `serve` and `project` fill the host's buffers, `drive` names the
-/// ready session, `cancel` answers a disposition and `tick` its next tick. The two transcripts must
-/// be identical.
-///
-/// RED ARM, kept: the same plane with the door shape the macro used to build — an `open` over the
-/// lifecycle's own `OpenIn`/`OpenOut` — publishes no snapshot, and the loader FAULTs its `open`.
 mod door {
     use std::mem::zeroed;
     use std::sync::Arc;
@@ -216,7 +183,7 @@ mod door {
                 frame.input.signals_cap = signals.len();
                 frame.input.arena_buf = arena.as_mut_ptr();
                 frame.input.arena_cap = arena.len();
-                // The service cannot pend; the synchronous crossing keeps its lent buffers live.
+
                 assert_eq!(p.call(slot::PROJECT, &mut frame).outcome, Outcome::Ready);
             }
             assert_eq!(
@@ -251,7 +218,6 @@ mod door {
         }
     }
 
-    /// `len` bytes of a host buffer, as text.
     fn at(buf: &[u8], offset: usize, len: usize) -> String {
         String::from_utf8_lossy(&buf[offset..offset + len]).into_owned()
     }
@@ -260,7 +226,6 @@ mod door {
         at(buf, s.offset as usize, s.len as usize)
     }
 
-    /// A published snapshot, read while its generation is live.
     fn snapshot(p: *const PlaneSnapshot) -> String {
         assert!(!p.is_null(), "a READY open/refresh publishes a snapshot");
         // SAFETY: the plugin's generation data, valid until `retire` of its generation.
@@ -283,11 +248,9 @@ mod door {
         load_linked::<Plane>(&row, bind()).expect("the linked plane door loads")
     }
 
-    /// The example `cdylib` in this target dir. A missing artifact is a failure naming the command
-    /// that builds it, never a skip.
     fn dropped() -> Plugin<Plane> {
         let path = crate::both_ways::example_cdylib("plane_door_plugin");
-        // The signed manifest's rendering: the linked rlib's door, the same crate.
+
         let stated = rendering_of(plug::door).expect("the plane renders its Statement");
         load_dropped::<Plane>(&path, &stated, bind()).expect("the dropped plane door loads")
     }
@@ -437,8 +400,6 @@ mod door {
             assert_eq!(dispatcher.services().held(), 1);
             assert_eq!(services.0.releases.load(SeqCst), 1);
 
-            // A spurious wake and another TICK cannot replay a different service operation
-            // under the held handle, or reuse the previous answer's session count or lease.
             crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
             drive_until(|| plugin.inner.driven.answers() == 2);
             assert_eq!(
@@ -469,8 +430,6 @@ mod door {
             assert_eq!(dispatcher.services().held(), 0);
             assert_eq!(services.0.releases.load(SeqCst), 3);
 
-            // Cancel a caller operation through the actual worker. Its session must not
-            // reappear when a still-live driver advances independent pending work.
             let session = dispatcher.mint(0).unwrap();
             let mut frame: Frame<OnPieceIn, OnPieceOut> = Frame::new(z(), z());
             frame.input.head = in_head();
@@ -492,8 +451,6 @@ mod door {
             assert_eq!(cancelled.disposition, Some(CANCEL_ABORTED));
             dispatcher.recycle(session);
 
-            // The next cycle really issues again. Recycling cancels its result custody;
-            // a late completion may neither resurrect the driver nor emit a session.
             crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
             drive_until(|| plugin.inner.driven.answers() == 4);
             drive_tick(&dispatcher, &plugin, driver, 0);
@@ -551,7 +508,7 @@ mod door {
                 services.0.immediate.store(true, SeqCst);
                 let driver = dispatcher.driver(&plugin, 0).unwrap();
                 crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
-                // The ACK itself must wake the confirmation crossing; there is no I/O wake.
+
                 drive_until(|| {
                     plugin.inner.driven.answers() == 2 && services.0.releases.load(SeqCst) == 2
                 });
@@ -649,7 +606,6 @@ mod door {
         }
     }
 
-    /// A zeroed `on_piece` frame over the host's buffers.
     struct Piece {
         reply: [u8; 64],
         units: [UnitCount; 2],
@@ -696,7 +652,6 @@ mod door {
         }
     }
 
-    /// THE SCRIPT: every plane op once (arrive's short answer twice), each answer read back.
     fn script(p: &Plugin<Plane>) -> Vec<String> {
         let mut t = Vec::new();
 
@@ -734,7 +689,6 @@ mod door {
             t.push(format!("{s} {:?}", p.call(s, &mut g).outcome));
         }
 
-        // `arrive`: the admission estimate, then the short answer on a zero-capacity buffer.
         let mut units = [z::<UnitCount>(); 2];
         let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
         (a.input.head, a.out.head) = (in_head(), out_head());
@@ -754,7 +708,6 @@ mod door {
             c.recall.is_some()
         ));
 
-        // `on_piece` from the caller opens a session; `drive` names it; the kernel collects it.
         let mut piece = Piece::new();
         let (c, _) = piece.call(p, FROM_CALLER, b"hi", (0, b""));
         t.push(format!("on_piece caller {c:?}"));
@@ -773,7 +726,6 @@ mod door {
             at(&piece.reply, 0, out.emitted as usize)
         ));
 
-        // An ATTEMPT piece: the request bound for the member, verb and target in the arena.
         let (c, out) = piece.call(p, FROM_KERNEL, b"", (1, b"m1"));
         t.push(format!(
             "on_piece attempt {c:?} {} {} {} to_far_end={}",
@@ -783,7 +735,6 @@ mod door {
             out.flags & EMIT_TO_FAR_END != 0
         ));
 
-        // The far end's answer: echoed, with a count, a record and a field.
         let (c, out) = piece.call(p, FROM_FAR_END, b"answer", (0, b""));
         t.push(format!(
             "on_piece far_end {c:?} {} status={} done={} verdict_ok={} units={}:{}:{} \
@@ -801,7 +752,6 @@ mod door {
             arena(&piece.arena, piece.fields[0].value),
         ));
 
-        // `refusal` in the plane's dialect.
         let (mut reply, mut fields, mut buf) = ([0_u8; 16], [z::<OutField>(); 1], [0_u8; 32]);
         let mut r: Frame<RefusalIn, RefusalOut> = Frame::new(z(), z());
         (r.input.head, r.out.head) = (in_head(), out_head());
@@ -818,7 +768,6 @@ mod door {
             arena(&buf, fields[0].name)
         ));
 
-        // `serve` one admin route.
         let mut reply = [0_u8; 16];
         let mut s: Frame<ServeIn, ServeOut> = Frame::new(z(), z());
         (s.input.head, s.out.head) = (in_head(), out_head());
@@ -831,7 +780,6 @@ mod door {
             at(&reply, 0, s.out.reply_written as usize)
         ));
 
-        // `project` into the hook kind's request view.
         let (mut signals, mut buf) = ([z::<SignalEntry>(); 2], [0_u8; 32]);
         let mut j: Frame<ProjectIn, ProjectOut> = Frame::new(z(), z());
         (j.input.head, j.out.head) = (in_head(), out_head());
@@ -923,7 +871,6 @@ mod door {
         }
     }
 
-    /// The transcript every rule requires, linked or dropped.
     const EXPECTED: &[&str] = &[
         "validate bad Refused",
         "validate Ready",
@@ -955,7 +902,6 @@ mod door {
         assert_eq!(script(&dropped()), linked, "the dropped plane door");
     }
 
-    /// The lifecycle's own `open`: an `OpenOut` with an instance and nowhere to put a snapshot.
     struct LifecycleOpen;
     impl RawSlot for LifecycleOpen {
         type In = OpenIn;
@@ -966,12 +912,8 @@ mod door {
         }
     }
 
-    /// How many times [`LifecycleClose`] took its token back.
     static LIFECYCLE_CLOSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-    /// The `close` that goes with [`LifecycleOpen`]: its instance is a token, not a box, so its
-    /// `close` takes the token back and frees nothing (the host closes the live instance of an
-    /// `open` it judged FAULT after the plugin answered READY).
     struct LifecycleClose;
     impl RawSlot for LifecycleClose {
         type In = busbar_contract::abi::mechanism::call::InHead;
@@ -986,8 +928,6 @@ mod door {
         }
     }
 
-    /// A call capture for the hand-built table entry below: one slot per thread, as `plugin_door!`
-    /// expands for a plugin's own image.
     struct TestCapture;
     impl busbar_contract::abi::sdk::capture::CaptureHome for TestCapture {
         fn retention() -> &'static busbar_contract::abi::sdk::capture::CaptureRetention {
@@ -1005,8 +945,6 @@ mod door {
         }
     }
 
-    /// The plane door with `open` over the lifecycle's own structs: the shape `plugin_door!` gave
-    /// every plane before the kind stated its lifecycle.
     extern "C" fn lifecycle_open_door() -> *const Door {
         // SAFETY: the macro's `'static` door and its plane table.
         let (d, ops) = unsafe {
@@ -1047,10 +985,6 @@ mod door {
         assert_eq!(green.call(life::CLOSE, &mut e).outcome, Outcome::Ready);
     }
 
-    /// RED: the host's copy of a generation snapshot survives the plugin's next refresh and the
-    /// retire of its generation. The copy is taken inside the READY crossing that published it
-    /// (`Plugin<Plane>::open`/`refresh`), so after the plugin has published generation 2 and
-    /// dropped generation 1's memory, the host still reads generation 1 exactly as it was published.
     #[test]
     fn red_the_hosts_snapshot_copy_survives_the_plugins_next_refresh() {
         for p in [linked(), dropped()] {
@@ -1129,10 +1063,6 @@ mod door {
         }
     }
 
-    /// DECL-FOLD (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): the registry facts a
-    /// door states are read off its Statement and tail at bind, linked and dropped alike, and its
-    /// own `validate` judges a section: the kernel folds these into its plane registry before the
-    /// config prepass.
     #[test]
     fn a_door_states_its_registry_facts_and_judges_its_section() {
         let check = |bind: crate::dispatch::kinds::plane::ProbeBind| {

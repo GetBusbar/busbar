@@ -2,23 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The parts of the unit the ported suite never watched.
-//!
-//! Every test here was written because a deliberate change to production code — the wrong
-//! comparison in a bound, a boolean accessor pinned to `true`, a conjunction turned into a
-//! disjunction — left the existing suite entirely green. Each one names the specific change it
-//! refuses, so the property is on record rather than left to be inferred from a passing run.
 
 use super::{entry, Canned};
 use crate::chain::AuthChain;
 use crate::module::AuthOutcome;
 
-// The chain's own accessors and its cacheability gate.
-
 /// The two chain-shape accessors answer about the chain they were built over, in BOTH directions.
-///
-/// Read only in the affirmative, each is satisfied by a constant `true`; a caller deciding whether
-/// to run the keys arm, or an operator report saying whether a chain has modules, would then get the
-/// same answer for every chain that was ever configured.
+
 #[test]
 fn the_chain_shape_accessors_answer_in_both_directions() {
     let with_module = AuthChain::new(

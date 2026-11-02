@@ -1,23 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `cap.perf.streams-2000` (BUSBAR-1.6.0.md l.663; the plane ABI review's "a cap.perf cell with 2000
-//! concurrent streams", l.4426; a correctness check, every stream
-//! completes, no speed threshold): the shipped binary carries 2,000 streamed answers AT ONCE, and
-//! every one of them reaches its caller whole.
-//!
-//! The stand-in upstream holds every stream open after its first events until all 2,000 have
-//! arrived, so the 2,000 are in flight through busbar together, never one after another; then it
-//! finishes them. Each caller must read a 200 and the far end's exact stream, byte for byte. There
-//! is deliberately no speed threshold: the PERF phase's A/B against published 1.5.5 is the speed
-//! proof (THE DESIGN §11.9); this cell proves nothing is dropped, cut, crossed or parked.
-//!
-//! 2,000 streams are 4,000 sockets on each side of busbar, above many hosts' default soft limit on
-//! open files. The cell therefore runs itself again under `ulimit -n` raised to the hard limit
-//! (`run_under_raised_open_files`), and refuses loudly, naming the limit, where the host cannot hold
-//! the streams: a host that cannot run the cell is a red, never a pass.
 #![cfg(unix)]
-// Needs a bootable server with a route to send a real request through.
 #![cfg(linked_axis_body_ingress)]
 
 mod common;
@@ -30,20 +14,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// The concurrent streams.
 const STREAMS: usize = 2000;
-/// The open files the cell needs: two sockets per stream on each side of busbar, and headroom.
+
 const OPEN_FILES: u64 = 16_384;
-/// How long the upstream waits for every stream to arrive before failing the barrier.
+
 const ARRIVAL_WAIT: Duration = Duration::from_secs(120);
-/// A caller that has not read its whole answer by now is parked or cut.
+
 const CALLER_BUDGET: Duration = Duration::from_secs(240);
-/// The content deltas each stream carries.
+
 const DELTAS: usize = 8;
-/// The environment variable the re-run is told it is the re-run by.
+
 const CHILD: &str = "BUSBAR_CAP_PERF_STREAMS_2000_CHILD";
 
-/// THE CELL: re-run under a raised open-files limit, which must succeed.
 #[test]
 fn cap_perf_streams_2000() {
     if std::env::var_os(CHILD).is_some() {
@@ -79,7 +61,6 @@ fn cap_perf_streams_2000() {
     );
 }
 
-/// The cell's body, run by [`cap_perf_streams_2000`] in its re-run under the raised limit.
 fn cap_perf_streams_2000_body() {
     let dir = fixture_dir();
     let upstream = Upstream::spawn();
@@ -172,11 +153,6 @@ fn cap_perf_streams_2000_body() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── the stand-in upstream ────────────────────────────────────────────────────────────────────────
-
-/// An OpenAI-shaped streaming upstream: each request is answered with its first events at once,
-/// then held until every stream is live together. An expired barrier fails the cell; it never
-/// releases a partial batch that later arrivals could mistake for concurrent capacity.
 struct Upstream {
     port: u16,
     peak: Arc<AtomicUsize>,
@@ -190,7 +166,6 @@ struct ArrivalState {
     failed: bool,
 }
 
-/// Keep the count tied to this handler's lifetime, including early returns and unwinding.
 struct LiveStream<'a> {
     arrived: &'a (Mutex<ArrivalState>, Condvar),
     registered: bool,
@@ -265,7 +240,7 @@ fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<ArrivalStat
     if stream.flush().is_err() {
         return;
     }
-    // A timeout permanently fails this generation. Later arrivals cannot complete a partial batch.
+
     let mut live = LiveStream {
         arrived,
         registered: false,
@@ -301,8 +276,6 @@ fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<ArrivalStat
     }
 }
 
-/// The far end's stream, event by event: a role delta, [`DELTAS`] content deltas, the finish, the
-/// usage the caller asked for, and the terminator.
 fn events() -> Vec<String> {
     let chunk = |delta: &str, finish: &str| {
         format!(
@@ -324,15 +297,11 @@ fn expected_stream() -> Vec<u8> {
     events().concat().into_bytes()
 }
 
-// ── the callers ──────────────────────────────────────────────────────────────────────────────────
-
 struct Answer {
     status: u16,
     body: Vec<u8>,
 }
 
-/// One streamed chat on its own connection, asking for usage itself (so the far end's stream is
-/// relayed as it is), read to its end and de-chunked.
 fn stream_chat(port: u16, i: usize) -> Answer {
     let body = format!(
         r#"{{"model":"cap-model","stream":true,"stream_options":{{"include_usage":true}},"messages":[{{"role":"user","content":"stream {i}"}}]}}"#
@@ -384,7 +353,6 @@ fn parse(raw: &[u8]) -> Answer {
     }
 }
 
-/// An HTTP/1.1 chunked body, de-chunked; a malformed or cut one yields what was whole before it.
 fn dechunk(mut raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     loop {
@@ -404,8 +372,6 @@ fn dechunk(mut raw: &[u8]) -> Vec<u8> {
     }
 }
 
-// ── fixture ──────────────────────────────────────────────────────────────────────────────────────
-
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-cap-perf-streams-{}-{}",
@@ -419,8 +385,6 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16) {
-    // The provider catalog row is test data (`fixtures/perf_mock_provider.yaml`, the upstream's
-    // dialect), not a literal here.
     std::fs::write(
         dir.join("providers.yaml"),
         include_str!("fixtures/perf_mock_provider.yaml")

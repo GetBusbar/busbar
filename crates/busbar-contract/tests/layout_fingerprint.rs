@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KIND LAYOUT FINGERPRINTS ARE THEIR FOLDS.
-//!
-//! Each kind states its fingerprint as a literal (`abi/<kind>/`'s `LAYOUT_FINGERPRINT`, which the
-//! generated C header carries) and lists its shapes (`LAYOUT_SHAPES`, evaluated by the compiler).
-//! This test holds the literal to the fold of the shapes, for every kind, and names the fold's
-//! number when they part: a struct that moved needs its kind's literal moved with it (and the
-//! header regenerated, `cargo xtask abi-header --write`), so every plugin of that kind built
-//! before the move is refused at load instead of read at the wrong offsets.
 
 use busbar_contract::abi::mechanism::layout::fingerprint;
 use busbar_contract::abi::mechanism::KindCode;
@@ -86,8 +79,7 @@ fn the_host_accepts_each_kind_at_its_own_fingerprint() {
 }
 
 /// RED: any moved word moves the fold: a struct one field-width larger, a field at another
-/// offset (the hook `RequestView` insertion that shifted `DecideIn` by 24 bytes), a struct
-/// dropped from the list, and two structs swapped.
+
 #[test]
 fn a_moved_layout_moves_the_fingerprint() {
     for (kind, stated, shapes) in KINDS {

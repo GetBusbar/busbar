@@ -16,7 +16,6 @@ static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 struct Owned(std::sync::Weak<Leases>);
 impl Drop for Owned {
     fn drop(&mut self) {
-        // A kept destructor can reenter its lease owner: RELEASE must detach and unlock first.
         if let Some(leases) = self.0.upgrade() {
             let _ = leases.held();
         }

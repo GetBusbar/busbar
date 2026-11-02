@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A guest list's order and its match: CG-62 precedence first, predicates above none at an equal
-//! path, a claimant's rung among its own lines; two claimants meeting at an equal precedence refused;
-//! a path hit on another method is a method miss, not no-route; a listener mixing lines that need
-//! `Peer` with lines that need a per-request point refused, a `none` line neutral to that rule and
-//! gated by the listener's `Peer` verdict; a line needing a point its transport does not offer
-//! refused.
-
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use busbar_contract::abi::transport::route::{
     FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN,
@@ -60,8 +53,6 @@ fn the_most_specific_path_is_tried_first() {
     assert_eq!(l.claimant, Claimant::Plane("b".into()));
 }
 
-/// RED: at an equal path, the line that names a field predicate ranks above the one that does not,
-/// and is chosen only when its predicate holds.
 #[test]
 fn a_line_with_predicates_ranks_above_one_without() {
     let bare = route(METHOD_POST, PATH_EXACT, "/v1/chat/completions");
@@ -88,9 +79,6 @@ fn a_line_with_predicates_ranks_above_one_without() {
     );
 }
 
-/// RED: path precedence is the first key; predicates break ties only at an equal path precedence. An
-/// exact path without predicates is tried before a prefix line that names one, even when that
-/// predicate holds for the request.
 #[test]
 fn an_exact_path_beats_a_prefix_line_with_predicates() {
     let exact = route(METHOD_POST, PATH_EXACT, "/v1/chat/completions");
@@ -112,7 +100,6 @@ fn an_exact_path_beats_a_prefix_line_with_predicates() {
     assert_eq!(l.claimant, Claimant::Plane("exact".into()));
 }
 
-/// RED: a claimant's rung orders its own lines at an equal precedence.
 #[test]
 fn a_claimants_rung_orders_its_own_lines() {
     let mut first = with_field(
@@ -142,8 +129,6 @@ fn a_claimants_rung_orders_its_own_lines() {
     assert_eq!(l.route.fields[0].1, "x-b");
 }
 
-/// RED: two claimants whose lines could match one request at an equal precedence are refused,
-/// naming both; disjoint methods, paths or predicate values never meet.
 #[test]
 fn two_claimants_at_an_equal_precedence_are_refused() {
     let r = || route(METHOD_POST, PATH_EXACT, "/v1/messages");
@@ -177,7 +162,7 @@ fn two_claimants_at_an_equal_precedence_are_refused() {
         GuestList::seal(vec![line("a", pre(b"AWS4")), line("b", pre(b"AWS4"))]).is_err(),
         "the same prefix can hold for both, at one precedence"
     );
-    // A longer prefix is more specific (its own precedence), so it is ordered ahead, never refused.
+
     let ordered =
         GuestList::seal(vec![line("a", pre(b"AWS4")), line("b", pre(b"AWS4-HMAC"))]).unwrap();
     assert_eq!(
@@ -187,8 +172,6 @@ fn two_claimants_at_an_equal_precedence_are_refused() {
     );
 }
 
-/// RED: a path hit on another method is a method miss on that line (405), never no-route; a later
-/// line that admits the method wins over the miss; nothing matching is no-route.
 #[test]
 fn a_path_hit_on_another_method_is_a_method_miss() {
     let list = GuestList::seal(vec![
@@ -213,7 +196,6 @@ fn a_path_hit_on_another_method_is_a_method_miss() {
     assert_eq!(l.claimant, Claimant::Plane("any".into()));
 }
 
-/// A line whose auth is a one-auth chain over `points`.
 fn authed(claimant: &str, path: &str, points: AuthPoints) -> Line {
     Line {
         auth: LineAuth::Chain(vec!["chain".into()], points),
@@ -221,9 +203,6 @@ fn authed(claimant: &str, path: &str, points: AuthPoints) -> Line {
     }
 }
 
-/// RED (THE DESIGN §6 step 3, boot refusals): a listener where some lines need `Peer` and others
-/// need a per-request point without it is refused, naming the lines on each side (a `none` line on
-/// neither); a listener whose lines all need `Peer`, and one where none does, seal.
 #[test]
 fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
     let both = AuthPoints(AuthPoints::PEER.bits() | AuthPoints::HEAD.bits());
@@ -265,8 +244,6 @@ fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
     );
 }
 
-/// RED (THE DESIGN §6 step 3, boot refusals): a line whose auth needs a point its transport does
-/// not offer is refused, naming the line; one whose points its transport offers seals.
 #[test]
 fn an_auth_needing_a_point_its_transport_does_not_offer_is_refused() {
     let head_only = AuthPoints::HEAD;
@@ -298,11 +275,6 @@ fn an_auth_needing_a_point_its_transport_does_not_offer_is_refused() {
     );
 }
 
-/// RED (THE DESIGN §6 step 3, l.926-927; step 7, l.969-970): a `none` line needs no point, so it is
-/// neutral to the `Peer` mix rule: a `Peer` chain and a `none` line on one listener seal, and the
-/// sealed list is connection-gated, so the `none` line sits behind the connection's `Peer` verdict.
-/// A `Peer` chain and a `Head` chain on one listener are still refused. A list with no `Peer` line
-/// is not gated.
 #[test]
 fn a_none_line_is_neutral_to_the_peer_mix_and_sits_behind_the_peer_verdict() {
     let gated = GuestList::seal(vec![
@@ -338,11 +310,6 @@ fn a_none_line_is_neutral_to_the_peer_mix_and_sits_behind_the_peer_verdict() {
     assert!(!open.connection_gated(), "no Peer line, no connection gate");
 }
 
-/// RED (ARCHITECT ruling (a) on #953; THE DESIGN §6 step 3, §11 extensions-blob defaults): the
-/// offered set is what the transport's Statement `extensions` record states. A transport stating
-/// `{Peer}` only refuses a line that needs `Head`; a transport stating no record offers `{Head,
-/// HeadBody}`, so a `Head` line seals on it and a `Peer` line is refused: a transport offering
-/// `Peer` states the record.
 #[test]
 fn the_offered_points_record_decides_what_a_line_may_need() {
     use busbar_contract::abi::mechanism::extensions::encode;
@@ -380,9 +347,6 @@ fn the_offered_points_record_decides_what_a_line_may_need() {
     );
 }
 
-/// RED (audit contract-src #11, `check_route_view` never called): a line whose route no request can
-/// match is refused when the list is sealed, naming the line and the rule, never mounted as a dead
-/// route: no method, an unrooted exact path, a broken pattern, an upper-case field name.
 #[test]
 fn a_line_no_request_can_match_is_refused_at_seal() {
     let refused = |r: Route| match GuestList::seal(vec![

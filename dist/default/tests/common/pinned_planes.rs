@@ -1,30 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PINNED PLANES, FOR THE TESTS THAT READ THE TREE OFF DISK.
-//!
-//! A plane crate that left this tree for its own repo (`GetBusbar/busbar-plane-<key>`) comes back as
-//! a `git` row of the root `[workspace.dependencies]`, pinned at one rev, and cargo fetches its
-//! checkout for the rev `Cargo.lock` pins. The xtask gates read it through their context's base
-//! layer, laid at `crates/<package>`; a test here that reads the filesystem resolves the same
-//! directory through this module, so a plane that left is read exactly as when it lived here.
-//! Nothing is written into the tree: the bytes are read where cargo keeps them (spec #39, plugin
-//! source never re-enters busbar).
-//!
-//! Generic over the plane KIND: a pinned row is a plane when its package is `busbar-plane-<key>`
-//! and not the `-plugin` cdylib twin, the kind's own naming rule; no plane instance is named here.
-//! FAILS CLOSED: a pinned plane cargo does not resolve panics, naming the package and its rev.
-
 use std::path::{Path, PathBuf};
 
-/// The kind prefix every plane package carries.
 const PLANE_PREFIX: &str = "busbar-plane-";
 
-/// The `-plugin` cdylib twin's suffix: a plugin repo's packaging crate, never the plane itself.
 const TWIN_SUFFIX: &str = "-plugin";
 
-/// The root manifest's pinned plane rows: `(package, rev)` for each `[workspace.dependencies]` row
-/// naming a `git` source whose package is a plane.
 pub fn pinned_rows(root: &Path) -> Vec<(String, String)> {
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("the root Cargo.toml");
     let mut rows: Vec<(String, String)> = Vec::new();
@@ -61,11 +43,6 @@ pub fn pinned_rows(root: &Path) -> Vec<(String, String)> {
     rows
 }
 
-/// Every pinned plane's checkout directory, as `cargo metadata` resolves it: `(package, dir)`.
-///
-/// # Panics
-/// `cargo metadata` does not answer, or a pinned plane does not resolve to a `git` package (named,
-/// with its rev).
 pub fn pinned_dirs(root: &Path) -> Vec<(String, PathBuf)> {
     let rows = pinned_rows(root);
     if rows.is_empty() {
@@ -108,12 +85,6 @@ pub fn pinned_dirs(root: &Path) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// Where `rel` (a repo-relative path) is read: the tree's own file, or, under `crates/<package>/`
-/// of a pinned plane no crate on disk is, that plane's checkout. Under `crates/<package>-plugin/`,
-/// the same plane's cdylib twin in that same checkout, at the pinned rev (a plane's both-ways witness lives in its
-/// twin, and a citation of it is read there). A path
-/// that resolves to nothing stays the tree's own, which does not exist, so a citation of it fails
-/// closed.
 pub fn resolve(root: &Path, rel: &str) -> PathBuf {
     let on_disk = root.join(rel);
     if on_disk.exists() {
@@ -145,10 +116,6 @@ pub fn resolve(root: &Path, rel: &str) -> PathBuf {
     }
 }
 
-/// The directory of `twin`, the cdylib crate of the plugin repo whose logic crate cargo checked out
-/// at `plane_dir`: the member of that repo's workspace (the nearest `Cargo.toml` above `plane_dir`
-/// that declares `[workspace]`) whose manifest names the package `twin`. `None` when the checkout
-/// has no such member.
 fn twin_dir(plane_dir: &Path, twin: &str) -> Option<PathBuf> {
     let workspace = plane_dir.ancestors().skip(1).find(|d| {
         std::fs::read_to_string(d.join("Cargo.toml"))

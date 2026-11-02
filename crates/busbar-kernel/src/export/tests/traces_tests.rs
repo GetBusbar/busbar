@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The traces producer (K9a S7): what record a closed span becomes, and what a sink's projection
-//! lets through. The axis delivery it feeds is the one `logs` rides (`export/plugin.rs`); the
-//! dropped-in sink that receives these records end to end is driven by the composition root's
-//! `export_plugin_dropped_in_serves` test.
-
 use super::*;
 use busbar_contract::abi::export::{ExportField, ExportStream};
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -22,10 +17,6 @@ fn field(facts: &[(ExportField, Value)], f: ExportField) -> Option<&Value> {
     facts.iter().find(|(k, _)| *k == f).map(|(_, v)| v)
 }
 
-/// A closed span becomes ONE record of the stream's documented fields: its own id, its root's id
-/// as the trace id, its parent's id, its name, when it started and how long it lasted, and the
-/// stream fields it recorded (`pool`, `model`, …) — nothing it recorded outside the vocabulary.
-/// RED: a producer that dropped the parent link (or the trace id) would fail the joins below.
 #[test]
 fn a_closed_span_becomes_one_record_joined_to_its_trace() {
     let subscriber = tracing_subscriber::registry().with(Producer(capture, no_records));
@@ -41,8 +32,7 @@ fn a_closed_span_becomes_one_record_joined_to_its_trace() {
     assert_eq!(field(inner, ExportField::Name), Some(&Value::from("adhoc")));
     assert_eq!(field(inner, ExportField::Model), Some(&Value::from("m1")));
     assert_eq!(field(outer, ExportField::Pool), Some(&Value::from("p1")));
-    // Only the stream's own vocabulary: an unknown field, and a field of ANOTHER stream (`key_id`
-    // is `identity`'s), are not traces facts.
+
     assert!(outer.iter().all(|(_, v)| v != "not-a-field" && v != "k1"));
     assert_eq!(
         field(inner, ExportField::ParentSpanId),
@@ -61,8 +51,6 @@ fn a_closed_span_becomes_one_record_joined_to_its_trace() {
     assert!(field(inner, ExportField::Start).is_some_and(Value::is_u64));
 }
 
-/// A sink's record is built TO ITS PROJECTION: a subscriber to `traces` without `fields:` is granted
-/// the stream's documented fields; one that does not subscribe is granted nothing of it.
 #[test]
 fn a_traces_record_is_built_to_the_sinks_projection() {
     let facts = [
@@ -103,11 +91,6 @@ fn capture_recorded(facts: &[(ExportField, Value)], _: Option<&Value>) {
         .push(facts.to_vec());
 }
 
-/// A VALUE A SPAN RECORDS AFTER IT OPENED IS ONE OF ITS FACTS (status row 173): the unit's
-/// `forward` opens before the plane has read the request and records its `pool`, `ingress` and
-/// `op` once it has (v1.5.5 `proxy/engine/mod.rs:120` carried all three). A field recorded twice
-/// keeps its last value, once. RED before the producer read recorded values: the record carried
-/// none of the three.
 #[test]
 fn a_value_recorded_after_the_span_opened_is_one_of_its_facts() {
     let subscriber = tracing_subscriber::registry().with(Producer(capture_recorded, no_records));
@@ -155,12 +138,10 @@ fn a_value_recorded_after_the_span_opened_is_one_of_its_facts() {
     );
 }
 
-/// No sink takes full span records.
 fn no_records() -> bool {
     false
 }
 
-/// Some sink takes full span records.
 fn records() -> bool {
     true
 }
@@ -173,12 +154,6 @@ fn capture_full(_: &[(ExportField, Value)], span: Option<&Value>) {
         .extend(span.cloned());
 }
 
-/// THE FULL SPAN RECORD (status row 173; K9e-2): what the previous release's
-/// tracing-opentelemetry 0.33 layer exported for a span, in its attribute order and types: the
-/// code location, `thread.id` (an integer), `thread.name`, `target`, the span's fields as recorded
-/// (a `u64` its text), then `busy_ns` and `idle_ns` (integers); each event in it with `level`,
-/// `target`, its fields and its code location; its status, an error once an ERROR event lands; its
-/// start and its end in nanoseconds. RED before the producer kept it: no record at all.
 #[test]
 fn a_span_record_carries_what_the_previous_exporter_sent() {
     let subscriber = tracing_subscriber::registry().with(Producer(capture_full, records));
@@ -275,12 +250,6 @@ fn capture_first(facts: &[(ExportField, Value)], _: Option<&Value>) {
         .push(facts.to_vec());
 }
 
-/// A span's export id is unique ACROSS processes, not only within one: the OTLP backend joins on
-/// trace and span ids, so a restarted (or second) busbar that minted ids from 1 again would merge
-/// its traces into the previous run's (the previous release sent random ids). The ids start at a
-/// value drawn from OS entropy once per process, so a test process that has opened only a handful
-/// of spans does not hold a small id (the chance a random start lands below 2^32 is 2^-32).
-/// RED: a counter that starts at a fixed 1 mints ids 1, 2, 3, … in every process.
 #[test]
 fn span_ids_do_not_restart_from_a_fixed_value_in_each_process() {
     let subscriber = tracing_subscriber::registry().with(Producer(capture_first, no_records));

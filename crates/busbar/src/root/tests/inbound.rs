@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE INBOUND HANDLE'S REFUSALS, HELD TO 1.5.5 (`BUSBAR-1.6.0.md` THE DESIGN §6, "Auth points and
-//! guest lists", step 4, l.950-952 and l.962-964): with this build's protocol declarations linked,
-//! the kernel's `unit.refuse` answers, for the request the transport hands it
-//! (`UnitRefuseIn::request`, ruling 1), the bytes the 1.5.5 oracle recorded for every crosscut cell
-//! a refusal answers: the no-route cells, the method-miss cell, and the over-gate cells (an
-//! unauthenticated one answers its 401 first). The cells are READ from the oracle's own catalogue
-//! (`testing/shadow-oracle/cells.json`, by family), so this crate names no dialect (Law 0).
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -25,7 +17,7 @@ use crate::root::loader::dispatch::auth_handle::{self, RefSpace};
 
 const OWNER: u64 = 11;
 const GEN: u64 = 1;
-/// A line under the native API's root (`admin::gate::API_ROOT`).
+
 const NATIVE: &str = "/api/v1/things";
 
 fn line(path: &str, methods: u32) -> Line {
@@ -45,7 +37,6 @@ fn line(path: &str, methods: u32) -> Line {
     }
 }
 
-/// The kernel side over this build's protocols, the data listener holding `NATIVE` (POST only).
 fn side() -> (Arc<Inbound>, GuestList) {
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
@@ -91,7 +82,6 @@ fn ix(guests: &GuestList, path: &str) -> u32 {
         .expect("on the list") as u32
 }
 
-/// The golden cell `name`.
 fn golden(name: &str) -> Value {
     let path = format!(
         "{}/../../testing/shadow-oracle/golden/1.5.5/cells/{name}.json",
@@ -108,9 +98,6 @@ fn field<'a>(r: &'a kin::Refusal, name: &str) -> Option<&'a str> {
         .and_then(|(_, v)| std::str::from_utf8(v).ok())
 }
 
-/// `r` against golden cell `name`: its status, every head field the cell pins but the date and
-/// the length (its `<ID>` normalisation applied), its body (a request id normalised the same way),
-/// and its content-length where the cell pins one. The differences, worded; none when it holds.
 fn differences(r: &kin::Refusal, name: &str) -> Vec<String> {
     let cell = golden(name);
     let mut wrong = Vec::new();
@@ -157,9 +144,6 @@ fn differences(r: &kin::Refusal, name: &str) -> Vec<String> {
     wrong
 }
 
-/// The oracle's crosscut cells of `family` (`http.crosscut|<family>|…`) that run without a
-/// fixture: (the golden cell's name, the request's method, path and head fields, whether it
-/// presents a credential).
 fn crosscut(family: &str) -> Vec<(String, kin::Head, bool)> {
     let path = format!(
         "{}/../../testing/shadow-oracle/cells.json",
@@ -201,8 +185,6 @@ fn crosscut(family: &str) -> Vec<(String, kin::Head, bool)> {
         .collect()
 }
 
-/// Every cell of `family` refused for `cause`, held to its golden bytes: the cells that differ, and
-/// how. A cell whose 1.5.5 answer is no refusal of this cause (it was routed) is named apart.
 fn refused_against(family: &str, cause: u32) -> Vec<String> {
     let (side, guests) = side();
     let line = if cause == REFUSE_NO_ROUTE {
@@ -212,7 +194,6 @@ fn refused_against(family: &str, cause: u32) -> Vec<String> {
     };
     let mut failing = Vec::new();
     for (name, head, credentialed) in crosscut(family) {
-        // An unauthenticated over-gate request is a stop at its head, before the body (its 401).
         let cause = if credentialed { cause } else { REFUSE_STOPPED };
         let refusal = side
             .refuse(kin::Refuse {
@@ -235,9 +216,6 @@ fn refused_against(family: &str, cause: u32) -> Vec<String> {
     failing
 }
 
-/// RED (ruling 1): every no-route crosscut cell answers its 1.5.5 bytes, shaped by the request's
-/// path. A suffix-routed cell is excluded by its own answer: 1.5.5 ROUTED that request (a
-/// 400 from its dialect), which is the guest list's parity, not a refusal's.
 #[test]
 fn red_every_no_route_cell_answers_its_1_5_5_bytes() {
     let failing: Vec<String> = refused_against("unknown-path", REFUSE_NO_ROUTE)
@@ -247,25 +225,18 @@ fn red_every_no_route_cell_answers_its_1_5_5_bytes() {
     assert!(failing.is_empty(), "{failing:#?}");
 }
 
-/// RED (ruling 1): the method-miss crosscut cell answers its 1.5.5 bytes in the path's dialect,
-/// its request id included.
 #[test]
 fn red_the_method_miss_cell_answers_its_1_5_5_bytes() {
     let failing = refused_against("wrong-method", REFUSE_METHOD_MISS);
     assert!(failing.is_empty(), "{failing:#?}");
 }
 
-/// RED (ruling 1): every over-gate crosscut cell answers its 1.5.5 bytes in the path's dialect,
-/// before any verdict; the unauthenticated one its 401 first.
 #[test]
 fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
     let failing = refused_against("413", REFUSE_OVER_GATE);
     assert!(failing.is_empty(), "{failing:#?}");
 }
 
-/// The kernel's line half of the ref-id space is the loader's: every id the root mints for a line
-/// keeps the binding bit clear and is a line's, and the bit the kernel refuses is the one a binding
-/// id carries (one rule both ways, #74).
 #[test]
 fn the_roots_line_ids_and_the_kernels_rule_are_one_space() {
     for _ in 0..64 {

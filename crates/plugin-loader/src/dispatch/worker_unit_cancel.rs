@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! One logical plane unit may have two request tickets. Its closing callback belongs to the
-//! unit, while frames, retained loans, completions and recycling still belong to each ticket.
-
 use super::*;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{
@@ -42,8 +39,6 @@ impl End {
     }
 }
 
-/// One bounded tombstone per actual live ticket generation. A generation cannot be rebound to
-/// another instance/unit. Recycling drops it; stale messages cannot name the next generation.
 pub(super) struct Binding {
     instance: Arc<Instance>,
     unit: u64,
@@ -67,8 +62,6 @@ impl Drop for Binding {
     }
 }
 
-/// The entry retains the sender while a cancellation crosses. Watchdog retirement drops the
-/// entry outside its lock and answers None, even while that crossing still owns every loan.
 pub(crate) struct Waiter(Option<oneshot::Sender<Option<Cancelled>>>);
 
 impl Waiter {
@@ -264,8 +257,6 @@ impl Worker {
             .collect()
     }
 
-    /// Retire every sibling without another plugin callback. The trigger owns the single set
-    /// of writes unless an explicit cancellation waiter owns it. Each sibling shares disposition.
     fn retire_unit(
         &self,
         st: &mut WorkerState,
@@ -327,8 +318,7 @@ impl Worker {
                 job.finish(crossed, None);
                 drop(meta);
             }
-            // An explicit idle cancellation may be followed by recycle; no stale runnable
-            // entry can start another callback before that generation is retired.
+
             if st.entries[idx as usize].current.is_none()
                 && st.entries[idx as usize].recycle_when_idle
             {
@@ -373,8 +363,7 @@ impl Worker {
                     jobs.push((idx, job));
                 }
             }
-            // A queued op has not lent its frame to the plugin, but its owners also stay alive
-            // through the logical closing callback, including a watchdog fault of that callback.
+
             loans.extend(entry.queue.iter().filter_map(|(_, job)| job.keep_lent()));
         }
         let mut frame = (instance.cancel_frame)();
@@ -465,8 +454,6 @@ impl Worker {
 #[path = "worker_unit_cancel_tests.rs"]
 mod tests;
 
-/// Group replacement-worker orphans by the same bound key, including idle/queued siblings.
-/// Non-plane operations retain their existing per-ticket cancellation behavior.
 pub(super) fn group_orphans(
     worker: &Worker,
     gone: Vec<Entry>,
@@ -581,8 +568,6 @@ pub(super) fn cancel_orphan(mut orphan: Orphan) {
     }
 }
 
-/// A failed OS thread spawn cannot release frames that a healthy plugin still retains.
-/// Publish FAULT without handing back the admitted unit or dropping any lent owner.
 pub(super) fn fault_orphan_replies(orphan: &mut Orphan) {
     for (_, entry) in &mut orphan.entries {
         if let Some(current) = &entry.current {
@@ -612,7 +597,6 @@ impl Dispatcher {
         );
     }
 
-    /// Submission happens here, not on the future's first poll.
     pub(crate) fn cancel_plane_unit<K: Kind>(
         &self,
         plugin: &Plugin<K>,

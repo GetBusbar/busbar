@@ -1,32 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LINE CARRIER (SEAM-S1; ARCHITECT Q1a, consistent with round 4's line-shape ruling (B)): the
-//! process's own stdin/stdout, held open as ONE carrier session for one caller. busbar is somebody's
-//! child process here, binds no listener, and serves the door claim a served plane makes over the
-//! line carrier's key ([`carrier`]): the one linked transport claim whose row opens its unit 0 on
-//! the first line, read off the transport's own declared rows, never named here.
-//!
-//! - The session is only the CARRIER ([`LineCaller`], the driver's one `SessionCaller` for a held
-//!   carrier): each line it reads is ONE unit, opened exactly as a data-listener arrival is (its own
-//!   admission, budget, scope, audit and route walk) through the data routes' one unit path; what a
-//!   unit answers is written to stdout as whole lines, never interleaved with another's.
-//! - What the plane writes UNSOLICITED (a notification, a request of its own, a keepalive) it writes
-//!   with `session.emit` on the session the root opened on the kernel's services for it; every
-//!   arrival names that session ([`CARRIER_SESSION_FIELD`]). Nothing else reaches stdout.
-//! - THE IDENTITY IS BOUND ONCE, from the boot credential ([`env_credential`]), by the same admission
-//!   the data listener runs: the RFC 8707 audience pre-filter against the audience the plane's
-//!   snapshot binds, then the configured auth chain and the one verdict resolution. A configured
-//!   chain with no credential, or a refused one, refuses to serve: nonzero exit, the sentence on
-//!   stderr, not one frame first.
-//! - EOF on stdin, or the shutdown signal, ends the session: no further line is read, the units
-//!   already in flight finish and answer within the drain grace (as the listener path lets its
-//!   in-flight requests drain on the same signal), and any still running after it are ended. The
-//!   output shares that grace: output that cannot finish makes the serve return nonzero.
-//!
-//! Every meaning a line has is the plane's, and every name the carrier answers by is the
-//! transport's; this module names neither.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::host::service::CARRIER_SESSION_FIELD;
@@ -36,14 +10,6 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use super::{DoorRequest, Served};
 
-/// THE LINE CARRIER'S CLAIM KEY among `transports`: the one claim whose row opens its unit 0 on
-/// the first line (`unit0_trigger` `FIRST_LINE`, read off each linked door's Statement). `None` when
-/// no linked transport carries lines. Two such claims are refused: the process has one
-/// stdin/stdout, and which claim it carries is never decided by picking one.
-///
-/// # Errors
-///
-/// Two linked claims open on the first line.
 pub fn line_carrier(
     transports: &[crate::root::linked::LinkedTransport],
 ) -> Result<Option<&'static str>, String> {
@@ -58,32 +24,22 @@ pub fn line_carrier(
     }
 }
 
-/// This build's line carrier, read once off its linked transports ([`line_carrier`]). `Err` when
-/// two linked claims open on the first line; boot refuses that build before anything is served
-/// ([`refusal`]).
 fn installed() -> &'static Result<Option<&'static str>, String> {
     static CARRIER: std::sync::OnceLock<Result<Option<&'static str>, String>> =
         std::sync::OnceLock::new();
     CARRIER.get_or_init(|| line_carrier(crate::LINKED.transports))
 }
 
-/// The line carrier's claim key in this build: the claims made over it are served on the
-/// process's own stdin/stdout. `None` when no linked transport carries lines.
 #[must_use]
 pub fn carrier() -> Option<&'static str> {
     installed().as_ref().ok().copied().flatten()
 }
 
-/// The refusal a build whose linked transports state two line carriers boots to, `None` for every
-/// other build.
 #[must_use]
 pub fn refusal() -> Option<&'static str> {
     installed().as_ref().err().map(String::as_str)
 }
 
-/// The environment variable carrying the session credential for the plane keyed `plane` over the
-/// line carrier keyed `carrier` (both instances' keys, never a literal here): argv is
-/// world-readable, and the launching client's `env` block has exactly this shape.
 #[must_use]
 pub fn env_credential(plane: &str, carrier: &str) -> String {
     format!(
@@ -93,7 +49,6 @@ pub fn env_credential(plane: &str, carrier: &str) -> String {
     )
 }
 
-/// The `(plane, claim)` a served plane claims over the line carrier, the first in binding order.
 #[must_use]
 pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
     let carrier = carrier()?;
@@ -102,7 +57,6 @@ pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
             .snapshot
             .claims
             .iter()
-            // A raw affix (`CLAIM_RAW_AFFIX`) mounts no route on any carrier.
             .position(|c| {
                 c.carrier == carrier && c.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
             })
@@ -111,14 +65,10 @@ pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
     })
 }
 
-/// The one line a refused serve writes to stderr before it exits nonzero.
 pub fn refuse(plane: &str, carrier: &str, sentence: &str) {
     eprintln!("busbar: {plane} {carrier} serve refused to start: {sentence}");
 }
 
-/// RESOLVE THE SESSION IDENTITY from the boot credential, against `audience`: `Err` is a sentence
-/// for stderr and a refusal to serve. Every operator sentence names the plane by `plane` and the
-/// carrier by `carrier`.
 async fn session(
     app: Arc<busbar_kernel::state::App>,
     plane: &str,
@@ -127,7 +77,7 @@ async fn session(
     credential: Option<&str>,
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
     let env = env_credential(plane, carrier);
-    // The setting a refusal points the operator at: the plane's canonical resource, by its key.
+
     let canonical_uri = format!("{plane}.canonical_uri");
     let Some(resource) = audience else {
         return Err(format!(
@@ -135,8 +85,7 @@ async fn session(
              has no audience to be bound to."
         ));
     };
-    // (1) THE AUDIENCE PRE-FILTER, for a credential busbar did not mint: a token minted for another
-    // resource is not made admissible by arriving on a pipe instead of a socket.
+
     if let Some(token) = credential {
         use busbar_kernel::auth::audience::Binding;
         match busbar_kernel::auth::audience::inspect_bearer(token, resource) {
@@ -157,7 +106,7 @@ async fn session(
             }
         }
     }
-    // (2)+(3) THE CHAIN AND THE ONE VERDICT RESOLUTION the data listener runs.
+
     let admitted = busbar_kernel::auth::admit::admit_session(
         app,
         credential.map(str::to_string),
@@ -192,8 +141,6 @@ async fn session(
     }
 }
 
-/// THE CARRIER'S CALLER SIDE: the lines read from the reader, and every write — a unit's answer or
-/// the plane's unsolicited output — handed to the one writer as whole lines.
 pub struct LineCaller<R> {
     lines: AsyncMutex<tokio::io::BufReader<R>>,
     max_line: usize,
@@ -227,7 +174,6 @@ impl IoFailure {
 }
 
 impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
-    /// A pipe has no head.
     fn head(&self, _status: u32, _fields: HeadFields) {}
 
     async fn write(&self, bytes: &[u8]) -> bool {
@@ -235,7 +181,6 @@ impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
     }
 }
 
-/// `bytes` as one whole line: copied once, with a `\n` appended unless it already ends in one.
 fn terminated(bytes: &[u8]) -> Vec<u8> {
     let mut line = Vec::with_capacity(bytes.len() + 1);
     line.extend_from_slice(bytes);
@@ -246,8 +191,6 @@ fn terminated(bytes: &[u8]) -> Vec<u8> {
 }
 
 impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
-    /// The next non-empty line, without its terminator; `None` at EOF. A line past the inbound body
-    /// bound is read to its end and dropped, so the session goes on.
     async fn read(&self) -> Option<Vec<u8>> {
         let mut reader = self.lines.lock().await;
         loop {
@@ -268,8 +211,6 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
     }
 }
 
-/// SERVE the line claim over the process's own stdin/stdout until EOF or `stop` (the shutdown
-/// signal): the exit code for `main`.
 pub async fn serve_lines(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
@@ -287,7 +228,6 @@ pub async fn serve_lines(
     .await
 }
 
-/// SERVE the line claim over any reader/writer pair, until the reader's EOF or `stop`.
 pub async fn serve_lines_over<R, W, S>(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
@@ -347,7 +287,6 @@ where
         }
     };
     run_io(carrier, reader, writer, stop, move |caller| {
-        // THE CARRIER SESSION on the kernel's services: what the plane emits on it goes to the writer.
         let principal = gov.key().map_or_else(
             || {
                 busbar_contract::auth::AuthPrincipal(None)
@@ -373,15 +312,14 @@ where
                 headers,
                 body: axum::body::Bytes::from(line),
                 gov: gov.clone(),
-                // The boot credential is the caller's verified credential, lent for a passthrough
-                // member's outbound auth call alone, as the data listener lends the gate's.
+
                 credential: credential
                     .as_ref()
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
-                // A carrier line presents no ticket: its session was bound once, at its open.
+
                 ticket: None,
                 app: app.load(),
-                // The process's own stdin/stdout: no listener, no connection security.
+
                 scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
                 consumed_fields: Vec::new(),
             };
@@ -400,8 +338,6 @@ where
     .await
 }
 
-/// The production carrier loop, with the bound session's unit dispatch and close supplied by boot.
-/// Keeping the I/O loop independent of admission also lets its shutdown run against stalled writers.
 async fn run_io<R, W, S, Open, Answer, Unit, Close>(
     carrier: &str,
     reader: R,
@@ -418,7 +354,6 @@ where
     Unit: std::future::Future<Output = ()> + Send + 'static,
     Close: FnOnce(),
 {
-    // THE ONE WRITER: whole lines, in the order they were handed over, flushed each.
     let (out, mut lines_out) = mpsc::unbounded_channel::<Vec<u8>>();
     let failure = Arc::new(IoFailure::default());
     let write_failure = Arc::clone(&failure);
@@ -467,13 +402,10 @@ where
         };
         let Some(line) = line else { break };
         units.spawn(answer(line));
-        // Units that ended are reaped as the session goes, so a long session holds only its open ones.
+
         while units.try_join_next().is_some() {}
     }
-    // EOF or the shutdown signal: no further line is read. The units already in flight finish and
-    // answer within the drain grace. Their answers and already queued output share this one
-    // deadline; finishing units does not grant the writer another grace. Then the session closes
-    // (an emit on it is refused from now on), so the writer can finish its queue and final flush.
+
     let deadline = tokio::time::Instant::now() + busbar_kernel::detached::DETACHED_DRAIN_GRACE;
     let ended = if writer_ended {
         let ended = units.len();
@@ -498,13 +430,8 @@ where
             Ok(Ok(())) => {}
             Ok(Err(error)) => failure.record("output", std::io::Error::other(error)),
             Err(_) => {
-                // Retire the async writer, including its queue and channel receiver. Tokio's
-                // stdout may still have a blocking OS write in progress: aborting this task does
-                // not cancel that operation. The root can now run its final accounting flush.
                 written.abort();
                 match written.await {
-                    // Completion can race the deadline. Preserve a successful drain or the
-                    // writer's own error/panic instead of claiming it was cancelled.
                     Ok(()) => {}
                     Err(error) if error.is_cancelled() => failure.record(
                         "output",
@@ -521,9 +448,6 @@ where
     i32::from(failure.report())
 }
 
-/// The caller's next line, or `None` at EOF or once `stop` resolves: a stop that fires mid-line
-/// drops that partial line, which was never a unit. `stop` is not polled again after it resolves:
-/// the caller's loop ends on the `None`.
 async fn next_line<R, S>(caller: &LineCaller<R>, stop: std::pin::Pin<&mut S>) -> Option<Vec<u8>>
 where
     R: AsyncRead + Unpin + Send,
@@ -536,8 +460,6 @@ where
     }
 }
 
-/// THE DRAIN: the units in `units` finish by `deadline`; whatever is still running after it is
-/// ended. Returns how many were ended.
 async fn drain_units(
     units: &mut tokio::task::JoinSet<()>,
     deadline: tokio::time::Instant,
@@ -555,7 +477,6 @@ async fn drain_units(
     ended
 }
 
-/// A unit's whole answer.
 async fn collect(response: axum::response::Response) -> Vec<u8> {
     use http_body::Body as _;
     let mut body = response.into_body();
@@ -571,11 +492,6 @@ async fn collect(response: axum::response::Response) -> Vec<u8> {
     all
 }
 
-/// One line of at most `max` bytes into `buf`; a longer one is read to its end and dropped (`Ok`
-/// with nothing kept), so the session goes on. `Ok(0)` at EOF.
-///
-/// Once the bound is crossed the line is OVER: every later piece of it, up to its terminator, is
-/// read and discarded too, so no tail of an over-long line is ever kept as a line of its own.
 async fn read_line<R: AsyncBufReadExt + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
@@ -618,7 +534,6 @@ async fn read_line<R: AsyncBufReadExt + Unpin>(
     }
 }
 
-/// A line without its terminator.
 fn trim(line: &[u8]) -> &[u8] {
     let mut end = line.len();
     while end > 0 && matches!(line[end - 1], b'\n' | b'\r') {

@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Frames, connections and the closed codes that describe what happened to them.
-//!
-//! Everything here belongs to the transport axis. A transport cannot name a plane and cannot name
-//! a unit: it yields and writes frames, and it knows no protocol and no principal. Nothing in this
-//! module carries meaning — meaning is the plane's answer, in the contract one crate up.
-//!
-//! What stayed in the contract is the handful of these types a PLANE holds: the frame it reads, the
-//! cursor it reads through, the envelope it decorates. Everything else — the listener, the
-//! connection, the detached stream, the closed failure and close codes, the arrival record the
-//! bottom layer writes — is read by a transport and by the loop, and by nobody who writes a plugin.
 
 use core::fmt;
 use std::future::Future;
@@ -74,7 +65,7 @@ pub enum WireFault {
 
 impl WireFault {
     /// The reading a piece's `FAULT_*` byte states; `None` for `FAULT_NONE` or a byte no reading
-    /// names (the piece checker refuses the latter before this reads it).
+
     #[must_use]
     pub const fn from_code(code: u8) -> Option<Self> {
         match code {
@@ -159,11 +150,7 @@ impl WireStatus {
     }
 
     /// The number, when this status is in the numbering asked for. `None` otherwise — never a
-    /// coerced number, because no code in one numbering "is" a code in another.
-    ///
-    /// The one accessor every namespace-specific question is asked through, in the namespace the
-    /// reader's transport declares: adding a family adds no arm here and no arm anywhere else, and
-    /// no accessor here is named for a protocol.
+
     #[must_use]
     pub fn in_namespace(self, namespace: &str) -> Option<u32> {
         (self.namespace == namespace).then_some(self.code)
@@ -453,54 +440,25 @@ impl fmt::Debug for Conn {
 }
 
 /// A duplex byte stream, as one transport layer hands it to the layer above.
-///
-/// Blanket-implemented, so any concrete socket a transport owns can be boxed as one. The traits are
-/// the ones the contract already depends on; nothing here names a runtime, because which runtime
-/// moves the bytes is the transport's business and not the seam's.
+
 pub trait RawIo: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin {}
 impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo for T {}
 
 /// The core↔transport connection-security seam (DECISIONS #40): an opaque wrap a binding's
-/// connection-security prep hands to a transport, and the ONE operation a transport calls on it.
-///
-/// This is deliberately rustls-free, matching the ABI-face rule that already keeps rustls (and
-/// every other concrete crypto/cert type) out of this crate (DECISIONS #38/#39): a plugin manifest
-/// — and a transport, which is in-tree but still only ever named through this trait here — never
-/// names `rustls::ServerConfig` or any key byte. The concrete implementation (an identity no-op for
-/// a plaintext binding, a rustls-backed one for a TLS binding) is built on the far side of the
-/// seam, which this crate does not name; everything on this side of the seam sees only `wrap`.
-///
-/// The connector calls `wrap` on a carrier's accepted or dialled byte stream, between the carrier
-/// and the framer (`carrier -> [TLS] -> framer`); a carrier with no byte stream to wrap (e.g. one
-/// that talks to a child process over its pipes) has nothing for it to secure.
+
 pub trait ConnectionSecurity: Send + Sync {
     /// Apply this binding's connection security to a freshly accepted/dialled raw stream, handing
-    /// back the secured stream the transport serves from then on.
-    ///
-    /// The identity wrap returns `io` unchanged — a plaintext binding's wire is untouched, byte for
-    /// byte. A TLS wrap runs the handshake and returns the encrypted session. Either way this is a
-    /// PER-CONNECTION outcome: any failure (a rejected handshake, a transport error) is reported
-    /// through the `io::Error` and must never be treated as a reason to bring the listener down.
+
     fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a>;
 }
 
 /// The one boxed future [`ConnectionSecurity::wrap`] returns — named for the same reason
-/// [`super::Fut`] is: an async trait method has to box its future, and a bare inline
-/// `Pin<Box<dyn Future<...> + Send + 'a>>` at the call site is what clippy's `type_complexity`
-/// (correctly) refuses to let sprawl across a signature.
+
 pub type SecuredIoFut<'a> =
     Pin<Box<dyn Future<Output = std::io::Result<Box<dyn RawIo>>> + Send + 'a>>;
 
 /// The byte stream under a connection, detached from the layer that owned it.
-///
-/// An in-band upgrade is not a source transport turning into a target transport: it is the source
-/// giving up its stream and the target taking it. That is why this exists as a value — the moment
-/// it is produced, the source has removed the connection from its own registry and will never read
-/// from or write to it again, and the target owns everything about what happens next.
-///
-/// `from` travels with the stream because a handoff is only admissible between the layers that
-/// declared it. A target handed a stream by a transport it does not compose over refuses, and the
-/// refusal is a mismatch rather than a framing error, because the bytes were never the problem.
+
 pub struct RawStream {
     io: Box<dyn RawIo>,
     from: &'static str,
@@ -521,7 +479,7 @@ impl RawStream {
     }
 
     /// The peer's source address, carried across the handoff so the adopting layer does not have to
-    /// ask the socket again.
+
     #[must_use]
     pub fn peer(&self) -> &str {
         &self.peer

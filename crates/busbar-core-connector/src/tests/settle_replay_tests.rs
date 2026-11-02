@@ -20,8 +20,7 @@ impl FramerDoor for ReplayRecordingDoor {
         if let Call::Emit(i, _) = &call {
             let text = i.flags & EMIT_TEXT != 0;
             let end = i.end_of_frame != 0;
-            // This fixture replays text followed by an empty terminal frame. The opening
-            // body and the line's empty nonterminal readiness probes are separate traffic.
+
             if text || (i.len == 0 && end) {
                 self.emits.lock().unwrap().push((i.len, end, text));
             }
@@ -69,7 +68,7 @@ impl FramerDoor for ReplayCarrier {
                 Self::pause(&self.write);
                 self.inner.carry(side, resume, Carry::Write(i, o))
             }
-            // The fixture's loopback connect is accepted; pause actual writes independently.
+
             Carry::Flush(..) => Crossed {
                 outcome: Outcome::Ready,
                 error: None,
@@ -172,7 +171,7 @@ fn a_pending_dial_completed_after_close_never_publishes_a_live_line() {
                 io.ends(crate::support::OWNER, handle),
                 Err(IoRefusal::Refused(_))
             );
-            // Reclaim the original late pool/handle leak before asserting.
+
             c.pools.forget(OWNER);
             let _ = io.close(crate::support::OWNER, handle);
             drop(far);
@@ -214,7 +213,6 @@ fn replay_keeps_a_short_suffix_and_empty_flags_across_zero_and_busy_retries() {
         let first_frames = framing.emits.lock().unwrap().clone();
         let (mut socket, _) = listener.accept().await.unwrap();
 
-        // Another operation holds the real line out while replay tries its remaining suffix.
         let (entered_tx, entered) = std::sync::mpsc::channel();
         let (release, held_back) = std::sync::mpsc::channel();
         *carrier.write.lock().unwrap() = Some((entered_tx, held_back));
@@ -233,7 +231,7 @@ fn replay_keeps_a_short_suffix_and_empty_flags_across_zero_and_busy_retries() {
         carrier.inner.gate.release();
         let woken = wakes.lock().unwrap().clone();
         let was_woken = woken.contains(&73) || woken.contains(&72);
-        // The resumed replay must send the suffix and its terminal empty frame exactly once.
+
         let mut expected = opening;
         expected.extend_from_slice(b"accepted");
         let got = tokio::time::timeout(Duration::from_secs(5), async {

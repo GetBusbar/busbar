@@ -2,13 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KIND → VERB LIST (the config section of the kernel-and-plugins design): every kind's verb
-//! round-trips, the six root keys are distinct, and the plane's verb is declared by each plane
-//! rather than named here.
 
 use super::*;
 
 /// The list, as the design's config section states it — the one other spelling of it, kept to pin
-/// the list.
+
 const DESIGN: [(Kind, Verb); 7] = [
     (Kind::Store, Verb::Root("store")),
     (Kind::Secret, Verb::Root("secrets")),

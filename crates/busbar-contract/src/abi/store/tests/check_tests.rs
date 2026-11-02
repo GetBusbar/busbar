@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RED tests for the store answer validators: one per rule, each a well-formed answer that passes
-//! and the same answer broken in exactly one way that fails with the rule's [`Fault`]. Removing a
-//! check turns its test red.
 
 use super::*;
 use crate::abi::mechanism::call::{
@@ -56,8 +54,6 @@ fn blob(ptr: *const u8, len: usize, fmt: u32) -> Blob {
 fn s(ptr: *const u8, len: usize) -> AbiStr {
     AbiStr { ptr, len }
 }
-
-// ── single-value reads ───────────────────────────────────────────────────────────────────────
 
 fn bytes_out(found: u32, written: u64, needed: u64) -> HostBytesOut {
     HostBytesOut {
@@ -143,8 +139,6 @@ fn needed_within_the_capacity_is_fault() {
         Err(BYTES_NEEDED_WITHIN_CAP)
     );
 }
-
-// ── request-path lists ───────────────────────────────────────────────────────────────────────
 
 fn list_out(iw: u64, bw: u64, ni: u64, nb: u64) -> HostListOut {
     HostListOut {
@@ -335,14 +329,13 @@ fn list_needed_bytes_over_u32_max_is_fault() {
 
 #[test]
 fn list_short_in_one_dimension_with_the_other_fitting_is_legal() {
-    // M-SB REFINEMENT: items over their cap (4), bytes at their full size that fits (10 <= 64).
     let mut b = Bufs::new();
     let host = b.host();
     assert_eq!(
         check_list_plane_records(F, &list_out(0, 0, 5, 10), &host, &[]),
         Ok(())
     );
-    // Bytes over their cap (64), items at their full size that fits (2 <= 4).
+
     assert_eq!(
         check_list_plane_records(F, &list_out(0, 0, 2, 65), &host, &[]),
         Ok(())
@@ -402,12 +395,12 @@ fn record_scan_checks_limit_keys_and_values() {
         check_record_scan(R, &list_out(1, 8, 0, 0), &host, &[e], 4),
         Ok(())
     );
-    // More entries than the scan's limit (limit 0 means nothing).
+
     assert_eq!(
         check_record_scan(R, &list_out(1, 8, 0, 0), &host, &[e], 0),
         Err(SCAN_OVER_LIMIT)
     );
-    // A value over the record ceiling.
+
     let big = RecordEntry {
         key: blob(base, 2, BLOB_OCTETS),
         value: blob(base.wrapping_add(2), 513, BLOB_OCTETS),
@@ -416,7 +409,7 @@ fn record_scan_checks_limit_keys_and_values() {
         check_record_scan(R, &list_out(1, 515, 0, 0), &host, &[big], 4),
         Err(SCAN_VALUE_OVER_MAX)
     );
-    // A key past the written bytes.
+
     let past = RecordEntry {
         key: blob(base.wrapping_add(7), 2, BLOB_OCTETS),
         value: blob(base, 1, BLOB_OCTETS),
@@ -426,8 +419,6 @@ fn record_scan_checks_limit_keys_and_values() {
         Err(SPAN_OUT_OF_BOUNDS)
     );
 }
-
-// ── leased (off-path) answers ────────────────────────────────────────────────────────────────
 
 #[test]
 fn leased_blob_rules() {
@@ -535,8 +526,6 @@ fn verdict_and_cancel_vocabularies() {
     assert_eq!(check_cancel(R, &c(3)), Err(CANCEL_DISPOSITION));
 }
 
-// ── M-SB: the short-buffer answer ────────────────────────────────────────────────────────────
-
 #[test]
 fn needed_with_refused_is_fault_on_reads_and_lists() {
     assert_eq!(
@@ -550,8 +539,6 @@ fn needed_with_refused_is_fault_on_reads_and_lists() {
         Err(NEEDED_NOT_FAILED)
     );
 }
-
-// ── every outcome: a zeroed `out` on PENDING or REFUSED passes ──────────────────────────────
 
 #[test]
 fn a_found_outside_the_vocabulary_is_read_on_ready_only() {
@@ -588,8 +575,6 @@ fn a_zeroed_out_on_pending_or_refused_passes_every_validator() {
     }
 }
 
-// ── purges: the rows removed ─────────────────────────────────────────────────────────────────
-
 fn count_out(count: u64) -> CountOut {
     CountOut {
         head: head(),
@@ -608,8 +593,6 @@ fn count_ready_passes() {
 fn count_on_failed_is_fault() {
     assert_eq!(check_count(F, &count_out(1)), Err(COUNT_FAILED_WRITTEN));
 }
-
-// ── a distinct fault field per arm (the design: "a distinct message per arm") ────────────────
 
 #[test]
 fn every_store_fault_names_its_own_store_field() {
@@ -630,7 +613,7 @@ fn kind_before(retention: u32) -> KindBeforeIn {
 }
 
 /// GREEN: each rule a purge may carry passes, and the zero an older host's shorter `in` reads as
-/// is the age rule.
+
 #[test]
 fn green_a_purge_carries_a_known_retention() {
     assert_eq!(check_kind_before(&kind_before(RETENTION_AGE)), Ok(()));
@@ -670,8 +653,6 @@ fn a_retention_and_its_code_map_both_ways() {
     assert_eq!(Retention::default(), Retention::Age);
 }
 
-// ── the kind's answer check (`check_answer`): frames, then the op's validator ───────────────
-
 /// `check_answer` for a store slot over an `in` and an `out` of the stated sizes.
 fn answer<I, O>(
     slot: u32,
@@ -697,7 +678,7 @@ fn answer<I, O>(
 }
 
 /// `record_get` reads its `in` first, then its `out`, and is judged against the capacity its `in`
-/// lent; `get_usage` is a leased blob; `cancel` its disposition; a bare-head op passes.
+
 #[test]
 fn check_answer_reads_the_frames_in_order_then_judges_the_op() {
     use crate::abi::store::{slot, RecordGetIn};
@@ -736,7 +717,7 @@ fn check_answer_reads_the_frames_in_order_then_judges_the_op() {
         answer(slot::GET_USAGE, R, &input, hs, &leased, ls),
         Err(LEASED_BLOB_FOUND)
     );
-    // An op reading its `out` alone never size-checks the `in`.
+
     assert_eq!(
         answer(slot::GET_KEY, R, &input, 0, &leased, ls - 1),
         Err(fault(Rule::Foreign, "out"))
@@ -755,7 +736,7 @@ fn check_answer_reads_the_frames_in_order_then_judges_the_op() {
 }
 
 /// A leased list is read only on READY, its count capped before any slice exists, and its fault
-/// named for its op.
+
 #[test]
 fn check_answer_reads_a_leased_list_only_on_ready() {
     use crate::abi::store::slot;
@@ -777,6 +758,6 @@ fn check_answer_reads_a_leased_list_only_on_ready() {
         answer(slot::LIST_KEYS_SINCE, R, &input, hs, &list, ls),
         Err(fault(Rule::OverCap, "list_keys_since.items"))
     );
-    // FAILED holds no lease: nothing is read, and the validator states nothing for it.
+
     assert_eq!(answer(slot::LIST_AUDIT, F, &input, hs, &list, ls), Ok(()));
 }

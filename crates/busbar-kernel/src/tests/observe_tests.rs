@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the host end of the plugin observability envelope (#85).
-//!
-//! These prove the REFUSALS, because the refusals are what make "the plugin REPORTS; the host
-//! DECIDES" a real split rather than a comment. A plugin that could name any series, mint any
-//! diagnostic code and pick its own severity would be mutating host state with extra steps.
-
 use super::*;
 
-/// A well-formed banner for a REGISTERED code resolves; the resolved entry is the catalogue's, so
-/// its severity and title are the host's words and not the plugin's.
 #[test]
 fn a_registered_code_resolves_to_the_catalogue_entry() {
     let d = crate::diagnostics::PLUGINS_DIR_FINGERPRINT_FAILED;
@@ -21,15 +13,11 @@ fn a_registered_code_resolves_to_the_catalogue_entry() {
     assert_eq!(got.slug, d.slug);
 }
 
-/// A CODE THE CATALOGUE DOES NOT HOLD IS DROPPED. A `BUSBAR-NNNN` banner promises that pasting it
-/// into the docs lands on an entry saying what to do; a plugin cannot be allowed to mint that
-/// promise, so an unregistered code resolves to nothing and never reaches a log line.
 #[test]
 fn an_unregistered_code_is_refused() {
     assert!(resolve_code(crate::diagnostics::Catalogue::NEUTRAL, "BUSBAR-65535").is_none());
 }
 
-/// Nor can a plugin get a banner by spelling one that is not a banner.
 #[test]
 fn a_malformed_code_is_refused() {
     for bad in [
@@ -49,9 +37,6 @@ fn a_malformed_code_is_refused() {
     }
 }
 
-/// THE SEVERITY IS THE CATALOGUE'S, NOT THE PLUGIN'S. A condition the catalogue classifies as
-/// benign-recurring is capped at `debug` however loudly the plugin claims it — otherwise a plugin
-/// pages an operator at 3am by asserting that it should.
 #[test]
 fn a_benign_recurring_condition_cannot_be_escalated() {
     use busbar_contract::abi::mechanism::observe::DiagLevel;
@@ -68,9 +53,6 @@ fn a_benign_recurring_condition_cannot_be_escalated() {
     }
 }
 
-/// An ACTIONABLE condition keeps the plugin's claimed level: the catalogue has said this one is
-/// worth an operator's attention, so how loud it is at this particular occurrence is exactly the
-/// thing only the plugin knows.
 #[test]
 fn an_actionable_condition_keeps_the_reported_level() {
     use busbar_contract::abi::mechanism::observe::DiagLevel;
@@ -86,10 +68,6 @@ fn an_actionable_condition_keeps_the_reported_level() {
     }
 }
 
-/// PROVENANCE CANNOT BE FORGED OR DROPPED. The `plugin` label is the host's, taken from the loaded
-/// handle; a plugin that reports its own `plugin` label has that label dropped rather than allowed
-/// to shadow the host's — a duplicate label name is a Prometheus parse error that costs the WHOLE
-/// scrape, not just the sample.
 #[test]
 fn the_provenance_label_cannot_be_shadowed() {
     let m: busbar_contract::hook_wire::reply::HookMetric =
@@ -109,8 +87,6 @@ fn the_provenance_label_cannot_be_shadowed() {
     assert!(labels.iter().any(|l| l.key() == "sink"));
 }
 
-/// The plugin's OWN labels survive alongside the host's, so the per-dimension breakdown a real sink
-/// reports is not flattened away by the provenance label.
 #[test]
 fn a_plugins_own_labels_are_carried() {
     let m: busbar_contract::hook_wire::reply::HookMetric =
@@ -124,9 +100,6 @@ fn a_plugins_own_labels_are_carried() {
     assert_eq!(labels.len(), 3);
 }
 
-/// The real observer's accepted histogram reaches the real Source with only the host's quantiles.
-/// Reporter-supplied reserved labels neither shadow provenance nor spend cardinality slots; actual
-/// dimensions still do. Cover granted first-party series too, whose provenance is deliberately absent.
 #[test]
 fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapshot() {
     use busbar_contract::abi::mechanism::observe::SeriesDecl;
@@ -165,7 +138,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
                     &[],
                 );
             };
-            // More reserved-label claims than the entire label-set budget must remain one series.
+
             for claim in 0..=MAX_LABEL_SETS_PER_SERIES {
                 observe(entry("audit", claim));
             }
@@ -173,7 +146,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
                 observe(entry(&dimension.to_string(), 0));
             }
             observe(entry("over-budget", 0));
-            observe(entry("audit", 0)); // An established dimension keeps reporting at the ceiling.
+            observe(entry("audit", 0));
         });
         let families = source.snapshot();
         let family = families.iter().find(|family| family.name == name).unwrap();
@@ -206,9 +179,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
             if sample.name == name {
                 assert_eq!(quantiles.len(), 1, "{sample:?}");
                 assert!(["0", "0.5", "0.9", "0.95", "0.99", "0.999", "1"].contains(&quantiles[0]));
-                // Summary quantiles use the recorder's approximate sketch. Preserve the value
-                // check within Summary::with_defaults()'s 0.0001 relative accuracy;
-                // sum/count below stay exact.
+
                 let value: f64 = sample.value.parse().expect("a numeric quantile");
                 assert!((value - 2.0).abs() <= 2.0 * 0.0001, "{sample:?}");
             } else {
@@ -332,11 +303,6 @@ impl metrics::Recorder for Registered {
     }
 }
 
-/// THE FIRST-PARTY NAMESPACE (K9a S1), end to end through the fold: a series the loader GRANTED a
-/// first-party plugin renders exactly as declared — its reserved name, no `plugin=` label — while
-/// the RED arms keep today's rule: the same name from a plugin granted nothing, an undeclared
-/// reserved name, and the declared name at a type it was not declared as are all refused, and an
-/// ordinary name from the granted plugin still carries its provenance label.
 #[test]
 fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted() {
     use busbar_contract::abi::mechanism::observe::SeriesDecl;
@@ -405,9 +371,6 @@ fn a_reported_metric_name_keeps_one_type_across_plugins_and_label_sets() {
     );
 }
 
-/// THE RESERVED NAMESPACE. A plugin metric named `busbar_*` is dropped so no plugin can impersonate
-/// a first-party series or type-conflict with one. The real fold admits the ordinary control and
-/// refuses the reserved name under a local recorder, without changing the process's recorder.
 #[test]
 fn the_reserved_namespace_is_refused() {
     let recorder = Registered::default();
@@ -427,10 +390,6 @@ fn the_reserved_namespace_is_refused() {
     );
 }
 
-/// ONE VALIDATOR, AND IT IS 1.5.5'S. The entries the host folds are the entries the hook validator
-/// admits — same caps, same charset, same fail-open drop-the-entry rule — so a plugin of any kind
-/// gets exactly the bounding a hook has had since 1.5.5 and no second implementation exists to
-/// drift from it.
 #[test]
 fn the_fold_validates_through_the_one_hook_validator() {
     let raw = vec![
@@ -449,21 +408,15 @@ fn the_fold_validates_through_the_one_hook_validator() {
     assert_eq!(kept[0].name, "good_total");
 }
 
-/// **THE CARDINALITY BUDGET ON THE COLD LANE — bounded emitter admitted, unbounded refused.**
-///
-/// The cold lane's validator caps labels at 8 PER ENTRY and entries at 64 PER REPLY, and neither
-/// bounds what accumulates across replies: a sink reporting a fresh series name on every delivery
-/// passes both caps every time and still grows the registry without limit. This is the bound that
-/// was missing, and it is the same one the hot lane asks.
 #[test]
 fn the_cold_lane_bounds_series_cardinality() {
     const PLUGIN: &str = "cold-cardinality-plugin";
     forget_cardinality(PLUGIN);
-    // A bounded emitter: the same series, forever.
+
     for _ in 0..(MAX_SERIES_PER_PLUGIN * 4) {
         assert!(admits_cardinality(PLUGIN, "steady_total", 0));
     }
-    // An unbounded one: a new name every time. One slot is spent, so the ceiling admits N-1 more.
+
     let mut admitted = 1usize;
     for i in 0..(MAX_SERIES_PER_PLUGIN * 2) {
         if admits_cardinality(PLUGIN, &format!("churn_{i}_total"), 0) {
@@ -471,13 +424,10 @@ fn the_cold_lane_bounds_series_cardinality() {
         }
     }
     assert_eq!(admitted, MAX_SERIES_PER_PLUGIN);
-    // The established series survives the flood — a misbehaving shape must not evict a good one.
+
     assert!(admits_cardinality(PLUGIN, "steady_total", 0));
 }
 
-/// The LABEL half on the cold lane. Here the labels ARE interpreted (a validated `BTreeMap`), so
-/// the fingerprint is taken over the canonical rendering — and two identical label sets fingerprint
-/// identically however the plugin ordered them on the wire.
 #[test]
 fn the_cold_lane_bounds_label_set_cardinality() {
     const PLUGIN: &str = "cold-label-plugin";
@@ -498,9 +448,6 @@ fn the_cold_lane_bounds_label_set_cardinality() {
     );
 }
 
-/// THE FINGERPRINT IS ORDER-STABLE. Two plugins that report the same dimensions in different wire
-/// order must spend ONE budget slot, not two — otherwise a well-behaved sink burns its ceiling on
-/// what is really one series.
 #[test]
 fn an_identical_label_set_fingerprints_identically() {
     let a: std::collections::BTreeMap<String, String> = [
@@ -516,20 +463,16 @@ fn an_identical_label_set_fingerprints_identically() {
     .into_iter()
     .collect();
     assert_eq!(fingerprint_pairs(Some(&a)), fingerprint_pairs(Some(&b)));
-    // And a DIFFERENT set does not collide with it (not a guarantee of the hash, but a guard
-    // against a fingerprint that ignores its input).
+
     let c: std::collections::BTreeMap<String, String> =
         [("model".to_string(), "other".to_string())]
             .into_iter()
             .collect();
     assert_ne!(fingerprint_pairs(Some(&a)), fingerprint_pairs(Some(&c)));
-    // No labels is its own set, distinct from any labelled one.
+
     assert_ne!(fingerprint_pairs(None), fingerprint_pairs(Some(&a)));
 }
 
-/// THE BUDGET IS PER PLUGIN. One noisy sink must not be able to spend another's ceiling — otherwise
-/// a single misbehaving plugin silences every other plugin's telemetry, which is a denial of service
-/// against the operator's own observability.
 #[test]
 fn one_plugins_flood_does_not_spend_anothers_budget() {
     const NOISY: &str = "noisy-plugin";
@@ -543,13 +486,6 @@ fn one_plugins_flood_does_not_spend_anothers_budget() {
     assert!(admits_cardinality(QUIET, "polite_total", 0));
 }
 
-/// THE HOOK FREEZE. A hook may now put samples on the envelope — the wire is uniform — but the host
-/// does NOT fold them, because doing so would give hook metrics a second path with a different
-/// freshness and a different exposition, and the hook kind's behaviour is frozen for 1.6.0.
-///
-/// A local recorder observes no registration for the hook, then observes the same entry from an
-/// export plugin. The positive control proves the entry and recorder work without installing a
-/// process-global recorder.
 #[test]
 fn hook_envelope_metrics_are_carried_but_not_folded() {
     let entries = vec![
@@ -586,13 +522,6 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
     );
 }
 
-/// THE HOOK FREEZE IS A METRICS FREEZE; A HOOK'S DIAGNOSTIC STILL REACHES THE LOG (item 556).
-///
-/// The early return for the hook kind used to skip `fold_diagnostics` as well as `fold_metrics`,
-/// while every word of its justification was about metrics — a second path with a different
-/// freshness and exposition. Diagnostics have no second path (`hooks::scrape` knows none), so the
-/// return silenced a hook's catalogue banner outright. A hook's registered diagnostic must now be
-/// emitted exactly as any other kind's is, and its metrics must still not be folded.
 #[test]
 fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
     use crate::test_support::warn_capture::WarnCapture;
@@ -620,10 +549,6 @@ fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
     );
 }
 
-/// K9c: A FIRST-PARTY plugin's diagnostic is written as the host writes its own — the catalogue
-/// line a `diag_*!` site writes, byte for byte: its message, `diag=`, then its fields in the order
-/// it attached them, with no `plugin=` provenance label and no `fields=` bag. Any other plugin's
-/// keeps the provenance shape.
 #[test]
 fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
     use std::io::Write;
@@ -698,13 +623,11 @@ impl Grants for TestGrants {
     }
 }
 
-/// The observer these tests fold through, lent the neutral built-ins (no plane is linked here).
 const OBSERVER: KernelPluginObserver =
     KernelPluginObserver::lent(crate::diagnostics::Catalogue::NEUTRAL);
 
 static TEST_GRANTS: std::sync::LazyLock<TestGrants> = std::sync::LazyLock::new(TestGrants::default);
 
-/// Grant `plugin` first-party with `declared` series.
 fn grant(plugin: &str, declared: &[busbar_contract::abi::mechanism::observe::SeriesDecl]) {
     TEST_GRANTS.0.lock().unwrap().insert(
         plugin.to_string(),
@@ -715,11 +638,6 @@ fn grant(plugin: &str, declared: &[busbar_contract::abi::mechanism::observe::Ser
     );
 }
 
-/// TWO OBSERVERS LENT TWO ROOTS' CATALOGUES EACH EMIT ONLY THEIR OWN ROOT'S CODES: the kernel holds
-/// no catalogue. The same first-party diagnostic naming a code only the first root folded is
-/// emitted by the observer lent that root's catalogue and dropped by the other, as a code no
-/// catalogue holds is. While the catalogue was one installed process static, every observer in the
-/// process resolved against whichever root installed first.
 #[test]
 fn two_observers_lent_two_catalogues_each_emit_only_their_own_roots_codes() {
     use std::io::Write;

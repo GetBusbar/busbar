@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CONNECTION TABLE (the design's connections: "every plugin that needs an external connection
-//! declares a need, and the kernel instantiates the transport"). One host table serves every kind —
-//! a plane, an exporter, a store driver, a secret plugin — and never learns which: a plugin opens a
-//! connection for one of the needs it DECLARED, then writes, reads, waits and closes it by a
-//! [`ConnId`]. No plugin opens a socket, dials, binds or does TLS; the connector behind this table
-//! does.
-//!
-//! A [`ConnId`] belongs to the plugin instance that opened it. Every operation names the caller
-//! (the host knows it from the instance's own context, a plugin cannot state it), and an id the
-//! caller does not own is refused — as is an id already closed, and a need the caller never
-//! declared. [`ConnSlab`] is that bookkeeping, shared by every host implementation.
-//!
-//! This is the LINKED source of truth; `abi::host::conn` is its mechanical `#[repr(C)]` lowering, one
-//! slot per [`Conns`] method.
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -208,7 +195,7 @@ impl ConnError {
     }
 
     /// Whether this is an AUTH outcome ([`ConnError::AuthRefused`], [`ConnError::AuthFailed`]):
-    /// the auth's answer, never the destination failing, so nothing is recorded against it.
+
     #[must_use]
     pub const fn is_auth(self) -> bool {
         matches!(self, Self::AuthRefused | Self::AuthFailed)
@@ -224,29 +211,21 @@ impl std::fmt::Display for ConnError {
 impl std::error::Error for ConnError {}
 
 /// THE CALLER'S WAKE TICKET: an opaque number the caller mints for the task waiting on a read or a
-/// wait. Nothing blocks (THE DESIGN: every wait returns pending and a wake): a call with nothing
-/// ready answers [`ConnError::Pending`] and registers interest under the ticket, and the host wakes
-/// the ticket once the operation may progress. [`NO_TICKET`] registers nothing. Deadlines are not an
-/// argument: each operation has a deadline CLASS the host enforces, answering
-/// [`ConnError::Timeout`] when it passes.
+
 pub type Ticket = u64;
 
 /// The ticket that names no waiting task: a call handed it registers no interest.
 pub const NO_TICKET: Ticket = 0;
 
 /// HOW A TABLE WAKES A CALLER'S TICKET: the caller the interest was registered for, and its ticket.
-/// The caller is named so the host can blame the instance that supplied a ticket it never minted
-/// (#74) rather than whichever thread the wake fires on.
+
 pub type ConnWake = std::sync::Arc<dyn Fn(InstanceId, Ticket) + Send + Sync>;
 
 /// THE HOST'S CONNECTION TABLE, as the host implements it. Every method names the `caller`, which
-/// the host reads off the instance's own context.
+
 pub trait Conns: Send + Sync {
     /// Open a connection for the caller's declared `need`.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::UndeclaredNeed`], [`ConnError::Refused`], [`ConnError::Timeout`].
+
     fn open(
         &self,
         caller: InstanceId,
@@ -255,10 +234,7 @@ pub trait Conns: Send + Sync {
     ) -> Result<ConnId, ConnError>;
 
     /// Open while preserving the auth field batch's required connection security. A table that
-    /// cannot enforce this requirement refuses before copying or transmitting the fields.
-    ///
-    /// # Errors
-    /// As [`Self::open`], or [`ConnError::AuthRefused`] when secure delivery is unavailable.
+
     fn open_with_security(
         &self,
         caller: InstanceId,
@@ -273,11 +249,7 @@ pub trait Conns: Send + Sync {
     }
 
     /// Offer `bytes` to the connection (`end` = the caller's message is complete, `text` = it is a
-    /// text message, for a wire whose messages are text or binary); answers how many were taken.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::NotOwner`], [`ConnError::Closed`], [`ConnError::Timeout`].
+
     fn write(
         &self,
         caller: InstanceId,
@@ -288,12 +260,7 @@ pub trait Conns: Send + Sync {
     ) -> Result<usize, ConnError>;
 
     /// The next piece, its bytes into `buf`; with nothing ready, [`ConnError::Pending`] and interest
-    /// registered under `ticket`.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Pending`], [`ConnError::Timeout`], [`ConnError::NotOwner`],
-    /// [`ConnError::Closed`].
+
     fn read(
         &self,
         caller: InstanceId,
@@ -303,25 +270,15 @@ pub trait Conns: Send + Sync {
     ) -> Result<Piece, ConnError>;
 
     /// The position in `set` of a connection with a piece ready; with none ready,
-    /// [`ConnError::Pending`] and interest registered under `ticket` for every id in the set.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Pending`], [`ConnError::Timeout`], and any id's own refusal.
+
     fn wait(&self, caller: InstanceId, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError>;
 
     /// What connection security established on the connection.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::NotOwner`], [`ConnError::Closed`].
+
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError>;
 
     /// Close the connection.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::NotOwner`], [`ConnError::Closed`].
+
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError>;
 }
 
@@ -337,25 +294,10 @@ pub struct ConnCause {
 }
 
 /// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
-/// lowered to a plugin). The loader declares every need an instance's signed Statement states: a
-/// need whose target the plugin names at bind, a need whose `target_from` or `trust_from` names a
-/// config path at every `open` and `refresh`, with what that path resolved to in the instance's
-/// settings. The host's need-admission service reads the answers back.
+
 pub trait DeclaredConns: Conns {
     /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
-    /// states it: the whole need — direction, transport, auth, egress class, target and trust
-    /// sources, details. `target` is what the need's `target_from` resolved to in the instance's
-    /// settings (`None`: it resolved to nothing, or the need has no `target_from`); a need declared
-    /// with a target dials that target only. `trust` is the PEM the need's `trust_from` resolved
-    /// to (`None`: it resolved to nothing, or the need has no `trust_from`; an absent trust anchor is
-    /// optional and the need's connections trust the public roots alone): an operator CA the
-    /// host adds on top of the public roots for the need's connections. Declaring the same need
-    /// again replaces its record. The answer is kept: [`DeclaredConns::declared`] reads it back.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Refused`] when the host will not carry the need as declared, for a need whose
-    /// `target_from` resolved to nothing, and for a `trust` that does not parse.
+
     fn declare(
         &self,
         owner: InstanceId,
@@ -369,14 +311,7 @@ pub trait DeclaredConns: Conns {
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
 
     /// Open with a dial bound separate from the whole request's [`OpenDesc::timeout_ms`].
-    /// `dial_timeout_ms == 0` inherits the declared need's bound, or the existing host default.
-    /// This host-only seam carries `ESTABLISH`'s bound through a deferred framed request without
-    /// replacing its `REQUEST_HEAD` timeout (`0` still leaves that request to its op deadline).
-    /// A table without independent bounds refuses a distinct nonzero dial bound honestly.
-    ///
-    /// # Errors
-    ///
-    /// As [`Conns::open_with_security`], or [`ConnError::Refused`] for an unsupported distinct bound.
+
     fn open_request(
         &self,
         caller: InstanceId,
@@ -392,22 +327,7 @@ pub trait DeclaredConns: Conns {
     }
 
     /// UPGRADE `conn`, an open raw byte stream, to connection security from its next byte on
-    /// (`abi::host::conn::connector::service::UPGRADE_SECURE`: StartTLS after the plugin's own
-    /// negotiation, or TLS from the first byte when made before any byte): offering `name`
-    /// (`None` = the endpoint's host name) and trusting the need's anchors — the public roots, and
-    /// the operator CA its `trust_from` names on top. `trust` names the anchors by the need's
-    /// `trust_from` reference (`None` = the need's); any other reference is refused. The first
-    /// call starts the handshake and every call drives it: `Ok` once it completed,
-    /// [`ConnError::Pending`] with interest under `ticket` while it runs. A host that offers no
-    /// upgrade refuses. `verify_off`: the far end's certificate is NOT verified (the operator's
-    /// opt-in, `UPGRADE_VERIFY_OFF`), honoured for an operator-infrastructure need only.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Pending`], [`ConnError::Refused`] (the stream is framed, already secure,
-    /// bytes the far end sent in the clear are still unread, which fails the stream, or the far
-    /// end's certificate was refused), [`ConnError::NotOwner`], [`ConnError::Closed`],
-    /// [`ConnError::Timeout`].
+
     fn upgrade_secure(
         &self,
         caller: InstanceId,
@@ -422,46 +342,25 @@ pub trait DeclaredConns: Conns {
     }
 
     /// WHETHER `conn`'s DIAL HAS LANDED: the far end took the connect. An open answers with its
-    /// dial still in flight; `ESTABLISH` (`abi::host::conn::connector::service::ESTABLISH`: "dial
-    /// the need's endpoints ... and answer the stream") answers a raw stream only once it has
-    /// landed, so a far end that refuses the connect is the establish's own answer, and a plugin
-    /// trying an endpoint list in order (open; on reject close and try the next) moves on. `Ok`
-    /// once it has landed, [`ConnError::Pending`] with interest under `ticket` while it connects.
-    /// A table whose opens land before they answer (or that cannot tell) answers `Ok`.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Pending`]; the connect's failure ([`ConnError::Refused`],
-    /// [`ConnError::Timeout`], ...), its cause readable through [`DeclaredConns::cause`];
-    /// [`ConnError::NotOwner`], [`ConnError::Closed`].
+
     fn landed(&self, caller: InstanceId, conn: ConnId, ticket: Ticket) -> Result<(), ConnError> {
         let _ = (caller, conn, ticket);
         Ok(())
     }
 
     /// Whether `owner`'s `need` is carried over a FRAMED transport (a framer composed over a
-    /// carrier, http's kind): its request goes out as one opening message, head words, fields and
-    /// body, so the host opens it when the request is whole. A raw byte stream, or a need never
-    /// declared, is not.
+
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
         let _ = (owner, need);
         false
     }
 
     /// Whether a loaded transport serves `transport` (a need's scheme). THE BOOT'S SCHEME MATCH
-    /// (`BUSBAR-1.6.0.md` Part 2 #50): the loader refuses an instance whose outbound need names a
-    /// scheme no loaded transport serves, naming the plugin and the scheme — fail closed at boot,
-    /// never at the need's first open.
+
     fn serves_scheme(&self, transport: &str) -> bool;
 
     /// Record that `owner` declared `need` (as [`DeclaredConns::declare`]), its target a PROGRAM
-    /// the need's `target_from` resolved to in the instance's settings ([`Program::from_settings`]):
-    /// every open on the need spawns that program, its stdin and stdout the connection, the child's
-    /// lifecycle the host's (killed on close). A table that carries no program refuses it.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Refused`] when the host will not carry the need as declared.
+
     fn declare_program(
         &self,
         owner: InstanceId,
@@ -474,42 +373,27 @@ pub trait DeclaredConns: Conns {
     }
 
     /// Why `owner`'s connection `conn` failed, once it has: where (a `CAUSE_*` stage) and the
-    /// underlying error's own text (the socket's, or connection security's), never secret
-    /// material. `None` while it has not failed, or when the table names no cause. The host reads
-    /// it to answer a plugin's failed connector service with its cause.
+
     fn cause(&self, owner: InstanceId, conn: ConnId) -> Option<ConnCause> {
         let _ = (owner, conn);
         None
     }
 
     /// THE HOST WRITES THE AUTHORITY of every connection `owner` opens: an open whose head
-    /// carries its own `host` field is refused before anything is dialled. The loader holds it for
-    /// every instance of the auth kind, before any of its needs is declared (ARCHITECT ruling on
-    /// #780, Part 1 Law 0 and Part 2 #3: 1.5.5 refused a module-set `Host` on the one request an
-    /// auth module described, its login hop, and no other auth request carried a module's field,
-    /// v1.5.5 `crates/busbar/src/auth/token.rs:805` `FORBIDDEN_HOP_HEADERS`). A table that holds no
-    /// such rule ignores it.
+
     fn hold_authority(&self, owner: InstanceId) {
         let _ = owner;
     }
 
     /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (empty = the need's
-    /// own), as [`PollConns::head_defaults`] reads it: what a plugin's whole request is completed
-    /// with ([`HeadDefaults::completing`]) in the head its member's auth call is handed, before the
-    /// open. The default is none.
+
     fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
         let _ = (owner, need, target);
         HeadDefaults::default()
     }
 
     /// Hold `binding` as the auth binding of `owner`'s requests on `need` that name the
-    /// registration `member` ([`OpenDesc::member`]) and reach `origin` (`scheme://authority`,
-    /// [`origin_of`]): that MEMBER's binding, which the plugin's own requests to that member are
-    /// authenticated with (the open calls its fields). The connector keys a binding by (instance,
-    /// need, member, target origin); a request naming no member gets no binding. So several
-    /// registrations at one origin each hold their own, and one that holds none lends none to its
-    /// neighbour. Binding the same member, need and origin again replaces it. A table that carries
-    /// no binding drops it.
+
     fn bind_auth(
         &self,
         owner: InstanceId,
@@ -522,8 +406,7 @@ pub trait DeclaredConns: Conns {
     }
 
     /// The binding [`DeclaredConns::bind_auth`] holds for `owner`'s requests on `need` that name
-    /// `member` and reach `target`'s origin; `None` = the request carries no auth fields (a request
-    /// that names no member, or a member that holds no binding there, presents none).
+
     fn auth_of(
         &self,
         owner: InstanceId,
@@ -536,18 +419,7 @@ pub trait DeclaredConns: Conns {
     }
 
     /// Record that `owner` declared `need` (as [`DeclaredConns::declare`]), its `target_from` the
-    /// member-program path ([`crate::section::MEMBER_PROGRAM`]): `programs` is every member's own
-    /// program, by member name, as the instance's settings spell them. The host keeps ONE
-    /// long-lived connection per member, spawned on its first open and shared by every open that
-    /// names the member (an open's target names the member: its text up to the first `/`), each
-    /// open reading every frame the program writes after it; a program that ends is spawned anew
-    /// on the next open, a new GENERATION. Declaring the need again replaces the set: a member that
-    /// is gone, or whose program changed, is retired (no open reaches it again; its program is
-    /// killed once the last open on it closes). A table that carries no program refuses it.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Refused`] when the host will not carry the need as declared.
+
     fn declare_member_programs(
         &self,
         owner: InstanceId,
@@ -560,19 +432,14 @@ pub trait DeclaredConns: Conns {
     }
 
     /// THE INSTANCE IS GONE (closed, replaced by a reload, or quarantined): it never crosses
-    /// again, so nothing `owner` declared outlives it. Every need it declared is dropped (an open
-    /// on one is refused as undeclared, and [`DeclaredConns::declared`] reads `None`), every
-    /// connection it still holds is closed, and every member program of its member-program needs
-    /// is retired and killed: the instance that replaces it declares its own. A table that holds
-    /// nothing per instance ignores it. Forgetting an instance twice is forgetting it once.
+
     fn forget(&self, owner: InstanceId) {
         let _ = owner;
     }
 }
 
 /// THE ORIGIN of a URL, `scheme://authority`: what a member's route is sealed at and its binding
-/// held under (a target is a path joined onto it). A string with no scheme is its own origin up to
-/// its first `/`.
+
 #[must_use]
 pub fn origin_of(url: &str) -> &str {
     let after = url.find("://").map_or(0, |at| at + 3);
@@ -595,13 +462,7 @@ pub const CONTENT_LENGTH: &[u8] = b"content-length";
 
 impl HeadDefaults {
     /// THE LINES THE HOST ADDS to a request head (THE DESIGN section 6, step 5: nothing is added
-    /// after the auth runs): each of the framer's own lines the head does not carry (`carried`
-    /// reads a name, any case), in the framer's order, then `content-length: <body_len>` where the
-    /// framer states the length, the body is not empty and no line names it (1.5.5's client wrote
-    /// its defaults after every field the request carried and the length last, and sent no length
-    /// for an empty HTTP/1.1 body). The connector adds exactly these to the opening it dials, and an
-    /// opener that runs an auth call before the open hands the same lines to the auth, so the head
-    /// the auth signs is the head that goes out.
+
     #[must_use]
     pub fn completing(
         &self,
@@ -628,10 +489,10 @@ impl HeadDefaults {
 }
 
 /// THE CREDENTIAL A UNIT LENDS its passthrough member (the kernel's caller-credential lending): the
-/// caller's verified credential, by the unit it was verified for.
+
 pub trait LendCredential: Send + Sync {
     /// The credential `unit`'s caller presented, while the unit runs; `None` when it presented
-    /// none, or the unit is not in flight.
+
     fn lent(&self, unit: u64) -> Option<crate::redacted::Secret<Vec<u8>>>;
 }
 
@@ -672,16 +533,11 @@ impl std::fmt::Debug for ConnAuth {
 }
 
 /// THE OPENER'S SEALED FIELDS (TSEAL): a field of this name in an open's fields is the HOST'S,
-/// never the far end's. Its value names, comma-separated, the fields of the same open whose values
-/// are credential bytes (the bound auth's fields, which the host added). The connector takes it out
-/// before anything is framed and, over a framer that renders sealed values
-/// (`abi::transport::EXT_SEALED_VALUES`), hands the framer filler for those values and splices the
-/// real bytes into its output only where the host secures the connection; no wire ever carries it.
+
 pub const SEALED_FIELDS_FIELD: &str = "busbar-sealed-fields";
 
 /// One host-owned auth query pair, percent-encoded as `name=value`. Repeated entries retain
-/// order and duplicate names. The connector removes these before framing and appends them to
-/// the request target under the same credential custody as [`SEALED_FIELDS_FIELD`].
+
 pub const SEALED_QUERY_FIELD: &str = "busbar-sealed-query";
 
 /// Whether a field carries the host's auth query metadata, never a wire header.
@@ -697,28 +553,23 @@ pub fn is_sealed_fields_field(name: &[u8]) -> bool {
 }
 
 /// The field a member-program connection's HEAD carries (the first piece every open on it reads,
-/// a fields piece whose status is a success): the GENERATION of the program it reaches, a decimal
-/// counting the spawns of that member's program from `1`. Two opens that read the same generation
-/// reach the same running program.
+
 pub const PROGRAM_GENERATION_FIELD: &str = "generation";
 
 /// The host member incarnation. A replacement launch configuration receives a distinct value,
-/// even when its first child has the same generation as the previous member's first child.
+
 pub const PROGRAM_INSTANCE_FIELD: &str = "program-instance";
 
 /// Standard-base64 UTF-8 absolute command path from the host-admitted program. This identifies
-/// the configured command, not executable bytes, an inode, or a script's contents. It appears
-/// only in the host-generated first HEAD after an actual same-ticket host spawn.
+
 pub const PROGRAM_IDENTITY_FIELD: &str = "program-identity";
 
 /// Host-only open constraint: the member incarnation previously observed in its first HEAD.
-/// Supply this with [`PROGRAM_EXPECT_GENERATION_FIELD`] as canonical nonzero decimal values.
-/// A mismatch refuses before any opening body is sent and never spawns a replacement. These
-/// fields only narrow an already admitted member-program open; they authenticate nothing new.
+
 pub const PROGRAM_EXPECT_INSTANCE_FIELD: &str = "program-expect-instance";
 
 /// Host-only generation constraint paired with [`PROGRAM_EXPECT_INSTANCE_FIELD`]. Both fields
-/// are consumed by the connector, never forwarded. They are refused on non-member-program opens.
+
 pub const PROGRAM_EXPECT_GENERATION_FIELD: &str = "program-expect-generation";
 
 /// The registration key a member's program environment is read from ([`Program::from_settings`]).
@@ -792,13 +643,7 @@ pub enum ProgramRefused {
 
 impl Program {
     /// A REGISTRATION's program ([`crate::section::MEMBER_PROGRAM`]): its `command`, `args`, `cwd`
-    /// and `env` keys read as [`Program::from_settings`] reads them; every other key of the
-    /// registration is its own, not the program's. `None` for a registration that names no
-    /// `command` (or is not a map): it is not a member of a program need.
-    ///
-    /// # Errors
-    ///
-    /// The [`ProgramRefused`] naming what the program keys break.
+
     pub fn of_member(registration: &serde_json::Value) -> Option<Result<Self, ProgramRefused>> {
         let map = registration.as_object()?;
         map.get("command")?;
@@ -811,12 +656,7 @@ impl Program {
     }
 
     /// The settings' spelling of a program: `{command, args?, env?, cwd?}` — paths are absolute,
-    /// `args` a list of strings, `env` a map of string to a string or a secret reference; any other key, type or a NUL byte
-    /// is refused.
-    ///
-    /// # Errors
-    ///
-    /// The [`ProgramRefused`] naming what the value breaks.
+
     pub fn from_settings(value: &serde_json::Value) -> Result<Self, ProgramRefused> {
         let map = value.as_object().ok_or(ProgramRefused::NoCommand)?;
         if map
@@ -851,7 +691,7 @@ impl Program {
                 .map(|a| a.as_str().map(str::to_owned).ok_or(ProgramRefused::Args))
                 .collect::<Result<Vec<_>, _>>()?,
         };
-        // An environment value is a string, or a secret REFERENCE the host resolves at the spawn.
+
         let mut env = Vec::new();
         let mut env_refs = Vec::new();
         if let Some(v) = map.get(PROGRAM_ENV_KEY) {
@@ -891,19 +731,10 @@ impl Program {
 }
 
 /// THE HOST-SIDE READER'S CONNECTION TABLE: [`Conns`] plus a read that wakes a [`Waker`] instead of
-/// a plugin's ticket, for the kernel's egress walk, which awaits a far end on the caller's runtime
-/// task. It is not part of [`Conns`] because it is never lowered: a waker does not cross the plugin
-/// boundary (`abi::host::conn` lowers [`Conns`] slot for slot), and a plugin reads with its ticket.
-///
-/// [`Waker`]: std::task::Waker
+
 pub trait PollConns: Conns {
     /// [`Conns::read`], for a reader on the host's own side (the kernel's egress walk): with nothing
-    /// ready, [`Poll::Pending`] and `cx`'s waker woken once the read may progress. Never lowered:
-    /// a waker does not cross the plugin boundary, and a plugin reads with its ticket.
-    ///
-    /// # Errors
-    ///
-    /// As [`Conns::read`], less [`ConnError::Pending`], which is [`Poll::Pending`] here.
+
     fn poll_read(
         &self,
         caller: InstanceId,
@@ -913,22 +744,7 @@ pub trait PollConns: Conns {
     ) -> Poll<Result<Piece, ConnError>>;
 
     /// SEAL THE TRUST ANCHORS of one destination `owner`'s declared `need` reaches at `target` (a
-    /// member route's sealed target, the transport pin, ARCHITECT 2026-10-03): every connection the need opens to that
-    /// target's authority, by the plugin or by the host's own walk, is held to `anchors` by the
-    /// connector itself — the far end's key pin enforced, busbar's client identity presented — and
-    /// its facts say what was observed ([`ConnFacts::peer_key_pin`],
-    /// [`ConnFacts::client_identity`]). Empty anchors drop any earlier seal for that target.
-    /// A non-empty `member` keys the seal to that REGISTRATION ([`OpenDesc::member`]): an open
-    /// naming it, to its own target's authority, is held to its anchors alone (none, where they are
-    /// empty), so two registrations at one `host:port` each present their own client identity and
-    /// hold their own pin; an open naming no sealed registration is held to the destination's.
-    /// Host-side only, never lowered: the root seals what its configuration states.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Refused`]: the need is not `owner`'s, the target is not one it reaches, the
-    /// identity does not parse, or (the default) the table cannot enforce anchors at all — a pin
-    /// nobody enforces is refused, never dropped.
+
     fn anchor(
         &self,
         owner: InstanceId,
@@ -946,31 +762,14 @@ pub trait PollConns: Conns {
     }
 
     /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (the transport ABI's
-    /// `LocateIn::defaults_buf` and `LocateOut::states_length`): the field lines its wire adds to a
-    /// head that does not state them, in the framer's order, and whether its head states the
-    /// body's length. The lines the host adds are [`HeadDefaults::completing`]'s, BEFORE the auth
-    /// kind signs the head, so nothing is added after the auth runs (THE DESIGN section 6, step 5);
-    /// the framer then writes the head as handed.
-    /// Host-side only, never lowered. The default is none: a table whose framers state none, and a
-    /// framer that predates the fields, add theirs at encode as before.
+
     fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
         let _ = (owner, need, target);
         HeadDefaults::default()
     }
 
     /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed
-    /// per REGISTRATION, never per destination): `owner`'s `need` may dial a private address at
-    /// `target`'s authority on an open that names `member` ([`OpenDesc::member`]) and on no other,
-    /// as an allowlist entry naming that host would (cloud metadata stays refused; the need's class
-    /// is unchanged). `reach` false drops any earlier seal for the registration. Two registrations
-    /// at one `host:port` hold their own answers. Host-side only: the root seals what its
-    /// configuration states.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Refused`]: the need is not `owner`'s, the target is not one it reaches, or (the
-    /// default) the table cannot honour a reach at all — a reach nobody honours is refused, never
-    /// dropped.
+
     fn seal_reach(
         &self,
         owner: InstanceId,
@@ -988,8 +787,6 @@ pub trait PollConns: Conns {
     }
 }
 
-// ── the bookkeeping every host shares ────────────────────────────────────────────────────────────
-
 /// One slab entry: free (with the generation the next occupant takes) or live.
 enum Entry<T> {
     Free {
@@ -1004,9 +801,7 @@ enum Entry<T> {
 }
 
 /// THE OWNERSHIP BOOK of a host's connections: which needs each instance declared, and which
-/// instance owns each live [`ConnId`] and for which need. Every operation goes through it, so an id
-/// another instance owns, an id already closed and a need nobody declared are refused the same way
-/// in every host.
+
 pub struct ConnSlab<T> {
     entries: Mutex<Vec<Entry<T>>>,
     declared: Mutex<std::collections::BTreeSet<(InstanceId, NeedId)>>,
@@ -1037,10 +832,7 @@ impl<T> ConnSlab<T> {
     }
 
     /// Whether `caller` declared `need`.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::UndeclaredNeed`].
+
     pub fn check_need(&self, caller: InstanceId, need: NeedId) -> Result<(), ConnError> {
         if self
             .declared
@@ -1055,10 +847,7 @@ impl<T> ConnSlab<T> {
     }
 
     /// Hold `state` as a connection `owner` opened for `need`, answering its id.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::UndeclaredNeed`] when `owner` never declared `need`.
+
     pub fn insert(&self, owner: InstanceId, need: NeedId, state: T) -> Result<ConnId, ConnError> {
         let declared = self
             .declared
@@ -1068,8 +857,7 @@ impl<T> ConnSlab<T> {
             drop(declared);
             return Err(ConnError::UndeclaredNeed);
         }
-        // Keep admission until the entry is committed: forget either removes the declaration
-        // first, refusing this insert, or collects the committed entry for the host to close.
+
         #[cfg(test)]
         tests::insert_admitted();
         let mut entries = self.lock();
@@ -1104,11 +892,7 @@ impl<T> ConnSlab<T> {
     }
 
     /// The live connection `conn`, when `caller` owns it: its need and state.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Closed`] for an id not live; [`ConnError::NotOwner`] for one another instance
-    /// owns.
+
     pub fn get(&self, caller: InstanceId, conn: ConnId) -> Result<(NeedId, Arc<T>), ConnError> {
         let entries = self.lock();
         match Self::slot(&entries, conn)? {
@@ -1121,10 +905,7 @@ impl<T> ConnSlab<T> {
     }
 
     /// Release `conn`, when `caller` owns it, answering its state.
-    ///
-    /// # Errors
-    ///
-    /// As [`ConnSlab::get`].
+
     pub fn remove(&self, caller: InstanceId, conn: ConnId) -> Result<Arc<T>, ConnError> {
         let mut entries = self.lock();
         let index = match Self::slot(&entries, conn)? {
@@ -1145,8 +926,7 @@ impl<T> ConnSlab<T> {
     }
 
     /// Forget `owner`: every need it declared is dropped (an insert or a need check for it is
-    /// refused as undeclared), and the ids of every connection it still holds are answered, live,
-    /// for the host to close through [`ConnSlab::remove`].
+
     pub fn forget(&self, owner: InstanceId) -> Vec<ConnId> {
         self.declared
             .lock()

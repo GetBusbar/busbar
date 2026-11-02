@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A WORKING 1.5.5 DEPLOYMENT MIGRATES TO ONE 1.6.0 BOOTS AND RUNS THE SAME WAY.
-//!
-//! One fixture per change 1.6.0 made to a key core owns (`fixtures/upgrade_1_5_5/`), each a
-//! 1.5.5-shaped configuration that 1.5.5 ran. For each, against the REAL binary:
-//!
-//! 1. RED: the fixture as written fails `busbar --validate` on 1.6.0, or runs differently;
-//! 2. `busbar --migrate-config` rewrites it and prints one line naming what it changed and why;
-//! 3. the migrated configuration validates, and runs as 1.5.5 ran the fixture.
-
 mod linked;
 
 use std::path::{Path, PathBuf};
@@ -21,7 +12,6 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// A fresh, isolated directory holding the fixtures' providers catalog.
 fn workdir(tag: &str) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let d = std::env::temp_dir().join(format!(
@@ -50,7 +40,6 @@ fn validate(dir: &Path, config: &Path) -> Output {
         .expect("run busbar --validate")
 }
 
-/// `busbar --migrate-config <fixture>`: the migrated YAML (stdout) and the change summary (stderr).
 fn migrate(path: &Path) -> (String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .arg("--migrate-config")
@@ -63,7 +52,6 @@ fn migrate(path: &Path) -> (String, String) {
     (String::from_utf8_lossy(&out.stdout).into_owned(), stderr)
 }
 
-/// Migrate `name` and validate the result: the migrated YAML, the summary, the validator's stderr.
 fn migrate_and_validate(name: &str) -> (String, String, String) {
     let dir = workdir(name);
     let (yaml, summary) = migrate(&fixture(name));
@@ -80,7 +68,6 @@ fn migrate_and_validate(name: &str) -> (String, String, String) {
     (yaml, summary, stderr)
 }
 
-/// The fixture as written, validated on 1.6.0.
 fn validate_as_written(name: &str) -> Output {
     let dir = workdir(name);
     let out = validate(&dir, &fixture(name));
@@ -92,8 +79,6 @@ fn yaml(text: &str) -> serde_yaml::Value {
     serde_yaml::from_str(text).expect("YAML")
 }
 
-/// A rate card that prices tokens only: 1.6.0 refuses it as written; the migration prices every
-/// other billable unit at 0, which is what 1.5.5 billed, and says so.
 #[test]
 fn a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same() {
     let raw = validate_as_written("rate_card.yaml");
@@ -128,8 +113,6 @@ fn a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same() {
     );
 }
 
-/// A block-list entry that names no usable host: 1.6.0 refuses it at startup (#1789), naming it;
-/// the migration removes it (it never matched anything) and says so, and every real entry stays.
 #[test]
 fn a_1_5_5_metadata_entry_naming_no_host_migrates_away() {
     let raw = validate_as_written("metadata_no_host.yaml");
@@ -158,10 +141,6 @@ fn a_1_5_5_metadata_entry_naming_no_host_migrates_away() {
     );
 }
 
-/// A data-plane provider with no role bindings: 1.5.5 admitted every principal it identified;
-/// 1.6.0 refuses each one as written (no grant, 401). The migration writes the explicit binding
-/// that admits them again, with a warning, and the migrated configuration grants them on every
-/// pool with no budget, as 1.5.5 did.
 #[test]
 fn a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration() {
     use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
@@ -189,7 +168,6 @@ fn a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration() {
         busbar_kernel::governance::synthesize_bound_key("corp", &user(roles), bindings)
     };
 
-    // RED: as written, 1.6.0 grants the provider's users nothing.
     let before = resolved(&raw);
     assert!(admitted(&before, &[]).is_none() && admitted(&before, &["eng"]).is_none());
 

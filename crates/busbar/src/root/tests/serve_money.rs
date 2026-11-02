@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MONEY STEPS OF A UNIT SERVED THROUGH A PLANE'S DOOR (SERVE-WIRE step 33, `$`; ARCHITECT
-//! P3 (a), 2026-10-02), over the test plane dropped in: a keyed unit is admitted and charged, and
-//! its money settles at its end; a route its section does not hold is admitted then refused (1.5.5's
-//! order) and settles; an unkeyed unit on a claim that takes a credential is never admitted; an
-//! anonymous unit on an open claim routes and never reaches a billed path. No egress is composed
-//! here, so every admitted unit's walk is exhausted at once and nothing is dialled.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -27,12 +20,10 @@ use crate::root::plane_node::{Node, NodeEndPost};
 #[path = "serve_datagram_open.rs"]
 mod datagram_opening_tests;
 
-/// A governed composition of the test plane: a signing book with one minted key, the plane's
-/// section one entry `m`, its data routes on a data router built with them, over a node of its own.
 pub(super) struct Governed {
     pub(super) router: axum::Router,
     served: super::Served,
-    /// The test plane's driver, for a test that reloads its generation while a unit is in flight.
+
     pub(super) driver: Arc<busbar_kernel::plane_driver::PlaneDriver>,
     post: Arc<NodeEndPost>,
     money: Arc<PlaneMoney>,
@@ -41,28 +32,22 @@ pub(super) struct Governed {
     token: String,
     app: Arc<App>,
     book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
-    /// The live generation, as the door planes' units read it: a config apply replaces it.
+
     current: Arc<std::sync::Mutex<Arc<App>>>,
 }
 
 impl Governed {
-    /// A CONFIG APPLY: `next` is the generation every unit that binds from now on reads.
     fn apply(&self, next: Arc<App>) {
         *self.current.lock().expect("unpoisoned") = next;
     }
 }
 
-/// `keys_chain`: the deployment's data chain verifies a key (a claim that takes a credential is
-/// then refused by the gate when none is presented).
 pub(super) fn governed(instance: &'static str, keys_chain: bool) -> Governed {
     governed_with(instance, keys_chain, None)
 }
 
-/// The test plane's key, the card its fee is charged on: its Statement name.
 const TEST_PLANE: &str = "plane-driver-test-plane";
 
-/// [`governed`], the key bound to a group whose all-time budget is `budget` cents, the test plane
-/// charging one cent per request (`None`: no group, no fee).
 fn governed_with(instance: &'static str, keys_chain: bool, budget: Option<u64>) -> Governed {
     governed_full(instance, keys_chain, budget, Screen::Nothing, None, None)
 }
@@ -79,7 +64,6 @@ enum Screen<'a> {
     Pool(&'a str),
 }
 
-/// The operator's gate definition, as `hooks:` writes it.
 fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
     serde_json::from_value(serde_json::json!({
         "kind": "gate",
@@ -93,8 +77,6 @@ fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
     .expect("an operator's gate definition")
 }
 
-/// The hook env the gate's `module` resolves in: the kernel's hook double, its manifest asking to
-/// read the prompt.
 fn screen_env() -> busbar_kernel::hooks::HookEnv {
     let needs = busbar_kernel_testkit::test_support::HookNeeds {
         prompt: busbar_contract::plugin_rows::NeedLevel::Ro,
@@ -103,8 +85,6 @@ fn screen_env() -> busbar_kernel::hooks::HookEnv {
     busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], needs)
 }
 
-/// The deployment's App for `screen`: a pool gate is resolved through the one gate resolver the
-/// build uses for a configured gate, filed under the pool.
 fn screened(screen: Screen<'_>) -> busbar_kernel_testkit::test_support::TestApp {
     match screen {
         Screen::Nothing => busbar_kernel_testkit::test_support::TestApp::new(),
@@ -128,9 +108,6 @@ fn screened(screen: Screen<'_>) -> busbar_kernel_testkit::test_support::TestApp 
     }
 }
 
-/// The deployment's `hooks:` as an operator writes it: one global `kind: gate` on the kernel's
-/// hook double (the 1.5.5 hook reply through the hook axis port), granted `prompt: ro`, rejecting
-/// any request whose projected text carries `token`.
 fn screening_gate(token: &str) -> busbar_kernel_testkit::test_support::TestApp {
     busbar_kernel_testkit::test_support::TestApp::new()
         .hook_env(screen_env())
@@ -139,8 +116,6 @@ fn screening_gate(token: &str) -> busbar_kernel_testkit::test_support::TestApp {
         .resolve_global_gates()
 }
 
-/// [`governed_with`], with `screen` configured; the door plane's driver binds the LIVE
-/// generation's hooks ([`super::HookStage`]) as the boot's does.
 fn governed_hooked(
     instance: &'static str,
     keys_chain: bool,
@@ -150,14 +125,11 @@ fn governed_hooked(
     governed_full(instance, keys_chain, budget, screen, None, None)
 }
 
-/// The node a composition's units are driven on, and the book it is already bound to.
 type BoundNode = (
     Arc<Node>,
     Arc<std::sync::Mutex<crate::root::durability::Durability>>,
 );
 
-/// [`governed_with`], its units driven on `on` (a node already bound to its book), or on a node of
-/// its own bound to a fresh memory-buffered book.
 fn governed_over(
     instance: &'static str,
     keys_chain: bool,
@@ -167,9 +139,6 @@ fn governed_over(
     governed_full(instance, keys_chain, budget, Screen::Nothing, on, None)
 }
 
-/// [`governed_with`] with both: `screen` configured, and its units driven on `on` (or on a node of
-/// its own bound to a fresh memory-buffered book). `flat_fee`: with no budget, the flat card's
-/// per-request fee in cents (`None`: one cent).
 fn governed_full(
     instance: &'static str,
     keys_chain: bool,
@@ -178,8 +147,6 @@ fn governed_full(
     on: Option<BoundNode>,
     flat_fee: Option<i64>,
 ) -> Governed {
-    // The dispatcher serves its instances the composition's host services (`unit.nest` among
-    // them), as the boot's does.
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
@@ -238,7 +205,7 @@ fn governed_full(
         .mint_signed(spec, 4_000_000_000, 1_700_000_000)
         .expect("mint");
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
-    // The node's one book, as the boot binds it: every unit's one line and its audit record.
+
     let (node, book) = on.unwrap_or_else(|| {
         let book = Arc::new(std::sync::Mutex::new(
             crate::root::durability::build(
@@ -268,8 +235,7 @@ fn governed_full(
         .iter()
         .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
     let app = app.governance(Arc::clone(&gov)).cost(cost).build();
-    // The hook stage reads the generation current when a unit binds, as the boot's reads its swap
-    // handle; this rig's config applies replace the generation in a cell.
+
     let current = Arc::new(std::sync::Mutex::new(Arc::clone(&app)));
     let reads = Arc::clone(&current);
     let hooks = super::HookStage {
@@ -293,8 +259,7 @@ fn governed_full(
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
     let driver = Arc::clone(&served.planes[0].driver);
-    // The framer of the test plane's framed claim: the neutral frame door, dropped in (ARCHITECT
-    // 4l); no other claim of the test plane is one a framer answers.
+
     served.framers = Some(neutral_framers());
     let retained = served.clone();
     let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
@@ -317,8 +282,6 @@ fn governed_full(
 }
 
 impl Governed {
-    /// A POST of `ping` to `path` on the data router, with the minted key's token or with none: the
-    /// status and the body.
     async fn post(&self, path: &str, keyed: bool) -> (u16, String) {
         use http_body_util::BodyExt as _;
         use tower::ServiceExt as _;
@@ -343,7 +306,6 @@ impl Governed {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// The requests the governance book admitted for the key, this window.
     fn requests(&self) -> u64 {
         self.gov
             .usage_for(&self.app.cost, &self.key.id, busbar_kernel::store::now())
@@ -353,9 +315,6 @@ impl Governed {
     }
 }
 
-/// A KEYED UNIT IS ADMITTED, AND ITS MONEY SETTLES: the governance book charges its request at
-/// admission, it routes (every walk is exhausted: no egress is composed), and its money facts close
-/// at its end.
 #[tokio::test]
 async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     let _one = PUBLISHING.lock().await;
@@ -375,21 +334,17 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
 }
 
-/// 1.5.5'S ORDER FOR A ROUTE ITS SECTION DOES NOT HOLD: the keyed unit is admitted (charged) first
-/// and refused for its route after, and its money settles at its end.
 #[tokio::test]
 async fn an_unknown_route_is_admitted_then_refused_and_settles() {
     let _one = PUBLISHING.lock().await;
     let g = governed("serve-money-unknown", true);
     let (status, body) = g.post("/call/direct:nowhere", true).await;
-    // A route nothing holds is a policy refusal (`NotFound`): 404, never a server fault.
+
     assert_eq!((status, body.as_str()), (404, "refused:404:no_destination"));
     assert_eq!(g.requests(), 1, "charged before its route was refused");
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
 }
 
-/// A UNIT WITH NO KEY ON A CLAIM THAT TAKES A CREDENTIAL IS NEVER ADMITTED: fail closed, nothing
-/// charged, nothing opened (ARCHITECT P3 (a)).
 #[tokio::test]
 async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
     let _one = PUBLISHING.lock().await;
@@ -403,8 +358,6 @@ async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
     assert_eq!(g.money.open_units(), 0);
 }
 
-/// AN ANONYMOUS UNIT ON AN OPEN CLAIM (`CLAIM_OPEN`) is admitted with nothing held and opens no
-/// money (ARCHITECT P3 (a)): it routes, and nothing of it is ever on the governance book.
 #[tokio::test]
 async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     let _one = PUBLISHING.lock().await;
@@ -422,10 +375,6 @@ async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     assert_eq!(g.money.open_units(), 0);
 }
 
-/// A UNIT THE PLANE ANSWERS ITSELF AS AN ADMITTED CALL (`ROUTE_COUNTED` on a `ROUTE_LOCAL` unit,
-/// stating no expected units): a keyed one is admitted through the one check-then-charge on the
-/// plane's pool, so its request is counted, and its money settles at its end. RED with the charge
-/// rule reverted to `!local || estimated`: the counted unit charges nothing.
 #[tokio::test]
 async fn a_counted_local_unit_is_charged_as_an_admitted_call() {
     let _one = PUBLISHING.lock().await;
@@ -441,8 +390,6 @@ async fn a_counted_local_unit_is_charged_as_an_admitted_call() {
     assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
 }
 
-/// A UNIT THE PLANE ANSWERS ITSELF, NOT COUNTED and stating no expected units (a notification, a
-/// public document): admitted with nothing charged, and nothing opened on the money steps.
 #[tokio::test]
 async fn an_uncounted_local_unit_is_charged_nothing() {
     let _one = PUBLISHING.lock().await;
@@ -458,8 +405,6 @@ async fn an_uncounted_local_unit_is_charged_nothing() {
     assert_eq!(g.post.open_units(), 0);
 }
 
-/// A LOCAL UNIT WHOSE PLANE EXPECTS UNITS (its admission estimate), not counted: charged as any
-/// keyed unit is, as before `ROUTE_COUNTED` existed (the estimated path is unchanged).
 #[tokio::test]
 async fn an_estimated_local_unit_is_still_charged() {
     let _one = PUBLISHING.lock().await;
@@ -474,10 +419,6 @@ async fn an_estimated_local_unit_is_still_charged() {
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
 }
 
-/// A NESTED UNIT (`unit.nest`, ARCHITECT round 4 (c)): the parent's plane runs a child on the claim
-/// it names, under the parent's key (the child is admitted and charged on the same key's chain: one
-/// admission chain), and hands the parent the child's whole reply; both units' money and node facts
-/// close at their ends.
 #[tokio::test]
 async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     let _one = PUBLISHING.lock().await;
@@ -491,8 +432,7 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     );
     assert_eq!(g.money.open_units(), 0, "both units' money facts closed");
     assert_eq!(g.post.open_units(), 0, "both units' node facts closed");
-    // Each unit's one audit record: the child's names its parent and its nested origin, under the
-    // parent's principal.
+
     {
         let book = g.book.lock().expect("unpoisoned");
         let records = &book.audit_records;
@@ -510,7 +450,7 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
         assert_eq!(child.origin_kind, "nested");
         assert_eq!(parent.origin_kind, "client");
     }
-    // A claim no plane serves is refused, and nothing more is charged.
+
     let (status, body) = g.post("/call/nest:/nowhere", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -519,11 +459,6 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     assert_eq!(g.requests(), 3, "only the parent");
 }
 
-/// THE IN-SESSION SERVICES THROUGH THE ONE TABLE (U22): a dropped-in plane's unit calls
-/// `content.scan`, `hook.call` (a gate, then a rewrite) and `verify.lookup` on its own ticket. The
-/// unit's route leg stated its hook stage, so each is served (none refused as unbound): with no hook
-/// bound the content passes, the gate passes and the chain is unchanged; the verify cache, empty,
-/// makes the caller its leader.
 #[tokio::test]
 async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
     let _one = PUBLISHING.lock().await;
@@ -536,12 +471,6 @@ async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
     assert_eq!(g.money.open_units(), 0);
 }
 
-/// THE DEPLOYMENT'S GATE REACHES A DOOR PLANE'S UNIT (U22, ARCHITECT 2026-10-05): the operator's
-/// global `kind: gate` (the 1.5.5 hook double, through the hook axis port) is bound to the unit by
-/// the driver, as the boot binds it. The request itself carries nothing the gate screens, so the
-/// unit is admitted and served; the content the plane then passes through `content.scan` and
-/// `hook.call` carries the screened token, and the configured gate blocks it, with its own status.
-/// The control (the same deployment with no gate) is the test above: `scan=0 gate=0`.
 #[tokio::test]
 async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane() {
     let _one = PUBLISHING.lock().await;
@@ -555,10 +484,6 @@ async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane(
     assert_eq!(g.money.open_units(), 0);
 }
 
-/// A CONFIG APPLY REACHES THE NEXT UNIT WITH NO RESTART (ARCHITECT ruling on U22, 2026-10-05):
-/// the deployment boots with no hook, so a unit's in-session content passes; a config apply then
-/// adds a global gate, and the NEXT unit (a new session) binds the live generation's hooks, so the
-/// same content is blocked. Nothing is restarted or recomposed.
 #[tokio::test]
 async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restart() {
     let _one = PUBLISHING.lock().await;
@@ -569,8 +494,7 @@ async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restar
         (200, "scan=0 gate=0 rewrite=0 verify=2"),
         "the boot generation configures no hook"
     );
-    // THE APPLY: the same deployment (every plane's runtime carried, as an apply carries them), its
-    // `hooks:` now defining a gate and wiring it globally, resolved through the build's one resolver.
+
     let mut next = (*g.app).clone();
     let registry: std::collections::HashMap<_, _> = [("screen".to_string(), screen_cfg("ping"))]
         .into_iter()
@@ -594,9 +518,6 @@ async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restar
     );
 }
 
-/// A POOL'S OWN GATE SCREENS ITS UNITS' IN-SESSION CONTENT (ARCHITECT ruling on U22, 2026-10-05):
-/// a gate configured on the section's pool `p` blocks the content of a unit routed over `p`, as
-/// 1.5.5's pool gates did; a unit routed directly (no pool) is not under it.
 #[tokio::test]
 async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
     let _one = PUBLISHING.lock().await;
@@ -615,9 +536,6 @@ async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
     );
 }
 
-/// BUDGET EXHAUSTION MID-NEST: the parent is admitted while its key's budget holds one more fee;
-/// that fee spends it, so the child the parent then nests is refused over budget at its own
-/// admission (one admission chain), charged nothing, and the parent is handed the refusal.
 #[tokio::test]
 async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing() {
     let _one = PUBLISHING.lock().await;
@@ -633,8 +551,6 @@ async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing
     assert_eq!(g.post.open_units(), 0);
 }
 
-/// THE DEPTH CAP: a chain of nests is cut at the deepest a nested unit may be; every unit above it
-/// answers, each charged on the one key.
 #[tokio::test]
 async fn a_nest_past_the_depth_cap_is_refused() {
     let _one = PUBLISHING.lock().await;
@@ -659,14 +575,8 @@ async fn a_nest_past_the_depth_cap_is_refused() {
     assert_eq!(g.money.open_units(), 0);
 }
 
-/// The child arm of [`the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build`]: set in the
-/// fresh process that runs it, so the process-wide card holder and node it boots are its own.
 const NODE_HOOKS_ARM: &str = "BUSBAR_TEST_NODE_HOOKS_ARM";
 
-/// THE NODE'S BOOT HOOKS RUN IN EVERY BUILD (ARCHITECT Q1 (3)), so a door unit's money reaches the
-/// durability book under the card in force — in a door-only build too, where no plane rides the
-/// `node` axis. Run in a fresh process of this test binary ([`node_boot_hooks_arm`]): the arm boots
-/// the process-wide card holder and node, which no other test in this binary may share.
 #[test]
 fn the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build() {
     if std::env::var_os(NODE_HOOKS_ARM).is_some() {
@@ -695,32 +605,22 @@ fn the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build() {
     );
 }
 
-/// The arm: the generated root-unit table carries the node's unit; its configuration step and its
-/// book step run as `main.rs` runs them (every unit's, in table order) around the real app build and
-/// the real boot book; then a keyed door unit of the test plane, dropped in, is driven on the
-/// process's one node. Its line and its audit record are on that book, and the record names the
-/// card the unit was pinned to at its door: a second apply's entry, so not the opening's `0`.
 async fn node_boot_hooks_arm() {
-    // THE TABLE: the node's root unit is keyed to the node itself, never to a plane feature.
     assert!(
         include_str!(concat!(env!("OUT_DIR"), "/linked.rs"))
             .contains("&crate::root::plane_node::ROOT_UNIT,"),
         "this build's generated ROOT_UNITS does not carry the node's root unit"
     );
-    // THE INSTALL RECORD, as main.rs installs it (`register_planes`: `root::linked::register_stores`),
-    // before anything reads the record: the card repricer reaches the kernel as the record's holder
-    // and dater, not through a static of its own.
+
     crate::root::linked::register_stores(&crate::LINKED);
     let rows = busbar_kernel::preflight::root_rows();
     assert!(
         rows.rate_apply.is_some() && rows.rate_epoch.is_some(),
         "the root's install record carries neither half (holder, dater) of the rate seam"
     );
-    // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
-    // holder's opening entry.
+
     busbar_kernel_testkit::test_support::metrics::init();
-    // A deployment naming no plane at all (a door-only build links no protocol to name one), over
-    // the kernel's stand-in store.
+
     let cfg = || {
         let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
             .expect("a minimal deployment");
@@ -738,7 +638,7 @@ async fn node_boot_hooks_arm() {
         crate::root::kernel::ROOT_CARD.pin().is_some(),
         "the boot build's rates never reached the card holder: its repricer is not installed"
     );
-    // THE BOOK STEP, over the real boot book.
+
     let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
     let ctx = crate::root::linked::BookCtx {
         book: &book,
@@ -747,7 +647,7 @@ async fn node_boot_hooks_arm() {
     for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_book) {
         step(&ctx);
     }
-    // A SECOND APPLY: the card in force moves past the opening entry.
+
     let mut applied = cfg();
     applied.per_request_fee = 3;
     let _applied =
@@ -759,7 +659,6 @@ async fn node_boot_hooks_arm() {
         .get();
     assert_ne!(pinned, 0, "the apply appended no entry to the card history");
 
-    // THE DOOR UNIT, on the process's one node.
     let _one = PUBLISHING.lock().await;
     let g = governed_over(
         "serve-money-node-hooks",
@@ -808,12 +707,6 @@ async fn node_boot_hooks_arm() {
     );
 }
 
-/// A BUILD THAT LINKS NO PLANE SERVES A DROPPED-IN DOOR PLANE (ARCHITECT Q1 (2), #2: a dropped-in
-/// plane serves on the same path as a compiled-in one). The boot's own composition — `compose_served`
-/// over a governance book, the test plane dropped in with its section configured and its egress
-/// sealed over the deployment's (empty) providers, then `data_routes` — serves a keyed unit of it on
-/// the process's one node in every build, `--no-default-features` included: admitted and charged,
-/// then its walk exhausted, its money and node facts closed.
 #[tokio::test]
 async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     let _one = PUBLISHING.lock().await;
@@ -920,19 +813,6 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     assert_eq!(post.open_units(), 0, "its node facts closed at its end");
 }
 
-/// AN UNGROUPED KEY IS AUTHENTICATED BUT UNLIMITED: ADMISSION NEVER BLOCKS IT (G3 by-design guard).
-///
-/// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_ungrouped_key_is_authed_but_unlimited_admission_never_blocks`
-/// (coverage map row 376, REHOME). 1.5.5 behaviour pinned: a governed key bound to no group carries
-/// no budget, request or token cap (its charge chain is its own attribution bucket alone), so the
-/// real limit engine admits the same key 500 times (the legacy `ADMITS`) on the governance book the
-/// served door charges, its spend accruing without a ceiling to 500 x the 30-cent flat fee; and
-/// with all of that spent, the served door still admits the key's next unit. The old home showed
-/// one admission.
-///
-/// RED: a default cap on an ungrouped key (an admission blocked on the book, or the door refusing
-/// the next unit over budget or rate limited), or an admission that stops charging the fee (spend
-/// short of 500 x 30).
 #[tokio::test]
 async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
     const ADMITS: u64 = 500;
@@ -975,7 +855,7 @@ async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
         i64::try_from(ADMITS).expect("fits") * FEE_CENTS,
         "an ungrouped key accrues spend without any cap ever blocking its admission"
     );
-    // The served door, over the same book, still admits the key after all of that spend.
+
     let (status, body) = deployment.post("/call/local-counted", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -994,9 +874,6 @@ async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
     );
 }
 
-/// The framer that answers a claim, for the compositions here: the neutral frame door (the plugin
-/// loader's `neutral_frame_door` example), dropped in and opened through the one door, for its own
-/// claim alone. Not built is a failure in every run, never a skip.
 pub(super) fn neutral_framers() -> super::StreamFramers {
     use crate::root::test_plugins::{missing, neutral_frame_door, BUILD_LOADER_EXAMPLES};
     use busbar_core_connector::framer::FramerDoor;
@@ -1020,7 +897,6 @@ pub(super) fn neutral_framers() -> super::StreamFramers {
     }))
 }
 
-/// One span a served unit opened: its name, its parent's name, and its callsite's field names.
 type SpanSeen = (&'static str, Option<&'static str>, Vec<&'static str>);
 
 /// THE SPANS A SERVED UNIT OPENS, as one capturing subscriber reads them.
@@ -1049,12 +925,6 @@ where
     }
 }
 
-/// AN ARRIVAL OPENS THE SPAN ITS CLAIM STATES, AND THE UNIT'S REQUEST SPAN UNDER IT (status row
-/// 173; v1.5.5 `docs/observability.md` l.162-174: the ingress entry spans, then `forward`, at the
-/// hot-path level, exported by OTLP). `/call` states `test_arrival` (the test plane's claim data;
-/// the kernel names no dialect): its unit's `forward` opens beneath it, with 1.5.5's fields
-/// (v1.5.5 `proxy/engine/mod.rs:120`: `pool`, `ingress`, `op`, `request_id`). RED arm: `/open`
-/// states none, so no entry span opens and its `forward` has no arrival above it.
 #[tokio::test]
 async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -1092,8 +962,6 @@ async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it
     assert_ne!(forward.1, Some("test_arrival"), "{opened:?}");
 }
 
-/// Reuse the composed dropped plane, its node and its money. Releasing the router
-/// leaves this rig as the sole owner of the generation before the test changes it.
 fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::DataRoutes> {
     g.router = axum::Router::new();
     let mut served = std::mem::take(&mut g.served);
@@ -1187,8 +1055,6 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for AttachErrors {
     }
 }
 
-/// An attachment can fail after the kernel admitted the unit. That failure must replace the
-/// open's provisional Completed outcome before its one record is sealed, and close once.
 #[tokio::test]
 async fn a_failed_session_attachment_records_its_fault_and_cleans_up_once() {
     use busbar_contract::caps::{Outcome, ReasonCode, StepName};
@@ -1264,8 +1130,6 @@ async fn a_failed_session_attachment_records_its_fault_and_cleans_up_once() {
     }
 }
 
-/// A child whose reply crosses the existing buffering bound has already been admitted and
-/// produced output. Its host answer must say FAILED; a claim with no child still says REFUSED.
 #[tokio::test]
 async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusing() {
     let _one = PUBLISHING.lock().await;
@@ -1298,8 +1162,6 @@ async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusi
     assert_eq!(g.requests(), 3, "an unserved claim starts no child");
 }
 
-/// Declaring a whole reply must not make the nested ingress buffer it before the nesting cap
-/// applies. The real child produces bounded windows and exposes its byte counter independently.
 #[tokio::test]
 async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound() {
     let _one = PUBLISHING.lock().await;
@@ -1313,8 +1175,7 @@ async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound
         .await;
     assert_eq!(status, axum::http::StatusCode::OK.as_u16());
     assert_eq!(body, format!("nest-failed:{}", super::NEST_UNREAD));
-    // Dropping the bounded reply drops its real producer. The ordinary lost-task sweep seals
-    // its final record and closes its money; no test aborts or substitutes the child's task.
+
     tokio::time::timeout(super::OPEN_HEAD_WAIT, async {
         loop {
             g.post.node().sweep(g.post.node().arrived());
@@ -1335,7 +1196,7 @@ async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound
     let produced: usize = produced
         .parse()
         .expect("the fixture's produced-byte counter");
-    // One channel slot, the window that crosses the cap, and a crossing already in flight.
+
     const RETAINED_WINDOWS: usize = 3;
     assert!(produced > super::NEST_REPLY_MAX);
     assert!(
@@ -1400,8 +1261,6 @@ async fn in_bound_nested_whole_and_streamed_replies_keep_their_bytes_and_head_fi
     }
 }
 
-/// The unitless catalog crosses the same credential boundary as an ordinary arrival. Echoing
-/// the head through the real dropped plane observes both removal and exact permitted bytes.
 #[tokio::test]
 async fn a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_bytes() {
     use axum::http::{HeaderName, HeaderValue, StatusCode};
@@ -1565,8 +1424,6 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
         let attach = super::Attach {
             answered: 101,
             admitted: Some(Box::new(move |unit| {
-                // Capture the same live node slot as DoorNests does. Deliberately
-                // independent of frames, so this regression isolates the open rule.
                 let parent = node
                     .parent(busbar_contract::UnitKey::new(unit))
                     .expect("live parent");

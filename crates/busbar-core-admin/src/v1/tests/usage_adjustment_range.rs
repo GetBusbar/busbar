@@ -72,8 +72,7 @@ impl Fixture {
                 usage_units: BTreeMap::new(),
             })
             .expect("metering row");
-        // The count boundary must remain observable without making a money figure overflow.
-        // Both pricing paths derive zero from an explicit zero rate, without storing money.
+
         let cost = zero_cost();
         let card = RateCard::from_config(
             Some([(

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 #[test]
 fn from_ranked_drops_unknown_and_dedups() {
     let valid: HashSet<usize> = [0usize, 1, 2].into_iter().collect();
-    // 9 is unknown (dropped); 1 is duplicated (deduped); order preserved.
+
     let d = RoutingDecision::from_ranked([2usize, 9, 1, 1, 0], &valid);
     assert_eq!(d, RoutingDecision::Prefer(vec![2, 1, 0]));
 }
@@ -265,7 +265,7 @@ impl busbar_contract::hook_calls::HookAxis for StrategyAxis {
         if self.fail_open {
             return Err("strategy constructor refused".into());
         }
-        // Reuse the kernel's hook-call double; no plugin implementation enters this test.
+
         crate::test_support::hook_double::HookAxisDouble::new(&["strategy-double"]).open(
             "strategy-double",
             label,
@@ -355,21 +355,10 @@ fn plugin_strategy_open_failure_refuses_pool_construction() {
     assert!(error.contains("strategy constructor refused"));
 }
 
-// ── Hook test env ─────────────────────────────────────────────────────────────────────────────────
-// A hook resolves its `plugin:` ref against the registry's `kind: hook` rows and opens through the
-// hook axis into a `HookPolicy`. These resolution tests build the rows (each stating its manifest
-// `needs`, aliased `test-hook`) behind the kernel's hook axis port answered by the hook DOUBLE
-// (`test_support::hook_double`; OWNER 2026-10-03, no test plugins), so `resolve_*` exercises the true
-// registry-resolution path and the kernel's own lowering — the same seam the request path uses. A
-// gate whose `plugin:` names a missing row resolves to `None` (gate-absent), exactly as before.
-
-/// A [`HookEnv`] whose registry holds the `kind: hook` row `alias`, declaring manifest `needs`.
 fn test_env_needs(alias: &str, needs: crate::test_support::HookNeeds) -> HookEnv {
     crate::test_support::test_hook_env(&[alias], needs)
 }
 
-/// A [`HookEnv`] that resolves `test-hook` (declaring rw prompt + ro user intent, so the projection
-/// matrix's operator grants are not clamped by the manifest in the general resolution tests).
 fn test_env() -> HookEnv {
     test_env_needs(
         "test-hook",
@@ -380,7 +369,6 @@ fn test_env() -> HookEnv {
     )
 }
 
-/// An empty env (no plugins loaded) — a hook ref resolves to `None` (gate-absent).
 fn empty_env() -> HookEnv {
     HookEnv::new(
         crate::test_support::rows::empty(),
@@ -389,14 +377,10 @@ fn empty_env() -> HookEnv {
     .expect("the registry's hook axis")
 }
 
-/// Fail-closed: a hook whose SecretRef setting cannot resolve must make `preresolve_hook_secrets`
-/// return `Err` (aborting boot/reload CLOSED), matching the store/auth paths — NOT be silently dropped
-/// from the routing chain. A hook whose settings all resolve returns `Ok`.
 #[test]
 fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
     let env = empty_env();
-    // A hook carrying a SecretRef (`{ env: <unset var> }`) — the resolver (`builtins_only`) cannot
-    // resolve an unset env var, so this MUST fail the pre-resolve pass.
+
     let mut settings = serde_json::Map::new();
     settings.insert(
         "licenseKey".to_string(),
@@ -414,7 +398,6 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
         "the error names the offending hook: {err}"
     );
 
-    // A hook with NO secret refs (plain settings) resolves cleanly — the pass is Ok.
     let mut plain = base_gate();
     plain
         .settings
@@ -424,22 +407,16 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
     assert!(env.preresolve_hook_secrets(&ok_hooks).is_ok());
 }
 
-/// `preopen_gate_hooks` pre-opens ONLY `kind: gate` hooks (decision + rewrite), never taps — taps
-/// observe and legitimately fail-open, so a broken tap must never abort boot/reload. A GATE whose
-/// plugin resolves but whose settings/open() fails MUST abort (fail-closed): the gate would
-/// otherwise be silently dropped and its admission/rewrite decision lost.
 #[test]
 fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     let env = test_env();
-    // An unresolvable SecretRef in settings — the plugin itself resolves fine (it's registered in
-    // `env`), but `resolve_hook_settings` must fail BEFORE open() is ever attempted.
+
     let mut settings = serde_json::Map::new();
     settings.insert(
         "licenseKey".to_string(),
         serde_json::json!({ "env": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_PREOPEN" }),
     );
 
-    // A broken TAP must not abort — taps fail-open by design.
     let mut broken_tap = base_gate();
     broken_tap.kind = HookKind::Tap;
     broken_tap.settings = settings.clone();
@@ -449,8 +426,6 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
         "a broken TAP must never abort boot/reload (taps fail-open)"
     );
 
-    // The SAME broken settings on a GATE must abort — a decision/rewrite gate can never silently
-    // vanish while boot/reload reports success.
     let mut broken_gate = base_gate();
     broken_gate.settings = settings;
     let gate_hooks = registry("broken-gate", broken_gate);
@@ -462,7 +437,6 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
         "the error names the offending gate: {err}"
     );
 
-    // A healthy gate (resolvable plugin, valid settings) pre-opens cleanly.
     let ok_hooks = registry("ok-gate", base_gate());
     assert!(
         env.preopen_gate_hooks(&ok_hooks).is_ok(),
@@ -470,7 +444,6 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     );
 }
 
-/// A pool with a native ranking strategy and no gate.
 fn pool_policy(policy: PoolPolicy) -> crate::config::PoolCfg {
     crate::config::PoolCfg {
         upstream_credentials: None,
@@ -486,7 +459,6 @@ fn pool_policy(policy: PoolPolicy) -> crate::config::PoolCfg {
     }
 }
 
-/// A pool referencing a gate hook by name (native strategy defaults to weighted).
 fn pool_with_hook(name: &str) -> crate::config::PoolCfg {
     crate::config::PoolCfg {
         upstream_credentials: None,
@@ -502,7 +474,6 @@ fn pool_with_hook(name: &str) -> crate::config::PoolCfg {
     }
 }
 
-/// A minimal gate hook backed by the `test-hook` plugin; grants filled by the caller.
 fn base_gate() -> HookCfg {
     HookCfg {
         kind: HookKind::Gate,
@@ -523,17 +494,12 @@ fn base_gate() -> HookCfg {
     }
 }
 
-/// A one-entry hooks registry.
 fn registry(name: &str, hook: HookCfg) -> HashMap<String, HookCfg> {
     let mut m = HashMap::new();
     m.insert(name.to_string(), hook);
     m
 }
 
-/// Each native `policy:` strategy resolves to a constructed `Policy` whose name round-trips the
-/// native registry name. (No gate; empty hook registry.) Runs in every build: a test build's
-/// stand-in hook rows always link the kernel's ranking double (THE DESIGN l.1443: no
-/// `hooks-ranking` kernel feature; audit Q128 p15#6).
 #[test]
 fn native_policy_resolves_constructed_policy() {
     for (policy, name) in [
@@ -559,28 +525,24 @@ fn native_policy_resolves_constructed_policy() {
     }
 }
 
-/// The `default:` hook becomes the base ordering for a pool that named NO base (base_named=false)
-/// and has no gate of its own — but NOT for a pool that named a base or brought its own gate.
 #[test]
 fn default_hook_resolves_as_base_for_unnamed_pools() {
     let env = test_env();
     let mut def = base_gate();
     def.default = true;
     let mut hooks = registry("def", def);
-    // also register the own-gate hook "h"
+
     hooks.insert("h".to_string(), base_gate());
 
     assert_eq!(default_hook_name(&hooks), Some("def"));
 
-    // base_named=false + no gate ⇒ inherits the default gate as its base ordering.
     let mut unnamed = pool_with_hook("x");
-    unnamed.gates.clear(); // base_named is already false from pool_with_hook
+    unnamed.gates.clear();
     assert!(
         resolve_pool_ordering(&unnamed, &hooks, &env, Some("def"), 0).is_some(),
         "an unnamed-base pool inherits the default hook as its ordering"
     );
 
-    // base_named=true (explicit weighted) ⇒ default does NOT override; weighted ⇒ None.
     assert!(
         resolve_pool_ordering(
             &pool_policy(PoolPolicy::Weighted),
@@ -593,9 +555,6 @@ fn default_hook_resolves_as_base_for_unnamed_pools() {
         "a pool that named its base keeps it; the default does not override"
     );
 
-    // base_named=false with its OWN gate ⇒ STILL inherits the default as its base — gates are
-    // orthogonal to the base ordering (they fire in the phase-2 reconcile on top of it), and
-    // its own gate resolves separately via resolve_pool_gates.
     let gated = pool_with_hook("h");
     assert!(
         resolve_pool_ordering(&gated, &hooks, &env, Some("def"), 0).is_some(),
@@ -607,24 +566,16 @@ fn default_hook_resolves_as_base_for_unnamed_pools() {
         "the pool's own gate resolves separately, on top of the inherited base"
     );
 
-    // No default registered ⇒ identical to resolve_policy (backstop): unnamed pool ⇒ None.
     assert!(
         resolve_pool_ordering(&unnamed, &HashMap::new(), &env, None, 0).is_none(),
         "no default hook ⇒ the compiled-in weighted backstop (None)"
     );
 }
 
-/// A `default: true` hook that is NOT a non-rewriting decision gate (a `prompt: rw` gate, or a
-/// `tap`) must NOT become a pool's base ordering — it structurally cannot return an `order`
-/// (a rw hook's decision arm normalizes to Abstain; a tap has no decision arm at all). Before the
-/// fix, `resolve_pool_ordering` applied NO filter at all (unlike its siblings
-/// `resolve_pool_gates`/`resolve_gate_hooks`), so every unnamed-base pool paid a per-request
-/// plugin round-trip + DOM materialization for a guaranteed no-op.
 #[test]
 fn default_rw_hook_is_not_the_base_ordering() {
     let env = test_env();
 
-    // `kind: gate, prompt: rw, default: true` — a rewrite gate, not a decision gate.
     let mut rw = base_gate();
     rw.prompt = PromptAccess::Rw;
     rw.default = true;
@@ -636,7 +587,6 @@ fn default_rw_hook_is_not_the_base_ordering() {
         "a prompt:rw default hook must not become the base ordering — it can never return an order"
     );
 
-    // `kind: tap, default: true` — no decision arm at all.
     let mut tap = base_gate();
     tap.kind = HookKind::Tap;
     tap.default = true;
@@ -649,7 +599,6 @@ fn default_rw_hook_is_not_the_base_ordering() {
     );
 }
 
-/// `policy: weighted` (default / absent) collapses to the zero-cost default (`None`).
 #[test]
 fn weighted_policy_resolves_none_zero_cost() {
     assert!(
@@ -658,16 +607,12 @@ fn weighted_policy_resolves_none_zero_cost() {
     );
 }
 
-/// A pool gate referencing an UNKNOWN registry entry is skipped at resolution (gate absent) —
-/// routing never strands a request; config_validate/pre-flight is the loud gate at boot.
 #[test]
 fn unknown_hook_ref_falls_back_to_none() {
     let hooks = HashMap::new();
     assert!(resolve_pool_gates(&pool_with_hook("nonexistent"), &hooks, &empty_env(), 0).is_empty());
 }
 
-/// A pool `hook:` naming a plugin-backed gate resolves to a constructed `HookPolicy` whose name is
-/// the hook's registry name; a gate whose plugin is missing (empty registry) degrades to gate-absent.
 #[test]
 fn plugin_gate_resolves_constructed_policy() {
     let env = test_env();
@@ -695,23 +640,19 @@ fn plugin_gate_resolves_constructed_policy() {
         }
         None => panic!("plugin gate must resolve to a Policy"),
     }
-    // A missing plugin (empty registry) → gate absent (the pre-flight is the loud gate at boot).
+
     assert!(resolve_pool_gates(&pool_with_hook("h"), &hooks, &empty_env(), 0).is_empty());
 }
 
-/// The plain default (`policy: weighted`, no hook) stays the zero-cost `None` path.
 #[test]
 fn weighted_default_resolves_none() {
     assert!(resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none());
 }
 
-/// `on_error` resolution: a reserved terminal yields an EMPTY chain + that terminal; a gate
-/// name appends its transport and follows ITS on_error; a ranking strategy appends one
-/// infallible link and terminates.
 #[test]
 fn on_error_chain_resolves_gates_and_terminals() {
     let env = test_env();
-    // a (plugin, on_error: b) -> b (plugin, on_error: reject)
+
     let mut a = base_gate();
     a.on_error = "b".to_string();
     let mut b = base_gate();
@@ -739,9 +680,6 @@ fn on_error_chain_resolves_gates_and_terminals() {
         "the chain bottoms out on b's reject terminal"
     );
 
-    // `on_error: nothing` — the explicit do-not-participate terminal — resolves to the same
-    // no-op machinery as weighted (an empty chain + the Weighted terminal, which every
-    // reconcile pass skips): a failing gate with `nothing` can never displace another gate.
     let mut n = base_gate();
     n.on_error = "nothing".to_string();
     let hooks_n = registry("n", n);
@@ -765,7 +703,6 @@ fn on_error_chain_resolves_gates_and_terminals() {
         "nothing = the non-participating terminal"
     );
 
-    // A direct terminal ⇒ empty chain.
     let mut c = base_gate();
     c.on_error = "first".to_string();
     let hooks = registry("c", c);
@@ -786,7 +723,6 @@ fn on_error_chain_resolves_gates_and_terminals() {
     assert_eq!(on_error, PolicyOnError::First);
 }
 
-/// `on_error: <ranking strategy>` appends one infallible link and terminates at weighted.
 #[test]
 fn on_error_chain_strategy_terminates() {
     let env = test_env();
@@ -811,9 +747,6 @@ fn on_error_chain_strategy_terminates() {
     assert_eq!(on_error, PolicyOnError::Weighted);
 }
 
-/// A pool's `prompt: rw` gate is a PHASE-1 rewrite, not a phase-2 decision gate: it is
-/// EXCLUDED from `resolve_pool_gates` and resolved by `resolve_pool_rewrites` instead — so it
-/// never pays a decision deadline for a reply arm it cannot return.
 #[test]
 fn pool_rw_gate_resolves_as_rewrite_not_decision() {
     let env = test_env();
@@ -830,43 +763,25 @@ fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         1,
         "an rw gate must resolve into the pool rewrite chain"
     );
-    // And the inverse: a plain (non-rw) gate stays a decision gate, no rewrite entry.
+
     let hooks = registry("plain", base_gate());
     let pool = pool_with_hook("plain");
     assert_eq!(resolve_pool_gates(&pool, &hooks, &env, 0).len(), 1);
     assert!(resolve_pool_rewrites(&pool, &hooks, &env, 0).is_empty());
 }
 
-/// A gate hook with `on_error: nothing`/loop but a MISSING plugin resolves cleanly to gate-absent
-/// (never a stranded request), independent of the plugin registry contents.
 #[test]
 fn missing_plugin_gate_is_absent_not_stranded() {
     let hooks = registry("h", base_gate());
-    // With an empty registry the plugin doesn't resolve → gate absent.
+
     assert!(resolve_pool_gates(&pool_with_hook("h"), &hooks, &empty_env(), 0).is_empty());
 }
 
-/// THE ABA HAZARD IN THE RESOLUTION CACHE, WRITTEN AS A TEST.
-///
-/// `resolution::key` identifies a registry by its `Arc` ADDRESS, and a published entry outlives the
-/// registry it was resolved against. Nothing in the entry USED TO KEEP THAT ALLOCATION, so once the
-/// old registry was dropped its address was free, the very next registry `Arc` the allocator
-/// handed out landed on it, and a resolution against a registry that had never heard of the plugin
-/// collided with the dead one's key and was served ITS transport.
-///
-/// That is the inverse of the property `missing_plugin_gate_is_absent_not_stranded` pins: a gate
-/// whose plugin is NOT installed must be absent, and here it would resolve — with a plugin image
-/// the operator removed. It is also exactly what a `plugins refresh` does in production (drop the
-/// old registry, install a new one), which is why this is an engine defect and not a test artifact.
-///
-/// Deterministic where the allocator cooperates: the freed slot is claimed by a same-sized
-/// allocation almost immediately, and non-matching candidates are kept alive so they are never
-/// recycled into the next attempt.
 #[test]
 fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
     let env = test_env();
     let hooks = registry("h", base_gate());
-    // Resolve once against the REAL registry: this publishes into the resolution cache.
+
     assert_eq!(
         resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0).len(),
         1,
@@ -875,9 +790,6 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
     let freed = std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize;
     drop(env);
 
-    // Now hunt for a NEW, EMPTY registry that the allocator places on the freed allocation.
-    // The candidates are the registry double (`test_support::rows`), the type `test_env` built the
-    // dead registry as, so each candidate is an allocation of the freed one's size.
     let mut keepalive: Vec<std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>> =
         Vec::new();
     for _ in 0..4096 {
@@ -898,16 +810,8 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
         }
         keepalive.push(reg);
     }
-    // Falling out of the loop is the ORDINARY outcome once the defect is fixed, not a skip: the
-    // published entry holds a `Weak` to the dead registry, which pins its allocation, so the
-    // address can never be handed to another registry and the collision has nowhere to form. Before
-    // the fix the FIRST candidate took that address, every run — which is what made this red.
 }
 
-/// SECURITY INVARIANT: `resolve_rewrite_hooks` admits ONLY `prompt: rw` GATES as rewrite hooks.
-/// A `ro`/`no` gate and a tap (even one that claims `prompt: rw`) are excluded — the rw grant is
-/// enforced at RESOLUTION, so a hook without the grant can NEVER reach the rewrite/transform path,
-/// independent of what it tries to return (the bidirectional grant holds by construction).
 #[test]
 fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
     let env = test_env();
@@ -921,7 +825,7 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
     hooks.insert("rw-gate".to_string(), mk(HookKind::Gate, PromptAccess::Rw));
     hooks.insert("ro-gate".to_string(), mk(HookKind::Gate, PromptAccess::Ro));
     hooks.insert("no-gate".to_string(), mk(HookKind::Gate, PromptAccess::No));
-    // A tap that (nonsensically) claims prompt: rw — still NEVER a rewrite hook (a tap can't reply).
+
     hooks.insert("rw-tap".to_string(), mk(HookKind::Tap, PromptAccess::Rw));
     let global = vec![
         "rw-gate".to_string(),
@@ -966,7 +870,7 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
             user: NeedLevel::No,
         };
         let env = test_env_needs("test-hook", needs);
-        // The operator's grant is the MAXIMUM rung on every row — only the manifest varies.
+
         let mut rw = base_gate();
         rw.prompt = PromptAccess::Rw;
         rw.global = true;
@@ -989,8 +893,6 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
             if admitted { "" } else { "NOT " }
         );
 
-        // The read half is derived from the SAME meet, so admission and projection can never
-        // disagree: anything admitted to a rewrite chain is, by the ladder, allowed to read.
         let (send_prompt, _) = projection_grants("rw", hooks.get("rw").unwrap(), &env);
         assert!(
             !admitted || send_prompt,
@@ -1004,26 +906,10 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
     }
 }
 
-/// A `kind: gate` hook whose OPERATOR grant is `prompt: rw` but whose
-/// SIGNED MANIFEST declares less (`ro`/absent `needs.prompt`) is excluded from BOTH admission chains
-/// by construction — `resolve_pool_gates`/`resolve_gate_hooks` exclude it from the decision chain on
-/// the raw grant (deliberate, see `resolve_pool_gates`'s doc comment); `resolve_pool_rewrites`/
-/// `resolve_rewrite_hooks` exclude it from the rewrite chain on the effective grant (also deliberate,
-/// see `rewrite_admission_requires_the_signed_manifest_rewrite_need` above). Each exclusion is
-/// individually correct, but together they leave the hook completely inert — configured, opening fine
-/// at boot, reported registered by the admin API, yet never firing on any request — with no
-/// operator-visible signal beyond a `tracing::warn!` that RUST_LOG=error silences.
-///
-/// `hook_inert_gate_banner` is the fix: the SAME mismatch, surfaced with the SAME loudness discipline
-/// as `open_relay_banner`/`inert_durable_keys_banner` (ERROR level + unconditional stderr at the call
-/// site in `effective_access`). This test pins the banner's firing condition directly, exactly as the
-/// `open_relay_banner`/`inert_durable_keys_banner` unit tests pin theirs.
 #[test]
 fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch() {
     use busbar_contract::plugin_rows::NeedLevel;
 
-    // The exact bug scenario: `kind: gate`, operator `prompt: rw`, manifest only `ro`. Must banner,
-    // loudly, naming the hook, the plugin, and both exclusion mechanisms.
     let banner = hook_inert_gate_banner(
         "compliance-gate",
         "acme.compliance",
@@ -1042,21 +928,14 @@ fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch(
         "banner must explain BOTH exclusions, not just one: {banner}"
     );
 
-    // Manifest declaring `no` need is the same story (absent `needs.prompt` deserializes to `No`).
     assert!(hook_inert_gate_banner("g", "p", HookKind::Gate, NeedLevel::No).is_some());
 
-    // A `kind: tap` hook was never in either admission chain to begin with — the same grant/manifest
-    // mismatch on a tap is a fat-fingered grant (still warn-worthy), not a silent gate outage.
     assert!(
         hook_inert_gate_banner("t", "p", HookKind::Tap, NeedLevel::Ro).is_none(),
         "a tap never joins an admission chain, so it must not get the gate-outage banner"
     );
 }
 
-/// A minimal capturing `tracing::Subscriber` (no test-only crate needed) — records every event's
-/// source line, so a test can assert exactly which `tracing::warn!`/`tracing::error!` call site
-/// fired, and how many times. Mirrors the pattern already used for
-/// `to_policy_with_floor_warns_only_on_a_non_empty_malformed_floor` in config's own test suite.
 struct LineCapturingSubscriber(std::sync::Arc<std::sync::Mutex<Vec<u32>>>);
 impl tracing::Subscriber for LineCapturingSubscriber {
     fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
@@ -1068,9 +947,6 @@ impl tracing::Subscriber for LineCapturingSubscriber {
     fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
-        // WARN/ERROR only — `effective_access` also emits a legitimate `tracing::info!` (declared
-        // intent) whenever the manifest declares ANY need, which would otherwise pollute a test
-        // that's specifically checking for the fat-fingered-grant WARN/inert-gate ERROR.
         let level = *event.metadata().level();
         if level == tracing::Level::WARN || level == tracing::Level::ERROR {
             if let Some(line) = event.metadata().line() {
@@ -1082,10 +958,6 @@ impl tracing::Subscriber for LineCapturingSubscriber {
     fn exit(&self, _span: &tracing::span::Id) {}
 }
 
-/// `effective_access`'s two "fat-fingered grant" warns (prompt-read, user-read) are PURE logging
-/// side effects — they never change the returned `(PromptAccess, UserAccess)` — so they're only
-/// observable by capturing the actual `tracing` event. Each must fire EXACTLY when the operator
-/// grants MORE than the plugin's manifest wants to READ, and never otherwise.
 #[test]
 fn effective_access_warns_on_inert_read_grants_only() {
     use busbar_contract::plugin_rows::NeedLevel;
@@ -1094,8 +966,6 @@ fn effective_access_warns_on_inert_read_grants_only() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub = LineCapturingSubscriber(events.clone());
 
-    // Fat-fingered PROMPT grant: operator grants `ro`, manifest declares no prompt need at all.
-    // Must warn at effective_access's prompt-inert-grant call site.
     let env = test_env_needs(
         "inert-prompt",
         crate::test_support::HookNeeds {
@@ -1116,7 +986,6 @@ fn effective_access_warns_on_inert_read_grants_only() {
         "a prompt grant the manifest never declared must warn exactly once: {seen:?}"
     );
 
-    // The matching case (manifest declares what's granted) must NOT warn.
     let events2: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub2 = LineCapturingSubscriber(events2.clone());
@@ -1139,7 +1008,6 @@ fn effective_access_warns_on_inert_read_grants_only() {
         events2.lock().unwrap()
     );
 
-    // Fat-fingered USER grant: operator grants `ro`, manifest declares no user need.
     let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub3 = LineCapturingSubscriber(events3.clone());
@@ -1163,7 +1031,6 @@ fn effective_access_warns_on_inert_read_grants_only() {
         "a user grant the manifest never declared must warn exactly once: {seen3:?}"
     );
 
-    // The matching user case must NOT warn.
     let events4: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub4 = LineCapturingSubscriber(events4.clone());
@@ -1187,12 +1054,6 @@ fn effective_access_warns_on_inert_read_grants_only() {
     );
 }
 
-/// The inert-GATE-rewrite banner (`effective_access`'s WRITE-half branch) must fire EXACTLY ONCE
-/// per hook NAME per `HookEnv` lifetime — a hook resolved twice (e.g. named in two pools'
-/// `hooks:` lists) must not re-banner. Pins `banner_seen`'s de-dup guard directly (the guard IS
-/// the `.insert()` call — a hand-applied `with false`/`with true` mutation of the guard removes
-/// the call entirely, so `banner_seen` is never populated either way, distinguishing both from
-/// real code via the set's post-call membership).
 #[test]
 fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     use busbar_contract::plugin_rows::NeedLevel;
@@ -1201,8 +1062,6 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub = LineCapturingSubscriber(events.clone());
 
-    // The exact inert-gate scenario: kind: gate, operator grants `rw`, manifest only declares `ro`
-    // (can_rewrite() true, wants_rewrite() false) — the WRITE-half mismatch.
     let env = test_env_needs(
         "inert-rewrite",
         crate::test_support::HookNeeds {
@@ -1234,7 +1093,6 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
          {banner_events:?}"
     );
 
-    // A SECOND call for the SAME name must NOT re-banner (dedup).
     let events2: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub2 = LineCapturingSubscriber(events2.clone());
@@ -1247,7 +1105,6 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         events2.lock().unwrap()
     );
 
-    // A DIFFERENT non-inert (matching) gate must never enter banner_seen or emit any event.
     let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub3 = LineCapturingSubscriber(events3.clone());
@@ -1275,10 +1132,6 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     );
 }
 
-/// `resolve_gate_hooks` admits the GLOBAL DECISION gates: `kind: gate` that is NOT a rewrite
-/// (`prompt: rw`) gate. A rewrite gate fires in the phase-1 transform pass (excluded here); a tap
-/// never decides (excluded). So from {rw-gate, ro-gate, no-gate, rw-tap} exactly the ro + no gates
-/// resolve as decision gates.
 #[test]
 fn resolve_gate_hooks_admits_only_decision_gates() {
     let env = test_env();
@@ -1307,9 +1160,6 @@ fn resolve_gate_hooks_admits_only_decision_gates() {
     );
 }
 
-/// `resolve_tap_hooks` admits ONLY `kind: tap` hooks observing at the REQUESTED stage. Stage
-/// pinning is the `phase:` list (1.6.0 removed the legacy single `at:`); an EMPTY `phase:` fires
-/// at the four core stages. A gate is excluded (it fires on the gate seam, not the tap fan-out).
 #[test]
 fn resolve_tap_hooks_admits_only_request_stage_taps() {
     use crate::config::HookStage;
@@ -1325,9 +1175,7 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
         "tap-req".to_string(),
         mk(HookKind::Tap, vec![HookStage::Request]),
     );
-    // FREEZE BLOCKER: a tap with an EMPTY `phase:` fires at THE FOUR CORE STAGES (not just
-    // `request`, and not "every stage that will ever exist") — so it is admitted at request AND
-    // response below. See `CORE_HOOK_PHASES`.
+
     hooks.insert("tap-unset".to_string(), mk(HookKind::Tap, Vec::new()));
     hooks.insert(
         "tap-completion".to_string(),
@@ -1346,7 +1194,7 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
         2,
         "only the two REQUEST-stage taps resolve; the gate and the completion-stage tap are excluded"
     );
-    // The same registry resolved for the RESPONSE stage admits exactly the response tap.
+
     let completion =
         resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Response);
     assert_eq!(
@@ -1354,22 +1202,19 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
         2,
         "the explicit response-stage tap AND the unset tap (omitted = the four core stages)"
     );
-    // The ROUTING stage admits only the unset tap, never the two stage-pinned ones.
+
     assert_eq!(
         resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Routing).len(),
         1,
         "only the phase-unset tap observes the routing stage (omitted = the four core stages)"
     );
-    // Every resolved tap here is `prompt: no`, so `send_prompt` (the middle tuple element) is false.
+
     assert!(
         resolved.iter().all(|(_, send_prompt, _, _)| !*send_prompt),
         "a prompt:no tap must not carry the prompt-content grant"
     );
 }
 
-/// 1.5.3 PHASE LIST: a tap with `phase: [response]` resolves ONLY into the response stage bucket —
-/// not request/candidate/routing — generalizing the single `at:`. A tap with a MULTI-stage phase
-/// (`[request, response]`) resolves into BOTH named buckets.
 #[test]
 fn resolve_tap_hooks_honors_phase_list() {
     use crate::config::HookStage;
@@ -1388,26 +1233,22 @@ fn resolve_tap_hooks_honors_phase_list() {
     );
     let global = vec!["resp-only".to_string(), "req-and-resp".to_string()];
 
-    // Response stage: both fire.
     assert_eq!(
         resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Response).len(),
         2,
         "both taps declare the response phase"
     );
-    // Request stage: only the multi-stage tap fires; `phase: [response]` is excluded here.
+
     assert_eq!(
         resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Request).len(),
         1,
         "phase: [response] does not fire at the request stage"
     );
-    // Candidate/routing: neither declares them.
+
     assert!(resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Candidate).is_empty());
     assert!(resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Routing).is_empty());
 }
 
-/// A tap's `prompt: ro` grant flows through `resolve_tap_hooks` as `send_prompt = true` (the plugin
-/// also declares the prompt need), so the firing site can hand it the prompt-content projection; a
-/// `prompt: no` tap stays `false` (shape-only). This is the per-grant projection contract for taps.
 #[test]
 fn resolve_tap_hooks_carries_prompt_grant() {
     let env = test_env();
@@ -1428,7 +1269,7 @@ fn resolve_tap_hooks_carries_prompt_grant() {
         crate::config::HookStage::Request,
     );
     assert_eq!(resolved.len(), 2);
-    // Both taps share priority 0; identify each by re-resolving individually to assert the flag.
+
     let ro = resolve_tap_hooks(
         &hooks,
         &["ro-tap".to_string()],
@@ -1447,8 +1288,6 @@ fn resolve_tap_hooks_carries_prompt_grant() {
     assert!(!no[0].1, "prompt:no tap carries send_prompt = false");
 }
 
-/// The `timeout_ms == 0` → default guard in `policy_timeout` (belt-and-suspenders for any
-/// code-built `PolicyCfg` that slips a 0 through).
 #[test]
 fn policy_timeout_treats_zero_as_default() {
     assert_eq!(
@@ -1477,8 +1316,6 @@ fn from_ranked_empty_is_abstain() {
     );
 }
 
-/// A native `policy:` FORCES the payload projections off at resolve (no native policy reads them).
-/// Runs in every build: the stand-in hook rows always link the ranking double (THE DESIGN l.1443).
 #[test]
 fn native_resolve_forces_opt_in_flags_off() {
     match resolve_policy(&pool_policy(PoolPolicy::Cheapest)) {
@@ -1494,10 +1331,6 @@ fn native_resolve_forces_opt_in_flags_off() {
     }
 }
 
-/// A gate hook's `prompt: ro` / `user: ro` grants PASS THROUGH to the resolved policy as
-/// send_prompt / send_user — the mirror image of the native force-off: an accidental hardcoded
-/// `false` would silently strip content from every opted-in hook. (The plugin manifest here declares
-/// the matching intent, so BOTH agree and the projection is on.)
 #[test]
 fn gate_grants_pass_through_as_projection_flags() {
     let env = test_env();
@@ -1534,21 +1367,17 @@ fn gate_grants_pass_through_as_projection_flags() {
     }
 }
 
-/// THE MANIFEST-INTENT × OPERATOR-GRANT PROJECTION MATRIX (the belt-and-suspenders rule): the core
-/// projects prompt/user content ONLY when BOTH the operator grants it AND the signed manifest
-/// declares the need. A grant above the declared need is a no-op; a manifest need above the grant is
-/// a no-op. Prompt content flows only when both are ≥ read; rewrite-power (rw) requires both rw.
 #[test]
 fn manifest_intent_and_grant_projection_matrix() {
     use busbar_contract::plugin_rows::NeedLevel;
-    // (manifest prompt need, operator prompt grant) -> expected send_prompt
+
     let prompt_cases = [
         (NeedLevel::No, PromptAccess::No, false),
-        (NeedLevel::No, PromptAccess::Ro, false), // grant above declared need = no-op
+        (NeedLevel::No, PromptAccess::Ro, false),
         (NeedLevel::No, PromptAccess::Rw, false),
-        (NeedLevel::Ro, PromptAccess::No, false), // declared above grant = no-op
+        (NeedLevel::Ro, PromptAccess::No, false),
         (NeedLevel::Ro, PromptAccess::Ro, true),
-        (NeedLevel::Ro, PromptAccess::Rw, true), // both ≥ read → content flows
+        (NeedLevel::Ro, PromptAccess::Rw, true),
         (NeedLevel::Rw, PromptAccess::No, false),
         (NeedLevel::Rw, PromptAccess::Ro, true),
         (NeedLevel::Rw, PromptAccess::Rw, true),
@@ -1581,7 +1410,6 @@ fn manifest_intent_and_grant_projection_matrix() {
         );
     }
 
-    // The user axis: send_user only when BOTH manifest declares (ro) AND operator grants (ro).
     let user_cases = [
         (NeedLevel::No, UserAccess::No, false),
         (NeedLevel::No, UserAccess::Ro, false),
@@ -1617,10 +1445,6 @@ fn manifest_intent_and_grant_projection_matrix() {
     }
 }
 
-/// LOCKS the invariant behind `forward`'s `unreachable!("from_ranked never rejects")` arm:
-/// `from_ranked` is a pure order-normalizer and must only ever produce Prefer/Abstain. If a
-/// future change makes it emit Reject, that unreachable arm panics on a live request — this
-/// test is the tripwire that fails FIRST.
 #[test]
 fn from_ranked_never_produces_reject() {
     let valid: HashSet<usize> = [0usize, 1, 2].into_iter().collect();
@@ -1640,9 +1464,6 @@ fn from_ranked_never_produces_reject() {
     }
 }
 
-/// The opt-in projections REDACT their content in Debug: a stray `{{:?}}` debug log on the
-/// routing path must never fan operator-opted-in prompt text or end-user PII into the log
-/// stream (the VirtualKey key-hash precedent).
 #[test]
 fn opt_in_projections_redact_debug() {
     let p = PromptProjection {
@@ -1669,23 +1490,13 @@ fn opt_in_projections_redact_debug() {
         !dbg.contains("alice@example.com"),
         "leaked end-user id: {dbg}"
     );
-    // The operator-facing key labels stay visible — they are the operator's own config values,
-    // and losing them would make the struct undiagnosable.
+
     assert!(dbg.contains("sales-team"));
 }
 
-// ── HookPolicy behavior over the REAL lowering (ported socket/webhook transport coverage) ──────
-// These drive an OPENED hook (the hook double behind the kernel's hook axis port) through the
-// resolved `HookPolicy`: its 1.5.5 JSON reply is lowered into the call's frame as the SDK lowers a
-// plugin's, and the kernel lowers the fixed answer through the wire.rs fail-closed normalizing
-// (reject-precedence, order, abstain, rewrite, notify delivery). The `dlopen_*` names are the 1.5.5
-// tests' own spellings, which THE DESIGN R1 and the design-bindings ledger cite by name.
-
-/// Resolve the single gate `h` from a one-hook registry backed by the hook double (settings carry
-/// the double's behavior config), returning the constructed `Arc<dyn RoutingPolicy>`.
 fn resolve_one(env: &HookEnv, settings: serde_json::Value) -> Option<Arc<dyn RoutingPolicy>> {
     let mut hook = base_gate();
-    hook.prompt = PromptAccess::Ro; // so the opt-in prompt projection is sent (matches manifest rw need)
+    hook.prompt = PromptAccess::Ro;
     hook.settings = settings.as_object().cloned().unwrap_or_default();
     let hooks = registry("h", hook);
     match resolve_gate_transport("h", &hooks["h"], &hooks, env, 0)? {
@@ -1742,8 +1553,6 @@ fn dctx() -> RoutingContext<'static> {
     }
 }
 
-/// `decide` over the dlopen seam: the plugin's configured order is echoed and normalized by the REAL
-/// `wire::normalize` (unknown idxs dropped); an empty order abstains.
 #[tokio::test]
 async fn dlopen_decide_order_and_abstain() {
     let env = test_env();
@@ -1769,9 +1578,6 @@ async fn dlopen_decide_order_and_abstain() {
     assert_eq!(d, RoutingDecision::Abstain);
 }
 
-/// `decide` REJECT over the dlopen seam: the opt-in prompt projection reaches the in-process gate
-/// (proving content delivery under the grant + manifest need), and the plugin's `{"reject":{...}}`
-/// surfaces as a `RoutingDecision::Reject` through the REAL fail-closed normalizer (status/message).
 #[tokio::test]
 async fn dlopen_decide_reject_from_opt_in_prompt() {
     let env = test_env();
@@ -1783,14 +1589,12 @@ async fn dlopen_decide_reject_from_opt_in_prompt() {
     )
     .expect("resolve");
 
-    // Prompt WITHOUT the token → the gate ranks (no reject).
     let d = policy
         .decide(&dreq("clean prompt"), &cands, &dctx(), budget)
         .await
         .expect("decide");
     assert_eq!(d, RoutingDecision::Prefer(vec![0]));
 
-    // Prompt WITH the token → the gate rejects (content reached it over the ABI).
     let d = policy
         .decide(&dreq("please BLOCKME"), &cands, &dctx(), budget)
         .await
@@ -1804,8 +1608,6 @@ async fn dlopen_decide_reject_from_opt_in_prompt() {
     );
 }
 
-/// `transform` over the dlopen seam: the plugin rewrites the body (a rw gate), and rejects on the
-/// screen token — reject > rewrite precedence, through the REAL `wire::transform_outcome`.
 #[tokio::test]
 async fn dlopen_transform_rewrite_and_reject() {
     use busbar_contract::hooks::TransformOutcome;
@@ -1824,18 +1626,12 @@ async fn dlopen_transform_rewrite_and_reject() {
     }
 }
 
-/// A `notify` tap over the hook seam is fire-and-forget AND actually DISPATCHED: each tap view
-/// reaches the plugin's `notify`, and neither errors or tears down the seam.
-///
-/// The dispatch is observed through the plugin's own `test_notifies_total` counter, read back over
-/// `status`. Without that observation this test asserted nothing at all — `notify` returns `()`, so
-/// a seam stubbed to a no-op would have passed it just as happily as the real one.
 #[tokio::test]
 async fn dlopen_notify_is_fire_and_forget() {
     let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let policy = resolve_one(&env, serde_json::json!({})).expect("resolve");
-    /// The plugin's tap counter, read over the SAME handle the notifies went to.
+
     async fn taps(policy: &Arc<dyn RoutingPolicy>) -> f64 {
         let status = policy
             .status(std::time::Duration::from_secs(5))
@@ -1860,16 +1656,12 @@ async fn dlopen_notify_is_fire_and_forget() {
     policy.notify(tap(), budget).await;
     assert_eq!(taps(&policy).await, 2.0, "each tap is one dispatch");
 
-    // The seam is still live and correct after both taps — a fire-and-forget call must never
-    // poison or close the handle it rode.
     match policy.transform(&dreq("hello"), budget).await {
         busbar_contract::hooks::TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
         other => panic!("seam unusable after notify: expected Rewrite, got {other:?}"),
     }
 }
 
-/// `status` + `describe` over the dlopen seam: the plugin reports a metric (via `fetch_status`) and a
-/// schema envelope (via `fetch_schema`, single-nest extracted), through the real lowering.
 #[tokio::test]
 async fn dlopen_status_and_schema_reads() {
     let env = test_env();
@@ -1881,7 +1673,7 @@ async fn dlopen_status_and_schema_reads() {
             .unwrap();
         h
     };
-    // Drive a decide first so the plugin's decide counter is non-zero, then read status.
+
     let hooks = registry("h", hook.clone());
     let ResolvedPolicy::Policy { policy, .. } =
         resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0).expect("resolve");
@@ -1899,24 +1691,10 @@ async fn dlopen_status_and_schema_reads() {
     assert_eq!(metrics[0]["name"], "test_decides_total");
 
     let schema = fetch_schema("h", &hook, 0, &env).await.expect("schema");
-    // fetch_schema returns the schema member ALREADY EXTRACTED (single nest).
+
     assert_eq!(schema["type"], "object");
 }
 
-/// `configure` push over the hook seam: the hook acks the EXACT pushed version → Ok.
-/// (A wrong-version ack rejecting the commit is covered at the HookPolicy configure unit level.)
-///
-/// **The one assertion this test makes is about the ACK.** It used to make a second one nobody
-/// intended: that a `dlopen` of the 2.1 MB test cdylib completed inside the control plane's 5 s
-/// deadline, on whatever machine was running `cargo test --workspace` at the time. That second
-/// assertion is what failed — see `hooks::resolution` for the measured numbers (a 5.9 s median and
-/// an 88 s worst case for one `Library::new` under full workspace parallelism) and for why raising
-/// the deadline to 60 s made it rarer rather than gone.
-///
-/// So the resolution is now waited for on the loader's own readiness signal
-/// ([`super::await_transport_published`]) instead of being raced, and `push_configure` then makes
-/// the assertion this test is actually about. Nothing here is more permissive than production: the
-/// deadline the push runs under is the shipped 5 s, unchanged.
 #[tokio::test]
 async fn dlopen_configure_acks_exact_version() {
     let env = test_env();
@@ -1925,15 +1703,7 @@ async fn dlopen_configure_acks_exact_version() {
         super::await_transport_published("h", &hook, &env).await,
         "the loader must publish a transport for a loadable hook plugin"
     );
-    // The push runs under the SHIPPED 5 s deadline, unchanged (see the header note above: the
-    // cfg(test) 60 s fork is deleted, deliberately). What that deadline cannot distinguish is a
-    // wedged plugin from a saturated HOST: with a full workspace build and sibling test binaries
-    // on every core, the `spawn_blocking` FFI hop plus scheduling can eat the whole budget while
-    // the plugin is perfectly healthy. Production's answer to that is the operator retrying the
-    // admin push; this test's answer is the same, bounded — the exact mirror of
-    // `await_transport_published`'s ATTEMPTS loop one call up. ONLY a deadline-shaped error
-    // retries: a wrong acked version (the defect this test pins) fails on the first answer,
-    // every time, because no retry can turn a wrong ack into a right one.
+
     const ATTEMPTS: usize = 4;
     let mut last = String::new();
     for _ in 0..ATTEMPTS {
@@ -1949,14 +1719,6 @@ async fn dlopen_configure_acks_exact_version() {
     );
 }
 
-/// ONE `dlopen` per distinct resolution, proven the only way that cannot be faked: the two
-/// transports are the SAME `Arc`. Before `hooks::resolution` this returned two independently loaded
-/// images, which is the defect — every control-plane touch (`push_configure`, every `/metrics/hooks`
-/// scrape refresh, every `/schema` read) staged and `dlopen`ed the plugin again against a
-/// process-globally serialised linker.
-///
-/// Watched to FAIL: with the `resolution::admit` call removed from `gate_transport_named` the assert
-/// reports two distinct pointers.
 #[tokio::test]
 async fn one_load_serves_every_resolution_of_the_same_hook() {
     let env = test_env();
@@ -1969,8 +1731,6 @@ async fn one_load_serves_every_resolution_of_the_same_hook() {
          not open a second image"
     );
 
-    // DIFFERENT settings are a DIFFERENT resolution: the plugin's `open` receives a different
-    // `cfg_json`, so reuse there would be serving the wrong configuration.
     let mut other = base_gate();
     other
         .settings
@@ -1982,12 +1742,6 @@ async fn one_load_serves_every_resolution_of_the_same_hook() {
     );
 }
 
-/// THE EXCLUSION THAT MUST NOT BE SOFTENED: a hook whose settings carry a `SecretRef` is never
-/// eligible for reuse, so a rotated credential is picked up on the very next control-plane call
-/// exactly as it was before. A plain settings bag is eligible.
-///
-/// Watched to FAIL: dropping the `SettingShape::Reference` guard from `resolution::key` makes the
-/// first assert report `Some(..)`.
 #[test]
 fn a_hook_carrying_a_secret_ref_is_never_reused() {
     let env = test_env();
@@ -2007,9 +1761,6 @@ fn a_hook_carrying_a_secret_ref_is_never_reused() {
     );
 }
 
-/// The on_error CHAIN fires through LOADED plugins: gate `a` (on_error → gate `b`) resolves a
-/// one-link fallback chain whose link is a live `HookPolicy` (name `b`), bottoming out on `b`'s
-/// `reject` terminal. Ported from the socket on_error-chain test onto the dlopen seam.
 #[tokio::test]
 async fn dlopen_on_error_chain_link_is_live_plugin() {
     let env = test_env();
@@ -2031,7 +1782,7 @@ async fn dlopen_on_error_chain_link_is_live_plugin() {
         "the fallback link is a live HookPolicy"
     );
     assert_eq!(on_error, PolicyOnError::Reject);
-    // And the live fallback link actually decides over the ABI.
+
     let cands = [dcand(0)];
     let d = on_error_chain[0]
         .policy
@@ -2049,14 +1800,11 @@ async fn dlopen_on_error_chain_link_is_live_plugin() {
     ));
 }
 
-/// A `prompt: no` gate (default) sends NO prompt content even though the plugin declares an rw need:
-/// the belt-and-suspenders rule requires BOTH — the operator grant of `no` wins. So the gate cannot
-/// reject on prompt content it never received.
 #[tokio::test]
 async fn dlopen_prompt_no_grant_withholds_content() {
     let env = test_env();
-    // A gate with the DEFAULT prompt: no grant, but a plugin that WOULD reject on the token.
-    let mut hook = base_gate(); // prompt defaults to No
+
+    let mut hook = base_gate();
     hook.settings = serde_json::json!({"order": [0], "reject_if_contains": "BLOCKME"})
         .as_object()
         .cloned()
@@ -2071,10 +1819,9 @@ async fn dlopen_prompt_no_grant_withholds_content() {
         !send_prompt,
         "prompt:no grant → no content projected, regardless of manifest intent"
     );
-    // The prompt carries the token, but with send_prompt=false the CORE would not project it. Here we
-    // simulate the firing site: a `prompt: no` gate gets a request with NO prompt projection.
+
     let mut req = dreq("please BLOCKME");
-    req.prompt = None; // the core withholds content for a no-grant hook
+    req.prompt = None;
     let d = policy
         .decide(
             &req,
@@ -2091,9 +1838,6 @@ async fn dlopen_prompt_no_grant_withholds_content() {
     );
 }
 
-/// REJECT-STATUS CLAMP over the dlopen seam (ported from the socket reject-status test): a hook may
-/// only speak client errors. Whatever status the plugin returns, the REAL `wire::normalize` clamps
-/// anything outside 400..=499 to 403 — a hook cannot mint a success/redirect/5xx through the ABI.
 #[tokio::test]
 async fn dlopen_decide_reject_status_is_clamped() {
     let env = test_env();
@@ -2127,17 +1871,12 @@ async fn dlopen_decide_reject_status_is_clamped() {
     }
 }
 
-/// RESTRICT over the dlopen seam (ported from the socket restrict coverage): a compliance gate's
-/// `{"restrict":{"tags_any":[...]}}` reply surfaces as a `RoutingDecision::Restrict` through the REAL
-/// `wire::normalize` — restrict wins over `order`, and a malformed/empty restrict is fail-closed to an
-/// EMPTY tag set (resolved downstream by `on_empty`, never allow-all).
 #[tokio::test]
 async fn dlopen_decide_restrict_and_fail_closed() {
     let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let cands = [dcand(0), dcand(1)];
 
-    // Well-formed restrict → Restrict{tags_any}; restrict wins even though `order` is also set.
     let policy = resolve_one(
         &env,
         serde_json::json!({"order": [1, 0], "restrict_tags": ["baa"]}),
@@ -2152,7 +1891,6 @@ async fn dlopen_decide_restrict_and_fail_closed() {
         other => panic!("expected Restrict, got {other:?}"),
     }
 
-    // A malformed restrict (empty tags) is fail-closed to an EMPTY tag set — never allow-all/order.
     let policy = resolve_one(
         &env,
         serde_json::json!({"raw_decide_reply": {"restrict": {"tags_any": []}}}),
@@ -2171,17 +1909,12 @@ async fn dlopen_decide_restrict_and_fail_closed() {
     }
 }
 
-/// FAIL-CLOSED reply parsing over the dlopen seam (ported from the socket malformed-reply coverage):
-/// the REAL `wire::normalize` degrades a mis-typed `reject` detail to a full-strength 403 rejection
-/// (never a silent route), while a non-verb reply object abstains — a hook that tried to stop a
-/// request can never have it routed because a detail was malformed.
 #[tokio::test]
 async fn dlopen_decide_raw_reply_is_fail_closed() {
     let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let cands = [dcand(0)];
 
-    // A `reject` with a bogus (string) status degrades to the default 403 — still a rejection.
     let policy = resolve_one(
         &env,
         serde_json::json!({"raw_decide_reply": {"reject": {"status": "451"}}}),
@@ -2196,7 +1929,6 @@ async fn dlopen_decide_raw_reply_is_fail_closed() {
         other => panic!("malformed reject must stay a 403 Reject, got {other:?}"),
     }
 
-    // A non-verb reply object → Abstain (no opinion), never an error.
     let policy = resolve_one(
         &env,
         serde_json::json!({"raw_decide_reply": {"unknown_field": true}}),
@@ -2210,7 +1942,6 @@ async fn dlopen_decide_raw_reply_is_fail_closed() {
         RoutingDecision::Abstain
     );
 
-    // `reject: false` is the explicit opt-out — defers to `order`.
     let policy = resolve_one(
         &env,
         serde_json::json!({"raw_decide_reply": {"reject": false, "order": [0]}}),
@@ -2225,9 +1956,6 @@ async fn dlopen_decide_raw_reply_is_fail_closed() {
     );
 }
 
-/// The USER-identity opt-in projection rides the dlopen seam when BOTH the grant and manifest agree:
-/// a `user: ro` gate (manifest declares the user need) gets the caller identity in the projection.
-/// This is the identity analogue of the prompt opt-in delivery test.
 #[tokio::test]
 async fn dlopen_user_identity_projection_rides_the_wire() {
     use crate::test_support::HookNeeds;
@@ -2262,10 +1990,6 @@ async fn dlopen_user_identity_projection_rides_the_wire() {
     );
 }
 
-/// A SLOW gate is cut off by the wall-clock `budget` over the dlopen seam (ported from the socket
-/// silent-hook timeout test): a decide that overruns the deadline surfaces as `Err` (→ the caller's
-/// `on_error`), promptly — never a hang. The blocking call runs on `spawn_blocking`, so a sleeping
-/// plugin never stalls the runtime.
 #[tokio::test]
 async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
     let env = test_env();
@@ -2287,12 +2011,6 @@ async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
     );
 }
 
-/// A slow gate is cut off by the `budget` over the dlopen seam (spawn_blocking + timeout), promptly
-/// → `Err`, never a hang. The blocking sleep never stalls the runtime.
-///
-/// One of the two 1.5.5 timeout tests BUSBAR-1.6.0.md R1 (Q-LEAK) requires to pass as written: its
-/// assertions are the deleted loader test's, verbatim; only the call path is the hook axis's
-/// (`resolve_one`), where `load` and `DlopenPolicy` went.
 #[tokio::test]
 async fn dlopen_slow_gate_hits_the_deadline() {
     let env = test_env();
@@ -2314,9 +2032,6 @@ async fn dlopen_slow_gate_hits_the_deadline() {
     );
 }
 
-/// FAIL-OPEN management reads over the dlopen seam (ported from the socket status/describe
-/// "unsupported" coverage): a hook that replies `{}` to `status`/`describe` is treated as
-/// "doesn't speak it" — `fetch_status`/`fetch_schema` return `None`, never affecting a request.
 #[tokio::test]
 async fn dlopen_empty_management_reads_are_fail_open_none() {
     let env = test_env();
@@ -2335,9 +2050,6 @@ async fn dlopen_empty_management_reads_are_fail_open_none() {
     );
 }
 
-/// A NACK'd `configure` push over the dlopen seam does NOT commit (ported from the socket
-/// wrong-version-ack coverage): the plugin refuses to ack, so `push_configure` returns `Err` and the
-/// settings PATCH would not commit — the exact-version ack rule holds over the ABI.
 #[tokio::test]
 async fn dlopen_configure_nack_does_not_commit() {
     let env = test_env();
@@ -2352,14 +2064,6 @@ async fn dlopen_configure_nack_does_not_commit() {
     );
 }
 
-// ── offload_bounded (bound the transport resolve, name a swallowed JoinError) ────────────────────
-
-/// UNIT TEST of the new bound (NOT a red proof of the old unbounded `.await` — there is no fixture
-/// that makes a real `dlopen`/constructor hang, so the "no timeout today" claim is established by
-/// reading `gate_transport_offloaded`, not by a test). `spawn_blocking` runs the closure on a real OS
-/// thread, which a paused tokio clock cannot accelerate (a live blocking thread never reports the
-/// runtime "idle", so time auto-advance never fires) — so this drives the deadline-parameterized
-/// core directly with a short REAL deadline instead, making the timeout arm deterministic and fast.
 #[test]
 fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -2383,10 +2087,6 @@ fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
     });
 }
 
-/// UNIT TEST of the new bound's panic arm — but WRITABLE NOW, unlike the timeout arm: the closure
-/// itself can panic without needing a real plugin. Pins the fix for the swallowed `JoinError`
-/// a panicking blocking task must not unwind the caller, and must be named in a captured
-/// warn distinctly from an ordinary "no resolvable transport" `None`.
 #[test]
 fn offload_bounded_logs_when_the_blocking_task_panics() {
     use crate::test_support::warn_capture::WarnCapture;
@@ -2417,21 +2117,10 @@ fn offload_bounded_logs_when_the_blocking_task_panics() {
     );
 }
 
-/// The settings-drift signal yields KEY NAMES ONLY, and is computed WITHOUT resolving a single
-/// secret.
-///
-/// Three defects in one line of `GET /api/v1/admin/hooks/{name}/status`. It serialized
-/// `reported.settings` verbatim — the hook's ECHO of the bag busbar pushed it, which
-/// `configure_hook` resolves first, so that field carried the PLAINTEXT of every `SecretRef` at
-/// READ-ONLY admin scope. It compared that resolved echo against the UNRESOLVED `hook.settings`, so
-/// a `SecretRef` field could NEVER match and reported drift on every single poll, forever — a
-/// permanent false positive on the one signal the endpoint exists to raise. And the fix for THAT
-/// (resolving the desired bag per request) put blocking secret FFI on a polled async GET; a
-/// `SecretRef` field is now skipped by SHAPE instead, with no resolution anywhere on the path.
 #[test]
 fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     let var = "BUSBAR_TEST_HOOK_DRIFT_SECRET";
-    // The var name is unique to this test, so no sibling reads or clobbers it.
+
     std::env::set_var(var, "hunter2-resolved");
     let mut hook: HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate",
@@ -2451,7 +2140,6 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
 
-    // The hook echoes back exactly what it was configured with — i.e. the RESOLVED secret.
     let in_sync = serde_json::json!({
         "api_token": "hunter2-resolved",
         "ratio": 0.4,
@@ -2466,7 +2154,6 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
          against the unresolved `SecretRef` made every secret-bearing hook report drift forever"
     );
 
-    // A hook running a stale ORDINARY value drifts — and the signal is the KEY NAME, never a value.
     let drifted = serde_json::json!({
         "api_token": "hunter2-resolved",
         "ratio": 0.9,
@@ -2487,7 +2174,6 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
         "no value from either bag may ride out on the drift signal: {keys:?}"
     );
 
-    // A stale LITERAL-wrapped value drifts too: unwrapping is shape-only, no resolution involved.
     let literal_drift = serde_json::json!({
         "api_token": "hunter2-resolved",
         "ratio": 0.4,
@@ -2502,21 +2188,9 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
         "`{{ literal: … }}` is ordinary data, compared against its INNER value"
     );
 
-    // A hook that reports no settings at all is fail-open, not drift.
     assert!(crate::hooks::settings_drift_keys(&hook, None).is_empty());
 }
 
-/// `hook_status` is a POLLED async GET, so nothing it calls may resolve a secret.
-/// The earlier drift check compared against the RESOLVED desired bag, which reaches
-/// `SecretResolver::resolve` — a SYNCHRONOUS FFI call into a `kind: secret` plugin for any
-/// non-built-in module — inline on a Tokio worker with no `spawn_blocking` and no cache, plus a
-/// `tracing::info!` naming the setting and its reference on EVERY call. A dashboard polling every 5s
-/// became a Vault round-trip every 5s, parking a worker for the plugin's full timeout when Vault is
-/// slow.
-///
-/// The observable consequence of removing the resolution: a `SecretRef` field's desired value is no
-/// longer knowable on the read path, so it is NOT COMPARED and never reports drift — whatever the
-/// hook echoes back for it. Ordinary fields keep drifting normally (asserted above and here).
 #[test]
 fn settings_drift_never_compares_a_secret_ref_field() {
     let var = "BUSBAR_TEST_HOOK_DRIFT_NO_RESOLVE";
@@ -2539,9 +2213,6 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     .unwrap()
     .clone();
 
-    // Whatever the hook echoes for the two reference fields — the resolved plaintext, a STALE
-    // plaintext, or nothing comparable at all — none of it is drift, because deciding would require
-    // the resolution this path refuses to perform.
     for echoed in [
         serde_json::json!({ "api_token": "the-real-secret", "licenseKey": "lic-1", "ratio": 0.4 }),
         serde_json::json!({ "api_token": "a-stale-secret", "licenseKey": "lic-2", "ratio": 0.4 }),
@@ -2554,7 +2225,6 @@ fn settings_drift_never_compares_a_secret_ref_field() {
         );
     }
 
-    // Drift detection still works for ordinary fields alongside them.
     let observed = serde_json::json!({
         "api_token": "the-real-secret",
         "licenseKey": "lic-1",
@@ -2570,12 +2240,6 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     );
 }
 
-// ── the BLOCKING-FFI class: a hook's SECRET resolution must not run on a reactor worker ──────────
-
-/// A `HookEnv` whose secret resolver's PLUGIN arm blocks the calling thread for `park`. That arm is a
-/// synchronous `transport_call` into a `kind: secret` plugin in production (`DynSecret::resolve` →
-/// `RawPlugin::transport_call`), and behind it a Vault/AWS-SM round trip. Nothing here is async —
-/// the ENGINE is responsible for keeping it off the reactor.
 fn parking_secret_env(park: std::time::Duration) -> HookEnv {
     HookEnv::new(
         crate::test_support::rows::empty(),
@@ -2589,9 +2253,6 @@ fn parking_secret_env(park: std::time::Duration) -> HookEnv {
     .expect("the registry's hook axis")
 }
 
-/// A hook whose `settings:` carry a SecretRef pointing at a NON-built-in module, i.e. one that must
-/// be resolved by a `kind: secret` PLUGIN — the shape `classify_setting` reports as
-/// `SettingShape::Reference` and `resolve_settings` therefore resolves over FFI.
 fn hook_with_plugin_secret() -> HookCfg {
     let mut hook = base_gate();
     hook.settings.insert(
@@ -2601,10 +2262,6 @@ fn hook_with_plugin_secret() -> HookCfg {
     hook
 }
 
-/// See `busbar-core-oauth2`'s `hosted_login_tests::assert_runtime_still_polls` for why this waits on WALL CLOCK and
-/// never on a Tokio timer: when every worker is parked in FFI the time driver is parked too, so a
-/// `tokio::time::timeout` does not fire — it returns late and its assertion passes against a runtime
-/// that was dead for the whole window.
 fn assert_runtime_still_polls(
     rt: &tokio::runtime::Runtime,
     budget: std::time::Duration,
@@ -2621,10 +2278,6 @@ fn assert_runtime_still_polls(
     panic!("{msg}");
 }
 
-/// `PATCH /api/v1/admin/hooks/{name}/settings` → `push_configure`, an `async fn`. It resolved the
-/// hook's SecretRef settings INLINE — one line above the `gate_transport_offloaded` call that exists
-/// to keep exactly this work off the reactor — and did so UNTIMED: `CONFIGURE_TIMEOUT_MS` bounds only
-/// the `configure` call that follows. Concurrent admin pushes must not stop the runtime polling.
 #[test]
 fn concurrent_push_configure_does_not_starve_the_runtime() {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -2650,16 +2303,10 @@ fn concurrent_push_configure_does_not_starve_the_runtime() {
          plugin's synchronous resolve: every Tokio worker is parked in FFI",
     );
     for t in tasks {
-        // Every push still FAILS (the registry is empty, so there is no transport) — the point is
-        // that the failure arrives without the reactor having stopped.
         assert!(rt.block_on(async { t.await.expect("task") }).is_err());
     }
 }
 
-/// THE IR COMPUTE GATE. `any_content_hook` is true iff SOME registered hook holds a prompt-content
-/// grant. An empty registry and a registry of shape-only (`prompt: no`) hooks both read false — the
-/// zero-cost default every deployment that runs no content hook lands on — and a single `ro` or `rw`
-/// grant anywhere flips it, whatever kind of hook holds it.
 #[test]
 fn any_content_hook_is_true_iff_some_hook_is_granted_prompt_content() {
     assert!(
@@ -2693,17 +2340,13 @@ fn any_content_hook_is_true_iff_some_hook_is_granted_prompt_content() {
             any_content_hook(&registry("granted", granted.clone())),
             "a {kind:?} holding {prompt:?} must open the gate"
         );
-        // One granted hook among shape-only siblings is still one granted hook.
+
         let mut mixed = shape_registry.clone();
         mixed.insert("granted".to_string(), granted);
         assert!(any_content_hook(&mixed));
     }
 }
 
-/// The gate reads the DEFINITION registry, so it does not depend on a hook being WIRED into a pool
-/// or into `global_hooks`. The one-sided direction is deliberate: over-reporting costs an unused IR
-/// build, under-reporting would hand a content-granted hook a view the request was never parsed
-/// into.
 #[test]
 fn any_content_hook_ignores_whether_the_granted_hook_is_wired() {
     let granted = HookCfg {
@@ -2714,16 +2357,6 @@ fn any_content_hook_ignores_whether_the_granted_hook_is_wired() {
     assert!(any_content_hook(&registry("unwired", granted)));
 }
 
-// ── The disposition of a hook call that FAILED ─────────────────────────────────────────────────────
-// `on_error: reject` is the operator declaring a hook LOAD-BEARING: without its answer the unit is
-// refused. The READ-ONLY (decide) seat has honored that since the on_error chain landed; the
-// READ-WRITE (transform) seat silently skipped the hook instead, so a redaction/compression gate an
-// operator had declared load-bearing failed OPEN. The disposition now lives in ONE decorator applied
-// at RESOLUTION, over ONE rule shared with the read-only seat.
-
-/// Resolve the same `prompt: rw` gate through BOTH rewrite resolvers (global and per-pool) and hand
-/// back the two chains' transports. Returning both is the point: they are siblings, and a
-/// disposition applied to one and not the other would be exactly the drift this fix removes.
 fn resolve_rewrite_pair(
     env: &HookEnv,
     settings: &serde_json::Value,
@@ -2746,12 +2379,6 @@ fn resolve_rewrite_pair(
     Some((global, pool))
 }
 
-/// THE MATRIX: {call answered, call failed} × {`on_error: weighted`, `on_error: reject`}, over the
-/// REAL resolved chain (so it covers the decorator AND the resolution wiring that applies it).
-///
-/// A call that FAILED is driven by the fixture's own "I could not answer" reply — the shape a gate
-/// takes when its classifier or model endpoint is down. A hook that is unreachable or over its
-/// deadline reaches the same arm one layer lower, in the transport (`HookPolicy::transform`).
 #[tokio::test]
 async fn rewrite_call_failure_takes_the_configured_disposition() {
     use busbar_contract::hooks::TransformOutcome;
@@ -2773,8 +2400,6 @@ async fn rewrite_call_failure_takes_the_configured_disposition() {
         for (which, policy) in [("global", &global), ("pool", &pool)] {
             let outcome = policy.transform(&dreq("hello"), budget).await;
             match (&outcome, expect_refusal, call_failed) {
-                // The refusal: the load-bearing hook could not answer, so the unit is refused —
-                // with the shared status/message, never the hook's name or the reason.
                 (TransformOutcome::Reject { status, message }, true, _) => {
                     assert_eq!(
                         *status,
@@ -2787,12 +2412,9 @@ async fn rewrite_call_failure_takes_the_configured_disposition() {
                         "{which}: and the shared, content-free message"
                     );
                 }
-                // Not load-bearing: the failure is carried through to the firing site, which
-                // proceeds with the ORIGINAL body and logs it — today's fail-safe shape, now the
-                // operator's stated choice rather than an assumption.
+
                 (TransformOutcome::Failed { .. }, false, true) => {}
-                // The call ANSWERED: `on_error` is not consulted at all — the answer stands,
-                // whatever the disposition says.
+
                 (TransformOutcome::Rewrite(_), false, false) => {}
                 (other, _, _) => panic!(
                     "{which}: on_error={on_error} call_failed={call_failed} \
@@ -2803,8 +2425,6 @@ async fn rewrite_call_failure_takes_the_configured_disposition() {
     }
 }
 
-/// The `on_error` disposition is asked of ONE rule, and that rule is what both seats consult. Pinned
-/// directly so a future edit that special-cases one seat has to change this line first.
 #[test]
 fn only_reject_refuses_a_failed_call() {
     use crate::config::PolicyOnError;

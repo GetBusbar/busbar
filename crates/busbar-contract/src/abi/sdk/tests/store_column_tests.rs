@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A record's fields as a backend stores them: the scope columns keep the omitted grant and the
-//! empty grant apart and never widen a malformed one; a `u64` past `i64::MAX` is refused in words,
-//! or pinned for a counter; a negative counter reads as zero.
 
 use super::*;
 
@@ -15,7 +13,7 @@ fn scope(kind: &str, value: &str) -> ScopeRef {
 }
 
 /// The omitted grant is two NULLs; an empty grant writes `[]`; pools are 1.5.x's array of names and
-/// every other kind is `{kind: [value, ...]}` in kind order.
+
 #[test]
 fn scopes_are_written_as_two_columns() {
     assert_eq!(scope_columns(None), (None, None));
@@ -39,7 +37,7 @@ fn scopes_are_written_as_two_columns() {
 }
 
 /// What is written reads back: the omitted grant as `None`, the empty grant as `Some([])`, a mixed
-/// grant pools first, then every other kind in kind order.
+
 #[test]
 fn scopes_read_back_as_written() {
     for grant in [
@@ -60,7 +58,7 @@ fn scopes_read_back_as_written() {
 }
 
 /// A column that does not parse adds nothing: never the wildcard, never a wider grant. Surrounding
-/// whitespace is read through.
+
 #[test]
 fn a_malformed_column_reads_as_the_restrictive_grant() {
     assert_eq!(
@@ -78,7 +76,7 @@ fn a_malformed_column_reads_as_the_restrictive_grant() {
 }
 
 /// A value a signed column cannot hold is refused naming the method and the field; one it can hold
-/// is stored as itself.
+
 #[test]
 fn a_value_past_i64_max_is_refused_in_words() {
     assert_eq!(storable_i64("append_audit", "seq", 7).expect("held"), 7);

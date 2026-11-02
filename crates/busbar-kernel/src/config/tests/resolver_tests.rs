@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/config/secret.rs`.
-
 use super::*;
 use busbar_contract::redacted::Secret;
 
-/// The resolver's built-in arm resolves env/file inline WITHOUT any plugin.
 #[test]
 fn resolver_builtins_resolve_without_plugin() {
     let r = SecretResolver::builtins_only();
@@ -23,7 +20,6 @@ fn resolver_builtins_resolve_without_plugin() {
     std::env::remove_var(&var);
 }
 
-/// A non-built-in module with NO plugin subsystem is FAIL-CLOSED, naming the module.
 #[test]
 fn resolver_unknown_module_without_plugin_fails_closed() {
     let r = SecretResolver::builtins_only();
@@ -38,11 +34,8 @@ fn resolver_unknown_module_without_plugin_fails_closed() {
     );
 }
 
-/// A non-built-in module DELEGATES to the plugin resolver; a plugin error and an empty result
-/// are both fail-closed.
 #[test]
 fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
-    // Plugin that returns bytes for `vault` and errors for anything else.
     let r = SecretResolver::with_plugin(Box::new(|module: &str, settings: &str| {
         if module == "vault" {
             let v: serde_json::Value = serde_json::from_str(settings).unwrap();
@@ -70,14 +63,14 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
         r.resolve(&mk("kv/ok")).unwrap(),
         Secret::new(b"plugin-secret".to_vec())
     );
-    // Empty plugin result is rejected (fail-closed), never an empty secret.
+
     assert!(r.resolve(&mk("kv/empty")).unwrap_err().contains("EMPTY"));
-    // Plugin error is surfaced fail-closed.
+
     assert!(r
         .resolve(&mk("kv/missing"))
         .unwrap_err()
         .contains("failed to resolve"));
-    // Built-ins still short-circuit past the plugin.
+
     let var = format!("BUSBAR_RESOLVER_PLUGIN_TEST_{}", std::process::id());
     std::env::set_var(&var, "envval");
     assert_eq!(

@@ -1,30 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! EACH PLUGIN MIGRATES ITS OWN SETTINGS (owner ruling 2026-10-27).
-//!
-//! `busbar --migrate-config` migrates core's own keys and nothing inside a plugin's settings
-//! section: core knows no plugin's keys, old or new. For each plugin the configuration selects,
-//! this step hands the section to that plugin's own `migrate` (through the composition root's
-//! [`MigrateHost`], which loads the plugin's current build) and then:
-//!
-//! - writes the section the plugin answered in place of the old one;
-//! - applies the needs the plugin raised, to keys CORE owns and nothing else (a destination to
-//!   allow joins `advanced.allow_destinations`, exactly that host; a destination to allow only if
-//!   it is private is resolved here, at migrate time, and judged with the destination guard's own
-//!   predicates first);
-//! - prints every report line under the plugin's name.
-//!
-//! A plane is handed the sections it owns and, beside them, the sections it CONSUMES, read-only:
-//! an answer that rewrites a consumed section is refused whole. A plane that consumes the
-//! transport kind's root is handed the providers catalog merged under the deployment's entries,
-//! as boot merges them.
-//!
-//! A plugin whose build states no `migrate` passes through unchanged. A plugin no build answers is
-//! left as written, with a TODO naming it. The composition root also answers which release of a
-//! plugin matches this core (`plugins.fetch` pins are rewritten through that lookup, and a plugin
-//! no build here serves gains a pin), by asking the release index: no plugin name is written here.
-
 use std::net::IpAddr;
 
 use busbar_contract::abi::sdk::migrate::{MigrateNeed, Migrated};
@@ -33,30 +9,18 @@ use serde_yaml::{Mapping, Value};
 
 use super::migrate::vocabulary::field;
 
-/// `plugins.fetch` source selector retained from the existing configuration grammar.
 const FETCH_GITHUB_PIN_KEY: &str = "github";
-/// RFC 6761 section 6.3 reserves localhost and its subdomains for loopback.
+
 const LOCALHOST_NAME: &str = "localhost";
 const LOCALHOST_SUFFIX: &str = ".localhost";
 
-/// The busbar version a configuration is migrated from when nothing says otherwise: the release
-/// before this one.
 pub const FROM_DEFAULT: &str = "1.5.5";
 
-/// What the composition root answers for the migration: the plugins, and the release index.
 pub trait MigrateHost {
-    /// The busbar version the configuration came from.
     fn migrating_from(&self) -> &str {
         FROM_DEFAULT
     }
 
-    /// Migrate one plugin's section: the plugin `module` names on `kind`'s axis (`kind` is the
-    /// kind's word, `plane` for a plane, whose `module` is its registry key). `Ok(None)` when no
-    /// build of it states a `migrate`; otherwise the plugin's name (the word its report lines are
-    /// printed under) and its answer.
-    ///
-    /// # Errors
-    /// No build of the plugin is at hand, or its `migrate` refused (the reason).
     fn migrate(
         &self,
         kind: &str,
@@ -65,56 +29,25 @@ pub trait MigrateHost {
         from: &str,
     ) -> Result<Option<(String, Migrated)>, String>;
 
-    /// The `plugins.fetch` GitHub reference (`org/repo@tag`) that names the release of the same
-    /// plugin matching this core, when `github` names another one. `Ok(None)`: it already matches,
-    /// or the index does not know the plugin.
-    ///
-    /// # Errors
-    /// The release index could not be read.
     fn repin(&self, github: &str) -> Result<Option<String>, String>;
 
-    /// The `plugins.fetch` GitHub reference for the plugin `module` names on `kind`'s axis, when no
-    /// build here serves it (not linked, not in the plugins directory) and the release index names
-    /// one matching this core. `Ok(None)` otherwise.
-    ///
-    /// # Errors
-    /// The release index could not be read.
     fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String>;
 
-    /// The providers catalog the configuration reads, rewritten without the keys its entries'
-    /// grammar does not read ([`super::migrate_catalog`]): `Ok(None)` when there is no catalog or
-    /// nothing to remove; otherwise the `providers_file:` value that names the rewritten catalog
-    /// and one change line per removed key.
-    ///
-    /// # Errors
-    /// The catalog could not be read or the rewritten one written.
     fn rewrite_catalog(&self) -> Result<Option<(String, Vec<String>)>, String> {
         Ok(None)
     }
 
-    /// The providers catalog the configuration reads (the file boot reads, found as boot finds
-    /// it), as written: each entry's table by its name. `Ok(None)` when there is none.
-    ///
-    /// # Errors
-    /// The catalog could not be read, or is not a map of entries.
     fn providers_catalog(
         &self,
     ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
         Ok(None)
     }
 
-    /// Every address the name `host` answers on this machine, now (the migration's one
-    /// resolution of a host a plugin raised to allow only if it is private).
-    ///
-    /// # Errors
-    /// The name did not resolve (the reason).
     fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
         Err(format!("no resolver is at hand for '{host}'"))
     }
 }
 
-/// The host of a migration with no plugins at hand (`migrate_config`): every plugin passes through
-/// unchanged, and no pin is rewritten.
 pub struct NoPlugins;
 
 impl MigrateHost for NoPlugins {
@@ -135,39 +68,29 @@ impl MigrateHost for NoPlugins {
     }
 }
 
-/// The ledgers a migration step writes.
 pub(super) struct Ledger<'a> {
     pub changes: &'a mut Vec<String>,
     pub todos: &'a mut Vec<String>,
 }
 
-/// One plugin section the configuration selects: where it is, which kind and module, and its
-/// settings as written.
 struct Site {
-    /// The path an operator reads (`store.settings`, `export.audit.settings`, `<plane section>`).
     path: String,
-    /// Where the section sits, key by key from the document root (empty for a plane's sections,
-    /// which sit at the root under their own names).
+
     at: Vec<String>,
     kind: String,
     module: String,
-    // settings-leak-lint: allow — the operator's own section as written, handed to its plugin's
-    // migrate and written back into the operator's file; no admin read serves it.
+
     settings: serde_json::Value,
-    /// The sections in `settings` the plugin reads but does not own (a plane's consumed
-    /// sections): handed read-only, never written back.
+
     read_only: Vec<String>,
 }
 
-/// What the migration reads of one plane: its registry key, the sections it owns (its declaring
-/// section first) and the sections it consumes.
 pub(super) struct PlaneFacts {
     pub key: &'static str,
     pub owns: Vec<&'static str>,
     pub consumes: &'static [&'static str],
 }
 
-/// Every plane the registry holds, as the migration reads it.
 fn registry_planes() -> Vec<PlaneFacts> {
     crate::plane_driver::registry::plane_decls()
         .iter()
@@ -179,12 +102,10 @@ fn registry_planes() -> Vec<PlaneFacts> {
         .collect()
 }
 
-/// Run every plugin's own migration over `root`, then the release lookups.
 pub(super) fn migrate(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut Ledger<'_>) {
     migrate_over(root, host, ledger, &registry_planes());
 }
 
-/// [`migrate`] over the planes `planes`.
 pub(super) fn migrate_over(
     root: &mut Mapping,
     host: &dyn MigrateHost,
@@ -241,9 +162,6 @@ fn migration_json(
     }
 }
 
-/// Every plugin section the configuration selects, in document order: the store, each named
-/// instance of the named-map kinds, and each plane's sections (with the ones it consumes,
-/// read-only).
 fn sites(
     root: &Mapping,
     planes: &[PlaneFacts],
@@ -326,7 +244,7 @@ fn sites(
                 sections.insert((*s).to_string(), value);
             }
         }
-        // A plane none of whose own sections is written is not configured: nothing to migrate.
+
         if sections.is_empty() {
             continue;
         }
@@ -369,11 +287,6 @@ fn sites(
     out
 }
 
-/// THE PROVIDERS A PLANE READS: the catalog the configuration reads, merged under the
-/// deployment's `providers:` entries as boot merges them (`super::providers::merge_tables`: a key
-/// the deployment sets wins, a string map merges member by member), so an entry only the catalog
-/// states is there too. `None` when neither states any. A catalog that cannot be read leaves the
-/// deployment's entries alone, with a TODO.
 fn merged_providers(
     root: &Mapping,
     host: &dyn MigrateHost,
@@ -414,8 +327,6 @@ fn merged_providers(
     Ok(Some(serde_json::Value::Object(merged)))
 }
 
-/// The sections a plane's migration is handed and may answer: the one that declares it and the
-/// ones it owns.
 fn plane_sections(d: &crate::plane_driver::registry::PlaneDecl) -> Vec<&'static str> {
     let mut all = vec![d.config_section];
     for s in d.owned_config_sections {
@@ -426,7 +337,6 @@ fn plane_sections(d: &crate::plane_driver::registry::PlaneDecl) -> Vec<&'static 
     all
 }
 
-/// The word a kind's plugins are named by in the migration (`store`, `auth`, ...).
 fn kind_word(kind: Kind) -> &'static str {
     match kind {
         Kind::Plane => busbar_contract::abi::mechanism::kind::PLANE,
@@ -439,7 +349,6 @@ fn kind_word(kind: Kind) -> &'static str {
     }
 }
 
-/// Write `migrated` for `site`: its section, its needs on core's keys, its report lines.
 fn apply(
     root: &mut Mapping,
     host: &dyn MigrateHost,
@@ -470,7 +379,7 @@ fn apply(
     for need in needs {
         match need {
             MigrateNeed::AllowDestination(host) => allow_destination(root, plugin, &host, ledger),
-            // One decision per host, however many times the plugin raised it.
+
             MigrateNeed::AllowDestinationIfPrivate(h) => {
                 let h = h.trim().to_string();
                 if !decided.contains(&h) {
@@ -482,14 +391,13 @@ fn apply(
     }
 }
 
-/// Put `settings` where `site` read its section from.
 fn write_back(root: &mut Mapping, site: &Site, settings: serde_json::Value) -> Result<(), String> {
     let value = |v: &serde_json::Value| serde_yaml::to_value(v).map_err(|e| e.to_string());
     if site.kind == busbar_contract::abi::mechanism::kind::PLANE {
         let serde_json::Value::Object(sections) = settings else {
             return Err("a plane answers its sections as one object".into());
         };
-        // Judged whole before anything is written: a refused answer writes none of itself.
+
         let mut writes = Vec::new();
         for (name, v) in &sections {
             let Some(handed) = site.settings.get(name) else {
@@ -530,7 +438,6 @@ fn write_back(root: &mut Mapping, site: &Site, settings: serde_json::Value) -> R
     Ok(())
 }
 
-/// Add `host` to `advanced.allow_destinations`, once, reporting it.
 fn allow_destination(root: &mut Mapping, plugin: &str, host: &str, ledger: &mut Ledger<'_>) {
     let host = host.trim();
     if host.is_empty() {
@@ -547,8 +454,6 @@ fn allow_destination(root: &mut Mapping, plugin: &str, host: &str, ledger: &mut 
     }
 }
 
-/// Add `host` to `advanced.allow_destinations` (made when it is not there): `Ok(true)` when it
-/// was added, `Ok(false)` when it was there already, or the TODO naming what is in its way.
 fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, String> {
     let advanced = root
         .entry(Value::from(field::ADVANCED))
@@ -575,8 +480,6 @@ fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, St
     Ok(true)
 }
 
-/// Whether `advanced.allow_destinations` already names `name` (as the guard folds an entry:
-/// unbracketed, one trailing dot dropped, case-blind). Nothing is made.
 fn already_allowed(root: &Mapping, name: &str) -> bool {
     let Some(Value::Mapping(advanced)) = root.get(Value::from(field::ADVANCED)) else {
         return false;
@@ -590,15 +493,6 @@ fn already_allowed(root: &Mapping, name: &str) -> bool {
     })
 }
 
-/// THE ALLOW-IF-PRIVATE DECISION (`MigrateNeed::AllowDestinationIfPrivate`): the host the plugin
-/// `plugin` raised, read as the destination guard reads it, with the guard's own predicates
-/// (`busbar_contract::net`) in the guard's order: a host it cannot judge, a cloud-metadata name
-/// and an alternate IPv4 spelling are decided first; an address literal is its own answer; a
-/// `localhost` name is loopback; any other name is resolved here, now, through `host`, and every
-/// answer is judged. Exactly the host is added only when every answer is private or loopback and
-/// none is cloud metadata (nor IPv6 link-local, which the guard refuses as it refuses metadata,
-/// and which a host entry never admits). Every decision gets a line: what the host resolved to,
-/// and that it was resolved at migrate time. A decision only the operator can make is a TODO.
 fn allow_if_private(
     root: &mut Mapping,
     host: &dyn MigrateHost,
@@ -615,7 +509,7 @@ fn allow_if_private(
     };
     let never = "a migration never allows it (the 1.5.5 `allow_metadata_hosts` carve-outs keep \
                  working as they did)";
-    // The one form the guard compares every name in.
+
     let name = match judged_host(raised) {
         Ok(name) if !name.is_empty() => name,
         _ => {
@@ -725,7 +619,6 @@ fn allow_if_private(
     }
 }
 
-/// The `plugins.fetch` list, when the configuration has one.
 fn fetch_list(root: &mut Mapping) -> Option<&mut Vec<Value>> {
     let Some(Value::Mapping(plugins)) = root.get_mut(Value::from(field::PLUGINS)) else {
         return None;
@@ -736,9 +629,6 @@ fn fetch_list(root: &mut Mapping) -> Option<&mut Vec<Value>> {
     }
 }
 
-/// Rewrite each `plugins.fetch` GitHub pin that names another release of a plugin than the one
-/// matching this core (a 1.5.5-era build would be refused at boot), dropping its now-wrong
-/// `sha256`, one change line each.
 fn repin_fetch(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut Ledger<'_>) {
     let Some(list) = fetch_list(root) else {
         return;
@@ -778,7 +668,6 @@ fn repin_fetch(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut Ledger<'
     }
 }
 
-/// The `org/repo` of a GitHub pin (`org/repo@tag`), lower-cased for comparison.
 fn repo_of(github: &str) -> String {
     github
         .split_once('@')
@@ -786,8 +675,6 @@ fn repo_of(github: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Pin, in `plugins.fetch`, each selected plugin no build here serves, at the release the index
-/// names for this core, unless a pin for that repository is already there.
 fn pin_unserved(
     root: &mut Mapping,
     host: &dyn MigrateHost,

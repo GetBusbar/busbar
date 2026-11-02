@@ -38,35 +38,6 @@
 use busbar_contract::abi::export::{ExportField, ExportStream};
 use serde_json::Value;
 
-// ───────────────────────────────────────────────────────────────────────────────────────────────
-// WHAT THIS RELEASE ACTUALLY PRODUCES — the HARD RULE's single source of truth.
-// ───────────────────────────────────────────────────────────────────────────────────────────────
-
-/// The streams this release has a REAL PRODUCER for — i.e. core builds the records.
-///
-/// THE HARD RULE: a config naming a stream that is not here LOUD-FAILS at validate, naming the
-/// stream and saying it arrives in a later release. It must NEVER validate-and-silently-deliver-
-/// nothing. Shipping the surface ahead of the producers is the tempting shortcut and it is a defect,
-/// not a shortcut: `streams: [prompts]` would parse, report success, and deliver nothing forever.
-///
-/// What produces each entry TODAY (open these before changing this list — the rule is only worth
-/// what the citations are worth):
-/// - `metrics` — the recorder + emit sites in `crate::snapshot`, rendered by
-///   the scrape sink through `crate::export::scrape`.
-/// - `logs` — [`crate::export::build_request_log`], from the request-finish path
-///   (`crate::ingress::finish_inner`). PARTIAL: it produces a subset of the stream's documented
-///   default fields (see [`produced_fields`]).
-/// - `traces` — the kernel's traces producer (`crate::export::traces`, K9a S7), which builds one
-///   record per closed span for every export-axis sink subscribed to it (the `otlp` module's
-///   among them).
-/// - `events` — the hash-chained admin records in `crate::audit_ring` (`busbar_contract::records::AuditRecord`:
-///   `seq`/`ts`/`action`/`resource`/`outcome`/`principal`/`prev_hash`/`hash`). PARTIAL: admin
-///   mutations only; config applies, plugin loads/refusals, boot and shutdown are a later unit.
-///
-/// NOT here, and therefore rejected: `costs`, `decisions`, `identity`, `prompts`, `completions`.
-/// `decisions` is the one to protect hardest — core ALREADY computes exclusion reasons and hook
-/// verdicts and then DISCARDS them, so it is tempting to call it "nearly there". It is not a
-/// producer until the records exist.
 pub(crate) const PRODUCED_STREAMS: &[ExportStream] = &[
     ExportStream::Metrics,
     ExportStream::Logs,
@@ -74,39 +45,19 @@ pub(crate) const PRODUCED_STREAMS: &[ExportStream] = &[
     ExportStream::Events,
 ];
 
-/// True when this release has a producer for `stream` (see [`PRODUCED_STREAMS`]).
 pub(crate) fn stream_produced(stream: ExportStream) -> bool {
     PRODUCED_STREAMS.contains(&stream)
 }
 
-/// The fields of `stream` this release actually FILLS IN, a subset of the stream's frozen
-/// documented default set ([`ExportStream::default_fields`]).
-///
-/// This exists so that `fields:` cannot name a field that would never arrive. The default (no
-/// `fields:`) projection is the produced subset, which is why a partial stream can ship at all —
-/// but an EXPLICIT request for a field is a promise, and a promise this release cannot keep is a
-/// loud error rather than a permanently-absent key in the operator's SIEM.
-///
-/// `logs` is kept honest by `crate::export::tests::projection_tests` — it asserts this list equals
-/// the keys [`crate::export::build_request_log`] actually emits, so the table cannot drift from the
-/// producer it describes.
 pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
     use ExportField as F;
     match stream {
-        // Aggregate: the unit is the documented metric CATALOG (families), not record fields.
         ExportStream::Metrics => &[],
-        // `crate::export::build_request_log` — the five fields today's request log carries. The rest
-        // of the stream's documented default set (correlation_id, model_requested, model_served,
-        // provider, status) is the producer unit that follows this one.
+
         ExportStream::Logs => &[F::Ts, F::IngressProtocol, F::Pool, F::Outcome, F::LatencyMs],
-        // Empty ON PURPOSE: an operator asking to project trace FIELDS is refused, loudly, in the
-        // words this release has always used (1.5.5 printed them for an `otlp` instance). A sink
-        // subscribed to `traces` is GRANTED the stream's documented set — see `resolve_projection`
-        // — which the traces producer, K9a S7, fills.)
+
         ExportStream::Traces => &[],
-        // `busbar_contract::records::AuditRecord`, mapped onto the stream's field names: seq → seq, ts → ts,
-        // prev_hash → prev_hash, action → kind, principal → actor, resource → resource,
-        // outcome → outcome.
+
         ExportStream::Events => &[
             F::Seq,
             F::Ts,
@@ -116,7 +67,7 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
             F::Resource,
             F::Outcome,
         ],
-        // No producer at all (see PRODUCED_STREAMS) — the stream itself is rejected first.
+
         ExportStream::Costs
         | ExportStream::Decisions
         | ExportStream::Identity
@@ -124,10 +75,6 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
         | ExportStream::Completions => &[],
     }
 }
-
-// ───────────────────────────────────────────────────────────────────────────────────────────────
-// THE PROJECTION ITSELF
-// ───────────────────────────────────────────────────────────────────────────────────────────────
 
 /// One sink's PROJECTION: the streams it subscribes to and the fields it is granted, as two dense
 /// bitmasks. `Copy` and pointer-free, so the request-finish path reads it with an `AND`+compare.
@@ -141,9 +88,6 @@ pub(crate) struct Projection {
 }
 
 impl Projection {
-    /// Build a projection from an explicit stream + field set. Private-by-module on purpose: config
-    /// resolution ([`resolve_projection`]) is the only place a projection is minted, so a projection
-    /// can never be widened by a caller that "just needs one more field".
     fn from_parts(streams: &[ExportStream], fields: &[ExportField]) -> Projection {
         let mut p = Projection::default();
         for s in streams {
@@ -155,36 +99,26 @@ impl Projection {
         p
     }
 
-    /// A projection minted directly from parts, for tests only. Deliberately `#[cfg(test)]`: in a
-    /// real build the ONLY way to obtain a projection is [`resolve_projection`], which is what makes
-    /// "the operator grants, nothing else does" a structural property rather than a convention.
     #[cfg(test)]
     pub(crate) fn for_test(streams: &[ExportStream], fields: &[ExportField]) -> Projection {
         Projection::from_parts(streams, fields)
     }
 
-    /// Does this sink subscribe to `stream`?
     #[inline]
     pub(crate) fn wants_stream(self, stream: ExportStream) -> bool {
         self.streams & (1u16 << stream_bit(stream)) != 0
     }
 
-    /// Is `field` of `stream` granted to this sink? BOTH halves must hold — a field granted for one
-    /// stream must not leak in through another the sink did not subscribe to.
     #[inline]
     pub(crate) fn grants(self, stream: ExportStream, field: ExportField) -> bool {
         self.wants_stream(stream) && self.fields & (1u64 << field.bit()) != 0
     }
 
-    /// Nothing subscribed — the zero-cost default generation (no `export:` block at all). Read by
-    /// the tests only.
     #[cfg(test)]
     pub(crate) fn is_empty(self) -> bool {
         self.streams == 0
     }
 
-    /// The UNION of two projections. Used to build the compute gate; never to build a sink's own
-    /// projection (a sink's grant is exactly what its own config says).
     #[inline]
     pub(crate) fn union(self, other: Projection) -> Projection {
         Projection {
@@ -193,8 +127,6 @@ impl Projection {
         }
     }
 
-    /// The granted fields of `stream`, in the frozen catalog order — what the tests read a
-    /// projection back through (nothing in the shipped binary does).
     #[cfg(test)]
     pub(crate) fn granted_fields(self, stream: ExportStream) -> Vec<ExportField> {
         ExportField::ALL
@@ -205,8 +137,6 @@ impl Projection {
     }
 }
 
-/// A stream's bit position in [`Projection`]'s stream mask — its index in the frozen vocabulary, so
-/// the position is derived, never hand-assigned.
 fn stream_bit(stream: ExportStream) -> u16 {
     ExportStream::ALL
         .iter()
@@ -226,7 +156,6 @@ fn stream_bit(stream: ExportStream) -> u16 {
 pub(crate) struct ProjectionUnion(Projection);
 
 impl ProjectionUnion {
-    /// Fold every configured instance's projection into the generation's union.
     pub(crate) fn of<'a>(projections: impl IntoIterator<Item = &'a Projection>) -> ProjectionUnion {
         ProjectionUnion(
             projections
@@ -235,48 +164,25 @@ impl ProjectionUnion {
         )
     }
 
-    /// Does ANY configured sink subscribe to `stream`? The single check the hot path makes before
-    /// building a record for it.
     #[inline]
     pub(crate) fn wants_stream(self, stream: ExportStream) -> bool {
         self.0.wants_stream(stream)
     }
 
-    /// Nothing subscribed anywhere — the zero-cost default (read by the tests only).
     #[cfg(test)]
     pub(crate) fn is_empty(self) -> bool {
         self.0.is_empty()
     }
 }
 
-// ───────────────────────────────────────────────────────────────────────────────────────────────
-// THE ENFORCEMENT: a record that CANNOT carry an ungranted field
-// ───────────────────────────────────────────────────────────────────────────────────────────────
-
-/// A record being built TO A PROJECTION. **The only way to build an export payload in core.**
-///
-/// WHY THIS TYPE EXISTS RATHER THAN A `json!` LITERAL PLUS A FILTER. A filter is a step someone can
-/// forget, reorder, or short-circuit, and the failure mode is silent over-disclosure. Here the
-/// projection is a CONSTRUCTOR ARGUMENT and [`ProjectedRecord::set`] is the only writer: the field
-/// key is an [`ExportField`] (so a producer cannot invent a key as a string), the value is dropped
-/// unless the projection grants it, and the inner map is private with no way in. Writing the wrong
-/// thing is not merely untested — it does not typecheck. Same discipline as `config::migrate`'s
-/// `Taken<T>` (take-on-match, no `unwrap_or_default`) and the cache's generation guard.
-///
-/// A dropped write is NOT a silent failure of the kind this release keeps finding: the operator
-/// asked for exactly this by writing `fields:`, validation already refused every combination that
-/// would under-deliver a field they DID ask for (see [`resolve_projection`]), and the whole point of
-/// an exhaustive override is that what is not listed does not arrive.
 pub(crate) struct ProjectedRecord {
     projection: Projection,
     stream: ExportStream,
-    /// Private, and there is no constructor from a `Value`, no `DerefMut`, and no accessor — so
-    /// `set` is the only path by which a key can enter this map.
+
     fields: serde_json::Map<String, Value>,
 }
 
 impl ProjectedRecord {
-    /// Start a record for `stream`, bounded by `projection`.
     pub(crate) fn new(projection: Projection, stream: ExportStream) -> ProjectedRecord {
         ProjectedRecord {
             projection,
@@ -285,10 +191,6 @@ impl ProjectedRecord {
         }
     }
 
-    /// Offer `field` to the record. Written IFF the projection grants it for this record's stream;
-    /// otherwise the value is dropped here and never serialized. The value is computed by the caller
-    /// — this is the DISCLOSURE gate, not the COMPUTE gate (that one is [`ProjectionUnion`], read
-    /// before the producer runs at all).
     pub(crate) fn set(&mut self, field: ExportField, value: impl Into<Value>) -> &mut Self {
         if self.projection.grants(self.stream, field) {
             self.fields
@@ -297,27 +199,11 @@ impl ProjectedRecord {
         self
     }
 
-    /// Finish the record. Consumes the builder, so nothing can be added after the payload is taken.
     pub(crate) fn finish(self) -> Value {
         Value::Object(self.fields)
     }
 }
 
-// ───────────────────────────────────────────────────────────────────────────────────────────────
-// CONFIG RESOLUTION + VALIDATION
-// ───────────────────────────────────────────────────────────────────────────────────────────────
-
-/// Resolve ONE `export:` instance's `streams:` / `fields:` / `durable:` keys into its [`Projection`],
-/// accumulating every problem into `errors` (never short-circuiting, so `--validate` reports the
-/// whole config at once — the posture `resolve_export` takes everywhere else).
-///
-/// `name` is the instance name and `module` its `module:` value, both only for diagnostics;
-/// `module_carries` is the streams that module can carry (`None` ⇒ not yet known, no carry check).
-/// `streams`/`fields` are the RAW operator tokens: parsing happens here so every diagnostic is ours
-/// (serde's "unknown variant" could not say that `audit` was REMOVED and why).
-///
-/// Returns the projection to enforce. On error the returned projection is EMPTY — a config that
-/// failed validation never boots, and an empty projection grants nothing if it somehow did.
 pub(crate) fn resolve_projection(
     name: &str,
     module: &str,
@@ -329,8 +215,6 @@ pub(crate) fn resolve_projection(
 ) -> Projection {
     let before = errors.len();
 
-    // `durable:` — the KEY is part of the frozen surface but core does not spool. Accepting
-    // `true` would report success while quietly not taking effect, so it is a LOUD refusal.
     if durable {
         errors.push(format!(
             "export.{name}.durable: `true` is NOT YET IMPLEMENTED in this release — core does not \
@@ -340,16 +224,8 @@ pub(crate) fn resolve_projection(
         ));
     }
 
-    // ── streams: ────────────────────────────────────────────────────────────────────────────────
     let subscribed: Vec<ExportStream> = match stream_tokens {
-        None => {
-            // Absent ⇒ the module's own streams. NOT "nothing": an instance that subscribed to
-            // nothing would be a sink that validates and receives nothing, which is the shape this
-            // whole module exists to refuse. A module whose streams are not yet known (an export-axis
-            // module before its sink is opened and asked) provisionally takes every produced stream;
-            // the open resolves it again against what the sink declares.
-            module_carries.unwrap_or(PRODUCED_STREAMS).to_vec()
-        }
+        None => module_carries.unwrap_or(PRODUCED_STREAMS).to_vec(),
         Some([]) => {
             errors.push(format!(
                 "export.{name}.streams: is EMPTY — a sink that subscribes to no stream receives \
@@ -415,14 +291,7 @@ pub(crate) fn resolve_projection(
         }
     };
 
-    // ── fields: — the EXHAUSTIVE OVERRIDE ───────────────────────────────────────────────────────
     let granted: Vec<ExportField> = match fields {
-        // No override ⇒ the default projection: every subscribed stream's documented default field
-        // set, intersected with what this release actually produces.
-        //
-        // `traces` is granted its WHOLE documented set, which the kernel's traces producer (K9a S7,
-        // `crate::export::traces`) fills from the span. `produced_fields(traces)` stays empty on
-        // purpose: it is what a `fields:` override may name, and its refusals keep their words.
         None => subscribed
             .iter()
             .flat_map(|s| match s {
@@ -440,8 +309,6 @@ pub(crate) fn resolve_projection(
     Projection::from_parts(&subscribed, &granted)
 }
 
-/// The `fields:` half of [`resolve_projection`]. Split out because it carries the pinned-field rule,
-/// which is the subtle part: `fields:` bounds DISCLOSURE and must NOT be able to break STRUCTURE.
 fn resolve_fields_override(
     name: &str,
     list: &[String],
@@ -457,10 +324,6 @@ fn resolve_fields_override(
         return Vec::new();
     }
 
-    // A stream whose PINNED fields this release cannot yet produce cannot be projected with
-    // `fields:` at all: the rule would demand a field, and the producer cannot supply it. Refusing
-    // here — once, with both halves of the reason — beats letting the operator discover it as a
-    // contradictory pair of errors, and beats the alternative of quietly not enforcing the pin.
     let mut blocked = false;
     for s in subscribed {
         if s.default_fields().is_empty() {
@@ -533,10 +396,6 @@ fn resolve_fields_override(
         granted.push(field);
     }
 
-    // THE PINNED-FIELD RULE. `fields:` bounds DISCLOSURE; it must not break STRUCTURE. Omitting a
-    // pinned field would let an operator configure records that look complete and cannot be
-    // reassembled into a request (or, on `events`, a chain with no link to verify) — so it is a
-    // config error with the reason attached, never a silent no-op that "helpfully" adds it back.
     if !blocked {
         for s in subscribed {
             for pinned in s.pinned_fields() {
@@ -558,8 +417,6 @@ fn resolve_fields_override(
     granted
 }
 
-/// Why a given field is pinned — the REASON half of the pinned-field error, so the operator learns
-/// the rule from the message instead of being told "no".
 fn pinned_reason(field: ExportField) -> &'static str {
     match field {
         ExportField::CorrelationId => {
@@ -578,7 +435,6 @@ fn pinned_reason(field: ExportField) -> &'static str {
     }
 }
 
-/// Render a stream list as its tokens, for a diagnostic.
 fn tokens(streams: &[ExportStream]) -> String {
     streams
         .iter()
@@ -587,7 +443,6 @@ fn tokens(streams: &[ExportStream]) -> String {
         .join(" | ")
 }
 
-/// Render every field the subscribed streams document, deduplicated in catalog order.
 fn subscribed_field_tokens(subscribed: &[ExportStream]) -> String {
     ExportField::ALL
         .iter()

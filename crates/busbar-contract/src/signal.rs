@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The "decision observability" signal CATALOG: a single, append-only
-//! enumeration of every observable busbar can produce about a request/decision/outcome, plus the
-//! compact wire value type and bag it rides the hook projections in. Lives here
-//! (`busbar-contract`) — not a new crate, and no longer in the retiring `busbar-api` (DECISIONS
-//! #84) — because the catalog is a SHAPE in the #83(d) sense: [`Signal::name`] is the wire and
-//! config key, and every honest implementation must spell `candidate_breaker_state` byte-for-byte
-//! or a declared-signal bag does not round-trip. The plugin ABI (`abi::cold`) and its SDK (`abi::sdk`,
-//! both merged into this crate by #84) re-export [`Signal`] wholesale, so a hook-plugin author names
-//! `Signal::CandidateBreakerState` at compile time from the one crate a plugin depends on.
-//! The catalog names NOTHING of the engine: the projections that carry a `signals` field
-//! (`RoutingRequest`, `Candidate`) name IT, never the reverse — a direction this crate's dependency
-//! policy makes structural rather than conventional.
-//!
-//! ADDITIVE BY CONSTRUCTION: [`Signal`] is `#[non_exhaustive]` (a new variant never breaks an
-//! exhaustive `match` in an out-of-tree consumer — there can be none, since the type forbids one),
-//! and every projection's `signals` bag is OMITTED from the wire entirely when no consumer
-//! declared anything (see `busbar::hooks::wire`'s `#[serde(flatten)]` field) — a busbar binary
-//! that ships a new catalog entry changes nothing for a hook that never asked for it.
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -43,7 +26,6 @@ use std::borrow::Cow;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Signal {
-    // ── Request phase (available from the pristine ingress body, pre-forward) ──────────────────
     /// The model the caller asked for. Catalog form of the RESERVED `RoutingRequest::requested_model`
     /// core field — still projected as a core field today (this design does not migrate any
     /// existing core field, see the module doc); listed here so a future outcome/log consumer can
@@ -60,7 +42,6 @@ pub enum Signal {
     /// System-prompt-only chars. Catalog form of the RESERVED `RoutingRequest::system_chars` field.
     RequestSystemChars,
 
-    // ── Candidate phase (per-candidate, read from already-maintained store state) ───────────────
     /// The circuit breaker's current FSM state for this candidate lane in this pool
     /// (`closed`/`open`/`half_open`) — a PURE projection of an already-maintained atomic (no new
     /// tracking; see `busbar::store::LaneRuntime::breaker_state_snapshot_in`). O(1), always
@@ -81,13 +62,11 @@ pub enum Signal {
     /// `fastest` policy reads, a p95 surfaces the slow tail.
     CandidateLatencyP95Ms,
 
-    // ── Routing phase (known once the policy has decided) ───────────────────────────────────────
     /// The resolved policy's stable name (`policy.name()` — already a `&'static str` in hand at
     /// decision time; free to project). Reserved for the request-log/decision-observability
     /// consumer, which is not wired yet.
     RoutingPolicy,
 
-    // ── Response phase (known once the upstream response completes) ────────────────────────────
     /// Output token count: the unit's reported output units, projected onto the `response`
     /// stage tap. Present when the tap has read a usage by the time that stage fires (every
     /// buffered answer); absent on a stream still flowing at head time and on a transfer that
@@ -115,8 +94,7 @@ impl Signal {
     ];
 
     /// The stable wire/config key for this signal — snake_case, matching the `#[serde(rename_all =
-    /// "snake_case")]` derive above exactly (pinned by a same-crate test), so a hand-written match
-    /// arm can never silently drift from the derived (de)serialization.
+
     pub fn name(self) -> &'static str {
         match self {
             Signal::RequestedModel => "requested_model",
@@ -134,7 +112,7 @@ impl Signal {
     }
 
     /// A dense, stable bit position for this signal — the `RequestedSignals` bitmask's index.
-    /// Ordinal into [`Signal::ALL`], not the enum's discriminant.
+
     pub fn bit(self) -> u32 {
         Self::ALL
             .iter()
@@ -180,9 +158,7 @@ impl Serialize for SignalValue {
 }
 
 /// The inline-capacity-4 backing store: the common case (0-4 signals declared for a given
-/// projection) never spills to the heap. `4` covers every signal this catalog currently wires for
-/// a single phase with room to spare; growing the catalog past 4 declared-at-once entries for one
-/// projection only costs a heap spill, never a contract change.
+
 type SignalBagInner = smallvec::SmallVec<[(Signal, SignalValue); 4]>;
 
 /// The signal bag a projection (`RoutingRequest`, `Candidate`, and the response stage tap's
@@ -213,13 +189,13 @@ impl SignalBag {
     }
 
     /// Insert one signal's value. Optional telemetry is computed only when requested; the
-    /// routing-cost recipe accompanies the candidate's existing price projection.
+
     pub fn push(&mut self, signal: Signal, value: SignalValue) {
         self.0.push((signal, value));
     }
 
     /// Read back a previously-pushed value (test/debug convenience; the wire never round-trips
-    /// through this — it serializes straight from `iter`).
+
     pub fn get(&self, signal: Signal) -> Option<&SignalValue> {
         self.0.iter().find(|(s, _)| *s == signal).map(|(_, v)| v)
     }
@@ -230,8 +206,7 @@ impl SignalBag {
     }
 
     /// Whether the bag has spilled its inline `SmallVec` capacity onto the heap. Test/proof aid
-    /// for the "the default (nothing declared) path never allocates" guarantee: an empty or
-    /// small (≤4) bag is always `false`.
+
     pub fn spilled(&self) -> bool {
         self.0.spilled()
     }

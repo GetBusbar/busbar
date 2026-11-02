@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PATH'S MONEY, WHERE THE NODE'S LEGACY ANSWER PATH WAS THE ONLY WITNESS. Each cell here
-//! is the door-path successor of one money test in `root/tests/plane_node.rs` (the node's legacy
-//! answer path, deleted by #1161), driven end to end through the door serving the `pools` map
-//! (`super::super::hook_seat_tests::rig`): a keyed caller through the data router, the kernel's
-//! steps, the model-serving walk to a loopback far end, and the money steps on the governance
-//! book. Every expected value is the original's literal or the 1.5.5 behaviour the
-//! original pinned, and each cell names its original.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -22,12 +14,10 @@ use super::super::hook_seat_tests::{
 use super::super::planes_tests::PUBLISHING;
 use super::{frame, stream_pausing, streamed_chat, STREAM_HEAD};
 
-/// The store's clock.
 fn now() -> u64 {
     busbar_kernel::store::now()
 }
 
-/// A recording far end answering its requests with `replies`, in order.
 async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
     let state = Arc::new(MockServerState::new());
     for reply in replies.into_iter().rev() {
@@ -37,7 +27,6 @@ async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) 
     (state, server)
 }
 
-/// One group limit of `amount` `metric` per `per`.
 fn limit(metric: LimitMetric, amount: u64, per: LimitWindow) -> LimitCfg {
     LimitCfg {
         metric,
@@ -51,8 +40,6 @@ fn limit(metric: LimitMetric, amount: u64, per: LimitWindow) -> LimitCfg {
     }
 }
 
-/// One request through the door as the keyed caller, its body sent as these very bytes: its
-/// status.
 async fn send_bytes(rig: &DoorRig, path: &str, body: &str) -> u16 {
     use tower::ServiceExt as _;
     let req = axum::http::Request::builder()
@@ -73,8 +60,6 @@ async fn send_bytes(rig: &DoorRig, path: &str, body: &str) -> u16 {
     status
 }
 
-/// The key's metering rows in the bucket `at` falls in, once flushed: `model/provider in= out= cr=
-/// cw= req= billable=`, one line per row, as `plane_node.rs`'s `observe` spelled them.
 fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
     rig.gov.flush_metering();
     rig.gov
@@ -98,7 +83,6 @@ fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
         .collect()
 }
 
-/// The key's all-time derived spend in cents on the governance book (`Err`: the read refused).
 fn key_spend(rig: &DoorRig) -> Result<i64, String> {
     rig.gov
         .usage_for(&rig.app.cost, &rig.key_id, now())
@@ -106,20 +90,10 @@ fn key_spend(rig: &DoorRig) -> Result<i64, String> {
         .map_err(|refusal| format!("{refusal:?}"))
 }
 
-/// A rate card of one entry, `m0`, as the deployment writes it.
 fn card_of(entry: &str) -> BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
     serde_yaml::from_str(&format!("m0: {entry}\n")).expect("the card parses")
 }
 
-// ── GAP 1: a pre-routing refusal leaves a prior charge intact ──────────────────────────────────
-
-/// A PRE-ROUTING REFUSAL ON THE DOOR NEVER REFUNDS A PRIOR CHARGE. Door successor of
-/// `plane_node.rs::a_pre_routing_refusal_leaves_a_prior_charge_intact`. 1.5.5 behaviour, as the original pinned it: a key carrying one legitimately
-/// charged request (one 1-cent flat fee, admitted on the real admission charge) sends a body that
-/// is not JSON; it is refused 400 before any model resolves, was never charged, so refunds nothing:
-/// the prior request and its fee stay on the key's bucket (requests 1, spend 1 cent).
-///
-/// RED: the 400 finished through the refunding arm and eroded the prior charge.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal() {
     let _one = PUBLISHING.lock().await;
@@ -147,7 +121,7 @@ async fn the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal() {
         400,
         "a malformed body is a pre-routing 400"
     );
-    // A refund, were there one, settles at the unit's end: give it the time to land.
+
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let (requests, spend, _, billable) = rig.ledger_after(1).await;
     assert_eq!(
@@ -162,16 +136,6 @@ async fn the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal() {
     assert_eq!(far.served(), 0, "the refused body was never dialled");
 }
 
-// ── GAP 3: an aliased lane prices at the rate card of its config name ─────────────────────────
-
-/// AN ALIASED LANE PRICES AT THE RATE CARD UNDER ITS CONFIG NAME, ON THE DOOR. Door successor of
-/// `plane_node.rs::an_aliased_lane_prices_at_the_rate_card_under_its_config_name`.
-/// 1.5.5 behaviour, as the original pinned it: the card is keyed by the CONFIG model name; a lane
-/// whose `upstream_model` differs is sent the wire name but ledgered and priced under its config
-/// name, so 600 input and 400 output tokens at 1,000 micro-units each land as 1,000 tokens on the
-/// key's group bucket and derive 100 cents against the card (no request fee).
-///
-/// RED: the accrual keyed by the wire model, which the card cannot name: the spend derives 0.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
     const WIRE: &str = "m0-on-the-wire";
@@ -235,22 +199,8 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
     );
 }
 
-// ── GAP 4: the tap reports the end a status line cannot carry ─────────────────────────────────
-
-/// The first frame of the streamed answer: one content delta, no usage (the original's
-/// `FIRST_FRAME`).
 const FIRST_FRAME: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}"#;
 
-/// THE DOOR'S REPORT CARRIES THE END A STATUS LINE CANNOT. Door successor of
-/// `plane_node.rs::the_tap_reports_the_end_a_status_line_cannot`. 1.5.5 behaviour, as the original pinned it for its two fixtures (a 2xx stream cut after
-/// one content frame, and a 2xx transfer that failed before its first byte): both answer the caller
-/// under a 200 status line and neither completes, so the caller holds the cut (the one relayed
-/// frame, no terminator) or nothing; and the key's ledger holds no tokens. The plane ledgered nothing, so nothing bills:
-/// the 2xx end's one metering row carries no token (owner ruling 2026-10-20: the plane's ledger is
-/// final, cut or not; a cut does not drop the row).
-///
-/// RED: tokens that never streamed, a terminator the far end never reached, or a metering row
-/// carrying a token that never streamed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
     use http_body_util::BodyExt as _;
@@ -324,20 +274,8 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
     }
 }
 
-/// The first frame of a streamed answer that carries its content, its stop and its usage together:
-/// 600 input and 400 output tokens, the 1,000 the plane ledgers before the far end cuts. The usage
-/// rides the stop: the chat dialect's reader takes a content chunk's `usage` only with its
-/// `finish_reason` (or on a usage-only chunk).
 const FIRST_FRAME_WITH_USAGE: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":600,"completion_tokens":400,"total_tokens":1000}}"#;
 
-/// A STREAM ITS FAR END CUT AFTER ITS FIRST FRAME BILLS WHAT ITS PLANE LEDGERED. The far
-/// end streams one frame carrying 600 input and 400 output tokens under a 200 head, then cuts the
-/// stream before its end. The plane ledgered those 1,000 tokens, so the door takes that ledger as
-/// final: the key's ledger holds the 1,000 tokens, its group's spend derives 100 cents against
-/// the card (1,000 micro-units a token, no request fee), and one metering row carries 600 in and
-/// 400 out. Core does not override the plane's ledger because of the cut or the caller's status.
-///
-/// RED: the cut stream's ledgered tokens dropped, its charge withheld, or its metering row skipped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its_first_frame() {
     let _one = PUBLISHING.lock().await;
@@ -398,13 +336,8 @@ async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its
     );
 }
 
-// ── GAP 6: rerank pricing ────────────────────────────────────────────────────────
-
-/// The open class a rerank's far end bills (`plane_node.rs`'s `SEARCH_UNITS`).
 const SEARCH_UNITS: &str = "search_units";
 
-/// The rerank card pinned at the door: `m0` pricing `search_units` at 2,000,000 nano-units (2,000
-/// micro-units) each, no fee (`plane_node.rs`'s `rerank_history_on(lane, 0, Some(2_000_000))`).
 static RERANK_CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
         use busbar_kernel_ledger::cost::{LaneClass, RateCard};
@@ -433,14 +366,6 @@ fn rerank_pin() -> Option<crate::root::kernel::PinnedHistory> {
     RERANK_CARD.pin()
 }
 
-/// A RERANK'S SEARCH UNITS REACH THE PRICE, THROUGH THE DOOR. Door successor of
-/// `plane_node.rs::a_reranks_search_units_reach_the_price_on_both_books` and of the unbilled arm of `a_same_dialect_rerank_puts_identical_search_units_on_both_books`.
-/// 1.5.5 behaviour, as the originals pinned it: a card pricing `search_units` at 2,000 micro-units
-/// (0.2 cents) each derives 10 cents for 50 units and 0 cents for 1 unit (one unit rounds to
-/// nothing); a rerank whose far end bills no units derives 0 cents.
-///
-/// RED: the search units dropped or priced as a flat request (10 cents read 0), or one unit
-/// rounded up.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_prices_a_reranks_search_units() {
     let _one = PUBLISHING.lock().await;
@@ -485,9 +410,6 @@ async fn the_pools_door_prices_a_reranks_search_units() {
         );
         assert_eq!(far.served(), 1, "{units:?} units: dialled once");
 
-        // Admission's billable count precedes settlement. The metered request does not:
-        // PlaneMoney::bill records usage before record_lane_metering adds this request, even
-        // when the delivered answer reports no units. Observe that positive witness first.
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 rig.gov.flush_metering();
@@ -518,18 +440,6 @@ async fn the_pools_door_prices_a_reranks_search_units() {
     }
 }
 
-// ── STRENGTHENED: the flat fee is a client's fee ───────────────────────────────────────────────
-
-/// A CLIENT'S DELIVERED REQUEST ON THE DOOR PAYS EXACTLY ONE FLAT FEE. Door successor of the
-/// client half of `plane_node.rs::a_provider_origin_unit_posts_no_flat_fee` (its provider half is
-/// the door's probe unit: `busbar-kernel` `plane_driver/tests/probe_unit_tests.rs`
-/// `a_probe_recovers_a_tripped_member` asserts a probe makes no money call at all, "zero-billed",
-/// though its plane reported units). The original's literal: a client's delivered request pays the
-/// one flat per-request fee (`fee_units == 1`). On the door that is the fee unit the plane reported
-/// on the unit's line (`fee_count == 1`), the one billable request on the key and the key's 1-cent
-/// spend.
-///
-/// RED: no fee unit on a delivered client request, or a second one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_charges_a_client_request_exactly_one_flat_fee() {
     let _one = PUBLISHING.lock().await;
@@ -552,16 +462,6 @@ async fn the_pools_door_charges_a_client_request_exactly_one_flat_fee() {
     );
 }
 
-// ── STRENGTHENED: a caller that hangs up mid-dispatch keeps its fee charged ────────────────────
-
-/// A CALLER THAT HANGS UP MID-DISPATCH KEEPS ITS FLAT FEE CHARGED, ON THE DOOR. Door successor of
-/// `plane_node.rs::a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged` (MONEY-AUDIT
-/// C-F1, spec §7 F13). The far end answers its head and holds its body, so the unit is parked
-/// reading it; the caller's request future is dropped there. 1.5.5's dropped request never reached
-/// the non-2xx refund, so, as the original pinned: the door drew the admission slot (requests 1)
-/// and the 1-cent fee stays charged.
-///
-/// RED: the abandoned end finished as a non-2xx no client saw, and its refund took the fee back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_keeps_the_fee_of_a_caller_that_hung_up_mid_dispatch() {
     let _one = PUBLISHING.lock().await;
@@ -592,7 +492,7 @@ async fn the_pools_door_keeps_the_fee_of_a_caller_that_hung_up_mid_dispatch() {
         () = started.notified() => {}
     }
     release.notify_one();
-    // The abandoned end settles once the unit's future is gone: give it the time to land.
+
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let (requests, spend, _, _) = rig.ledger_after(1).await;
     assert_eq!(requests, 1, "the door drew the admission slot");
@@ -602,10 +502,6 @@ async fn the_pools_door_keeps_the_fee_of_a_caller_that_hung_up_mid_dispatch() {
     );
 }
 
-// ── STRENGTHENED: billing off serves free, writes its row, still governs ──────────────────────
-
-/// One streamed chat (11 in, 7 out) through a door priced by `rate_card`: its status, the key's
-/// spend in cents, and the key's metering rows.
 async fn served_streamed(
     instance: &'static str,
     rate_card: Option<&BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
@@ -633,16 +529,6 @@ async fn served_streamed(
     (status, spend, metering_rows(&rig, charged_at))
 }
 
-/// BILLING OFF SERVES FREE, WRITES ITS METERING ROW, YET STILL GOVERNS, ON THE DOOR. Door
-/// successor of `plane_node.rs::billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_governs`
-/// (W3.c, DECISIONS #42 + #43). As the original pinned: with no `rate_card:` a delivered request is
-/// served 200 and writes the plane's counts as its metering row (11 in, 7 out, cache 0 and 0,
-/// requests 1, billable 1); the money view reads them as 0, so the key's spend is the 1-cent flat
-/// fee alone; the same request on a billed door writes the identical row; and a pool-ACL guard
-/// still refuses with billing off, charging nothing and metering nothing.
-///
-/// RED: billing off refusing to serve, writing no row (or another row than billed), pricing the
-/// tokens, or skipping governance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_serves_free_with_billing_off_writes_its_row_and_still_governs() {
     let _one = PUBLISHING.lock().await;
@@ -691,18 +577,6 @@ async fn the_pools_door_serves_free_with_billing_off_writes_its_row_and_still_go
     assert_eq!(far.served(), 0);
 }
 
-// ── STRENGTHENED: the unit is attributed to what the door resolved, and to nothing else ────────
-
-/// THE DOOR ATTRIBUTES THE IDENTITY ITS AUTH RESOLVED AND INVENTS NONE. Door successor of
-/// `plane_node.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none`. Three
-/// credentials through the deployment's own data door: the live bearer is admitted, its unit is
-/// charged to that key (requests 1); a bearer this deployment never minted and a bearer whose lifetime has run out are
-/// both refused at the door (401, the chat dialect's `invalid_api_key` refusal the wrong-key door
-/// cells pin), so no unit exists: nothing is dialled, no line or record is written for either, and
-/// the expired key's own ledger stays empty.
-///
-/// RED: a refused credential admitted, a unit charged to a key nobody presented, or a line
-/// attributed to anything but the resolved key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_none() {
     let _one = PUBLISHING.lock().await;
@@ -717,13 +591,11 @@ async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_no
     )
     .await;
 
-    // THE LIVE BEARER: admitted, and the unit is the resolved key's.
     assert_eq!(rig.chat().await.0, 200, "the deployment's own bearer");
     let (requests, _, _, _) = rig.ledger_after(1).await;
     assert_eq!(requests, 1, "the admitted unit was charged to the key");
     let records = rig.audit_records();
 
-    // A BEARER THIS DEPLOYMENT NEVER MINTED.
     let chat = serde_json::json!({"model": "p", "max_tokens": 16,
         "messages": [{"role": "user", "content": "hi"}]});
     let (bad, _, _) = rig
@@ -736,8 +608,6 @@ async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_no
         .await;
     assert_eq!(bad, 401, "a bearer never minted is refused at the door");
 
-    // A BEARER WHOSE LIFETIME HAS RUN OUT, minted on this deployment's own book for a key of its
-    // own, so a unit attributed to it would be visible on that key.
     let (expired_key, expired_token) = rig
         .gov
         .mint_signed(
@@ -790,21 +660,6 @@ async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_no
     assert_eq!(requests, 1, "nor to the live key a second time");
 }
 
-// ── STRENGTHENED: a gate stops a unit, and a gate that passes changes nothing ─────────────────
-
-/// A GATE THAT VETOES STOPS THE UNIT; A GATE THAT PASSES IS ASKED AND CHANGES NOTHING, ON THE
-/// DOOR. Door successor of
-/// `plane_node.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing`.
-/// The original's native seat list is empty on the live mount (its first assertion), because the
-/// migrated gates fire AFTER the door, as 1.5.5's did (v1.5.5 `ingress/dispatch.rs` admits and
-/// charges before `proxy/engine/mod.rs:946` runs the gates; the door's seat order cell
-/// `serve_hook_seats.rs::migrated_request_hook_seats_after_admit_before_candidate`). So, on the
-/// door, as the original pinned for both shapes: a vetoing gate is asked, the unit answers the
-/// gate's 451, the upstream is never dialled and no metering row is written, its admission kept
-/// and its fee refunded (spend 0, billable 0); a gate that does not veto is asked too, and the unit
-/// goes on to the same served end (200, one far-end dial, one billable request).
-///
-/// RED: a veto that reached the far end or kept its fee, or a passing gate never consulted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing() {
     let _one = PUBLISHING.lock().await;
@@ -853,18 +708,6 @@ async fn the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing() 
     }
 }
 
-// ── STRENGTHENED: the far end is reached once by a served unit, never by a refused one ─────────
-
-/// A SERVED UNIT REACHES ITS FAR END EXACTLY ONCE; A REFUSED ONE NEVER DOES, ON THE DOOR. Door
-/// successor of `plane_node.rs::the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one`.
-/// Three ends, three counts, each on its own deployment: refused at the pool-ACL guard before the
-/// door (0), refused at the door for a spent budget (0), and served through the whole walk
-/// (exactly 1: a second dial of one unit is a request the client sent once and the upstream saw
-/// twice). Each unit produces a status. On the door the witness is the far end's own count (the
-/// original's second witness); the node's dispatch count is reached only from its legacy answer
-/// path.
-///
-/// RED: a refusal that dialled, or a served unit dialled twice or never.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_dials_a_served_unit_once_and_a_refused_one_never() {
     let _one = PUBLISHING.lock().await;

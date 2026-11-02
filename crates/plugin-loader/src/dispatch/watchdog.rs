@@ -31,8 +31,6 @@ use busbar_contract::abi::mechanism::call::DeadlineClass;
 use super::plugin::Instance;
 use super::worker::{spawn_worker, Pool, Worker};
 
-/// Count one breach against `inst`; quarantine it on the pool's Nth. `true` when the instance is
-/// quarantined now (by this breach or an earlier one).
 fn breach(pool: &Pool, inst: &Instance) -> bool {
     let n = inst
         .breaches
@@ -57,12 +55,11 @@ fn breach(pool: &Pool, inst: &Instance) -> bool {
             "plugin quarantined: every new call answers FAULT without a crossing"
         );
     }
-    // A quarantine is a FAULT AND REVOKE (#74): its handle names nothing any more.
+
     inst.revoke();
     true
 }
 
-/// Start the watchdog of `pool`; it ends when the pool does.
 pub(crate) fn spawn(pool: Weak<Pool>, period: Duration) {
     std::thread::Builder::new()
         .name("busbar-dispatch-watchdog".into())
@@ -91,8 +88,6 @@ fn scan(pool: &Pool) {
     ticketless(pool);
 }
 
-/// The ticket-less crossings of every adopted instance: one past its budget faults its instance
-/// (a caller's thread cannot be replaced; the instance is never called again).
 fn ticketless(pool: &Pool) {
     let mut adopted = pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
     adopted.retain(|w| w.strong_count() > 0);
@@ -102,8 +97,6 @@ fn ticketless(pool: &Pool) {
         .collect();
     drop(adopted);
     for inst in live {
-        // Budgets differ by slot, so call-id order is not deadline order. Mark each live call
-        // under the same lock that removes it on return; its mark dies with the call.
         let fresh = {
             let mut calls = inst.lock_calls();
             let mut fresh = 0;
@@ -122,15 +115,12 @@ fn ticketless(pool: &Pool) {
         }
         if quarantined {
             inst.wake.exports.wake_waiters(inst.wake);
-            // A quarantined instance never crosses again: what it holds goes now.
+
             inst.let_go_held();
         }
     }
 }
 
-/// Replace worker `i` if it is STILL inside the crossing that began at `started` (its
-/// [`super::now_ns`]): re-checked under the state lock, which the worker takes back only after it
-/// cleared the start, so a crossing that returned meanwhile is never faulted.
 fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
     let (gone, gens, breached, quarantined) = {
         let mut st = old.lock();
@@ -142,7 +132,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
         };
         let quarantined = breach(pool, &breached);
         st.dead = true;
-        // Every slot's next mint counter; a spent one RETIRED (`None`), never handed out again.
+
         let gens: Vec<Option<u32>> = st
             .entries
             .iter()
@@ -150,7 +140,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
             .collect();
         (Worker::fault_all(&mut st), gens, breached, quarantined)
     };
-    // A quarantined instance never crosses again: what it holds goes now, outside the locks.
+
     if quarantined {
         breached.wake.exports.wake_waiters(breached.wake);
         breached.let_go_held();
@@ -167,13 +157,9 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
         .unwrap_or_else(|e| e.into_inner()) = w.clone();
     pool.env.stats.replacements.fetch_add(1, Ordering::Relaxed);
     spawn_worker(w, rx, pool.env.clone());
-    // Only now, with the fresh worker serving: every `Meta` settles its reply as FAULT as it drops
-    // and gives back what it held, so a caller that sees the FAULT finds the new worker in place.
+
     drop(gone);
-    // A healthy instance's pending op is told it ended (`cancel`) before its frame and lent memory
-    // go: off the watchdog's thread, so a `cancel` that hangs never stops the watchdog (the
-    // ticket-less watch judges it). A failed OS thread spawn must retain these still-lent
-    // ranges: no native closing callback has returned to release them.
+
     if !orphans.is_empty() {
         let retained = Arc::new(std::sync::Mutex::new(Some(orphans)));
         let crossing = Arc::clone(&retained);
@@ -188,9 +174,6 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
         if spawned.is_err() {
             let batch = retained.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(mut batch) = batch {
-                // The batch lock is gone before reply/waker callbacks. Keep the frames and
-                // admission counts forever on this exceptional path rather than free raw
-                // ranges the plugin still owns. Faulted callers cannot mistake them for READY.
                 for orphan in &mut batch {
                     orphan.fault_replies();
                 }

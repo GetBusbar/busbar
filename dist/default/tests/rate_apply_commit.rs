@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RATE-APPLY SEAM IS RAISED AT THE COMMIT, NEVER DURING THE BUILD (#79).
-//!
-//! The seam's holder appends the applied rates to the dated rate-card history and journals them.
-//! An admin apply builds the next `App` first and persists after; a persist that fails aborts the
-//! transaction with "nothing was changed", and the build's uncommitted handle is dropped. Raised
-//! during the build, the rates of that rejected apply had already entered the history and the
-//! journal. So the seam rides the same commit the process-wide limits do: `InstalledLimits::keep`.
-//!
-//! A test BINARY of its own, because the rate holder this file hands in is process-wide.
-//!
-//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation: core names zero plane types, its tests included): its config names a provider, whose dialect only a real plane declares, and the
-//! composition root is where a plane may be linked.
-
 mod linked;
 
 use std::sync::Mutex;
@@ -21,8 +8,6 @@ use std::sync::Mutex;
 use busbar_kernel::rate_apply::{RateApply, RawRates};
 use busbar_kernel_testkit::test_support::rate_holders::install_rate_apply;
 
-/// The holder, writing down the flat figure of every apply it hears — the only writer of the dated
-/// history and of the journal, so what it never hears neither of them holds.
 struct Recorder(Mutex<Vec<i64>>);
 
 impl RateApply for Recorder {
@@ -56,9 +41,6 @@ fn build(
     .expect("the app builds")
 }
 
-/// An apply whose persist fails drops the build's handle unkept: the holder hears nothing, so the
-/// dated history and the journal are exactly as they were. The apply that commits is heard once,
-/// at its commit, with its own figures.
 #[test]
 fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_once() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -66,7 +48,6 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
     let recorder: &'static Recorder = Box::leak(Box::new(Recorder(Mutex::new(Vec::new()))));
     install_rate_apply(recorder);
 
-    // THE PERSIST FAILED: the transaction never reaches its commit and the handle falls out of scope.
     let (_app, _rotate, limits) = build(424_242);
     drop(limits);
     assert_eq!(
@@ -75,7 +56,6 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
         "an apply that never committed entered the dated history and the journal"
     );
 
-    // THE APPLY LANDED: persist and swap both `Ok`, and the commit keeps it.
     let (_app, _rotate, limits) = build(515_151);
     assert_eq!(
         *recorder.0.lock().unwrap(),

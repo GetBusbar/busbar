@@ -1,28 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLUGIN-LOGGING WITNESS — a door-macro plugin that logs.
-//!
-//! Two plugins over the lifecycle table only, [`a`] and [`b`], each its own `plugin_door!` and so
-//! its own call capture. `tick` is the test's side door: the `in`'s extensions blob names what the
-//! call does.
-//!
-//! * [`LOG`] — logs through `tracing` and through `log`, from this crate and from two libraries
-//!   inside it: `h2` (`tracing`), driving a client handshake over an in-memory pipe, and
-//!   `tungstenite` (`log`), sending a frame into a buffer.
-//! * `log:<label>` — the same script with a caller-supplied label in its warning, so a test can
-//!   identify its own dropped plugin's message in the shared host log.
-//! * [`FLOOD`] — more records than one reply may carry.
-//! * [`OUTSIDE`] — writes straight to standard error, and logs from a thread of its own, both
-//!   outside any capture: neither may reach the plugin's log file.
-//! * [`NEST`] (plugin [`a`] only) — logs, calls plugin [`b`]'s `tick` on the same thread (which
-//!   logs), then logs again: each plugin image's capture must keep its own records.
-//!
-//! One source, compiled into plugin-loader's test build as a module (the LINKED door) and built
-//! as the `log_witness_door` example cdylib behind one `export_door!` line (the DROPPED door); the
-//! two plugin log files must be byte-identical. The two builds place this source under different
-//! module paths, so the witness's own records name one explicit target, [`TARGET`]; a real plugin
-//! is one crate in both builds and needs none. The libraries' records carry their own targets.
 #![allow(dead_code)]
 
 use std::ffi::c_void;
@@ -36,22 +14,18 @@ use busbar_contract::abi::mechanism::lifecycle::{
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::door::{KindOps, RawSlot};
 
-/// The target the witness's own records carry.
 pub const TARGET: &str = "log_witness";
 
-/// The witness's kind code: a lifecycle-only table under a real kind's code, as the dispatcher's
-/// own test plugin does.
 pub const KIND: KindCode = KindCode::Export;
 
-/// `tick` mode: log from the plugin and from the libraries inside it.
 pub const LOG: &[u8] = b"log";
-/// `tick` mode: log more than one reply may carry.
+
 pub const FLOOD: &[u8] = b"flood";
-/// How many records [`FLOOD`] logs.
+
 pub const FLOOD_RECORDS: usize = 300;
-/// `tick` mode: write outside any capture.
+
 pub const OUTSIDE: &[u8] = b"outside";
-/// `tick` mode (plugin [`a`]): log around a nested call of plugin [`b`].
+
 pub const NEST: &[u8] = b"nest";
 
 /// The lifecycle-only table both plugins answer.
@@ -67,7 +41,6 @@ unsafe impl KindOps for Ops {
     type Lifecycle = busbar_contract::abi::sdk::door::Lifecycle;
 }
 
-/// The `tick` mode the `in` names.
 fn mode(input: &TickIn) -> &[u8] {
     let b = input.head.extensions;
     if b.ptr.is_null() || b.fmt != BLOB_OCTETS {
@@ -77,16 +50,15 @@ fn mode(input: &TickIn) -> &[u8] {
     unsafe { std::slice::from_raw_parts(b.ptr, b.len) }
 }
 
-/// Log through `tracing` and `log`, from here and from `h2` and `tungstenite`.
 fn log_everything(who: &str) {
     tracing::info!(target: TARGET, who, calls = 1, "tracing from the plugin");
     tracing::debug!(target: TARGET, "tracing at debug from the plugin");
     log::warn!(target: TARGET, "log from the plugin, {who}");
     log::trace!(target: TARGET, "log at trace from the plugin");
-    // `h2` logs through `tracing` while it binds a client connection.
+
     let (client, _server) = tokio::io::duplex(64 * 1024);
     let _ = futures::executor::block_on(h2::client::handshake(client));
-    // `tungstenite` logs through `log` as it sends a frame.
+
     let mut socket = tungstenite::protocol::WebSocket::from_raw_socket(
         std::io::Cursor::new(Vec::new()),
         tungstenite::protocol::Role::Server,
@@ -95,7 +67,6 @@ fn log_everything(who: &str) {
     let _ = socket.send(tungstenite::Message::text("witness"));
 }
 
-/// Write to standard error, and log from a thread of the plugin's own: outside every capture.
 fn log_outside() {
     eprintln!("witness: straight to standard error");
     let _ = std::thread::spawn(|| {
@@ -105,7 +76,6 @@ fn log_outside() {
     .join();
 }
 
-/// Call plugin [`b`]'s `tick` directly, on this thread, with `mode`.
 fn call_b(mode: &'static [u8]) {
     // SAFETY: `b::door` answers a static complete lifecycle table, immutable for the process.
     let ops = unsafe { *b::door().ops() };
@@ -181,7 +151,6 @@ macro_rules! ready {
     };
 }
 
-/// `open`: a non-NULL instance; the witness keeps no state in it.
 struct Open;
 impl RawSlot for Open {
     type In = OpenIn;
@@ -200,7 +169,6 @@ ready!(Cancel, CancelIn, CancelOut);
 ready!(Release, ReleaseIn, OutHead);
 ready!(Close, InHead, OutHead);
 
-/// Plugin A: [`LOG`], [`FLOOD`], [`OUTSIDE`] and [`NEST`].
 pub mod a {
     use super::*;
 
@@ -239,8 +207,6 @@ pub mod a {
     }
 }
 
-/// Plugin B: [`LOG`] only; plugin A calls it from inside its own call. Its door is never exported:
-/// the test build links it, and plugin A reaches it directly.
 pub mod b {
     use super::*;
 

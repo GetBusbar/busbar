@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! MEMBER PROGRAMS through the connection table: one
-//! long-lived program per (instance, need, member), every open on the member a lease on it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -276,8 +275,7 @@ async fn until_gone(pid: &str) -> bool {
 }
 
 /// RED: two exchanges on one member, one after the other, reach ONE running program (one pid, one
-/// generation): closing an open leaves the program running for the next. Another member runs its
-/// own program.
+
 #[test]
 fn opens_on_one_member_share_one_program_and_members_run_their_own() {
     worker().block_on(async {
@@ -292,7 +290,7 @@ fn opens_on_one_member_share_one_program_and_members_run_their_own() {
         let first = pid_of(&c, a, "a").await;
         c.close(OWNER, a).unwrap();
         assert!(!gone(&first), "closing an open leaves the program running");
-        // A target with a path names the member before its first `/`.
+
         let b = open(&c, "one/rpc", b"").unwrap();
         assert_eq!(generation(&c, b).await, 1, "the same generation");
         assert_eq!(pid_of(&c, b, "b").await, first, "the same program");
@@ -311,7 +309,7 @@ fn opens_on_one_member_share_one_program_and_members_run_their_own() {
 }
 
 /// RED: every frame the program writes reaches every open lease of its generation (the plugin
-/// correlates by its own ids); an open's body is its first message.
+
 #[test]
 fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
     worker().block_on(async {
@@ -332,9 +330,7 @@ fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
 }
 
 /// RED: a lease opened while the program is part way through one frame does not read
-/// that frame's rest as though it began there (on one shared child, another exchange's answer
-/// taken as its own): its first body bytes begin a frame. The lease already reading the frame reads
-/// it whole.
+
 #[test]
 fn a_lease_opened_mid_frame_reads_from_the_next_frame() {
     worker().block_on(async {
@@ -378,12 +374,12 @@ fn a_lease_opened_mid_frame_reads_from_the_next_frame() {
 }
 
 /// RED: a program that ends ends every lease of its generation; the next open spawns it anew — the
-/// next generation, another process.
+
 #[test]
 fn a_program_that_ends_is_a_new_generation_on_the_next_open() {
     worker().block_on(async {
         let c = connector();
-        // Answers one line, then exits.
+
         declare(&c, &[("one", sh("read l; echo \"$$ $l\"", &[]))]).unwrap();
         let a = open(&c, "one", b"").unwrap();
         assert_eq!(generation(&c, a).await, 1);
@@ -401,8 +397,7 @@ fn a_program_that_ends_is_a_new_generation_on_the_next_open() {
 }
 
 /// RED: a re-declaration (a config apply) retires a member whose program changed or that is gone:
-/// no open reaches it again and its program is killed once its last open closes; an unchanged
-/// member keeps its running program.
+
 #[test]
 fn a_redeclaration_kills_a_changed_or_removed_members_program() {
     worker().block_on(async {
@@ -423,7 +418,7 @@ fn a_redeclaration_kills_a_changed_or_removed_members_program() {
             pids.push(pid_of(&c, id, name).await);
             c.close(OWNER, id).unwrap();
         }
-        // An open lease on the changed member drains: its program dies when the lease closes.
+
         let draining = open(&c, "changed", b"").unwrap();
         generation(&c, draining).await;
         declare(
@@ -490,9 +485,7 @@ fn a_members_program_inherits_only_its_stated_environment() {
 }
 
 /// THE HELD ENVIRONMENT: an `env` entry written as a secret reference stays the reference in the
-/// declared program; the need's DECLARATION resolves it (config time) and the spawn hands the held
-/// value: the child's environment carries it, a template's `${VAR}` filled in place. The first
-/// lease's spawn resolves nothing.
+
 #[test]
 fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_spawn() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
@@ -548,7 +541,7 @@ fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_sp
 }
 
 /// A member whose environment reference did not resolve at its declaration is not spawned
-/// (fail-closed); the declaration itself stands.
+
 #[test]
 fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
     worker().block_on(async {
@@ -569,7 +562,7 @@ fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
 }
 
 /// RED: a member-program need is carried only as a program need is (operator infrastructure, no
-/// auth, absolute commands, the member-program path), and an open on it carries no fields.
+
 #[test]
 fn a_member_program_need_is_refused_unless_declared_as_written() {
     worker().block_on(async {
@@ -624,12 +617,7 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
 }
 
 /// RED (`BUSBAR-1.6.0.md` l.388: the supervisor of a spawned program is its carrier's): THE HOST
-/// HOLDS NO RESTART POLICY OF ITS OWN. A member's program that ends is dialled anew on the very next
-/// open, however often it ends: seven ends inside a second, and the eighth open is a new generation
-/// (the host's copy of the policy refused the open inside its backoff, and for good after five
-/// ends). Whether the program may be spawned is the carrier's verdict, carried by the dial: while
-/// the carrier refuses the member's supervision key the open is refused, and once it lets the dial
-/// through the program runs again.
+
 #[test]
 fn the_host_holds_no_restart_policy_of_its_own() {
     worker().block_on(async {
@@ -645,7 +633,7 @@ fn the_host_holds_no_restart_policy_of_its_own() {
             None,
             Arc::new(|_, _| {}),
         );
-        // Answers one line, then exits.
+
         declare(&c, &[("one", sh("read l; echo \"$$ $l\"", &[]))]).unwrap();
         for n in 1..=7 {
             let id = open(&c, "one", b"")
@@ -714,13 +702,7 @@ fn open_bounded(c: &Connector, target: &str) -> ConnId {
 }
 
 /// A lease's bound runs past its head, which the host serves the instant the lease opens, to the
-/// program's own first bytes: a program that takes the request and never answers is a timeout once
-/// the bound passes.
-///
-/// The bound is moved by the test's own hand, never raced on the wall clock. The earlier form opened
-/// with a live 300ms bound, took its `started` only after `open` returned, and polled the head and
-/// the answer every 5ms: on a loaded runner the head read could land past the bound (the head itself
-/// a timeout), or the timeout could land under 300ms from a `started` taken after the bound began.
+
 #[test]
 fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
     worker().block_on(async {
@@ -729,13 +711,13 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
         let before = std::time::Instant::now();
         let id = open_bounded(&c, "mute");
         let after = std::time::Instant::now();
-        // The open's `timeout_ms` is the bound, from the open.
+
         let at = due(&c, id).expect("the open is bounded");
         assert!(
             at >= before + Duration::from_millis(300) && at <= after + Duration::from_millis(300),
             "the bound is the open's timeout_ms from the open"
         );
-        // Held off while the head is read: no load on the runner puts the head past it.
+
         set_due(
             &c,
             id,
@@ -749,7 +731,7 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
             Err(ConnError::Pending),
             "short of the bound, the mute program's answer pends"
         );
-        // The bound passes with no answer begun: the read is a timeout.
+
         set_due(&c, id, std::time::Instant::now());
         assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Timeout));
         c.close(OWNER, id).unwrap();
@@ -757,7 +739,7 @@ fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
 }
 
 /// The RED arm of the bound above, on the same hand: a bound set below the answer's arrival is a
-/// timeout, and a bound held past it ends at the answer (its first bytes spend the bound).
+
 #[test]
 fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
     worker().block_on(async {
@@ -811,10 +793,7 @@ async fn drain(c: &Connector, id: ConnId, bound: Duration) -> usize {
 }
 
 /// RED (resource bounds; THE DESIGN §5, back-pressure): every frame the program writes is kept for
-/// every open lease until it reads it, so a lease that does not read holds the program back, as a
-/// holder that does not read holds a line's far end back. Kept with no cap, a lease that never read
-/// grew host memory by everything the program wrote while another lease read on; once it reads,
-/// the program runs on.
+
 #[test]
 fn a_lease_that_does_not_read_holds_its_program_back() {
     worker().block_on(async {
@@ -839,7 +818,7 @@ fn a_lease_that_does_not_read_holds_its_program_back() {
             read < 8 * 1024 * 1024,
             "one lease read {read} bytes while another read none: the other kept them all"
         );
-        // The idle lease reads: the program is read again for both.
+
         assert!(drain(&c, idle, Duration::from_millis(500)).await > 0);
         assert!(
             drain(&c, reading, Duration::from_millis(500)).await > 0,
@@ -851,8 +830,7 @@ fn a_lease_that_does_not_read_holds_its_program_back() {
 }
 
 /// RED (`DialIn::supervision_key`): a member's spawn carries its supervision key, never `0`, one per
-/// member; a member a re-declaration changed is a new member with a new key, so a carrier that
-/// supervises what it runs resets exactly when the connector's member is new.
+
 #[test]
 fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() {
     worker().block_on(async {
@@ -903,9 +881,7 @@ fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() 
 }
 
 /// THE RESOLVER IS THE CONNECTOR'S, NOT THE PROCESS'S (BUSBAR-1.6.0.md Part 0, no process-global
-/// static seam): a connector the root handed no resolver resolves no reference, whatever another
-/// connector in the same process was handed, so its member is not spawned (fail-closed); the
-/// connector handed one spawns the same member with the value.
+
 #[test]
 fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_OWN_RESOLVER";
@@ -943,8 +919,7 @@ fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
 }
 
 /// An instance that is gone (replaced by a reload, closed or quarantined) leaves no member program
-/// running. Its needs are dropped, its open lease is closed, and every member program it held is
-/// killed, even the one a lease was still holding.
+
 #[test]
 fn a_forgotten_instance_leaves_no_member_program_running() {
     worker().block_on(async {
@@ -986,7 +961,7 @@ fn a_forgotten_instance_leaves_no_member_program_running() {
 }
 
 /// The test carrier, with a `read` that HANGS once armed: it says it is inside the crossing, then
-/// does not come back until the test lets it.
+
 struct HangingRead {
     inner: TestDoor,
     gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -1026,10 +1001,7 @@ impl crate::framer::FramerDoor for HangingRead {
 }
 
 /// RED while a member's lock was held across its program's carrier crossings (`BUSBAR-1.6.0.md`
-/// §11.13 M1: no plugin code runs under a host lock): one lease's read hung in the carrier's
-/// `read` held the member, so every other caller of it (a new lease, its write, a wait on it, its
-/// close, a re-declaration retiring the member) waited on the plugin for as long as it hung. Now
-/// each returns while the read still hangs.
+
 #[test]
 fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
     let rt = worker();
@@ -1054,7 +1026,6 @@ fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
         assert_eq!(generation(&c, a).await, 1);
         pid_of(&c, a, "a").await;
 
-        // LEASE A READS, and the carrier's read hangs with the member's program in its hands.
         let (entered_tx, entered) = std::sync::mpsc::channel();
         let (release, held_back) = std::sync::mpsc::channel();
         *door.gate.lock().unwrap() = Some((entered_tx, held_back));
@@ -1067,7 +1038,6 @@ fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
         });
         let reached = entered.recv_timeout(Duration::from_secs(10));
 
-        // BESIDE IT: a second lease opens, writes, waits, closes; then the member is retired.
         let (done_tx, done) = std::sync::mpsc::channel();
         let beside = Arc::clone(&c);
         let on = handle.clone();
@@ -1087,7 +1057,6 @@ fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
         });
         let answered = done.recv_timeout(Duration::from_secs(5));
 
-        // Let the hung read go before asserting, so nothing is left waiting on it.
         release.send(()).unwrap();
         reader.join().unwrap();
         other.join().unwrap();
@@ -1113,11 +1082,7 @@ fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
 }
 
 /// RED (T5, stdio TS1): A RETIRED MEMBER'S KEY IS SIGNALLED RETIRED. A member a re-declaration
-/// changed is retired; once its program is shut, its carrier is handed a [`DEST_RETIRED`] dial
-/// carrying the retired member's supervision key (and only its), so a supervising carrier forgets
-/// the key instead of holding it for the process's life. A member the re-declaration kept is not.
-///
-/// [`DEST_RETIRED`]: busbar_contract::abi::transport::DEST_RETIRED
+
 #[test]
 fn a_retired_members_supervision_key_is_signalled_retired_once() {
     worker().block_on(async {

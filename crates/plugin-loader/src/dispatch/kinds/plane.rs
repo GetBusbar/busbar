@@ -1,37 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE KIND: `abi/plane/`. Every answer is judged by its kind's own check:
-//!
-//! * `arrive` by `check_arrive`, its units over the host's `units_buf`/`units_cap`;
-//! * `on_piece` by `check_on_piece`, its units, records and fields over the host's buffers, every
-//!   cap from `OnPieceIn`;
-//! * `refusal` by `check_refusal` and `serve` by `check_serve`, their fields over the host's
-//!   `fields_buf`/`fields_cap`, every cap from the op's `in`;
-//! * `project` by `check_project`, its view's signals over the host's `signals_buf`/`signals_cap`
-//!   and its strings and body over the host's `arena_buf`/`arena_cap`, from `ProjectIn`;
-//! * `open` and `refresh` by `check_snapshot` on the generation snapshot a READY answer carries,
-//!   against the generation the `in` names;
-//! * `cancel` by `check_cancel` on its disposition (answered on READY only);
-//! * `drive` by `check_drive`, its ready sessions over the host's `sessions_cap` from
-//!   `PlaneDriveIn`.
-//!
-//! Every outcome is judged; each check decides what an outcome carries. A snapshot is read only
-//! from a READY `open`/`refresh`: on another outcome the plugin publishes none.
-//!
-//! `hydrate` and `start` answer a bare `OutHead`: no per-answer rule beyond the mechanism's. The
-//! snapshot's claims and admin routes (`check_claims`, `check_admin_routes`) and the Statement tail
-//! are generation and load data, judged where the kernel adopts them, not per answer.
-//!
-//! THE TAIL'S INDICES. A unit's billable class, a record's kind, `arrive`'s op class and dialect
-//! index lists of the plane's Statement tail ([`PlaneTail`]). The tail is read once at bind: it
-//! must be a whole `PlaneTail` that passes `check_tail`, or the load is refused. Its list lengths
-//! are the instance's context ([`Bounds`]), and every answer's indices are judged against them at
-//! the crossing: an index past its list is FAULT.
-//!
-//! SHORT ANSWERS: `arrive`, `on_piece`, `refusal`, `serve`, `project` and `drive` have the short
-//! path; a FAILED answer of one of them with any `*_needed` non-zero is short.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
@@ -64,9 +33,6 @@ use crate::dispatch::{
     Frame, InFrame, Kind, OutFrame,
 };
 
-/// The plane tail's last frozen size (THE KIND TAIL GROWTH RULE,
-/// `abi::mechanism::door::tail_read_len`): the tail before `stream_ceiling_secs` was appended, so a
-/// tail that ends there loads and states no ceiling.
 const PLANE_TAIL_FROZEN: usize = std::mem::offset_of!(PlaneTail, stream_ceiling_secs);
 
 /// The plane kind.
@@ -216,18 +182,12 @@ pub struct NeedKeep {
     pub denied: Vec<&'static str>,
 }
 
-/// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
-/// binds with its tail).
 fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
     a.context::<PlaneFacts>()
         .map(|f| &f.bounds)
         .ok_or(fault(Rule::Missing, "plane.tail"))
 }
 
-/// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`, its
-/// billable classes and fee units (`check_billable_classes`, `check_fee_units`: every fee unit is a
-/// billable class, so the plane can report it), the Statement's sections, exactly one of them
-/// declaring (`check_sections`), and refusal statuses that pass `check_refusal_statuses`.
 fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
     OVER_CAP.with(|c| c.set(false));
     let facts = tail_facts_read(st);
@@ -245,12 +205,10 @@ std::thread_local! {
     static OVER_CAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Note a tail length refused before any slice was formed over it.
 fn over_cap() {
     OVER_CAP.with(|c| c.set(true));
 }
 
-/// [`tail_facts`]' reading, every slice it forms capped first.
 fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
@@ -261,16 +219,13 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_fee_units(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    // EVERY ELEMENT THE TAIL LISTS IS JUDGED, not only its counts (audit contract-C2 #4): a chain
-    // of an unknown framing or kind, or a route cost naming no billable class, refuses the plane at
-    // load rather than reaching the host as a declaration it cannot keep.
+
     check_record_chains(
         &listed(tail.record_chains, tail.record_chains_len),
         tail.record_kinds_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    // Each retention rule names a kind the tail keeps, once, with a rule the host passes; a tail
-    // that ends before the list (an older plane's) reads none, so every kind is purged by age.
+
     check_record_retentions(
         &listed(tail.record_retentions, tail.record_retentions_len),
         tail.record_kinds_len as u64,
@@ -297,15 +252,14 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // SAFETY: the bound Statement owns these static lane bytes for the loaded plugin lifetime.
     unsafe { check_metric_lanes(&metric_lanes) }
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    // A plane declares exactly one section: its verb. The loader's Statement check already
-    // refused a NULL list with a count.
+
     let sections = listed(st.sections, st.sections_len);
     check_sections(&sections)
         .map_err(|f| format!("the plane's sections break {:?} at {}", f.rule, f.field))?;
     let refusal_statuses = listed(tail.refusal_statuses, tail.refusal_statuses_len);
     check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    // Each dialect's default style and its parameters, judged before they are kept.
+
     busbar_contract::abi::plane::check::check_dialect_auth(
         &listed(tail.dialect_auth, tail.dialect_auth_len),
         tail.dialects_len as u64,
@@ -313,7 +267,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     let mut decl = declared(&tail);
     decl.ticket_prefix = ticket_prefix(st)?;
-    // Optional capability detection never lends an oversized or unreadable legacy blob.
+
     let extensions = if st.extensions.len
         > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize
         || (st.extensions.len != 0 && st.extensions.ptr.is_null())
@@ -469,9 +423,6 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     })
 }
 
-/// The provider-key descriptor a Statement's extensions state, judged: a descriptor naming a shape
-/// outside the neutral vocabulary, or not a descriptor at all, refuses the plane at bind. `None` when
-/// the extensions state none.
 fn stated_provider_keys(
     ext: Blob,
 ) -> Result<Option<busbar_contract::provider_keys::ProviderKeys>, String> {
@@ -490,9 +441,6 @@ fn stated_provider_keys(
         .map_err(|e| format!("the plane's provider keys are refused: {e}"))
 }
 
-/// Each of the tail's dialects' `DIALECT_*` flags, by dialect index: the union of its
-/// `dialect_auth` lines' flags (`check_dialect_auth` judged every line's index and bits), `0` for a
-/// dialect with none.
 fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
     let mut flags = vec![0; listed(tail.dialects, tail.dialects_len).len()];
     for d in listed(tail.dialect_auth, tail.dialect_auth_len) {
@@ -503,7 +451,6 @@ fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
     flags
 }
 
-/// A tail string, kept for the process (`""` when absent).
 fn kept(s: AbiStr) -> &'static str {
     if check_tail_text(s, "plane.tail.text").is_err() {
         over_cap();
@@ -521,7 +468,6 @@ fn kept(s: AbiStr) -> &'static str {
     crate::intern_name(&String::from_utf8_lossy(bytes))
 }
 
-/// A tail blob's bytes, kept for the process (empty when absent).
 fn kept_blob(b: Blob) -> &'static [u8] {
     if busbar_contract::abi::mechanism::check::blob(&b, "plane.tail.blob", "plane.tail.blob")
         .is_err()
@@ -539,8 +485,7 @@ fn kept_blob(b: Blob) -> &'static [u8] {
         over_cap();
         return &[];
     };
-    // These public facts outlive the image. Keep one HOST-owned copy per distinct declaration,
-    // not a fresh permanent allocation every time that image is bound or its facts are read.
+
     static BLOBS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static [u8]>>> =
         std::sync::OnceLock::new();
     let mut blobs = BLOBS
@@ -555,9 +500,6 @@ fn kept_blob(b: Blob) -> &'static [u8] {
     kept
 }
 
-/// A process-lifetime mechanism declaration, shared by repeated reads of the same tail. Tokens
-/// have already been copied and interned; the comparison includes flags and order. The public
-/// contract lends these slices forever, so distinct declarations remain retained forever too.
 fn kept_mechanisms(mechanisms: Vec<PinMechanismDecl>) -> &'static [PinMechanismDecl] {
     if mechanisms.is_empty() {
         return &[];
@@ -576,7 +518,6 @@ fn kept_mechanisms(mechanisms: Vec<PinMechanismDecl>) -> &'static [PinMechanismD
     mechanisms
 }
 
-/// A tail list of `n` `T`s at `p`, copied.
 fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
     if busbar_contract::abi::mechanism::check::bounded(p, n, "plane.tail.list").is_err() {
         over_cap();
@@ -591,10 +532,6 @@ fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
     list.to_vec()
 }
 
-/// The issued-id prefix `st` declares (its one
-/// [`MARK_WORD_ISSUED_ID_PREFIX`](busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX)
-/// word mark): what leads every ticket the host mints for the plane (row 132). `None` = none
-/// declared; two are refused, as is an empty one.
 fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
     use busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX;
     let mut found = None;
@@ -613,8 +550,6 @@ fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
     Ok(found)
 }
 
-/// What the tail declares for the instance's admission: record kinds, signing, scope kinds and the
-/// trust keys (each judged at bind by `check_tail_trust_keys`).
 fn declared(t: &PlaneTail) -> InstanceDecl {
     let words = |p: *const AbiStr, n: usize| -> Vec<&'static str> {
         listed(p, n).into_iter().map(kept).collect()
@@ -660,7 +595,6 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
 }
 
 impl crate::dispatch::Plugin<Plane> {
-    /// What the instance declares for its admission: its bind label and its tail's facts.
     pub fn declared(&self) -> InstanceDecl {
         let mut d = self
             .inner
@@ -673,7 +607,6 @@ impl crate::dispatch::Plugin<Plane> {
         d
     }
 
-    /// What the composition root serves the instance by (empty with no tail facts).
     pub fn served(&self) -> ServedFacts {
         self.inner
             .context::<PlaneFacts>()
@@ -681,14 +614,12 @@ impl crate::dispatch::Plugin<Plane> {
             .unwrap_or_default()
     }
 
-    /// The refusal statuses the plane's tail states, as judged at bind.
     pub fn refusal_statuses(&self) -> &[RefusalStatus] {
         self.inner
             .context::<PlaneFacts>()
             .map_or(&[], |f| f.refusal_statuses.as_slice())
     }
 
-    /// The dialects the plane's tail declares (`0` with no tail facts).
     fn dialects(&self) -> u64 {
         self.inner
             .context::<PlaneFacts>()
@@ -696,12 +627,8 @@ impl crate::dispatch::Plugin<Plane> {
     }
 }
 
-/// A probe instance of a door, bound afresh: the door's one load, on a dispatcher of the caller's.
 pub type ProbeBind = Arc<dyn Fn() -> Result<crate::dispatch::Plugin<Plane>, String> + Send + Sync>;
 
-/// A [`ProbeBind`] over a LINKED door: each bind loads `door` through the one load
-/// ([`crate::dispatch::load_linked`]) as `instance`, on a probe dispatcher the process keeps for its
-/// life (a probe it adopted is refreshed through it at every generation).
 pub fn linked_probe(
     door: busbar_contract::abi::mechanism::door::DoorFn,
     instance: &str,
@@ -727,13 +654,6 @@ pub fn linked_probe(
     })
 }
 
-/// THE COMMAND-LINE HELP A LINKED PLANE DOOR STATES: its tail's `cli_help`, read off its `'static`
-/// Statement without binding it (no `validate` or `open` runs), so `busbar --help` can render it
-/// before any configuration is read. `None` when the tail states none.
-///
-/// # Errors
-///
-/// The door, its Statement or its tail is not one this host reads.
 pub fn linked_cli_help(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<Option<&'static str>, String> {
@@ -754,15 +674,6 @@ pub fn linked_cli_help(
     Ok((!help.is_empty()).then_some(help))
 }
 
-/// THE COMMAND-LINE HELP A DROPPED-IN PLANE STATES: its tail's `cli_help`, read off its SIGNED
-/// MANIFEST's Statement rendering with no dlopen, as [`linked_cli_help`] reads a linked door's off
-/// its tail (BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped in, one loading path; the
-/// rendering carries the whole kind tail, and admitting the plane compares its door's Statement
-/// with it). `None` when the tail states none.
-///
-/// # Errors
-///
-/// The rendering does not read back, is not a plane Statement's, or states no tail.
 pub fn rendered_cli_help(rendering: &[u8]) -> Result<Option<String>, String> {
     use busbar_contract::abi::mechanism::rendering::{read, read_plane_cli_help};
     let r = read(rendering).map_err(|e| {
@@ -789,22 +700,12 @@ pub fn rendered_cli_help(rendering: &[u8]) -> Result<Option<String>, String> {
     Ok((!help.is_empty()).then_some(help))
 }
 
-/// EVERYTHING A LINKED PLANE DOOR STATES (its Statement's name and its tail's facts, as a bind
-/// copies them out), read WITHOUT binding it: reading a linked row's static declaration, its kind
-/// tail included, is reading, not loading (Law 7; ARCHITECT ruling 2026-10-20). Reads the door's
-/// `'static` Statement only, through the same door checks and tail checks a bind runs; nothing is
-/// bound or opened.
-///
-/// # Errors
-///
-/// The door's Statement does not read as a plane Statement, or its tail is one a bind refuses.
 pub fn stated_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<(String, PlaneFacts), String> {
     stated_facts_raw(crate::dispatch::load::raw(door))
 }
 
-/// [`stated_facts`] over a door the loader already holds raw (a [`crate::dispatch::LinkedRow`]'s).
 fn stated_facts_raw(
     door: busbar_contract::abi::sdk::door::RawDoorFn,
 ) -> Result<(String, PlaneFacts), String> {
@@ -815,17 +716,6 @@ fn stated_facts_raw(
     Ok((name, tail_facts(&v.statement)?))
 }
 
-/// THE REGISTRY ROW OF A DISCOVERED PLANE DOOR (`candidate`), with `bind` binding a probe instance
-/// of it through the one load. LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff the configuration
-/// uses it): a LINKED door's row is read off its `'static` Statement ([`stated_facts`]) and binds
-/// nothing; its probe is bound the first time its section is judged or faced, which only a
-/// configuration that writes the section asks. A DROPPED-IN door's plane tail is in its library
-/// alone (its signed rendering states the tail's size, never its facts), so that row is read off a
-/// probe bound here ([`registration`]), as before.
-///
-/// # Errors
-///
-/// The door will not state its facts (a linked door), or will not bind (a dropped-in one).
 pub fn stated_registration(
     candidate: &crate::boot::Candidate,
     bind: ProbeBind,
@@ -845,16 +735,6 @@ pub fn stated_registration(
     }
 }
 
-/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): its
-/// Statement name, its declaring section and its tail's words, read off the facts kept at its bind,
-/// and its own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe
-/// instance of the door through the one load (a linked and a dropped door alike); one is bound here
-/// for the facts and the section judge, and one more per public base URL its facing is asked for (a
-/// plane states its audience and claims against the URL it was opened with).
-///
-/// # Errors
-///
-/// The door will not bind.
 pub fn registration(
     bind: ProbeBind,
 ) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
@@ -870,11 +750,8 @@ pub fn registration(
     ))
 }
 
-/// A probe instance of a door, bound once and kept: the one that judges its section.
 type Judge = std::sync::OnceLock<Arc<crate::dispatch::Plugin<Plane>>>;
 
-/// The judge `judge` holds, bound through `bind` the first time one is asked for. Bound with no
-/// lock held; two first callers each bind one, the second's let go.
 fn judge_of(
     judge: &Judge,
     bind: &ProbeBind,
@@ -886,8 +763,6 @@ fn judge_of(
     Ok(Arc::clone(judge.get_or_init(|| plugin)))
 }
 
-/// THE REGISTRY ROW of the plane `name` from what its door states (`served`, `declared`), its
-/// section judged by `bound` (a probe already bound) or else by the first probe `bind` binds.
 fn registered(
     name: &str,
     served: &ServedFacts,
@@ -944,10 +819,6 @@ fn registered(
                   owned: &[u8],
                   public_url: Option<&str>,
                   facts: &[busbar_contract::plane_calls::DialectFacts]| {
-                // Retain the latest COMPLETED input, not every historical configuration. Each
-                // caller owns its in-use probe until its snapshot has been copied. A concurrent
-                // caller binds its own; completion order affects reuse, never the returned facts.
-                // Binding, closing and dropping a library all happen outside the cache lock.
                 let url = public_url.unwrap_or_default().to_string();
                 let same = |p: &Probe| p.url == url && p.owned == owned && p.facts == facts;
                 let lock = || {
@@ -990,14 +861,12 @@ fn registered(
     }
 }
 
-/// One probe instance of a door, opened against one public base URL, one set of owned sections and
-/// one list of providers' dialect facts (each read at its open; a change of any is a restart).
 struct Probe {
     url: String,
     owned: Vec<u8>,
     facts: Vec<busbar_contract::plane_calls::DialectFacts>,
     plugin: crate::dispatch::Plugin<Plane>,
-    /// Its current generation; `0` = not opened yet.
+
     generation: u64,
 }
 
@@ -1018,8 +887,6 @@ impl Drop for Probe {
     }
 }
 
-/// THE PROVIDERS' DIALECT FACTS LOWERED for `PlaneOpenIn::providers`, one per entry of `dialects`,
-/// each pointing into `dialects` (which must outlive the open that lends them).
 #[must_use]
 pub fn provider_facts(
     dialects: &[busbar_contract::plane_calls::DialectFacts],
@@ -1052,14 +919,6 @@ pub fn provider_facts(
         .collect()
 }
 
-/// OPEN `plugin` at generation 1 over `settings` (JSON; empty = absent), its `owned` sections (one
-/// JSON object keyed by section name; empty = none) and `public_url`, as the composition root opens
-/// a door plane, with no provider's dialect facts: the first generation's snapshot, or why it did
-/// not open.
-///
-/// # Errors
-///
-/// The plane did not answer READY, or its snapshot did not pass the host's checks.
 pub fn open_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
@@ -1069,9 +928,6 @@ pub fn open_door(
     checked(plugin, opened(plugin, settings, owned, public_url, &[])?)
 }
 
-/// OPEN `plugin` at generation 1, as [`open_door`] does, handed the providers' dialect facts
-/// `providers` (each pointing into memory that outlives the open): its snapshot, `None` when it did
-/// not pass the host's checks.
 fn opened(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
@@ -1105,7 +961,6 @@ fn opened(
     Ok(snapshot)
 }
 
-/// A generation's snapshot, or the refusal of one that did not pass the host's checks.
 fn checked(
     plugin: &crate::dispatch::Plugin<Plane>,
     snapshot: Option<OwnedSnapshot>,
@@ -1118,13 +973,6 @@ fn checked(
     })
 }
 
-/// REFRESH `plugin` onto `next` over `settings` (JSON; empty = absent), as a config apply refreshes
-/// a served door plane: the new generation's snapshot, or why it did not refresh. The previous
-/// generation stays live for units still running on it; retire it with [`retire_door`].
-///
-/// # Errors
-///
-/// The plane did not answer READY, or its snapshot did not pass the host's checks.
 pub fn refresh_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
@@ -1134,8 +982,6 @@ pub fn refresh_door(
     checked(plugin, refreshed(plugin, settings, owned, next)?)
 }
 
-/// REFRESH `plugin` onto `next`, as [`refresh_door`] does: its snapshot, `None` when it did not
-/// pass the host's checks.
 fn refreshed(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
@@ -1144,9 +990,7 @@ fn refreshed(
 ) -> Result<Option<OwnedSnapshot>, String> {
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON, BLOB_OCTETS};
     let blob = lifecycle::blob(settings, BLOB_JSON, 0);
-    // ITS OTHER OWNED SECTIONS ride the extensions blob under `EXT_OWNED` (the same JSON object
-    // `open` carries in `PlaneOpenIn::owned`; absent when the document writes none), so a need whose
-    // trust anchor sits in one is re-declared over the applied value.
+
     let extensions = if owned.is_empty() {
         Vec::new()
     } else {
@@ -1188,7 +1032,6 @@ fn refreshed(
     Ok(snapshot)
 }
 
-/// RETIRE `generation` of `plugin`: no unit runs on it any more.
 pub fn retire_door(plugin: &crate::dispatch::Plugin<Plane>, generation: u64) {
     use busbar_contract::abi::mechanism::lifecycle::GenIn;
     let mut retire = Frame::new(
@@ -1209,13 +1052,6 @@ pub fn retire_door(plugin: &crate::dispatch::Plugin<Plane>, generation: u64) {
     }
 }
 
-/// What `plugin` faces the world with over `settings`, its `owned` sections, `public_url` and the
-/// providers' dialect `facts`, as a snapshot it published: the probe instance is `open`ed on the
-/// first call (with `public_url`, `owned` and `facts`, which a plane states its audience and claims
-/// against) and `refresh`ed onto a new generation on each call after it, the previous generation
-/// retired. A probe is retained for matching subsequent inputs beside the instance the composition
-/// root serves through; its public base URL, owned sections and providers' dialect facts are read
-/// at open. A changed input replaces and closes an idle probe; in-use probes finish independently.
 fn facing(
     plugin: &crate::dispatch::Plugin<Plane>,
     dialects: &[&'static str],
@@ -1226,14 +1062,11 @@ fn facing(
     facts: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<busbar_contract::plane_calls::DoorFacing, String> {
     let snapshot = if *current == 0 {
-        // The same list the served instance's open is handed: the plane resolves each model's
-        // dialect from it, and its claims follow. Each points into `facts`, which outlives the open.
         let providers = provider_facts(facts);
         let snapshot = opened(plugin, settings, owned, public_url, &providers)?;
         *current = 1;
         snapshot
     } else {
-        // Refreshed with no owned sections: they are read at the probe's open only.
         let next = *current + 1;
         let snapshot = refreshed(plugin, settings, &[], next)?;
         retire_door(plugin, *current);
@@ -1258,10 +1091,6 @@ fn facing(
     })
 }
 
-/// The tail's billable classes and fee units, judged PER ELEMENT (ARCHITECT Q-L5-FEE (C)): each
-/// class by `check_billable_classes`, then each fee unit by `check_fee_units`, which holds every fee
-/// unit to one of the classes (the plane reports "a fee unit was incurred" as a count on it; a fee
-/// unit no class lists could never be reported, and its fee would be refunded on every unit).
 fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
     let classes: Vec<BillableClass> = listed(tail.billable_classes, tail.billable_classes_len);
     for class in &classes {
@@ -1276,7 +1105,6 @@ fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
     unsafe { check_fee_units(&fee_units, &classes) }
 }
 
-/// The same byte bound the canonical tail rendering applies, before a validator reads text.
 fn check_tail_text(text: AbiStr, field: &'static str) -> Result<(), Fault> {
     busbar_contract::abi::mechanism::check::text(text, field)?;
     if text.len as u64 > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES {
@@ -1285,9 +1113,6 @@ fn check_tail_text(text: AbiStr, field: &'static str) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The tail's kernel-owned trust keys, judged PER ELEMENT: each key by `check_trust_keys`, each
-/// pin's mechanisms by `check_pin_mechanisms`. `check_tail` proved only that no list is counted over
-/// a NULL pointer; the elements are read here, once, at bind.
 fn check_tail_trust_keys(tail: &PlaneTail) -> Result<(), Fault> {
     let keys = listed(tail.trust_keys, tail.trust_keys_len);
     check_trust_keys(&keys)?;
@@ -1359,7 +1184,7 @@ impl Kind for Plane {
                         "refusal.records",
                     )
                 }?;
-                // A refusal that writes no record needs no tail to be judged against.
+
                 let b = if o.records_written == 0 {
                     Bounds::default()
                 } else {
@@ -1465,31 +1290,19 @@ impl Kind for Plane {
                 let cap = a.input::<PlaneDriveIn>()?.sessions_cap as u64;
                 check_drive(a.outcome, a.out::<PlaneDriveOut>()?, cap)
             }
-            // `hydrate`, `start` (a bare `OutHead`) and the other lifecycle answers: no
-            // per-answer rule beyond the mechanism's.
+
             _ => Ok(()),
         }
     }
 
-    /// The plane's `drive` frame: `PlaneDriveIn`/`PlaneDriveOut`, with a host buffer for the ready
-    /// sessions at the kind's maximum, so a `drive` never answers short.
     fn drive_frame() -> Box<dyn DriveFrame> {
         Box::new(PlaneDrive::new())
     }
 
-    /// The plane's `cancel` frame: `PlaneCancelIn`/`PlaneCancelOut`, lending record buffers so the
-    /// cancelled unit writes its row (SEAM-L(r)).
     fn cancel_frame() -> Box<dyn CancelFrame> {
         Box::new(PlaneCancel::new())
     }
 
-    /// THE REQUEST LOOKUP: the unit an `arrive`, `on_piece`, `project` or `refusal` serves, the kernel-
-    /// minted key its `in` carries, so a
-    /// host service the plane calls inside the crossing (`entitlement.check`) answers for that
-    /// unit's principal. `0` is no unit (a refusal before any unit arrived); every other op serves
-    /// none.
-    // The trait's own contract (`Kind::unit_of`): `input` is the dispatcher's own `in` of `in_size`
-    // bytes, written by the host for this crossing; only the dispatcher calls it.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn unit_of(s: u32, input: *const InHead, in_size: usize) -> Option<u64> {
         /// The host's `in` read as a `T`, when its frame holds a whole one.
@@ -1552,13 +1365,10 @@ impl Kind for Plane {
     }
 }
 
-/// The record writes a plane's `cancel` may carry, and the arena their bytes go in: `cancel` is
-/// never re-called, so a plane writes within these.
 pub const CANCEL_RECORDS: usize = 16;
-/// The arena bytes a plane's `cancel` is lent.
+
 pub const CANCEL_ARENA: usize = 4096;
 
-/// A plane's `cancel` frame and the host buffers its `in` names (SEAM-L(r)).
 pub struct PlaneCancel {
     frame: Frame<plane::PlaneCancelIn, plane::PlaneCancelOut>,
     records: Vec<RecordWrite>,
@@ -1572,7 +1382,6 @@ impl Default for PlaneCancel {
 }
 
 impl PlaneCancel {
-    /// A frame with [`CANCEL_RECORDS`] record slots and a [`CANCEL_ARENA`]-byte arena.
     #[must_use]
     pub fn new() -> Self {
         let none = RecordWrite {
@@ -1604,7 +1413,6 @@ impl PlaneCancel {
         }
     }
 
-    /// The frame, for a ticketless `cancel` crossing through [`Plugin::call`].
     pub fn frame(&mut self) -> &mut Frame<plane::PlaneCancelIn, plane::PlaneCancelOut> {
         &mut self.frame
     }
@@ -1648,7 +1456,6 @@ impl CancelFrame for PlaneCancel {
     }
 }
 
-/// A plane driver ticket's `drive` frame and the host buffer its `in` names.
 struct PlaneDrive {
     frame: Frame<PlaneDriveIn, PlaneDriveOut>,
     sessions: Vec<u64>,
@@ -1697,7 +1504,6 @@ impl DriveFrame for PlaneDrive {
     }
 }
 
-/// `arrive`: the expected units over the host's `units_buf`, `units_cap` from `ArriveIn`.
 fn arrive(a: &Answer) -> Result<(), Fault> {
     let i = a.input::<ArriveIn>()?;
     let o = a.out::<ArriveOut>()?;
@@ -1715,7 +1521,6 @@ fn arrive(a: &Answer) -> Result<(), Fault> {
     check_arrive(a.outcome, o, units, cap, bounds(a)?)
 }
 
-/// `on_piece`: units, records and fields over the host's buffers, every cap from `OnPieceIn`.
 fn on_piece(a: &Answer) -> Result<(), Fault> {
     let i = a.input::<OnPieceIn>()?;
     let o = a.out::<OnPieceOut>()?;
@@ -1753,8 +1558,6 @@ fn on_piece(a: &Answer) -> Result<(), Fault> {
     check_on_piece(a.outcome, o, (units, records, fields), &caps, bounds(a)?)
 }
 
-/// `project`: the view's signals over the host's `signals_buf`, its prompt turns over the host's
-/// `messages_buf`, its strings and bodies over the host's arena, every cap from `ProjectIn`.
 fn project(a: &Answer) -> Result<(), Fault> {
     let i = a.input::<ProjectIn>()?;
     let o = a.out::<ProjectOut>()?;
@@ -1799,8 +1602,6 @@ fn project(a: &Answer) -> Result<(), Fault> {
     }
 }
 
-/// A READY `open`'s or `refresh`'s generation snapshot: present, then `check_snapshot` (its size
-/// among them) against the generation the `in` names, on the host's copy of its own bytes.
 fn snapshot(s: *const PlaneSnapshot, generation: u64, field: &'static str) -> Result<(), Fault> {
     if s.is_null() {
         return Err(fault(Rule::Missing, field));
@@ -1808,10 +1609,6 @@ fn snapshot(s: *const PlaneSnapshot, generation: u64, field: &'static str) -> Re
     check_snapshot(&as_written(s), generation)
 }
 
-/// THE SNAPSHOT AT `p` AS ITS PUBLISHER WROTE IT (the append rule: data structs grow by append
-/// under `honoured_size`): its leading `size` is read alone first, then that many bytes, never more
-/// than this host's struct, are copied over zeros. A field appended after the publisher was built
-/// reads as none, and nothing past the publisher's own `size` is read. `p` is non-NULL.
 fn as_written(p: *const PlaneSnapshot) -> PlaneSnapshot {
     // SAFETY: a non-NULL snapshot is the plugin's generation data, valid until `retire` of its
     // generation; its leading `size` is read alone first.
@@ -1827,8 +1624,6 @@ fn as_written(p: *const PlaneSnapshot) -> PlaneSnapshot {
         s.assume_init()
     }
 }
-
-// ── the host's copy of a generation snapshot ─────────────────────────────────────────────────────
 
 /// One claim of a snapshot, owned by the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1886,9 +1681,6 @@ pub struct OwnedSnapshot {
 }
 
 impl crate::dispatch::Plugin<Plane> {
-    /// `open`, and the first generation's snapshot COPIED while the crossing that published it
-    /// proves it live: `Some` exactly when the answer is READY and every claim, admin route and
-    /// string of the snapshot passes the contract's checks and is UTF-8.
     pub fn open(
         &self,
         frame: &mut crate::dispatch::Frame<PlaneOpenIn, PlaneOpenOut>,
@@ -1900,7 +1692,6 @@ impl crate::dispatch::Plugin<Plane> {
         (called, copy)
     }
 
-    /// `refresh`, and the new generation's snapshot copied as [`Self::open`] copies it.
     pub fn refresh(
         &self,
         frame: &mut crate::dispatch::Frame<RefreshIn, PlaneRefreshOut>,
@@ -1913,10 +1704,6 @@ impl crate::dispatch::Plugin<Plane> {
     }
 }
 
-/// A string of the plugin's generation data, owned; `Some(None)` when absent, `None` (the snapshot
-/// refused) for bad UTF-8 or a length over the hard byte maximum, which is refused before any slice
-/// is formed (THE DESIGN §11.13 M1). Called only on data a READY crossing's checks accepted (no
-/// string counted over a NULL pointer).
 fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<String>> {
     if s.ptr.is_null() {
         return Some(None);
@@ -1927,8 +1714,6 @@ fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<
     std::str::from_utf8(bytes).ok().map(|t| Some(t.to_string()))
 }
 
-/// A blob of the plugin's generation data, owned; `Some(None)` when absent, `None` (the snapshot
-/// refused) for a length over the hard byte maximum, refused before any slice is formed.
 fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
     if b.ptr.is_null() {
         return Some(None);
@@ -1937,11 +1722,6 @@ fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
     unsafe { crate::dispatch::validate::lent(b.ptr, b.len) }.map(|bytes| Some(bytes.to_vec()))
 }
 
-/// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has
-/// passed (its size, generation, lists and strings), and the claims, admin routes and listed names
-/// are judged here by the contract's element checks before any element string is read: a claim's
-/// refusal dialect against the `dialects` its tail declares. Each claim's target text is judged by
-/// the claim grammar once read (`check_claim_target`).
 pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
     use busbar_contract::abi::plane::check::{
         check_admin_routes, check_arrival_spans, check_claim_target, check_claims, check_listed,
@@ -1949,8 +1729,7 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
     if p.is_null() {
         return None;
     }
-    // A READY answer's snapshot, whose size and lists this crossing's check accepted; valid until
-    // `retire` of its generation. Read as its publisher wrote it.
+
     let s = &as_written(p);
     // SAFETY: the check refused a list counted over a NULL pointer or over its cap; each names
     // `*_len` entries, bounded again before the slice is formed. A snapshot from before `listed`
@@ -1974,7 +1753,7 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
     check_admin_routes(routes).ok()?;
     check_listed(listed).ok()?;
     check_arrival_spans(spans).ok()?;
-    // A span name is `[a-z0-9_]`: the kernel builds a callsite of it, so nothing else is a name.
+
     let span_of = |i: usize| -> Option<String> {
         let name = spans.get(i).map_or(Some(String::new()), |n| {
             owned_str(*n).map(Option::unwrap_or_default)
@@ -1990,8 +1769,6 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                // The target's TEXT, judged by the claim grammar once read (`check_claim_target`):
-                // a claim no request can match refuses the snapshot, never loads as a dead route.
                 let target = text(c.target)?;
                 check_claim_target(&target, c.flags).ok()?;
                 Some(OwnedClaim {

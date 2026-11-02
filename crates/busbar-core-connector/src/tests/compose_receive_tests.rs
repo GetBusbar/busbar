@@ -58,7 +58,7 @@ impl FramerDoor for Input {
 }
 
 /// Pending auth retains input while fresh tickets still deliver a sibling. The real loader's
-/// per-leg metadata is used here; the HTTP door test separately exercises the wire report.
+
 struct Holding {
     inner: TestDoor,
     scope: Arc<FramingContext>,

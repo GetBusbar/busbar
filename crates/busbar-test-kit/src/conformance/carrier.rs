@@ -71,7 +71,6 @@ impl Wake for Woken {
     }
 }
 
-/// One side of a connection: its inline ticket and the waker the script registered on it.
 struct Side {
     ticket: InlineTicket,
     woken: Arc<Woken>,
@@ -86,7 +85,6 @@ impl Side {
     }
 }
 
-/// One inline crossing of op `s` on `side`.
 fn go<I: InFrame, O: OutFrame>(
     p: &Plugin<Transport>,
     side: &Side,
@@ -107,7 +105,6 @@ fn err(c: &Called) -> String {
         .into_owned()
 }
 
-/// An address with its port blanked: the two legs bind and dial different ports.
 fn unported(a: &str) -> String {
     a.rsplit_once(':')
         .map_or_else(|| a.to_owned(), |(h, _)| format!("{h}:*"))
@@ -119,9 +116,7 @@ fn text(v: &serde_json::Value, what: &str) -> String {
         .to_owned()
 }
 
-/// The ops of the role a carrier does not play, in slot order: each REFUSED, one crossing each.
 fn framer_ops(p: &Plugin<Transport>, side: &Side) -> String {
-    // A declared scheme, so the begin reaches the carrier, which refuses it as its own.
     let mut begin: BeginIn = input();
     begin.scheme = busbar_contract::abi::host::service::SCHEME_PLAIN;
     let outcomes = [
@@ -148,7 +143,6 @@ fn framer_ops(p: &Plugin<Transport>, side: &Side) -> String {
         .join(" ")
 }
 
-/// A destination, with the storage its pointers name.
 struct Dest {
     authority: String,
     program: String,
@@ -279,7 +273,6 @@ fn shut(p: &Plugin<Transport>, side: &Side, conn: u64) -> String {
     format!("{:?}", c.outcome)
 }
 
-/// Wait (up to five seconds) for the host to wake `side`, pumping its sockets' readiness.
 fn woken(host: &SuiteIo, side: &Side) -> bool {
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until {
@@ -292,7 +285,6 @@ fn woken(host: &SuiteIo, side: &Side) -> bool {
     false
 }
 
-/// An echo far end: every connection it accepts answers what it reads, until its end.
 fn echo() -> String {
     let l = TcpListener::bind("127.0.0.1:0").expect("the echo far end binds");
     let at = l.local_addr().expect("bound").to_string();
@@ -312,7 +304,6 @@ fn echo() -> String {
     at
 }
 
-/// The script, one leg.
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = &s.kind_inputs("transport")["carrier"];
     assert!(
@@ -332,20 +323,18 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let is = |line: &str| Want::Is(line.into());
 
     sc.line("facts", 0, || facts_line(&p, &facts));
-    // 0: the dispatcher refuses an op on an instance that is not open, without a crossing.
+
     sc.judged("dial unopened", 0, Want::Starts("Refused "), || {
         dial(&p, &wr, &Dest::authority("127.0.0.1:1")).0
     });
     opened(&mut sc, (s, &p, &d), &settings, &asis);
 
-    // ── the role it does not play ──
     let want = is(
         "locate=Refused begin=Refused ingest=Refused emit=Refused encode=Refused \
                    refuse=Refused finish=Refused detach=Refused adopt=Refused timer=Refused",
     );
     sc.judged("framer ops", 10, want, || framer_ops(&p, &wr));
 
-    // ── listen, accept, and the accepted connection both ways ──
     let listens = k["listen"].as_bool().unwrap_or(false);
     let ls = Side::new(&d);
     let bind_at = "127.0.0.1:0";
@@ -373,7 +362,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     if listens {
         let mut far = TcpStream::connect(&bound).expect("the script reaches the listener");
         let _ = far.set_read_timeout(Some(Duration::from_secs(5)));
-        // The connection is in the backlog once `connect` answered: the accept answers at once.
+
         let mut peer = vec![0_u8; MAX_ADDR as usize];
         let accepted = sc.step_judged("accept", 1, is("Ready peer=127.0.0.1:*"), || {
             let mut i: AcceptIn = input();
@@ -402,7 +391,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         });
         far.write_all(b"from the far end")
             .expect("the far end writes");
-        // Loopback: the bytes are at the accepted socket well inside this.
+
         std::thread::sleep(Duration::from_millis(100));
         let want = is("Ready bytes=\"from the far end\" end_of_frame=true");
         sc.judged("accepted read", 1, want, || read(&p, &rd, accepted, false));
@@ -418,7 +407,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         sc.judged("far end saw the end", 0, is("true"), || format!("{ended}"));
     }
 
-    // ── the dial, its exchange, a pending read resumed by the host's wake ──
     let (dest, other) = match &k["dial"] {
         serde_json::Value::String(a) if a == "authority" => {
             let at = echo();
@@ -482,16 +470,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     sc.judged("the host woke the read", 0, is("true"), || {
         format!("{}", woken(&host, &rd))
     });
-    // The pending read's RESUME on its ticket: the op's one first invocation was "read pending", so
-    // this re-invocation is counted apart and reported, never pinned (Q-P4-5: one op, one crossing,
-    // however often it pends).
+
     let answer = lossy(answer.as_bytes());
     let want = Want::Is(format!("Ready bytes={answer:?} end_of_frame=true"));
     sc.judged("read resumed", 0, want, || read(&p, &rd, conn, true));
     sc.judged("shut", 1, is("Ready"), || shut(&p, &wr, conn));
     sc.judged("shut again", 1, is("Ready"), || shut(&p, &wr, conn));
 
-    // ── THE HOST'S GUARD (RED arm): nothing the host did not admit is reached ──
     let guarded = Side::new(&d);
     let unadmitted = match dest.kind {
         DEST_AUTHORITY => Dest::authority("127.0.0.1:9"),
@@ -514,10 +499,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     drop(other_side);
     drop(guarded);
 
-    // ── THE HOST'S END OF A PROGRAM (`io.ends`' `exited`): a program that exits while a
-    // descendant still holds its output is answered as exited, its code with it, while its pipe
-    // stays open; the carrier reads the program's end there, never from the pipe. Host-side: no
-    // crossing. ──
     sc.judged(
         "a program's own exit",
         0,
@@ -526,19 +507,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     );
 
     closed(&mut sc, &p, &asis);
-    // 0: a closed instance answers FAULT without a crossing.
+
     sc.judged("dial after close", 0, Want::Starts("Fault "), || {
         dial(&p, &wr, &Dest::authority("127.0.0.1:1")).0
     });
-    // What the carrier did not close itself is the host's to reap: the script's own listener.
+
     sc.judged("handles held after close", 0, is("true"), || {
         format!("{}", host.holds_only(host_listener))
     });
     sc.fold()
 }
 
-/// The suite's host spawns `sh`, which exits with code 3 and leaves a `sleep` holding its output,
-/// and answers what `io.ends` reads of the program: its own exit, and whether the pipe is still open.
 fn program_exit(host: &SuiteIo) -> String {
     use busbar_contract::abi::mechanism::ticket::Ticket;
     use busbar_contract::io_host::{IoHost, Spawn};

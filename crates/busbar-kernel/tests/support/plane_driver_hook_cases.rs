@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK STAGE ON THE DRIVER, against the contract-level plane double (`BUSBAR-1.6.0.md` Part 3,
-//! section 12, "Hooks"; ARCHITECT K5): no hook bound projects nothing; a request-stage hook's
-//! rewrite goes back to the plane (`ProjectIn::rewrite`), which applies it and answers the body the
-//! kernel keeps and re-pushes on every attempt; a veto wears the hook's own status and words,
-//! rendered by the plane (`REFUSAL_GATE`), before any attempt; a request the plane cannot project
-//! is refused before any attempt. The 1.5.5 hook tests themselves run over the real plane serving
-//! the `pools` map in the composition root's `hook_parity_driver` suite.
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,7 +20,6 @@ use super::cases::{arrival, drive, Book, Caller, Far};
 use super::common::TestUnits;
 use super::{rig_with_hooks, Way};
 
-/// A caller the hooks know nothing of.
 pub(crate) struct Nobody;
 
 impl CallerFacts for Nobody {
@@ -65,10 +56,8 @@ fn bound(
     }
 }
 
-/// The turns a gate was shown, per call.
 type Seen = Arc<Mutex<Vec<Vec<(String, String)>>>>;
 
-/// A gate that sees the prompt, records it, and decides `reject`.
 struct Gate {
     seen: Seen,
     reject: Option<(u16, &'static str)>,
@@ -111,7 +100,6 @@ fn gate(reject: Option<(u16, &'static str)>) -> (Seen, ResolvedPolicy) {
     gate_granted(reject, true)
 }
 
-/// [`gate`], with or without the prompt granted.
 fn gate_granted(reject: Option<(u16, &'static str)>, send_prompt: bool) -> (Seen, ResolvedPolicy) {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     (
@@ -128,7 +116,6 @@ fn gate_granted(reject: Option<(u16, &'static str)>, send_prompt: bool) -> (Seen
     )
 }
 
-/// A rewrite hook replacing the turns with one.
 struct Rewriter;
 
 #[async_trait::async_trait]
@@ -153,8 +140,6 @@ impl RoutingPolicy for Rewriter {
     }
 }
 
-/// A rewrite hook declared load-bearing whose call failed: what the resolver's `on_error: reject`
-/// decorator hands every firing site (the shared refusal, minted as a transform reject).
 struct LoadBearingDown;
 
 #[async_trait::async_trait]
@@ -320,9 +305,6 @@ async fn a_request_the_plane_cannot_project_is_refused_before_any_attempt() {
     assert_eq!(rendered.status, 400);
 }
 
-/// RED (THE DESIGN §11.7, HOOK Q1, owner-signed 2026-10-02): a load-bearing rewrite that could not
-/// answer refuses the routed request with the shared retryable 503 and its words, the refusal the
-/// gate-first stage and every gate seat answer, never clamped to a 403.
 #[tokio::test]
 async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503() {
     let r = rig_with_hooks(
@@ -363,11 +345,6 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
     assert!(far.sent().is_empty(), "no attempt was made");
 }
 
-// ── a rewrite the plane refuses to apply ────────────────────────────────────────────────────────
-
-/// The `prompt: rw` gate `rw` with `on_error`, resolved through the kernel's own rewrite resolver
-/// over the hook double (which answers every `transform` with a rewrite), so the chain entry is the
-/// one a deployment's configuration produces, its `on_error` disposition and all.
 fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
     let env = busbar_kernel_testkit::test_support::test_hook_env(
         &["test-hook"],
@@ -395,21 +372,6 @@ fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
     chain
 }
 
-/// A REWRITE THE PLANE DID NOT APPLY IS REFUSED, never relayed un-rewritten (owner's standard:
-/// refuse, never default open; it overrides the coordinator ruling of row 159, which let a
-/// non-load-bearing hook's `on_error` proceed with the request unmodified). Two ways the plane
-/// does not apply a request-stage hook's rewrite, under every `on_error`:
-/// - `/refuses-rewrite`: it REFUSES to project with the rewrite (one naming a model other than
-///   the routed one, say);
-/// - `/no-rewrite`: it answers READY with no rewritten body (a rewrite it cannot read, or a
-///   dialect with no conversation to frame it into).
-///
-/// `on_error: reject` keeps the shared retryable 503 a failed call of that hook answers; every
-/// other `on_error` is 1.5.5's own 500 for a rewrite it could not apply. Nothing is sent, and the
-/// unit's record names the hook a failed veto, not the rewrite it answered.
-///
-/// RED before: `/refuses-rewrite` under `weighted`/`first`, and `/no-rewrite` under every
-/// `on_error`, sent `user:hello` upstream as the caller wrote it.
 #[tokio::test]
 async fn a_rewrite_the_plane_does_not_apply_is_refused_under_every_on_error() {
     for target in ["/refuses-rewrite", "/no-rewrite"] {
@@ -455,7 +417,6 @@ async fn a_rewrite_the_plane_does_not_apply_is_refused_under_every_on_error() {
     }
 }
 
-/// What a caller is answered for a rewrite the plane did not apply, by the hook's `on_error`.
 fn unapplied_rewrite_words(on_error: &str) -> Vec<u8> {
     if on_error == "reject" {
         format!(
@@ -473,7 +434,6 @@ fn unapplied_rewrite_words(on_error: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-/// The unit's record names the rewriting hook a failed veto, never the rewrite it answered.
 fn assert_unapplied_on_record(reports: &Reports, case: &str) {
     let reports = reports.0.lock().unwrap().clone();
     assert_eq!(
@@ -492,7 +452,6 @@ fn assert_unapplied_on_record(reports: &Reports, case: &str) {
     );
 }
 
-/// A gate-first binder attaching `gates` and `rewrites` to every entry.
 struct GatedBinder {
     gates: Vec<(u16, ResolvedPolicy)>,
     rewrites: Vec<(Duration, Arc<dyn RoutingPolicy>)>,
@@ -526,10 +485,6 @@ impl busbar_kernel::plane_driver::HookBinder for GatedBinder {
     }
 }
 
-/// The gate-first twin: the entry's rewrite the plane did not apply (refused, or READY with no
-/// rewritten body) is refused at the screen under every `on_error`, named for the hook, nothing
-/// sent: `reject` with the shared 503, any other with 1.5.5's 500. RED before: `weighted` served
-/// the unit with its own body, and `/no-rewrite` did under every `on_error`.
 #[tokio::test]
 async fn a_gate_first_rewrite_the_plane_does_not_apply_is_refused_under_every_on_error() {
     for target in ["/refuses-rewrite", "/no-rewrite"] {
@@ -571,13 +526,8 @@ async fn a_gate_first_rewrite_the_plane_does_not_apply_is_refused_under_every_on
     }
 }
 
-// ── a rewrite that does not apply to the unit ──────────────────────────────────────────────────
-
-/// The words the kernel warns with when a rewrite does not apply to the unit.
 const NOT_APPLICABLE_WARN: &str = "rewrite not applicable to this request; forwarded unmodified";
 
-/// A capture of the kernel's warnings for the life of the guard, on this test's thread (the
-/// `#[tokio::test]` runtime is current-thread, so the unit's whole drive runs here).
 fn capture_warnings() -> (
     busbar_kernel_testkit::test_support::warn_capture::WarnCapture,
     tracing::subscriber::DefaultGuard,
@@ -588,8 +538,6 @@ fn capture_warnings() -> (
     (cap, guard)
 }
 
-/// The unit is on record once, the rewriting hook a pass that did not fail: it answered, and its
-/// rewrite had nothing to apply to.
 fn assert_passed_on_record(reports: &Reports, case: &str) {
     let reports = reports.0.lock().unwrap().clone();
     assert_eq!(
@@ -608,19 +556,6 @@ fn assert_passed_on_record(reports: &Reports, case: &str) {
     );
 }
 
-/// A REWRITE THAT DOES NOT APPLY TO THE UNIT IS AN AUDITED PASS-THROUGH (ruling (A) on #1709): the
-/// plane answers READY with no rewritten body and states [`PROJECT_REWRITE_NOT_APPLICABLE`] (the
-/// unit's operation has no conversation to frame a rewrite into: a rerank's query and documents,
-/// an embedding's input). Under every `on_error`, the load-bearing hook's included, the unit goes
-/// upstream with the caller's own body, the hook is on the unit's record as a pass that did not
-/// fail, and the kernel warns naming the hook and the entry. The refusal of an unapplied rewrite
-/// without the mark is unchanged
-/// (`a_rewrite_the_plane_does_not_apply_is_refused_under_every_on_error`).
-///
-/// RED before: the kernel could not tell the mark from a failed splice and refused the unit (the
-/// hook's 503 under `reject`, 1.5.5's 500 otherwise), nothing sent.
-///
-/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
 #[tokio::test]
 async fn a_rewrite_that_does_not_apply_to_the_unit_is_forwarded_unmodified_and_audited() {
     for on_error in ["weighted", "first", "reject"] {
@@ -673,12 +608,6 @@ async fn a_rewrite_that_does_not_apply_to_the_unit_is_forwarded_unmodified_and_a
     }
 }
 
-/// The gate-first twin: the entry's rewrite that does not apply to the unit (READY, no rewritten
-/// body, [`PROJECT_REWRITE_NOT_APPLICABLE`]) is forwarded unmodified under every `on_error`, the
-/// hook on record as a pass that did not fail, the kernel warning naming the hook and the entry.
-/// RED before: refused at the screen, named for the hook, nothing sent.
-///
-/// [`PROJECT_REWRITE_NOT_APPLICABLE`]: busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
 #[tokio::test]
 async fn a_gate_first_rewrite_that_does_not_apply_to_the_unit_is_forwarded_unmodified_and_audited()
 {
@@ -728,9 +657,6 @@ async fn a_gate_first_rewrite_that_does_not_apply_to_the_unit_is_forwarded_unmod
     }
 }
 
-/// RED (row 159, B1): a plane that answers FAULT to a `project` carrying a request-stage hook's
-/// rewrite (a redaction it cannot apply) is answered with the shared 500 and its words under EVERY
-/// `on_error`, never the hook's disposition, and the far end is never dialled.
 #[tokio::test]
 async fn a_faulted_rewrite_project_is_always_the_shared_500_under_every_on_error() {
     let words = format!(
@@ -769,8 +695,6 @@ async fn a_faulted_rewrite_project_is_always_the_shared_500_under_every_on_error
     }
 }
 
-/// The gate-first twin of the above: the entry's rewrite whose project FAULTs is the shared 500
-/// under every `on_error`, nothing sent.
 #[tokio::test]
 async fn a_gate_first_faulted_rewrite_project_is_always_the_shared_500() {
     let words = format!(
@@ -808,8 +732,6 @@ async fn a_gate_first_faulted_rewrite_project_is_always_the_shared_500() {
     }
 }
 
-/// A rewrite hook that counts its invocations and abstains, fails or rejects as told: whichever it
-/// does, it must never run over a body the plane could not parse.
 struct CountingRewriter {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     answer: fn() -> TransformOutcome,
@@ -837,7 +759,6 @@ impl RoutingPolicy for CountingRewriter {
 
 type Answers = [(&'static str, fn() -> TransformOutcome); 3];
 
-/// How a configured rewrite hook may answer: abstain, fail, reject.
 const ANSWERS: Answers = [
     ("abstains", || TransformOutcome::Abstain),
     ("fails", || TransformOutcome::Failed {
@@ -849,7 +770,6 @@ const ANSWERS: Answers = [
     }),
 ];
 
-/// A counting rewrite chain: its invocation count, and the chain.
 type Counted = (
     Arc<std::sync::atomic::AtomicUsize>,
     Vec<(Duration, Arc<dyn RoutingPolicy>)>,
@@ -872,10 +792,6 @@ fn shared_500() -> Vec<u8> {
     .into_bytes()
 }
 
-/// RED (v1.5.5 `proxy/engine/mod.rs:728`, `:749`): a rewrite hook CONFIGURED for the route has the
-/// document materialized before any hook runs, so a body that will not parse is the shared 500 even
-/// when the hook would have abstained, failed or rejected: the hook is never invoked and nothing is
-/// dialled.
 #[tokio::test]
 async fn an_unparseable_body_with_a_configured_rewrite_hook_is_the_shared_500_and_no_hook_runs() {
     for (how, answer) in ANSWERS {
@@ -918,8 +834,6 @@ async fn an_unparseable_body_with_a_configured_rewrite_hook_is_the_shared_500_an
     }
 }
 
-/// RED: the same for a rewrite the POOL configures, with no global rewrite hook. The far end names
-/// its pool to the hooks, as the kernel's egress walk does: a pool's hooks bind only so.
 #[tokio::test]
 async fn an_unparseable_body_with_a_pool_rewrite_is_the_shared_500() {
     for (how, answer) in ANSWERS {
@@ -960,8 +874,6 @@ async fn an_unparseable_body_with_a_pool_rewrite_is_the_shared_500() {
     }
 }
 
-/// The gate-first twin: the entry's configured rewrite hook, the first `project` FAULTs, no hook
-/// runs, the shared 500, nothing dialled.
 #[tokio::test]
 async fn a_gate_first_unparseable_body_with_a_configured_rewrite_is_the_shared_500() {
     for (how, answer) in ANSWERS {
@@ -999,8 +911,6 @@ async fn a_gate_first_unparseable_body_with_a_configured_rewrite_is_the_shared_5
     }
 }
 
-/// GREEN twin: no rewrite hook configured (nothing bound at all), so `project` is not called up
-/// front and the body passes through to the far end.
 #[tokio::test]
 async fn with_no_rewrite_configured_project_is_not_called_up_front() {
     let r = rig_with_hooks(
@@ -1027,8 +937,6 @@ async fn with_no_rewrite_configured_project_is_not_called_up_front() {
     assert_eq!(far.sent().len(), 1, "the body went through");
 }
 
-/// What [`unparseable_under`] answers: the unit's outcome, the rendered refusal (status, body), the
-/// attempts the far end received and every `project` crossing (body, rewrite).
 type Driven = (
     Outcome,
     Option<(u32, Vec<u8>)>,
@@ -1036,13 +944,10 @@ type Driven = (
     Vec<(Vec<u8>, Vec<u8>)>,
 );
 
-/// Drive one unit of `/unparseable` (the double answers FAULT to its every `project`) under
-/// `hooks`: the outcome, what was rendered, and how many attempts reached the far end.
 async fn unparseable_under(hooks: BoundHooks) -> Driven {
     unparseable_over(hooks, Far::new(&["ok"], &[b"done"])).await
 }
 
-/// [`unparseable_under`], over `far`.
 async fn unparseable_over(hooks: BoundHooks, far: Far) -> Driven {
     let r = rig_with_hooks(
         Way::Double,
@@ -1065,11 +970,6 @@ async fn unparseable_over(hooks: BoundHooks, far: Far) -> Driven {
     (outcome, rendered, far.sent().len(), r.projects())
 }
 
-/// RED (opus review B1; v1.5.5 `proxy/engine/mod.rs:957-961`): with a decision gate bound and no
-/// rewrite configured (no hook, no pool rewrite), a body the plane cannot parse is no 500 and no
-/// 400. 1.5.5 materialized the document for its gates and, when it would not parse, the gates
-/// judged a Null body and the request proceeded: the gate judges the zeroed view (no turns) and
-/// the unit is served. RED before: the FAULT was read as an unreadable request, 400 `DecodeFailed`.
 #[tokio::test]
 async fn an_unparseable_body_with_only_a_gate_is_judged_as_a_null_body_and_served() {
     let (seen, g) = gate(None);
@@ -1088,15 +988,13 @@ async fn an_unparseable_body_with_only_a_gate_is_judged_as_a_null_body_and_serve
         projects[0].1.is_empty(),
         "the up-front project carries no rewrite"
     );
-    // The gate still judges: one that rejects refuses the unit with its own status and words.
+
     let (_, g) = gate(Some((451, "blocked")));
     let (_, rendered, sent, _) = unparseable_under(bound(Vec::new(), vec![(0, g)])).await;
     assert_eq!(rendered, Some((451, b"refused:451:blocked".to_vec())));
     assert_eq!(sent, 0, "never dialled");
 }
 
-/// GREEN twin: gates only, a body the plane parses. The up-front `project` answers the view and
-/// the gate judges the request's own turns, the unit served.
 #[tokio::test]
 async fn with_only_a_gate_a_parseable_body_is_judged_over_its_own_turns() {
     let (seen, g) = gate(None);
@@ -1124,9 +1022,6 @@ async fn with_only_a_gate_a_parseable_body_is_judged_over_its_own_turns() {
     );
 }
 
-/// RED (opus review B1; v1.5.5 `proxy/engine/mod.rs:1330`, the policy's document read `.ok()`):
-/// the same with only a base routing policy bound for the pool: it judges the zeroed view and the
-/// unit is served. RED before: 400 `DecodeFailed`.
 #[tokio::test]
 async fn an_unparseable_body_with_only_a_policy_is_judged_as_a_null_body_and_served() {
     let (seen, policy) = gate(None);
@@ -1144,11 +1039,6 @@ async fn an_unparseable_body_with_only_a_policy_is_judged_as_a_null_body_and_ser
     );
 }
 
-/// RED, the gate-first twin (opus review B1): the entry has gates and no rewrite, and the first
-/// `project` FAULTs. The gates judge a view with no body and the unit is served: a gate shown the
-/// shape judges it (one that rejects refuses, with its status and words), and a gate granted the
-/// content applies its `on_error` (here `weighted`, which proceeds), as it does for any body it
-/// cannot read. RED before: refused as unreadable.
 #[tokio::test]
 async fn a_gate_first_unparseable_body_with_only_gates_is_judged_and_served() {
     for (send_prompt, reject, want_sent, want_seen) in [
@@ -1188,14 +1078,6 @@ async fn a_gate_first_unparseable_body_with_only_gates_is_judged_and_served() {
     }
 }
 
-/// GUARD (lead rulings on #1500; dev answers these 400 too): only the plane's own FAULT marked
-/// `PROJECT_FAULT_UNPARSEABLE` takes
-/// the Null-view path. Every other FAULT on a gate-only route is a broken plane and fails closed,
-/// unreadable (400), before any gate judges it and before any attempt: a slot that panicked (its
-/// door writes nothing but the outcome), a frame refused before the crossing or a quarantined
-/// instance (the `out` as the host lent it), a FAULT the plane answered without the mark, and a
-/// READY answer the host's kind check refused (a FAULT the host minted, the mark's bit among the
-/// plane's own view flags even). The same at a gate-first screen.
 #[tokio::test]
 async fn every_fault_but_the_marked_unparseable_one_on_a_gate_only_route_is_refused_400() {
     for target in [
@@ -1260,11 +1142,6 @@ async fn every_fault_but_the_marked_unparseable_one_on_a_gate_only_route_is_refu
     }
 }
 
-/// RED (opus review of #1500): at a gate-first screen the first `project` is made before the entry
-/// is bound, so it cannot know a rewrite is configured. An UNMARKED FAULT there (a panicking slot, no
-/// crossing, a FAULT without the mark, a READY answer the host's check refused) over an entry that
-/// carries a rewrite is the shared 500, no hook invoked and nothing dialled, as dev answered it and
-/// as the routed path does. RED before: 400, the unit read as unreadable without the rewrite looked at.
 #[tokio::test]
 async fn a_gate_first_unmarked_fault_with_a_configured_rewrite_is_the_shared_500() {
     for target in [
@@ -1315,7 +1192,6 @@ impl HookJournal for Reports {
     }
 }
 
-/// One hook that ran, keyed `hook`.
 fn ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
     HookApplied {
         hook: hook.to_string(),
@@ -1324,8 +1200,6 @@ fn ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
     }
 }
 
-/// Drive one unit through `hooks` with the stage reporting to a [`Reports`], and hand back what it
-/// reported.
 async fn reported(hooks: BoundHooks) -> Vec<HooksRan> {
     let mut r = rig_with_hooks(
         Way::Double,
@@ -1350,9 +1224,6 @@ async fn reported(hooks: BoundHooks) -> Vec<HooksRan> {
     out
 }
 
-/// THE STAGE REPORTS EACH HOOK THAT RAN (audit root#3; THE DESIGN §1: the record's "controls (...
-/// hooks applied)"): once for the unit, under its key, in the order the hooks ran, each by its key
-/// with its decision head. The rewrite changed the request; the gate after it let it through.
 #[tokio::test]
 async fn the_stage_reports_each_hook_that_ran_in_order_with_its_head() {
     let (_, g) = gate(None);
@@ -1373,8 +1244,6 @@ async fn the_stage_reports_each_hook_that_ran_in_order_with_its_head() {
     );
 }
 
-/// A HOOK THAT FAILED IS REPORTED FAILED, never dropped: the load-bearing rewrite that could not
-/// answer stopped the unit, and the report names it as the veto it became, failed.
 #[tokio::test]
 async fn the_stage_reports_a_hook_that_failed_as_failed() {
     let reports = reported(bound(

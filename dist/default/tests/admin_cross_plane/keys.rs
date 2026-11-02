@@ -1,28 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The admin service's keys-module tests that need a linked plane (moved from
-//! busbar-core-admin's `src/tests/tests.rs`, assertions unchanged), with the error-surface
-//! drivers they share.
-
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::plane_driver::serve::ServeTables;
 use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use std::sync::Arc;
-
-// ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
-//
-// The keys handlers historically spoke their OWN error vocabulary (`error_response` + `ERR_TYPE_*`,
-// re-mapped onto the frozen `code` enum in a second place) while every other v1 handler spoke
-// `AdminError` + `err_json`. That second vocabulary is collapsed onto the one
-// taxonomy. The collapse must be INVISIBLE on the wire: this test pins the EXACT status,
-// content-type and body BYTES of every keys error path, so the refactor is provably a no-op for
-// clients and any future divergence between the two surfaces is a red test, not a support ticket.
-//
-// Regenerate deliberately with `UPDATE_KEYS_ERROR_GOLDEN=1 cargo test -p busbar
-// keys_error_surface_is_byte_stable` — a diff in that file is a WIRE CHANGE on a frozen surface.
 
 /// The governance posture a keys error case is exercised against.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -35,24 +19,21 @@ enum KeysFixture {
     Off,
 }
 
-/// One pinned keys error case: a request, and the fixture it runs against.
 struct KeysErrCase {
     name: &'static str,
     fixture: KeysFixture,
     method: &'static str,
-    /// Path relative to `/api/v1/admin`; `{live}` is substituted with the id of a minted key.
+
     path: &'static str,
     headers: &'static [(&'static str, &'static str)],
     body: Option<&'static str>,
 }
 
-/// The committed byte-for-byte snapshot of the keys error wire.
 const KEYS_ERROR_GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../crates/busbar-core-admin/src/tests/keys_error_wire.json"
 );
 
-/// Terse constructor for a [`KeysErrCase`] row.
 const fn c(
     name: &'static str,
     fixture: KeysFixture,
@@ -71,11 +52,6 @@ const fn c(
     }
 }
 
-/// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
-/// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
-/// of a 409 "signed-token minting is unavailable". Every admin test that mints (directly or over
-/// HTTP) builds its gov through this so the signer is always present; a read-only test could stay on
-/// `GovState::new`, but giving them all a signer keeps the fixtures uniform and future-proof.
 fn gov_with_signer(
     store: Arc<dyn busbar_kernel::governance::RecordStore>,
     admin_token: Option<String>,
@@ -95,9 +71,6 @@ fn gov_with_signer(
     )
 }
 
-/// Spin up an already-built `router` on an ephemeral local port: the listener bind, the address
-/// read-back, the live `axum::serve` task, and a fresh client to hit it — the "spin up a real
-/// router" preamble every v1-transport test in this file repeated inline.
 async fn spin_up(
     router: axum::Router,
 ) -> (
@@ -111,15 +84,6 @@ async fn spin_up(
     (addr, handle, reqwest::Client::new())
 }
 
-/// With a rate card PRESENT, a usage read over a class the card does not
-/// price answers a NAMED `409 unpriced_class` whose message names the lane and the class — on all
-/// three usage reads — instead of the bare `500 internal` they answered after 789d55a78.
-///
-/// The card prices lane `m`'s `input` class and holds its `output` class UNPRICED (a negative
-/// rate is not a rate the card can represent, item 22). One response of 700 input + 200 output
-/// tokens is accrued to key `k` (bucket `k`, window total) and its group `team` (budget, total),
-/// and metered into today's `/usage` bucket. Returns `(path, status, body)` for each read, and
-/// is the witness the declared-error audit drives for the three `unpriced_class` declarations.
 async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
     busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -161,7 +125,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             now,
         )
         .unwrap();
-    // Accrue through the group chain the way the engine does (the chain reads `key.group`).
+
     let mut in_team = minted.clone();
     in_team.group = Some("team".to_string());
     let units = std::collections::BTreeMap::from([
@@ -199,8 +163,6 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
     out
 }
 
-/// The read of [`drive_unpriced_usage_reads`] whose path starts with `prefix`, asserted: `409`, `code = unpriced_class`, and a
-/// message naming the lane `m` and the class `output`.
 async fn assert_unpriced_usage_read_is_named(prefix: &str) {
     let reads = drive_unpriced_usage_reads().await;
     let (path, status, body) = reads
@@ -220,16 +182,6 @@ async fn assert_unpriced_usage_read_is_named(prefix: &str) {
     );
 }
 
-/// `POST /config/apply` accepts EXACTLY the shape boot config
-/// accepts, PLANE SECTIONS INCLUDED — no `unknown field`. A plane's fee is that plane's own reserved
-/// key (#47: `<section>.fees`, lifted off the section by the 1.6.0 pre-pass), so a live fee change
-/// is an apply carrying the plane section, and the applied App must price that plane at the new fee.
-///
-/// RED before the fix: `ApplyConfigReq` derived `Deserialize` straight onto the frozen
-/// `deny_unknown_fields` `DeployCfg`, skipping the pre-pass, so the plane section was refused
-/// (`400 malformed config body: unknown field ...`) while the identical document boots clean.
-/// The control half: a key NO registered plane declares is still refused, so apply is exactly
-/// boot's shape and not a looser one.
 #[tokio::test]
 async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     use http_body_util::BodyExt;
@@ -246,7 +198,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
-    // The plane the registry says owns the `tools:` section, so the test names no plane crate.
+
     let section = "tools";
     let plane = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .expect("a plane is registered to own the `tools:` section");
@@ -311,10 +263,6 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     let _ = std::fs::remove_file(&overlay);
 }
 
-/// `GET openapi.json` answers every client as 1.5.5 did: the identity JSON document, no
-/// `Content-Encoding` and no `Vary`, whatever `Accept-Encoding` the client sends (ORACLE-116
-/// review, F-011c: the gzip negotiation and its `Vary` were never signed). RED: a gzip-accepting
-/// client was sent the pre-compressed bytes and every answer carried `Vary: accept-encoding`.
 #[tokio::test]
 async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -325,8 +273,6 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
     let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/openapi.json");
 
-    // This reqwest client has no gzip feature, so it performs no transparent decode: the bytes
-    // observed here are the wire bytes.
     let mut bodies = Vec::new();
     for accept in [
         None,
@@ -359,13 +305,10 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
     handle.abort();
 }
 
-/// Build an UNSIGNED (structurally valid) plugin tarball in memory for the HTTP lifecycle tests.
 fn admin_test_tarball(name: &str, alias: &str) -> Vec<u8> {
     admin_test_tarball_versioned(name, alias, "1.0.0")
 }
 
-/// As `admin_test_tarball`, with an explicit version so a test can build two SAME-NAME tarballs that
-/// differ only in version (and thus filename) - the same-name-different-file case.
 fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u8> {
     let lib = format!("junk library bytes for {name} {version} (never dlopened)").into_bytes();
     let lib = lib.as_slice();
@@ -395,7 +338,6 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// A `budget` limit for a group tree (helper to keep the test trees readable).
 fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
         metric: busbar_kernel::config::groups::LimitMetric::Budget,
@@ -485,12 +427,10 @@ async fn drive_key_cap_and_delegation_errors() {
         }
     };
 
-    // Fill `capped` to its ceiling of 2, and park one key in `roomy` to rebind with.
     let cap_a = mint("a", "capped").await;
     let _cap_b = mint("b", "capped").await;
     let roamer = mint("roamer", "roomy").await;
 
-    // ── 1. REBIND into an at-cap bucket → 409 `conflict` naming the cap ───────────────────────
     let r = patch(roamer.clone(), serde_json::json!({"group": "capped"})).await;
     assert_eq!(r.status().as_u16(), 409, "rebind into an at-cap group");
     let body: serde_json::Value = r.json().await.unwrap();
@@ -503,8 +443,6 @@ async fn drive_key_cap_and_delegation_errors() {
         "the rebind 409 names the cap: {body}"
     );
 
-    // ── 2. RE-ENABLE past the cap → the SAME 409 ──────────────────────────────────────────────
-    // Disable one of `capped`'s keys: the bucket now counts 1 live, so a fresh mint is admitted.
     assert_eq!(
         patch(cap_a.clone(), serde_json::json!({"enabled": false}))
             .await
@@ -514,7 +452,7 @@ async fn drive_key_cap_and_delegation_errors() {
         "disabling is always allowed — it can only free a slot"
     );
     let _cap_c = mint("c", "capped").await;
-    // …and NOW re-enabling the parked key would make 3 live keys in a bucket capped at 2.
+
     let r = patch(cap_a.clone(), serde_json::json!({"enabled": true})).await;
     assert_eq!(
         r.status().as_u16(),
@@ -530,8 +468,7 @@ async fn drive_key_cap_and_delegation_errors() {
             .contains("max_keys_per_principal"),
         "the re-enable 409 names the cap: {body}"
     );
-    // A DISABLED key can still be edited in every other way — the guard fires on admission, not on
-    // touching an at-cap bucket (otherwise an at-cap bucket would freeze).
+
     assert_eq!(
         patch(cap_a.clone(), serde_json::json!({"enabled": false}))
             .await
@@ -541,8 +478,6 @@ async fn drive_key_cap_and_delegation_errors() {
         "a no-op disable of a key in an at-cap bucket is not an admission"
     );
 
-    // The operator (`full`) may mint an UNBOUND key — the tree's owner is not gated (1.5.2 removed
-    // the delegated-mint-must-bind refusal along with the narrower `mint` scope).
     let r = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
@@ -556,11 +491,6 @@ async fn drive_key_cap_and_delegation_errors() {
         "the operator owns the tree and may still mint an unbound key"
     );
 
-    // ── THE AUDIT CONSEQUENCE ─────────────────────────────────────────────────────────────────
-    // Every refusal above wrote a `rejected` row: a refused mint is a stopped attempt to issue a
-    // credential, and must leave a trace. The rows are asserted through
-    // the live `GET /audit` surface, bound to each key this test minted. Unrelated rejected
-    // patches in the process-wide ring cannot stand in for either refusal.
     let audit_rows = |resource: String| {
         let (c, a) = (client.clone(), addr);
         async move {
@@ -583,7 +513,7 @@ async fn drive_key_cap_and_delegation_errors() {
                 .clone()
         }
     };
-    // The cap refusals above are `key.patch` (rebind + re-enable); each must leave a `rejected` row.
+
     for id in [&roamer, &cap_a] {
         let resource = format!("key:{id}");
         let rows = audit_rows(resource.clone()).await;
@@ -598,17 +528,11 @@ async fn drive_key_cap_and_delegation_errors() {
     server.abort();
 }
 
-/// The `#[tokio::test]` wrapper for [`drive_key_cap_and_delegation_errors`].
 #[tokio::test]
 async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
     drive_key_cap_and_delegation_errors().await;
 }
 
-/// The unknown-section refusal keeps 1.5.5's EXACT sentence shape — "expected `a`, `b`, or `c`",
-/// serial comma, `or` before the last name — with the longer list (1.5.5's four
-/// sections plus `identity-providers` and `export`, the two named-map sections a 1.5.5-shaped config
-/// serves; a configured plane's section joins the list). 1.5.5 answered "expected `groups`, `hooks`, `root`, or `plugin_versions`"; a rewording
-/// onto "expected one of …" is a customer-visible change no ruling allows.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -627,10 +551,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
     assert_eq!(r.status().as_u16(), 400);
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
-    // This lib-test app links no plane registry, so every named-map section is served and the list
-    // runs on to `tools`/`agents`; on a 1.5.5-shaped config (no plane sections) those two are not
-    // sections and the list ends `…, or `export`` — the oracle cell
-    // `admin.ops|DeleteOverlaySection|not-found` pins that form. The SHAPE is what this pins.
+
     assert_eq!(
         body["error"]["message"],
         "unknown overlay section `limits`: expected `groups`, `hooks`, `root`, \
@@ -641,18 +562,8 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
     handle.abort();
 }
 
-/// RESET a NAMED-MAP section (`DELETE /overlay/export`): every API-applied exporter definition is
-/// discarded and the section reverts to base `config.yaml` truth, exactly as `groups`/`hooks`/`root`
-/// already did.
-///
-/// `named_maps` was in NONE of `OverlaySection`'s variants, so there was no way to revert
-/// API-applied identity-provider or export definitions to config.yaml at all: the endpoint answered
-/// `400 unknown overlay section`. Every other durable overlay section had a revert and this one did
-/// not, while the docs listed the four-value set as COMPLETE.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
-    // `request-log-file` (K9b) and `prometheus` (K9d) are rows of the export axis, as a linked
-    // build's are.
     linked_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("resetnamedmap", false).await;
     let client = reqwest::Client::new();
@@ -661,7 +572,6 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
             .header("content-type", "application/json")
     };
 
-    // An API-applied exporter, alongside the fixture's base-config `base-metrics`.
     let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/runtime-sink")))
         .body(
             serde_json::json!({
@@ -683,7 +593,6 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
         "the definition is in the overlay before the reset"
     );
 
-    // RESET the section.
     let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/export")))
         .send()
         .await
@@ -693,7 +602,6 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
     assert_eq!(body["reset"], "export");
     assert_eq!(body["changed"], true, "the reset discarded a mutation");
 
-    // The API-applied exporter is gone; the base-config one is untouched.
     let gone = admin(client.get(format!("http://{addr}/api/v1/admin/export/runtime-sink")))
         .send()
         .await
@@ -712,13 +620,13 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
         200,
         "a base config.yaml definition is NOT what a reset removes"
     );
-    // The durable half: the section is cleared on disk, so the revert survives a restart.
+
     assert!(
         busbar_kernel::config::overlay::read(&overlay)
             .is_none_or(|d| !d.named_maps.contains_key("export")),
         "the overlay `export` section is cleared on disk"
     );
-    // A SIBLING named-map section is untouched by another section's reset.
+
     let idp = admin(client.get(format!(
         "http://{addr}/api/v1/admin/identity-providers/base-idp"
     )))
@@ -731,14 +639,6 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// REFERENTIAL INTEGRITY on a BULK reset: a section reset that would leave another config site
-/// naming a definition that no longer exists is refused as a terminal `conflict` NAMING both the
-/// entry and its referent, and nothing changes.
-///
-/// This is the guard the per-entry `DELETE /identity-providers/{name}` already had, applied to the
-/// bulk path. Without it a reset would be accepted, the rebuild would fail deeper down with the far
-/// less actionable "references X, which is not defined", and the operator would be left guessing
-/// which of the definitions they just discarded was the one still in use.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference() {
     let (dir, _overlay, addr, handle) = named_map_app("resetdangling", true).await;
@@ -747,7 +647,7 @@ async fn test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference() {
         r.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
     };
-    // The fixture's base `auth.admin_auth:` names `corp-ad`; this PUT is the only definition of it.
+
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/corp-ad"
     )))
@@ -782,7 +682,6 @@ async fn test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference() {
         "the refusal names the entry AND the referent so an operator knows what to fix: {body}"
     );
 
-    // NOTHING changed: the definition is still live and still on disk.
     let after = admin(client.get(format!(
         "http://{addr}/api/v1/admin/identity-providers/corp-ad"
     )))
@@ -799,8 +698,6 @@ async fn test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Serve one fixture, returning its address, the server task, and the id of a live key (empty for
-/// the postures that cannot mint).
 async fn serve_keys_fixture(
     fixture: KeysFixture,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
@@ -814,9 +711,7 @@ async fn serve_keys_fixture(
             let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
             crate::new_test_app().governance(gov).build()
         }
-        // Governance OFF: there is no governance to hold an operator token, so the fixture uses
-        // the explicit `admin_auth: []` OPEN posture (the documented dev posture) to authenticate.
-        // Otherwise every case would 401 in the middleware and never reach a keys handler.
+
         KeysFixture::Off => {
             let cfg = busbar_kernel::config::AuthCfg {
                 admin_auth: Vec::new(),
@@ -832,7 +727,7 @@ async fn serve_keys_fixture(
     };
     let router = crate::build_router(app.clone());
     let (addr, handle, _) = spin_up(router).await;
-    // A live key id for the stale-ETag cases (only mintable on the signing fixture).
+
     let live = if fixture == KeysFixture::Signing {
         let (key, _) = app
             .governance
@@ -857,26 +752,19 @@ async fn serve_keys_fixture(
     (addr, handle, live)
 }
 
-/// BYTE-PARITY LOCK: every keys error response — status, content-type and body
-/// BYTES — is pinned. The keys surface is frozen v1; collapsing its private error vocabulary onto
-/// `AdminError` + `err_json` may change how the bytes are PRODUCED, never what they ARE.
 #[tokio::test]
 async fn keys_error_surface_is_byte_stable() {
     drive_keys_error_surface().await;
 }
 
-/// Drive every pinned keys error path and assert the wire is byte-identical to the golden. Split
-/// out of the `#[tokio::test]` so the class-level over-claim test can RUN it (and collect its
-/// emissions) without depending on test ordering.
 async fn drive_keys_error_surface() {
     busbar_kernel_testkit::test_support::metrics::init();
-    // A 65-character id (the cap is 64) and an id that cannot exist.
+
     const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const MISSING: &str = "vk_0000000000000000";
-    // A well-formed but WRONG key ETag (16 hex chars) — the stale-If-Match guard, not the parser.
+
     const STALE_ETAG: &str = "\"00000000000000ff\"";
     let cases: &[KeysErrCase] = &[
-        // ── GET /keys — the query string is validated at the door ─────────────────────────────
         c(
             "list_bad_cursor",
             KeysFixture::Signing,
@@ -901,7 +789,6 @@ async fn drive_keys_error_surface() {
             &[],
             None,
         ),
-        // ── POST /keys ────────────────────────────────────────────────────────────────────────
         c(
             "mint_bad_json",
             KeysFixture::Signing,
@@ -982,7 +869,6 @@ async fn drive_keys_error_surface() {
             &[],
             Some(r#"{"name":"k"}"#),
         ),
-        // ── GET /keys/{id} ────────────────────────────────────────────────────────────────────
         c(
             "read_overlong_id",
             KeysFixture::Signing,
@@ -1007,7 +893,6 @@ async fn drive_keys_error_surface() {
             &[],
             None,
         ),
-        // ── PATCH /keys/{id} ──────────────────────────────────────────────────────────────────
         c(
             "patch_overlong_id",
             KeysFixture::Signing,
@@ -1064,7 +949,6 @@ async fn drive_keys_error_surface() {
             &[],
             Some("{}"),
         ),
-        // ── DELETE /keys/{id} ─────────────────────────────────────────────────────────────────
         c(
             "delete_overlong_id",
             KeysFixture::Signing,
@@ -1105,7 +989,6 @@ async fn drive_keys_error_surface() {
             &[],
             None,
         ),
-        // ── GET /keys/{id}/usage ──────────────────────────────────────────────────────────────
         c(
             "usage_overlong_id",
             KeysFixture::Signing,
@@ -1130,7 +1013,6 @@ async fn drive_keys_error_surface() {
             &[],
             None,
         ),
-        // ── POST /keys/{id}/rotate ────────────────────────────────────────────────────────────
         c(
             "rotate_overlong_id",
             KeysFixture::Signing,
@@ -1155,7 +1037,6 @@ async fn drive_keys_error_surface() {
             &[],
             None,
         ),
-        // ── POST /keys/{id}/revoke ────────────────────────────────────────────────────────────
         c(
             "revoke_overlong_id",
             KeysFixture::Signing,
@@ -1180,7 +1061,6 @@ async fn drive_keys_error_surface() {
             &[],
             None,
         ),
-        // ── POST /signing-key/rotate ──────────────────────────────────────────────────────────
         c(
             "signing_rotate_no_key",
             KeysFixture::NoSigner,
@@ -1268,24 +1148,11 @@ async fn drive_keys_error_surface() {
     );
 }
 
-/// Drive the non-keys admin error paths that the rest of the suite leaves unexercised: the group
-/// CRUD errors, the version-guard errors on every If-Match-guarded mutation, the list-GET query
-/// rejections and the config-plane read errors. Assertions are deliberately thin (status + code) —
-/// the POINT of the test is the emission, which the router's recording layer witnesses.
 #[tokio::test]
 async fn admin_error_surface_witnesses_every_declared_response() {
     drive_admin_error_surface().await;
 }
 
-/// Build a FRESH admin fixture for the error-surface driver: a base-config group (`team`) and hook
-/// (`basehook`) — file-owned, so the `conflict` base-defined arms are reachable — plus an OVERLAY
-/// group (`og`) and hook (`oh`) created over the API, for the arms that must NOT hit the
-/// base-defined guard. Returns the address and the server task.
-///
-/// Each batch of cases gets its own fixture: the admin surface enforces a per-principal, per-class
-/// MUTATION BUDGET (10/min for the config plane), and a driver that exercises every declared error
-/// blows straight through it. A fresh App carries a fresh limiter, so the batching keeps the driver
-/// exercising HANDLERS rather than the rate limiter.
 async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -1346,16 +1213,13 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
     (addr, server)
 }
 
-/// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_admin_error_surface() {
     busbar_kernel_testkit::test_support::metrics::init();
-    // A syntactically valid but WRONG config-plane ETag — the stale guard, not the parser.
+
     const STALE: &str = "\"999999\"";
     const BAD_ETAG: &str = "not-an-etag";
     let group_body = r#"{"config":{"limits":[]}}"#;
-    // (label, method, rel, if-match, body, expected status, expected code)
-    /// One driven error case: (label, method, relative path, `If-Match`, body, expected status,
-    /// expected frozen `code`).
+
     type ErrCase = (
         &'static str,
         &'static str,
@@ -1366,7 +1230,6 @@ async fn drive_admin_error_surface() {
         &'static str,
     );
     let cases: &[ErrCase] = &[
-        // ── POST /groups ──────────────────────────────────────────────────────────────────────
         (
             "groups_post_invalid_tree",
             "POST",
@@ -1403,7 +1266,6 @@ async fn drive_admin_error_surface() {
             400,
             "invalid_request",
         ),
-        // ── PUT /groups/{name} ────────────────────────────────────────────────────────────────
         (
             "groups_put_bad_if_match",
             "PUT",
@@ -1440,7 +1302,6 @@ async fn drive_admin_error_surface() {
             409,
             "version_conflict",
         ),
-        // ── PATCH /groups/{name} ──────────────────────────────────────────────────────────────
         (
             "groups_patch_bad_if_match",
             "PATCH",
@@ -1486,7 +1347,6 @@ async fn drive_admin_error_surface() {
             400,
             "invalid_request",
         ),
-        // ── DELETE /groups/{name} ─────────────────────────────────────────────────────────────
         (
             "groups_delete_bad_if_match",
             "DELETE",
@@ -1523,7 +1383,6 @@ async fn drive_admin_error_surface() {
             409,
             "version_conflict",
         ),
-        // ── Hooks: the version-guard arms the escalation tests don't reach ─────────────────────
         (
             "hooks_post_stale",
             "POST",
@@ -1587,7 +1446,6 @@ async fn drive_admin_error_surface() {
             409,
             "version_conflict",
         ),
-        // ── List/read GETs whose query string is rejected at the door ─────────────────────────
         (
             "pools_bad_detail",
             "GET",
@@ -1642,7 +1500,6 @@ async fn drive_admin_error_surface() {
             404,
             "not_found",
         ),
-        // ── Config plane ──────────────────────────────────────────────────────────────────────
         (
             "config_rollback_bad_body",
             "POST",
@@ -1688,7 +1545,6 @@ async fn drive_admin_error_surface() {
             400,
             "invalid_request",
         ),
-        // ── Plugins ───────────────────────────────────────────────────────────────────────────
         (
             "plugin_rollback_bad_body",
             "POST",
@@ -1716,7 +1572,6 @@ async fn drive_admin_error_surface() {
             409,
             "version_conflict",
         ),
-        // ── Single-resource reads: the 404 every templated GET carries ────────────────────────
         (
             "pool_unknown",
             "GET",
@@ -1816,19 +1671,6 @@ async fn drive_admin_error_surface() {
             400,
             "invalid_request",
         ),
-        // ── POST /restart's 3 declared conditions ─────────────────────────────────────────────
-        // These 3 have their own dedicated behavioral test (`test_admin_v1_restart_refuses_when_
-        // it_cannot_restart`, which also asserts the exact refusal MESSAGE distinguishing the two
-        // 409s) -- but that test's witnesses must not be this audit's only source of them, per
-        // this function's own doc comment ("independent of whether they [other tests] ran"). Under
-        // parallel `cargo test` scheduling there is no guarantee that test's HTTP calls land before
-        // this function's caller takes its `observed::snapshot()`, so relying on it alone is a real
-        // race, not just a theoretical one -- these 3 rows close it. `can_restart()` is backed by a
-        // `OnceLock` never populated in a test binary, so `confirm: true` deterministically reaches
-        // the NotRestartable gate regardless of environment; `restart_no_supervisor` forces the
-        // unsupervised environment deterministically (see `busbar_core_admin_testkit::with_forced_unsupervised`'s doc
-        // comment) rather than assuming the real env lacks the supervisor markers -- CI runners were
-        // found to genuinely set INVOCATION_ID themselves, which broke that original assumption.
         (
             "restart_malformed_body",
             "POST",
@@ -1856,7 +1698,6 @@ async fn drive_admin_error_surface() {
             409,
             "conflict",
         ),
-        // ── Hook definition lifecycle ─────────────────────────────────────────────────────────
         (
             "hooks_post_bad_body",
             "POST",
@@ -1947,7 +1788,6 @@ async fn drive_admin_error_surface() {
             404,
             "not_found",
         ),
-        // ── Overlay reset ─────────────────────────────────────────────────────────────────────
         (
             "overlay_unknown_section",
             "DELETE",
@@ -1966,7 +1806,6 @@ async fn drive_admin_error_surface() {
             409,
             "version_conflict",
         ),
-        // ── Config plane ──────────────────────────────────────────────────────────────────────
         (
             "cache_flush_bad_body",
             "POST",
@@ -2061,8 +1900,6 @@ async fn drive_admin_error_surface() {
         ),
     ];
 
-    // The per-principal mutation budget is 10/min for the config class, so run the table in small
-    // batches, each against a fresh fixture (and therefore a fresh limiter).
     let client = reqwest::Client::new();
     for batch in cases.chunks(6) {
         let (addr, server) = admin_error_fixture().await;
@@ -2079,11 +1916,7 @@ async fn drive_admin_error_surface() {
             if let Some(b) = body {
                 req = req.header("content-type", "application/json").body(*b);
             }
-            // `restart_no_supervisor` needs a deterministically-unsupervised environment to reach
-            // the real NoSupervisor 409 through the real handler -- CI runners were found to
-            // genuinely set INVOCATION_ID themselves, so the env alone can't be trusted. See
-            // `busbar_core_admin_testkit::with_forced_unsupervised`'s doc comment for why this is thread-local, not
-            // an env var.
+
             let resp = if *label == "restart_no_supervisor" {
                 busbar_core_admin_testkit::with_forced_unsupervised(|| req.send()).await
             } else {
@@ -2102,32 +1935,19 @@ async fn drive_admin_error_surface() {
     }
 }
 
-/// WITNESS: the two `POST /plugins/rollback` errors that need a real plugins directory —
-/// a target file that is not there (404 `not_found`) and one that IS there but does not pass the
-/// running trust posture even with the anti-downgrade floor lowered to its own version (409
-/// `conflict`; a rollback authenticates the OPERATOR, never the bytes).
 #[tokio::test]
 async fn plugin_rollback_reports_missing_and_untrusted_targets() {
     drive_plugin_rollback_errors().await;
 }
 
-/// `POST /plugins/reload` 400s when the on-disk config no longer rebuilds. The operation declared NO
-/// 4xx at all until this driver existed -- `openapi.json` hid a response clients hit, and the
-/// router's under-claim panic could not catch it because nothing produced it.
 #[tokio::test]
 async fn plugin_reload_reports_an_unrebuildable_disk_config() {
     drive_plugin_reload_errors().await;
 }
 
-/// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_reload_errors() {
     busbar_kernel_testkit::test_support::metrics::init();
-    // `pid` alone collides: this helper is called from TWO `#[tokio::test]`s in the same binary
-    // (`plugin_reload_reports_an_unrebuildable_disk_config` and
-    // `declared_error_set_is_exactly_what_the_handlers_emit`), which can run concurrently and would
-    // otherwise `remove_dir_all` / overwrite each other's fixture mid-request. A per-CALL monotonic
-    // ticket makes every call's directory unique, matching the `stage.rs::next_seq` idiom (pid+tag
-    // is not enough here because it's the SAME tag from two call sites, not distinct ones).
+
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-reload-witness-{}-{}",
@@ -2136,7 +1956,7 @@ async fn drive_plugin_reload_errors() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    // DISK TRUTH that does not parse: the rebuild is reached (not the ephemeral branch) and fails.
+
     let config = dir.join("config.yaml");
     let providers = dir.join("providers.yaml");
     std::fs::write(&config, "this: [is not: valid: yaml\n").unwrap();
@@ -2166,11 +1986,9 @@ async fn drive_plugin_reload_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_rollback_errors() {
     busbar_kernel_testkit::test_support::metrics::init();
-    // Same per-call collision as `drive_plugin_reload_errors` above (two callers, same pid) — see
-    // that function's comment.
+
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-rollback-witness-{}-{}",
@@ -2180,8 +1998,7 @@ async fn drive_plugin_rollback_errors() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let overlay = dir.join("overlay.yaml");
-    // An UNSIGNED artifact sitting in the plugins directory, under the DEFAULT trust posture
-    // (unsigned not opted in) — so it is present but not loadable.
+
     let tarball = admin_test_tarball("rollme", "rollme");
     let file = "rollme-1.0.0.tar.gz";
     std::fs::write(dir.join(file), &tarball).unwrap();
@@ -2224,9 +2041,6 @@ async fn drive_plugin_rollback_errors() {
     );
     assert_eq!(body["error"]["code"], "conflict");
 
-    // The sibling INSTALL + REMOVE errors, driven against the same directory: a malformed body, a
-    // filename that is not a plugin archive, an artifact the trust posture rejects, and a removal
-    // of something that was never installed.
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&tarball);
     for (label, rel, method, body, want_status, want_code) in [
@@ -2294,8 +2108,6 @@ async fn drive_plugin_rollback_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `POST /plugins/inspect` with a `tarball_b64` that is not valid base64 is rejected with
-/// `invalid_request`.
 async fn drive_plugin_inspect_errors() {
     busbar_kernel_testkit::test_support::metrics::init();
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2318,8 +2130,6 @@ async fn drive_plugin_inspect_errors() {
     let router = crate::build_router(app);
     let (addr, server, client) = spin_up(router).await;
 
-    // tarball_b64 that is not valid base64 → AdminError::Validation → 400 invalid_request. This is the
-    // witness for the operation's declared 400.
     let r = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
@@ -2337,9 +2147,6 @@ async fn drive_plugin_inspect_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Every admin error-surface driver answers the status and code it expects: the admin, keys,
-/// plugin, key-cap, named-map, door-verb and usage-read error paths, plus each linked engine
-/// plane's own driver from the kernel's test-seam registry.
 #[tokio::test]
 async fn every_admin_error_surface_answers_its_declared_status() {
     drive_admin_error_surface().await;
@@ -2361,16 +2168,6 @@ async fn every_admin_error_surface_answers_its_declared_status() {
     }
 }
 
-/// Every (relative path, method) the admin surface documents — read off the COMMITTED
-/// `openapi.json`, the exact bytes the runtime serves via `include_str!`.
-///
-/// This used to be a hand-maintained list that nothing tied to anything: an operation could be added
-/// to the router and the doc and simply never appear here, and its declared 4xx set would go
-/// unaudited forever. The committed doc is a projection of the code (`openapi_json_matches_committed_file`
-/// fails the build the moment it drifts) and every operation in it that this crate's router answers
-/// is proven mounted with a documented status, and every router route proven documented
-/// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
-/// this audit.
 fn documented_operations() -> Vec<(String, busbar_core_admin::v1::contract::taxonomy::MethodTag)> {
     use busbar_core_admin::v1::contract::taxonomy::MethodTag;
     let doc: serde_json::Value =
@@ -2385,7 +2182,6 @@ fn documented_operations() -> Vec<(String, busbar_core_admin::v1::contract::taxo
             .strip_prefix(busbar_core_admin::v1::contract::ADMIN_PREFIX)
             .unwrap_or(abs);
         for key in item.as_object().into_iter().flatten().map(|(k, _)| k) {
-            // `x-*` specification extensions share the path-item object with real operations.
             if let Some(m) = MethodTag::from_op_key(key) {
                 ops.push((rel.to_string(), m));
             }
@@ -2399,23 +2195,12 @@ fn documented_operations() -> Vec<(String, busbar_core_admin::v1::contract::taxo
     ops
 }
 
-/// `docs/admin-api.md`'s mutation rate-limit table names the CONFIG-class (10/min) endpoint set by
-/// hand. Until this test existed, nothing tied that prose list to
-/// `ratelimit::classify_mutation` — the classifier that actually decides which budget a request
-/// spends from. This walks every mutation operation in the committed `openapi.json`
-/// (`documented_operations`, itself a projection nothing can silently drift from), classifies each
-/// one, and requires the resulting CONFIG set to equal the doc's `config` row EXACTLY — under- and
-/// over-listing both fail, same bidirectional-equality idiom as
-/// `declared_error_set_is_exactly_what_the_handlers_emit`.
 #[test]
 fn rate_limit_doc_table_matches_classifier() {
     use busbar_core_admin::v1::contract::taxonomy::MethodTag;
-    // The classifier folds each registered plane's named-map section into the CONFIG class, so the
-    // planes must be registered before it is asked — independent of which test ran first.
+
     crate::ensure_seam();
-    // The 1.6.0 kernel verbs are answered by the node's administrative loop, which rate-classes
-    // them by VERB (`rate::MutationClass::for_verb`), never by this path classifier: they are in
-    // the one document but not in this table's jurisdiction.
+
     let loop_verbs: std::collections::BTreeSet<&'static str> = crate::verb::NEW_VERBS
         .iter()
         .chain(crate::verb::LEDGER_VERBS)
@@ -2430,8 +2215,6 @@ fn rate_limit_doc_table_matches_classifier() {
         .is_some_and(|row| loop_verbs.contains(row.verb))
     };
 
-    // The doc's `config` row, parsed straight out of the committed file — not retyped here — so
-    // editing the row is the only step needed to change what this test expects.
     let doc = include_str!("../../../../docs/admin-api.md");
     let row = doc
         .lines()
@@ -2458,8 +2241,6 @@ fn rate_limit_doc_table_matches_classifier() {
         doc_config.len()
     );
 
-    // `documented_operations` yields `/overlay/{section}` verbatim (the templated openapi path),
-    // matching the doc's literal spelling — no normalization needed on either side.
     let code_config: std::collections::BTreeSet<(String, MethodTag)> = documented_operations()
         .into_iter()
         .filter(|(rel, method)| {
@@ -2482,21 +2263,10 @@ fn rate_limit_doc_table_matches_classifier() {
     );
 }
 
-/// `docs/admin-api.md`'s `DELETE /overlay/{section}` row names the valid section set by hand, and
-/// it called that set COMPLETE while it was not: `named_maps` shipped as a durable, API-writable
-/// overlay section with no reset at all, and the reference documentation asserted the resulting
-/// functional gap did not exist. Prose that describes a gap as a closed set is worse than prose that
-/// says nothing, because it stops the reader from looking.
-///
-/// So the row is parsed out of the committed file and required to equal `OverlaySection::all()`
-/// EXACTLY, in both directions: a section live in the code but missing from the doc fails, and a
-/// section the doc claims but the parser rejects fails too.
 #[test]
 fn overlay_reset_doc_row_matches_the_section_set() {
     use busbar_kernel::config::overlay::OverlaySection;
-    // Register the plane config sections (`tools`/`agents`) so `OverlaySection::all()`/`parse` see
-    // them — busbar-core's own `cfg(test)` binary has them as builtins; here the plane testkits must
-    // be installed first (this test builds no `App`, so nothing else triggers the install).
+
     crate::ensure_seam();
 
     let doc = include_str!("../../../../docs/admin-api.md");
@@ -2507,8 +2277,7 @@ fn overlay_reset_doc_row_matches_the_section_set() {
                 .starts_with("| `DELETE /overlay/{section}` |")
         })
         .expect("docs/admin-api.md has a `DELETE /overlay/{section}` row");
-    // The set is spelled `(`section` ∈ `a` \| `b` \| …)`. Take the backticked tokens between the
-    // marker and the closing paren, which is the only place the row enumerates section names.
+
     let (_, after) = row
         .split_once("(`section` ∈ ")
         .expect("the row states the section set as \"(`section` ∈ …)\"");
@@ -2543,7 +2312,6 @@ fn overlay_reset_doc_row_matches_the_section_set() {
          {missing_from_code:?}"
     );
 
-    // Every name the doc lists really is accepted by the parser, not merely present in the enum.
     for name in &doc_sections {
         assert!(
             OverlaySection::parse(name).is_some(),
@@ -2552,8 +2320,6 @@ fn overlay_reset_doc_row_matches_the_section_set() {
     }
 }
 
-/// THE EXPORT AXIS these tests resolve an `export:` block against — once, as the composition root
-/// installs it: the scrape sink (`module: prometheus`) LINKED through the one admission.
 fn linked_export_axis() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -2567,16 +2333,6 @@ fn linked_export_axis() {
     });
 }
 
-/// Write the on-disk base config the named-map tests rebuild against: one model/pool plus a BASE
-/// entry in each named map (the base-protection target).
-///
-/// `reference_corp_ad` additionally makes `auth.admin_auth:` name `corp-ad` — a REFERENCE SITE whose
-/// definition lives only in the overlay. That is the shape the dangling-reference test needs: create
-/// `corp-ad` through the API (the rebuild resolves, because the overlay supplies the definition),
-/// then watch the DELETE get refused because the reference would be left dangling. Every other
-/// fixture leaves it off, since a config whose chain names an undefined provider cannot resolve.
-/// `base_export == false` writes a config that declares NO exporter at all — the deployment that
-/// booted without a scrape sink under `export:`, so `/metrics` was never registered on the router.
 fn write_named_map_fixture(
     tag: &str,
     reference_corp_ad: bool,
@@ -2651,23 +2407,14 @@ agents:
         },
     )
     .unwrap();
-    // The operator credential lives in the FILE the base config points at, so it survives every
-    // rebuild-and-swap these tests trigger — a fixture whose admin token only existed on the
-    // pre-mutation `App` would start 401-ing the moment a mutation succeeded.
+
     std::fs::write(dir.join("admin.token"), "admintok").unwrap();
     if reference_corp_ad {
-        // The overlay-defined `corp-ad` is a SECOND `admin-tokens` provider on the admin chain, with
-        // its own credential file — so the rebuilt chain still admits the fixture's own `admintok`
-        // through the first entry, and the test is measuring the dangling guard rather than an
-        // accidentally-broken admin credential.
         std::fs::write(dir.join("corp.token"), "corp-secret").unwrap();
     }
     (dir, config_path, providers_path)
 }
 
-/// A running admin server over the named-map disk fixture. The live `App` is seeded with the SAME
-/// base entries the file declares (a `TestApp` does not parse config.yaml), so the read surface and
-/// disk truth agree exactly as they do after a real boot.
 async fn named_map_app(
     tag: &str,
     reference_corp_ad: bool,
@@ -2680,8 +2427,6 @@ async fn named_map_app(
     named_map_app_opts(tag, reference_corp_ad, true, ServeTables::default()).await
 }
 
-/// [`named_map_app`] whose generation is lent `tables`, the admin table a door was published into
-/// ([`publish_door`]), as the composition root lends the boot generation its own.
 async fn named_map_app_serving(
     tag: &str,
     tables: ServeTables,
@@ -2694,10 +2439,6 @@ async fn named_map_app_serving(
     named_map_app_opts(tag, false, true, tables).await
 }
 
-/// [`named_map_app`] with the base `export:` entry made OPTIONAL. `base_export == false` is the
-/// deployment that BOOTED WITH NO EXPORTER: no `export:` in the base config, no export definition on
-/// the live snapshot, and — the part that matters — an empty `boot_route_paths`, i.e. `/metrics` was
-/// never registered on this process's router.
 async fn named_map_app_opts(
     tag: &str,
     reference_corp_ad: bool,
@@ -2713,14 +2454,10 @@ async fn named_map_app_opts(
     busbar_kernel_testkit::test_support::metrics::init();
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
-    // Disk truth, read back before the paths move into the fixture: the plane sections below are
-    // seeded from it.
+
     let disk: serde_yaml::Value =
         serde_yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    // The DEFAULT overlay filename next to config.yaml — the same path `load_config_from_disk`
-    // resolves for a config with no explicit `config.overlay` block. A named-map mutation rebuilds
-    // from disk truth PLUS the on-disk overlay, so a fixture whose live overlay path differed from
-    // the resolved one would silently lose every prior API-applied definition on the next mutation.
+
     let overlay = dir.join(busbar_kernel::config::overlay::DEFAULT_OVERLAY_FILENAME);
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -2741,12 +2478,7 @@ async fn named_map_app_opts(
             }))
             .unwrap(),
         );
-    // The plane sections' base entries, seeded FROM config.yaml itself (a `TestApp` does not parse
-    // config.yaml, so without this the read surface and disk truth would disagree and the
-    // base-protection guard would be measuring the disagreement rather than the guard). Each section
-    // reaches its plane through the NEUTRAL registry — the decl that owns the config section parses
-    // it and builds the runtime, exactly as `appbuild` does at boot — so this helper names no plane,
-    // no plane crate and no plane type.
+
     let owner = |section: &str| {
         busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
             .unwrap_or_else(|| panic!("no plane is registered to own the `{section}:` section"))
@@ -2763,10 +2495,7 @@ async fn named_map_app_opts(
             std::sync::Arc::<dyn busbar_kernel::config::plane_sections::PlaneCfg>::from(cfg),
         )
     };
-    // `tools:` — a per-generation runtime built through the plane's own `build_runtime`, installed
-    // under its runtime slot; a plane served through its door (its row folded from its Statement)
-    // has none, and builds its slot through its own `build` instead, as `appbuild` does — the slot
-    // its named-map reads project.
+
     {
         let (decl, cfg) = parse("tools");
         match decl.build_runtime {
@@ -2792,10 +2521,7 @@ async fn named_map_app_opts(
             }
         }
     }
-    // `agents:` — the App's type-erased named-definition handle (the admin agents named-map reads
-    // it), and the plane object its admin verbs re-read the registry off, built from the SAME
-    // section through the plane's own `build` so the runtime this generation carries holds
-    // `base-agent` (or a patch of it 404s).
+
     {
         let (decl, cfg) = parse("agents");
         let defs = std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
@@ -2819,9 +2545,6 @@ async fn named_map_app_opts(
             .unwrap(),
         )
     } else {
-        // No exporter at boot ⇒ no plugin route was ever mounted on this process's router. The
-        // explicit form matters: the harness's default table keys on the PROCESS-GLOBAL recorder
-        // (`metrics::init()` above), so merely omitting the definition would still yield `/metrics`.
         builder.no_plugin_routes()
     };
     let app = builder.build();
@@ -2830,15 +2553,8 @@ async fn named_map_app_opts(
     (dir, overlay, addr, handle)
 }
 
-/// LIST / GET / PUT for EVERY named-map section through the one generic handler: the base entry is
-/// listed and readable, a PUT creates a new definition that is immediately readable, the config
-/// version bumps, and the definition lands in the `named_maps` overlay section (so it survives a
-/// restart). `identity-providers` additionally projects its ceiling/credential fields while
-/// `/export` omits them entirely — the one-view-per-pattern contract.
 #[tokio::test]
 async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
-    // `request-log-file` (K9b) and `prometheus` (K9d) are rows of the export axis, as a linked
-    // build's are.
     linked_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("roundtrip", false).await;
     let client = reqwest::Client::new();
@@ -2846,7 +2562,7 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
         r.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
     };
-    // (section, base entry, the definition a PUT stores under `new-<section>`)
+
     let cases: [(&str, &str, serde_json::Value); 2] = [
         (
             "identity-providers",
@@ -2863,7 +2579,6 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
         ),
     ];
     for (section, base, def) in &cases {
-        // LIST — the base entry is there, and the list carries the config-plane ETag.
         let r = admin(client.get(format!("http://{addr}/api/v1/admin/{section}")))
             .send()
             .await
@@ -2885,7 +2600,6 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
             .collect();
         assert!(names.contains(base), "GET /{section} lists {base}: {body}");
 
-        // GET one.
         let one: serde_json::Value =
             admin(client.get(format!("http://{addr}/api/v1/admin/{section}/{base}")))
                 .send()
@@ -2910,7 +2624,6 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
             );
         }
 
-        // PUT a NEW definition, chaining the ETag we just read into the guard.
         let name = format!("new-{section}");
         let put = admin(client.put(format!("http://{addr}/api/v1/admin/{section}/{name}")))
             .header("if-match", etag)
@@ -2925,7 +2638,6 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
             put.text().await
         );
 
-        // Readable immediately (the swap already happened) …
         let after: serde_json::Value =
             admin(client.get(format!("http://{addr}/api/v1/admin/{section}/{name}")))
                 .send()
@@ -2940,8 +2652,6 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
         );
         assert_eq!(after["module"], def["module"]);
 
-        // … and DURABLE: the raw definition is in the overlay's `named_maps` section, so a restart
-        // replays exactly the document that was PUT.
         let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay written");
         assert_eq!(
             doc.named_maps[*section][&name], *def,
@@ -2952,9 +2662,6 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// OPTIMISTIC CONCURRENCY: a stale `If-Match` on a named-map write is a RETRYABLE
-/// `version_conflict` (409) and changes nothing — the same one mechanism every other config-plane
-/// mutation speaks. Driven on both sections, since they share one guard.
 #[tokio::test]
 async fn test_admin_v1_named_map_put_honors_expected_version() {
     linked_export_axis();
@@ -2983,7 +2690,7 @@ async fn test_admin_v1_named_map_put_honors_expected_version() {
             body["error"]["code"], "version_conflict",
             "RETRYABLE, distinct from a terminal conflict: {body}"
         );
-        // Nothing was created.
+
         let after = admin(client.get(format!("http://{addr}/api/v1/admin/{section}/stale")))
             .send()
             .await
@@ -2998,17 +2705,6 @@ async fn test_admin_v1_named_map_put_honors_expected_version() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE TRUST-CEILING RULE: `identity-providers.<name>.max_admin_scope` may be LOWERED or left
-/// alone through the admin API, and RAISING it is refused outright (409 `conflict`) — including on
-/// a brand-new provider, whose baseline is the most restrictive default, so an escalating ceiling
-/// cannot ride in on a create either. Every attempt is audited.
-///
-/// AND the token must be one the ENGINE accepts: exactly `read-only` or `full`. There is no `none`
-/// — omit the key for the most restrictive default (`read-only`), and to grant NO admin authority
-/// through a provider grant no `admin_scope` under that provider's `role_bindings:`. An unknown
-/// token is a hard boot error (`config_validate`'s chain-entry rule, reached because `resolve_auth`
-/// copies the definition's ceiling onto every resolved chain entry), so accepting it here would
-/// answer 200 to a write that leaves the deployment unbootable.
 #[tokio::test]
 async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     let (dir, addr, handle) = {
@@ -3020,10 +2716,9 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
         r.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
     };
-    // This fixture's provider is not used by sibling named-map tests sharing the audit ring.
+
     let provider = "ceiling-audit-witness";
 
-    // (a) A NEW provider asking for `full` is a RAISE over the default baseline — refused.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
@@ -3041,7 +2736,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
             .contains("max_admin_scope"),
         "the refusal names the ceiling: {body}"
     );
-    // Nothing was stored.
+
     let after = admin(client.get(format!(
         "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
@@ -3054,14 +2749,6 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
         "the refused PUT stored nothing"
     );
 
-    // (b) A ceiling token the ENGINE does not accept is refused by the API too. The accepted values
-    // are exactly `read-only` and `full` — the two `Scope::parse` knows; `config_validate`'s
-    // chain-entry rule turns anything else into a HARD BOOT ERROR, because `resolve_auth` copies the
-    // definition's ceiling onto every resolved chain entry. `none` in particular is NOT a value:
-    // there is no "no admin authority" ceiling. Omit the key for the most restrictive default
-    // (`read-only`); to grant no admin authority through a provider, grant no `admin_scope` under
-    // that provider's `role_bindings:`. Accepting `none` here reported success on a write that left
-    // the deployment unbootable at the next restart.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
@@ -3095,7 +2782,6 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
         "the refused PUT stored nothing"
     );
 
-    // (b2) The most restrictive ceiling the engine DOES accept is `read-only` — applied.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
@@ -3110,7 +2796,6 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
         r.text().await
     );
 
-    // (c) …and a subsequent RAISE on the now-existing provider is still refused.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
@@ -3133,7 +2818,6 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
         "the live ceiling is untouched by the refused raise: {still}"
     );
 
-    // AUDITED — both the applied change and the refusals.
     let audit: serde_json::Value = admin(client.get(format!(
         "http://{addr}/api/v1/admin/audit?resource=identity-provider:{provider}"
     )))
@@ -3160,23 +2844,10 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A MUTATION THAT ADDS A ROUTE SAYS "RESTART REQUIRED", instead of reporting
-/// plain success for a route this process will never serve.
-///
-/// Each declared plugin-route PATH is registered on the axum router ONCE, at boot; a config apply
-/// swaps only `Arc<App>` and never rebuilds the router. So a `PUT /export/{name}` that introduces a
-/// `prometheus` instance where none existed at boot is durably stored, live on the snapshot, and
-/// `/metrics` keeps 404ing until the process restarts. The `export:` named map had no restart-required
-/// signal (unlike `PUT /config/settings`'s `reload_to_apply`), so the operator was told nothing.
-///
-/// The signal must be exact in BOTH directions, which is why this walks all four cases: an exporter
-/// that declares no route is silent, the route-adding PUT flags exactly `/metrics`, a LATER unrelated
-/// mutation does not re-flag it (the signal is keyed on the mutation's own delta), and a REMOVAL is
-/// silent because removing genuinely does take effect live.
 #[tokio::test]
 async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     linked_export_axis();
-    // `base_export: false` ⇒ booted with NO exporter, so `/metrics` was never mounted.
+
     let (dir, _overlay, addr, handle) =
         named_map_app_opts("bootfrozen", false, false, ServeTables::default()).await;
     let client = reqwest::Client::new();
@@ -3185,7 +2856,6 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
             .header("content-type", "application/json")
     };
 
-    // (1) An exporter that declares NO plugin route (a PUSH sink) is fully live on the swap — silent.
     let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/reqlog")))
         .body(
             serde_json::json!({
@@ -3216,9 +2886,6 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         "a sink that declares no route needs no restart: {body}"
     );
 
-    // (2) THE DEFECT: adding a `prometheus` instance introduces `GET /metrics`, which this process's
-    // router does not have. Accepted (it is stored, and correct after a restart) but NOT reported as
-    // simply applied.
     let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/prom")))
         .body(
             serde_json::json!({
@@ -3247,10 +2914,10 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         body["note"].as_str().unwrap_or("").contains("RESTART"),
         "the note tells the operator what to do about it: {body}"
     );
-    // The response is still the stored definition — the signal is ADDITIVE, not a replacement body.
+
     assert_eq!(body["name"], "prom");
     assert_eq!(body["module"], "prometheus");
-    // And the route really is unserved on this process, which is what the signal is about.
+
     assert_eq!(
         client
             .get(format!("http://{addr}/metrics"))
@@ -3263,9 +2930,6 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         "`/metrics` is not mounted, exactly as the response just said"
     );
 
-    // (3) NO SPURIOUS RE-FLAG: a later mutation that introduces no new path is silent, even though
-    // `/metrics` is still pending a restart (the same "keyed on what this request changed" rule
-    // `reload_to_apply_fields` follows).
     let r = admin(client.patch(format!("http://{addr}/api/v1/admin/export/reqlog/settings")))
         .body(
             serde_json::json!({"settings": {"path": dir.join("req2.jsonl").to_string_lossy()}})
@@ -3281,8 +2945,6 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         "an edit that adds no path must not re-flag an already-pending route: {body}"
     );
 
-    // (4) REMOVAL is live (the dispatcher resolves the owner from the current snapshot and 404s), so
-    // it carries no notice at all.
     let r = admin(client.delete(format!("http://{addr}/api/v1/admin/export/prom")))
         .send()
         .await
@@ -3293,13 +2955,6 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AN UNREFERENCED DEFINITION IS STILL VALIDATED. Most of the identity-provider rules live in
-/// `resolve_auth`, which only ever sees providers already NAMED by `auth.chain:`/`auth.admin_auth:`
-/// — so a definition written through the admin API and not yet referenced used to escape them: the
-/// API answered 200, persisted the definition into the overlay, and the error surfaced only later,
-/// when something finally named the provider (or, for a `config.yaml` edit that named it, at the
-/// next BOOT, which then failed). The definition-side write path now runs the same rules on the same
-/// shared functions, so the value is refused where it is written.
 #[tokio::test]
 async fn test_admin_v1_identity_provider_validates_an_unreferenced_definition() {
     let (dir, addr, handle) = {
@@ -3311,9 +2966,7 @@ async fn test_admin_v1_identity_provider_validates_an_unreferenced_definition() 
         r.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
     };
-    // `token:` is the built-in `admin-tokens` operator credential. On any other module it is inert —
-    // a MISPLACED SECRET the config grammar fails loud on (`resolve_auth`). Nothing references
-    // `stray` yet, so nothing used to check it.
+
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/stray"
     )))
@@ -3346,9 +2999,6 @@ async fn test_admin_v1_identity_provider_validates_an_unreferenced_definition() 
         "the refused PUT stored no credential"
     );
 
-    // Same for a ceiling token the engine cannot boot with, on a provider in no chain: the chain-entry
-    // rule in `config_validate` never sees this definition, so the DEFINITION-side check is the only
-    // thing standing between the operator and an unbootable next restart.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/stray"
     )))
@@ -3362,7 +3012,6 @@ async fn test_admin_v1_identity_provider_validates_an_unreferenced_definition() 
         "an unreferenced provider's ceiling is checked where it is written"
     );
 
-    // The legal shape is accepted.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/stray"
     )))
@@ -3375,15 +3024,6 @@ async fn test_admin_v1_identity_provider_validates_an_unreferenced_definition() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AN UNREFERENCED DEFINITION'S `module:` MUST NAME A MODULE THAT EXISTS. The sibling rules above
-/// are VALUE-level (a token, a ceiling) and need only the definition itself; this one needs the
-/// plugin REGISTRY, because a valid identity-provider module is either a built-in
-/// (`BUILTIN_IDENTITY_PROVIDERS`) or a loaded `kind: auth` plugin. `export:` has had this check
-/// since 1.5.3 (`resolve_export` refuses an unknown exporter and names the built-ins), but the
-/// identity-provider side had nothing: `resolve_auth` is keyed off the RESOLVED chain and
-/// `plugins_preflight` derived its auth refs from `auth.chain` alone, so a definition that nothing
-/// references — the exact thing this endpoint writes — was checked by no layer at all. The API
-/// answered 200 and stored a provider that can never authenticate anyone.
 #[tokio::test]
 async fn test_admin_v1_identity_provider_rejects_an_unknown_module() {
     let (dir, addr, handle) = {
@@ -3430,8 +3070,6 @@ async fn test_admin_v1_identity_provider_rejects_an_unknown_module() {
         "the refused PUT stored nothing"
     );
 
-    // The CONTROL: a built-in module through the identical path is still accepted, so the new rule
-    // rejects the unknown name and nothing else.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/typo"
     )))
@@ -3444,15 +3082,8 @@ async fn test_admin_v1_identity_provider_rejects_an_unknown_module() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// DANGLING-REFERENCE GUARD: a DELETE that would leave another config section naming a definition
-/// that no longer exists is refused as a TERMINAL `conflict` naming the referent — never applied
-/// and then discovered at the next resolve. The fixture's base `auth.role_bindings` names
-/// `corp-ad`, so creating that provider through the API and then deleting it is exactly the
-/// dangling case.
 #[tokio::test]
 async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
-    // `request-log-file` (K9b) and `prometheus` (K9d) are rows of the export axis, as a linked
-    // build's are.
     linked_export_axis();
     let (dir, _overlay, addr, handle) = named_map_app("dangling", true).await;
     let client = reqwest::Client::new();
@@ -3460,8 +3091,7 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
         r.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
     };
-    // Create the referenced provider (the fixture's `auth.admin_auth:` already names it, with no
-    // definition anywhere but the overlay this PUT writes).
+
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/corp-ad"
     )))
@@ -3477,7 +3107,6 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
 
-    // … then try to delete it while `auth.role_bindings.corp-ad` still names it.
     let r = admin(client.delete(format!(
         "http://{addr}/api/v1/admin/identity-providers/corp-ad"
     )))
@@ -3494,7 +3123,7 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
             .contains("auth.admin_auth"),
         "the refusal NAMES the referent so an operator knows what to fix: {body}"
     );
-    // Still live.
+
     let after = admin(client.get(format!(
         "http://{addr}/api/v1/admin/identity-providers/corp-ad"
     )))
@@ -3507,8 +3136,6 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
         "the refused delete changed nothing"
     );
 
-    // An UNREFERENCED definition deletes cleanly — the guard is about references, not about
-    // refusing deletes.
     let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/spare")))
         .body(
             serde_json::json!({
@@ -3539,10 +3166,6 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on an admin table of
-/// its own as the composition root publishes it (K-SERVE): the table, to lend the generation whose
-/// admin router serves the instance's stated admin routes. The door is the one whose folded row
-/// owns `section`.
 fn publish_door(section: &str, settings: &str) -> ServeTables {
     use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
     use busbar_plugin_loader::dispatch::{
@@ -3603,10 +3226,6 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
     tables
 }
 
-/// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
-/// own `serve` op: an unregistered name is `404 not_found` on every verb, and `connect` on a
-/// `passthrough` registration is `400 invalid_request` (its credential belongs to a caller, and an
-/// operator's refresh has none).
 async fn drive_door_verb_errors() {
     let tables = publish_door(
         "tools",
@@ -3643,12 +3262,6 @@ async fn drive_door_verb_errors() {
     handle.abort();
 }
 
-/// A DOOR'S ADMIN ROUTE IS SERVED OFF THE LIVE GENERATION'S OWN TABLE: two admin routers in one
-/// process over the same deployment, one whose generation was lent the table the door was
-/// published into and one whose generation was lent none. The first serves the door's `connect`
-/// (its passthrough registration's `400 invalid_request`); the second answers the same request as
-/// no published instance names it (`404 not_found`). While the table was one process-wide value,
-/// both routers served the door.
 #[tokio::test]
 async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let tables = publish_door(
@@ -3691,8 +3304,6 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let _ = std::fs::remove_dir_all(&unlent_dir);
 }
 
-/// The DER `SubjectPublicKeyInfo` of `issuer`'s Ed25519 key (RFC 8410 section 4), base64: the key
-/// a registration pinned by its card issuer names.
 fn issuer_key_info(issuer: &ed25519_dalek::SigningKey) -> String {
     use base64::Engine as _;
     let mut der = vec![
@@ -3702,15 +3313,6 @@ fn issuer_key_info(issuer: &ed25519_dalek::SigningKey) -> String {
     base64::engine::general_purpose::STANDARD.encode(der)
 }
 
-/// THE AGENT DOOR'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the linked
-/// door's own `serve` op, the door published over the section the
-/// named-map fixture boots with:
-/// * an unregistered name is `404 not_found` on `connect` and `approve` (before anything is read);
-/// * `approve` whose body is not the one-field `{"fingerprint": …}` document (an unknown field
-///   beside it) is `400 invalid_request`, naming the one field the body may carry;
-/// * `approve` naming a fingerprint for an agent whose card cannot be fetched is
-///   `400 invalid_request`: the look reports the card unauthenticated, which no approval can agree
-///   with.
 async fn drive_agent_door_verb_errors() {
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let section = serde_json::json!({
@@ -3770,15 +3372,6 @@ async fn drive_agent_door_verb_errors() {
     handle.abort();
 }
 
-/// WITNESS DRIVER for the generic named-map surface: produces EVERY `(operation, ErrKind, Cond)`
-/// triple `contract::taxonomy::declared_errors` claims for `/identity-providers` and `/export`, so
-/// `declared_error_set_is_exactly_what_the_handlers_emit` can prove none of them is an over-claim.
-/// Every emission on this surface names its condition (`err_json_cond`), so nothing here needs a
-/// `COND_WITNESS_DEBT` row.
-///
-/// Batched: these are CONFIG-class mutations (10/min per principal — each rebuilds and swaps the
-/// whole App), and a driver that walked the whole table on one fixture would measure the rate
-/// limiter instead of the handlers. A fresh fixture carries a fresh limiter.
 async fn drive_named_map_errors() {
     linked_export_axis();
     let big_settings = {
@@ -3788,17 +3381,15 @@ async fn drive_named_map_errors() {
     };
     let ok_def = |section: &str| match section {
         "identity-providers" => r#"{"module":"keys"}"#.to_string(),
-        // The tools plane has no backing plugin, so its valid definition names no `module:` —
-        // which is exactly the asymmetry `NamedMapSection::requires_module` exists to carry.
+
         "tools" => r#"{"url":"https://x/","pin":{"mechanism":"unpinned"}}"#.to_string(),
-        // The agents plane's entries are NOT plugin instances, so a legal definition names a URL
-        // and a pin rather than a module. That asymmetry is the reason `requires_module()` exists.
+
         "agents" => {
             r#"{"url":"https://agent.example/x","pin":{"mechanism":"unpinned"}}"#.to_string()
         }
         _ => r#"{"module":"prometheus","settings":{"buffer_seconds":30}}"#.to_string(),
     };
-    // (label, method, relative path, If-Match, body, want status, want code)
+
     type Case = (
         String,
         &'static str,
@@ -3834,7 +3425,6 @@ async fn drive_named_map_errors() {
             )
         };
         cases.extend([
-            // PUT — the upsert. Every declared Validation condition, plus the base-config guard.
             c(
                 "put_malformed_body",
                 "PUT",
@@ -3854,18 +3444,11 @@ async fn drive_named_map_errors() {
                 "invalid_request",
             ),
             c(
-                // On a plugin-instance section this is the empty-`module:` guard. On `tools:` there
-                // is no `module:` at all, so the same document is refused by the typed
-                // `deny_unknown_fields` parse — one status, two reasons, and both are the section's
-                // own grammar rather than a hardcoded rule in the handler.
                 "put_bad_definition",
                 "PUT",
                 format!("/{section}/x"),
                 None,
                 Some(if section == "agents" {
-                    // A pin whose mechanism needs material and carries none. On the other sections
-                    // the equivalent nonsense is an empty `module:`; the CONDITION being witnessed
-                    // (`Validation/InvalidConfig`) is the same one either way.
                     r#"{"url":"https://agent.example/x","pin":{"mechanism":"jws_issuer_key"}}"#
                         .to_string()
                 } else {
@@ -3892,7 +3475,6 @@ async fn drive_named_map_errors() {
                 409,
                 "version_conflict",
             ),
-            // PATCH …/settings.
             c(
                 "patch_malformed_body",
                 "PATCH",
@@ -3947,7 +3529,6 @@ async fn drive_named_map_errors() {
                 409,
                 "version_conflict",
             ),
-            // DELETE.
             c(
                 "delete_bad_ifmatch",
                 "DELETE",
@@ -3984,7 +3565,6 @@ async fn drive_named_map_errors() {
                 409,
                 "version_conflict",
             ),
-            // The single-definition READ.
             c(
                 "get_unknown",
                 "GET",
@@ -4040,18 +3620,6 @@ async fn drive_named_map_errors() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // NO DISK BASE: an EPHEMERAL busbar (started without config files) has no base truth to merge a
-    // named-map change onto, so every write verb refuses up front — the condition the disk fixtures
-    // above can never reach.
-    //
-    // ONE SERVER PER SECTION, and that is about the RATE LIMITER rather than isolation. Every verb
-    // below is a CONFIG-class admin mutation, budgeted at 10/min PER PRINCIPAL, and failed attempts
-    // spend the budget too (that is the anti-enumeration rule, working as designed). The section
-    // list is now four long — the two 1.5.3 sections plus a plane section each for `tools:` and
-    // `agents:` — so twelve probes against one server would start answering 429 at the eleventh and
-    // the error taxonomy this test exists to pin would go unchecked from there on. The limiter is a
-    // field on `App`, so a fresh fixture is a fresh budget; raising the limit instead would have
-    // made the test pass by weakening the thing it shares with production.
     for section in ["identity-providers", "export", "tools", "agents"] {
         busbar_kernel_testkit::test_support::metrics::init();
         let store = Arc::new(MemoryStore::new());
@@ -4094,8 +3662,6 @@ async fn drive_named_map_errors() {
         handle.abort();
     }
 
-    // STILL REFERENCED: the dangling-delete conflict needs a config that already NAMES a provider
-    // the overlay defines, so it gets its own fixture (see `write_named_map_fixture`).
     {
         let (dir, _overlay, addr, handle) = named_map_app("witness-dangling", true).await;
         let admin = |r: reqwest::RequestBuilder| {
@@ -4130,18 +3696,6 @@ async fn drive_named_map_errors() {
         );
         assert_eq!(parsed["error"]["code"], "conflict");
 
-        // ...and the BULK twin, on the same fixture (the refused per-entry delete above left
-        // `corp-ad` in place, which is exactly the state a dangling reset needs).
-        //
-        // This drives `DELETE /overlay/{section}`'s `Conflict/StillReferenced`. It has a test of
-        // its own (`test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference`), and that
-        // was not enough: the gate calls these drivers precisely SO THAT its verdict does not
-        // depend on whether some other test ran, so a condition witnessed only by a sibling test is
-        // witnessed nowhere as far as the gate is concerned. It read as an OVER-CLAIM — a
-        // documented 409 nothing could produce — while the guard, and a passing test for it, were
-        // both sitting right there. A driver that covers the per-entry case and skips its bulk twin
-        // is the same "scoped to where the bug was first seen" shape the whole taxonomy exists to
-        // catch.
         let r = admin(client.delete(format!(
             "http://{addr}/api/v1/admin/overlay/identity-providers"
         )))
@@ -4160,22 +3714,11 @@ async fn drive_named_map_errors() {
     }
 }
 
-/// The driver above, as a test in its own right — so the named-map error surface is exercised even
-/// when the class-level audit is filtered out of a run.
 #[tokio::test]
 async fn named_map_error_surface_answers_its_declared_taxonomy() {
     drive_named_map_errors().await;
 }
 
-/// CONFIG STABILITY: THE ADMIN API AND THE FILE PARSER MUST SHARE ONE GRAMMAR. A PUT body
-/// carrying a field the section's `deny_unknown_fields` config struct rejects is exactly what
-/// `config.yaml` would refuse at boot — so the API must refuse it too, loudly and BEFORE persisting.
-///
-/// It did not. The handler only did a generic `serde_json::Value` parse plus "is it an object with a
-/// non-empty `module`", answered 200, wrote the document verbatim into the overlay, and then DROPPED
-/// it at the rebuild (`apply_named_maps_to_deploy` swallowed the typed parse error into a
-/// `tracing::error!`). The operator got a success for config that never took effect and vanished on
-/// every subsequent read — two paths disagreeing about the one frozen 1.5.3 grammar.
 #[tokio::test]
 async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
     linked_export_axis();
@@ -4186,7 +3729,6 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
             .header("content-type", "application/json")
     };
 
-    // `buffer` is not a field of `ExportDefCfg` (the operator meant `settings.buffer_seconds`).
     let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/spare")))
         .body(r#"{"module":"prometheus","buffer":30}"#)
         .send()
@@ -4205,7 +3747,6 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
         "the refusal carries serde's own message naming the offending field: {body}"
     );
 
-    // NOTHING was persisted and nothing is readable — the reject happens before the overlay write.
     let after = admin(client.get(format!("http://{addr}/api/v1/admin/export/spare")))
         .send()
         .await
@@ -4223,8 +3764,6 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
         );
     }
 
-    // The SAME shape with the fields spelled correctly is accepted — this is a grammar check, not
-    // a blanket refusal.
     let good = serde_json::json!({
         "module": "request-log-file",
         "settings": {"path": dir.join("spare.jsonl").to_string_lossy()}
@@ -4236,7 +3775,6 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
 
-    // The identity-providers section speaks the same rule through the same generic path.
     let r = admin(client.put(format!(
         "http://{addr}/api/v1/admin/identity-providers/typo-idp"
     )))
@@ -4255,14 +3793,6 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// DISCOVERABILITY: an overlay-stored definition this binary cannot parse is DROPPED
-/// at every rebuild. It used to be announced exactly once, at boot, in a log line — and the API read
-/// surface answered 404 for the name, which is indistinguishable from "you never wrote it". An
-/// operator who does not tail boot logs could not discover their own stored-but-inert config.
-///
-/// It is now surfaced through the READ, explicitly flagged (`unparseable` carries the parse error),
-/// on both the collection and the single-entry read. The operator's data is only ever REPORTED —
-/// never auto-deleted, never rewritten.
 #[tokio::test]
 async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
     linked_export_axis();
@@ -4270,8 +3800,6 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    // An overlay holding a definition whose typed struct rejects it (a downgrade whose struct lost
-    // the field, or a hand-edited overlay) — never applied, so absent from the live `export:` map.
     std::fs::write(
         &overlay,
         serde_json::json!({
@@ -4313,8 +3841,6 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
         "the operator's own raw document is projected back so they can see what they wrote"
     );
 
-    // The single-entry read answers the flagged view rather than a 404 for a name that is sitting in
-    // the operator's own overlay.
     let one = admin(client.get(format!("http://{addr}/api/v1/admin/export/ghost")))
         .send()
         .await
@@ -4323,7 +3849,6 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
     let one: serde_json::Value = one.json().await.unwrap();
     assert!(one["unparseable"].is_string(), "{one}");
 
-    // A LIVE definition is never flagged.
     let base: serde_json::Value =
         admin(client.get(format!("http://{addr}/api/v1/admin/export/base-metrics")))
             .send()

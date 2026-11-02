@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLUGIN TEST SUPPORT THAT MUST SEE INSIDE THE CONTRACT. Everything else a plugin's tests
-//! drive its door with lives in the test kit (`busbar_test_kit::test_support`: a door's Statement
-//! read as Rust values, a fake host, door calls whose replies are copied out, a lent `in` built
-//! safely); this crate's own tests mount that source here. What stays:
-//!
-//! * [`zeroed`] and `Default`: the all-zero value of a REVIEWED ABI struct. [`AllZero`] is sealed,
-//!   so the constructor cannot be called on any type this module has not reviewed (and `Default`
-//!   on a contract type can only be implemented here).
-//! * [`lent_pairs`]: the pointer and length pairs of every struct a call lends, from the SDK's own
-//!   lending lists.
-//! * `chip` (behind the dev-only `test-seal` feature): a sealed credential's bytes, as a test's own
-//!   stand-in for the host's wire writes them.
-//! * [`sink`]: the actual SDK sink over exclusively borrowed host buffers, without exposing its
-//!   crate-private loan or output constructors to test callers.
-//!
-//! TEST ONLY: compiled for this crate's tests and behind the `test-support` feature busbar-test-kit
-//! (a dev-dependency only) enables, so no shipped image carries it. It adds no `#[repr(C)]` type
-//! and changes no layout.
 
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 
@@ -47,11 +30,8 @@ pub const unsafe fn lend<T>(t: &T) -> crate::abi::sdk::Lent<'_, T> {
 #[doc(hidden)]
 pub use pairs::lent_pairs;
 
-// ── THE ALL-ZERO VALUE ──────────────────────────────────────────────────────────────────────────
-
 /// A REVIEWED ABI struct whose all-zero bit pattern is a valid value. Sealed: the implementors are
-/// exactly the structs listed in this module, each under the SAFETY argument beside its list, and
-/// arrays of them.
+
 pub trait AllZero: sealed::Sealed + Copy + 'static {}
 
 /// The all-zero `T`: every integer `0`, every raw pointer NULL, every `Option<fn>` `None`. A test

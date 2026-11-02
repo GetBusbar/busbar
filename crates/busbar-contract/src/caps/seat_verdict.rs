@@ -155,8 +155,6 @@ macro_rules! reasons {
     };
 }
 
-// ONE ROW PER REASON: its name, its journal word, its `unit::RefusalReason` spelling, and its
-// `abi::plane::RefusalClass`. Its wire code is the `abi::plane::RefusalCode` of the same name.
 reasons! {
     /// The in-flight table is full.
     InFlightCap => "in_flight_cap", InFlightCap, Busy,
@@ -322,17 +320,14 @@ impl Refusal {
     }
 
     /// Whether the refusal was raised while a hold was open. False until a step is stamped: an
-    /// unstamped refusal has not reached any step, so it cannot have reached one past the door.
+
     pub fn under_hold(&self) -> bool {
         self.at.is_some_and(StepName::under_hold)
     }
 }
 
 /// A step's answer: proceed with the facts the next step reads, or refuse.
-///
-/// Built only with the token for the same step; read only by the kernel. Neither `Clone` nor
-/// `Copy`, so one token yields one answer, and `#[must_use]`, so an answer cannot be quietly
-/// dropped on the way back to the loop.
+
 #[must_use = "a decision that is not returned to the loop silently skips the step"]
 pub struct SeatVerdict<S: Step>(Inner<S>);
 

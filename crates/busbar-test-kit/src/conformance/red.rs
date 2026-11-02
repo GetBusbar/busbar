@@ -1,35 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ADMISSION AND CONNECTION RED ARMS every plugin's run carries, whatever its kind (`BUSBAR-1.6.0.md`
-//! §2: a plugin is admitted only as the Statement its row or signed manifest states, only as the
-//! kind it is asked for, and it reaches the network only over the needs it declared, on
-//! connections of its own instance). Each arm drives the plugin's own door into the misbehaviour
-//! and requires the host to refuse it, and each keeps an honest twin that must pass beside it:
-//!
-//! * [`red_statement`]: the door under a row or manifest stating another valid Statement,
-//!   and the door restated with another version under its honest row, are refused
-//!   ([`LoadError::StatementMismatch`]), linked and dropped in;
-//! * [`red_wrong_kind`]: the door asked for as every other kind is refused at the stated rendering's
-//!   admission check ([`LoadError::ManifestKind`]), linked and dropped in before `dlopen`;
-//! * [`red_undeclared_need`]: the door's instance, bound over a connection table, establishing a
-//!   connection over a need its Statement never declared is refused (`UndeclaredNeed`), as its
-//!   declared need opens;
-//! * [`red_cross_instance_conn`]: one instance writing, reading or closing a connection another
-//!   instance of the door opened is refused (`NotOwner`), and the owner's connection is untouched;
-//! * [`red_kind_layout`]: the door, of any kind, restated with another layout fingerprint than its
-//!   kind's (and with none, `0`) is refused, by the pack tool and linked
-//!   ([`LoadError::KindLayout`]);
-//! * [`red_frame_piece`]: a transport door restated with a tail stating another frame piece size
-//!   than the host's is refused, linked and by the pack tool ([`LoadError::FramePieceSize`]);
-//! * [`red_plane_layout`]: a plane door restated with a tail stating another answer layout than
-//!   the host's is refused, linked and by the pack tool ([`LoadError::PlaneLayout`]).
-//!
-//! The connection arms bind the door restated with one outbound need of its own (as
-//! [`super::red_no_table`] restates it, [`super::connection_fixture`]), over the loader's test table
-//! dialing a listener of the arm's own on loopback, and call the HOST's connector slots on the instance's own context, the
-//! calls the plugin makes through the tables `open` hands it.
-
 use std::os::raw::c_void;
 use std::sync::Arc;
 
@@ -53,23 +24,19 @@ use crate::dispatch::conn_services::CONN_SLOTS;
 use crate::dispatch::load::rendering_of_raw;
 use crate::dispatch::{load_linked, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin};
 
-/// The door functions of [`VERSIONED`] and [`CONNECTED`] (`super::restated_door`).
 const VERSIONED_DOOR: RawDoorFn = restated_door::<1>;
 const CONNECTED_DOOR: RawDoorFn = restated_door::<2>;
-/// The door function of [`PIECED`].
+
 const PIECED_DOOR: RawDoorFn = restated_door::<3>;
-/// The door function of [`LAID`].
+
 const LAID_DOOR: RawDoorFn = restated_door::<4>;
-/// The door function of [`FINGERPRINTED`].
+
 const FINGERPRINTED_DOOR: RawDoorFn = restated_door::<5>;
 
-/// Every kind the host has.
 const KINDS: [KindCode; 7] = KindCode::ALL;
 
-/// The version the restated door states instead of its own.
 const OTHER_VERSION: &str = "0.0.0-conformance-restated";
 
-/// The real door restated with another version in its Statement.
 fn with_another_version(real: DoorParts) -> DoorParts {
     // SAFETY: a door's Statement is `'static`; only its version is restated.
     let st: Statement = unsafe { real.statement.read_unaligned() };
@@ -86,13 +53,6 @@ fn with_another_version(real: DoorParts) -> DoorParts {
     }
 }
 
-/// **RED: a door whose Statement is not the one its row or signed manifest states is refused, both
-/// ways.** The honest door loads linked and dropped in; under another valid rendering it is
-/// refused linked and dropped in; the door restated with another version is refused under its
-/// honest row. Every refusal is [`LoadError::StatementMismatch`].
-///
-/// # Panics
-/// When a mismatched door loads, or the honest one does not.
 pub fn red_statement(s: &Subject) {
     let stated = s.stated();
     let _held = VERSIONED.hold(with_another_version(real_door(s)));
@@ -129,17 +89,6 @@ pub fn red_statement(s: &Subject) {
     });
 }
 
-/// **RED: a door built against other shapes of its kind is refused at load (status row 188).** The
-/// host reads every struct crossing a kind's table at its own layout, and the kind's version number
-/// does not move with a layout (a field inserted into the hook `RequestView` moved every later
-/// field of `DecideIn` by 24 bytes under the same hook ABI version). The door states its kind's
-/// layout fingerprint as built; the honest door loads linked and dropped in, and the door restated
-/// with another fingerprint, or with none (`0`, a door that predates the word), is refused by the
-/// pack tool, by its honest linked row and by its own, naming the plugin, the kind, both numbers
-/// and the rebuild ([`LoadError::KindLayout`]). Every kind carries this arm.
-///
-/// # Panics
-/// When a restated door loads, or the honest one does not.
 pub fn red_kind_layout(s: &Subject) {
     let kind = s.kind();
     let host = kind.layout_fingerprint();
@@ -190,7 +139,6 @@ pub fn red_kind_layout(s: &Subject) {
     });
 }
 
-/// The real transport door restated with a tail stating a frame piece `stated` bytes long.
 fn with_another_piece(real: DoorParts, stated: u32) -> DoorParts {
     // SAFETY: a door's Statement is `'static`.
     let st: Statement = unsafe { real.statement.read_unaligned() };
@@ -211,15 +159,6 @@ fn with_another_piece(real: DoorParts, stated: u32) -> DoorParts {
     }
 }
 
-/// **RED: a transport built against another frame piece is refused at load (busbar #1032).** A
-/// framer writes the host's piece buffer at its own `FramePiece` size; one built against another
-/// contract would be read at the wrong stride. The honest door loads linked and dropped in; the
-/// door restated with a tail stating a piece 8 bytes short (the piece before #1032) is refused by
-/// the pack tool and by the linked row, naming the plugin, both sizes and the rebuild
-/// ([`LoadError::FramePieceSize`]). A door of another kind has no pieces: the arm passes.
-///
-/// # Panics
-/// When the restated door loads, or the honest one does not.
 pub fn red_frame_piece(s: &Subject) {
     if s.kind() != KindCode::Transport {
         return;
@@ -255,7 +194,6 @@ pub fn red_frame_piece(s: &Subject) {
     assert_eq!(linked, refused, "the same refusal, linked");
 }
 
-/// The real plane door restated with a tail stating answer layout `stated`.
 fn with_another_layout(real: DoorParts, stated: u32) -> DoorParts {
     // SAFETY: a door's Statement is `'static`.
     let st: Statement = unsafe { real.statement.read_unaligned() };
@@ -289,16 +227,6 @@ fn with_another_layout(real: DoorParts, stated: u32) -> DoorParts {
     }
 }
 
-/// **RED: a plane built against another answer layout is refused at load.** The host reads every
-/// `out` a plane writes at its own layout (`OnPieceOut` 248 bytes ending in `fault_reason`,
-/// `ArriveOut::refusal_flags` where padding was); one built against another contract would be read
-/// wrong. The honest door loads linked and dropped in; the door restated with a tail stating the
-/// layout before this host's is refused by the pack tool and by the linked row, naming the plugin,
-/// both layouts and the rebuild ([`LoadError::PlaneLayout`]). A door of another kind writes no
-/// plane answers: the arm passes.
-///
-/// # Panics
-/// When the restated door loads, or the honest one does not.
 pub fn red_plane_layout(s: &Subject) {
     if s.kind() != KindCode::Plane {
         return;
@@ -334,7 +262,6 @@ pub fn red_plane_layout(s: &Subject) {
     assert_eq!(linked, refused, "the same refusal, linked");
 }
 
-/// The door asked for as kind `want`: the linked refusal and the dropped-in one.
 fn as_kind<K: Kind>(s: &Subject) -> (Option<LoadError>, Option<LoadError>) {
     let d = dispatcher();
     let linked = load::<K>(s, Leg::Linked, s.bind(&d, "red-kind-linked")).err();
@@ -342,13 +269,6 @@ fn as_kind<K: Kind>(s: &Subject) -> (Option<LoadError>, Option<LoadError>) {
     (linked, dropped)
 }
 
-/// **RED: a door asked for as another kind is refused, both ways, for every kind.** For each kind
-/// the door is not, its stated rendering is refused ([`LoadError::ManifestKind`]) in both paths,
-/// before the dropped-in library is opened; asked for as its own kind it loads,
-/// both ways.
-///
-/// # Panics
-/// When the door loads as another kind, or not as its own.
 pub fn red_wrong_kind(s: &Subject) {
     let own = s.kind();
     by_kind!(own, K => {
@@ -372,7 +292,6 @@ pub fn red_wrong_kind(s: &Subject) {
     }
 }
 
-/// A head for connector service `op`, `size` bytes, on no ticket.
 fn head(op: u32, size: usize) -> ServiceHead {
     ServiceHead {
         size: u32::try_from(size).unwrap_or(u32::MAX),
@@ -385,7 +304,6 @@ fn head(op: u32, size: usize) -> ServiceHead {
     }
 }
 
-/// An empty service `out`.
 fn out() -> ServiceOut {
     // SAFETY: a plain repr(C) value of integers and a NULL/0 string: all-zero is valid.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
@@ -393,7 +311,6 @@ fn out() -> ServiceOut {
     out
 }
 
-/// A host slot's answer: its outcome, scalar and text.
 fn answered(raw: RawOutcome, o: &ServiceOut) -> (Outcome, u64, String) {
     let text = if o.error.ptr.is_null() {
         String::new()
@@ -405,7 +322,6 @@ fn answered(raw: RawOutcome, o: &ServiceOut) -> (Outcome, u64, String) {
     (raw.outcome(), o.value, text)
 }
 
-/// `ESTABLISH` of `need` at `target`, on `p`'s own context, as the plugin calls it.
 fn establish<K: Kind>(p: &Plugin<K>, need: u32, target: &str) -> (Outcome, u64, String) {
     let none = AbiStr {
         ptr: std::ptr::null(),
@@ -435,7 +351,6 @@ fn establish<K: Kind>(p: &Plugin<K>, need: u32, target: &str) -> (Outcome, u64, 
     answered(raw, &o)
 }
 
-/// `WRITE` (`write`) or `READ` of `stream`, on `p`'s own context.
 fn io<K: Kind>(p: &Plugin<K>, stream: u64, write: bool) -> (Outcome, u64, String) {
     let mut buf = *b"x";
     let (op, f) = if write {
@@ -461,7 +376,6 @@ fn io<K: Kind>(p: &Plugin<K>, stream: u64, write: bool) -> (Outcome, u64, String
     answered(raw, &o)
 }
 
-/// `CLOSE` of `stream`, on `p`'s own context.
 fn close_stream<K: Kind>(p: &Plugin<K>, stream: u64) -> (Outcome, u64, String) {
     let i = StreamIn {
         head: head(service::CLOSE, std::mem::size_of::<StreamIn>()),
@@ -479,7 +393,6 @@ fn close_stream<K: Kind>(p: &Plugin<K>, stream: u64) -> (Outcome, u64, String) {
     answered(raw, &o)
 }
 
-/// The door restated with one outbound need, bound linked as `instance` over `table`.
 fn connected<K: Kind>(table: &Arc<dyn DeclaredConns>, instance: &str) -> Plugin<K> {
     let d = dispatcher();
     let row = LinkedRow::of_raw(CONNECTED_DOOR).expect("the restated door states its Statement");
@@ -493,13 +406,6 @@ fn connected<K: Kind>(table: &Arc<dyn DeclaredConns>, instance: &str) -> Plugin<
     .expect("the door with a need of its own binds over the table")
 }
 
-/// **RED: a connection over a need the plugin never declared is refused.** The door, restated with
-/// one outbound need (need 0), is bound over the test table; on its own context, ESTABLISH of
-/// need 0 to a loopback listener opens (the GREEN twin), and ESTABLISH of need 1 and of the
-/// highest need index is REFUSED, naming the undeclared need.
-///
-/// # Panics
-/// When an undeclared need opens, or the declared one does not.
 pub fn red_undeclared_need(s: &Subject) {
     let _held = CONNECTED.hold(with_an_outbound_need(real_door(s)));
     let (table, _listening, at) = connection_fixture(s, CONNECTED_DOOR);
@@ -520,14 +426,6 @@ pub fn red_undeclared_need(s: &Subject) {
     });
 }
 
-/// **RED: a plugin instance using a connection another instance opened is refused.** Two instances
-/// of the door, restated with one outbound need, are bound over ONE table; the first opens
-/// a connection to a loopback listener and writes on it (the GREEN twin); the second's WRITE, READ
-/// and CLOSE of that connection are each REFUSED, naming the other owner, and the first's
-/// connection still writes after them.
-///
-/// # Panics
-/// When an instance reaches another's connection, or the owner cannot use its own.
 pub fn red_cross_instance_conn(s: &Subject) {
     let _held = CONNECTED.hold(with_an_outbound_need(real_door(s)));
     let (table, _listening, at) = connection_fixture(s, CONNECTED_DOOR);

@@ -83,8 +83,6 @@ fn zeros_are_read_as_the_end_of_the_writes_and_not_as_damage() {
 
 #[test]
 fn a_frame_whose_payload_length_is_impossible_is_refused_before_it_is_used() {
-    // Re-sealed after the edit, so the header check passes and the bound behind it is what refuses
-    // (an unsealed edit fails its header check first: `a_header_edit_fails_its_header_check`).
     let record = Record::new(1, 1, vec![1u8; 10]);
     let mut frame = record.encode().remove(0);
     frame[32..34].copy_from_slice(&((FRAME_PAYLOAD_BYTES + 1) as u16).to_le_bytes());
@@ -107,14 +105,13 @@ fn a_frame_from_a_layout_this_build_does_not_know_stops_the_scan() {
 }
 
 /// Version 1 — the layout before the header check — was never released, so this build does not read
-/// it: a frame claiming it is an unknown layout, sealed digest or not. Reading it would let a frame
-/// relabelled 1 skip its header check.
+
 #[test]
 fn a_version_1_frame_is_a_layout_this_build_does_not_read() {
     let record = Record::new(1, 1, vec![1u8; 10]);
     let mut frame = record.encode().remove(0);
     frame[4..6].copy_from_slice(&1u16.to_le_bytes());
-    // Re-sealed under the edit, so nothing but the version can refuse it.
+
     crate::tests::fixtures::reseal(&mut frame);
     assert_eq!(
         decode_frame(&frame),
@@ -125,7 +122,6 @@ fn a_version_1_frame_is_a_layout_this_build_does_not_read() {
 
 #[test]
 fn a_frame_claiming_a_part_outside_its_own_count_is_refused() {
-    // Re-sealed after the edit, so the header check passes and the bound behind it is what refuses.
     let record = Record::new(1, 1, vec![1u8; 10]);
     let mut frame = record.encode().remove(0);
     frame[24..28].copy_from_slice(&5u32.to_le_bytes());
@@ -138,8 +134,6 @@ fn a_frame_claiming_a_part_outside_its_own_count_is_refused() {
 
 #[test]
 fn the_header_leaves_the_documented_amount_of_room_for_a_payload() {
-    // The constants are load-bearing for the fixed stride, so they are pinned rather than
-    // recomputed from each other at every call site.
     assert_eq!(
         FRAME_HEADER_BYTES + FRAME_PAYLOAD_BYTES + FRAME_TRAILER_BYTES,
         FRAME_BYTES
@@ -152,7 +146,7 @@ fn the_header_leaves_the_documented_amount_of_room_for_a_payload() {
 }
 
 /// Every frame ENDS with its end mark, and the end mark is never zero: it is the byte that says the
-/// write reached the frame's end.
+
 #[test]
 fn every_frame_ends_with_its_end_mark() {
     assert_ne!(FRAME_END_MARK, 0);
@@ -171,14 +165,9 @@ fn every_frame_ends_with_its_end_mark() {
 }
 
 /// **A WRITE THAT STOPS ANYWHERE INSIDE A FRAME LEAVES AN UNFINISHED WRITE; A WHOLE FRAME THAT
-/// CHANGED NEVER IS ONE.** The two are what recovery tells a torn tail from an altered record by, so
-/// both directions are walked at every byte: a frame cut at each offset (the rest the zeros the
-/// segment claimed ahead) is unfinished and does not decode, and the same frame with any one byte
-/// changed is not unfinished, wherever that byte is.
+
 #[test]
 fn a_write_stopped_at_any_byte_is_unfinished_and_a_changed_whole_frame_is_not() {
-    // A payload ending in zeros: the case where the bytes alone could not have told a tear in the
-    // payload from a whole frame.
     let mut body = vec![7u8; 300];
     body.extend_from_slice(&[0u8; 50]);
     let frame = Record::new(9, 4, body).encode_in_commit(true).remove(0);
@@ -207,7 +196,7 @@ fn a_write_stopped_at_any_byte_is_unfinished_and_a_changed_whole_frame_is_not() 
 }
 
 /// A frame of a layout this build does not read is never an unfinished write of this one, even
-/// with a zero last byte: its bytes are another build's to read, and recovery never cuts them.
+
 #[test]
 fn a_frame_of_another_layout_is_never_an_unfinished_write() {
     let mut frame = Record::new(1, 1, vec![1u8; 10]).encode().remove(0);
@@ -219,7 +208,7 @@ fn a_frame_of_another_layout_is_never_an_unfinished_write() {
 }
 
 /// The first frame of a group commit says so, and no other frame does: it is the frame whose
-/// verifying presence past a damaged commit proves that commit was acknowledged.
+
 #[test]
 fn only_the_first_frame_of_a_commit_opens_it() {
     let record = Record::new(2, 5, vec![3u8; 1000]);
@@ -236,7 +225,7 @@ fn only_the_first_frame_of_a_commit_opens_it() {
 }
 
 /// A frame whose header field is edited fails its HEADER CHECK before anything else is read: an edit
-/// to the header never reads as a different record.
+
 #[test]
 fn a_header_edit_fails_its_header_check() {
     let record = Record::new(1, 1, vec![1u8; 10]);
@@ -246,7 +235,7 @@ fn a_header_edit_fails_its_header_check() {
 }
 
 /// A frame whose PAYLOAD is edited keeps its header check and its end mark and fails its digest: a
-/// whole frame altered after it was written.
+
 #[test]
 fn a_payload_edit_is_an_altered_whole_frame() {
     let record = Record::new(1, 1, vec![1u8; 10]);
@@ -258,10 +247,7 @@ fn a_payload_edit_is_an_altered_whole_frame() {
 }
 
 /// THE ON-DISK DIGESTS ARE SHA-256, BYTE FOR BYTE. The frame digest, the header check and the
-/// journal's body digest are computed with ring (ONE crypto backend = ring), and a frame must carry
-/// exactly the bytes an independent SHA-256 (RustCrypto `sha2`, a dev-dependency only) computes over
-/// the same regions: the digest (header bytes 64..96) over the header up to it plus the payload area
-/// and the end mark, and the 4-byte check (34..38) over bytes 0..34.
+
 #[test]
 fn the_frame_digest_and_header_check_are_sha256_byte_for_byte() {
     use sha2::Digest as _;

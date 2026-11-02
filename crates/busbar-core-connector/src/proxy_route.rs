@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PROXY ROUTE CHOICE: which proxy, if any, a dial goes through. The connector reads the
-//! process environment into it once ([`crate::proxy`], the one parser) and every dial it makes asks
-//! it. It is the connector's alone: it lived in `busbar-contract` while the composition root handed
-//! the same value to the kernel's outbound engine, and moved here when that engine was deleted: the
-//! contract holds only cross-kind shapes.
-//!
-//! The rules are reqwest 0.12's implicit proxy environment, as 1.5.5 shipped them: a secured target
-//! uses the secured slot and every other target the plain slot (each set from its own variable,
-//! with the catch-all variable as the fallback for both), and the exemption list excludes a host
-//! from both before either is read, with curl's rule set (host, domain suffix, IP literal, CIDR).
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -25,7 +16,6 @@ pub struct ProxyHop {
 
 impl std::fmt::Debug for ProxyHop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The credential is never rendered.
         f.debug_struct("ProxyHop")
             .field("host", &self.host)
             .field("port", &self.port)
@@ -80,7 +70,7 @@ pub struct ProxyChoice {
 
 impl ProxyChoice {
     /// The choice of a `secured` slot, a `plain` slot, and the exemption list `exempt` as its
-    /// variable spells it (comma-separated entries).
+
     #[must_use]
     pub fn new(secured: Option<Arc<ProxyHop>>, plain: Option<Arc<ProxyHop>>, exempt: &str) -> Self {
         Self {
@@ -91,7 +81,7 @@ impl ProxyChoice {
     }
 
     /// The per-dial choice — `None` → direct (the host is exempt, or no proxy is set for the
-    /// target's slot), `Some` → tunnel through that proxy.
+
     #[must_use]
     pub fn select(&self, secured_target: bool, target_host: &str) -> Option<Arc<ProxyHop>> {
         if self.exempt.matches(target_host) {
@@ -134,9 +124,7 @@ enum NoProxyEntry {
 
 impl NoProxy {
     /// Comma-separated entries, whitespace trimmed, empties dropped. Entry classification
-    /// mirrors reqwest: try CIDR, then IP literal, then fall back to domain — a malformed
-    /// CIDR (`10.0.0.0/40`) therefore degrades to a domain entry that never matches, exactly
-    /// as `ipnet` parse failure does under reqwest, rather than aborting boot.
+
     fn parse(raw: &str) -> Self {
         let mut entries = Vec::new();
         for part in raw.split(',') {
@@ -168,8 +156,6 @@ impl NoProxy {
     }
 
     fn matches(&self, target_host: &str) -> bool {
-        // A URI's host may carry an IPv6 literal in brackets; strip them before the
-        // IpAddr parse, as hyper-util's NoProxy::contains does.
         let bare = target_host.trim_start_matches('[').trim_end_matches(']');
         let ip: Option<IpAddr> = bare.parse().ok();
         let host = target_host.to_ascii_lowercase();
@@ -189,10 +175,7 @@ impl NoProxy {
 }
 
 /// CIDR containment by prefix-length bit compare over octets — the ~10 lines that make an
-/// `ipnet` dependency unnecessary. Families never cross: a v4 block does not match a v6
-/// address and vice versa, INCLUDING v6-mapped forms (`10.0.0.0/8` does NOT match
-/// `::ffff:10.0.0.1` — it is a v6 address), matching `ipnet`/reqwest, which do not
-/// special-case mapped addresses either.
+
 fn cidr_contains(net: &IpAddr, prefix: u8, addr: &IpAddr) -> bool {
     match (net, addr) {
         (IpAddr::V4(n), IpAddr::V4(a)) => octets_prefix_eq(&n.octets(), &a.octets(), prefix),
@@ -202,7 +185,7 @@ fn cidr_contains(net: &IpAddr, prefix: u8, addr: &IpAddr) -> bool {
 }
 
 /// The first `prefix` bits of `net` and `addr` are equal. `prefix` is pre-validated against
-/// the address width; `/0` matches everything (whole bytes to compare: none, remainder: 0).
+
 fn octets_prefix_eq(net: &[u8], addr: &[u8], prefix: u8) -> bool {
     let whole = usize::from(prefix / 8);
     let rem = prefix % 8;

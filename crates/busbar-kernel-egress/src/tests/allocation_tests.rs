@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! What the pick costs per member.
-//!
-//! The weighted floor runs once per hop of every route walk, so anything it does per OFFERED MEMBER
-//! is paid on the request path times pool membership. The pool name is a borrowed `&str` for the
-//! whole walk, and there is no reason for a turn of the rotation to own a copy of it once per
-//! member. This crate forbids unsafe, so the count cannot be taken with a counting allocator; what
-//! is measured instead is the shape that decides it — how many keys carry a pool name at all.
 
 use crate::ports::DestinationId;
 use crate::select::WeightedFloor;
@@ -17,7 +11,7 @@ fn offered(n: u64) -> Vec<(DestinationId, u32)> {
 }
 
 /// And the rotation itself is unchanged: the pick ORDER is the previous release's behaviour and is
-/// what the oracle pins, so the restructure has to be invisible in the sequence.
+
 #[test]
 fn the_rotation_order_is_byte_identical_across_the_restructure() {
     let floor = WeightedFloor::new();
@@ -33,7 +27,6 @@ fn the_rotation_order_is_byte_identical_across_the_restructure() {
         .collect();
     assert_eq!(picked, expected, "the smooth weighted rotation over 5/3/1");
 
-    // The same destination in a second pool is a second, independent rotation.
     let second_pool = WeightedFloor::new();
     let other: Vec<DestinationId> = (0..3)
         .filter_map(|_| second_pool.take_turn(&members))
@@ -44,7 +37,7 @@ fn the_rotation_order_is_byte_identical_across_the_restructure() {
 }
 
 /// A pool the floor has never seen still rotates from a clean slate, and seeing it does not disturb
-/// a pool already running.
+
 #[test]
 fn a_new_pool_starts_its_own_rotation_without_touching_an_existing_one() {
     let (a, b) = (WeightedFloor::new(), WeightedFloor::new());
@@ -64,9 +57,7 @@ fn a_new_pool_starts_its_own_rotation_without_touching_an_existing_one() {
 }
 
 /// The membership with the blocklist applied is read on every hop of every walk, and the pool that
-/// blocklists nobody is the common case by a wide margin. That case has nothing to compute, so it
-/// has nothing to copy either: it hands back a borrow of the pool's own membership, and only a pool
-/// that actually excludes somebody pays for the filtered copy.
+
 #[test]
 fn an_unblocked_pools_membership_is_borrowed_not_copied() {
     use crate::pool::{Member, Pool};

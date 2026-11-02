@@ -2,26 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE TRANSPORT SDK: what every transport door wrote alike, stated once.
-//!
-//! * [`form_codes`] — a door's selector forms, as the codes its Statement carries.
-//! * [`not_served!`](crate::not_served) — the stubs a transport fills the slots of the role it does
-//!   not play with: REFUSED, naming the op and the role (`abi::transport`).
-//! * [`SettingRow`], [`setting_decls`], [`settings_reading`] — the settings a transport reads, stated
-//!   once: its Statement's [`SettingDecl`]s render from the rows, and its settings are read as a JSON
-//!   object against them, a key it does not read or a value its kind refuses refused.
-//! * [`DEFAULT_BODY_MAX`] — the request-body bound's declared default, as a setting declaration
-//!   states it.
-//! * [`carried!`](crate::carried) — a carrier op's instance and its armed host I/O, or the refusal a call on neither
-//!   earns.
-//! * [`table::Table`] — what an instance holds by token (framings, connections, calls), one lock per
-//!   value, none shared between two.
-//! * [`sink`] — a framer's sink fill ([`sink::fill`], [`sink::Piece`], [`sink::field_cut`]), over
-//!   any frame buffer.
-//!
-//! The HOT transport lowering that lived here (`export_carrier!`, `export_framer!`, the per-method
-//! `#[repr(C)]` slot bridges and the decl a transport cdylib exported as `busbar_transport_decl`) is
-//! deleted (row 84): every transport, in this tree and in the fleet, serves its memory-ABI door
-//! (`export_door!`), and the loader reads no transport decl.
 
 use crate::abi::mechanism::call::AbiStr;
 use crate::abi::sdk::io::Io;
@@ -50,7 +30,7 @@ pub const fn form_codes<const N: usize>(forms: &[SelectorForm]) -> [u8; N] {
 }
 
 /// The request-body bound's default ([`DEFAULT_REQUEST_BODY_MAX_BYTES`]) as the decimal text a
-/// setting declaration states it in.
+
 pub const DEFAULT_BODY_MAX: &str = "33554432";
 
 /// `text` read as a decimal count.
@@ -65,7 +45,6 @@ const fn decimal(text: &str) -> usize {
     n
 }
 
-// The declared default is the bound the host applies: one fact, held equal.
 const _: () = assert!(decimal(DEFAULT_BODY_MAX) == DEFAULT_REQUEST_BODY_MAX_BYTES);
 
 /// One setting a transport reads: the ONE source of its Statement's [`SettingDecl`]
@@ -95,7 +74,7 @@ impl SettingRow {
     }
 
     /// Why `value` is not a value of this setting's kind: [`SETTING_FLAG`] is `true`/`false`,
-    /// [`SETTING_COUNT`] an unsigned integer above `0`, [`SETTING_TEXT`] a string.
+
     fn refuses(&self, value: &serde_json::Value) -> Option<String> {
         let path = self.path;
         match self.kind {
@@ -124,14 +103,7 @@ pub const fn setting_decls<const N: usize>(rows: &[SettingRow; N]) -> [SettingDe
 }
 
 /// A transport's `settings` as the JSON object they must be (`{}` when empty), read against the
-/// settings it declares (`reads`): a key no row names is refused,
-/// `settings: <key> is not a setting this transport reads`, and a value its row's kind refuses is
-/// refused naming the key (`settings: <key> must be true or false` / `must be a count above 0` /
-/// `must be text`).
-///
-/// # Errors
-/// The settings are not a JSON object, name a key not in `reads`, or hold a value its kind
-/// refuses: FAILED.
+
 pub fn settings_reading(
     settings: &[u8],
     reads: &[SettingRow],
@@ -167,10 +139,7 @@ macro_rules! carried {
 }
 
 /// [`carried!`](crate::carried)'s body: the instance and its armed I/O, or FAILED saying
-/// `no_instance` / `no_io`.
-///
-/// # Errors
-/// FAILED: no open instance, or no armed I/O.
+
 pub fn carried_saying<'a, L: Life>(
     i: &Instance<'a, Held<L>>,
     no_instance: &'static str,

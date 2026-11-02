@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DEAL's REDs: a section reaches only its plugin, a reserved key is stripped,
-//! and a refusal names the operator's file position in 1.5.5's bytes.
-
 use super::*;
 use serde_json::json;
 
@@ -38,14 +35,13 @@ agents:
     url: b
 ";
 
-/// RED: each plugin is dealt its own section and nothing of another's.
 #[test]
 fn red_a_section_reaches_only_its_plugin() {
     let d = doc(DOC);
     let tools = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
     assert_eq!(tools.settings, json!({"tools": {"t1": {"url": "a"}}}));
     assert_eq!(tools.at, vec![verbs(&["tools"])]);
-    // Every stated verb the document writes, and only those.
+
     let both = d
         .deal(Seat::Verbs(&verbs(&["agents", "unwritten"])))
         .expect("dealt");
@@ -61,8 +57,6 @@ fn red_a_section_reaches_only_its_plugin() {
     assert!(d.deal(Seat::Instance(Kind::Transport, "t")).is_none());
 }
 
-/// RED: the reserved core-owned sub-keys are read off a section's own level and off each of its
-/// registrations, and never cross.
 #[test]
 fn red_a_reserved_key_is_stripped() {
     let d = doc("\
@@ -110,15 +104,13 @@ tools:
     ];
     want.sort_unstable();
     assert_eq!(paths, want);
-    // The kernel keeps what it read.
+
     assert!(s
         .reserved
         .contains(&(verbs(&["tools", "t1", "tier"]), json!("big"))));
     assert!(!is_reserved("url"));
 }
 
-/// RED: a refusal names the node's file position, in the bytes the YAML library 1.5.5 parsed with
-/// prints for a refusal raised at that node.
 #[test]
 fn red_a_refusal_names_its_position() {
     let d = doc(DOC);
@@ -135,13 +127,10 @@ fn red_a_refusal_names_its_position() {
             column: 10
         })
     );
-    // No such node: the path, unpositioned.
+
     assert_eq!(d.position(&verbs(&["tools", "t9"])), None);
     assert_eq!(d.refusal(&verbs(&["tools", "t9"]), "r"), "tools.t9: r");
 
-    // Byte-identical to the library's own refusal raised at the same node (1.5.5's form): a value of
-    // the wrong type, refused at that value. (An unknown field is raised at its KEY, a node no
-    // section path names, so it is not the comparison.)
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     #[allow(dead_code)]
@@ -164,7 +153,6 @@ fn red_a_refusal_names_its_position() {
     );
 }
 
-/// A stage-0 rewrite edits the value; the positions stay the ones the operator wrote.
 #[test]
 fn a_rewrite_keeps_the_operators_positions() {
     let mut d = doc(DOC);
@@ -176,18 +164,12 @@ fn a_rewrite_keeps_the_operators_positions() {
     assert_eq!(d.refuse(&tools, "bad"), "tools: bad at line 16 column 3");
 }
 
-// ── Q-STEP9-a (ARCHITECT 2026-10-07): the strip's exact depths and the generic refusal ──────────
-
-/// Every recorded path, joined and sorted.
 fn paths(s: &Section) -> Vec<String> {
     let mut p: Vec<String> = s.reserved.iter().map(|(p, _)| p.join(".")).collect();
     p.sort();
     p
 }
 
-/// RED (base: `pools` was no reserved key, so `tools.pools` crossed whole, its pools' breakers and
-/// its members' tiers with it): under a declared verb `pools` is reserved and leaves the blob, and
-/// the reserved keys of each pool and each member are recorded at their exact paths besides.
 #[test]
 fn red_each_exact_depth_is_stripped_and_recorded_at_its_path() {
     let d = doc("\
@@ -216,7 +198,7 @@ tools:
             "tools.work",
         ]
     );
-    // The kernel keeps what it read, at its path.
+
     assert!(s.reserved.contains(&(
         verbs(&["tools", "pools", "p1", "members", "0", "tier"]),
         json!("big")
@@ -229,9 +211,6 @@ tools:
     assert!(is_reserved(busbar_contract::section::RESERVED_POOLS_KEY));
 }
 
-/// No recursion: a word spelled like a reserved key BELOW the four exact depths is the plane's own
-/// and crosses, and nothing is recorded for it. (RED on the base only through `pools`, which crossed
-/// there; the base strip did not recurse either, so the no-recursion half is a guard.)
 #[test]
 fn a_reserved_word_below_the_exact_depths_is_not_stripped() {
     let d = doc("\
@@ -252,9 +231,6 @@ tools:
     assert_eq!(paths(&s), ["tools.pools"]);
 }
 
-/// RED (base: a pool named after a knob was stripped from the root `pools:` section as if it were
-/// that knob): under the root `pools:` section every depth-1 key but 1.5.5's two section words is a
-/// POOL, and crosses; its own knobs and its members' are taken at their paths.
 #[test]
 fn red_root_pools_named_after_a_knob_are_pools_and_cross() {
     let d = doc("\
@@ -296,10 +272,6 @@ pools:
     );
 }
 
-/// The one generic shape judge (spec :567): a map where the knob is a list or a scalar, a map
-/// holding a key the knob does not read, or a `pools`/`rate_card` map holding a non-map value, is an
-/// entry by that name; a well-shaped knob, a malformed knob of the right kind, and a non-reserved
-/// key are not.
 #[test]
 fn red_a_value_plainly_not_its_knob_names_an_entry() {
     let y = |t: &str| serde_yaml::from_str::<serde_yaml::Value>(t).expect("yaml");
@@ -336,18 +308,14 @@ fn red_a_value_plainly_not_its_knob_names_an_entry() {
         ("pools", "{p: {members: [a]}}"),
         ("rate_card", "{lane: {input_utok: 1}}"),
         ("timeout", "10s"),
-        // Malformed, but the knob's kind: its own reader says what is wrong.
         ("hooks", "a"),
         ("work", "5"),
-        // Not a reserved key.
         ("url", "{url: a}"),
     ] {
         assert!(!names_an_entry(key, &y(knob)), "{key}: {knob}");
     }
 }
 
-/// The field lists the shape judge reads are the kernel types' own: each type, handed a key it does
-/// not read, names exactly the fields the judge lists.
 #[test]
 fn the_knob_field_lists_are_the_kernel_types_own() {
     fn expected<T: serde::de::DeserializeOwned + std::fmt::Debug>(knob: &str) -> String {
@@ -363,8 +331,6 @@ fn the_knob_field_lists_are_the_kernel_types_own() {
         .contains("expected `per_request` or `per_session`"));
 }
 
-/// The sentence: 1.5.5's, to the byte, for the two section words; the same form naming the
-/// core-owned setting for any other reserved key.
 #[test]
 fn the_reserved_name_sentence_is_1_5_5s() {
     use busbar_contract::section::reserved_name_refusal;

@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! TRUST ON SIGHT, PLANE SIDE: the two shapes every plane that sights an upstream on the kernel's
-//! trust book (`trust.sight`, `trust.serves`) renders its admin trust view from. The verdicts are
-//! the kernel's; what a plane holds is the last contact it made ([`Sighting`]) and the state word
-//! its view answers ([`State`]). What a contact OBSERVES is each plane's own, so [`Sighting`] is
-//! generic over it.
 
 /// The last contact with an upstream, over what a successful one observed (`O`). `Never` is not a
 /// failure: an upstream nobody has looked at, or one approved declaratively, has legitimately never

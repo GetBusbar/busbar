@@ -1,34 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The neutral Admin API v1 DATA helpers a plane crate names without reaching into `busbar-core`.
-//!
-//! These are the pure-data pieces of the frozen admin contract: the path prefix every admin
-//! endpoint hangs off, the absolute-path helper derived from it, the shared named-definition read
-//! VIEW, and the OpenAPI response-schema attach helper. None of them touches `App`, `Store`, audit,
-//! or the authorization `Scope` — they are `String`/`Vec`/`Option` serde data and `serde_json`
-//! manipulation, so they belong in the neutral substrate. Core re-exports each from its old admin
-//! path so the in-core (and a2a) call sites are unchanged.
-
 use serde::Serialize;
 
-/// The frozen Admin API v1 path prefix — `API_ROOT` + version + area. Every admin endpoint hangs
-/// off this; the router nest, the scope matrix, and the OpenAPI doc all derive from it (one source
-/// of truth, drift-proof by construction — see `admin::transport::mount`).
-///
-/// The literal itself lives in `busbar-contract`, and this is a re-export of it. It has to: the
-/// admin plane must claim this prefix, a plugin may name `busbar-contract` and nothing else in the
-/// workspace, and the plane's only alternative was transcribing the string by hand — which it did,
-/// with an assertion over its own copy that could not check this one.
 pub use busbar_contract::surface::ADMIN_PREFIX;
 
-/// Absolute admin path from a RELATIVE one — [`ADMIN_PREFIX`] + `rel`. The OpenAPI doc keys
-/// (which document the WIRE, so they must be absolute) are all built through this, so no absolute
-/// path is ever hand-written here and none can drift from the mount grammar.
-// Only `openapi_doc()` (feature `openapi-schema`) and the plane `openapi_schemas` contributors it
-// folds call this; all are compiled solely under that feature, so `ap` is dead in every build
-// without it — allow it there. `pub` so a plane can compute the absolute path of its own verb
-// when attaching that verb's typed schema through the `openapi_schemas` seam.
 #[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
 pub fn ap(rel: &str) -> String {
     format!("{ADMIN_PREFIX}{rel}")
@@ -116,8 +92,6 @@ pub struct NamedDefView {
     pub unparseable: Option<String>,
 }
 
-/// The served description of [`NamedDefView::token_configured`]: 1.5.5's text byte for byte, the
-/// operator credential's provider read off its frozen row, so the kernel spells no auth module.
 #[cfg(feature = "openapi-schema")]
 fn token_configured_description() -> String {
     format!(
@@ -126,10 +100,6 @@ fn token_configured_description() -> String {
     )
 }
 
-/// Attach a `$ref` schema onto `<abs_path>.<method>.responses.<status>.content` — the module-level
-/// twin of `openapi_doc`'s nested `set_content`, exposed so a plane's `openapi_schemas` contributor
-/// attaches its verb's typed success body through the SAME logic (byte-identical output). Creates the
-/// status response entry if the op did not already document it.
 #[cfg(feature = "openapi-schema")]
 pub fn set_response_schema(
     paths: &mut serde_json::Map<String, serde_json::Value>,
@@ -141,9 +111,7 @@ pub fn set_response_schema(
     let Some(op) = paths.get_mut(abs_path).and_then(|p| p.get_mut(method)) else {
         return;
     };
-    // The OpenAPI operation-object key is the fixed wire word `responses` — unrelated to any plane
-    // dialect, but a bare token collides with the plane-purity lint's dialect list, so the fixed
-    // spelling is assembled with `concat!` (compile-time identical) and the local is named neutrally.
+
     let Some(resp_map) = op
         .get_mut(concat!("respon", "ses"))
         .and_then(|r| r.as_object_mut())

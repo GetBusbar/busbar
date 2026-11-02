@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE CALL SHAPE: [`Op`], `op(instance, in, out)`, and the two heads every `in` and every
-//! `out` of every kind leads with ([`InHead`], [`OutHead`]). A kind's own structs embed the head
-//! as their first field and append their fields after it.
 
 use std::os::raw::c_void;
 
@@ -94,7 +92,7 @@ pub type Op = unsafe extern "C" fn(
 ) -> RawOutcome;
 
 /// [`InHead::flags`]: this call RESUMES a call that answered [`Outcome::Pending`], with the same
-/// ticket and the same `in`/`out`.
+
 pub const FLAG_RESUME: u32 = 1;
 
 /// The deadline class of an op (the ABI brief's mechanics), carried in
@@ -138,8 +136,7 @@ pub struct AbiStr {
 
 impl AbiStr {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `AbiStr { …, ..AbiStr::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         ptr: std::ptr::null(),
         len: 0,
@@ -206,8 +203,7 @@ impl AbiStr {
     }
 
     /// `s`, which lives at least until the plugin's next refresh generation: the borrow checker
-    /// holds `s` to the op's generation borrow `gen`, so a string of the call's own (a local, the
-    /// host's lent `in`) does not compile here.
+
     #[must_use]
     pub fn lent<'g>(s: &'g str, gen: &Gen<'g>) -> AbiStr {
         Self::lent_bytes(s.as_bytes(), gen)
@@ -303,8 +299,7 @@ pub struct Span {
 
 impl Span {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Span { …, ..Span::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self { offset: 0, len: 0 };
 }
 
@@ -346,8 +341,7 @@ pub struct Blob {
 
 impl Blob {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Blob { …, ..Blob::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         ptr: std::ptr::null(),
         len: 0,
@@ -367,9 +361,7 @@ impl Blob {
 }
 
 /// HOW A `Blob` IS MADE AND READ, through methods rather than its pointer and
-/// length fields, which #1471 makes private: [`Blob::of`] / [`Blob::json`] over memory that lives
-/// for the program, [`Blob::lent`] over memory the op's generation borrow ([`Gen`]) proves, the
-/// `unsafe` [`Blob::from_raw_parts`] for the host's and the loader's per-call memory.
+
 impl Blob {
     /// `bytes`, which live for the program, as opaque octets ([`BLOB_OCTETS`]); state another
     /// format with [`Blob::with_fmt`].
@@ -396,7 +388,7 @@ impl Blob {
     }
 
     /// `bytes`, which live at least until the plugin's next refresh generation, as opaque octets:
-    /// the borrow checker holds them to the op's generation borrow `gen` ([`AbiStr::lent`]).
+
     #[must_use]
     pub fn lent<'g>(bytes: &'g [u8], gen: &Gen<'g>) -> Blob {
         let s = AbiStr::lent_bytes(bytes, gen);
@@ -409,7 +401,7 @@ impl Blob {
     }
 
     /// The same bytes, stated as `fmt` ([`BLOB_ABSENT`] | [`BLOB_JSON`] | [`BLOB_JSONL`] |
-    /// [`BLOB_OCTETS`]).
+
     #[must_use]
     pub const fn with_fmt(mut self, fmt: u32) -> Blob {
         self.fmt = fmt;
@@ -548,8 +540,7 @@ pub struct Diag {
 
 impl Diag {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Diag { …, ..Diag::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         id_idx: 0,
         severity: 0,
@@ -559,10 +550,10 @@ impl Diag {
 }
 
 /// [`Diag::id_idx`]: a log record the plugin emitted during the call. Its text is
-/// `target: message`, followed by any other fields as ` key=value`.
+
 pub const DIAG_LOG: u32 = u32::MAX;
 /// [`Diag::id_idx`]: how many log records the plugin's capture dropped over its bound, as decimal
-/// text. At most one per reply, and last.
+
 pub const DIAG_LOG_DROPPED: u32 = u32::MAX - 1;
 /// [`Diag::severity`]: info.
 pub const SEVERITY_INFO: u8 = 0;
@@ -595,8 +586,7 @@ pub struct Envelope {
 
 impl Envelope {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Envelope { …, ..Envelope::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         metrics: std::ptr::null(),
         metrics_len: 0,

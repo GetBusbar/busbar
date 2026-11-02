@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! SECRET MATERIAL IS `Secret<T>`, NEVER LOGGED, NEVER SERVED (Part 2 #53, #54). Three rules over
-//! core's production source:
-//!
-//! - a field named for secret material is typed (`Secret`, `SecretRef`, `Zeroizing`), never a bare
-//!   string or byte holder;
-//! - an `.expose(..)` never shares a statement with a log, metric or audit sink;
-//! - an admin-facing struct never carries a raw operator `settings` bag.
 
 use proc_macro2::{Delimiter, TokenTree};
 use syn::visit::Visit;
@@ -35,8 +29,7 @@ const CONTEXT_STRUCTS: &[&str] = &[
 const WRAPPERS: &[&str] = &["Secret", "Zeroizing", "SecretRef"];
 
 /// The documented exceptions: `(file, needle, field)`; an empty field covers every field the
-/// needle names in that file. The store ABI's serde egress of a credential secret, the once-shown
-/// mint response, and the auth wire boundary.
+
 const ALLOWED: &[(&str, &str, &str)] = &[
     ("crates/busbar-contract/src/records.rs", "secret", "secret"),
     (

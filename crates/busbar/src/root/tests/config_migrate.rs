@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STUB PLUGIN MIGRATES ITSELF, END TO END ACROSS CORE (owner ruling 2026-10-27): a stub
-//! plugin's door states `migrate` (the contract's `Migrator` over its own `Migrate`), the loader
-//! calls it through the door with no instance, and the kernel's `--migrate-config` writes the
-//! plugin's answer back, applies the destination it raised to `advanced.allow_destinations` and
-//! prints its report line under its name. Core knows none of the stub's keys. And the release
-//! index picks the release built for this core's ABI.
-
 use busbar_contract::abi::sdk::migrate::Migrated;
 use busbar_kernel::config::migrate::migrate_config_with;
 use busbar_kernel::config::migrate_plugins::MigrateHost;
@@ -16,7 +9,6 @@ use busbar_test_kit::root_door_fixtures::migrate_stub as stub;
 use super::{Index, IndexPlugin};
 use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};
 
-/// A host whose one plugin is the stub's door, called as the root calls every door's `migrate`.
 struct StubHost;
 impl MigrateHost for StubHost {
     fn migrate(
@@ -197,9 +189,6 @@ fn migration_staging_owns_only_its_fresh_private_directory() {
     assert_eq!(std::fs::read(second.0.join("other")).unwrap(), b"second");
 }
 
-/// THE CATALOG A PLANE'S MIGRATION READS is the one boot reads: the `providers.yaml` beside the
-/// configuration (the private-destinations corpus fixture's), each entry as written, a
-/// catalog-only private one included.
 #[test]
 fn the_root_hands_the_catalog_boot_reads_to_the_plane_migrations() {
     let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

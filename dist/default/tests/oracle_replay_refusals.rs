@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ORACLE NEVER READS "NOTHING JUDGED" AS A VERDICT. A filtered replay
-//! handed `--filter` (record's flag; replay selects with `--id-filter`) exited 2 from the engine's
-//! argument parser, and the fence and dated-baseline sections then printed their own rows, which
-//! read like a verdict over the selected cells. `bin/oracle replay-refusal-selftest` drives a copy
-//! of the shim with a stub engine: `--filter` is refused by name before the engine runs, an engine
-//! argument refusal stops the replay, a report that compared zero owed cells is refused, and a
-//! replay that judged cells answers the engine's verdict.
-
 use std::path::Path;
 use std::process::Command;
 

@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SAFE ABI SURFACE BESIDE THE OPEN FIELDS: every accessor,
-//! constructor, setter and builder this tree gains before #1471 makes the pointer and length
-//! fields private, each held to the field or path it replaces, so a plugin that moves to it reads
-//! and writes exactly what it did.
 
 use std::mem::{size_of, MaybeUninit};
 use std::ptr;
@@ -27,8 +24,7 @@ use crate::abi::transport::route::RouteMatch;
 use crate::abi::transport::{Claim, TransportTail};
 
 /// A `T` whose every byte is set, each to its own value, so two fields never read alike by chance.
-/// Every struct a call lends is integers, floats, raw pointers and unions of them: any byte
-/// pattern is a value of it, and nothing here reads through a pointer.
+
 fn patterned<T>() -> T {
     let mut v = MaybeUninit::<T>::uninit();
     let at = v.as_mut_ptr().cast::<u8>();
@@ -42,7 +38,7 @@ fn patterned<T>() -> T {
 }
 
 /// The bytes of `v`, a value with no padding (each `val` field's type: integers, floats, arrays,
-/// spans, tickets, contexts and the signal union).
+
 fn bytes_of<T>(v: &T) -> Vec<u8> {
     // SAFETY: `v` is a live `T` of `size_of::<T>()` initialised bytes (no padding, above).
     unsafe { std::slice::from_raw_parts(ptr::from_ref(v).cast::<u8>(), size_of::<T>()) }.to_vec()
@@ -83,8 +79,6 @@ fn every_field_accessor_reads_the_field_it_is_named_after() {
 
 #[test]
 fn a_named_accessor_reads_what_the_deref_read_did() {
-    // The spellings a plugin moves from (`input.unit`, `input.get().from`, `input.field(|i|
-    // &i.member)`) and to (`input.unit()`, `input.from()`, `input.member()`).
     let member = b"agent-a";
     let mut v: OnPieceIn = patterned();
     v.member = AbiStr {
@@ -108,7 +102,7 @@ fn a_lent_blob_states_its_format_flags_and_absence() {
     assert_eq!((b.fmt(), b.flags()), (present.fmt, present.flags));
     assert!(!b.is_absent());
     assert_eq!(b.bytes(), json);
-    // Absent by format, and absent by a NULL pointer whatever the format says.
+
     assert!(lend(&Blob::ABSENT).is_absent());
     let null = Blob {
         fmt: BLOB_JSON,
@@ -245,7 +239,7 @@ fn a_decl_str_is_made_and_read_as_its_fields_state() {
 }
 
 /// `v` for the program: one address, as a plugin's `'static` rows have (a `const` promoted at
-/// each use need not have one).
+
 fn leak<T>(v: T) -> &'static T {
     Box::leak(Box::new(v))
 }
@@ -275,7 +269,7 @@ fn a_statement_list_set_by_its_setter_is_the_pointer_and_length_it_states() {
     );
     assert_eq!((tail.dialects, tail.dialects_len), (keys.as_ptr(), 2));
     assert_eq!(s.kind_tail(), s.kind_tail);
-    // What the struct-update spelling a plugin moves from stated: the same fields.
+
     let by_hand = Statement {
         diag_ids: keys.as_ptr(),
         diag_ids_len: keys.len(),
@@ -322,8 +316,7 @@ fn an_empty_row_is_the_zero_row_with_its_head_sized() {
         &ExportTail::ZERO,
         sized(size_of::<ExportTail>()),
     );
-    // The plane tail has padding (after `stream_ceiling_secs`): its fields are compared, not its
-    // bytes.
+
     let (plane, zero) = (PlaneTail::EMPTY, PlaneTail::ZERO);
     assert_eq!(plane.head.size as usize, size_of::<PlaneTail>());
     assert!(plane.scope.ptr.is_null() && plane.dialects.is_null() && plane.metric_lanes.is_null());
@@ -468,7 +461,7 @@ fn a_fake_host_lends_its_own_tables() {
     let fake = FakeHost::new();
     let tables = fake.lent();
     assert!(ptr::eq(tables.lent, fake.tables_for_tests()));
-    // A sealed loan, passed by value, proves the nested tables.
+
     let host = Host::of(tables);
     // SAFETY: the fake's own tables, alive while `fake` is.
     let raw = unsafe { Host::from_raw(fake.tables_for_tests()) };
@@ -492,8 +485,7 @@ fn a_kept_handle_is_named_by_its_static_alias() {
     use crate::abi::sdk::conn::{Host, StaticHost};
     use crate::abi::sdk::services::{StaticServices, StaticWake};
     use crate::abi::sdk::test_support::fake::FakeHost;
-    // The aliases are the types themselves: what a plugin keeps in a struct field reads back as
-    // the handle it was handed.
+
     struct Kept {
         host: StaticHost,
         services: Option<StaticServices>,

@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL TEST BINARY'S PROTOCOL SET — seven SYNTHETIC declarations with neutral names, so the
-//! kernel's own `#[cfg(test)]` binary has a protocol registry to validate, route and frame over
-//! without naming a plane crate ("a plugin tests itself; the kernel never tests or names a plugin").
-//!
-//! Each row carries only the SHAPE the kernel's tests exercise, never a dialect's bytes: six rows
-//! with a trivial passthrough codec (the codec protocols `known_protocols()` lists) and one
-//! codec-less row serving `invoke`. Between them they declare every family verb, one residual
-//! default, one lane-constant and one request-signing egress builder, and one SigV4-ingress row
-//! claiming the `/model/` residual path. THE ORDER IS FIXED: tests read these rows by position.
-
 use busbar_contract::billing::TokenUsage;
 use busbar_contract::codec::{
     CodecError, CodecHost, EgressCtx, IngressReject, OperationHandler, RequestHandler,
@@ -24,7 +14,6 @@ use busbar_contract::protocol::{
 use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError};
 use serde_json::{json, Map, Value};
 
-/// The passthrough codec: says nothing a dialect would say, and changes no body.
 struct Passthrough;
 
 impl DialectCodec for Passthrough {
@@ -94,8 +83,6 @@ impl DialectCodec for Passthrough {
     }
 }
 
-/// The one operation cell every verb of every row answers with: the trait's defaults, and a wire it
-/// never decodes (no kernel-lib test drives a body through a synthetic cell).
 struct Cell;
 
 impl OperationHandler for Cell {
@@ -111,7 +98,6 @@ impl OperationHandler for Cell {
     }
 }
 
-/// A row's request handler: its name, and a cell for each verb it declares.
 struct Handler(&'static str, &'static [OpVerb]);
 
 impl RequestHandler for Handler {
@@ -131,7 +117,6 @@ impl RequestHandler for Handler {
     }
 }
 
-/// A static scheme: the credential in one header, whatever the request.
 fn static_header(cred: &str, _: &SigningContext) -> Vec<(String, Vec<u8>)> {
     vec![(
         "authorization".to_string(),
@@ -139,7 +124,6 @@ fn static_header(cred: &str, _: &SigningContext) -> Vec<(String, Vec<u8>)> {
     )]
 }
 
-/// A request signer: the header covers the body, the time and the path.
 fn signed_header(cred: &str, ctx: &SigningContext) -> Vec<(String, Vec<u8>)> {
     let sig = format!(
         "{cred}/{}/{}/{}",
@@ -166,7 +150,6 @@ const FAMILY: &[OpVerb] = &[
 const CHAT: &[OpVerb] = &[OpVerb::CHAT];
 const INVOKE: &[OpVerb] = &[OpVerb::INVOKE];
 
-/// A codec row: the passthrough codec, a handler serving `verbs`.
 const fn codec_row(name: &'static str, handler: &'static Handler) -> ProtocolDecl {
     ProtocolDecl {
         codec: Some(&Passthrough),
@@ -202,5 +185,4 @@ static G: ProtocolDecl = ProtocolDecl {
     ..ProtocolDecl::named("proto-g")
 };
 
-/// The seven rows, in their fixed order.
 pub(crate) static NEUTRAL_PROTOCOLS: &[&ProtocolDecl] = &[&A, &B, &C, &D, &E, &F, &G];

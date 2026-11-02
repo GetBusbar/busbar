@@ -1,21 +1,10 @@
 //! The bounded types every other module is built out of. Every ceiling below is pinned by the
-//! crate-graph section of the design and enforced at the type, not by a runtime check buried in a
-//! handler; the one resource a plugin is handed is the per-unit scratch pad, and every byte a
-//! plugin produces comes out of it. See `docs/design/BUSBAR-1.6.0.md` #38.
 
 use core::fmt;
 
 /// The most keys any scratch-backed fact map may carry.
-///
-/// The crate-graph section of the design pins this at thirty-two.
-pub const MAX_KEYS: usize = 32;
 
-// There is deliberately no step ceiling here. One was declared, and nothing in the tree carried
-// it: no type was a list of steps, so the number bounded nothing and only read as though it did,
-// which is worse than its absence — a reader takes it for a bound in force. The step vocabulary
-// itself is a closed const list on the unit type and its length is asserted against nothing else.
-// When the audit step grows an amendment list, that list arrives with a ceiling of its own, in the
-// type that carries it.
+pub const MAX_KEYS: usize = 32;
 
 /// The most usage lines one unit may settle.
 pub const MAX_USAGE_LINES: usize = 16;
@@ -24,20 +13,11 @@ pub const MAX_USAGE_LINES: usize = 16;
 pub const MAX_RECORD_BYTES: usize = 512;
 
 /// The per-connection read cursor ceiling, in bytes, credential slab included.
-///
-/// The buffer grows lazily; resident memory counts the actual bytes, never the ceiling. A frame
-/// prefix that would carry the cursor past this is the cursor-budget refusal of the arrival gate.
+
 pub const MAX_CURSOR_BYTES: usize = 64 * 1024;
 
 /// The most consecutive "need more" answers a session-transport handshake may take.
-///
-/// This bounds handshake framing only. Body-chunk spooling is charged to the node-global spill
-/// budget instead, so a large request body is never refused by this number.
-///
-/// The run counted is a CONSECUTIVE one, kept per session by the pump: a frame that is something
-/// forgives every "not yet" before it, and the frame past this number is refused as a stall while
-/// the session stays open to be told so. A peer that never finishes a frame otherwise holds its
-/// session slot for as long as it cares to.
+
 pub const MAX_NEEDMORE_FRAMES: usize = 256;
 
 /// The most upstream connections one session may pair with itself.
@@ -50,16 +30,11 @@ pub const MAX_LEGS: usize = 8;
 pub const MAX_LEG_REPLIES: usize = 2;
 
 /// The most places a plane may say the client's response ceiling could be.
-///
-/// Two, because the case this exists for is one dialect accepting the same ceiling under an older
-/// member name and a newer one. A plane that wanted a third would be describing a dialect nobody
-/// can write a client for.
+
 pub const MAX_RESPONSE_PTRS: usize = 2;
 
 /// The per-unit scratch pad's starting size, in bytes.
-///
-/// The pad is reset per frame on the relay path of an open unit and at unit end otherwise. Relay
-/// and egress bodies live in the connection slab, never here.
+
 pub const SCRATCH_BASE_BYTES: usize = 4 * 1024;
 
 /// A fixed-capacity list.
@@ -80,12 +55,7 @@ impl<T, const N: usize> Default for BoundedVec<T, N> {
 
 impl<T, const N: usize> BoundedVec<T, N> {
     /// A new, empty list. Holds no allocation until something is pushed into it.
-    ///
-    /// A list that is built and never filled is the common case on this ABI — most of these are
-    /// fields of a default-constructed facts or patch value that a plugin never touches — so the
-    /// empty list costs nothing. The capacity arrives whole at the first push; see [`push`].
-    ///
-    /// [`push`]: BoundedVec::push
+
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -94,9 +64,7 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// A new, empty list that has already reserved the whole capacity its type declares.
-    ///
-    /// For the caller that knows it is about to fill one: the allocation happens here rather than
-    /// at the first push.
+
     #[must_use]
     pub fn with_declared_capacity() -> Self {
         Self {
@@ -129,12 +97,7 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// Append an item. Errors with the item handed back unchanged when the list is already full.
-    ///
-    /// The first push reserves the whole declared capacity at once. The capacity is part of the
-    /// type and the list can never exceed it, so the doubling a growable vector does on the way
-    /// there is pure waste: filling one of these to its eight legs was four allocations and three
-    /// copies to reach a size that was known before the first item existed. It is one allocation
-    /// now, and nothing reallocates after it.
+
     pub fn push(&mut self, item: T) -> Result<(), Overflow<T>> {
         if self.is_full() {
             return Err(Overflow { item, capacity: N });
@@ -147,11 +110,7 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// The items, in insertion order.
-    ///
-    /// Read-only, and only read-only. The mutable twin of this accessor had no caller anywhere in
-    /// the workspace and no reader outside one: it handed out a view through which every item of a
-    /// bounded container could be rewritten with the bound proving nothing about the contents, and
-    /// the two ways to change one of these — `push` and `clear` — both go past the ceiling check.
+
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.items
@@ -290,7 +249,7 @@ impl Default for SlabBytes {
 }
 
 /// Take an owned buffer as a whole slab. The bytes are moved into one shared allocation (a copy
-/// into the slab's own header block), after which every clone shares them.
+
 impl From<Vec<u8>> for SlabBytes {
     fn from(bytes: Vec<u8>) -> Self {
         Self::new(std::sync::Arc::from(bytes))
@@ -312,7 +271,7 @@ impl From<&[u8]> for SlabBytes {
 }
 
 /// The slab reads as the byte slice it windows, so a caller hands `&slab` wherever `&[u8]` is
-/// wanted. Read-only: there is no mutable view.
+
 impl std::ops::Deref for SlabBytes {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
@@ -321,7 +280,7 @@ impl std::ops::Deref for SlabBytes {
 }
 
 /// The slab as a byte slice, for a host that adopts it as the owner of its own buffer type without
-/// copying the bytes.
+
 impl AsRef<[u8]> for SlabBytes {
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
@@ -329,19 +288,7 @@ impl AsRef<[u8]> for SlabBytes {
 }
 
 /// The one resource handle a plugin is given.
-///
-/// DEAD-BY-DESIGN, kept only while the shipped per-call seam described in DECISIONS #41 is cut
-/// over: its `Send + Sync` bound and its `&self`-returns-a-borrow allocator shape together have no
-/// safe implementation, so every implementor anywhere in this tree is a test double that leaks
-/// (see `busbar_contract::scratch::Scratch` for the replacement #41 mandates, and
-/// `busbar-kernel::scratch::ScratchPad` for its one real implementation). This trait predates that
-/// decision: it modelled the contract section's "the context carries exactly one resource" rule
-/// with a FIXED-size, refusing allocator, where [`Scratch`](crate::scratch::Scratch) grows on
-/// demand and never refuses for size.
-///
-/// # Errors
-/// Both allocation methods return [`PlaneAllocBudget`] when the request does not fit in what is
-/// left of the fixed allocation.
+
 pub trait PlaneAlloc: Send + Sync {
     /// Copy bytes into the allocator.
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget>;
@@ -350,16 +297,7 @@ pub trait PlaneAlloc: Send + Sync {
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget>;
 
     /// Copy a resolved span table into the allocator.
-    ///
-    /// The one thing a plane could not build before this existed. An [`Ir`] borrows its body AND
-    /// its span table for the unit's lifetime, and a plane holds neither: the body is the frame
-    /// buffer's and the table has to outlive the frame it was scanned in. With only bytes and
-    /// strings on offer, every plane in the tree passed an EMPTY table and the kernel re-scanned
-    /// bytes the plane had already scanned. This is the allocation that makes a plane's own scan
-    /// the one the loop reads.
-    ///
-    /// The pointers are already `'a` because they are the plane's declared pointers — static
-    /// strings or scratch strings — so only the pairs themselves are copied.
+
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
@@ -457,8 +395,7 @@ impl<'u> Facts<'u> {
     }
 
     /// Set a key, replacing any earlier value for it. Errors with [`FactsExhausted`] when the map
-    /// already holds [`MAX_KEYS`] distinct keys and the key is a new one (the loop's
-    /// session-facts-exhausted failure).
+
     pub fn set(&mut self, key: &'u str, value: FactValue<'u>) -> Result<(), FactsExhausted> {
         for (k, v) in self.entries.iter_mut().take(self.len).flatten() {
             if *k == key {
@@ -545,10 +482,6 @@ impl<'u> Labels<'u> {
 }
 
 /// A half-open byte range inside a scanned prefix.
-///
-/// The span grammar's own type, named here rather than declared a second time: a span the plane
-/// resolved and a span the kernel resolved have to be the same value, and two structurally
-/// identical types with one field order between them is exactly how that stops being true.
 pub use crate::json_grammar::Span;
 
 /// The kernel's view of a unit's body: the bytes plus the resolved pointer spans.
@@ -591,11 +524,7 @@ impl<'u> Ir<'u> {
     }
 
     /// A view over no bytes at all.
-    ///
-    /// The honest shape for a unit that carries no body — a session tick, a close, a keepalive.
-    /// It exists so that an empty span table is something a caller MEANT rather than something a
-    /// caller could not build: `Ir::new(body, &[])` says the same words whether the body was empty
-    /// or the pointers were never resolved, and only one of those is a defect.
+
     #[must_use]
     pub const fn empty() -> Self {
         Self {

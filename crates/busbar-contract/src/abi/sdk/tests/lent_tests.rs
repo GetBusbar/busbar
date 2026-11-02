@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `Lent` and `HostBuf`: host-lent bytes read without `unsafe`, host buffers filled to their
-//! capacity with `needed` reported exactly. No FFI: each test lends from its own stack, as the
-//! trampoline lends from its copy of the host's `in`.
 
 use std::ptr;
 
@@ -42,7 +40,7 @@ fn a_blob_field_reads_as_its_bytes_and_an_absent_one_as_empty() {
 
     let absent: ValidateIn = zeroed();
     assert_eq!(lend(&absent).field(|i| &i.settings).bytes(), b"");
-    // A NULL pointer with a length is still absent: nothing is read.
+
     let mut null_len: ValidateIn = zeroed();
     null_len.settings.len = 9;
     null_len.settings.fmt = BLOB_ABSENT;
@@ -84,7 +82,6 @@ fn a_nested_field_is_reached_through_its_parent() {
 #[test]
 #[should_panic(expected = "not a field of the lent struct")]
 fn a_picked_value_that_is_not_a_field_is_refused() {
-    // RED: a Blob the plugin MADE, pointing anywhere, never reads as lent bytes.
     let forged: &'static Blob = Box::leak(Box::new(Blob {
         ptr: 0x10 as *const u8,
         len: 64,
@@ -168,7 +165,7 @@ fn a_host_buffer_too_small_writes_to_cap_and_reports_needed_exactly() {
     buf.push(unit(2));
     buf.push(unit(3));
     assert!(!buf.fits());
-    // The short-buffer rule: FAILED, `written` 0, `needed` the full size — above the cap.
+
     assert_eq!((buf.written(), buf.needed()), (0, 3));
     assert_eq!(buf.settle(true), (0, 3));
     assert_eq!(units[0].amount, 1, "nothing is written past the capacity");
@@ -195,7 +192,7 @@ fn in_a_short_answer_every_buffer_reports_its_full_size() {
     a.span(b"xyz");
     let short = !u.fits() || !a.fits();
     assert!(short);
-    // The multi-buffer rule: every `needed` at its full size, nothing written.
+
     assert_eq!(u.settle(short), (0, 1));
     assert_eq!(a.settle(short), (0, 3));
 }
@@ -273,7 +270,6 @@ fn a_failed_open_writes_its_reason_into_the_lent_buffer_cut_on_a_char_boundary()
     use crate::abi::mechanism::lifecycle::OpenOut;
     use crate::abi::sdk::door::blank_out;
 
-    // `a` then two two-byte chars: a capacity of 4 falls inside the second, so 3 bytes are kept.
     let mut buf = [0_u8; 4];
     let mut v: OpenIn = zeroed();
     v.err_buf = buf.as_mut_ptr();
@@ -292,7 +288,6 @@ fn a_failed_open_writes_its_reason_into_the_lent_buffer_cut_on_a_char_boundary()
     assert_eq!(&buf[..3], "aé".as_bytes());
     assert_eq!(buf[3], 0, "nothing past the cut is written");
 
-    // No buffer lent: nothing is written and no reason is stated.
     let v: OpenIn = zeroed();
     let mut out: OpenOut = blank_out();
     assert_eq!(
@@ -308,8 +303,7 @@ fn a_failed_open_writes_its_reason_into_the_lent_buffer_cut_on_a_char_boundary()
 }
 
 /// THE LOGIN LISTS: `begin_login`'s scopes and `complete_login`'s submitted fields lend each
-/// element, stop at their length, and read as EMPTY for a zero length or a NULL pointer, as
-/// `verify`'s carriers do.
+
 #[test]
 fn the_login_lists_lend_within_bounds_and_empty_when_null_or_zero() {
     use crate::abi::auth::{BeginLoginIn, CompleteLoginIn, NamedValue};
@@ -379,8 +373,7 @@ fn text(s: &'static str) -> AbiStr {
 }
 
 /// THE EXPORT KIND, without `unsafe`: `scrape`'s snapshot is read family by family, sample by
-/// sample, label by label, and its exposition written into the host buffer (a too-small one
-/// reporting what it needed); `check`'s instances and `serve`'s headers are read as lists.
+
 #[test]
 fn an_export_scrape_check_and_serve_lend_their_lists_and_buffer() {
     use crate::abi::export::{

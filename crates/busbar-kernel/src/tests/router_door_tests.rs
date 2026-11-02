@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PLANES' DATA ROUTES, installed at the router's construction (ARCHITECT Q-SW1,
-//! 2026-10-02): a route handed to `build_split_routers_serving` is answered by its own handler,
-//! ahead of the protocol fallback, at the bar it declares; the same path without the install is the
-//! fallback's.
-
 use std::sync::Arc;
 
 use axum::Router;
@@ -14,12 +9,10 @@ use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
 
 const DOOR: &str = "/door-route-test/call";
 
-/// A door route whose handler answers 200 with the request's own path and body.
 fn door(auth: RouteAuth) -> PlaneRouteSpec {
     door_at(DOOR, auth)
 }
 
-/// [`door`], claimed at `path`.
 fn door_at(path: &str, auth: RouteAuth) -> PlaneRouteSpec {
     PlaneRouteSpec {
         path: path.to_string(),
@@ -95,13 +88,8 @@ fn a_door_route_is_recorded_at_the_bar_it_declares() {
     assert_eq!(row, Some(("POST", RouteAuth::Key)));
 }
 
-/// A door route a plane claims EXACTLY under the native-API root.
 const CLAIMED_UNDER_API: &str = "/api/door-route-test/evaluate";
 
-/// A PLANE'S EXACT CLAIM WINS OVER THE `/api/` ADMIN PREFIX (ARCHITECT ruling, decisions audit): a
-/// door route a plane claims by name under `/api/` is admitted at the data-plane bar it declares,
-/// never sent down the operator chain. RED before the fix: the prefix classified the claimed path
-/// as admin, and a caller the data plane admits was refused by the operator chain.
 #[tokio::test]
 async fn a_planes_exact_claim_under_the_api_root_is_admitted_at_its_own_bar() {
     let (code, body) = post(
@@ -113,7 +101,6 @@ async fn a_planes_exact_claim_under_the_api_root_is_admitted_at_its_own_bar() {
     assert_eq!(body, format!("door {CLAIMED_UNDER_API} piece"));
 }
 
-/// The other arm: a path under `/api/` that no plane claimed stays behind the operator chain.
 #[tokio::test]
 async fn an_unclaimed_path_under_the_api_root_stays_behind_the_operator_chain() {
     let (code, body) = post(

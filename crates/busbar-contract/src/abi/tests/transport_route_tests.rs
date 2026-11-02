@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The route match vocabulary's one spelling of every form: each path form matches what its name
-//! says and nothing else, a field name matches in any case while a value prefix matches only in its
-//! own case, and a route admits exactly its method set.
 
 use super::*;
 
@@ -158,7 +156,7 @@ fn the_interner_returns_one_copy_per_distinct_string() {
 }
 
 /// The contract holds no interner of its own: a second interner starts empty, and a pattern is
-/// matched from its spelling without interning anything.
+
 #[test]
 fn an_interner_is_a_plain_value_its_holder_owns() {
     let mut first = Interner::default();

@@ -2,32 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S SDK: a hook plugin over the hook kind's door (`abi::hook`), written against
-//! typed views ([`Hook`]). [`export_plugin!`](crate::export_plugin)'s `hook` arm emits the door;
-//! every slot is the SDK's own.
-//!
-//! * [`Decoded`] — a `decide`/`transform` `in` read as a view borrowed from the host's `in` for
-//!   the call (text and the prompt body zero-copy), and
-//!   [`Decoded::projection_json`], the 1.5.5 wire JSON rebuilt byte for byte from it
-//!   (`crate::hook_wire::build`, the same function the host once ran).
-//! * [`DecodedTap`] — a `notify` `in`, and its 1.5.5 notify JSON.
-//! * [`Verdict`] / [`RewriteVerdict`] — what `decide` / `transform` answer, lowered into the fixed
-//!   `out` and the host's buffers by [`write_verdict`] / [`write_rewrite`], with the one
-//!   short-buffer answer when a buffer is too small (nothing written, every `*_needed` stated).
-//! * [`lower_decide_reply`] / [`lower_transform_reply`] — a 1.5.5 JSON reply lowered to a verdict,
-//!   exactly as 1.5.5's host normalized it (reject > restrict > abstain > order; a reply whose
-//!   typed fields do not parse is ABSTAIN, as 1.5.5's host read it; only the hook's own `Err` is
-//!   FAILED). The host keeps the rest of 1.5.5's normalizing: the status clamp, the message
-//!   sanitiser and cap, dropping an `idx` the candidates do not hold.
-//!
-//! Built ON the SDK's safe layer (SDK-SAFE, ARCHITECT ruling 366) and its generic lifecycle
-//! (`abi::sdk::life`): every op is a [`SafeSlot`] over `Held<HookLife<P>>`, every read goes through
-//! [`Lent`], every host buffer is a [`HostBuf`](crate::abi::sdk::HostBuf). This module adds only
-//! the hook kind's own pieces.
-//!
-//! A hook that waits on the far end answers [`Poll::Pending`] from `decide`, `transform` or
-//! `notify` while its one exchange ([`Op::exchange`]) pends: the op answers PENDING and the host
-//! re-enters it on the wake, exactly as every other kind's ops (THE DESIGN, the plugin ABI: every
-//! call is Ready or Pending(wake)).
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -66,14 +40,8 @@ pub mod configure_checkpoint;
 pub use configure_checkpoint::ConfigureCheckpoint;
 mod projection;
 
-// ── reading the host's views ─────────────────────────────────────────────────────────────────────
-//
-// Every read goes through the SDK's safe layer (`abi::sdk::lent`, SDK-SAFE): the `in` is a [`Lent`],
-// its lists are [`LentList`]s and its strings and blobs are borrowed from the host for the call.
-// The one piece the layer cannot state generically is the tagged signal union, read here.
-
 /// A NULL string is absent; a present one is BORROWED from the host's view (lossily UTF-8: a copy
-/// only when the bytes are not valid UTF-8).
+
 fn text(s: Lent<'_, AbiStr>) -> Option<Cow<'_, str>> {
     (!s.ptr.is_null()).then(|| String::from_utf8_lossy(s.bytes()))
 }
@@ -109,7 +77,7 @@ fn bag(list: LentList<'_, SignalEntry>) -> SignalBag {
         if let Some(sig) = Signal::ALL.get(e.id as usize).copied() {
             match signal_value(e) {
                 Some(value) => b.push(sig, value),
-                // A malformed recipe must not disappear and fall back to legacy cost data.
+
                 None if sig == Signal::CandidateRouteCost => b.push(sig, SignalValue::I64(-1)),
                 None => {}
             }
@@ -372,8 +340,7 @@ impl<'a> Decoded<'a> {
     }
 
     /// THE 1.5.5 PROJECTION: the JSON 1.5.5's host handed a hook for `op` (`decide` or
-    /// `transform`), rebuilt byte for byte from this view. (The JSON contract is a copy by
-    /// definition; a typed [`Hook`] never pays it.)
+
     #[must_use]
     pub fn projection_json(&self, op: &'static str) -> serde_json::Value {
         let req = self.request();
@@ -409,11 +376,7 @@ impl<'a> Decoded<'a> {
     }
 
     /// Append the canonical 1.5.5 projection envelope, with `op` last, directly to `out`.
-    /// Extra top-level fields replace projected fields; an extra `op` is ignored. No projection
-    /// JSON value is built, and borrowed prompt text and signal values are serialized in place.
-    ///
-    /// # Errors
-    /// The JSON serializer's refusal. On failure `out` may contain a partial envelope.
+
     pub fn write_projection(
         &self,
         op: &str,
@@ -491,8 +454,7 @@ impl<'a> DecodedTap<'a> {
                 candidates: Vec::new(),
                 budget_remaining: None,
                 budget: Vec::new(),
-                // A tap's stage view carries no session (the ruling appends it to the request
-                // view only).
+
                 session: None,
             },
             stage,
@@ -522,10 +484,7 @@ impl<'a> DecodedTap<'a> {
     }
 
     /// Append this tap's canonical projection envelope, with `op` last, directly to `out`.
-    /// Extra fields and serialization failures follow [`Decoded::write_projection`].
-    ///
-    /// # Errors
-    /// The JSON serializer's refusal. On failure `out` may contain a partial envelope.
+
     pub fn write_projection(
         &self,
         op: &str,
@@ -535,8 +494,6 @@ impl<'a> DecodedTap<'a> {
         projection::write(&self.request, self.stage.as_ref(), true, op, extra, out)
     }
 }
-
-// ── answering ────────────────────────────────────────────────────────────────────────────────────
 
 /// What `decide` answers (the OLD `RoutingDecision`, before the host's normalizing).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -580,7 +537,7 @@ pub enum RewriteVerdict {
 }
 
 /// Lower `v` into `out` and the host buffers `input` lends ([`HostBuf`](crate::abi::sdk::HostBuf)). A buffer too small answers
-/// the ONE short FAILED: every dimension's `*_needed` its full size, nothing counted as written.
+
 pub fn write_verdict(v: &Verdict, input: Lent<'_, DecideIn>, out: &mut DecideOut) -> Outcome {
     let mut order = input.order_buf();
     let mut reject = input.reject_message_buf();
@@ -664,7 +621,7 @@ pub fn write_rewrite(
 }
 
 /// An owned hook settings/reply tree. Only its initialized owned strings and map keys are
-/// wiped here; the JSON parser's private scratch is not this owner's allocation.
+
 struct JsonValue(serde_json::Value);
 
 impl<'de> serde::Deserialize<'de> for JsonValue {
@@ -713,7 +670,7 @@ struct Reply155 {
 }
 
 /// A reject's status as the hook stated it: an integer that fits a `u16`, else none (the host then
-/// answers 403, as 1.5.5 did for anything out of shape).
+
 fn reject_of(r: &serde_json::Value) -> (Option<u16>, String) {
     let status = r
         .get("status")
@@ -735,12 +692,7 @@ fn verb(v: &Option<JsonValue>) -> Option<&serde_json::Value> {
 }
 
 /// LOWER A 1.5.5 `decide` REPLY exactly as 1.5.5's host normalized it (v1.5.5
-/// `crates/busbar/src/hooks/wire.rs:666-695`): reject > restrict > abstain > order; a malformed
-/// restrict restricts to nothing (the gate's `on_empty`). A reply whose typed fields do not parse
-/// (`null`, `[1]`, `{"order":"x"}`, `{"abstain":"yes"}`, a valid `reject` beside a wrong-typed
-/// sibling) is ABSTAIN, as 1.5.5's host read it (v1.5.5 `crates/busbar/src/hooks/plugin.rs:51-56`,
-/// `Err(_) => RoutingDecision::Abstain`). Only the hook's own `Err` (it said it could not answer) is
-/// FAILED, the operator's `on_error` (v1.5.5 `crates/plugin-loader/src/hook.rs:173-175`).
+
 #[must_use]
 pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     let v = match reply {
@@ -771,11 +723,7 @@ pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
 }
 
 /// LOWER A 1.5.5 `transform` REPLY exactly as 1.5.5's host normalized it (v1.5.5
-/// `crates/busbar/src/hooks/wire.rs:531-543`): reject > rewrite > abstain; a rewrite that is not
-/// 1.5.5's well-formed shape (v1.5.5 `wire.rs:499-510`: a non-empty `messages` array) is ABSTAIN,
-/// the original body. A reply whose typed fields do not parse is ABSTAIN, as 1.5.5's host read it
-/// (v1.5.5 `crates/busbar/src/hooks/plugin.rs:59-62`). Only the hook's own `Err` is FAILED. A
-/// well-formed rewrite crosses as its JSON bytes; the host parses them again, fail-closed.
+
 #[must_use]
 pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> RewriteVerdict {
     let v = match reply {
@@ -789,31 +737,18 @@ pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> Rewrit
         let (status, message) = reject_of(r);
         return RewriteVerdict::Reject { status, message };
     }
-    match parsed
-        .rewrite
-        // parse_rewrite's validity rule is exactly a nonempty messages array. Inspect that
-        // borrowed shape rather than constructing and dropping a second copy of every message.
-        .filter(|rw| {
-            rw.0.get("messages")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|items| !items.is_empty())
-        }) {
+    match parsed.rewrite.filter(|rw| {
+        rw.0.get("messages")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+    }) {
         Some(rw) => RewriteVerdict::Rewrite(serde_json::to_vec(&rw.0).unwrap_or_default()),
         None => RewriteVerdict::Abstain,
     }
 }
 
-// ── the plugin ───────────────────────────────────────────────────────────────────────────────────
-
 /// A hook plugin, over typed views: the SDK reads the host's `in` (after the kind's own checks on
-/// it) as views BORROWED from the host for the call ([`Decoded`], [`DecodedTap`]; text and the
-/// prompt body zero-copy), so a plugin never touches a host pointer and stays
-/// `forbid(unsafe_code)`.
-/// Every op has a default: the safe "no opinion" / "unsupported" answer.
-///
-/// `decide`, `transform` and `notify` are handed their [`Op`]: a hook that asks the far end makes
-/// its one [`Op::exchange`] and answers [`Poll::Pending`] while it pends; the host re-enters the op
-/// on the wake and the method runs again from the top (the exchange resumes where it parked).
+
 pub trait Hook: Send + Sync {
     /// `decide`. Default: abstain.
     fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
@@ -831,10 +766,7 @@ pub trait Hook: Send + Sync {
         Poll::Ready(())
     }
     /// `configure`: `Ok` acknowledges the version; `Err` refuses it, saying why in the hook's own
-    /// bare words (the host names the hook). Default: acknowledge.
-    ///
-    /// # Errors
-    /// Why the hook will not take the pushed settings.
+
     fn configure(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
@@ -844,12 +776,7 @@ pub trait Hook: Send + Sync {
         Ok(())
     }
     /// Apply a push and return its complete effective configuration under the same plugin lock.
-    /// A checkpoint is replayable through `configure` on a fresh instance; partial pushes and
-    /// null/alias normalization remain entirely plugin-owned. Build the checkpoint before the
-    /// state commit so an encoding refusal cannot leave a failed push applied.
-    ///
-    /// The default preserves existing plugins' configure behavior but reports no recovery
-    /// checkpoint. A host cannot safely reconstruct such an instance after an acknowledged push.
+
     fn configure_checkpoint(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
@@ -873,7 +800,6 @@ pub trait Hook: Send + Sync {
 #[derive(Clone, Copy)]
 pub struct Opening<'a> {
     /// The operator's section exactly as the host lent it (empty when none, as 1.5.5 handed it).
-    // settings-leak-lint: allow — borrowed lifecycle input to the hook, never an admin response
     pub settings: &'a str,
     /// The secrets the host resolved for the instance, in the order its settings name them.
     pub secrets: &'a [&'a [u8]],
@@ -894,28 +820,21 @@ impl std::fmt::Debug for Opening<'_> {
 }
 
 /// How a plugin opens: its settings, the operator's section exactly as the host lent it (empty when
-/// none, as 1.5.5 handed it), to a [`Hook`]. A hook that reads its secrets or its generation opens
-/// through [`HookOpen::open_with`]; one that reads its settings alone implements `open`.
+
 pub trait HookOpen: 'static {
     /// Open an instance over its settings.
-    ///
-    /// # Errors
-    /// Why the settings cannot open one (the operator reads it).
+
     fn open(settings: &str) -> Result<Box<dyn Hook>, String>;
 
     /// Open an instance over its settings, its secrets and its generation. The SDK opens every
-    /// instance (and re-opens it on `refresh`) through this. Default: [`HookOpen::open`] over the
-    /// settings.
-    ///
-    /// # Errors
-    /// As [`HookOpen::open`].
+
     fn open_with(opening: &Opening<'_>) -> Result<Box<dyn Hook>, String> {
         Self::open(opening.settings)
     }
 }
 
 /// The hook kind's Statement tail, for a plugin's `const`. A plugin's hook words are Statement
-/// word marks ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)), not tail facts.
+
 #[must_use]
 pub const fn tail(kind_class: u32, content_access: u32, user_access: u32) -> Tail {
     Tail::EMPTY.with_access(kind_class, content_access, user_access)
@@ -930,13 +849,6 @@ pub const fn statement_with_tail(base: Statement, tail: &'static Tail) -> Statem
     }
 }
 
-// ── the slots ────────────────────────────────────────────────────────────────────────────────────
-//
-// The lifecycle is the SDK's generic one (`abi::sdk::life`): the instance is `Held<HookLife<P>>`,
-// whose leases hold the status/describe blobs and whose `Out::fail` keeps each failure text. What
-// is left here is the hook kind's own: the typed hook behind a lock, and its ops, each a
-// [`SafeSlot`] over that state.
-
 /// One open hook instance: the hook its settings opened, swapped whole on `refresh`.
 pub struct HookLife<P> {
     hook: RwLock<Arc<dyn Hook>>,
@@ -945,7 +857,7 @@ pub struct HookLife<P> {
 }
 
 /// One operation's hook and exchange travel together. Safe owns this continuation, so cancel,
-/// a fresh entry, a fault and every terminal answer release the original hook along with its IO.
+
 struct PendingHook {
     hook: Arc<dyn Hook>,
     exchange: Option<Exchange>,
@@ -1031,7 +943,7 @@ struct Shorted {
 
 impl Shorted {
     /// The verdict `ticket`'s short answer lowered, if this entry is its re-call (the same ticket,
-    /// the same op); any entry kept on the ticket's slot is let go either way.
+
     fn take(&self, ticket: Ticket, decide: bool) -> Option<Lowered> {
         if ticket == Ticket::NONE || self.count.load(Ordering::Acquire) == 0 {
             return None;
@@ -1073,8 +985,7 @@ impl<P> HookLife<P> {
 }
 
 /// [`HookOpen::open_with`] over `settings`, verbatim (an empty blob stays empty, so the plugin
-/// answers it in its own 1.5.5 words), `secrets` and `generation`; its refusal is the plugin's own
-/// words.
+
 fn opened<P: HookOpen>(
     settings: &[u8],
     secrets: &[&[u8]],
@@ -1094,7 +1005,7 @@ impl<P: HookOpen> Life for HookLife<P> {
     const CANCEL: u32 = cancel::ABORTED;
 
     /// The settings are a JSON object that [`HookOpen::open`] opens: the instance it opens is
-    /// dropped. `--validate` refuses what boot's `open` would refuse.
+
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         settings_object(settings)?;
         opened::<P>(settings, &[], 0).map(drop)
@@ -1151,8 +1062,7 @@ macro_rules! hook_op {
 }
 
 /// The host's `decide`/`transform` `in` breaks the kind's own reading of it: a present prompt view
-/// whose lists do not hold ([`check_prompt_view`]). A host bug: the SDK answers FAULT rather than
-/// read it.
+
 fn decide_in_breaks_a_rule(input: &DecideIn) -> bool {
     input.present & VIEW_HAS_PROMPT != 0 && check_prompt_view(&input.prompt).is_err()
 }

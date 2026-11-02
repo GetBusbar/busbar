@@ -31,15 +31,9 @@
 
 use super::*;
 
-// ── the fixtures: one identified operator, one recording surface ───────────────────────────────
-
-/// The credential these cells present. One string, one directory that minted it, one door that
-/// identifies it — so the audit attribution below is an identity the node resolved rather than a
-/// fallback word.
 #[cfg(feature = "root-admin")]
 const THE_OPERATORS_CREDENTIAL: &str = "admin-token";
 
-/// A directory that knows exactly the one credential these cells present, and revokes nobody.
 #[cfg(feature = "root-admin")]
 struct ADirectoryThatMintedIt;
 
@@ -62,10 +56,6 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for ADirectoryThatMintedIt 
     }
 }
 
-/// A door that IDENTIFIES that credential as the operator, and identifies nothing else.
-///
-/// Closed rather than open on purpose: the open front door grants `Full` to anybody, so a cell that
-/// ran behind it would prove the walk reaches the surface without proving the walk authenticated.
 #[cfg(feature = "root-admin")]
 struct IdentifiesTheOperator;
 
@@ -118,13 +108,10 @@ impl SurfaceLog {
     }
 }
 
-/// The bytes the surface answers with. Distinctive on purpose: a body the wrap could have invented
-/// would not be these.
 #[cfg(feature = "root-admin")]
 const THE_SURFACES_OWN_BYTES: &[u8] =
     br#"{"answered_by":"the surface below the wrap","entries":[]}"#;
 
-/// An axum router standing in for the mounted admin surface, recording every request it is handed.
 #[cfg(feature = "root-admin")]
 fn a_recording_surface(log: Arc<SurfaceLog>) -> axum::Router {
     axum::Router::new().fallback(axum::routing::any(
@@ -153,16 +140,12 @@ fn a_recording_surface(log: Arc<SurfaceLog>) -> axum::Router {
     ))
 }
 
-/// A node whose journal this cell holds.
 #[cfg(feature = "root-admin")]
 struct ANodeWhoseChainThisCellReads {
     router: axum::Router,
     surface: Arc<SurfaceLog>,
 }
 
-/// The root's mount over `inner`, as `main.rs` composes it for `admin_listen`: a memory-buffered
-/// journal, `door` in front, the directory that minted the operator's credential behind it, and
-/// `tweak` applied to the units last.
 #[cfg(feature = "root-admin")]
 fn mounted_over(
     inner: axum::Router,
@@ -196,12 +179,10 @@ fn mounted_over(
     )
 }
 
-/// Compose the real mount over the real loop, exactly as `main.rs` composes it for `admin_listen`.
 #[cfg(feature = "root-admin")]
 fn a_node() -> ANodeWhoseChainThisCellReads {
     let surface = Arc::new(SurfaceLog::default());
-    // The SAME ingress cap `main.rs` hands the wrap, so the body read below is the one a deployment
-    // configured rather than one this cell invented.
+
     let router = mounted_over(
         a_recording_surface(Arc::clone(&surface)),
         64 * 1024,
@@ -211,17 +192,11 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
     ANodeWhoseChainThisCellReads { router, surface }
 }
 
-/// The REAL administrative surface, twice: bare (the leg a node without the root serves, which
-/// never had a root-held ring) and wrapped by the root's mount exactly as `main.rs` wraps it.
-///
-/// Both answer `GET /api/v1/admin/audit` off the kernel's one administrative ring, which the
-/// core-admin handlers write as each mutation applies. The ring is process-wide, so every cell
-/// that reads it filters on a resource only that cell minted.
 #[cfg(feature = "root-admin")]
 fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
-    // Governance ON, with a signer, so a key can be minted, renamed, revoked and deleted.
+
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[0x5a; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -249,7 +224,6 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     (bare, mounted)
 }
 
-/// One request over the mounted listener, with the operator's credential on it.
 #[cfg(feature = "root-admin")]
 async fn over_the_listener(
     node: &ANodeWhoseChainThisCellReads,
@@ -260,7 +234,6 @@ async fn over_the_listener(
     over(&node.router, method, path, body.to_vec()).await
 }
 
-/// One request over any router, with the operator's credential on it.
 #[cfg(feature = "root-admin")]
 async fn over(
     router: &axum::Router,
@@ -279,8 +252,6 @@ async fn over(
     .await
 }
 
-/// THE ONE REQUEST these cells send: `credential` as the bearer (or none), `idempotency_key` as the
-/// `Idempotency-Key` (or none), a JSON body; the answer's status, bytes and headers.
 #[cfg(feature = "root-admin")]
 async fn send(
     router: &axum::Router,
@@ -319,10 +290,6 @@ async fn send(
     (status, bytes.to_vec(), headers)
 }
 
-// ── the cells ──────────────────────────────────────────────────────────────────────────────────
-
-/// Use main's actual mount_node/live_admin_door path. Inner middleware cannot repair a refusal
-/// already made by root: a verifier outage must be 503 here, while a rejected credential stays401.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials() {
@@ -398,16 +365,6 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
     }
 }
 
-/// A REAL VERB STILL TRAVELS THE WHOLE CHAIN AND COMES BACK WITH THE SURFACE'S OWN BYTES.
-///
-/// `GET /api/v1/admin/audit` is row `get_audit` of the closed 1.5.5 table, read-only. It goes in at
-/// the mount, is matched against that table, walks every step of the loop behind an authenticated
-/// operator, reaches the mounted surface at Route, and the answer comes back unchanged.
-///
-/// Three assertions, because a walk can fail in three different ways that a status alone cannot
-/// tell apart: the status, the BYTES (the wrap chooses the path and never the body — a manufactured
-/// answer would not be the surface's distinctive bytes), and what the surface itself RECEIVED
-/// (a wrap that short-circuited would answer without the surface ever having been asked).
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_real_verb_still_answers_end_to_end_over_the_admin_listener() {
@@ -437,7 +394,6 @@ async fn a_real_verb_still_answers_end_to_end_over_the_admin_listener() {
     );
 }
 
-/// The served audit rows for one resource, as the operator's `/audit` page returns them.
 #[cfg(feature = "root-admin")]
 async fn audit_rows_for(router: &axum::Router, resource: &str) -> (u16, Vec<u8>) {
     let (status, body, _headers) = over(
@@ -450,7 +406,6 @@ async fn audit_rows_for(router: &axum::Router, resource: &str) -> (u16, Vec<u8>)
     (status, body)
 }
 
-/// `(action, outcome)` for every served row, newest first.
 #[cfg(feature = "root-admin")]
 fn actions_and_outcomes(body: &[u8]) -> Vec<(String, String)> {
     let page: serde_json::Value = serde_json::from_slice(body).expect("the audit page is JSON");
@@ -467,7 +422,6 @@ fn actions_and_outcomes(body: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Mint one key over `router`, and name the resource the ring files it under.
 #[cfg(feature = "root-admin")]
 async fn a_key_minted_over(router: &axum::Router, name: &str) -> String {
     let (status, body, _headers) = over(
@@ -483,13 +437,6 @@ async fn a_key_minted_over(router: &axum::Router, name: &str) -> String {
     format!("key:{id}")
 }
 
-/// AND THE AUDIT IS STILL PERFORMED — ONCE, ON THE ONE RING (item 237).
-///
-/// If the walk had been getting its audit through the plane face, deleting the face would have
-/// silently stopped recording administrative mutations, and an empty history reads exactly like a
-/// quiet fleet. It was not: the mutation's row is written by the core-admin handler the walk reaches
-/// at Route, onto the kernel's durable ring, and that is what the operator's `/audit` page serves.
-/// The root used to write a second copy onto a RAM-only ring of its own; one mutation is now ONE row.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_mutating_verb_still_seals_exactly_one_entry_onto_the_audit_chain() {
@@ -505,7 +452,6 @@ async fn a_mutating_verb_still_seals_exactly_one_entry_onto_the_audit_chain() {
     );
 }
 
-/// A READ still seals nothing, which is the other half of the same step.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_read_verb_still_seals_nothing_onto_the_audit_chain() {
@@ -529,16 +475,6 @@ async fn a_read_verb_still_seals_nothing_onto_the_audit_chain() {
     );
 }
 
-/// THE SERVED AUDIT BODY IS BYTE-IDENTICAL THROUGH THE ROOT AND WITHOUT IT (item 237).
-///
-/// A fixed sequence of mutations — mint, disable, revoke, delete one key — is walked through the
-/// root's mount over the real surface. The operator's `/audit` page for that key is then asked for
-/// twice: through the root, and through the bare surface a node without the root serves, which
-/// never held a second ring. The two bodies are the same bytes, and they list exactly one row per
-/// mutation, in order: the root adds no second answer to "what changed" and routes the read to the
-/// kernel's one ring. Run at the phase-start tree (the root still keeping its RAM-only ring) this
-/// cell passes with the same literal, which is the before/after comparison: deleting the ring moved
-/// no served byte.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
@@ -574,7 +510,6 @@ async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
     );
 }
 
-/// A store that applies each recovery verb, so a root-only verb can end `applied`.
 #[cfg(feature = "root-admin")]
 struct AnApplyingStore;
 
@@ -596,9 +531,6 @@ impl busbar_kernel_seams::verb_store::Store for AnApplyingStore {
     }
 }
 
-/// The served rows for one resource that the operator (`admin`) is attributed, as
-/// `(action, outcome)`, newest first. Filtered on the principal because the ring is process-wide
-/// and the step-level cells in `units_admin.rs` seal the same verbs under another identity.
 #[cfg(feature = "root-admin")]
 async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(String, String)> {
     let (status, body) = audit_rows_for(router, resource).await;
@@ -618,13 +550,6 @@ async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(S
         .collect()
 }
 
-/// EVERY ROOT-ONLY MUTATING VERB SEALS EXACTLY ONE DURABLE ROW; A READ SEALS NONE (P2-rootfollow).
-///
-/// The 1.6.0 verbs have no core-admin handler, so nothing wrote their row once the root's RAM ring
-/// went (item 237). Each is walked through the root's mount over the real surface, once, and the
-/// operator's `/audit` page must then carry exactly one row for it on the kernel's durable ring:
-/// `applied` where the effect landed (the three store verbs, under a store that applies),
-/// `rejected` where it did not. A ledger view seals nothing.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none() {
@@ -660,8 +585,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         );
     }
 
-    // Only the verbs with a bound effect are walked here; the unbound ones are not served at all
-    // (`an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing`).
     let rejected = [
         ("/api/v1/admin/adjust", "adjust"),
         (
@@ -692,23 +615,12 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     }
 }
 
-/// ROW 113 (ruling (B)): A BOOTED NODE'S RECOVERY VERBS REACH ITS CONFIGURED STORE.
-///
-/// The book is the one `root::boot::book` opens over a real App with a governance store, and the
-/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). The chain break
-/// answers `204` and lands on the book's journal and that store; the restore is
-/// refused `503` — the store has no restore operation (row 187). RED (the defect this
-/// replaced): the composition held a refusing stand-in, so each answered the store failure on a
-/// node whose store was right there; drop the book's store, or the units' binding of it, and this
-/// goes red.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
     busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
-    // An App with a governance store: the in-tree memory store, as a config that names none gets,
-    // with the record slots the boot book keeps its journal in (H3: a store without them refuses the
-    // boot) over the test's in-memory map.
+
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
             Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
@@ -736,9 +648,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         crate::root::kernel::new_kernel(),
         1 << 20,
         move |dispatch| {
-            // Its OWN full-tier identity, not the operator's: the audit ring is process-wide and
-            // `every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none` counts the
-            // operator's rows on these same three paths.
             let door: crate::root::units_admin::AdminDoorFn =
                 Arc::new(|_: &crate::root::units_admin::AdminRequest| {
                     busbar_kernel::auth::AdminVerdict::from(
@@ -773,12 +682,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     }
 }
 
-/// The nine verbs the owner removed from 1.6.0 — on 2026-09-08 (`set_operator_key`, `set_escrow`,
-/// `set_dual_control`, `export_keyset`, `approve`) and by #77(9), owner answer Q71(1)
-/// (`set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`) — as
-/// `(method, path)`. They are no longer in the
-/// table at all; while they were, they were unbound and answered the unmounted `404`. Removing them
-/// must not move that answer by a byte.
 #[cfg(feature = "root-admin")]
 const THE_REMOVED_VERBS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/operator-key"),
@@ -792,15 +695,6 @@ const THE_REMOVED_VERBS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/slices/resolve"),
 ];
 
-/// AN ADMIN VERB WHOSE EFFECT IS NOT BOUND IS NOT SERVED (architect ruling 2026-09-24).
-///
-/// Under a full-scope operator — the grant every gate admits —
-/// each unbound verb (none since Q71(2)) and each of the nine the owner removed (which the table no
-/// longer names) answers EXACTLY what an unmounted path answers (`404 not_found` /
-/// `resource not found`, byte for byte, which is also the published 1.5.5 answer for every one of
-/// these paths) and seals NO audit row. It used to be walked through the gates, sealed a `rejected`
-/// row, and then answered the same 404 from a surface with no handler for it. And the set is the
-/// one generic `effect_bound` check's, not a list kept beside it.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing() {
@@ -843,9 +737,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
             "{method} {path}: an unserved verb seals no audit row"
         );
     }
-    // Every 1.6.0 verb is bound (owner answer Q71(2) bound the last four: `verify`, `plane_facts`,
-    // `plane_record_write`, `commit_upgrade`); a verb added to `NEW_VERBS` without an
-    // `effect_bound` arm shows up here.
+
     let unbound: Vec<(&str, &str)> = busbar_core_admin::NEW_VERBS
         .iter()
         .filter(|verb| !busbar_core_admin::verb::effect_bound(**verb))
@@ -872,14 +764,6 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
     }
 }
 
-/// AND THE METER STEP STILL RUNS, AND STILL PRICES AN ADMIN VERB AT NOTHING.
-///
-/// The admin surface declares NO meter classes, so the honest report is the empty one — and the
-/// empty report is a report, not an absence. The unit COMPLETED: the meter step refuses with
-/// `Unpriced` when the usage grant will not take its report, and a refusal there renders as an
-/// error answer rather than the surface's bytes. A 200 carrying the surface's own body is the walk
-/// having passed Meter. (The node's second book, whose rows this also counted, is gone: the one
-/// ledger is governance's usage counts, which an admin-only node does not hold.)
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
@@ -903,13 +787,6 @@ async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     assert_eq!(status, 200, "and so did the mutation");
 }
 
-/// A PATH THE CLOSED TABLE DOES NOT DECLARE NEVER ENTERS THE LOOP AT ALL.
-///
-/// The mount asks the table first, and hands anything it does not name straight to the surface
-/// underneath. That is the property that keeps `/healthz` — which answers on this listener with the
-/// auth chain bypassed entirely and is not an administrative verb — answering. It is asserted here
-/// because it is the one place the closed table still decides something on the live path, and the
-/// removal must not have moved it: the surface still sees the request, once.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_path_the_table_does_not_declare_reaches_the_surface_without_the_loop() {
@@ -925,9 +802,6 @@ async fn a_path_the_table_does_not_declare_reaches_the_surface_without_the_loop(
     );
 }
 
-// ── the four verbs owner answer Q71(2) binds ─────────────────────────────────────────────────────
-
-/// A plane declaration for the Q71(2) cells: the one plane the lookup below serves.
 #[cfg(feature = "root-admin")]
 const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
     busbar_contract::plane::PlaneDeclaration {
@@ -954,7 +828,6 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         caller_credential_refusal: None,
     };
 
-/// A door that identifies ANOTHER principal than the operator: authenticated, and holding no grant.
 #[cfg(feature = "root-admin")]
 struct IdentifiesATenant;
 
@@ -976,8 +849,6 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
     }
 }
 
-/// The node the Q71(2) cells walk: a real surface, a memory-buffered journal, the given door, the
-/// one served plane, and a record sink that keeps what it was handed.
 #[cfg(feature = "root-admin")]
 fn a_q71_node(
     door: busbar_kernel_identity::AuthChain,
@@ -988,7 +859,6 @@ fn a_q71_node(
     a_q71_node_trusting(door, crate::root::units_admin::no_trust())
 }
 
-/// [`a_q71_node`], its trust verbs bound to `trust`.
 #[cfg(feature = "root-admin")]
 fn a_q71_node_trusting(
     door: busbar_kernel_identity::AuthChain,
@@ -1020,21 +890,9 @@ fn a_q71_node_trusting(
     (mounted, kept)
 }
 
-/// THE OPERATOR'S TRUST VERBS (ARCHITECT 2026-10-06): one generic core-admin verb set over the
-/// kernel's trust book, counterparty-phrased. Walked over the real mount behind the operator, each
-/// answer asserted by status AND body, against the trust book the kernel's Approve judges by:
-/// * unapproved (sighted, never approved) is refused at serve (the 403's case), and an approval
-///   with nothing sighted is a named `409`;
-/// * approved, it serves; the same approval twice answers the same row (idempotent);
-/// * a drift after the approval is quarantined again (refused) until re-approved;
-/// * revoked, it is refused again;
-/// * an unknown key is `404`, a body without one `400`; `GET /trust` lists every key's state;
-/// * each decision seals one audit row, and the read seals none.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
-    // The operator audit ring is the process's one: the plane-door cells that decide trust keys
-    // seal rows on it too, so this count runs under the root's admin-surface lock.
     let _one = crate::root::PUBLISHING.lock().await;
     use busbar_contract::services::{Caller, HostServices, Later};
     use busbar_kernel::host_services::{InstanceFacts, KernelServices};
@@ -1068,9 +926,7 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         Arc::new(move || Some(Arc::clone(&desk))),
     );
     let op = Some(THE_OPERATORS_CREDENTIAL);
-    // The operator audit ring is the process's one and keeps what earlier tests sealed on it (the
-    // plane-door cells decide trust keys too), so this test counts the rows ITS calls seal: the
-    // ring as it stood before them, held still by the admin-surface lock above.
+
     let approvals_before = the_operators_rows_for(&node, "/api/v1/admin/trust/approve")
         .await
         .len();
@@ -1113,7 +969,6 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         )
     };
 
-    // Declared, never sighted: listed `new`, and an approval has nothing to approve at.
     assert_eq!(
         over_as(&node, "GET", "/api/v1/admin/trust", "", op).await,
         (
@@ -1130,17 +985,14 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         )
     );
 
-    // RED: sighted and unapproved, it is refused at serve.
     sight("h1");
     assert_eq!(served(), Err(Distrust::NotApproved));
 
-    // Approved: served. The same approval twice answers the same row.
     let first = approve("inst/peer").await;
     assert_eq!(first, (200, row("approved", r#""h1""#, r#""h1""#)));
     assert_eq!(approve("inst/peer").await, first, "idempotent");
     assert_eq!(served(), Ok(()));
 
-    // RED: a drift after the approval is quarantined again, refused until re-approved.
     sight("h2");
     assert_eq!(served(), Err(Distrust::Quarantined));
     assert_eq!(
@@ -1156,7 +1008,6 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     );
     assert_eq!(served(), Ok(()));
 
-    // RED: revoked, refused again.
     assert_eq!(
         over_as(
             &node,
@@ -1170,7 +1021,6 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     );
     assert_eq!(served(), Err(Distrust::NotApproved));
 
-    // An unknown key is 404; a body naming none is 400.
     assert_eq!(
         approve("inst/stranger").await,
         (
@@ -1187,14 +1037,13 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         )
     );
 
-    // Audited like every admin write: one row per decision; the read seals none.
     let approvals = the_operators_rows_for(&node, "/api/v1/admin/trust/approve").await;
     assert_eq!(
         approvals.len() - approvals_before,
         5,
         "every approval call sealed one row: {approvals:?}"
     );
-    // Newest first: this test's five rows lead the page.
+
     assert!(approvals[..5]
         .iter()
         .all(|(verb, _)| verb == "trust_approve"));
@@ -1205,10 +1054,6 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     );
 }
 
-/// EVERY REFUSED APPROVAL IS AUDITED AS REJECTED, AND NONE PINS AN UNVERIFIED SIGHTING (a2a.md
-/// 249-250 and 265). A malformed body (`400`), an unknown key (`404`) and a counterparty whose last
-/// sighting failed its verification (the plane sights it as `"unverified"`, `409`, explained) each
-/// seal one `rejected` row on the operator's ring, and the placeholder is never pinned.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_rejected_approval_is_audited() {
@@ -1265,7 +1110,7 @@ async fn a_rejected_approval_is_audited() {
         404,
         "unknown"
     );
-    // RED: the generic approve used to pin the placeholder and answer 200.
+
     assert_eq!(
         approve(r#"{"key":"inst/peer"}"#).await,
         (
@@ -1282,7 +1127,7 @@ async fn a_rejected_approval_is_audited() {
 
     let rows = the_operators_rows_for(&node, "/api/v1/admin/trust/approve").await;
     assert_eq!(rows.len() - before, 3, "one row per refusal: {rows:?}");
-    // Newest first: this test's three rows lead the page.
+
     assert!(
         rows[..3]
             .iter()
@@ -1291,16 +1136,6 @@ async fn a_rejected_approval_is_audited() {
     );
 }
 
-/// THE VERBS UNIT'S MUTATION BUDGET OUTLIVES THE REQUEST (finding 5). The route step builds one
-/// `Verbs` per request, and each used to build its own limiter, so every call saw an empty window
-/// and none was ever refused. Walked over the real mount, which is the production construction: a
-/// new verb past the node's `Crud` budget inside one window is refused with the kernel's own admin
-/// rate-limit answer, the same bytes a legacy mutation's limiter gives. `trust/revoke` is the verb
-/// walked because no other cell counts its audit rows on the shared ring.
-///
-/// The window is the wall clock's minute, so a run that happens to cross a boundary has its count
-/// reset once. That can only delay the refusal, never bring it forward: the first `budget` calls
-/// are never refused, and one more full budget is the most a single reset can cost.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
@@ -1339,7 +1174,6 @@ async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
     );
 }
 
-/// One request over `router` presenting `credential` (or none).
 #[cfg(feature = "root-admin")]
 async fn over_as(
     router: &axum::Router,
@@ -1355,7 +1189,6 @@ async fn over_as(
     )
 }
 
-/// The four verbs as `(method, path, a body that applies)`.
 #[cfg(feature = "root-admin")]
 fn the_q71_verbs() -> [(&'static str, &'static str, String); 4] {
     [
@@ -1378,18 +1211,12 @@ fn the_q71_verbs() -> [(&'static str, &'static str, String); 4] {
     ]
 }
 
-/// OWNER ANSWER Q71(2): `verify`, `plane_facts`, `plane_record_write` and `commit_upgrade` ARE
-/// SERVED, each by its own effect, and each refuses a bad argument BY NAME.
-///
-/// Walked over the real mount behind the operator. Every answer is asserted by status AND body text.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     let (node, kept) = a_q71_node(a_door_that_identifies_the_operator());
     let op = Some(THE_OPERATORS_CREDENTIAL);
 
-    // verify: a fresh node has sealed nothing and posted nothing, and says so — `ok`, with the
-    // book NOT verified (there is no checkpoint to verify it against).
     let (status, body) = over_as(&node, "GET", "/api/v1/admin/verify", "", op).await;
     assert_eq!(status, 200, "verify is served: {body}");
     assert_eq!(
@@ -1397,7 +1224,6 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
         r#"{"book_verified":false,"checkpoints":0,"discrepancies":0,"findings":[],"identity_holds":true,"ok":true,"since":null}"#
     );
 
-    // plane_facts: the served plane's declaration; an unserved key is 404 by name; none is 400.
     let (status, body) = over_as(
         &node,
         "GET",
@@ -1431,7 +1257,6 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
         )
     );
 
-    // plane_record_write: the record reaches the sink exactly as written.
     let (_, _, write) = the_q71_verbs()[2].clone();
     let (status, body) = over_as(
         &node,
@@ -1454,7 +1279,7 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     {
         let kept = kept.lock().expect("the sink");
         assert_eq!(kept.len(), 1, "exactly one record written");
-        // The record lands in the plane's own rows: its declared kind, keyed by the plane.
+
         assert_eq!(
             (kept[0].kind.as_str(), kept[0].id.as_str(), kept[0].ts),
             ("\u{1}plane\u{1}example\u{1}note", "n-1", at)
@@ -1493,7 +1318,7 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
             r#"{"error":{"code":"not_found","message":"plane `nope` not found"}}"#.to_string()
         )
     );
-    // ARCHITECT RULING (b): a kind the named plane does not declare is refused by name.
+
     assert_eq!(
         over_as(
             &node,
@@ -1515,8 +1340,6 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
         "a refusal writes nothing"
     );
 
-    // commit_upgrade: the running release is committed and sealed on the journal; any other is a
-    // named conflict.
     let (_, _, commit) = the_q71_verbs()[3].clone();
     let (status, body) = over_as(&node, "POST", "/api/v1/admin/commit-upgrade", &commit, op).await;
     assert_eq!(status, 200, "commit_upgrade is served: {body}");
@@ -1542,15 +1365,6 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     );
 }
 
-/// THE Q71(2) VERBS ARE AUTHORIZED LIKE EVERY OTHER ADMIN VERB, AND REFUSE BY THE DOOR'S AND THE
-/// SCOPE'S OWN TEXT.
-///
-/// No credential is the door's `401`; a caller the door identifies as somebody other than the
-/// operator holds no grant and is told the scope the endpoint needed (`read-only` for the two
-/// reads, `full` for the two writes) — nothing is written in any of them. And `commit_upgrade`
-/// under the operator's `full` grant, on a node with no operator key (there is none to configure),
-/// is NOT refused at scope: a plain scoped verb (#77(9), OWNER-LOCKED). RED before the fix: it was
-/// refused `403 insufficient scope: full` while no operator key was sealed.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
@@ -1617,7 +1431,6 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
     }
 }
 
-/// One request as the operator, carrying `Idempotency-Key: <key>`.
 #[cfg(feature = "root-admin")]
 async fn over_with_key(router: &axum::Router, path: &str, body: &str, key: &str) -> (u16, String) {
     let (status, bytes, _) = send(
@@ -1635,16 +1448,12 @@ async fn over_with_key(router: &axum::Router, path: &str, body: &str, key: &str)
     )
 }
 
-/// CONTRACT D-3 ON THE TWO Q71(2) WRITES (ARCHITECT RULING (a)): a retry carrying the same
-/// `Idempotency-Key` and the same body answers the FIRST answer byte for byte and runs nothing again;
-/// the same key with a different body is refused by name and runs nothing; a different key runs.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_q71_writes_replay_under_an_idempotency_key() {
     const MISMATCH: &str = r#"{"error":{"code":"conflict","message":"this Idempotency-Key was already used with a different request body"}}"#;
     let (node, kept) = a_q71_node(a_door_that_identifies_the_operator());
 
-    // plane_record_write: one record for two identical calls.
     let (_, _, write) = the_q71_verbs()[2].clone();
     let path = "/api/v1/admin/plane-record-write";
     let first = over_with_key(&node, path, &write, "k-write").await;
@@ -1677,7 +1486,6 @@ async fn the_q71_writes_replay_under_an_idempotency_key() {
         "a different key runs"
     );
 
-    // commit_upgrade: one sealed record (the same seq and hash) for two identical calls.
     let (_, _, commit) = the_q71_verbs()[3].clone();
     let path = "/api/v1/admin/commit-upgrade";
     let first = over_with_key(&node, path, &commit, "k-commit").await;

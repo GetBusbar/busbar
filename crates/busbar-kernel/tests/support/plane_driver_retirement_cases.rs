@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Worker results that arrive before the caller's next poll still belong to the sweep.
-
 use super::*;
 
-/// Poll only the caller until its real pump has submitted a pending crossing. No runtime clock
-/// decides the race: the test then completes the worker's cancel and drops the unpolled caller.
 async fn worker_cancel_before_caller_poll(member: &'static str) {
     let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     let rows = Arc::new(AuditRows::default());

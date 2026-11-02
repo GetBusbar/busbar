@@ -1,35 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! DUPLEX SESSIONS (K6; `BUSBAR-1.6.0.md` Part 3, the driver's contract "Duplex sessions";
-//! ARCHITECT R-B and the K6 ruling). A session is ONE unit: `open_unit` ran its steps to the door
-//! and admitted it once, and [`PlaneUnits::session`] pumps it from there until it ends.
-//!
-//! - TWO PLANE TICKETS, one per side. The caller side carries the caller's pieces (`FROM_CALLER`)
-//!   and the collection of the plane's unsolicited output (`FROM_KERNEL`, no bytes); the far side
-//!   carries the turn legs. Each holds at most one op in flight, and neither waits on the other.
-//! - THE INSTANCE'S ONE DRIVER TICKET names the sessions with output ready
-//!   ([`PlaneDriver::drives`]); each one named is woken and collects on its caller side. There is
-//!   no per-session driver ticket.
-//! - ONE [`SessionCaller`], whatever carrier holds the session open (an inbound listener's
-//!   connection, a piped session).
-//! - EVERY TURN LEG IS UNDER THE SESSION'S ONE ADMISSION, INSIDE THE DESTINATION SET SEALED AT THE
-//!   OPEN (THE DESIGN; ARCHITECT Q-L5-FAR (A)). A caller-side answer bound for the far end is a
-//!   turn's request. The first turn is the session's ONE route walk (the unit's own `attempts`):
-//!   it dials the far end inside the sealed set, and the far end it answers from is HELD for the
-//!   session. Every later turn writes its frame into that held far end ([`FarEnd::write`]), never
-//!   a walk of its own, and the far end's pieces reach the far side's ticket as they arrive: there
-//!   is no per-turn end. A dial or a write that fails ends the session, and so does a cancel on
-//!   either side; each side tells the other.
-//! - EITHER SIDE ENDING ON ITS OWN ENDS THE SESSION: the caller's side ending (its last piece, or the
-//!   plane's done) stops the far side reading the held far end; the far end's answer ending (it
-//!   hung up) ends the caller's side with the caller's last piece, so the plane settles once.
-//! - CLEANUP RUNS EXACTLY ONCE, however the session ends (its own end, a cancel, or its caller
-//!   dropping the future): the stream leaves the instance's table and the money seam is told, in
-//!   the session's one guard; each side's ticket goes back through its own pump (finished, or
-//!   buried for the sweep).
-//! - Money per THE DESIGN §7 (`MoneySeam::session_opened`, `MoneySeam::session_ended`): one unit, one line.
-
 use std::future::Future;
 use std::pin::pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -44,17 +15,9 @@ use super::{
 use crate::plane_driver::{PlaneDriver, PlaneUnits};
 use crate::teller::UnitCtx;
 
-/// THE CALLER'S SIDE OF A DUPLEX SESSION, one trait for every carrier that holds a session open:
-/// its pieces go to the plane, and what the plane emits toward the caller is written to it (the
-/// [`CallerEnd`] it also is).
 pub trait SessionCaller: CallerEnd {
-    /// The caller's next piece; `None` once the caller's side has ended. Cancel-safe: a read
-    /// dropped before it resolved loses no piece.
     fn read(&self) -> impl Future<Output = Option<Vec<u8>>> + Send + '_;
 
-    /// The caller's next piece with an optional owner that must outlive its bytes allocation.
-    /// Has the same cancel-safety requirement as [`Self::read`]. Forwarding callers must forward
-    /// this method too when their inner caller supplies custody.
     fn read_owned(&self) -> impl Future<Output = Option<SessionInput>> + Send + '_ {
         async move {
             self.read().await.map(|bytes| SessionInput {
@@ -86,7 +49,6 @@ pub(crate) enum Halt {
 }
 
 impl Halt {
-    /// How a walk the halt stopped ends.
     pub(crate) fn end(self) -> End {
         match self {
             Halt::Cause(cause) => End::Cancel(cause, None),
@@ -95,10 +57,8 @@ impl Halt {
     }
 }
 
-/// The session's end, once a side names it; the first to name it wins.
 type EndCell = watch::Sender<Option<Halt>>;
 
-/// Name the session's end, unless a side already did.
 fn end_session(ended: &EndCell, halt: Halt) {
     ended.send_if_modified(|e| {
         let first = e.is_none();
@@ -109,9 +69,6 @@ fn end_session(ended: &EndCell, halt: Halt) {
     });
 }
 
-/// The session's one dial: the first turn's request, the destination set sealed at the session's
-/// open, the session's end (the walk stops at its next wait once it is named), and whether the far
-/// end the walk dialled has answered (the later turns are written into it from then on).
 pub(crate) struct Turn<'t> {
     pub(crate) request: OutboundRequest,
     sealed: &'t [VerifiedDestination],
@@ -120,12 +77,10 @@ pub(crate) struct Turn<'t> {
 }
 
 impl Turn<'_> {
-    /// Whether `member` is inside the set sealed at the open.
     pub(crate) fn within(&self, member: &str) -> bool {
         self.sealed.iter().any(|d| d.lane().as_str() == member)
     }
 
-    /// Resolves once the session's end is named.
     pub(crate) fn halted(&self) -> impl Future<Output = Halt> + Send + 'static {
         let mut halt = self.halt.clone();
         async move {
@@ -137,12 +92,11 @@ impl Turn<'_> {
     }
 }
 
-/// The session's ONE cleanup, run by its drop whichever way the session ends.
 struct Open<'d> {
     driver: &'d PlaneDriver,
     stream: u64,
     ctx: &'d UnitCtx,
-    /// The money seam was told the session opened, so it is told it ended.
+
     priced: bool,
 }
 
@@ -155,19 +109,16 @@ impl Drop for Open<'_> {
     }
 }
 
-/// What the caller side waits for next.
 enum Next {
-    /// The admitted session opens before any caller piece is read.
     Open,
-    /// The other side ended the session.
+
     Halt(Halt),
-    /// `drive` named the session: collect its output.
+
     Collect,
-    /// The caller's piece; `None` once its side ended.
+
     Caller(Option<SessionInput>),
 }
 
-/// Collect ownership under the table lock; waking a task may run arbitrary waker code.
 fn wake_ready(sessions: &Mutex<std::collections::HashMap<u64, Arc<Notify>>>, ready: &[u64]) {
     let told: Vec<_> = {
         let open = sessions.lock().unwrap_or_else(PoisonError::into_inner);
@@ -186,10 +137,6 @@ impl PlaneDriver {
         self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// THE READY-SESSION FAN-OUT (R-B), on the instance's one driver ticket: each stream its
-    /// `drive` names wakes that open session, which collects its output on its caller side. A
-    /// stream no open session holds is ignored. It ends when the instance names no more, or
-    /// holds no driver ticket.
     pub async fn drives(&self) {
         if self.driver.is_none() {
             return;
@@ -208,7 +155,6 @@ impl PlaneDriver {
 #[path = "tests/session_wake_tests.rs"]
 mod session_wake_tests;
 
-/// Why `end` ended a side; `None` for a side that simply finished.
 fn cause(end: &End) -> Option<ReasonCode> {
     match end {
         End::Done => None,
@@ -221,14 +167,6 @@ fn cause(end: &End) -> Option<ReasonCode> {
 impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
     PlaneUnits<'_, S, F, C>
 {
-    /// THE SESSION, after `open_unit` admitted its unit: `token` and `sealed` are what the
-    /// admission handed back. Both sides run until the session ends; `Ok` when it ended on its
-    /// own (the caller's side ended, or the plane said its reply was done), else why it ended.
-    ///
-    /// # Errors
-    ///
-    /// The money seam refused the session, no ticket could be minted, a turn failed, or a side
-    /// was cancelled (deadline, reload, cut, the caller gone).
     pub async fn session(
         &self,
         token: &Pass<Route>,
@@ -238,10 +176,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         self.session_priced(token, ctx, sealed, true).await
     }
 
-    /// [`Self::session`]; `priced` = false for a session its plane answers ITSELF (`ROUTE_LOCAL`,
-    /// ARCHITECT Q-L3B-LOCAL: it names no entry, so it dials nothing, and only far-end-reported
-    /// units bill): it runs under the admission that charged nothing, and the money seam is told
-    /// nothing of it, as of a local request unit.
     pub(crate) async fn session_priced(
         &self,
         token: &Pass<Route>,
@@ -254,7 +188,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         if priced {
             d.money.session_opened(ctx)?;
         }
-        // The session's in-session hook stage (`hook.call`, `content.scan`), from the open.
+
         self.state_stage(token);
         let stream = ctx.key.get();
         let told = Arc::new(Notify::new());
@@ -266,7 +200,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             priced,
         };
         d.sweep();
-        // Both legs on one worker: the session's crossings are ordered as one unit's.
+
         let near = d.calls.mint();
         let far = near.and_then(|n| d.calls.mint_beside(n));
         let (Some(near), Some(far)) = (near, far) else {
@@ -310,12 +244,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         near.and(far)
     }
 
-    /// The caller side, on its own ticket: the caller's pieces, and the collection of what the
-    /// plane has ready whenever `drive` named the session. An answer bound for the far end is
-    /// queued as a turn. It ends when the caller's side ends, the plane says its reply is done,
-    /// the other side ended the session, or the driver cancels. When the far side ended on its own
-    /// (the far end hung up), the caller's side ends with the caller's last piece, so the plane
-    /// settles the session once.
     async fn near_side(
         &self,
         run: &mut Pumping<'_>,
@@ -326,9 +254,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         let mut opening = true;
         loop {
             let next = if std::mem::take(&mut opening) {
-                // The plane may have an opening request or server-first output even when the
-                // caller has sent no frame. It uses the same crossing, writes and backpressure
-                // as every later piece; it never marks the caller's side ended.
                 Ok(Next::Open)
             } else {
                 guarded_run(run, async {
@@ -381,25 +306,17 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                     if done || piece.flags & PIECE_LAST != 0 {
                         return End::Done;
                     }
-                    // A far side that has ended takes no more turns: its end is named, and the
-                    // next wait sees it.
+
                     if request != OutboundRequest::default() {
                         let _ = turns.send(request).await;
                     }
                 }
-                // A verdict means nothing on the caller's side: there is nothing to fail over.
+
                 Step::Retry => {}
             }
         }
     }
 
-    /// The far side, on its own ticket. It waits for the session's first turn, whose walk is the
-    /// session's ONE dial inside the sealed set; the far end that answers it is held, and its pieces
-    /// reach this ticket as they arrive. Beside the walk, every later turn is written into the held
-    /// far end once it has answered, in the order the caller side queued them. It ends when the
-    /// far end's answer ends, the session's end is named (the caller's side ended, or a side ended
-    /// it for a cause), a dial or a write fails, or the driver cancels. Its end drops the turn
-    /// queue, so a caller side waiting to queue a turn is never left waiting on it.
     async fn far_side(
         &self,
         run: &mut Pumping<'_>,
@@ -419,7 +336,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         let request = match first {
             Err(cause) => return End::Cancel(cause, None),
             Ok(Err(halt)) => return halt.end(),
-            // The caller's side ended before any turn: nothing was dialled.
+
             Ok(Ok(None)) => return End::Done,
             Ok(Ok(Some(request))) => request,
         };
@@ -443,9 +360,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         }
     }
 
-    /// The session's later turns, each written into the held far end once it has answered, in
-    /// order. A write the far end does not take ends the session. It returns once the caller's side
-    /// has queued its last turn.
     async fn write_turns(
         &self,
         token: &Pass<Route>,
@@ -454,8 +368,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         ended: &EndCell,
     ) {
         while let Some(request) = queued.recv().await {
-            // The attempt that answered holds the session's far end: a frame never goes to an
-            // attempt the walk is still dialling, or one it failed over from.
             if held.wait_for(|h| *h).await.is_err() {
                 return;
             }
@@ -466,24 +378,18 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         }
     }
 
-    /// One side's end: a cancel is billed (and a cut renders its frame to the caller), its ticket
-    /// goes back, and a side that did not simply finish ends the session for the other side.
     async fn close(
         &self,
         run: &mut Pumping<'_>,
         end: End,
         ended: &EndCell,
     ) -> Result<(), ReasonCode> {
-        // The first side owns the session outcome. A worker retires a Pending sibling with
-        // a host timeout answer after normal unit completion; that induced failure must not
-        // replace the normal end already recorded by its completing sibling.
         let why = match *ended.borrow() {
             Some(Halt::Over) => None,
             Some(Halt::Cause(reason)) => Some(reason),
             None => cause(&end),
         };
-        // Stop the sibling before awaiting a worker control reply. Its next guarded wait must
-        // observe this cause rather than submitting more work to a retiring logical unit.
+
         end_session(ended, why.map_or(Halt::Over, Halt::Cause));
         if let (Some(reason), End::Cancel(_, done)) = (why, end) {
             let _bill = run.cancel(reason, done).await;
@@ -492,8 +398,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             }
         }
         run.finish();
-        // The first side to end the session names why; the other side's end follows it. A side
-        // that simply finished ends the session for the other side too.
+
         match why {
             Some(reason) => {
                 end_session(ended, Halt::Cause(reason));

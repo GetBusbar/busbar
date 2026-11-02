@@ -2,18 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S VIEWS, HOST SIDE: the fixed `in`s of `decide`/`transform`/`notify`
-//! (`abi::hook`) built from the kernel's own projections ([`RoutingRequest`], [`Candidate`],
-//! [`RoutingContext`]), and the host buffers a `decide`/`transform` answer is written into.
-//!
-//! A view owns the SMALL things its pointers name — the projection's strings and lists, and the
-//! frame's result buffers — so the dispatcher can hold them past a caller that stopped waiting
-//! (`plugin-loader`'s `Dispatcher::submit_lent`, ARCHITECT ruling 2026-09-29). The request BODY is
-//! never copied into a view: `PromptView::body` names bytes LENT by the request-serving code, which
-//! hands their owner to `submit_lent` beside the frame (the hooks law: body zero-copy). A frame is
-//! immutable once built except for the host buffers the plugin writes; the one short-buffer
-//! re-call gets a fresh frame over the same view ([`DecideFrame::regrown_decide`]).
-//!
-//! An absent string is a NULL [`AbiStr`]; a present one — even an empty one — is non-NULL.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -197,10 +185,7 @@ fn request_view(store: &mut Store, req: &RoutingRequest<'_>) -> RequestView {
 }
 
 /// THE STATIC HALF OF A DECIDE VIEW'S CANDIDATES: each candidate's configured facts (its `idx`,
-/// model, provider, weight, context ceiling, tier, cost and tags), which do not move between
-/// requests while the configuration does not. A caller may build it once and hand it to every
-/// [`DecideView::build_with`] whose candidates it [`matches`](Self::matches); a configuration that
-/// changes any of those facts no longer matches, so a kept half is never handed a stale view.
+
 pub struct CandidateStatics {
     _store: Store,
     statics: Box<[CandidateStatic]>,
@@ -217,7 +202,6 @@ struct StaticFacts {
     context_max: Option<usize>,
     tier: Option<Box<str>>,
     /// The configured cost per million tokens, as its `f64` bit pattern: compared for identity,
-    /// never priced with.
     cost_bits: Option<u64>,
     tags: Box<[Box<str>]>,
 }
@@ -306,7 +290,7 @@ impl CandidateStatics {
 }
 
 /// THE `decide`/`transform` VIEW: everything the two ops' shared [`DecideIn`] points at, built once
-/// per call from the kernel's projections. Immutable; shared by the call's frames.
+
 pub struct DecideView {
     base: DecideIn,
     _store: Store,
@@ -325,7 +309,7 @@ unsafe impl Sync for DecideView {}
 
 impl DecideView {
     /// The view of one request: `prompt`/`user` are populated exactly when the kernel's projection
-    /// carries them (the grants already applied), `budget_remaining` when the pool is capped.
+
     #[must_use]
     pub fn build(
         req: &RoutingRequest<'_>,
@@ -337,12 +321,7 @@ impl DecideView {
     }
 
     /// [`Self::build`] over a STATIC HALF already built for these candidates
-    /// ([`CandidateStatics::build`], which a caller may keep while [`CandidateStatics::matches`]
-    /// says the candidates are the ones it was built for): only the per-request half is built.
-    ///
-    /// # Panics
-    ///
-    /// When `statics` does not match `candidates`, in every build profile.
+
     #[must_use]
     pub fn build_with(
         req: &RoutingRequest<'_>,
@@ -476,7 +455,7 @@ fn blank_head() -> InHead {
 }
 
 /// One host buffer a plugin writes into: zero-filled, owned, freed on drop. Held by raw pointer so
-/// the plugin's writes never alias a Rust reference.
+
 struct HostBuf<T: Copy + Default> {
     ptr: *mut T,
     cap: usize,
@@ -529,8 +508,7 @@ pub struct Caps {
 
 impl Caps {
     /// The first call's capacities: an order as long as the candidate list, room for a reject
-    /// message past the 300-character cap in any UTF-8, and generous tag and rewrite buffers. A
-    /// longer answer takes the one short-buffer re-call.
+
     #[must_use]
     pub fn initial(view: &DecideView) -> Self {
         Self {
@@ -542,7 +520,7 @@ impl Caps {
     }
 
     /// The re-call's capacities after a SHORT `decide` answer: each dimension grown to what it
-    /// said it needs.
+
     #[must_use]
     pub fn after_decide(self, out: &DecideOut) -> Self {
         Self {
@@ -565,7 +543,7 @@ impl Caps {
 }
 
 /// ONE `decide`/`transform` CALL'S FRAME: the view's [`DecideIn`] pointed at this frame's own host
-/// buffers. Lent to the dispatcher for the life of the op; read after it answered.
+
 pub struct DecideFrame {
     view: Arc<DecideView>,
     caps: Caps,
@@ -626,9 +604,7 @@ impl DecideFrame {
     }
 
     /// Reserve the answer buffers for one native operation, including its pending invocations.
-    /// Returns `None` if another crossing, local answer or reader currently owns the buffers.
-    /// The dispatcher must retain the lease until the operation's last crossing returns, even
-    /// when the caller times out or drops its future. No mutex is held across plugin code.
+
     #[must_use]
     pub fn try_lend(self: &Arc<Self>) -> Option<DecideFrameLease> {
         let claim = self.try_buffers()?;
@@ -636,7 +612,7 @@ impl DecideFrame {
             frame: Arc::clone(self),
             held: AtomicBool::new(true),
         };
-        // Transfer the reservation to the owned lease, which can outlive this borrow.
+
         std::mem::forget(claim);
         Some(lease)
     }
@@ -654,8 +630,7 @@ impl DecideFrame {
     }
 
     /// The raw `in` (its head blank; the dispatcher fills it). Copying this record does not
-    /// reserve its output buffers. A native operation must hold [`Self::try_lend`]'s lease;
-    /// any other raw-pointer writer must prove exclusive access at its unsafe boundary.
+
     #[must_use]
     pub fn input(&self) -> DecideIn {
         DecideIn {
@@ -678,9 +653,7 @@ impl DecideFrame {
     }
 
     /// The candidate order a `decide` answer wrote (`order_written` entries, as `idx`es).
-    ///
-    /// # Panics
-    /// When another answer, reader or native operation owns the answer buffers.
+
     #[must_use]
     pub fn order(&self, written: usize) -> Vec<usize> {
         let _claim = self.buffers();
@@ -692,9 +665,7 @@ impl DecideFrame {
     }
 
     /// The reject-message bytes an answer wrote (`reject_message_written`), lossily UTF-8.
-    ///
-    /// # Panics
-    /// When another answer, reader or native operation owns the answer buffers.
+
     #[must_use]
     pub fn reject_message(&self, written: usize) -> String {
         let _claim = self.buffers();
@@ -702,9 +673,7 @@ impl DecideFrame {
     }
 
     /// The restrict tags a `decide` answer wrote: NUL-separated, each lossily UTF-8.
-    ///
-    /// # Panics
-    /// When another answer, reader or native operation owns the answer buffers.
+
     #[must_use]
     pub fn restrict_tags(&self, written: usize) -> Vec<String> {
         let _claim = self.buffers();
@@ -719,9 +688,7 @@ impl DecideFrame {
     }
 
     /// The rewrite bytes a `transform` answer wrote (`rewrite_written`).
-    ///
-    /// # Panics
-    /// When another answer, reader or native operation owns the answer buffers.
+
     #[must_use]
     pub fn rewrite(&self, written: usize) -> Vec<u8> {
         let _claim = self.buffers();
@@ -729,10 +696,7 @@ impl DecideFrame {
     }
 
     /// The 1.5.5 `decide`/`transform` JSON (`op`: [`crate::hook_wire::OP_DECIDE`] or
-    /// [`crate::hook_wire::OP_TRANSFORM`]) a hook written against the JSON contract is handed for
-    /// this frame's view: the SDK's own rebuild ([`crate::abi::sdk::hook::Decoded::projection_json`]),
-    /// read here so an in-process hook reads exactly what a plugin reads (as
-    /// [`NotifyFrame::projection_json`]).
+
     #[must_use]
     pub fn projection_json(&self, op: &'static str) -> serde_json::Value {
         let input = self.view.base;
@@ -743,9 +707,7 @@ impl DecideFrame {
     }
 
     /// THIS FRAME'S VIEW AS THE SDK DECODES IT for a hook's `decide`/`transform`
-    /// ([`crate::abi::sdk::hook::Decoded::of`]), lent to `read` for the call: an in-process hook
-    /// reads exactly the candidates a plugin behind its door reads, every key as the `in` carries it
-    /// (an infinity included, which the 1.5.5 JSON of [`Self::projection_json`] cannot carry).
+
     #[must_use]
     pub fn decoded<R>(&self, read: impl FnOnce(&crate::abi::sdk::hook::Decoded<'_>) -> R) -> R {
         let input = self.view.base;
@@ -756,12 +718,7 @@ impl DecideFrame {
     }
 
     /// ANSWER `decide` IN PROCESS: `v` lowered into this frame's own host buffers exactly as the
-    /// SDK's door lowers it ([`crate::abi::sdk::hook::write_verdict`], the one short FAILED
-    /// included), and the `out` it answers (its head blank: nothing crossed). For an in-process
-    /// [`crate::hook_calls::HookCalls`], lowering reserves the buffers until it returns.
-    ///
-    /// # Panics
-    /// When another answer, reader or native operation owns the answer buffers.
+
     #[must_use]
     pub fn answer_decide(&self, v: &crate::abi::sdk::hook::Verdict) -> (Outcome, DecideOut) {
         let _claim = self.buffers();
@@ -777,9 +734,7 @@ impl DecideFrame {
     }
 
     /// [`Self::answer_decide`]'s `transform` twin ([`crate::abi::sdk::hook::write_rewrite`]).
-    ///
-    /// # Panics
-    /// When another answer, reader or native operation owns the answer buffers.
+
     #[must_use]
     pub fn answer_transform(
         &self,
@@ -797,8 +752,7 @@ impl DecideFrame {
 }
 
 /// A native operation's exclusive reservation of a frame's host answer buffers.
-/// Keep this owner with the dispatcher's lent storage through pending, cancellation and timeout.
-/// Dropping its final owner releases the reservation. Read-only projections remain available.
+
 pub struct DecideFrameLease {
     frame: Arc<DecideFrame>,
     held: AtomicBool,
@@ -806,9 +760,7 @@ pub struct DecideFrameLease {
 
 impl DecideFrameLease {
     /// The raw input for the operation that owns this reservation.
-    ///
-    /// # Panics
-    /// After [`Self::complete`] released the reservation.
+
     #[must_use]
     pub fn input(&self) -> DecideIn {
         assert!(
@@ -857,8 +809,7 @@ impl Drop for BufferClaim<'_> {
 }
 
 /// ONE `notify` CALL'S FRAME (WIRE-HOOK Q5): the stage view, the request's declared signals and —
-/// only under the tap's `prompt: ro` grant — the prompt view. Owns everything it points at; the host's tap pool holds one per
-/// queued notification (H3: a copy of the fixed view, never JSON).
+
 pub struct NotifyFrame {
     input: NotifyIn,
     _store: Store,
@@ -877,9 +828,7 @@ unsafe impl Sync for NotifyFrame {}
 
 impl NotifyFrame {
     /// The tap view of `req` (its shape fields and declared signals) at `stage` (`None` = a
-    /// request-stage tap: no stage projection, as 1.5.5's `stage` was absent). The prompt view is
-    /// carried only when `view_granted` (the tap's `prompt: ro` grant) AND `req` projects one: an
-    /// ungranted tap never sees the prompt, whatever the request carries.
+
     #[must_use]
     pub fn build(
         req: &RoutingRequest<'_>,
@@ -979,8 +928,7 @@ impl NotifyFrame {
     }
 
     /// The 1.5.5 `notify` JSON a tap plugin written against the JSON contract is handed for this
-    /// view: the SDK's own rebuild ([`crate::abi::sdk::hook::DecodedTap::projection_json`]), read
-    /// here so an in-process tap reads exactly what a plugin reads.
+
     #[must_use]
     pub fn projection_json(&self) -> serde_json::Value {
         // SAFETY: every pointer in `input` names storage this frame owns (`_store`), live while

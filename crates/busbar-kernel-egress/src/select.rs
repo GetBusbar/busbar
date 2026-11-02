@@ -2,19 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The pick: who is asked first, and who is allowed.
-//!
-//! Those are two different questions and this module keeps them apart. The ORDER — session
-//! affinity, a ranking hook's preference, the weighted floor every deployment gets when it names
-//! none — answers only the first, and nothing in it may change a breaker cell's state. The
-//! ADMISSION answers the second and is the single mutating call in the whole pick: it consults the
-//! breaker, wins or loses the single-flight recovery probe, and takes a concurrency permit.
-//!
-//! That split is what the exclusion point depends on. A member that is drained, dead, out of
-//! lifetime budget or breaker-suppressed is filtered BEFORE the weighted credit walk, so it never
-//! consumes a turn; only a member that is at capacity — or that loses a probe race — reaches the
-//! admission after selection, and so is the only kind that does consume one. Ordering a suppressed
-//! member last instead of excluding it would spend its turn and change the order of every request
-//! after it.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -138,10 +125,7 @@ impl WeightedFloor {
     }
 
     /// One turn of the rotation over exactly these members.
-    ///
-    /// Every member offered here has already passed the filter — non-zero weight, usable
-    /// destination, ready cell — so a turn is only ever spent on a member that could have taken
-    /// the request. Returns `None` when nothing was offered.
+
     pub(crate) fn take_turn(&self, offered: &[(DestinationId, u32)]) -> Option<DestinationId> {
         if offered.is_empty() {
             return None;
@@ -159,8 +143,7 @@ impl WeightedFloor {
             let entry = pool_credits.entry(*destination).or_insert(0_i64);
             *entry = entry.saturating_add(i64::from(*weight));
             let current = *entry;
-            // Ties go to the earlier member in the offered order, which is the operator's own
-            // configured order — the same tie-break the previous release's rotation made.
+
             if best.is_none_or(|(_, b)| current > b) {
                 best = Some((*destination, current));
             }
@@ -174,15 +157,7 @@ impl WeightedFloor {
 }
 
 /// A won recovery probe, released if the dispatch that won it never records an outcome.
-///
-/// Winning a probe puts the cell in its half-open state with the probe marked in flight, and the
-/// mark is normally cleared by the request recording what happened. If the future holding it is
-/// dropped part-way — a client that went away while the upstream call was open — no cleanup runs,
-/// and without this the cell would stay half-open until the slow out-of-band prober noticed.
-///
-/// The release is owner-checked against the epoch captured at the win. A guard can be dropped
-/// LATE, after its own request already recorded an outcome and a peer has since won a newer probe
-/// on the same cell; an unchecked release would revert that peer's live probe.
+
 pub struct ProbeGuard<'a> {
     breaker: &'a dyn Breaker,
     pool: &'a str,
@@ -213,13 +188,13 @@ impl<'a> ProbeGuard<'a> {
     }
 
     /// Hand the probe to something that will record its own outcome. From here the guard releases
-    /// nothing.
+
     pub fn disarm(&mut self) {
         self.armed = false;
     }
 
     /// Hand the probe on and yield the epoch it was won at, so the dispatch that takes it can arm
-    /// its own guard over the same epoch. Disarms this one: exactly one guard is live per win.
+
     #[must_use]
     pub fn take_epoch(&mut self) -> u64 {
         self.armed = false;
@@ -243,19 +218,11 @@ impl Drop for ProbeGuard<'_> {
 }
 
 /// A ranking hook's preference over the members, by destination, best first.
-///
-/// A member the ranking omits is lowest priority but still reachable: when no ranked member
-/// qualifies the pick falls through to the weighted floor over the same candidates, so a partial
-/// ranking never strands the rest.
+
 pub type Preference<'a> = Option<&'a [DestinationId]>;
 
 /// What one pick found.
-///
-/// A won probe is held as a GUARD rather than a bare epoch, and that is what makes the ownership
-/// total. Between the pick and the dispatch there are resolution steps that can shed — a member the
-/// verified set does not carry, a pool whose membership no longer names it — and every one of them
-/// simply drops the pick. Holding the guard here means each of those drops gives the probe back,
-/// instead of leaving the cell half-open forever and the member excluded from every later pick.
+
 #[must_use = "a pick holds a concurrency permit and possibly a recovery probe"]
 pub struct Picked<'a> {
     /// Which member.
@@ -268,19 +235,14 @@ pub struct Picked<'a> {
 
 impl Picked<'_> {
     /// Hand this pick's probe, where it won one, to the dispatch that is about to run and will
-    /// record its own outcome. Any path that does NOT reach a dispatch never calls this, drops the
-    /// pick instead, and the guard gives the probe back.
+
     pub fn take_probe_epoch(&mut self) -> Option<u64> {
         self.probe.as_mut().map(ProbeGuard::take_epoch)
     }
 }
 
 /// Everything a pick reads.
-///
-/// The capability token has its own lifetime: it is minted per loop step and lives only as long as
-/// the step, while the breaker and the pool name outlive the request. A probe guard the pick hands
-/// back borrows the latter, so tying the two together would shorten the guard to the token's life
-/// for no reason.
+
 pub struct PickInput<'a, 't> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
@@ -299,20 +261,11 @@ pub struct PickInput<'a, 't> {
     /// This second, read once for the whole pick.
     pub now: u64,
     /// The capability token proving the loop is at the route step for this unit right now
-    /// (`busbar-caps`'s `&Pass<Route>`): a unit may only act at the step its token names.
-    /// Lent down to every
-    /// [`crate::ports::Breaker::ready`] / [`crate::ports::Breaker::cooldown_remaining`] call the
-    /// pick makes.
     pub token: &'t Pass<Route>,
 }
 
 /// Pick one member of the pool for this hop, or find that there is nowhere to send it.
-///
-/// The loop below is the walk over the order, and it is deliberately small: the order says who is
-/// next, the admission says yes or no, and a no is recorded and the order is asked again. Nothing
-/// else happens here — no waiting, no spilling, no bypassing. Those are the terminals' job, and
-/// keeping them out of this loop is what makes "the pick never blocks" a structural fact rather
-/// than a rule someone has to remember.
+
 pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option<Picked<'a>> {
     let mut order = Order::new(input, ctx);
     let mut passed_over: Vec<(DestinationId, Unavailable)> = Vec::new();
@@ -332,10 +285,6 @@ pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option
         }
     };
 
-    // When the health filter left nobody to offer, admission supplied no reasons. Explain
-    // that exhaustion by reading health alone: probing admission here could win a recovery
-    // probe even though this pick will dispatch nothing. Keep actual admission refusals (in
-    // particular at-capacity reasons consumed by the wait terminal) exactly as recorded.
     if picked.is_none() && passed_over.is_empty() && !ctx.expired(input.now) {
         for member in input.members {
             if member.weight == 0 || ctx.is_excluded(member.destination) {
@@ -351,8 +300,6 @@ pub fn pick_among<'a>(input: &PickInput<'a, '_>, ctx: &mut RequestCtx) -> Option
         }
     }
 
-    // The exclusion record is this pick's own, replaced wholesale: a spill that re-runs the pick
-    // against another pool must report that pool's exhaustion, never the primary's.
     ctx.excluded_reasons = passed_over;
 
     let (destination, admitted) = picked?;
@@ -370,15 +317,7 @@ struct Admitted<'a> {
 }
 
 /// The single mutating admission: the breaker, then the pool's own capacity.
-///
-/// The order matters and so does the failure path. A member whose breaker admits but whose slots
-/// are all held is at capacity, which is the one exclusion reason that waiting can cure — and a
-/// probe won on the way in must be given back here, because nothing was dispatched to record an
-/// outcome that would have cleared it.
-///
-/// A win is wrapped in its guard the instant it happens, so every exit from here on — this
-/// function's own at-capacity return, a caller's resolution shed, a dropped future — gives the
-/// probe back without anyone having to remember to.
+
 fn try_admit<'a>(
     input: &PickInput<'a, '_>,
     destination: DestinationId,
@@ -409,15 +348,11 @@ struct Order<'a, 'b, 't> {
     /// Set for exactly one call after the affinity position was offered.
     sticky_grace: bool,
     /// Positions this order will not offer again. Local to the pick: it never touches the
-    /// request's cross-hop exclusion set.
     local_excluded: HashSet<usize>,
 }
 
 impl<'a, 'b, 't> Order<'a, 'b, 't> {
     fn new(input: &'b PickInput<'a, 't>, ctx: &RequestCtx) -> Self {
-        // Session affinity is a preference, not a constraint, and it is skipped in exactly two
-        // cases: a drained member, and one this request has already tried. Both are selection
-        // policy rather than availability, so neither is recorded as an exclusion reason.
         let sticky = input.affinity.and_then(|hash| {
             if input.members.is_empty() {
                 return None;
@@ -437,19 +372,12 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
 
     fn next(&mut self, refused: Option<usize>, ctx: &RequestCtx) -> Option<usize> {
         if let Some(position) = refused {
-            // A refused affinity position is deliberately NOT locally excluded. The affinity fast
-            // path records its reason and falls through to the weighted floor, which may
-            // legitimately offer the same member again and attempt it a second time. The wait
-            // terminal is written against that: it dedups the doubled at-capacity reason by
-            // member.
             if !(self.sticky_grace && Some(position) == self.sticky) {
                 self.local_excluded.insert(position);
             }
         }
         self.sticky_grace = false;
 
-        // 1. Session affinity, before anything else and before the deadline guard — exactly where
-        //    the fast path sat.
         if !self.sticky_offered {
             self.sticky_offered = true;
             if let Some(position) = self.sticky {
@@ -458,13 +386,10 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
             }
         }
 
-        // 2. Never spin or re-select past the walk's deadline.
         if ctx.expired(self.input.now) {
             return None;
         }
 
-        // 3. This hop's candidates: the membership minus what the request has tried and minus what
-        //    this pick has burned.
         let mut candidates: Vec<(usize, DestinationId, u32)> = Vec::new();
         for (position, member) in self.input.members.iter().enumerate() {
             if ctx.is_excluded(member.destination) || self.local_excluded.contains(&position) {
@@ -476,8 +401,6 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
             return None;
         }
 
-        // 4. The health filter, applied BEFORE any turn is spent. A drained member, an unusable
-        //    destination, or a suppressed cell is excluded here — never ranked last and attempted.
         let healthy: Vec<(DestinationId, u32, u32)> = candidates
             .iter()
             .filter(|(_, destination, weight)| {
@@ -494,8 +417,7 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
                 (*destination, *weight, self.input.members[*position].tier)
             })
             .collect();
-        // THE LOWEST TIER among the healthy candidates is the only one offered: a higher tier is
-        // reached only when no member of a lower one could take the request (`Member::tier`).
+
         let lowest = healthy.iter().map(|(_, _, tier)| *tier).min();
         let offered: Vec<(DestinationId, u32)> = healthy
             .iter()
@@ -503,11 +425,6 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
             .map(|(destination, weight, _)| (*destination, *weight))
             .collect();
 
-        // 5. A ranking hook's preference, honouring exactly the filter above: the first ranked
-        //    member that is in this hop's candidates and passed the filter. If none qualifies —
-        //    every preferred member unhealthy or already tried, or the ranking covered only a
-        //    subset — fall through to the weighted floor over the same candidates, so an omitted
-        //    member is lowest priority but never stranded.
         let picked = match self.input.preference {
             Some(preference) => preference
                 .iter()
@@ -517,8 +434,6 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
             None => self.input.floor.take_turn(&offered),
         }?;
 
-        // The floor answers with a destination; the walk indexes the membership by position. A
-        // destination appears at most once in a pool, so the first match is the match.
         candidates
             .iter()
             .find(|(_, destination, _)| *destination == picked)

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PLANES' COMPOSITION, over the test plane
-//! dropped in (its `plane_driver_test_plane` example `cdylib`, admitted against the Statement its
-//! own library states; the binary forbids unsafe code, so the fixture's source is never compiled
-//! into it): a bound plane whose section the deployment writes is opened, driven and its admin
-//! routes published; one whose section is absent stays unopened (LAW 7).
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -23,26 +17,17 @@ use crate::root::loader::dispatch::{
     load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, NoSink,
 };
 
-/// The money steps of a composition: an ungoverned book (a unit that runs here admits nothing that
-/// bills), posting abandoned ends onto the process's one node.
 pub(crate) fn money() -> Arc<PlaneMoney> {
     let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("governance"));
     Arc::new(PlaneMoney::new(gov, post() as Arc<dyn EndPost>))
 }
 
-/// The process's one posting site, over its one node.
 pub(super) fn post() -> Arc<NodeEndPost> {
     Arc::new(NodeEndPost::new(crate::root::plane_node::node()))
 }
 
-/// THE OPERATOR AUDIT RING IS THE PROCESS'S ONE: a test that counts the audit rows its door's
-/// admin routes sealed holds this while it does ([`crate::root::PUBLISHING`]). Each composition
-/// publishes its admin routes into its own generation's table (`App::serve_tables`), so no test
-/// withdraws another's.
 pub(crate) use crate::root::PUBLISHING;
 
-/// The test plane's example `cdylib` beside this test binary. Not built is a failure in every run,
-/// never a skip: a composition proof without its plane proves nothing.
 fn dropped_path() -> std::path::PathBuf {
     let name = "plane_driver_test_plane";
     let exe = std::env::current_exe().expect("the test binary's path");
@@ -62,7 +47,6 @@ fn dropped_path() -> std::path::PathBuf {
     path
 }
 
-/// The test plane, dropped in and bound on `dispatcher` as `instance`.
 pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root::boot::DoorPlane {
     let path = dropped_path();
     let stated = rendering_of_library(&path)
@@ -77,8 +61,7 @@ pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                // These rows never dial (the plane's far end is not reached): its need is not
-                // declared, bound as a probe.
+
                 conns: crate::root::loader::dispatch::ConnTable::Probe,
             },
         )
@@ -94,8 +77,6 @@ pub(crate) fn composed_services() -> Arc<LateServices> {
     late
 }
 
-/// An admin request on `tables`, the admin router's plane table: its status, or `None` (the
-/// router's 404).
 fn admin(tables: &busbar_kernel::plane_driver::serve::ServeTables, path: &str) -> Option<u16> {
     let req = axum::http::Request::builder()
         .method("POST")
@@ -197,10 +178,6 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
     assert!(served.planes.is_empty());
 }
 
-/// THE CATALOG ROUTE (ARCHITECT Q-L5B-ROUTE, 2026-10-03): a section whose `session.model` names a
-/// top-level catalog model has that entry folded into its route table, so the door steps resolve the
-/// door's DIRECT route to it (unchanged); a section with its own `models:`, or naming a model the
-/// catalog lacks, keeps its table as written. The settings the door opens with are never folded.
 #[test]
 fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     use crate::root::door_steps::DoorPools;
@@ -240,13 +217,6 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     assert_eq!(super::catalog_routes(&own, &catalog), own);
 }
 
-/// A PLANE NEVER RECEIVES SECRET BYTES (THE DESIGN §6; SECURITY ruling 2026-10-07). `${VAR}` is
-/// spliced into the config text before it is parsed, so its plaintext used to reach a door plane's
-/// `open` settings, its owned sections and its `refresh` settings. The test plane records the bytes
-/// it is handed at the ABI. At every CREDENTIAL position (`token`, `api_key`, a program's `env`) the
-/// blobs carry the reference: `{ env: VAR }` for a whole value, a template reference for a part.
-/// An operator-written reference crosses as written, unresolved. Every other position (`url`,
-/// `args`, `command`) keeps the load-time interpolation, as 1.5.5 handed it on.
 #[test]
 fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_its_bytes() {
     const PLAIN: &str = "sk-plane-bound-PLAINTEXT-0001";
@@ -311,7 +281,6 @@ test_plane_owned:
         .live
         .refreshed(
             &sections["test_plane"],
-            // A plane that reads no section beside its own is handed its section bare.
             &sections["test_plane"],
             &serde_json::Map::new(),
             2,
@@ -353,7 +322,7 @@ test_plane_owned:
             settings["reg1"]["api_key"], written_reference,
             "{name}: {text}"
         );
-        // Not a credential field: the load-time interpolation, as 1.5.5 handed it on.
+
         assert_eq!(
             settings["reg1"]["url"], "http://upstream.invalid/v1",
             "{name}: {text}"
@@ -377,17 +346,12 @@ test_plane_owned:
     );
 }
 
-/// RED, THE DIALECT FACTS AT OPEN (THE DESIGN §4: a plane receives, at open, the dialect fields of
-/// the providers it references): the providers its section's `models.<m>.provider` entries name,
-/// once each in the order first referenced, cross `PlaneOpenIn::providers` with their resolved
-/// `protocol` and `error_map` (absent when none). An unreferenced provider is not handed, and a
-/// section that references none hands none. The test plane echoes what it was handed.
 #[test]
 fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     use crate::root::door_steps::{dialect_facts, ProviderRoute, StyleParams};
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let plane = bound("serve-open-dialect-facts", &dispatcher);
-    // The kernel's host services the plane's open is handed, as a composition installs them.
+
     let _late = composed_services();
     let route = |protocol: &str, error_map: &[(&str, &str)]| ProviderRoute {
         base_url: "http://127.0.0.1:9".to_string(),
@@ -444,7 +408,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     );
     let none = dialect_facts(&serde_yaml::Value::Null, &providers);
     assert!(none.is_empty(), "a section that references none hands none");
-    // A second instance (an instance opens once): a section that references none is handed none.
+
     let plane = bound("serve-open-dialect-none", &dispatcher);
     let snapshot = super::open(
         &plane,
@@ -458,13 +422,6 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     assert_eq!(snapshot.resource_facts, None);
 }
 
-/// THE CHAINED RECORDS of record kind `kind` in `store`, read back as the host's verified read
-/// answers them (`busbar_kernel::host_chains::verified`, the one chain mechanism, over the kind's
-/// declared `framing`): the one instance that wrote them, and each record's `(scope, sequence)` in
-/// key order. A chain that does not verify is announced by a span keyed by its bare scope, which
-/// this refuses, so a broken link fails the read. The flush is write-behind: the read waits up to
-/// five seconds for at least `want` records to land.
-/// One instance's chained records: its label, and each record's `(scope, sequence)`.
 pub(crate) type ChainedRecords = (String, Vec<(Vec<u8>, u64)>);
 
 pub(crate) fn chained_records(
@@ -519,23 +476,12 @@ pub(crate) fn chained_records(
     (instance, records)
 }
 
-/// THE RED ARM OF "NEVER SKIPS": a fixture that is not built fails the test, naming what builds it.
 #[test]
 #[should_panic(expected = "is not built: run")]
 fn a_missing_fixture_cdylib_fails_the_test_and_names_its_build() {
     missing("no_such_fixture", BUILD_BUSBAR_EXAMPLES);
 }
 
-/// RED (row 159): a config apply onto the door serving the `pools` map
-/// ([`super::DoorAppliers::refresh_models`]) whose plane answers its `refresh` READY with a
-/// snapshot the host's checks refuse retires that generation, so the plane never keeps the
-/// generation the host refused as its newest: it answers from the one the host keeps serving.
-/// The test plane is composed, then applied as the door serving `pools` (the same instance, its
-/// served section that map's); opened `unchecked_refresh`, its refreshed snapshot states an
-/// arrival span the host's copy refuses, and it records each generation it retires.
-///
-/// RED before: `refresh_models` kept its generation and left the refused one unretired (no
-/// `retired.<next>` recorded); it retired only a generation whose seal failed.
 #[test]
 fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     use crate::root::loader::dispatch::kinds::plane::ServedFacts;

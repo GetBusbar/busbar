@@ -36,7 +36,6 @@
 //! (`cargo run --example dropped_conformance`) over the plugin it built, and requires both proofs
 //! to pass.
 
-/// Both proofs, in order; either one failing panics, and the run exits non-zero.
 fn main() {
     a_plugin_built_from_the_c_header_alone_passes_its_kinds_script();
     a_plugin_built_against_another_kind_abi_is_refused();
@@ -71,7 +70,6 @@ use busbar_plugin_loader::dispatch::{
 };
 use busbar_test_kit::conformance::canary::{credentials, find, Heard};
 
-/// The generated header the plugin builds from (the RED arm rebuilds against it).
 const INCLUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../busbar-contract/include");
 
 fn input_path(var: &str) -> PathBuf {
@@ -87,7 +85,6 @@ fn lib() -> PathBuf {
     input_path("BUSBAR_DROPPED_LIB")
 }
 
-/// The plugin's `.c` sources, sorted.
 fn sources() -> Vec<PathBuf> {
     let dir = input_path("BUSBAR_DROPPED_SOURCES");
     let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -100,14 +97,12 @@ fn sources() -> Vec<PathBuf> {
     out
 }
 
-/// The plugin's conformance inputs.
 fn script_inputs() -> serde_json::Value {
     let p = input_path("BUSBAR_DROPPED_SCRIPT");
     let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: not JSON: {e}", p.display()))
 }
 
-/// The rebuilt image and its directory, kept until the caller finishes loading it.
 struct Rebuilt {
     path: PathBuf,
     dir: PathBuf,
@@ -129,7 +124,6 @@ impl Drop for Rebuilt {
     }
 }
 
-/// The sources again, into a library with `defines` (`-D`). The system C compiler is REQUIRED.
 fn rebuild(name: &str, defines: &[String]) -> Rebuilt {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = std::env::temp_dir().join("dropped-conformance");
@@ -194,14 +188,12 @@ fn load<K: Kind>(path: &Path, stated: &[u8]) -> Result<(Plugin<K>, Arc<Dispatche
     load_dropped::<K>(path, stated, b).map(|p| (p, d))
 }
 
-/// The library's Statement as the pack tool signs it into the manifest.
 fn stated(path: &Path) -> Vec<u8> {
     rendering_of_library(path)
         .expect("the library's Statement renders")
         .expect("the library exports busbar_plugin_door")
 }
 
-/// The host's current ABI for `kind`.
 fn host_abi(kind: KindCode) -> u32 {
     match kind {
         KindCode::Secret => secret::ABI_VERSION,
@@ -209,7 +201,6 @@ fn host_abi(kind: KindCode) -> u32 {
     }
 }
 
-/// An `in` of `T`, every field zero but its head.
 fn input<T: InFrame>() -> T {
     // SAFETY: every kind's `in` is plain integers, raw pointers and nested plain structs, for which
     // the all-zero pattern is valid; `T` leads with an `InHead`, written below.
@@ -219,7 +210,6 @@ fn input<T: InFrame>() -> T {
     v
 }
 
-/// An `out` of `T`, every field zero but its head.
 fn output<T: OutFrame>() -> T {
     // SAFETY: as `input`, with an `OutHead` first.
     let mut v: T = unsafe { MaybeUninit::zeroed().assume_init() };
@@ -241,7 +231,6 @@ fn blob(bytes: &[u8], fmt: u32) -> Blob {
     }
 }
 
-/// One transcript line: the step, the outcome, the error text.
 fn line(step: &str, c: &Called) -> String {
     let error = c
         .error
@@ -256,8 +245,6 @@ fn text<'a>(v: &'a serde_json::Value, key: &str) -> &'a str {
         .as_str()
         .unwrap_or_else(|| panic!("conformance.json: `{key}` must be a string"))
 }
-
-// ---- the secret kind's script ----
 
 fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     let mut err = [0_u8; 512];
@@ -291,8 +278,6 @@ fn release<K: Kind>(p: &Plugin<K>, lease: u64) -> Called {
     p.call(life::RELEASE, &mut f)
 }
 
-/// What one `resolve` answered: the call, its `error_kind`, the material it wrote into the host's
-/// buffer (copied out, the buffer then wiped), its blob flags and the `needed` a short answer names.
 struct Resolved {
     c: Called,
     kind: u32,
@@ -301,8 +286,6 @@ struct Resolved {
     needed: u64,
 }
 
-/// `resolve` into a zeroed host buffer of `cap` bytes. The dispatcher's `check_resolve` holds a
-/// READY answer to bytes at the start of that buffer, under no lease.
 fn resolve_into(p: &Plugin<Secret>, settings: &[u8], cap: usize) -> Resolved {
     let mut buf = vec![0_u8; cap];
     let mut f: Frame<ResolveIn, ResolveOut> = Frame::new(input(), output());
@@ -330,7 +313,6 @@ fn resolve_into(p: &Plugin<Secret>, settings: &[u8], cap: usize) -> Resolved {
     }
 }
 
-/// [`resolve_into`] the host's first buffer.
 fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> Resolved {
     resolve_into(p, settings, secret::FIRST_SECRET_CAP)
 }
@@ -367,7 +349,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         !material.is_empty(),
         "the known secret's material is not empty"
     );
-    // Optional: absent (or null), no more malformed references are resolved.
+
     let bad_references: Vec<&str> = match &s["bad_references"] {
         serde_json::Value::Null => Vec::new(),
         v => v
@@ -377,7 +359,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
             .map(|v| v.as_str().expect("`bad_references` entries are strings"))
             .collect(),
     };
-    // Optional: absent (or null), no empty secret is resolved.
+
     let empty: Option<&str> = match &s["empty"] {
         serde_json::Value::Null => None,
         v => Some(
@@ -395,7 +377,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     let (b, _d, captured) = bind();
     let p = load_dropped::<Secret>(lib, stated, b).expect("the dropped-in secret plugin loads");
     assert_eq!(p.kind(), KindCode::Secret);
-    // THE CANARY: every answer's text, searched for every spelling of a configured credential.
+
     let mut said: Vec<(String, Vec<u8>)> = Vec::new();
     let mut heard = |step: &str, c: &Called| {
         said.push((step.to_string(), c.error.clone().unwrap_or_default()));
@@ -425,7 +407,6 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     assert_eq!(o.outcome, Outcome::Ready, "{}", line("open", &o));
     assert!(p.is_open());
 
-    // A known name: READY, its material in the host's buffer under no lease, flagged secret.
     let r = resolve(&p, known);
     heard("resolve, known", &r.c);
     assert_eq!(
@@ -442,7 +423,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         0,
         "secret material is flagged BLOB_SECRET"
     );
-    // A second resolve: the same, again under no lease.
+
     let r = resolve(&p, known);
     heard("resolve, again", &r.c);
     assert_eq!(
@@ -453,7 +434,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     );
     assert_eq!(r.got, material);
     assert_eq!(r.c.lease, 0);
-    // A buffer one byte short of the value: the short-buffer answer, nothing written.
+
     let r = resolve_into(&p, known, material.len() - 1);
     heard("resolve, short", &r.c);
     assert_eq!(
@@ -546,7 +527,6 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         );
     }
 
-    // No lease was granted: a release of one is refused.
     let r = release(&p, 1);
     heard("release", &r);
     assert_eq!(r.outcome, Outcome::Refused, "{}", line("release", &r));
@@ -559,7 +539,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         let r = refresh(&p, b.as_bytes());
         heard("refresh, bad", &r);
         assert_eq!(r.outcome, Outcome::Failed, "{}", line("refresh, bad", &r));
-        // Read before any good refresh can restore material lost by the refusal.
+
         let r = resolve(&p, known);
         heard("resolve after a refused refresh", &r.c);
         assert_eq!(
@@ -578,7 +558,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     let r = refresh(&p, settings);
     heard("refresh", &r);
     assert_eq!(r.outcome, Outcome::Ready, "{}", line("refresh", &r));
-    // After the good refresh: the known name resolves.
+
     let r = resolve(&p, known);
     heard("resolve after refresh", &r.c);
     assert_eq!(
@@ -618,8 +598,6 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     }
 }
 
-/// **THE PROOF.** The plugin, built from the header alone, is admitted by the one dropped-in path
-/// and answers its kind's script as the kind's contract requires.
 fn a_plugin_built_from_the_c_header_alone_passes_its_kinds_script() {
     for src in sources() {
         let text = std::fs::read_to_string(&src).expect("the plugin's source");
@@ -650,9 +628,6 @@ fn a_plugin_built_from_the_c_header_alone_passes_its_kinds_script() {
     }
 }
 
-/// THE RED ARM, KEPT: the same sources built against another kind ABI version — newer and older —
-/// are refused at pack time and at load, naming the rebuild; a manifest stating another version or
-/// another kind is refused before the library is opened. The conforming build loads beside them.
 fn a_plugin_built_against_another_kind_abi_is_refused() {
     let lib = lib();
     let stated = stated(&lib);
@@ -684,7 +659,6 @@ fn a_plugin_built_against_another_kind_abi_is_refused() {
         assert!(refused.to_string().contains("rebuild"), "{refused}");
     }
 
-    // A manifest stating another version: refused before `dlopen`.
     let at = RENDERING_MAGIC.len() + 8;
     let mut newer = stated.clone();
     newer[at..at + 4].copy_from_slice(&(host + 1).to_le_bytes());
@@ -695,7 +669,7 @@ fn a_plugin_built_against_another_kind_abi_is_refused() {
             host,
         })
     );
-    // Asked for as another kind (a manifest stating export): refused.
+
     let mut as_export = stated.clone();
     let kind_at = RENDERING_MAGIC.len() + 4;
     as_export[kind_at..kind_at + 4].copy_from_slice(&(KindCode::Export as u32).to_le_bytes());
@@ -706,11 +680,6 @@ fn a_plugin_built_against_another_kind_abi_is_refused() {
     );
 }
 
-/// THE RED ARM, LAYOUT: the same sources built stating another layout fingerprint of their kind
-/// (`-DBUSBAR_PLUGIN_LAYOUT=<host's, one bit flipped>`) are refused at pack time and at load
-/// (`KindLayout`, naming the plugin, the stated layout and the host's). `false` (printed) when no
-/// source names `BUSBAR_PLUGIN_LAYOUT`: such a source states its kind's fingerprint by hand and
-/// cannot be rebuilt at another, so there is nothing to refuse.
 fn a_plugin_built_against_another_kind_layout_is_refused() -> bool {
     let hooked = sources().iter().any(|src| {
         std::fs::read_to_string(src)

@@ -134,66 +134,40 @@ mod transport;
 
 pub use store::store_newer_schema;
 
-/// How long the suite waits for one `ready`: the boot's own budget.
 pub const READY_DEADLINE: Duration = crate::dispatch::ready::READY_DEADLINE;
 
-/// The environment variable that perturbs the both-ways arm (`count`): the CI step's RED run.
 pub const RED_ENV: &str = "BUSBAR_CONFORMANCE_RED";
 
-/// The environment variable that makes the suite refuse a debug build (`plugin-ci.yml` sets it
-/// with `--release`: M6/contract, the release binary).
 pub const EXPECT_RELEASE_ENV: &str = "BUSBAR_EXPECT_RELEASE";
 
-/// The plugin under test: its linked door, the crate whose cdylib is its dropped-in door, and the
-/// inputs its kind's script drives.
 pub struct Subject {
-    /// The LINKED door: the plugin's logic crate's door function, compiled into the test binary.
     pub door: RawDoorFn,
-    /// The DROPPED door: the built cdylib of this crate (snake case), found in the test's target.
+
     pub cdylib_crate: &'static str,
-    /// The plugin's `conformance.json`.
+
     pub inputs: serde_json::Value,
-    /// THE HOST CONNECTOR the suite binds a networked plugin over (`conformance_suite! { …, host: …
-    /// }`): busbar's own connector, composed as the root composes it ([`Host`]). `None`: the
-    /// loader's test table ([`TcpConns`], its stream transport only).
+
     pub host: Option<Host>,
-    /// TEST TRUST ANCHORS (CA certificates, PEM) for the HOST connector's TLS
-    /// (`conformance_suite! { …, tls: … }`): never handed to the plugin.
+
     pub anchors: Option<String>,
-    /// THE PER-FOLD NAMESPACE HOOKS (`conformance_suite! { …, namespace: (create, drop) }`):
-    /// `create` makes a fold's namespace before its open, `drop` removes it after the fold.
+
     pub namespace: Option<(NamespaceHook, NamespaceHook)>,
-    /// THE NEWER-SCHEMA STAMP (`conformance_suite! { …, newer_schema: stamp }`): a DURABLE store's
-    /// own test client, called with a fold's namespace and settings after a store of this build
-    /// opened there, rewrites the schema version the store recorded to one newer than its build.
-    /// The store kind's forward-compatibility case ([`store_newer_schema`]) then requires the next
-    /// open to refuse. An ephemeral store keeps no schema and states none.
+
     pub newer_schema: Option<NamespaceHook>,
-    /// THE PLUGIN'S DECLARES (`conformance_suite!` reads its declares file, [`Subject::declared_in`]):
-    /// what the suite judges a kind's script against when the plugin states a fact about itself
-    /// (a hook's `hook.orders`). `None`: nothing stated, every fact at its default.
+
     pub declares: Option<crate::sign::Declares>,
 }
 
-/// A per-fold namespace hook: called with the fold's namespace (what [`FOLD`] was filled with) and
-/// the fold's filled settings. The PLUGIN implements it with its own test client (a store that never
-/// creates a schema on demand: `CREATE SCHEMA` / `DROP SCHEMA … CASCADE`); nothing in the store's
-/// behaviour changes.
 pub type NamespaceHook = fn(&str, &[u8]);
 
-/// One fold's settings, its [`FOLD`] filled with a namespace of its own, created by the subject's
-/// `create` hook when it was made and dropped by its `drop` hook when this goes (the fold's end,
-/// its failure included). Reads as the settings bytes.
 pub struct FoldSettings<'s> {
     subject: &'s Subject,
     namespace: String,
-    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: one fold's filled
-    // settings, handed to the subject plugin under test; never serialized and never served.
+
     settings: Vec<u8>,
 }
 
 impl FoldSettings<'_> {
-    /// The fold's namespace.
     #[must_use]
     pub fn namespace(&self) -> &str {
         &self.namespace
@@ -221,7 +195,6 @@ impl Drop for FoldSettings<'_> {
             return;
         };
         if std::thread::panicking() {
-            // The fold failed: drop its namespace still, never turning the failure into an abort.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 drop(&self.namespace, &self.settings);
             }));
@@ -231,24 +204,14 @@ impl Drop for FoldSettings<'_> {
     }
 }
 
-/// The suite's HOST CONNECTOR, as the busbar side builds it for one leg: its parked reads woken
-/// through the leg dispatcher's conn waker, its TLS trusting the test anchors (PEM) when named.
-/// INJECTED, never named here: this crate cannot depend on the connector (the connector depends on
-/// the kernel, which depends on this crate), so the busbar side that composes it hands it in.
 pub type Host = fn(busbar_contract::conn::ConnWake, Option<&str>) -> Arc<dyn DeclaredConns>;
 
 impl Subject {
-    /// `inputs` is the plugin's `conformance.json` text.
-    ///
-    /// # Panics
-    /// When `inputs` is not a JSON object.
     #[must_use]
     pub fn new(door: DoorFn, cdylib_crate: &'static str, inputs: &str) -> Self {
         Self::of_raw(crate::dispatch::load::raw(door), cdylib_crate, inputs)
     }
 
-    /// [`Subject::new`] over a door the suite holds raw: a [`LoadedDoor`](crate::dispatch::LoadedDoor)'s,
-    /// or one of its own restated doors.
     pub(crate) fn of_raw(door: RawDoorFn, cdylib_crate: &'static str, inputs: &str) -> Self {
         let inputs: serde_json::Value = serde_json::from_str(inputs)
             .unwrap_or_else(|e| panic!("conformance.json is not JSON: {e}"));
@@ -267,12 +230,6 @@ impl Subject {
         s
     }
 
-    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows 159
-    /// and 194). #1469 makes `new` take the `MacroDoor` alone and keeps this name beside it, so
-    /// `Subject::of_macro(plugin::MACRO_DOOR, ..)` compiles before and after.
-    ///
-    /// # Panics
-    /// As [`Subject::new`].
     #[must_use]
     pub fn of_macro(
         door: busbar_contract::abi::sdk::door::MacroDoor,
@@ -282,12 +239,6 @@ impl Subject {
         Self::new(door.door_fn(), cdylib_crate, inputs)
     }
 
-    /// [`Subject::new`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159 and
-    /// 194): a `MacroDoor`'s, or a door a crate that exports its `door` function alone restates
-    /// (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
-    ///
-    /// # Panics
-    /// As [`Subject::new`].
     #[must_use]
     pub fn of_loaded(
         door: crate::dispatch::LoadedDoor,
@@ -297,35 +248,24 @@ impl Subject {
         Self::of_raw(door.door, cdylib_crate, inputs)
     }
 
-    /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
-    /// (Q-P4-8).
     #[must_use]
     pub fn with_namespace(mut self, create: NamespaceHook, drop: NamespaceHook) -> Self {
         self.namespace = Some((create, drop));
         self
     }
 
-    /// A durable store's schema is stamped newer than its build by `stamp` ([`Subject::newer_schema`]).
     #[must_use]
     pub fn with_newer_schema(mut self, stamp: NamespaceHook) -> Self {
         self.newer_schema = Some(stamp);
         self
     }
 
-    /// This subject's declares are `declares`: the facts a plugin states about itself, which its
-    /// kind's script judges it against.
     #[must_use]
     pub fn with_declares(mut self, declares: crate::sign::Declares) -> Self {
         self.declares = Some(declares);
         self
     }
 
-    /// This subject's declares are the plugin crate's own declares file ([`declares_file`] of
-    /// `manifest_dir`), read through [`crate::sign::Declares::from_declares_json`]. A crate with no
-    /// declares file states nothing here (`the_declared_needs_are_the_statements` fails it).
-    ///
-    /// # Panics
-    /// The declares file does not read.
     #[must_use]
     pub fn declared_in(self, manifest_dir: &str) -> Self {
         let Some(file) = declares_file(manifest_dir) else {
@@ -338,8 +278,6 @@ impl Subject {
         self.with_declares(declares)
     }
 
-    /// Whether the plugin's hook may answer an order (`declares.hook.orders`; `true` when it
-    /// states none).
     #[must_use]
     pub fn hook_orders(&self) -> bool {
         self.declares
@@ -347,9 +285,6 @@ impl Subject {
             .is_none_or(crate::sign::Declares::hook_orders)
     }
 
-    /// One fold's settings, tagged `tag` (its leg, or the RED arm that opens): [`FOLD`] filled with
-    /// a namespace no other fold uses ([`fold_namespace`]), made by the `create` hook now and
-    /// removed by the `drop` hook when the returned settings go.
     #[must_use]
     pub fn fold_settings(&self, tag: &str) -> FoldSettings<'_> {
         let namespace = fold_namespace(tag);
@@ -364,24 +299,18 @@ impl Subject {
         }
     }
 
-    /// This subject's networked needs bind over `host` (the busbar side's host connector).
     #[must_use]
     pub fn with_host(mut self, host: Host) -> Self {
         self.host = Some(host);
         self
     }
 
-    /// The host connector's TLS trusts `pem` (test CA certificates) too.
     #[must_use]
     pub fn with_anchors(mut self, pem: &str) -> Self {
         self.anchors = Some(pem.to_owned());
         self
     }
 
-    /// The kind the linked door states.
-    ///
-    /// # Panics
-    /// When the door is NULL or names no kind.
     #[must_use]
     pub fn kind(&self) -> KindCode {
         let p = crate::dispatch::load::enter_door(self.door);
@@ -391,21 +320,11 @@ impl Subject {
         KindCode::from_raw(raw).unwrap_or_else(|| panic!("the door names kind {raw}"))
     }
 
-    /// The dropped-in library: this crate's cdylib in the test binary's target directory, the one
-    /// image that exports the dropped-in door, chosen by rank, never by age ([`cdylib_of`]). A
-    /// missing one is a FAILURE: this suite IS the dropped-in door's proof, and never skips.
-    ///
-    /// # Panics
-    /// When the cdylib is not built.
     #[must_use]
     pub fn cdylib(&self) -> PathBuf {
         cdylib_of(self.cdylib_crate)
     }
 
-    /// The Statement rendering the signed manifest states: the dropped-in library's own.
-    ///
-    /// # Panics
-    /// When the library does not load or exports no door.
     #[must_use]
     pub fn stated(&self) -> Vec<u8> {
         rendering_of_library(&self.cdylib())
@@ -413,16 +332,11 @@ impl Subject {
             .expect("the cdylib exports busbar_plugin_door")
     }
 
-    /// The settings the plugin opens over (`inputs.settings`, a JSON value, serialized), its
-    /// [`FOLD`] placeholder filled with a namespace of its own ([`fold_namespace`]`("suite")`).
     #[must_use]
     pub fn settings(&self) -> Vec<u8> {
         self.settings_in(&fold_namespace("suite"))
     }
 
-    /// The settings the plugin opens over, every [`FOLD`] placeholder in them replaced by
-    /// `namespace` (Q-P4-8: each fold writes into its own schema or key prefix). Settings that name
-    /// no placeholder are exactly `inputs.settings`.
     #[must_use]
     pub fn settings_in(&self, namespace: &str) -> Vec<u8> {
         let raw = match self.inputs.get("settings") {
@@ -438,15 +352,6 @@ impl Subject {
         }
     }
 
-    /// THE FAR ENDS the plugin's needs reach (`inputs.far_ends`), as a framed connection table
-    /// ([`crate::https_conns::HttpsConns`]): each `{ "url", "cert_pem", "status", "body" }` is served
-    /// at its exact URL, to a need trusting `cert_pem` (its `trust_from`), or to any need when
-    /// `cert_pem` is `null` (a far end chaining to the public roots); every other URL is refused as
-    /// unreachable. `None` when the inputs name no far end (the instance is handed no table).
-    ///
-    /// # Panics
-    /// When a far end names no `url`, or `inputs.unreached_schemes` is named (the plane suite's
-    /// alone: [`Subject::far_table`]).
     #[must_use]
     pub fn far_ends(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
         assert!(
@@ -458,14 +363,6 @@ impl Subject {
             .map(|t| t as Arc<dyn busbar_contract::conn::DeclaredConns>)
     }
 
-    /// [`Subject::far_ends`]' table, kept whole: with every scheme `inputs.unreached_schemes`
-    /// names ([`crate::https_conns::judge_unreached`]: named, reasoned, covered by a cited test
-    /// cell of the plugin's own repo, and named by a declared need) answering the load's scheme
-    /// match ([`HttpsConns::unreached`](crate::https_conns::HttpsConns::unreached)), and every open
-    /// on one counted, so the fold can assert none was made.
-    ///
-    /// # Panics
-    /// When a far end names no `url`, or an unreached scheme is refused.
     #[must_use]
     pub fn far_table(&self) -> Option<Arc<crate::https_conns::HttpsConns>> {
         let ends = self.inputs.get("far_ends")?.as_array()?;
@@ -506,17 +403,11 @@ impl Subject {
         Some(Arc::new(table))
     }
 
-    /// The kind's own inputs (`inputs.<kind>`), `Null` when absent.
     #[must_use]
     pub fn kind_inputs(&self, kind: &str) -> &serde_json::Value {
         self.inputs.get(kind).unwrap_or(&serde_json::Value::Null)
     }
 
-    /// The needs the linked door's Statement declares (the dropped-in library states the same
-    /// Statement: [`both_ways`] proves it), in Statement order.
-    ///
-    /// # Panics
-    /// When the door's Statement does not render or read back.
     #[must_use]
     pub fn needs(&self) -> Vec<rendering::ReadNeed> {
         let row = LinkedRow::of_raw(self.door)
@@ -526,20 +417,6 @@ impl Subject {
             .needs
     }
 
-    /// THE LEG'S CONNECTION TABLE, built the same way for the linked and the dropped-in leg: the
-    /// loader's test table ([`TcpConns`], standing in for the stream transport `stand_in.json`
-    /// names) waking a parked read's ticket through `d`'s conn waker, when the Statement declares a
-    /// need and the table serves every one it declares (a need naming no transport asks for none).
-    /// `None` when it declares no need (bound as before), or a need over a scheme the table does
-    /// not serve (a framed one: the host connector's framing, which the test table has not; bound
-    /// with no table, as before). `upgrade_secure` is refused: the table secures no stream (it
-    /// names no TLS library).
-    ///
-    /// With a HOST connector ([`Subject::host`]) every need, over any scheme it serves, binds over
-    /// it, built the same way for each leg; its TLS trusts the subject's [`Subject::anchors`].
-    ///
-    /// # Panics
-    /// Test anchors are named with no host connector to trust them.
     #[must_use]
     pub fn conns(&self, d: &Dispatcher) -> Option<Arc<dyn DeclaredConns>> {
         let needs = self.needs();
@@ -560,9 +437,6 @@ impl Subject {
         (!needs.is_empty() && served).then(|| Arc::new(table) as Arc<dyn DeclaredConns>)
     }
 
-    /// The bind the kernel makes for this plugin on `d` ([`bind`]), SERVING over the leg's
-    /// connection table ([`Subject::conns`]); a door that declares no need serves with none. (A
-    /// need over a scheme the test table does not serve binds as a probe: no table, not refused.)
     #[must_use]
     pub fn bind(&self, d: &Dispatcher, instance: &str) -> Bind {
         let conns = match self.conns(d) {
@@ -576,15 +450,6 @@ impl Subject {
         }
     }
 
-    /// Set the environment the plugin's inputs name (`inputs.env`: name → value; `null` unsets),
-    /// ONCE PER PROCESS, before any fold: every subject is made through [`Subject::new`], which
-    /// applies it, so no emitted test reaches a plugin before the environment is in place, and no
-    /// fold runs while it changes (a plugin, and the dropped image's own std, read it without the
-    /// test's lock). The environment is the process's: a second subject naming ANOTHER environment
-    /// is refused (one `conformance.json` per test binary). Idempotent.
-    ///
-    /// # Panics
-    /// When an environment other than the one already applied is named.
     pub fn apply_env(&self) {
         let Some(env) = self.inputs.get("env").and_then(|e| e.as_object()) else {
             return;
@@ -597,7 +462,6 @@ impl Subject {
     }
 }
 
-/// The environment applied to the process, once: `env` the first time it is asked.
 fn applied_env(
     env: &serde_json::Map<String, serde_json::Value>,
 ) -> &'static serde_json::Map<String, serde_json::Value> {
@@ -629,9 +493,6 @@ pub fn apply_env_before_threads(inputs: &str) {
     }
 }
 
-/// The environment variable naming the DROPPED image explicitly: the path of the cdylib this run's
-/// cargo build produced (`cargo build --message-format=json`'s artifact for the plugin crate;
-/// `plugin-ci.yml`'s conformance step sets it). It wins over every other image.
 pub const CDYLIB_ENV: &str = "BUSBAR_CONFORMANCE_CDYLIB";
 
 /// `crate_snake`'s cdylib, CHOSEN EXPLICITLY, never by age (audit loader-conformance #13), and only
@@ -672,11 +533,6 @@ pub fn cdylib_of(crate_snake: &str) -> PathBuf {
     choose_cdylib(profile, crate_snake).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// [`cdylib_of`]'s choice under `profile` (`target/<profile>`), [`CDYLIB_ENV`] aside: an image
-/// exports the door when it loads and its `busbar_plugin_door` resolves.
-///
-/// # Errors
-/// None is built, none built exports the door, or several different images rank first.
 pub(crate) fn choose_cdylib(profile: &Path, crate_snake: &str) -> Result<PathBuf, String> {
     choose_cdylib_by(profile, crate_snake, &|p: &Path| {
         matches!(
@@ -686,10 +542,6 @@ pub(crate) fn choose_cdylib(profile: &Path, crate_snake: &str) -> Result<PathBuf
     })
 }
 
-/// [`choose_cdylib`] with `exports_door` deciding which images export the dropped-in door.
-///
-/// # Errors
-/// As [`choose_cdylib`].
 pub(crate) fn choose_cdylib_by(
     profile: &Path,
     crate_snake: &str,
@@ -722,7 +574,6 @@ pub(crate) fn choose_cdylib_by(
     ];
     let mut doorless: Vec<PathBuf> = Vec::new();
     for rank in ranks {
-        // One image under two names (a hard link, a copy) is one image.
         let mut images: Vec<(Vec<u8>, PathBuf)> = Vec::new();
         for p in rank.into_iter().filter(|p| p.is_file()) {
             let bytes = std::fs::read(&p).unwrap_or_default();
@@ -761,20 +612,10 @@ pub(crate) fn choose_cdylib_by(
     }
 }
 
-/// **THE DROPPED DOOR IS AN IMAGE OF ITS OWN**: the dropped-in library's door and ops table are not
-/// the linked door's (a library whose door resolved into the test binary's own, or the test
-/// binary itself picked as the image, would compare a door with itself).
-///
-/// # Panics
-/// When the library exports no door, or its door or ops table is the linked door's.
 pub fn distinct_images(s: &Subject) {
     distinct(s.door, &s.cdylib()).unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// [`distinct_images`] of the linked `door` and the library at `path`.
-///
-/// # Errors
-/// The library does not load, exports no door, or answers the linked door or its ops table.
 pub(crate) fn distinct(door: RawDoorFn, path: &Path) -> Result<(), String> {
     let (dropped, ops) = crate::dispatch::load::door_addresses_of_library(path)
         .map_err(|e| format!("the dropped image {path:?} does not load: {e}"))?
@@ -794,22 +635,8 @@ pub(crate) fn distinct(door: RawDoorFn, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// THE PER-FOLD NAMESPACE PLACEHOLDER (Q-P4-8): `{fold}` anywhere in `conformance.json`'s
-/// `settings` (a schema name, a key prefix, a database name) is filled per fold with a namespace
-/// no other fold uses ([`fold_namespace`]), so two folds of one store, in one run or in two (CI's
-/// debug, release and RED runs), never see each other's rows or tombstones.
-///
-/// The store ABI offers no op that makes or drops a namespace, so a plugin whose backend never
-/// creates one on demand (a schema) names HOOKS that do, with its own test client
-/// (`conformance_suite! { …, namespace: (create, drop) }`, [`Subject::with_namespace`]): the suite
-/// creates each fold's namespace before its open and drops it after the fold, its failure
-/// included. Without hooks the suite leaves the namespace: a plugin's settings name a THROWAWAY
-/// backend (a test database or a key space it may litter), never one that holds data.
 pub const FOLD: &str = "{fold}";
 
-/// A namespace no other fold uses: `bbconf_<pid>_<tag>_<n>`, the process, the fold's tag (its leg)
-/// and a counter of this process's; lower-case letters, digits and `_` only, so it is a valid
-/// schema name and key prefix as it stands.
 #[must_use]
 pub fn fold_namespace(tag: &str) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -840,8 +667,6 @@ pub enum Leg {
 }
 
 impl Leg {
-    /// The settings this leg's fold opens over: `s`'s, its [`FOLD`] filled with a namespace of
-    /// the fold's own, made and removed by the subject's namespace hooks ([`Subject::fold_settings`]).
     #[must_use]
     pub fn settings(self, s: &Subject) -> FoldSettings<'_> {
         s.fold_settings(match self {
@@ -851,8 +676,6 @@ impl Leg {
     }
 }
 
-/// A dispatcher of the leg's own, registered with the fold running on this thread, so the fold's
-/// end can read what it counted ([`woken`]).
 #[must_use]
 pub fn dispatcher() -> Arc<Dispatcher> {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -860,8 +683,6 @@ pub fn dispatcher() -> Arc<Dispatcher> {
     d
 }
 
-/// A dispatcher of the leg's own serving `provider`'s host services, registered with the fold
-/// running on this thread exactly as [`dispatcher`]'s is ([`woken`]).
 #[must_use]
 pub fn dispatcher_serving(
     provider: Arc<dyn busbar_contract::services::HostServices>,
@@ -874,7 +695,6 @@ pub fn dispatcher_serving(
     d
 }
 
-/// An owned fixture door whose entire referenced graph has immutable static storage.
 #[cfg(all(test, loader_self_tests))]
 pub(crate) struct StaticDoor(Door);
 
@@ -900,23 +720,19 @@ unsafe impl Send for StaticDoor {}
 #[cfg(all(test, loader_self_tests))]
 unsafe impl Sync for StaticDoor {}
 
-/// The retained-input transport fixture's reviewed raw slots; callers only receive its door.
 #[cfg(all(test, loader_self_tests))]
 pub(crate) mod transport_receive_fixture;
 
-/// A test's restated door, written in plain Rust; [`test_door`] is its [`RawDoorFn`].
 #[cfg(all(test, loader_self_tests))]
 pub(crate) trait TestDoor {
     fn door() -> *const Door;
 }
 
-/// The C-ABI door of `T`: one shim per restated door, so no test spells the ABI of its own.
 #[cfg(all(test, loader_self_tests))]
 pub(crate) extern "C" fn test_door<T: TestDoor>() -> *const Door {
     T::door()
 }
 
-/// A test's restated op, written in plain Rust; [`test_op`] is its door-table entry.
 #[cfg(all(test, loader_self_tests))]
 pub(crate) trait TestOp {
     fn op(
@@ -926,7 +742,6 @@ pub(crate) trait TestOp {
     ) -> RawOutcome;
 }
 
-/// The C-ABI op of `T`, as a door table holds it.
 #[cfg(all(test, loader_self_tests))]
 pub(crate) extern "C" fn test_op<T: TestOp>(
     instance: *mut std::ffi::c_void,
@@ -942,14 +757,6 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// **EVERY WAIT WAS WOKEN** (THE DESIGN A.4.3: "`bb_deadline_without_wake_total` must be 0 in every
-/// conformance script"): no op of the dispatchers made on this thread since the last call (a
-/// fold's) answered PENDING and was settled by its deadline with its wake still owed. Clears the
-/// registration. A door that misses a wake and is rescued by a deadline fails here, however its
-/// steps answered.
-///
-/// # Errors
-/// How many ops a deadline, not a wake, ended.
 pub fn woken() -> Result<(), String> {
     let lost: u64 = FOLD_DISPATCHERS
         .with(|f| std::mem::take(&mut *f.borrow_mut()))
@@ -966,9 +773,6 @@ pub fn woken() -> Result<(), String> {
     }
 }
 
-/// The bind the kernel makes: a label, the inflight clamp, the fold's recording sink, the adopting
-/// dispatcher, SERVING with no connection table (a door that declares a need is refused;
-/// [`Subject::bind`] adds the plugin's table).
 #[must_use]
 pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
     Bind {
@@ -980,9 +784,6 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
     }
 }
 
-/// The plugin repo's root, a cited cell's path is read under: the crate's directory
-/// (`CARGO_MANIFEST_DIR` at test run) when the workspace is the crate, otherwise its parent (the
-/// workspace a plugin's `-plugin` crate sits in).
 fn repo_root() -> PathBuf {
     let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
     match dir.parent() {
@@ -991,9 +792,6 @@ fn repo_root() -> PathBuf {
     }
 }
 
-/// [`Subject::bind`], the instance bound to a connection table serving the subject's far ends
-/// ([`Subject::far_ends`]) when its inputs name any: the plugin's declared needs reach them there,
-/// as the host's connector would carry them. Naming none, the leg's own table ([`Subject::conns`]).
 pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
     match s.far_ends() {
         Some(table) => Bind {
@@ -1004,10 +802,6 @@ pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
     }
 }
 
-/// The subject's door as kind `K`, reached by `leg`, through the ONE loader.
-///
-/// # Errors
-/// The loader's refusal.
 pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadError> {
     match leg {
         Leg::Linked => load_linked::<K>(&LinkedRow::of_raw(s.door)?, b),
@@ -1015,13 +809,6 @@ pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadEr
     }
 }
 
-/// The dropped-in library at `path`, admitted against `stated` as every production caller admits a
-/// dropped plugin: its bytes read and handed to [`load_dropped_bytes`], which stages them by the
-/// loader's one staging path (a sealed `memfd` on Linux, a private `0700` copy elsewhere) and opens
-/// exactly those bytes, never the build path itself (THE DESIGN §11.4: one loading path).
-///
-/// # Errors
-/// The loader's refusal; a library that cannot be read is refused as one that does not open.
 pub(crate) fn load_dropped_staged<K: Kind>(
     path: &Path,
     stated: &[u8],
@@ -1032,14 +819,10 @@ pub(crate) fn load_dropped_staged<K: Kind>(
     load_dropped_bytes::<K>(&bytes, &path.display().to_string(), stated, b)
 }
 
-/// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
-/// the RESUME re-invocations, counted apart (Q-P4-5).
 pub(crate) fn crossings<K: Kind>(p: &Plugin<K>) -> Counts<'_> {
     crossings_of(&p.inner)
 }
 
-/// The crossings the instance `inner` has made ([`crossings`], read off the instance itself): for a
-/// fold that hands its plugin on by value (a `Plugin` is `!Clone`) and keeps reading the gate.
 pub(crate) fn crossings_of(inner: &crate::dispatch::plugin::Instance) -> Counts<'_> {
     Counts {
         total: &inner.crossings,
@@ -1055,15 +838,12 @@ pub struct Counts<'a> {
 }
 
 impl Counts<'_> {
-    /// (first invocations, resumes) so far: "one op = one crossing", however often it pended.
     #[must_use]
     pub fn read(&self) -> (u64, u64) {
         let resumes = self.resumes.load(Ordering::SeqCst);
         (self.total.load(Ordering::SeqCst) - resumes, resumes)
     }
 }
-
-// ---- the fold ----
 
 /// One step of a kind's script: what it is, what it answered (as the host reads it), the crossings
 /// it made and the crossings the script pins for it. THE PIN IS FIRST INVOCATIONS (Q-P4-5; THE
@@ -1085,17 +865,14 @@ pub struct Step {
     pub resumes: u64,
 }
 
-/// A leg's fold: its steps, in script order.
 pub type Fold = Vec<Step>;
 
-/// Records a script's steps against one instance's crossing counters.
 pub struct Recorder<'a> {
     counter: Counts<'a>,
     steps: Fold,
 }
 
 impl<'a> Recorder<'a> {
-    /// A recorder over `counter` (the instance's crossing gate).
     #[must_use]
     pub fn new(counter: Counts<'a>) -> Self {
         Self {
@@ -1104,7 +881,6 @@ impl<'a> Recorder<'a> {
         }
     }
 
-    /// Run `f` as step `label`, pinned at `pinned` crossings; its answer is what `f` returns.
     pub fn step<T>(&mut self, label: &str, pinned: u64, f: impl FnOnce() -> (String, T)) -> T {
         let (first, resumed) = self.counter.read();
         let (answer, value) = f();
@@ -1119,28 +895,20 @@ impl<'a> Recorder<'a> {
         value
     }
 
-    /// [`Recorder::step`] for a step whose answer is all it gives back.
     pub fn line(&mut self, label: &str, pinned: u64, f: impl FnOnce() -> String) {
         self.step(label, pinned, || (f(), ()));
     }
 
-    /// Move the steps of `other` (another instance's recorder) in after these.
     pub fn absorb(&mut self, other: Recorder<'_>) {
         self.steps.extend(other.steps);
     }
 
-    /// The fold.
     #[must_use]
     pub fn fold(self) -> Fold {
         self.steps
     }
 }
 
-/// THE EXACT COMPARATOR: `Err` names the first step whose crossings are not its pinned count.
-/// Never "above zero" (M6/contract): one crossing too many, or one skipped, is refused.
-///
-/// # Errors
-/// The first step that crossed otherwise than pinned.
 pub fn exact(fold: &[Step]) -> Result<(), String> {
     for s in fold {
         if s.crossed != s.pinned {
@@ -1153,10 +921,6 @@ pub fn exact(fold: &[Step]) -> Result<(), String> {
     Ok(())
 }
 
-/// The two legs agree step for step: label, answer and crossings.
-///
-/// # Errors
-/// The first step where they part.
 pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
     for (l, d) in linked.iter().zip(dropped) {
         if (&l.label, &l.answer, l.crossed) != (&d.label, &d.answer, d.crossed) {
@@ -1176,14 +940,6 @@ pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
     Ok(())
 }
 
-/// THE NETWORKED DOOR'S RESUMES (Q-P4-5): a door whose Statement declares an outbound need the suite's table
-/// serves reaches a REAL endpoint through it, so the ops that dial answer PENDING and are
-/// RESUMED on their ticket (THE DESIGN §11.2 Ready | Pending(wake)): each step `dialing` names
-/// (`conformance.json`'s `dialing_steps`) resumed at least once, or, when it names none, at least
-/// one step of the fold did. A door without a served outbound need is not held to it.
-///
-/// # Errors
-/// The first dialing step that never resumed, or a networked fold with no resume at all.
 pub fn resumed(fold: &[Step], networked: bool, dialing: &[String]) -> Result<(), String> {
     if !networked {
         return Ok(());
@@ -1209,7 +965,6 @@ pub fn resumed(fold: &[Step], networked: bool, dialing: &[String]) -> Result<(),
     Ok(())
 }
 
-/// `fold` with step `at`'s pinned count moved by one: the RED arm's input.
 #[must_use]
 pub fn perturbed(mut fold: Fold, at: usize) -> Fold {
     if let Some(s) = fold.get_mut(at) {
@@ -1218,9 +973,6 @@ pub fn perturbed(mut fold: Fold, at: usize) -> Fold {
     fold
 }
 
-// ---- the frames every kind shares (lifecycle) ----
-
-/// An `in` of `T`, every field zero but its head.
 #[must_use]
 pub fn input<T: InFrame>() -> T {
     // SAFETY: every kind's `in` is plain integers, raw pointers, `Option<fn>` and nested plain
@@ -1231,7 +983,6 @@ pub fn input<T: InFrame>() -> T {
     v
 }
 
-/// An `out` of `T`, every field zero but its head.
 #[must_use]
 pub fn output<T: OutFrame>() -> T {
     // SAFETY: as `input`, with an `OutHead` first.
@@ -1245,7 +996,6 @@ pub fn output<T: OutFrame>() -> T {
     v
 }
 
-/// A JSON blob over `bytes`.
 #[must_use]
 pub fn json(bytes: &[u8]) -> Blob {
     Blob {
@@ -1256,7 +1006,6 @@ pub fn json(bytes: &[u8]) -> Blob {
     }
 }
 
-/// A call's answer as one transcript line: outcome, whether it leased, the error text.
 #[must_use]
 pub fn called(c: &Called) -> String {
     let text = c
@@ -1267,16 +1016,6 @@ pub fn called(c: &Called) -> String {
     format!("{:?} lease={} {text}", c.outcome, c.lease != 0)
 }
 
-/// THE HOST'S SECRET LENDING, as the suite's host does it: each EXACT path the plugin's Statement
-/// names as a secret reference (`Plugin::secret_refs`, a `.`-separated settings path) has its
-/// value lent in `open`/`refresh`'s `secrets`, in the Statement's order: a string's bytes (the
-/// suite's test material stands in for the material the kernel would resolve the reference to);
-/// an absent or non-string value lends empty bytes, which the plugin refuses. Then each WILDCARD
-/// path's (`*` = any key or index) string matches, in document order, each replaced in the
-/// settings by its `{"$secret": <index>}` marker (`busbar_contract::secret_fields::lend`). `keep`:
-/// an exact key stays in the settings, as the secret kind's host (`secret_calls`) leaves it;
-/// otherwise it is taken out, as the auth hosts take it (`boot::resolve_secrets`,
-/// `auth_door::split_secrets`). Settings with no such path pass through unchanged.
 #[must_use]
 pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
     if refs.is_empty() {
@@ -1307,11 +1046,6 @@ pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, V
     (v.to_string().into_bytes(), secrets)
 }
 
-/// What kind `K`'s host hands `open`/`refresh` over `settings`: the auth kind's hosts take the
-/// declared secrets out and lend them, the secret kind's host lends them and leaves the exact
-/// keys in place ([`lend_secrets`]); every other kind's host (store, hook, export, plane) lends
-/// nothing, its settings already resolved by the kernel at the declared paths
-/// ([`settings_as_the_kernel_resolves`]).
 fn host_lends<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     match K::CODE {
         KindCode::Auth => lend_secrets(p.secret_refs(), settings, false),
@@ -1320,16 +1054,6 @@ fn host_lends<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>
     }
 }
 
-/// `settings` (one JSON object) AS THE KERNEL RESOLVES THEM before they cross to `p`
-/// (`busbar_contract::secret_fields::resolve_declared`): a secret reference at a position `p`'s
-/// Statement does not declare secret is refused in the kernel's sentence; each one at a declared
-/// position is replaced by the string `resolve` answers for it. At a position `p`'s Statement names
-/// REFERENCE-CAPABLE (its extensions' `reference_fields`, lead ruling item 7a) a reference resolves
-/// the same way and a literal passes as written. A plugin's suite proves its declared fields with
-/// it: `{env: VAR}` at a declared field resolves; anywhere else, it is refused.
-///
-/// # Errors
-/// The settings are not a JSON document, the refusal, or `resolve`'s error.
 pub fn settings_as_the_kernel_resolves<K: Kind>(
     p: &Plugin<K>,
     settings: &[u8],
@@ -1347,7 +1071,6 @@ pub fn settings_as_the_kernel_resolves<K: Kind>(
     Ok(tree.to_string().into_bytes())
 }
 
-/// The blobs `open`/`refresh` lend over `secrets`.
 fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
     use busbar_contract::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
     secrets
@@ -1361,9 +1084,6 @@ fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
         .collect()
 }
 
-/// `validate` over `settings` as the kind's host passes them: the auth host takes a provider's
-/// secret references out first (`auth_door::split_secrets`); every other kind's host validates the
-/// block as written (`export_axis::probe`).
 pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     let split;
     let settings = if K::CODE == KindCode::Auth {
@@ -1380,12 +1100,6 @@ pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     p.call(life::VALIDATE, &mut f)
 }
 
-/// `open` over `settings`, generation 1, in the frame the kernel opens kind `K` with: a plane's
-/// `open` is `PlaneOpenIn`/`PlaneOpenOut` (its `out` carries the first generation's snapshot, and
-/// the kind's check FAULTs an `open` whose `out` cannot hold it); every other kind's is the
-/// lifecycle's `OpenIn`/`OpenOut`.
-///
-/// The settings and the secrets are what kind `K`'s host hands `open` (`host_lends`).
 pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     let (settings, secrets) = host_lends(p, settings);
     let blobs = secret_blobs(&secrets);
@@ -1405,10 +1119,6 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     p.call(life::OPEN, &mut f)
 }
 
-/// `open` over `settings` THE WAY THE KERNEL OPENS IT (Q-P4-6): submitted on a ticket of `d`'s, so
-/// an `open` that answers PENDING (a store connecting to its backend) is RESUMED on its wake until
-/// it answers; the frame [`open`]'s. The settings and the secrets it lends ride with the op
-/// ([`OpenLend`]), never this call's stack.
 pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
     let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
     let (settings, secrets) = host_lends(p, settings);
@@ -1437,11 +1147,7 @@ pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> 
     on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline, lent)
 }
 
-/// The memory a resumed `open` lends the plugin: its settings, the secret material and the blobs
-/// over it.
 struct OpenLend {
-    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: the settings bytes a
-    // resumed `open` lends the plugin under test; never serialized and never served.
     settings: Vec<u8>,
     _secrets: Vec<Vec<u8>>,
     blobs: Vec<Blob>,
@@ -1453,10 +1159,6 @@ unsafe impl Send for OpenLend {}
 // SAFETY: as above.
 unsafe impl Sync for OpenLend {}
 
-/// Op `s` over `f`, submitted AS THE KERNEL SUBMITS IT: on a ticket of `d`'s, in deadline class
-/// `class` (`deadline_ns` 0 = none), so an op that answers PENDING (it waits on the network) is
-/// RESUMED on its wake until it answers; its answer as the host reads it. `lent` OWNS every buffer
-/// `f`'s pointers name ([`submit_on`]).
 pub fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
     p: &Plugin<K>,
     d: &Dispatcher,
@@ -1469,8 +1171,6 @@ pub fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
     on_ticket_frame(p, d, s, f, class, deadline_ns, lent).0
 }
 
-/// [`on_ticket`], and the frame back as the op left it (`None` when the op was faulted mid-crossing
-/// or the ticket could not be minted): an op whose answer is in its `out` (a `resolve`'s material).
 pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
     p: &Plugin<K>,
     d: &Dispatcher,
@@ -1503,15 +1203,7 @@ pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
     (answered(&done), done.frame)
 }
 
-/// **THE ONE WAY THE SUITE SUBMITS AN OP** (THE DESIGN §2: "The memory a call lends a plugin lives
-/// until that call completes, abandoned or not (a submit that the watchdog can abandon uses the
-/// lending submit)"): op `s` over `f` on `ticket`, in deadline class and deadline `when` (0 = none),
-/// THROUGH THE DISPATCHER'S LENDING SUBMIT, `lent` the OWNER of every buffer `f`'s pointers name.
-/// The dispatcher holds it with the frame until the op's last crossing returned, so a crossing the
-/// watchdog answered FAULT (this wait then returns) still reads live memory until it returns.
-/// `watch` is the op's own watch budget (a hook's `timeout_ms`, §11.7); `ZERO` keeps its class's.
-/// Awaited until the dispatcher settles it (an answer, a deadline's `cancel`, a fault).
-#[allow(clippy::too_many_arguments)] // the dispatcher's lending submit's own eight
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn submit_on<K: Kind, I: InFrame, O: OutFrame>(
     p: &Plugin<K>,
     d: &Dispatcher,
@@ -1526,8 +1218,6 @@ pub(crate) fn submit_on<K: Kind, I: InFrame, O: OutFrame>(
         .wait_done()
 }
 
-/// A submitted op's answer as the host reads it (a ticketed op earns no re-call token: its short
-/// answer is [`Done::short`], re-submitted on its ticket).
 pub(crate) fn answered<I, O>(done: &Done<I, O>) -> Called {
     Called {
         outcome: done.outcome,
@@ -1537,10 +1227,8 @@ pub(crate) fn answered<I, O>(done: &Done<I, O>) -> Called {
     }
 }
 
-/// How long the suite waits for one resumed `open`: the store bridge's call deadline.
 const OPEN_DEADLINE: Duration = Duration::from_secs(30);
 
-/// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     let (settings, secrets) = host_lends(p, settings);
     let blobs = secret_blobs(&secrets);
@@ -1552,14 +1240,12 @@ pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     p.call(life::REFRESH, &mut f)
 }
 
-/// `release` of `lease`.
 pub fn release<K: Kind>(p: &Plugin<K>, lease: u64) -> Called {
     let mut f: Frame<ReleaseIn, OutHead> = Frame::new(input(), output());
     f.input.lease = lease;
     p.call(life::RELEASE, &mut f)
 }
 
-/// `tick` at `now_ns`: its answer and the next tick it asks for.
 pub fn tick<K: Kind>(p: &Plugin<K>, now_ns: u64) -> (Called, u64) {
     let mut f: Frame<TickIn, TickOut> = Frame::new(input(), output());
     f.input.now_ns = now_ns;
@@ -1567,16 +1253,11 @@ pub fn tick<K: Kind>(p: &Plugin<K>, now_ns: u64) -> (Called, u64) {
     (c, f.out.next_tick_ns)
 }
 
-/// `close`.
 pub fn close<K: Kind>(p: &Plugin<K>) -> Called {
     let mut f: Frame<InHead, OutHead> = Frame::new(input(), output());
     p.call(life::CLOSE, &mut f)
 }
 
-/// THE `ready` STEP every kind's script runs right after its `open` answered READY (the
-/// mechanism's discovery at boot, awaited before any listener binds). A door that states no
-/// `ready` is not called: pinned at 0 crossings. One that states it is pinned at ONE first
-/// invocation, its resumes reported (Q-P4-5; `inputs.ready_crossings` is no longer read).
 pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, d: &Dispatcher) {
     let pinned = u64::from(p.has_ready());
     rec.line("ready", pinned, || {
@@ -1589,21 +1270,12 @@ pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, 
     });
 }
 
-// ---- the shared script: the steps every kind's script takes; each kind file keeps its own ops ----
-
-/// What a kind's contract requires of one step's answer.
 pub(crate) enum Want {
-    /// Exactly this line.
     Is(String),
-    /// A line that starts so.
+
     Starts(&'static str),
 }
 
-/// THE STEPS' CONTRACT: every step `want` names answered as it requires, so two equal folds of
-/// failures prove nothing.
-///
-/// # Panics
-/// A step the script never ran, or one that answered otherwise.
 pub(crate) fn judge(fold: &[Step], want: &[(String, Want)]) {
     for (label, w) in want {
         let got = answer(fold, label);
@@ -1614,10 +1286,6 @@ pub(crate) fn judge(fold: &[Step], want: &[(String, Want)]) {
     }
 }
 
-/// Step `label`'s answer in `fold`.
-///
-/// # Panics
-/// The script ran no such step.
 pub(crate) fn answer<'f>(fold: &'f [Step], label: &str) -> &'f str {
     fold.iter()
         .find(|s| s.label == label)
@@ -1625,15 +1293,12 @@ pub(crate) fn answer<'f>(fold: &'f [Step], label: &str) -> &'f str {
         .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
 }
 
-/// ONE KIND'S SCRIPT UNDER WAY: its [`Recorder`] (every step recorded, pinned and compared both
-/// ways) and what its contract requires of each judged step, held to it when the fold ends.
 pub(crate) struct Script<'a> {
     r: Recorder<'a>,
     want: Vec<(String, Want)>,
 }
 
 impl<'a> Script<'a> {
-    /// A script over `counter` (the instance's crossing gate).
     pub(crate) fn new(counter: Counts<'a>) -> Self {
         Self {
             r: Recorder::new(counter),
@@ -1641,7 +1306,6 @@ impl<'a> Script<'a> {
         }
     }
 
-    /// Step `label`, pinned at `pinned` crossings, whose answer must be `want`.
     pub(crate) fn judged(
         &mut self,
         label: &str,
@@ -1653,7 +1317,6 @@ impl<'a> Script<'a> {
         self.want.push((label.to_owned(), want));
     }
 
-    /// [`Script::judged`] for a step that gives a value back.
     pub(crate) fn step_judged<T>(
         &mut self,
         label: &str,
@@ -1665,7 +1328,6 @@ impl<'a> Script<'a> {
         self.r.step(label, pinned, f)
     }
 
-    /// The fold, every judged step held to what it requires ([`judge`]).
     pub(crate) fn fold(self) -> Fold {
         let fold = self.r.fold();
         judge(&fold, &self.want);
@@ -1686,7 +1348,6 @@ impl std::ops::DerefMut for Script<'_> {
     }
 }
 
-/// Borrowed bytes (a `str` or a byte slice) as the ABI names them.
 pub(crate) fn abi_bytes(b: &(impl AsRef<[u8]> + ?Sized)) -> AbiStr {
     let b = b.as_ref();
     AbiStr {
@@ -1695,12 +1356,10 @@ pub(crate) fn abi_bytes(b: &(impl AsRef<[u8]> + ?Sized)) -> AbiStr {
     }
 }
 
-/// A step's line as it is: the wrap of a kind whose lines carry nothing more.
 pub(crate) fn asis(line: String) -> String {
     line
 }
 
-/// The `facts` line every kind's script opens with: the host's own record, no crossing.
 pub(crate) fn facts<K: Kind>(p: &Plugin<K>) -> String {
     format!(
         "{:?} {} max_inflight={}",
@@ -1710,9 +1369,6 @@ pub(crate) fn facts<K: Kind>(p: &Plugin<K>) -> String {
     )
 }
 
-/// THE LIFECYCLE'S HEAD every kind's script takes: `validate` and `open` over `settings`, one
-/// crossing each and READY, then the `ready` step ([`ready_step`]). `wrap` adds what the kind's
-/// lines carry (export: what its host's sink observed).
 pub(crate) fn opened<K: Kind>(
     sc: &mut Script<'_>,
     (s, p, d): (&Subject, &Plugin<K>, &Dispatcher),
@@ -1728,7 +1384,6 @@ pub(crate) fn opened<K: Kind>(
     ready_step(sc, s, p, d);
 }
 
-/// THE REFUSAL LOOP: `validate` over each of the inputs' `bad` settings, one crossing each.
 pub(crate) fn refused_settings<K: Kind>(
     sc: &mut Script<'_>,
     p: &Plugin<K>,
@@ -1742,9 +1397,6 @@ pub(crate) fn refused_settings<K: Kind>(
     }
 }
 
-/// THE LIFECYCLE'S TAIL every kind's script takes before its last ops: `tick`, then (when the
-/// inputs name bad settings) `refresh` over the first of them, then `refresh` over `settings`,
-/// READY; one crossing each.
 pub(crate) fn refreshed<K: Kind>(
     sc: &mut Script<'_>,
     p: &Plugin<K>,
@@ -1764,17 +1416,12 @@ pub(crate) fn refreshed<K: Kind>(
     });
 }
 
-/// `close`, one crossing, READY.
 pub(crate) fn closed<K: Kind>(sc: &mut Script<'_>, p: &Plugin<K>, wrap: &dyn Fn(String) -> String) {
     sc.judged("close", 1, Want::Starts("Ready "), || {
         wrap(called(&close(p)))
     });
 }
 
-/// The kind's inputs `k` at `key`, a list the script requires non-empty.
-///
-/// # Panics
-/// It is not a list, or it is empty.
 pub(crate) fn listed<'v>(
     k: &'v serde_json::Value,
     kind: &str,
@@ -1787,11 +1434,6 @@ pub(crate) fn listed<'v>(
     list
 }
 
-/// A settings-like input (`what`: "a hook", "an export"): a string's bytes, anything else as its
-/// JSON.
-///
-/// # Panics
-/// The input is missing.
 pub(crate) fn input_text(v: &serde_json::Value, what: &str) -> Vec<u8> {
     match v {
         serde_json::Value::String(s) => s.as_bytes().to_vec(),
@@ -1800,11 +1442,7 @@ pub(crate) fn input_text(v: &serde_json::Value, what: &str) -> Vec<u8> {
     }
 }
 
-// ---- the kind dispatch ----
-
-/// One leg's fold, by the kind its door states; every wait in it woken ([`woken`]).
 fn fold(s: &Subject, leg: Leg) -> Fold {
-    // A fold's dispatchers are its own: none made before it is read.
     let _ = woken();
     let fold = kind_fold(s, leg);
     if let Err(e) = woken() {
@@ -1825,11 +1463,6 @@ fn kind_fold(s: &Subject, leg: Leg) -> Fold {
     }
 }
 
-/// **THE BOTH-WAYS ARM.** The dropped-in library states the linked door's Statement; each leg's
-/// fold makes exactly its pinned crossings; the two folds are equal.
-///
-/// # Panics
-/// On any of those failing (the test's verdict).
 pub fn both_ways(s: &Subject) {
     s.apply_env();
     assert_eq!(
@@ -1841,8 +1474,7 @@ pub fn both_ways(s: &Subject) {
     );
     distinct_images(s);
     let red = std::env::var(RED_ENV).is_ok_and(|v| v == "count");
-    // A served outbound need dials a real endpoint and owes a network resume. An inbound-only
-    // listener still binds over its host table, but serving a request does not imply an outbound dial.
+
     let networked = s
         .needs()
         .iter()
@@ -1870,7 +1502,6 @@ pub fn both_ways(s: &Subject) {
             "the {leg:?} leg skipped the ready step"
         );
         if red {
-            // THE CI STEP'S RED RUN: one pinned count moved by one must fail this arm.
             f = perturbed(f, 0);
         }
         if let Err(e) = exact(&f) {
@@ -1886,17 +1517,6 @@ pub fn both_ways(s: &Subject) {
     }
 }
 
-/// THE CANARY: no credential the subject's inputs name crosses back through either door, in any
-/// step's answer or any log record the instance raised ([`canary`]).
-///
-/// A subject whose inputs name no credential has nothing to plant, and passes; but a SECRET
-/// subject must name the values its settings carry: its canary is the one proof that a secret
-/// source never answers with the secrets it holds, so an empty plant list is refused, never a
-/// silent pass.
-///
-/// # Panics
-/// A spelling of a named credential was emitted (the panic names where, never the value); a
-/// secret subject names no `credentials`.
 pub fn canary(s: &Subject) {
     s.apply_env();
     let planted = canary::credentials(&s.inputs);
@@ -1933,11 +1553,6 @@ pub fn canary(s: &Subject) {
     }
 }
 
-/// RED: a plane declaring a billable class no conformance case reports is refused by
-/// the plane script's class contract. Nothing to plant for a door of another kind.
-///
-/// # Panics
-/// When a declared class no case reports passes the comparator.
 pub fn red_unreported_class(s: &Subject) {
     s.apply_env();
     if s.kind() == KindCode::Plane {
@@ -1945,12 +1560,6 @@ pub fn red_unreported_class(s: &Subject) {
     }
 }
 
-/// **RED: the exact comparator refuses a moved count.** The linked leg's real fold passes it; the
-/// same fold with any one step's pinned count moved by one does not, nor does a fold whose every
-/// count doubled (the "above zero" check a loose comparator would wave through).
-///
-/// # Panics
-/// When the comparator accepts a moved count.
 pub fn red_count(s: &Subject) {
     s.apply_env();
     let f = fold(s, Leg::Linked);
@@ -1978,13 +1587,9 @@ pub fn red_count(s: &Subject) {
     }
 }
 
-// ---- the perturbed doors (the RED arms' subjects: the real door, restated) ----
-
-/// The real door restated, served by a door function of its own.
 struct Restated {
     door: AtomicPtr<Door>,
-    /// Held by an arm for as long as it calls the restated door ([`Self::hold`]): the tests of one
-    /// binary run at once, and an arm over another subject must not restate it under this one.
+
     held: Mutex<()>,
 }
 
@@ -2005,8 +1610,6 @@ impl Restated {
             .store(Box::into_raw(Box::new(d)), Ordering::SeqCst);
     }
 
-    /// [`Self::set`], held: the door stays `d` until the guard drops. A lock poisoned by an arm
-    /// that panicked holding it (a RED twin's expected failure) is taken as is: `d` restates anew.
     fn hold(&'static self, d: DoorParts) -> MutexGuard<'static, ()> {
         let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         self.set(d);
@@ -2022,14 +1625,14 @@ static ABI_UP: Restated = Restated::new();
 static ABI_DOWN: Restated = Restated::new();
 static READY_FAILS: Restated = Restated::new();
 static NETWORKED: Restated = Restated::new();
-/// `red.rs`'s doors: the Statement arm's other version, the connection arms' outbound need.
+
 static VERSIONED: Restated = Restated::new();
 static CONNECTED: Restated = Restated::new();
-/// `red.rs`'s transport door whose tail states another frame piece size.
+
 static PIECED: Restated = Restated::new();
-/// `red.rs`'s plane door whose tail states another answer layout.
+
 static LAID: Restated = Restated::new();
-/// `red.rs`'s door, of any kind, stating another kind layout fingerprint.
+
 static FINGERPRINTED: Restated = Restated::new();
 
 extern "C" fn abi_up_door() -> *const Door {
@@ -2038,10 +1641,7 @@ extern "C" fn abi_up_door() -> *const Door {
 extern "C" fn abi_down_door() -> *const Door {
     ABI_DOWN.get()
 }
-/// The door function of restated door `I`: [`NETWORKED`] (0), [`VERSIONED`] (1), [`CONNECTED`]
-/// (2), [`PIECED`] (3), [`LAID`] (4), [`FINGERPRINTED`] (5). One generic entry rather than one
-/// `extern` per door: `kind-isolation:law0` reads each ABI
-/// string literal as the secret instance `c`.
+
 extern "C" fn restated_door<const I: usize>() -> *const Door {
     [
         &NETWORKED,
@@ -2075,7 +1675,6 @@ static READY_WITNESS: Mutex<ReadyWitness> = Mutex::new(ReadyWitness {
     close_answer: None,
 });
 
-/// Forward the store's real CLOSE exactly once, observing the cleanup independently of READY.
 extern "C" fn ready_store_close(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -2100,10 +1699,8 @@ extern "C" fn ready_store_close(
     answer
 }
 
-/// The text the RED `ready` fails with.
 pub const READY_FAILURE: &str = "conformance: discovery refused";
 
-/// A `ready` that answers FAILED with [`READY_FAILURE`].
 extern "C" fn ready_fails(
     _instance: *mut std::ffi::c_void,
     _input: *const std::ffi::c_void,
@@ -2126,8 +1723,6 @@ extern "C" fn ready_fails(
     failed
 }
 
-/// The subject's door, read: its parts, stating the host's whole size (a door ending before
-/// `ready` reads `None` there).
 fn real_door(s: &Subject) -> DoorParts {
     let p = (s.door)();
     assert!(!p.is_null(), "the door function answered NULL");
@@ -2140,7 +1735,6 @@ fn real_door(s: &Subject) -> DoorParts {
     }
 }
 
-/// `rendering` with its kind ABI word set to `abi`.
 fn stating_abi(rendering: &[u8], abi: u32) -> Vec<u8> {
     let mut r = rendering.to_vec();
     let at = RENDERING_MAGIC.len() + 8;
@@ -2184,20 +1778,12 @@ macro_rules! by_kind {
     };
 }
 
-// The admission and connection arms every kind's run carries (`red.rs`), after `by_kind!`.
 mod red;
 pub use red::{
     red_cross_instance_conn, red_frame_piece, red_kind_layout, red_plane_layout, red_statement,
     red_undeclared_need, red_wrong_kind,
 };
 
-/// **RED: a door at another kind ABI is refused, both ways.** The real door restated at its kind
-/// ABI + 1 and − 1 is refused by the linked row (`KindAbi`, naming the rebuild); the dropped-in
-/// library under a manifest stating either is refused before `dlopen` (`ManifestKindAbi`). The
-/// honest door loads beside them, both ways.
-///
-/// # Panics
-/// When a restated door loads, or the honest one does not.
 pub fn red_kind_abi(s: &Subject) {
     let kind = s.kind();
     let host = kind.abi_version();
@@ -2236,16 +1822,6 @@ pub fn red_kind_abi(s: &Subject) {
     });
 }
 
-/// **RED: a `ready` that fails refuses the boot with the plugin's text** (#391's arm, on the real
-/// plugin). The real door restated with a `ready` that answers FAILED is loaded and opened AS THE
-/// KERNEL OPENS IT (Q-P4-6: a store through [`LoadedStore::open`](crate::store_v3::LoadedStore::open),
-/// which awaits `ready` inside it; every other kind's `open` resumed on its ticket
-/// ([`open_resumed`]), never one raw crossing, so a door that connects in its `open` answers
-/// PENDING there and is resumed); its `ready` is awaited and refused, naming the plugin and the
-/// reason, in one first invocation. The honest door's `ready` (its own, or none) serves.
-///
-/// # Panics
-/// When the failing `ready` serves.
 pub fn red_ready(s: &Subject) {
     s.apply_env();
     let real = real_door(s);
@@ -2334,9 +1910,6 @@ pub fn red_ready(s: &Subject) {
     });
 }
 
-/// The real door restated with one outbound need over the stream double's transport
-/// (`stand_in.json`), its target its own (the RED arm's subject
-/// for a door that declares none).
 fn with_an_outbound_need(real: DoorParts) -> DoorParts {
     use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
     use busbar_contract::abi::mechanism::door::Statement;
@@ -2381,10 +1954,6 @@ fn with_an_outbound_need(real: DoorParts) -> DoorParts {
     }
 }
 
-/// THE CONNECTION ARMS' FIXTURE (`red.rs`): `door` (the real door restated with one outbound need,
-/// [`with_an_outbound_need`]), the connection table the suite builds for it (the loader's test
-/// table, as [`Subject::conns`] builds any leg's), a loopback listener the need dials (held while the
-/// arm runs) and its address.
 fn connection_fixture(
     s: &Subject,
     door: RawDoorFn,
@@ -2397,15 +1966,6 @@ fn connection_fixture(
     (table, Box::new(listening), at)
 }
 
-/// **RED: a networked door bound to serve with NO connection table is refused, naming the plugin**
-/// (Q-P4-3). A door that declares a need is bound as the kernel serves it but with no table
-/// ([`bind`]: [`ConnTable::NoNeeds`]), linked and dropped in, and refused at bind with
-/// [`LoadError::NoConnectionTable`]; a door that declares none is restated with one stream need (as
-/// [`red_ready`] restates its `ready`) and bound linked. The GREEN twins: the same door bound as a
-/// PROBE binds, and the honest door binds over the suite's own table ([`Subject::bind`]).
-///
-/// # Panics
-/// When a networked door binds to serve with no table, or a twin does not bind.
 pub fn red_no_table(s: &Subject) {
     let real = real_door(s);
     let needs = s.needs().len();
@@ -2438,8 +1998,6 @@ pub fn red_no_table(s: &Subject) {
     });
 }
 
-/// The transport schemes a Statement's needs name (each need's `transport`, the empty ones left
-/// out), sorted and deduplicated.
 #[must_use]
 pub fn need_schemes(needs: &[rendering::ReadNeed]) -> Vec<String> {
     let mut out: Vec<String> = needs
@@ -2452,13 +2010,6 @@ pub fn need_schemes(needs: &[rendering::ReadNeed]) -> Vec<String> {
     out
 }
 
-/// THE DECLARED NEEDS ARE THE STATEMENT'S (ARCHITECT, one truth): a declares file's `needs` (the
-/// transport schemes the fleet render reads to give a networked plugin its conformance host;
-/// absent = none) must name exactly the schemes `statement` (the Statement's needs) names.
-///
-/// # Errors
-/// The declares file is not a JSON object, its `needs` is not a list of strings, or it names a
-/// scheme the Statement does not or misses one it does.
 pub fn declared_needs_are(declares: &str, statement: &[String]) -> Result<(), String> {
     let v: serde_json::Value =
         serde_json::from_str(declares).map_err(|e| format!("declares.json is not JSON: {e}"))?;
@@ -2488,17 +2039,6 @@ pub fn declared_needs_are(declares: &str, statement: &[String]) -> Result<(), St
     ))
 }
 
-/// The repo's declares file, found from the plugin crate's manifest dir: `declares.json` at the
-/// workspace root (the crate dir's parent, holding the plugin repo's `Cargo.toml`) or one directory
-/// below it; `None` when there is none (plugin-ci's declares step refuses a plugin repo without
-/// one).
-///
-/// A crate whose parent is no workspace root (a crate inside busbar's own tree, under `crates/`)
-/// is in no plugin repo: its declares file is its own `declares.json` when it holds one, and a
-/// sibling crate's is that crate's, never this one's.
-///
-/// # Panics
-/// More than one is found.
 #[must_use]
 pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
     let crate_dir = Path::new(manifest_dir);
@@ -2534,15 +2074,6 @@ pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
     found.pop()
 }
 
-/// **THE DECLARED NEEDS ARE THE STATEMENT'S**, on the subject: its declares file's `needs` names
-/// exactly the transport schemes its door's Statement does ([`declared_needs_are`]).
-///
-/// A plugin with no declares file FAILS here (status row 114: no proof passes by skipping its
-/// subject): every plugin repo holds one (plugin-ci's declares step refuses a repo without it), and
-/// a crate in busbar's own tree holds its own beside its `Cargo.toml` ([`declares_file`]).
-///
-/// # Panics
-/// No declares file is found, or its `needs` is not the Statement's.
 pub fn needs_declared(s: &Subject, manifest_dir: &str) {
     let file = declares_file(manifest_dir).unwrap_or_else(|| {
         panic!(
@@ -2558,14 +2089,6 @@ pub fn needs_declared(s: &Subject, manifest_dir: &str) {
     }
 }
 
-/// THE PROFILE GUARD: asked for the release binary (M6/contract), the suite refuses a debug build.
-/// `debug` is the caller's `cfg!(debug_assertions)` (the plugin's test crate's, not this one's).
-/// The ASK is CI's: `plugin-ci.yml`'s conformance step sets [`EXPECT_RELEASE_ENV`] for the whole
-/// step, so the release requirement is enforced where a plugin is admitted; a direct local
-/// `cargo test` (no variable) runs the suite in whatever profile it was built in.
-///
-/// # Panics
-/// When the release binary was asked for and this is a debug build.
 pub fn profile(debug: bool) {
     assert!(
         !(debug && std::env::var_os(EXPECT_RELEASE_ENV).is_some()),
@@ -2598,7 +2121,6 @@ pub type ConformanceDoorFn = DoorFn;
 /// `__conformance_door!`'s arm for a `MacroDoor`.
 #[doc(hidden)]
 pub trait MacroDoorArg {
-    /// The door function the macro door names.
     fn door_arg(&self) -> DoorFn;
 }
 
@@ -2611,7 +2133,6 @@ impl MacroDoorArg for busbar_contract::abi::sdk::door::MacroDoor {
 /// `__conformance_door!`'s arm for a door function: the value itself, coerced by the caller.
 #[doc(hidden)]
 pub trait DoorFnArg<F> {
-    /// The door function, as given.
     fn door_arg(&self) -> F;
 }
 
@@ -2934,7 +2455,6 @@ mod ready_cleanup_tests {
 
     static DROPS: AtomicUsize = AtomicUsize::new(0);
 
-    /// A real SDK store instance. This test exercises only boot/retirement; data calls refuse.
     pub struct ReadinessStore;
 
     impl Drop for ReadinessStore {
@@ -2943,7 +2463,6 @@ mod ready_cleanup_tests {
         }
     }
 
-    // StoreSlots requires every data method even though this boot/cleanup fixture serves none.
     macro_rules! refuse_data {
         ($error:expr; $($name:ident($($arg:ident: $ty:ty),*) -> $result:ty;)*) => {$(
             fn $name(&self, $($arg: $ty),*) -> Step<$result> {

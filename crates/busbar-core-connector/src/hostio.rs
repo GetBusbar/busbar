@@ -2,26 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOST'S I/O, `io.*` (`busbar_contract::abi::host::io`; `BUSBAR-1.6.0.md` THE DESIGN §5: "No
-//! plugin opens a socket, dials, binds or does TLS"; TRANSPORT-STACK (2): a carrier writes "with
-//! readiness via core `io.*`"): the ONE place in this crate that holds an OS handle — a stream
-//! socket (IP or unix-domain), a listener, a spawned program's two pipes — and moves bytes over it.
-//! Every other module reaches the wire through a carrier's slots ([`crate::carrier`]), and the
-//! carrier reaches it through here.
-//!
-//! [`HostIo`] implements the contract's [`IoHost`]: the loader's `io` slots dispatch every carrier
-//! instance's `io.*` call into it, and a handle belongs to the instance whose call made it.
-//!
-//! * THE DESTINATION GUARD STAYS ONE CHECK (THE DESIGN §5): the connector
-//!   judges and pins every address before it asks a carrier to dial, and ADMITS exactly what it
-//!   judged for the dial's ticket ([`HostIo::admit`]); `open` reaches only an admitted address,
-//!   `listen` binds only an admitted bind, `spawn` starts only the admitted program. Anything else is
-//!   refused before any system call.
-//! * Readiness is the calling worker's reactor's ([`crate::io`]): a call that cannot progress
-//!   answers `Pending` with the ticket's waker registered, never a block, never a thread.
-//! * A stream is non-blocking, no-delay, probed after 60 s idle (1.5.5's keepalive); a
-//!   listener reuses its address and port (one per acceptor); a program is spawned with no shell, an
-//!   absolute path and only the environment its settings state, its error output the host's, and
-//!   killed when its handle is closed or dropped.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -104,10 +84,7 @@ const SLOTS: u64 = (FIRST as u64) * ((1 << SEGMENTS) - 1);
 const GENERATION: u64 = 1 << 32;
 
 /// THE HANDLE TABLE: a slot per live handle, read by every `io.*` call WITHOUT A LOCK (one atomic
-/// load). A handle is its slot (its low 32 bits, counted from 1: a handle is never 0) and the slot's
-/// generation (its high 32 bits); the entry carries its whole handle, so a handle released (or
-/// taken) names nothing even once its slot holds another: a handle is never made twice. A slot whose
-/// generations are spent is retired. Making and releasing serialise on [`Table::free`].
+
 struct Table {
     segments: [OnceLock<Box<[ArcSwapOption<Entry>]>>; SEGMENTS],
     free: Mutex<Free>,
@@ -188,7 +165,7 @@ impl Table {
     }
 
     /// Release every handle `owner` holds, as [`Table::release`] releases one: each names nothing
-    /// from here on.
+
     fn reap(&self, owner: u64) -> Vec<Arc<Entry>> {
         let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
         let mut gone = Vec::new();
@@ -238,7 +215,7 @@ fn polled<T>(p: Poll<io::Result<T>>) -> Poll<IoResult<T>> {
 }
 
 /// The process's one host I/O: every connector, carrier and wire of the process is served from it
-/// unless built over another ([`crate::Connector::with_io`]).
+
 static PROCESS: std::sync::OnceLock<Arc<HostIo>> = std::sync::OnceLock::new();
 
 /// The process's one host I/O ([`PROCESS`]).
@@ -265,7 +242,7 @@ impl HostIo {
     }
 
     /// ADMIT `what` for the op about to run on `ticket` (the destination guard's pinned address, the
-    /// bind, the program): the one thing that op may reach.
+
     pub fn admit(&self, ticket: Ticket, what: Admission) {
         self.admit_for(ticket, what, None);
     }
@@ -286,7 +263,7 @@ impl HostIo {
     }
 
     /// The op on `ticket` is done: its admission is withdrawn, and what it came to answered — the
-    /// handle it made and the last `open` failure.
+
     pub fn settle(&self, ticket: Ticket) -> (Option<u64>, Option<OpenFailure>) {
         let a = self
             .admitted
@@ -343,8 +320,7 @@ impl HostIo {
     }
 
     /// TAKE a stream handle's socket off the host's table, as the byte stream moves on to the
-    /// kernel's own serving loop (the root's non-plane listeners hand each accepted socket up): it
-    /// leaves the reactor, non-blocking. `None` for no such stream, or one still referenced.
+
     #[must_use]
     pub fn take_stream(&self, id: u64) -> Option<TcpStream> {
         let entry = Arc::into_inner(self.handles.release(id, |_| true)?)?;
@@ -358,7 +334,7 @@ impl HostIo {
     }
 
     /// Whether the program handle `id` runs has exited (without waiting for it); `false` for any
-    /// other handle, and for one no longer held.
+
     #[must_use]
     pub fn program_exited(&self, id: u64) -> bool {
         let Some(e) = self.handles.get(id) else {
@@ -387,10 +363,7 @@ impl HostIo {
     }
 
     /// RETIRE the listening handle `id` (the one a carrier's `listen` made, [`HostIo::settle`]): it
-    /// is closed at once and names nothing from here on, so its address stops accepting now, not
-    /// when the carrier's instance closes. The handle is the host's (`abi::transport`, "a retired
-    /// listener"): a carrier's later `accept` on it is FAILED as an unknown handle. Any other
-    /// handle, or one no longer held, is left alone.
+
     pub fn retire_listener(&self, id: u64) {
         if let Some(e) = self
             .handles
@@ -447,10 +420,7 @@ pub struct HostListener {
 
 impl HostListener {
     /// Bind `bind` (`ip:port`) on the calling worker's reactor, address and port reused.
-    ///
-    /// # Errors
-    ///
-    /// The address does not parse or cannot be bound, or the caller is not on a worker.
+
     pub fn bind(bind: &str) -> io::Result<Self> {
         let l = socket::listen(bind)?;
         let local = l.local_addr()?;
@@ -467,10 +437,7 @@ impl HostListener {
     }
 
     /// The next socket and its far end; an aborted or interrupted accept is retried at once (1.5.5).
-    ///
-    /// # Errors
-    ///
-    /// The accept failed (fd exhaustion): the caller backs off.
+
     pub fn poll_accept(
         &mut self,
         cx: &mut Context<'_>,
@@ -492,10 +459,6 @@ impl HostListener {
 fn ended(e: &Entry) {
     match &e.kind {
         Kind::Listener(listener) => {
-            // A concurrent fork can hold a copy of this close-on-exec descriptor until exec.
-            // Dropping our descriptor alone leaves that socket listening in the interval. Linux
-            // can stop the shared socket first. Kernels that refuse shutdown of a listener keep
-            // their ordinary descriptor-close behavior; this does not revoke arbitrary copies.
             let _ = socket2::SockRef::from(listener.get_ref()).shutdown(Shutdown::Both);
         }
         Kind::Program(p) => {
@@ -551,8 +514,6 @@ impl IoHost for HostIo {
     fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, String)> {
         self.admits(ticket, |a| matches!(a, Admission::Bind(b) if b == bind))?;
         let failed_bind = |stage: &str, error: &io::Error| {
-            // These are host parser/OS/reactor errors, before conversion into a carrier's
-            // arbitrary failure text. Never include the configured bind string.
             tracing::warn!(
                 owner,
                 ticket_slot = ticket.slot,
@@ -592,7 +553,6 @@ impl IoHost for HostIo {
             match l.poll_io(Direction::Read, &mut cx, TcpListener::accept) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok((stream, peer))) => {
-                    // A per-connection transient was the far end's; the accept carries on.
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
@@ -615,7 +575,7 @@ impl IoHost for HostIo {
                     self.record(ticket, Some(id), None);
                     return Poll::Ready(Ok((id, peer.to_string())));
                 }
-                // 1.5.5's accept loop: an aborted or interrupted accept is retried at once.
+
                 Poll::Ready(Err(e))
                     if matches!(
                         e.kind(),
@@ -704,7 +664,7 @@ impl IoHost for HostIo {
                 sock.poll_ready(d, &mut cx)
                     .map(|r| r.map(|_| ()).map_err(|err| failed(&err)))
             }
-            // A program's pipes are open from the spawn.
+
             Kind::Program(_) | Kind::Listener(_) => Poll::Ready(Ok(())),
         }
     }
@@ -790,22 +750,15 @@ impl IoHost for HostIo {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(IoRefusal::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
-        // The environment's references were resolved at config time and are HELD for the spawn
-        // (`crate::spawn_env`): the spawn loads them and resolves nothing, so no secret resolution
-        // runs on the request a spawn serves. One that did not resolve at its last load or refresh
-        // spawns nothing.
+
         let held = held.now();
         let resolved = held
             .env()
             .map_err(|why| IoRefusal::Refused(why.to_owned()))?;
-        // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
-        // The child's error output is the host's own (a spawned command inherits it).
+
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         let (host_reads, child_writes) = std::io::pipe().map_err(|e| failed(&e))?;
-        // The command (and the child's ends of the pipes it holds) is dropped with this statement,
-        // so the child sees the end of its input when the host closes its end. The held values are
-        // revealed into the child's environment under the kernel's seal: the one place a program's
-        // secret leaves the host's records.
+
         let seal = busbar_kernel::seal::lend();
         let mut command = tokio::process::Command::new(spawn.program);
         if let Some(directory) = cwd {
@@ -856,8 +809,7 @@ impl IoHost for HostIo {
                 port: l.get_ref().local_addr().map_err(|err| failed(&err))?.port(),
                 ..Ends::default()
             }),
-            // The program ITSELF, without waiting: a descendant still holding its output keeps the
-            // pipe open, so its exit is read here, never from the pipe's end.
+
             Kind::Program(p) => Ok(Ends {
                 exit: p
                     .child

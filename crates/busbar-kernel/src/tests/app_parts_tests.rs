@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Pure assembly must preserve state without taking any of boot's observable actions.
-
 use super::{App, AppParts};
 use busbar_contract::abi::export::ExportStream;
 use busbar_contract::export_calls::{
@@ -103,8 +101,6 @@ static PLANE: crate::plane_driver::registry::PlaneDecl = crate::plane_driver::re
 
 #[test]
 fn public_parts_assemble_without_boot_effects_or_journal_subscription() {
-    // These assertions install real process-wide registrations. Keep them in their own process
-    // so sibling tests cannot either observe the spies or pre-bind the export sinks' OnceLocks.
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", SELECTOR, "--nocapture"])
@@ -120,8 +116,6 @@ fn public_parts_assemble_without_boot_effects_or_journal_subscription() {
         return;
     }
 
-    // Obtain the ordinary fixture's already-public values before installing the spies. The
-    // constructor under test consumes these exact values rather than inventing a configuration.
     let base = (*crate::test_support::TestApp::new().build()).clone();
     let mut parts = public_parts(base);
     parts.config_version = 41;
@@ -183,8 +177,6 @@ fn public_parts_assemble_without_boot_effects_or_journal_subscription() {
     assert!(assembled.login_methods.methods.is_empty());
     assert_eq!(assembled.export_projections, Default::default());
 
-    // Positive control: the actual boot subscription retains this same journal. The reference
-    // count assertion above would detect accidentally running this real observer during assembly.
     crate::export::plugin::record_reads_on(&journal);
     assert_eq!(Arc::strong_count(&journal), before + 1);
     (PLANE.retain_verify_gates.expect("the retention observer"))(&assembled);

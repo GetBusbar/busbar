@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! No store call runs under the journal's position map (BUSBAR-1.6.0.md §11.13 M1: "No plugin code
-//! (`dlclose` included) runs under a host lock."; audit finding kernel-K4#6).
-//!
-//! The store is plugin code. These cells drive [`super::Journal`] over a store double that can PARK
-//! one crossing (an append, or a resume's read of one scope) until the test releases it, and that
-//! can RE-ENTER the journal from inside its own write. Every wait is bounded, so a journal that
-//! blocks on its own lock fails the cell instead of hanging the run.
-
 use super::{Journal, NeutralBody};
 use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, ChainedRecord, Framing};
@@ -20,10 +12,8 @@ use std::time::Duration;
 
 const KIND: &str = "journal_lock_test";
 
-/// How long a crossing that must finish is given before the cell fails.
 const WAIT: Duration = Duration::from_secs(10);
 
-/// How long a crossing that must still be waiting is watched.
 const SETTLE: Duration = Duration::from_millis(300);
 
 /// Which store crossing a park holds.
@@ -33,9 +23,6 @@ enum Op {
     List,
 }
 
-/// One parked crossing: the op and scope it holds, the signal it sends once it is inside the store,
-/// and the release it waits for (a dropped sender releases it too, so a failed cell never strands
-/// it).
 struct Park {
     op: Op,
     scope: String,
@@ -43,8 +30,6 @@ struct Park {
     release: mpsc::Receiver<()>,
 }
 
-/// One re-entry: inside the first append the store sees, append to `scope` of `journal` and send
-/// the inner answer.
 struct Reenter {
     journal: Arc<Journal<StreamRecord>>,
     scope: String,
@@ -59,7 +44,6 @@ struct GateStore {
 }
 
 impl GateStore {
-    /// Park here if the armed park names this crossing. The park is taken, so it holds once.
     fn parked(&self, op: Op, scope: Option<&str>) {
         let park = {
             let mut slot = self.park.lock().unwrap();
@@ -186,8 +170,6 @@ fn journal_over(store: &Arc<GateStore>) -> Arc<Journal<StreamRecord>> {
     j
 }
 
-/// Arm a park on `op` of `scope`: the receiver sees the crossing enter the store, the sender
-/// releases it.
 fn park(store: &GateStore, op: Op, scope: &str) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -200,7 +182,6 @@ fn park(store: &GateStore, op: Op, scope: &str) -> (mpsc::Receiver<()>, mpsc::Se
     (entered_rx, release_tx)
 }
 
-/// Append to `scope` on its own thread; the receiver carries the minted seq.
 fn append_in_thread(
     j: &Arc<Journal<StreamRecord>>,
     scope: &str,
@@ -219,9 +200,6 @@ fn append_in_thread(
     rx
 }
 
-/// RED on the kind-wide lock: scope A's durable write is parked inside the store, and an append to
-/// scope B of the same kind must still complete. It waited on the position map A's append held
-/// across the store call.
 #[test]
 fn an_append_to_another_scope_completes_while_one_scopes_store_write_is_parked() {
     let store = Arc::new(GateStore::default());
@@ -247,8 +225,6 @@ fn an_append_to_another_scope_completes_while_one_scopes_store_write_is_parked()
     assert_eq!(j.next_seq("scope-b"), 2);
 }
 
-/// RED on the kind-wide lock: a store that appends to ANOTHER scope from inside its own write must
-/// not deadlock the journal on its own position map.
 #[test]
 fn a_store_that_appends_to_another_scope_from_inside_its_write_does_not_deadlock() {
     let store = Arc::new(GateStore::default());
@@ -274,8 +250,6 @@ fn a_store_that_appends_to_another_scope_from_inside_its_write_does_not_deadlock
     assert_eq!(j.next_seq("scope-b"), 2);
 }
 
-/// A store that appends to the SAME scope from inside that scope's write is refused, not left to
-/// wait on itself, and the outer append still lands with no sequence burned.
 #[test]
 fn a_store_that_reenters_its_own_scope_is_refused_not_deadlocked() {
     let store = Arc::new(GateStore::default());
@@ -305,8 +279,6 @@ fn a_store_that_reenters_its_own_scope_is_refused_not_deadlocked() {
     assert_eq!(rows.len(), 1, "only the outer record is durable");
 }
 
-/// The claim still orders one scope: a second append to a scope whose first write is parked waits
-/// for it, and the two land as seq 1 then seq 2, linked, with no gap.
 #[test]
 fn two_concurrent_appends_to_one_scope_still_chain_gap_free() {
     let store = Arc::new(GateStore::default());
@@ -340,9 +312,6 @@ fn two_concurrent_appends_to_one_scope_still_chain_gap_free() {
     assert_eq!(j.next_seq("scope-a"), 3);
 }
 
-/// RED on the kind-wide lock: a resume parked reading scope A's tail back from the store (scope A
-/// was forgotten, so its next append reads the tail to continue it) must not hold the position map,
-/// so an append to scope B completes meanwhile. The resumed append then continues A's chain.
 #[test]
 fn an_append_completes_while_a_resume_is_parked_reading_another_scope() {
     let store = Arc::new(GateStore::default());
@@ -371,11 +340,6 @@ fn an_append_completes_while_a_resume_is_parked_reading_another_scope() {
     assert_eq!(j.next_seq("scope-a"), 3);
 }
 
-/// RED on the unbounded claim wait (audit finding kernel-K4#9): a second append to a scope whose
-/// first durable write is parked inside the store waited on the claim with no deadline, so it
-/// never returned while the store held the first write. It must be refused at the claim deadline,
-/// with the first write still parked, and mint nothing: the parked write lands as seq 1 once
-/// released and the next append takes seq 2, linked, with no gap.
 #[test]
 fn a_same_scope_append_behind_a_parked_store_write_is_refused_at_the_claim_deadline() {
     let store = Arc::new(GateStore::default());
@@ -388,8 +352,7 @@ fn a_same_scope_append_behind_a_parked_store_write_is_refused_at_the_claim_deadl
     entered
         .recv_timeout(WAIT)
         .expect("the first write reaches the store");
-    // The first write stays parked until `release` below, so the second append can only return
-    // through the claim deadline.
+
     let second = append_in_thread(&j, "scope-a", b"second");
     let second_done = second.recv_timeout(WAIT);
     let _ = release.send(());

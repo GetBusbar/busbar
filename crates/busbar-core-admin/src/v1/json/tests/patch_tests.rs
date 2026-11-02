@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/admin/v1/json/handlers.rs`.
-
 use super::merge_group_patch;
 use busbar_kernel::config::groups::{ChildDefault, LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
@@ -39,7 +37,6 @@ fn budget(cents: u64) -> LimitCfg {
     }
 }
 
-/// The raise-a-budget path: patching only `limits` replaces them and PRESERVES parent + enabled.
 #[test]
 fn patch_limits_preserves_other_fields() {
     let base = GroupCfg {
@@ -56,7 +53,6 @@ fn patch_limits_preserves_other_fields() {
     assert!(out.child_default.is_none());
 }
 
-/// Freezing a group: patching only `enabled` flips it, leaving limits + parent intact.
 #[test]
 fn patch_enabled_only_freezes_without_touching_limits() {
     let base = GroupCfg {
@@ -75,7 +71,6 @@ fn patch_enabled_only_freezes_without_touching_limits() {
     assert_eq!(cd.limits[0].amount, 500);
 }
 
-/// An empty patch (all None) is an identity: nothing changes.
 #[test]
 fn empty_patch_is_identity() {
     let base = GroupCfg {

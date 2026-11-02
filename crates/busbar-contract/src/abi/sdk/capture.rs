@@ -2,31 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CALL CAPTURE — how a plugin logs (`BUSBAR-1.6.0.md` decision #85, and THE DESIGN, section 11.2).
-//!
-//! Whatever a plugin logs during a call, through `tracing` or through `log`, from its own code or
-//! from a library inside it, becomes a [`DIAG_LOG`] diagnostic on that call's reply. The host
-//! writes it to the plugin's own log file. A plugin never writes a log anywhere itself.
-//!
-//! The door macro's trampoline runs every slot body under [`with_default`] with this module's
-//! [`Capture`] as the thread's scoped dispatcher, so the capture sees every `tracing` event the
-//! body raises, whichever copy of `tracing-core` the plugin image holds. `log` records reach the
-//! same capture through `tracing-log`'s `LogTracer`, which the door macro installs as the image's
-//! `log` logger (the host installs the same one; see `busbar-kernel`'s logging setup), so a `log`
-//! record is a `tracing` event by the time anything sees it. Compiled in or dropped in, the same
-//! events reach the same capture and become the same entries.
-//!
-//! WHERE THE STATE LIVES. The capture's dispatcher is long-lived, because creating a `Dispatch`
-//! rebuilds the interest of every callsite in the process, and the reply's entries must outlive
-//! the trampoline's return until the host copies them. The dispatcher lives in one [`CaptureSlot`]
-//! per thread; immutable returned logs live in [`CaptureRetention`] per plugin image, keyed by
-//! host context and full ticket. The door macro owns both in the PLUGIN's crate ([`CaptureHome`]);
-//! this module holds only their types.
-//!
-//! BOUNDS. The capture keeps at most [`MAX_ENVELOPE_ENTRIES`] entries per reply, the plugin's own
-//! diagnostics first, and each text at most [`MAX_TEXT`] bytes. Anything over is counted and
-//! reported as one [`DIAG_LOG_DROPPED`] entry. The host applies its own bound on top.
-//!
-//! [`with_default`]: tracing_core::dispatcher::with_default
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -51,7 +26,7 @@ use crate::abi::sdk::out::{Replies, ReplyKey};
 pub use tracing_log as __tracing_log;
 
 /// Where a plugin image keeps its [`CaptureSlot`]s: one per thread. Implemented only by the type
-/// the door macro expands in the plugin's crate.
+
 pub trait CaptureHome {
     /// Run `f` on this thread's slot.
     fn with<R>(f: impl FnOnce(&mut CaptureSlot) -> R) -> R;
@@ -138,7 +113,7 @@ impl CaptureRetention {
         let owner = Owner::of(host, instance);
         let key = ReplyKey::of(ticket);
         let mut reply = self.owner(owner).take(key).unwrap_or_default();
-        // No owner-map or reply-table lock is held while old buffers are destroyed.
+
         reply.clear();
         CaptureReply { owner, key, reply }
     }
@@ -156,8 +131,7 @@ impl CaptureRetention {
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(&reply.owner);
             drop(retired);
-            // The final CLOSE logs follow the actual unticketed crossing thread. Do not
-            // recreate a retention entry for an instance whose lifetime has ended.
+
             reply.owner = Owner::Unbound(std::thread::current().id());
             reply.key = ReplyKey::of(Ticket::NONE);
         } else if let (Owner::Unbound(_), Some(instance)) = (reply.owner, opened) {
@@ -247,12 +221,10 @@ fn bounded(mut text: String) -> String {
 
 impl Subscriber for Capture {
     fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
-        // Asked per event: the capture is the default only inside a call.
         Interest::sometimes()
     }
 
     fn max_level_hint(&self) -> Option<LevelFilter> {
-        // Every level: the host filters, per plugin, by its own configured level.
         Some(LevelFilter::TRACE)
     }
 
@@ -276,7 +248,7 @@ impl Subscriber for Capture {
                 return;
             }
         }
-        // Rendered outside the lock: a field's `Debug` may itself log.
+
         let normalized = event.normalized_metadata();
         let meta = normalized.as_ref().unwrap_or_else(|| event.metadata());
         let mut render = Render::default();
@@ -304,7 +276,7 @@ impl Subscriber for Capture {
 }
 
 /// One thread's long-lived tracing dispatcher in one plugin image. Returned diagnostics are
-/// detached into image-owned ticket storage; reusing this dispatcher cannot overwrite them.
+
 pub struct CaptureSlot {
     dispatch: Dispatch,
 }
@@ -356,7 +328,7 @@ impl CaptureSlot {
         }
         let own: &[Diag] = match (envelope.diags.is_null(), envelope.diags_len) {
             (_, 0) => &[],
-            // Malformed: the host refuses the array whole, and the records go with it.
+
             (true, _) => return,
             (false, n) if n > MAX_ENVELOPE_ENTRIES => return,
             // SAFETY: the caller's contract.
@@ -375,7 +347,6 @@ impl CaptureSlot {
         for diag in own {
             let mut diag = *diag;
             if diag.text.len > MAX_TEXT || (diag.text.len != 0 && diag.text.ptr.is_null()) {
-                // Keep the malformed-entry verdict without retaining an invalid pointer.
                 diag.text.ptr = std::ptr::null();
             } else if diag.text.len != 0 {
                 // SAFETY: the caller's diagnostic bytes are live for this crossing, with a

@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A FAILED `open`'s REASON REACHES THE OPERATOR, in 1.5.5's words, compiled in and dropped in.
-//!
-//! In 1.5.5 a plugin's `open` error text reached the operator as
-//! `plugin '<name>' open failed: <text>`. On the memory ABI a failed `open` has no instance to hold
-//! a dynamic text, so the host lends every `open` a reason buffer (`OpenIn::err_buf`): the SDK
-//! copies the constructor's `Err` into it, cut on a char boundary to its capacity, and the host
-//! rebuilds the 1.5.5 text from its own context ([`Called::open_failure`]).
-//!
-//! The witness (`tests/fixtures/open_reason_plugins.rs`) is a store built with its kind's SDK door,
-//! whose `open` fails with its settings as the reason; it is proven LINKED and DROPPED, and the two
-//! must read byte-identically. RED before this: the store door answered a bare REFUSED (read as
-//! `the store's validate answered Refused`).
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -45,13 +32,10 @@ fn bind(d: &Dispatcher) -> Bind {
     }
 }
 
-/// The DROPPED door's `cdylib`; not built, a hard failure naming the command that builds it.
 fn dropped_path(example: &str) -> PathBuf {
     crate::both_ways::example_cdylib(example)
 }
 
-/// The store witness's text through the store host ([`LoadedStore::open`]), LINKED and DROPPED;
-/// both must agree.
 fn store_text(settings: &[u8]) -> String {
     let d = dispatcher();
     let door: DoorFn = witness::store::door;
@@ -75,8 +59,6 @@ fn a_store_whose_open_fails_reads_as_1_5_5_did() {
     );
 }
 
-/// An over-long reason is cut to the buffer on a char boundary: `a` then two-byte `é`s put the
-/// capacity (even) in the middle of a char, so the cut falls one byte short of it.
 #[test]
 fn an_over_long_reason_is_cut_on_a_char_boundary() {
     assert_eq!(
@@ -96,7 +78,6 @@ fn an_over_long_reason_is_cut_on_a_char_boundary() {
     assert_eq!(reason, kept);
 }
 
-/// A plugin that writes no reason reads as 1.5.5 read a constructor error with no text.
 #[test]
 fn a_plugin_that_writes_no_reason_reads_as_a_stable_text() {
     assert_eq!(
@@ -114,10 +95,6 @@ fn octets(b: &[u8]) -> Blob {
     }
 }
 
-/// A kind on the SDK's generic lifecycle whose `validate` and `open` refuse in their own OWNED words
-/// (no instance exists to keep them): each crossing is lent the host's reason buffer, the SDK
-/// writes the words there, and the operator reads them byte for byte, with no per-thread slot on
-/// the plugin's side.
 #[test]
 fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers() {
     let d = dispatcher();
@@ -143,7 +120,6 @@ fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers()
     );
 }
 
-/// This test's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
 fn mint() -> busbar_contract::abi::store::OpId {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     busbar_contract::abi::store::OpId::from_parts(

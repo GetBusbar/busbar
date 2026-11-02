@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! DISCOVERY AT BOOT (ARCHITECT 2026-10-02): the mechanism's optional `ready`, awaited after `open`
-//! on a real ticket before any listener binds.
-//!
-//! RED before this: no door could state `ready`, so a plugin that must reach the network before it
-//! serves had nowhere to do it but its first op (the lazy discovery the ruling refuses), and no
-//! refusal of it could stop the boot.
-
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,7 +33,6 @@ fn bind(d: &Dispatcher) -> Bind {
     }
 }
 
-/// `door` loaded on `d` and opened with `settings`.
 fn opened(d: &Dispatcher, door: DoorFn, settings: &'static [u8]) -> Plugin<Secret> {
     let row = LinkedRow::of(door).expect("the witness states its Statement");
     let plugin = load_linked::<Secret>(&row, bind(d)).expect("the witness loads");
@@ -78,13 +70,13 @@ fn a_ready_that_pends_serves_after_its_wake() {
     let before = crossings(&p);
     let resumed = p.inner.resumes.load(Ordering::Relaxed);
     assert_eq!(p.ready(&d, WITHIN), Ok(()));
-    // It pended once and was resumed once, on its ticket, by the wake it fired.
+
     assert_eq!(
         crossings(&p),
         before + 2,
         "one PENDING crossing, then its RESUME"
     );
-    // Counted apart (Q-P4-5): ONE first invocation, ONE resume.
+
     assert_eq!(
         p.inner.resumes.load(Ordering::Relaxed),
         resumed + 1,
@@ -109,7 +101,7 @@ fn a_ready_that_answers_at_once_serves() {
 #[test]
 fn a_plugin_without_ready_is_opened_exactly_as_before() {
     let d = dispatcher();
-    // Its settings would refuse a `ready`: it is never called.
+
     let p = opened(&d, without_ready::door, b"err:never read");
     assert!(!p.has_ready());
     let before = crossings(&p);
@@ -133,10 +125,6 @@ fn ready_before_open_is_refused_without_a_crossing() {
     assert_eq!(crossings(&p), 0);
 }
 
-/// APPEND-ONLY: a door stating no `ready` loads with `None`, and the host reads `ready` only where
-/// the door's size covers it. A door whose size ends before `ready` also ends before its layout
-/// fingerprint (status row 188): it predates the word, states `0`, and is refused naming the kind
-/// and both numbers, never loaded and read past its size.
 #[test]
 fn a_door_that_ends_before_ready_predates_its_layout_and_is_refused() {
     use busbar_contract::abi::mechanism::door::DoorParts;

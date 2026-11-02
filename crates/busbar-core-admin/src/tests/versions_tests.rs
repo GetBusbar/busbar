@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core-admin/src/versions.rs`.
-
 use super::*;
 
 fn reg(names: &[&str]) -> serde_json::Value {
@@ -19,8 +17,6 @@ fn reg(names: &[&str]) -> serde_json::Value {
     )
 }
 
-/// record → list (newest first, metadata) → get (full snapshot); re-record replaces; the ring
-/// is bounded FIFO.
 #[test]
 fn record_list_get_and_bound() {
     let log = VersionLog::default();
@@ -34,12 +30,10 @@ fn record_list_get_and_bound() {
     assert_eq!(v1.hook_registry.as_object().map(|o| o.len()), Some(1));
     assert!(log.get(99).is_none(), "unknown version is None");
 
-    // Re-record replaces (no duplicate versions).
     log.record(2, "admin", "hook.register hook:b2", reg(&["b"]), &[]);
     assert_eq!(log.list(0, 10).len(), 2);
     assert_eq!(log.get(2).unwrap().summary, "hook.register hook:b2");
 
-    // Bounded: MAX_VERSIONS + overflow prunes the oldest.
     for v in 3..(MAX_VERSIONS as u64 + 5) {
         log.record(v, "admin", "s", reg(&[]), &[]);
     }

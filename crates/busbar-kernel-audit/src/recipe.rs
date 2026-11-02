@@ -2,61 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DIGEST RECIPE, as published contract rather than as an implementation detail.
-//!
-//! ## Why this is a module and not a comment
-//!
-//! If only busbar can verify busbar's chain then the chain is a CLAIM, not evidence. An auditor who
-//! has to run our binary to check our records has checked nothing they could not have checked by
-//! asking us. So the exact field order, the exact framing and the exact spelling of every value are
-//! a versioned public contract, written down at `docs/audit-chain-digest-v4.md`, and reproduced by
-//! a verifier that has never seen this repository.
-//!
-//! This module is what makes that promise checkable instead of aspirational. It is the ONE place
-//! the order lives: [`crate::record::AuditChain::digest_of`] walks this list, the range read
-//! ([`crate::expose`]) emits this list, and the published document describes this list. There is no
-//! second copy to drift, which matters more here than anywhere else in the crate — a digest recipe
-//! that drifted from its documentation would make every third-party verification fail and look, to
-//! the third party, exactly like a tampered chain.
-//!
-//! ## Length-prefixed, NOT separator-joined
-//!
-//! Carried forward from the record's own framing rule, because a published recipe that omitted
-//! the reason invites a reimplementation that "simplifies" it. Every field goes in as its
-//! big-endian eight-byte length followed by its bytes; integers go in as their big-endian
-//! eight-byte form (which is its own length prefix of 8). Fields are NOT joined by a separator.
-//!
-//! These fields hold arbitrary caller-named text — an operation class a caller named, a bucket
-//! chain reference, a destination — and a separator-joined digest is only safe while no field can
-//! contain the separator. That is a property of today's field VALUES, not of the code, and it stops
-//! being true the first time somebody names a tool with a bar in it. Length prefixes make the split
-//! between fields unforgeable whatever the fields hold: a caller who controls one field's bytes
-//! cannot make the same byte stream read as a different split.
 
 /// The recipe's version name. Goes in every published body so a verifier never has to guess which
-/// rules to apply, and so a future recipe can exist beside this one instead of replacing it.
-///
-/// `v3` is `v2` less `currency` (remove and migrate). Money is unitless abstract cost, so a
-/// denomination in the signed preimage was a claim the node does not make. `v2` is not rewritten:
-/// its page, `docs/audit-chain-digest-v2.md`, stays published beside this one, and a record sealed
-/// under it carries [`Recipe::V2`] with the text it digested, so it still verifies by the rules it
-/// was sealed under. `v2` is `v1` less the three priced figures (`pre_tier`, `priced`,
-/// `hooks[].priced_delta`); `v1` stays published too, and no node retains a `v1` record.
-///
-/// `v4` is `v3` plus `incarnation`, directly after `unit_key`, and `node`, directly after `mono`. A
-/// unit key restarts at every boot of a node, so `unit_key` alone named two different units across
-/// two boots; the boot the unit ran in (`What::incarnation`) makes the pair unique. Nodes share one
-/// store, and a monotonic reading compares only within the node that took it, so the sealing node
-/// (`AuditRecord::node`) is digested beside `mono` (THE DESIGN §1: "when (wall + monotonic,
-/// node)"). Each hook that ran carries its `head` and whether it `failed` directly after its key
-/// (`hooks[].head`, `hooks[].failed`; THE DESIGN §1: "controls (... hooks applied)"), framed in
-/// place before `v4` shipped. `v3` never shipped (THE DESIGN §7: "The audit digest that ships is
-/// v4 (v3 never shipped)"), so no node holds a `v3` record and this build reads none; its page,
-/// `docs/audit-chain-digest-v3.md`, stays published as the history of the field list, as the `v1`
-/// page does.
+
 pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v4";
 
 /// The name of the recipe `v2`: `v3` plus `currency`, so `v4` less `incarnation` and `node`, plus
-/// `currency`.
+
 pub const DIGEST_RECIPE_V2: &str = "busbar.audit.digest.v2";
 
 /// WHICH RECIPE A RECORD WAS SEALED UNDER — and so the rules it verifies by.
@@ -139,16 +91,7 @@ impl DigestField {
 }
 
 /// EVERY FIELD THAT GOES INTO ONE RECORD'S DIGEST, IN ORDER.
-///
-/// This is the recipe. `digest_of` hashes exactly this, the range read publishes exactly this, and
-/// the document at `docs/audit-chain-digest-v4.md` describes exactly this — for a record sealed
-/// under [`Recipe::V4`]. A record sealed under [`Recipe::V2`] gets the `v2` list, which
-/// `docs/audit-chain-digest-v2.md` describes.
-///
-/// The repeated groups — the usage lines, the hooks that ran, the child units — are each preceded
-/// by their COUNT, which is what stops two different groupings from digesting identically. Their
-/// members are named with the position folded in (`lines[0].class`) so that a published body can
-/// carry them as arrays and a verifier can still walk the flat order.
+
 #[must_use]
 pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     use crate::record::{finish_tag, outcome_tag, quantity_source_tag, subject_tag, subject_value};
@@ -165,7 +108,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
         subject_value(&record.subject),
     ));
     f.push(DigestField::num("unit_key", record.what.unit_key.get()));
-    // `v4` names the boot the unit ran in beside its key: a unit key restarts at every boot.
+
     if record.recipe == Recipe::V4 {
         f.push(DigestField::num("incarnation", record.what.incarnation));
     }
@@ -188,7 +131,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     f.push(DigestField::num("wall", record.wall));
     f.push(DigestField::num("mono", record.mono));
-    // `v4` names the node that sealed the record beside the monotonic reading that is the node's.
+
     if record.recipe == Recipe::V4 {
         f.push(DigestField::num("node", record.node));
     }
@@ -242,7 +185,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
         "fee_count",
         u64::from(record.usage.fee_count),
     ));
-    // `v2` framed a `currency` text here; `v4` does not.
+
     if let Recipe::V2 { currency } = &record.recipe {
         f.push(DigestField::text("currency", currency.clone()));
     }
@@ -281,8 +224,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     for hook in &record.controls.hooks_applied {
         f.push(DigestField::text("hooks[].hook", hook.hook.clone()));
-        // `v4` frames each hook's decision head and whether it failed beside its key (audit
-        // root#3; THE DESIGN §1: "controls (... hooks applied)"); `v2` framed the key alone.
+
         if record.recipe == Recipe::V4 {
             f.push(DigestField::text("hooks[].head", hook.head.as_str()));
             f.push(DigestField::num("hooks[].failed", u64::from(hook.failed)));
@@ -307,10 +249,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
 }
 
 /// Hash one field list under the record chain's framing.
-///
-/// The other half of "there is one recipe": this is the only function that turns fields into a
-/// digest, so a caller cannot accidentally hash them under a bar-joined framing and get an
-/// answer that looks plausible.
+
 #[must_use]
 pub fn digest_over(fields: &[DigestField]) -> String {
     let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);

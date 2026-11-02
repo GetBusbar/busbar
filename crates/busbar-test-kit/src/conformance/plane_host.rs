@@ -80,28 +80,21 @@ use crate::dispatch::services::{FILL_OUT_OF_RANGE, NO_TTL, UNTICKETED};
 use crate::dispatch::{HostServices, Ran, Reading, Stored};
 use crate::stand_in::FramedFacts;
 
-/// The completion a pending service answer is handed (the services' own callback type): never
-/// called here, every service this host serves answers at once.
 type Pended = Box<dyn FnOnce(Stored) + Send>;
 
-/// The kernel's refusal of a caller-scoped service from an instance it never admitted.
 const NOT_ADMITTED: &str = "the instance is not admitted";
-/// The kernel's refusal of a record kind the caller did not declare.
+
 const NOT_A_KIND: &str = "not a record kind the instance declared";
-/// The kernel's refusal of `records.get` on a chained record kind.
+
 const CHAIN_READ_WHOLE: &str = "a chained record kind is read whole, through records.list";
 
-/// The egress classes a private address is refused in at the owner default
-/// (`block_private_addresses: true`): the default class, the provider class and open web.
 const PRIVATE_REFUSED_IN: &[u32] = &[EGRESS_DEFAULT, EGRESS_PROVIDER, EGRESS_OPEN_WEB];
 
-/// One grant: its target, and the units it holds for (`None` = every unit).
 struct Grant {
     target: String,
     units: Option<Vec<u64>>,
 }
 
-/// The admitted instance: its label, its declared record kinds, and which of them are chained.
 struct Admitted {
     instance: Arc<str>,
     kinds: Vec<(String, bool)>,
@@ -120,19 +113,17 @@ struct Kept {
     claims: HashSet<(String, Vec<u8>)>,
 }
 
-/// The host the inputs state.
 pub(super) struct Host {
     entitled: Vec<Grant>,
     trusted: Vec<(String, Option<String>, u64)>,
     resolve: BTreeMap<String, Vec<IpAddr>>,
-    /// The URL scheme of a secured destination, as the stand-in transport's facts state it.
+
     secure_scheme: String,
-    /// The fills drawn so far.
+
     drawn: AtomicU64,
     kept: Mutex<Kept>,
 }
 
-/// A `trust.serves` verdict by its name.
 fn verdict(name: &str) -> u64 {
     match name {
         "none" => DISTRUST_NONE,
@@ -147,7 +138,6 @@ fn verdict(name: &str) -> u64 {
 }
 
 impl Host {
-    /// The host `v` (`plane.host`) states; `None` when the inputs state none.
     pub(super) fn of(v: &Value) -> Option<Self> {
         if v.is_null() {
             return None;
@@ -207,7 +197,7 @@ impl Host {
                         })
                     })
                     .collect();
-                // A stated name no mapping reads is never asked: the name arm refuses it first.
+
                 (norm(name).unwrap_or_else(|| name.to_string()), addrs)
             })
             .collect();
@@ -251,8 +241,6 @@ impl Host {
         self.kept.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// ADMIT the loaded instance on what its Statement declares, as the kernel admits it at bind:
-    /// its label, its record kinds and which of them are chained.
     pub(super) fn admit(&self, d: &InstanceDecl) {
         let kinds = d
             .record_kinds
@@ -269,10 +257,6 @@ impl Host {
         });
     }
 
-    /// KEEP one `RECORD_PUT` an answer carried, of the record kind at `kind` of the Statement's
-    /// list, as the kernel's flush writes it: an empty value is a tombstone; a chained kind's write
-    /// is appended to the chain its key names (an empty one drops the chain). A write the kernel
-    /// would refuse (no admitted instance, no such kind, a chained key that is no scope) is not kept.
     pub(super) fn keep(&self, kind: u32, key: &[u8], value: &[u8]) {
         let mut kept = self.kept();
         let Some((kind, chained)) = kept
@@ -307,7 +291,6 @@ impl Host {
         kept.rows.insert((kind, at), value.to_vec());
     }
 
-    /// The caller's record kind `kind`, whether it is chained; or the kernel's refusal.
     fn scope(kept: &Kept, caller: &Caller, kind: &str) -> Result<bool, Stored> {
         let admitted = kept
             .admitted
@@ -322,7 +305,6 @@ impl Host {
             .ok_or_else(|| Stored::refused(NOT_A_KIND))
     }
 
-    /// `len` bytes of the fill stream, fresh at every call.
     fn draw(&self, len: usize) -> Vec<u8> {
         let call = self.drawn.fetch_add(1, Ordering::Relaxed);
         let mut state = call.wrapping_add(1).wrapping_mul(0xD1B5_4A32_D192_ED03);
@@ -338,8 +320,6 @@ impl Host {
         bytes
     }
 
-    /// THE ONE JUDGEMENT asked to resolve: the addresses judged (the literal, or the stated answer
-    /// for the name), or the refusal with what decided it.
     fn resolved(
         &self,
         (host, https, literal): (String, bool, Option<IpAddr>),
@@ -366,17 +346,10 @@ impl Host {
     }
 }
 
-// ── the destination guard at the owner default ────────────────────────────────────────────────
-
-/// A target name as the guard compares it, through the guard's own mapping
-/// (`busbar_contract::net::judged_host`: UTS #46 to-ASCII, held to `url`'s IPv4 reading); `None`, a
-/// host the guard refuses as unjudgeable (`DEST_NO_HOST`).
 fn norm(host: &str) -> Option<String> {
     judged_host(host).ok()
 }
 
-/// Loopback as the guard reads it: IPv4 `127.0.0.0/8`, IPv6 `::1`, and the IPv4-mapped and
-/// -compatible spellings of a `127.0.0.0/8` address.
 fn is_loopback(addr: IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => v4.is_loopback(),
@@ -384,7 +357,6 @@ fn is_loopback(addr: IpAddr) -> bool {
     }
 }
 
-/// A host WRITTEN as loopback: a loopback literal in any spelling, or the `localhost` family.
 fn names_loopback(host: &str) -> bool {
     let Some(name) = norm(host) else {
         return false;
@@ -395,7 +367,6 @@ fn names_loopback(host: &str) -> bool {
     }
 }
 
-/// The loopback-allowed class's scheme rule: plaintext only to a host written as loopback.
 fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64> {
     if class == EGRESS_LOOPBACK_ALLOWED && !https && !names_loopback(host) {
         return Err(DEST_PLAINTEXT);
@@ -403,14 +374,10 @@ fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64>
     Ok(())
 }
 
-/// Whether a private address is refused under `class` (`strict`: `DEST_REFUSE_PRIVATE`).
 fn refuses_private(class: u32, strict: bool) -> bool {
     strict || PRIVATE_REFUSED_IN.contains(&class)
 }
 
-/// One address the destination stands for: cloud metadata refused in every class, an internal
-/// address where the class (or the caller) refuses private reach, and in the loopback-allowed
-/// class every internal address but loopback.
 fn judge_address(addr: IpAddr, class: u32, strict: bool) -> Result<(), u64> {
     if ip_is_cloud_metadata(&addr) {
         return Err(DEST_METADATA);
@@ -422,8 +389,6 @@ fn judge_address(addr: IpAddr, class: u32, strict: bool) -> Result<(), u64> {
     Ok(())
 }
 
-/// The name arm, before any resolution: `Some(ip)` for an IP literal (judged as its own answer),
-/// `None` for a name to resolve.
 fn judge_name(host: &str, class: u32, strict: bool) -> Result<Option<IpAddr>, u64> {
     let name = norm(host).ok_or(DEST_NO_HOST)?;
     if METADATA_HOSTS.iter().any(|h| name == *h) {
@@ -445,10 +410,6 @@ fn judge_name(host: &str, class: u32, strict: bool) -> Result<Option<IpAddr>, u6
     Ok(None)
 }
 
-/// A destination as `(host, secure)`: a URL of one of the two web schemes the shared host reader
-/// takes (`extract_normalized_host`; the scheme read without case, any other scheme refused, a
-/// userinfo refused), secure when its scheme is `secure_scheme`; or a bare `host[:port]` authority
-/// (secure). The scheme's name is data (`stand_in.json`), never this source's.
 fn split(dest: &str, secure_scheme: &str) -> Result<(String, bool), u64> {
     if let Some((scheme, rest)) = dest.split_once("://") {
         let scheme = scheme.to_ascii_lowercase();
@@ -485,15 +446,12 @@ fn split(dest: &str, secure_scheme: &str) -> Result<(String, bool), u64> {
     Ok((host.to_owned(), true))
 }
 
-/// The scheme and name arms under egress class `class`: the host, whether it is secure, and the
-/// literal when it is one.
 fn named(
     dest: &str,
     class: u32,
     strict: bool,
     secure_scheme: &str,
 ) -> Result<(String, bool, Option<IpAddr>), u64> {
-    // The classes a need may declare are 0..=4; a destination under any other names none.
     if class > EGRESS_LOOPBACK_ALLOWED {
         return Err(DEST_NO_HOST);
     }
@@ -507,8 +465,6 @@ fn named(
     }
     Ok((host, https, literal))
 }
-
-// ── the stored answers ─────────────────────────────────────────────────────────────────────────
 
 const fn absent() -> Span {
     Span {
@@ -525,7 +481,6 @@ fn span(at: usize, len: usize) -> Span {
     }
 }
 
-/// One span per key, value absent (the judged addresses, or what decided a refusal).
 fn keyed(mut s: Stored, keys: impl IntoIterator<Item = String>) -> Stored {
     for key in keys {
         let at = s.bytes.len();
@@ -538,7 +493,6 @@ fn keyed(mut s: Stored, keys: impl IntoIterator<Item = String>) -> Stored {
     s
 }
 
-/// The rows, one span each over its key and its value.
 fn rows_of(rows: Vec<(Vec<u8>, Vec<u8>)>) -> Stored {
     let mut s = Stored::ready(0);
     for (k, v) in rows {
@@ -592,7 +546,7 @@ impl HostServices for Host {
 
     fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Pended>) -> Ran {
         let strict = flags & DEST_REFUSE_PRIVATE != 0;
-        // The name and scheme arms first, at once: a refusal never waits on a resolution.
+
         let named = match named(dest, class, strict, &self.secure_scheme) {
             Err(v) => return Ran::Now(Stored::ready(v)),
             Ok(_) if flags & DEST_RESOLVE == 0 => return Ran::Now(Stored::ready(DEST_ALLOWED)),

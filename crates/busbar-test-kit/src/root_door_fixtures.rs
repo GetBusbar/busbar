@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TEST ONLY: THE COMPOSITION ROOT'S DOOR FIXTURES (`BUSBAR-1.6.0.md` l.272-274). A door is built
-//! by the contract's door macro, whose expansion writes `unsafe`; the root is `forbid(unsafe_code)`
-//! and must hold no such expansion, so the doors its tests drive are built HERE, in the test kit
-//! (a dev-dependency only), and the root's tests reach them as `busbar_test_kit::root_door_fixtures`.
-//! Moved verbatim from `crates/busbar/src/root/tests/doors_refresh.rs` (the held-down carrier)
-//! and `crates/busbar/src/root/tests/linked_door_root.rs` (the door-root crates in miniature).
-
 #[path = "root_door_fixtures/scoped_mux.rs"]
 pub mod scoped_mux;
 
@@ -23,7 +16,6 @@ pub mod raw_udp_ingress;
 #[path = "root_door_fixtures/piece_pending.rs"]
 pub mod piece_pending;
 
-/// The carrier under test: a member's program it holds down once it ended, until its `refresh`.
 pub mod held_down {
     use std::marker::PhantomData;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,11 +34,10 @@ pub mod held_down {
         SETTING_COUNT, UNIT0_FIRST_LINE,
     };
 
-    /// Its claim.
     const KEY: &str = "row159-held-down";
-    /// The one setting it reads, at its 1.5.5 path.
+
     pub const TIMEOUT: &str = "limits.upstream_request_timeout_secs";
-    /// The value its `refresh` refuses.
+
     pub const REFUSED_TIMEOUT_SECS: u64 = 1;
 
     const NONE: AbiStr = AbiStr::ZERO;
@@ -92,7 +83,6 @@ pub mod held_down {
         ..statement(KEY, "0.0.1", 64)
     };
 
-    /// The instance: whether it holds the member's program down, and the timeout it was handed.
     pub struct Program {
         held: AtomicBool,
         timeout: Mutex<Option<u64>>,
@@ -115,8 +105,6 @@ pub mod held_down {
             })
         }
 
-        /// The new settings, and the hold released; the sentinel timeout is refused, and then
-        /// nothing it holds moves.
         fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
             let next = timeout_of(settings);
             if next == Some(REFUSED_TIMEOUT_SECS) {
@@ -134,7 +122,6 @@ pub mod held_down {
         i.get().map(Held::life)
     }
 
-    /// A slot it does not serve: REFUSED.
     pub struct Refused<I, O>(PhantomData<(I, O)>);
 
     impl<I: AbiIn, O: AbiOut> SafeSlot for Refused<I, O> {
@@ -146,7 +133,6 @@ pub mod held_down {
         }
     }
 
-    /// `dial`: the program is spawned unless it is held down.
     pub struct Dial;
 
     impl SafeSlot for Dial {
@@ -166,7 +152,6 @@ pub mod held_down {
         }
     }
 
-    /// `shut`: the program ended, and is held down until the instance is refreshed.
     pub struct Shut;
 
     impl SafeSlot for Shut {
@@ -184,8 +169,6 @@ pub mod held_down {
         }
     }
 
-    /// `flush`: READY when its connection token is the timeout the instance holds (the test's
-    /// window on the settings it was handed).
     pub struct Flush;
 
     impl SafeSlot for Flush {
@@ -372,10 +355,8 @@ macro_rules! door_root {
     };
 }
 
-// A door-root wire: named for its own claim, over nothing, carrying a session.
 door_root!(wire, "door-root-wire", "door-root-wire", [], 1);
-// A door-root wire whose tail names a layer and whose claim carries no session: what it states is
-// read, never a default.
+
 door_root!(
     layered,
     "door-root-layered",
@@ -383,9 +364,9 @@ door_root!(
     ["door-root-under"],
     0
 );
-// A door whose Statement is named one thing and whose own claim is another.
+
 door_root!(misnamed, "door-root-named", "door-root-claimed", [], 1);
-// A door the loader refuses: its tail states another frame piece than the host's (row 167).
+
 door_root!(
     bad_piece,
     "door-root-bad-piece",
@@ -395,9 +376,6 @@ door_root!(
     busbar_contract::abi::transport::FRAME_PIECE_SIZE - 8
 );
 
-/// A stub plugin that migrates its own settings (`--migrate-config`, owner ruling 2026-10-27): its
-/// door states `migrate` over [`migrate_stub::StubMigration`], which renames `signing-secret` to
-/// `signing_secret` (renamed in 1.6.0) and raises the host its `url` names as a destination to allow.
 pub mod migrate_stub {
     use busbar_contract::abi::mechanism::call::Outcome;
     use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
@@ -405,10 +383,8 @@ pub mod migrate_stub {
     use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
     use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
 
-    /// Its Statement name.
     pub const NAME: &str = "busbar-secret-stub";
 
-    /// The stub's own migration.
     pub struct StubMigration;
     impl Migrate for StubMigration {
         fn migrate(mut settings: serde_json::Value, from: &str) -> Migrated {
@@ -434,7 +410,6 @@ pub mod migrate_stub {
         }
     }
 
-    /// Its lifecycle: opens on anything.
     pub struct L;
     impl Life for L {
         const CANCEL: u32 = 0;
@@ -446,7 +421,6 @@ pub mod migrate_stub {
         }
     }
 
-    /// `resolve`: never reached.
     pub struct Resolve;
     impl SafeSlot for Resolve {
         type In = ResolveIn;
@@ -470,14 +444,6 @@ pub mod migrate_stub {
     }
 }
 
-/// A TEST HTTP/1.1 FRAMER'S ACCEPTING SIDE, in Rust behind the connector's [`FramerDoor`] seam: the
-/// least an accepting framer does, for the composition root's data door cells (core never tests a
-/// plugin). Each whole request (a request line, field lines, a `content-length` body) comes up as
-/// one field block with its method and target in the stream's head slots, then its body; an
-/// answer's first emit is its head (a field block, with the status on the emit), every later one
-/// its body. It records what crossed: each `begin`'s lent guest list and each head emit's status.
-///
-/// [`FramerDoor`]: busbar_core_connector::framer::FramerDoor
 pub mod h1_accept {
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -490,10 +456,8 @@ pub mod h1_accept {
     };
     use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
 
-    /// The instance identity the fixture states.
     pub const INSTANCE: u64 = 0x5eed;
 
-    /// What one `begin` was lent: each line's id, auth points and whether it carries a handle.
     pub type Lent = Vec<(u32, u32, bool)>;
 
     #[derive(Default)]
@@ -504,20 +468,18 @@ pub mod h1_accept {
         ended: bool,
     }
 
-    /// The fixture.
     pub struct H1Accept {
         facts: DoorFacts,
         accepts: bool,
         framings: Mutex<HashMap<u64, State>>,
         next: AtomicU64,
-        /// The guest list every `begin` was lent, in order.
+
         pub begun: Mutex<Vec<Lent>>,
-        /// The status every head emit carried, in order.
+
         pub statuses: Mutex<Vec<u32>>,
     }
 
     impl H1Accept {
-        /// The fixture answering `http`; `accepts` = its tail states `FACT_ACCEPTS`.
         #[must_use]
         pub fn new(accepts: bool) -> Self {
             Self {
@@ -552,10 +514,8 @@ pub mod h1_accept {
         hay.windows(needle.len()).position(|w| w == needle)
     }
 
-    /// One request as it came up: method, target, field block, body.
     type Request = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
 
-    /// One whole request off the front of `inbound`.
     fn request(inbound: &mut Vec<u8>) -> Result<Option<Request>, &'static str> {
         let Some(head_end) = find(inbound, b"\r\n\r\n") else {
             return Ok(None);
@@ -607,7 +567,6 @@ pub mod h1_accept {
         )))
     }
 
-    /// Answer what the framing owes: its wire bytes, and every whole request it holds.
     fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut) -> Crossed {
         let y = &mut o.yielded;
         let w = st.outbound.len().min(sink.wire_cap);
@@ -709,7 +668,6 @@ pub mod h1_accept {
         }
     }
 
-    /// The reason phrase of the statuses the cells answer.
     fn reason(status: u32) -> &'static str {
         match status {
             200 => "OK",
@@ -812,7 +770,6 @@ pub mod h1_accept {
     }
 }
 
-/// Controlled pending response emits over the accepting HTTP fixture.
 pub mod pending_h1_accept {
     use super::h1_accept::H1Accept;
     use busbar_core_connector::framer::FramerDoor;
@@ -862,7 +819,6 @@ pub mod pending_h1_accept {
         deadline_ns: u64,
     }
 
-    /// A single-request HTTP fixture with a one-shot gate holding a response emit until release.
     pub struct ParkedHeadDoor {
         inner: H1Accept,
         gate: Arc<HeadGate>,
@@ -873,7 +829,6 @@ pub mod pending_h1_accept {
         completed: std::sync::atomic::AtomicU32,
     }
 
-    /// A fresh fixture with its response-head gate closed.
     pub fn parked_head() -> ParkedHeadDoor {
         ParkedHeadDoor {
             inner: H1Accept::new(true),
@@ -886,7 +841,6 @@ pub mod pending_h1_accept {
         }
     }
 
-    /// A fresh fixture that parks the final body emit, after all body bytes have been produced.
     pub fn parked_final_body() -> ParkedHeadDoor {
         ParkedHeadDoor {
             final_body: true,
@@ -895,27 +849,22 @@ pub mod pending_h1_accept {
     }
 
     impl ParkedHeadDoor {
-        /// Wait until the response-head crossing has copied its input and parked.
         pub async fn wait_for_head(&self) {
             self.entered.notified().await;
         }
 
-        /// Wait until the selected response emit has copied its input and parked.
         pub async fn wait_for_emit(&self) {
             self.entered.notified().await;
         }
 
-        /// Release the copied emit and wake its registered connection task.
         pub fn release(&self) {
             self.gate.release();
         }
 
-        /// Every response status the underlying accepting fixture emitted.
         pub fn statuses(&self) -> Vec<u32> {
             self.inner.statuses.lock().unwrap().clone()
         }
 
-        /// Number of selected emits that completed through the accepting fixture.
         pub fn completions(&self) -> u32 {
             self.completed.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -1069,8 +1018,6 @@ pub mod pending_h1_accept {
     }
 }
 
-/// A two-stream accepting protocol: input bytes `1` and `3` open independent requests.
-/// Stream one's response head parks; stream three can finish before it is released.
 pub mod pending_mux_accept {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1115,7 +1062,6 @@ pub mod pending_mux_accept {
         pub end: bool,
     }
 
-    /// One connection, with a gate on stream one's head and independently emitted stream three.
     pub struct Mux {
         facts: DoorFacts,
         session: bool,

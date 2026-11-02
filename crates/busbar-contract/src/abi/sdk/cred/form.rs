@@ -58,7 +58,7 @@ impl CredUrl {
     }
 
     /// The password, or an empty one when the text carries none: either carries the text's
-    /// [`CredUrl::floor`] and its secure requirement.
+
     pub fn credential(&self) -> Cred {
         self.password.clone().unwrap_or_else(|| {
             let c = Cred::empty().with_floor(self.floor);
@@ -71,27 +71,19 @@ impl CredUrl {
     }
 
     /// Split `text` (a URL or connection string the plugin already holds).
-    ///
-    /// # Errors
-    /// The text carries two passwords, or is a malformed key=value connection string.
+
     pub fn parse(text: &str) -> Result<Self, &'static str> {
         Self::split(text)
     }
 
     /// Capture PostgreSQL's keyword or URL password, with the last occurrence winning.
-    ///
-    /// # Errors
-    /// A malformed keyword string or invalid percent-encoded UTF-8.
+
     pub fn parse_postgres(text: &str) -> Result<Self, &'static str> {
         native::postgres(text)
     }
 
     /// Capture a Valkey URL without passing a plaintext password to a URL parser.
-    /// Native URL validation still runs on [`Self::public`]. Safe capture refusals are retained
-    /// in [`Self::parsing_error`] so typed settings retain the driver's error text.
-    ///
-    /// # Errors
-    /// Reserved for capture failures; malformed URLs retain safe refusal metadata instead.
+
     pub fn parse_valkey(text: &str) -> Result<Self, &'static str> {
         Ok(native::valkey(text))
     }
@@ -102,21 +94,19 @@ impl CredUrl {
     }
 
     /// The public URL, or the safe refusal discovered while capturing it.
-    ///
-    /// # Errors
-    /// The safe refusal returned by [`Self::parsing_error`].
+
     pub fn parsed(&self) -> Result<&str, &'static str> {
         self.parsing_error.map_or(Ok(self.public()), Err)
     }
 
     /// Replace credential echoes (including percent and form spellings) with `<redacted>`.
-    /// Comparison happens while the credential remains sealed; no plaintext is returned.
+
     pub fn redact_echo(&self, text: &str) -> String {
         native::redact(self, text)
     }
 
     /// Take a URL setting out of a parsed settings document: split it, and wipe the string where
-    /// it was. `None`: `v` is not a string (left as it was).
+
     pub fn take(v: &mut serde_json::Value) -> Option<Result<Self, &'static str>> {
         let serde_json::Value::String(s) = v else {
             return None;
@@ -127,10 +117,7 @@ impl CredUrl {
     }
 
     /// [`CredUrl::parse`] taking only a userinfo password: a query parameter is the target's own (a
-    /// webhook's `?password=` is part of where it posts, not this plugin's credential).
-    ///
-    /// # Errors
-    /// As [`CredUrl::parse`].
+
     pub fn parse_userinfo(text: &str) -> Result<Self, &'static str> {
         Self::split_with(text, false)
     }
@@ -172,10 +159,7 @@ type Bytes = Zeroizing<Vec<u8>>;
 type Found = (Bytes, PasswordAt);
 
 /// Whether the operator's text (its password already taken out) asks for a secure connection: a
-/// secure scheme (`https`, `rediss`, `ldaps`, …), or a TLS mode that refuses cleartext
-/// (`sslmode=require|verify-ca|verify-full`, `ssl-mode=REQUIRED|VERIFY_CA|VERIFY_IDENTITY`,
-/// `ssl=true`, `tls=true`), in a URL query or a key=value string. A unix-socket host asks for
-/// nothing: its drivers never secure one, whatever the mode says.
+
 fn secure_requested(public: &str) -> bool {
     if super::secure_scheme(public) {
         return true;

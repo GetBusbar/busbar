@@ -4,38 +4,6 @@
 #![deny(missing_docs)]
 
 //! # The breaker unit
-//!
-//! The design (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1, §5) splits egress into two units: the EGRESS
-//! unit owns the pool per `(transport, destination)` — selection, weighting, concurrency; the
-//! BREAKER unit (this crate) owns trip / cooldown / fast-fail per `(pool, destination)`, plus the
-//! per-destination lifetime request budget. A `BreakerCell` is per pool MEMBER, independent per
-//! pool — the same destination can be Open in one pool and Closed in another. Only the lifetime
-//! request budget and a hard-down trip are lane-global (they trip every pool's cell at once).
-//!
-//! The state machine in [`cell`] (trip condition, escalating cooldown with jitter, the
-//! requested-wait floor, half-open recovery) is ported from 1.5.5's
-//! `crates/busbar/src/store/in_memory/breaker.rs`, and [`cfg`] from the `BreakerCfg`, `TripConfig`
-//! and `TripMode` of 1.5.5's `crates/busbar/src/store/in_memory/mod.rs`. The port keeps the arithmetic
-//! and the transitions, and differs from the source where each module's doc comment says so: no
-//! logging, no SWRR/pool-selection state (the egress unit's), the jitter seeded from the caller's
-//! `now` rather than a wall clock, the jitter floor capped at the ceiling, a lock-free success path
-//! for a Closed cell with no streak, and the single-member cell that is not benched below the trip
-//! threshold ([`cfg::BreakerCfg::bench_below_trip_threshold`]).
-//!
-//! The classifier in [`classify`] is NOT a move: 1.5.5's read an upstream's numeric status against
-//! bands. This unit reads facts only — the transport's fault reading of an answer, the wait the
-//! answer stated, the kernel's fact that no answer came, and the plane's verdict as the [`Outcome`]
-//! its caller observes — so the bands live with the transports whose numbering they are. The four
-//! dispositions they produce are 1.5.5's.
-//!
-//! ## What's new here, not ported
-//!
-//! - The sealed [`Breaker`] trait itself (`observe`/`state`, in the unit-trait shape). 1.5.5
-//!   exposed the FSM through a much larger `LaneRuntime` trait (concurrency, SWRR, `/stats`, health
-//!   snapshots — all egress/observability concerns); this crate exposes only the breaker's own two
-//!   verbs, sealed so no plugin can implement it.
-//! - [`DestinationId`] is the contract crate's pool-member locator, named here and by the egress
-//!   unit, so the two units that key on a member key on one object.
 
 pub mod budget;
 pub mod cell;
@@ -55,14 +23,13 @@ use cell::{
 use cfg::BreakerCfg;
 
 /// The pool-member locator, as the contract crate defines it. The egress unit names the same one,
-/// which is what makes `(transport, destination)` and `(pool, destination)` the same key.
 pub use busbar_contract::DestinationId;
 
 /// The default sticky cooldown applied by a hard-down trip (1.5.5's `DEFAULT_HARD_DOWN_COOLDOWN_SECS`).
 pub const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 
 /// The default absolute ceiling on an honored upstream requested wait (1.5.5's
-/// `DEFAULT_MAX_HONORED_RETRY_AFTER_SECS`).
+
 pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 
 /// Why a `(pool, destination)` cannot admit right now, from the BREAKER's own point of view —
@@ -133,17 +100,10 @@ mod sealed {
 }
 
 /// The breaker unit's sealed trait shape (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, §9: `Breaker::observe/
-/// state`). Sealed on a private supertrait so no plugin crate can implement it — only
-/// [`BreakerUnit`] does. Like the design's other seven token-taking unit traits, every call also
-/// takes a `&Pass<Route>` (`busbar-contract`'s capability token): the proof that the loop is at
-/// the route step for this unit right now. The token is minted fresh per step call and taken by
-/// reference, never stored, so this trait cannot be driven outside the step it was lent for.
+
 pub trait Breaker: sealed::Sealed {
     /// Record one classified [`Outcome`] against `(pool, destination)`, applying the state
-    /// machine's trip/cooldown/recovery rules. Returns `true` IFF this observation drove a fresh,
-    /// logical Closed→Open trip (a success, a `HardDown` fan-out counts only the DEFAULT cell's
-    /// freshness, and a sub-threshold or already-Open failure all return `false`) — the one signal
-    /// a trip-count metric should increment on.
+
     fn observe(
         &self,
         pool: &str,
@@ -155,13 +115,7 @@ pub trait Breaker: sealed::Sealed {
     ) -> bool;
 
     /// This `(pool, destination)` cell's current [`LaneState`], folding in the destination's
-    /// lifetime budget (`BudgetExhausted` takes precedence — an exhausted destination is excluded
-    /// regardless of what its breaker cell reads).
-    ///
-    /// Read-only: it creates no cell and registers no pool, and takes only the cell map's read
-    /// lock. A `(pool, destination)` with no cell yet reads as the cell its first touch would
-    /// create: a named pool's inherits the destination's default cell (see [`BreakerUnit::cell`]),
-    /// so a pool no walk has touched still reads a hard-down trip.
+
     fn state(
         &self,
         pool: &str,
@@ -220,17 +174,10 @@ type Destinations =
     HashMap<DestinationId, Destination, std::hash::BuildHasherDefault<DestinationHash>>;
 
 /// The breaker unit: every `(pool, destination)` breaker cell plus every destination's lifetime
-/// budget, behind one lock, keyed by destination. Cells are created lazily on first touch (a cell
-/// not yet created inherits Closed-and-unspent, matching 1.5.5's lazy per-pool cell creation).
-///
-/// The unit classifies nothing. Reading an upstream's error body against an operator's `error_map`
-/// is the plane's work, done once by the plane's own classifier; the unit is told the verdict as an
-/// [`Outcome`] and acts on it.
+
 pub struct BreakerUnit {
     destinations: RwLock<Destinations>,
     /// Atomics, not plain fields: a unit that outlives one configuration generation (the plane
-    /// breaker store is process-lifetime) takes each new generation's `limits.*` through
-    /// [`Self::set_limits`] without being rebuilt and losing its learned cells.
     hard_down_cooldown_secs: AtomicU64,
     max_honored_retry_after_secs: AtomicU64,
 }
@@ -252,7 +199,7 @@ impl BreakerUnit {
     }
 
     /// Override the hard-down sticky cooldown and the absolute requested-wait honoring ceiling
-    /// (1.5.5's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`).
+
     pub fn with_limits(
         self,
         hard_down_cooldown_secs: u64,
@@ -263,8 +210,7 @@ impl BreakerUnit {
     }
 
     /// [`Self::with_limits`] on a unit already in service: the next hard-down arms the new sticky
-    /// cooldown and the next honoured wait is clamped to the new ceiling; every learned cell stays
-    /// as it is. A cooldown already armed keeps the `until` it was armed with.
+
     pub fn set_limits(&self, hard_down_cooldown_secs: u64, max_honored_retry_after_secs: u64) {
         self.hard_down_cooldown_secs
             .store(hard_down_cooldown_secs, Ordering::Relaxed);
@@ -273,14 +219,13 @@ impl BreakerUnit {
     }
 
     /// The destination map, read. A poisoned lock is recovered: every write under it leaves the map
-    /// whole.
+
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Destinations> {
         self.destinations.read().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Declare a destination's lifetime request budget. `max_requests < 0` means unlimited
-    /// (1.5.5's default; see [`LifetimeBudget::limited`]). Calling this again for the same
-    /// destination replaces its budget counter (a config-apply rebuild, not a per-request operation).
+
     pub fn set_budget(&self, destination: DestinationId, max_requests: i64) {
         let budget = LifetimeBudget::limited(max_requests);
         self.destinations
@@ -292,8 +237,7 @@ impl BreakerUnit {
     }
 
     /// The destination's declared budget itself, shared rather than copied: a caller that
-    /// admits against one destination many times holds the counter this unit spends, so there is
-    /// one budget and one figure however many readers it has. `None` if never declared.
+
     pub fn budget(&self, destination: DestinationId) -> Option<Arc<LifetimeBudget>> {
         self.read().get(&destination)?.budget.clone()
     }
@@ -309,19 +253,19 @@ impl BreakerUnit {
     }
 
     /// Remaining lifetime budget for a destination, or `None` if unlimited or never declared
-    /// (an undeclared destination is treated as unlimited, matching 1.5.5's default).
+
     pub fn budget_remaining(&self, destination: DestinationId) -> Option<i64> {
         self.read().get(&destination)?.budget.as_ref()?.remaining()
     }
 
     /// Whether the destination has nothing left to spend: the same test [`LifetimeBudget::spend`]
-    /// refuses on, so a destination this reports admissible is one a spend would charge.
+
     fn budget_exhausted(&self, destination: DestinationId) -> bool {
         matches!(self.budget_remaining(destination), Some(remaining) if remaining <= 0)
     }
 
     /// Spend one unit of `destination`'s lifetime budget. `true` if spent (or the destination is
-    /// unlimited/undeclared); `false` if it was already exhausted.
+
     #[must_use]
     pub fn spend_budget(&self, destination: DestinationId) -> bool {
         match self
@@ -346,12 +290,7 @@ impl BreakerUnit {
     }
 
     /// The `(pool, destination)` cell, registered for the destination's hard-down fan-out
-    /// ([`Self::hard_down_all`]) before anything can reach it. A named pool's cell is created
-    /// carrying the destination's default cell's known health, as 1.5.5's
-    /// `crates/busbar/src/store/in_memory/mod.rs` `cell` created it: its state (a probe in flight
-    /// read as Open), cooldown and streak, so a pool whose first touch comes while the destination
-    /// is parked respects it. With no default cell yet, and for the default cell itself, it is
-    /// created Closed.
+
     pub fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
         self.cell_with(pool, destination, |fresh, default| {
             if let Some(default) = default {
@@ -361,8 +300,7 @@ impl BreakerUnit {
     }
 
     /// [`Self::cell`], with `seed` run on the cell exactly when THIS call creates it, before any
-    /// other reader can reach it. A cell another holder of this unit already created is returned as
-    /// it stands: seeding it again would overwrite what that holder recorded.
+
     pub fn cell_seeded(
         &self,
         pool: &str,
@@ -378,8 +316,7 @@ impl BreakerUnit {
     }
 
     /// Run `f` on the `(pool, destination)` cell under the map's read lock, with no copy of the
-    /// handle — creating the cell ([`Self::cell`]) on its first touch. `f` must not call back into
-    /// the unit.
+
     fn on_cell<R>(
         &self,
         pool: &str,
@@ -393,19 +330,13 @@ impl BreakerUnit {
     }
 
     /// The one creation path. `seed` runs on the cell exactly when THIS call creates it, under the
-    /// map's write lock, with the destination's default cell when one exists and `pool` is a named
-    /// pool. Read under that lock, the default cell's health is the one a concurrent
-    /// [`Self::hard_down_all`] either already parked or has yet to fan out from: that walk tripped
-    /// the default cell before it reads the destination's cells, and a cell is published into that
-    /// same list, under the same lock, after the seed runs — reachable is registered.
+
     fn cell_with(
         &self,
         pool: &str,
         destination: DestinationId,
         seed: impl FnOnce(&BreakerCell, Option<&BreakerCell>),
     ) -> Arc<BreakerCell> {
-        // The hit path — every admission and every observation of an already-touched member —
-        // borrows the whole key from the caller's own arguments and allocates nothing.
         if let Some(c) = self.existing(pool, destination) {
             return c;
         }
@@ -428,21 +359,14 @@ impl BreakerUnit {
     }
 
     /// Whether a cell for this pool and destination already exists, without creating one.
-    ///
-    /// Reachability made observable, so a test can wait for the exact moment a cell becomes usable
-    /// and ask what else can see it then.
+
     #[cfg(test)]
     pub(crate) fn has_cell(&self, pool: &str, destination: DestinationId) -> bool {
         self.existing(pool, destination).is_some()
     }
 
     /// Trip EVERY existing pool cell for `destination` hard-down at once (the default `""`
-    /// cell and every named pool's cell), each with the SAME sticky cooldown — a hard-down fault
-    /// (bad key, billing exhausted) is a property of the shared destination, not of the one pool
-    /// the failing attempt happened to run through. Returns `true` IFF the default cell's trip was
-    /// fresh (it was Closed beforehand), for a trip-count metric. A pool with no cell yet is reached
-    /// through the default cell: its cell is created carrying the default cell's trip
-    /// ([`Self::cell`]), and until then [`Breaker::state`] reads it so.
+
     pub fn hard_down_all(&self, destination: DestinationId, now: u64) -> bool {
         let default_cell = self.cell("", destination);
         let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs());
@@ -468,8 +392,7 @@ impl BreakerUnit {
     }
 
     /// THE HEALTH PROBER'S TRIGGER (1.5.5 `lane_needs_probe`): whether the breaker suppresses
-    /// `destination` in ANY cell — not Closed, or Closed inside a pending soft cooldown. Read-only:
-    /// a cell nothing has touched is Closed, and none is created.
+
     pub fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
         self.read().get(&destination).is_some_and(|d| {
             d.cells
@@ -479,18 +402,7 @@ impl BreakerUnit {
     }
 
     /// ONE HEALTH PROBE'S ANSWER, folded into EVERY cell of `destination` — the default cell and
-    /// each named pool's — because a probe tests the shared upstream, not one pool's route to it
-    /// (1.5.5 `health.rs` `probe_lane`):
-    ///
-    /// - `Success`: a suppressed cell recovers (closed, unless a peer armed a stricter cooldown
-    ///   after [`suppressed`] read it), then every cell's window takes the success.
-    /// - `Transient`: every cell records the failure under its own pool's configuration, `cfg_of`
-    ///   (a cell whose pool has none records nothing, as an organic observation does).
-    /// - `HardDown`: every cell is parked ([`Self::hard_down_all`]).
-    /// - `RecordNothing` (a client fault, a probe too large for the destination): nothing. The
-    ///   destination is healthy; the probe request was refused.
-    ///
-    /// No trip signal: the out-of-band prober counts no trips (1.5.5).
+
     pub fn probed(
         &self,
         destination: DestinationId,
@@ -532,8 +444,7 @@ impl BreakerUnit {
     }
 
     /// Mutating admission attempt: wins-or-loses the single-flight probe, checking the destination's
-    /// lifetime budget first (an exhausted destination is excluded before the breaker is even
-    /// consulted, matching 1.5.5's `classify` reading `dead`/budget separately from the breaker).
+
     pub fn try_admit(
         &self,
         pool: &str,
@@ -544,8 +455,6 @@ impl BreakerUnit {
             return Err(LaneState::BudgetExhausted);
         }
         self.on_cell(pool, destination, |cell| match cell.acquire(now) {
-            // The refusal's own reason, not a second look at a cell a peer may have moved: a
-            // caller is entitled to read a refusal as "this would not have admitted".
             ProbeAdmit::Denied(DeniedBy::Cooling { until }) => Err(LaneState::Suppressed { until }),
             ProbeAdmit::Denied(DeniedBy::ProbeInFlight) => Err(LaneState::ProbeInFlight),
             ProbeAdmit::ReadyNoProbe => Ok(Admit { probe_epoch: None }),
@@ -556,7 +465,7 @@ impl BreakerUnit {
     }
 
     /// Release a probe won by [`Self::try_admit`] but never dispatched (owner-checked: a stale,
-    /// late release cannot revert a newer probe a different caller has since won).
+
     pub fn release_probe(&self, pool: &str, destination: DestinationId, owned_epoch: u64) {
         self.on_cell(pool, destination, |cell| {
             cell.release_probe_owned(owned_epoch)
@@ -565,7 +474,7 @@ impl BreakerUnit {
 }
 
 /// What a named pool's cell is created carrying from the destination's default cell: its state,
-/// cooldown and streak, and no lifetime errors of its own (the error count is the cell's own).
+
 fn inherited(default: &BreakerCell) -> CellSnapshot {
     CellSnapshot {
         err: 0,
@@ -574,8 +483,7 @@ fn inherited(default: &BreakerCell) -> CellSnapshot {
 }
 
 /// Whether `cell` is suppressed at `now` (not Closed, or Closed inside a pending soft cooldown),
-/// and if so the cooldown it was read under. The cooldown is read FIRST, so a peer that arms a
-/// stricter one afterwards is seen by [`BreakerCell::close_if_recoverable`]'s re-check.
+
 fn suppressed(cell: &BreakerCell, now: u64) -> Option<u64> {
     let cooldown = cell.cooldown_until();
     (!matches!(cell.state(), CellState::Closed) || cooldown > now).then_some(cooldown)
@@ -600,9 +508,7 @@ impl Breaker for BreakerUnit {
                 let _ = self.on_cell(pool, destination, |cell| cell.record_success(now));
                 false
             }
-            // The trip signal is what the call REPORTS, decided under the cell's transition lock,
-            // never a state read before it: a read here can be stale by the time `record_failure`
-            // takes the lock, and would count a probe's reopen as a fresh trip.
+
             Outcome::Transient { retry_after } => {
                 let max_honored = self.max_honored_retry_after_secs();
                 self.on_cell(pool, destination, |cell| {
@@ -626,8 +532,7 @@ impl Breaker for BreakerUnit {
         if let Some(cell) = self.existing(pool, destination) {
             return lane_state_from_verdict(cell.verdict(now));
         }
-        // No cell yet: what the first touch would create. A named pool's inherits the default
-        // cell, and the default cell itself, or a pool with no default cell, starts Closed.
+
         let unborn = match (pool.is_empty(), self.existing("", destination)) {
             (false, Some(default)) => inherited(&default),
             _ => CellSnapshot::default(),

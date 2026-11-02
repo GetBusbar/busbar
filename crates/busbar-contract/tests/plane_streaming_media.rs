@@ -13,7 +13,7 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
         AbiStr::of("text/event-stream"),
         AbiStr::of("application/vnd.amazon.eventstream"),
     ];
-    // Builders require process-lifetime declarations, as a real plugin's Statement does.
+
     let media = Box::leak(Box::new(media));
     let mut tail = PlaneTail::EMPTY.with_streaming_content_types(media);
     tail.ingress = INGRESS_RESPONSE_STREAM;
@@ -45,8 +45,7 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
     st.kind_tail = old.as_ptr().cast();
     // SAFETY: old's allocation is exactly its declared size; no appended pointer exists.
     let legacy_bytes = unsafe { rendering::render(&st) }.unwrap();
-    // This frozen BBSTMT03 statement predates the optional MIME-list extension. Admission
-    // compares precisely these signed bytes with the door's rendering, not decoded equality.
+
     assert_eq!(
         legacy_bytes,
         include_bytes!("fixtures/plane-before-streaming.bbstmt")

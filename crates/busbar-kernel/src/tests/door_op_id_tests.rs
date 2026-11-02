@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NODE'S ONE `op_id` ALLOCATOR: ids are unique across boots, so a write of a
-//! new boot is never answered as the replay of an earlier boot's write.
-
 use super::*;
 use crate::test_support::store_double::MemoryStore;
 use busbar_contract::abi::sdk::store::{Op, Step, StoreSlots};
@@ -21,7 +18,6 @@ fn cells() -> [(&'static str, u64, UsageDelta); 1] {
     )]
 }
 
-/// One usage write through the store's table body, on no ticket (the memory store answers inline).
 fn write(store: &MemoryStore, op: busbar_contract::abi::store::OpId, why: &str) {
     match StoreSlots::add_usage_batch(store, &mut Op::detached(), op, &cells()) {
         Step::Ready(r) => r.expect(why),
@@ -46,8 +42,6 @@ fn the_process_mint_is_one_counter() {
     assert_eq!(a.0[..8], b.0[..8], "one node half per process");
 }
 
-/// RED: the durable dedupe outlives the process. A write of the NEW boot at its counter 1 is
-/// applied, not answered as the previous boot's counter-1 write replayed.
 #[test]
 fn a_new_boots_write_is_not_deduped_against_an_earlier_boots() {
     let store = MemoryStore::new();
@@ -64,8 +58,6 @@ fn a_new_boots_write_is_not_deduped_against_an_earlier_boots() {
     );
 }
 
-/// What the per-boot node draw prevents: a counter restarted under the SAME node half re-issues
-/// the earlier boot's id, and the store applies nothing.
 #[test]
 fn a_restarted_counter_under_one_node_half_is_answered_as_a_replay() {
     let store = MemoryStore::new();

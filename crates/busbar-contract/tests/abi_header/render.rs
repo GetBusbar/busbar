@@ -1,35 +1,4 @@
 //! THE GENERATED C HEADER, AND PROOF IT HAS NOT DRIFTED.
-//!
-//! BUSBAR-1.6.0.md §11.5 (line 1322) lists "a generated C header — the zero-dependency proof (#84)"
-//! beside the ABI folders, and #84 (line 2237) says a third party builds a plugin from that header
-//! alone. This module is the generator. It parses the Rust sources of the memory ABI with `syn` and
-//! renders ONE header, `crates/busbar-contract/include/busbar_plugin.h`:
-//!
-//! * the sources are `abi/mechanism/`, one folder per kind (`store`, `secret`, `auth`, `hook`,
-//!   `export`, `plane`, `transport`; a `tests/` folder is never read) and the three host tables a
-//!   plugin calls (`abi/host/conn/connector.rs`, `abi/host/service.rs`, `abi/host/io.rs`). `abi/cold`, `abi/hot`,
-//!   `abi/sdk`, `abi/host/conn/mod.rs` and `abi/mod.rs` are never read;
-//! * every C-layout struct and union, every fixed-width enum and transparent newtype, every
-//!   `extern "C"` function-pointer alias and every integer `pub const` becomes a C declaration. A
-//!   type with no C-layout marker is Rust-only (a validator's fault enum, a contract row) and is
-//!   not part of the boundary;
-//! * a construct the generator cannot map FAILS the run and names the item. Nothing is skipped
-//!   silently;
-//! * the committed layout golden (`crates/busbar-contract/tests/golden/abi-layout.golden`) is the
-//!   ONE layout pin: every emitted struct is recorded there (one that is not FAILS the run, naming
-//!   it), and the header carries `_Static_assert`s for its size, alignment and field offsets, so a C
-//!   compiler refuses a header that disagrees.
-//!
-//! NAMING. Each source is a kind: `mech`, `store`, `secret`, `auth`, `hook`, `export`, `plane`,
-//! `transport`, `hconn` (the connector table), `hsvc` (the service table) and `hio` (the host I/O
-//! table). A type is
-//! `bb_<kind>_<RustName>` and a constant is `BB_<KIND>_<RUST_NAME>`, so one Rust name in two kinds
-//! cannot collide. A constant inside an inline module carries the module name
-//! (`BB_STORE_SLOT_RESERVE`); an enum variant is `BB_<KIND>_<Enum>_<Variant>`.
-//!
-//! THE COMMAND. `cargo test -p busbar-contract --test abi_header` re-renders and fails, naming the
-//! first differing line, if the committed header differs. `BUSBAR_ABI_HEADER_WRITE=1 cargo test -p busbar-contract --test abi_header` rewrites it.
-//! It is the one command to run after any change under `abi/`.
 
 use proc_macro2::{TokenStream, TokenTree};
 use std::collections::{HashMap, HashSet};
@@ -45,7 +14,7 @@ pub const REGENERATE: &str =
 pub const ABI: &str = "crates/busbar-contract/src/abi";
 
 /// `(kind, golden alias prefix, path under abi/, is a folder)`. The order is the order of the
-/// header's sections.
+
 pub const SOURCES: &[(&str, &str, &str, bool)] = &[
     ("mech", "Mech", "mechanism", true),
     ("store", "Store", "store", true),
@@ -61,7 +30,7 @@ pub const SOURCES: &[(&str, &str, &str, bool)] = &[
 ];
 
 /// `(kind, Rust name, golden key)`: a struct the layout golden records under an alias of its own,
-/// neither `<prefix><Name>` nor `<prefix><module>::<Name>`.
+
 const GOLDEN_ALIASES: &[(&str, &str, &str)] = &[("mech", "AbiStr", "MechStr")];
 
 /// One source file handed to [`render_sources`].
@@ -70,8 +39,6 @@ pub struct Src<'a> {
     pub rel: &'a str,
     pub text: &'a str,
 }
-
-// ───────────────────────────── the C type model ─────────────────────────────
 
 #[derive(Clone, Debug)]
 enum Ty {
@@ -144,7 +111,6 @@ const C_KEYWORDS: &[&str] = &[
     "bool",
     "true",
     "false",
-    // C++ keywords, so the header also reads as C++.
     "class",
     "new",
     "delete",
@@ -197,7 +163,7 @@ fn qualified(q: bool, base: &str, inner: &str) -> String {
 }
 
 /// The C declaration of `inner` (a name, possibly already wrapped in declarator syntax) having type
-/// `ty`. `q` is whether the object of this type is const-qualified.
+
 fn decl(ty: &Ty, inner: String, q: bool) -> String {
     match ty {
         Ty::Void => qualified(q, "void", &inner),
@@ -248,8 +214,6 @@ fn mentions(ty: &Ty, by_value: bool, out: &mut Vec<(String, String, bool)>) {
         }
     }
 }
-
-// ───────────────────────────── collected items ─────────────────────────────
 
 struct FileCtx {
     kind: String,
@@ -432,7 +396,7 @@ fn const_kind(t: &syn::Type) -> ConstKind {
 }
 
 /// The glue macros whose expansion is Rust-side only: they build a contract table or an SDK marker
-/// and define no C layout.
+
 const GLUE_MACROS: &[&str] = &[
     "kind_slots",
     "slot_structs",
@@ -664,7 +628,7 @@ fn collect_items(items: &[syn::Item], file: usize, scope: &mut Vec<String>, col:
                 }
                 let public = matches!(c.vis, syn::Visibility::Public(_));
                 let kind = const_kind(&c.ty);
-                // Private constants are still evaluable, so a public one may name them.
+
                 if !public && !matches!(kind, ConstKind::Int(_)) {
                     continue;
                 }
@@ -690,11 +654,9 @@ fn collect_items(items: &[syn::Item], file: usize, scope: &mut Vec<String>, col:
                     .unwrap_or_default();
                 let defines = m.ident.as_ref().map(ToString::to_string);
                 if defines.as_deref() == Some("store_slots") {
-                    // The one macro whose expansion is a C layout; its invocation is expanded below.
                     continue;
                 }
                 if defines.is_none() && name == "abi_struct" {
-                    // `abi_struct!` states its structs as written: read them in place.
                     match syn::parse2::<syn::File>(m.mac.tokens.clone()) {
                         Ok(inner) => collect_items(&inner.items, file, scope, col),
                         Err(e) => col.errs.push(format!(
@@ -705,8 +667,6 @@ fn collect_items(items: &[syn::Item], file: usize, scope: &mut Vec<String>, col:
                     continue;
                 }
                 if defines.is_some() || GLUE_MACROS.contains(&name.as_str()) {
-                    // A macro definition, or a glue invocation. Either one defining a C layout
-                    // would be an ABI shape this generator cannot see: refuse it.
                     if has_ident(m.mac.tokens.clone(), "repr") {
                         col.errs.push(format!(
                             "{}: macro `{name}` defines a C layout the generator cannot read",
@@ -758,8 +718,6 @@ fn collect_items(items: &[syn::Item], file: usize, scope: &mut Vec<String>, col:
         }
     }
 }
-
-// ───────────────────────────── constants ─────────────────────────────
 
 struct ConstTable<'a> {
     map: HashMap<(String, String, String), &'a syn::Expr>,
@@ -893,8 +851,6 @@ fn c_string(s: &str) -> String {
     o
 }
 
-// ───────────────────────────── type resolution ─────────────────────────────
-
 fn kind_in(segs: &[String]) -> Option<String> {
     let start = if let Some(p) = segs.iter().position(|s| s == "abi") {
         p + 1
@@ -966,9 +922,7 @@ impl Resolver<'_> {
                     .map_err(|e| format!("array length: {e}"))?;
                 Ok(Ty::Array(Box::new(self.map_type(&a.elem, f)?), n))
             }
-            // A shared `'static` reference is the C pointer it is laid out as, never NULL: the
-            // sealed door function answers one (`DoorFn`), and C reads it as
-            // `const T *`. Any other reference has no C mapping.
+
             syn::Type::Reference(r)
                 if r.mutability.is_none()
                     && r.lifetime.as_ref().is_some_and(|l| l.ident == "static") =>
@@ -1071,8 +1025,6 @@ fn type_form(t: &syn::Type) -> &'static str {
     }
 }
 
-// ───────────────────────────── the render ─────────────────────────────
-
 struct CStruct {
     kind: String,
     name: String,
@@ -1130,23 +1082,13 @@ fn comment(doc: &Option<String>) -> String {
 }
 
 /// Render the header from source texts and the layout golden. The pure core of the gate. A struct
-/// the golden does not record is emitted without its assertions: a synthetic fragment's golden may
-/// pin only what it tests. The real tree's render ([`render`]) holds every struct to the golden
-/// ([`render_sources_pinned`]).
-///
-/// # Errors
-///
-/// A construct with no C mapping, or a golden that disagrees with its struct.
+
 pub fn render_sources(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
     render_with(srcs, golden, false)
 }
 
 /// [`render_sources`], and every emitted struct is pinned by the golden: one it does not record
-/// fails the render, naming it.
-///
-/// # Errors
-///
-/// As [`render_sources`], and every struct the golden does not record.
+
 pub fn render_sources_pinned(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
     render_with(srcs, golden, true)
 }
@@ -1170,7 +1112,6 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
         }
     }
 
-    // Names, and the duplicates among them.
     let mut defined: HashSet<(String, String)> = HashSet::new();
     let mut fn_aliases: HashSet<(String, String)> = HashSet::new();
     for it in &col.items {
@@ -1267,7 +1208,6 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
         }
     }
 
-    // Constants.
     let mut consts: Vec<CConst> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for c in &col.consts {
@@ -1324,7 +1264,6 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
         });
     }
 
-    // C names may not collide across types either.
     let mut cnames: HashSet<String> = HashSet::new();
     for n in structs
         .iter()
@@ -1337,7 +1276,6 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
         }
     }
 
-    // Order: typedefs by what they name, structs by what they hold by value.
     let td_index: HashMap<(String, String), usize> = typedefs
         .iter()
         .enumerate()
@@ -1379,7 +1317,6 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
         }
     };
 
-    // The golden.
     let gold = parse_golden(golden);
     let mut asserts = String::new();
     let mut pinned = 0usize;
@@ -1399,8 +1336,7 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
         if s.name.starts_with(&cap) {
             keys.push(s.name.clone());
         }
-        // A struct recorded by its inline-module path (`tkind::route::RouteMatch`) or under the
-        // golden's own alias ([`GOLDEN_ALIASES`]) is the same struct.
+
         let mut submodule: Vec<&String> = gold
             .keys()
             .filter(|k| {
@@ -1418,9 +1354,7 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
                 .map(|(_, _, alias)| (*alias).to_string()),
         );
         let t = cname(&s.kind, &s.name);
-        // THE ONE LAYOUT PIN HOLDS FOR EVERY EMITTED STRUCT of the real tree: one the golden does
-        // not record is a header a C compiler cannot hold to the Rust layout, so the run fails and
-        // names it.
+
         let Some((key, entries)) = keys.iter().find_map(|k| {
             gold.get(k)
                 .filter(|e| e.iter().any(|(f, _)| f == "__size"))
@@ -1453,8 +1387,6 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
                     "BB_ASSERT(offsetof({t}, {cf}) == {off}, \"{t}.{cf}: offset\");\n"
                 ));
             } else if !s.union {
-                // Struct fields each have their own ABI offset. Unions deliberately permit a
-                // size/alignment-only pin (all members overlap), as HookSignalValue does.
                 errs.push(format!(
                     "golden `{key}` does not pin field `{f}` of Rust struct `{}`",
                     s.name
@@ -1481,7 +1413,6 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
         ));
     }
 
-    // Emit.
     let mut o = String::new();
     o.push_str(&format!(
         "/*\n * busbar_plugin.h -- the busbar plugin ABI as a C header (BUSBAR-1.6.0.md section 11.5,\n * decision 84: a third party builds a plugin from this header alone).\n *\n * GENERATED by `{REGENERATE}` from the Rust sources under\n * crates/busbar-contract/src/abi/. DO NOT EDIT. `cargo test -p busbar-contract --test abi_header`\n * fails if this file differs from what the generator renders.\n *\n * NAMING. Every type is bb_<kind>_<RustName> and every constant is BB_<KIND>_<RUST_NAME>, where\n * <kind> is one of: mech (the shared mechanism), store, secret, auth, hook, export, plane,\n * transport, hconn (the host connector table), hsvc (the host service table), hio (the host I/O\n * table). A constant in an\n * inline module carries the module name (BB_STORE_SLOT_RESERVE); an enum variant is\n * BB_<KIND>_<Enum>_<Variant>. Enums are fixed-width integer typedefs, never C enum types.\n *\n * LAYOUT. The static assertions at the end come from the layout golden\n * (crates/busbar-contract/tests/golden/abi-layout.golden) and hold on a 64-bit target.\n */\n"

@@ -1,19 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ADMIN SURFACE IS BOUND BEFORE `/healthz` ANSWERS: over the REAL binary, a client that waits
-//! for the data door's `/healthz` and then calls the admin API is answered, never refused. 1.5.5
-//! bound both listeners before either served; 1.6.0 started the data workers first and bound the
-//! admin socket after them, so a call fired on the first `/healthz` answer could find no admin
-//! listener (the oracle rig's mint after its `/healthz` wait read an empty reply:
-//! `admin API returned no/invalid JSON: EOF`).
-//!
-//! The window is the time between the first data worker serving and the admin bind, so the node is
-//! booted several times and polled without a pause: each first `/healthz` answer is followed at
-//! once by an admin call, which must connect and answer.
 #![cfg(unix)]
-// The fixture boots a REAL server with a provider row, as root_listeners_are_the_connectors.rs
-// gates.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -24,10 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// The admin surface's token.
 const ADMIN_TOKEN: &str = "admin-bound-before-healthz-token";
 
-/// How many boots are raced.
 const BOOTS: usize = 8;
 
 fn fixture_dir(n: usize) -> PathBuf {
@@ -75,7 +61,6 @@ models:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -99,7 +84,6 @@ fn boot(dir: &Path) -> Reap {
     )
 }
 
-/// The status code of one `GET path` on `port` carrying `header`; `Err` names why it did not answer.
 fn get(port: u16, path: &str, header: &str) -> Result<u16, String> {
     let mut stream =
         TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("connect: {e}"))?;
@@ -123,8 +107,6 @@ fn get(port: u16, path: &str, header: &str) -> Result<u16, String> {
         .ok_or_else(|| format!("no status line in {buf:?}"))
 }
 
-/// RED before: the admin socket was bound after the data workers served, so the admin call made
-/// on the first `/healthz` answer could be refused.
 #[test]
 fn the_admin_api_answers_as_soon_as_healthz_does() {
     for n in 0..BOOTS {

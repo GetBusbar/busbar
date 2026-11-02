@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! In-process fixture construction over the kernel's normal authentication constructors.
-
 use busbar_contract::auth::AuthModule;
 use busbar_contract::auth_calls::AuthCalls;
 use busbar_kernel::auth::{AdminModule, AuthMiddleware};

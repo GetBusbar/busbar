@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The upstream leg's reads: a channel message longer than the reader's buffer; every channel
-//! message reaches the reader.
 
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
@@ -59,9 +58,6 @@ fn a_concurrent_reader_gets_the_partial_messages_suffix_before_the_next_message(
     let spawned = Arc::clone(&reader);
     AFTER_READY_POP.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
-            // Select the same boundary on both versions. If pop released the mutex, force the
-            // second read to finish before the first can put its suffix back. With atomic pop
-            // and suffix retention, the second read waits for the first to release its guard.
             let unlocked = other.try_lock().is_ok();
             let (finished, done) = mpsc::channel();
             *spawned.lock().unwrap() = Some(std::thread::spawn(move || {
@@ -86,10 +82,7 @@ fn a_concurrent_reader_gets_the_partial_messages_suffix_before_the_next_message(
 }
 
 /// RED (THE DESIGN §5: a plugin's slow I/O answers not-ready, "no blocking thread exists"): a
-/// channel message longer than the reader's buffer is read in parts, its rest kept first in line.
-/// Put back while the queue's lock was still held (the lock taken for the pop lives through the
-/// whole `if let`), the read locked the queue a second time on the same thread and never answered,
-/// wedging the worker that drove it.
+
 #[test]
 fn a_message_longer_than_the_readers_buffer_is_read_in_parts_and_never_wedges_the_reader() {
     let ready = Arc::new(Mutex::new(ready_messages(&[(b"abcd", true)])));
@@ -137,11 +130,7 @@ fn message(bytes: &[u8]) -> crate::framer::Got {
 }
 
 /// RED (THE DESIGN §5: reads are back-pressured, nothing is lost silently on
-/// a reliable stream; `busbar_contract::abi::transport`, "an EMPTY piece is an empty frame (a
-/// wire's empty message)"): every channel message the leg's association yields reaches the
-/// reader, in order: an EMPTY message is relayed as an empty message, and a reader that has fallen
-/// past the leg's queue bound loses nothing (the leg stops draining its port instead). The leg
-/// dropped both, with no failure, flag or count.
+
 #[test]
 fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
     crate::support::worker().block_on(async {
@@ -193,8 +182,7 @@ fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
 }
 
 /// A datagram framer that answers every op with nothing (its `begin` naming framing `1`), and whose
-/// `emit` HANGS once armed: it says it is inside the crossing, then does not come back until the
-/// test lets it. Every crossing is recorded with the thread it ran on.
+
 struct Hanging {
     facts: crate::framer::DoorFacts,
     gate: Mutex<Option<(mpsc::Sender<std::thread::ThreadId>, mpsc::Receiver<()>)>>,
@@ -236,10 +224,7 @@ impl crate::framer::FramerDoor for Hanging {
 }
 
 /// RED before the leg's association was driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin
-/// code runs under a host lock): its mutex was held across every framer crossing, so the session's
-/// close beside a hung line-frame emit waited on the plugin for as long as it hung. Now a second
-/// line frame and the close both return while the emit still hangs, and the holder finishes the
-/// association on its own thread as it brings it back.
+
 #[test]
 fn a_close_beside_a_hung_datagram_emit_never_waits_and_the_holder_finishes_it() {
     use crate::datagram::{Across, LegSink as _};
@@ -359,7 +344,7 @@ impl crate::datagram::LegSink for ReturnedLines {
 }
 
 /// A finite Emit answer with a channel head, LINE feedback, and more channel messages than the
-/// actual host sink can hold. Recalls retain their output but receive no application bytes.
+
 struct LineOutputs {
     facts: crate::framer::DoorFacts,
     pending: Mutex<VecDeque<(u64, Vec<u8>, u16)>>,
@@ -946,7 +931,7 @@ fn a_charged_channel_keeps_its_original_allocation_until_consumption_or_close() 
             dialled.leg.line(incoming_line(), std::time::Instant::now());
             assert!(dialled.pairing.published().await.failure.is_none());
             let mut buf = [0; 16];
-            // Find a real multi-byte CHANNEL piece from the scripted MORE output.
+
             loop {
                 let multi = dialled
                     .leg
@@ -1003,8 +988,7 @@ fn a_charged_channel_keeps_its_original_allocation_until_consumption_or_close() 
                 "consumption or cancellation retires reader storage"
             );
             assert!(dialled.leg.ready.lock().unwrap().is_empty());
-            // Persistent channel descriptions and framer metadata stay charged until their
-            // actual owners retire too; they are not reader payload.
+
             dialled.close();
             drop(dialled);
             assert_eq!(memory.used(), 0);
@@ -1107,8 +1091,7 @@ fn a_publication_completion_wake_can_admit_the_next_episode_before_the_old_task_
         let mut context = std::task::Context::from_waker(&waker);
         let mut first = Box::pin(dialled.pairing.published());
         assert!(first.as_mut().poll(&mut context).is_pending());
-        // Notify invokes this waker synchronously after the first actor declares quiescence,
-        // while its completed future still owns its cancellation guard.
+
         tokio::time::timeout(Duration::from_secs(5), next.fired.notified())
             .await
             .expect("the first publication reached actual quiescence");

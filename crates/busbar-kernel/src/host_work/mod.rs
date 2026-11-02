@@ -1,36 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE WORK BOOK behind `work.open` / `work.find` / `work.settle` / `work.resume`
-//! (`BUSBAR-1.6.0.md` THE DESIGN §11.12, the work family; §1 "Admission bounds live work; nothing
-//! evicts it"; ARCHITECT H3): the durable work handles a plugin opens, finds by reference, settles
-//! and resumes, kept by the kernel and written through the store's typed records, so a handle
-//! outlives the process that opened it.
-//!
-//! * **A handle and its reference.** `work.open` mints a 128-bit REFERENCE from the OS CSPRNG (the
-//!   name the plugin hands its caller) and a process-local HANDLE (the number the plugin calls
-//!   with). The reference is durable; a handle is re-minted when a reference is found again after a
-//!   restart.
-//! * **Scoped lookup.** A handle is kept under the calling instance's LABEL and the digest of the
-//!   principal of the unit that opened it ([`owner_of`]). `work.find` answers only within both,
-//!   and every denial is the same READY absent answer.
-//! * **The bound refuses at admission; nothing evicts.** At [`WorkBounds::max_live`] live handles
-//!   an instance's next `work.open` is refused; a live handle is never dropped. Each instance's
-//!   bounds are its section's reserved `work:` sub-key ([`WorkBounds::of_section`]), the host's
-//!   where it states none. Retention bounds
-//!   only settled handles ([`WorkBounds::retain_ms`]), and the sweep runs from a `work.open` (a
-//!   submit), never from a read or a timer.
-//! * **Durable before answered.** Every open and settle is written to the store before it is
-//!   answered; a write the store refuses answers FAILED and leaves the book as it was.
-//! * **Across a restart.** A reference not in memory is read from the store, and an instance's
-//!   rows are read once ([`WorkBook::load`]) before its first open. A handle an earlier process
-//!   left holds NO slot of the bound (audit P-M8): its work died with the process that opened
-//!   it, so admission releases it at the first load and the instance admits up to its full bound
-//!   again. The handle stays findable; settling it is its plane's.
-//!
-//! The row is at most [`busbar_contract::bounded::MAX_RECORD_BYTES`]: the handle's record is capped
-//! at [`MAX_WORK_RECORD`] (the body lives in the plugin's own records; the handle's record names it).
-
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -41,13 +11,10 @@ use ring::digest;
 
 use crate::host_records::{record_key, RecordRows};
 
-/// The record kind every work row is kept under.
 pub const WORK_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-work");
 
-/// A reference's bytes: 128 bits.
 pub type Reference = [u8; 16];
 
-/// The digest a handle's owner is kept as.
 pub type Owner = [u8; 32];
 
 /// The bounds of one instance's work.
@@ -66,24 +33,13 @@ impl Default for WorkBounds {
 }
 
 impl WorkBounds {
-    /// The legacy work registries' bounds: 4096 live handles and five minutes for settled ones.
     pub const DEFAULT: Self = Self {
         max_live: 4096,
         retain_ms: 300_000,
     };
 
-    /// Milliseconds per second, for the section's `retain_s` to `retain_ms` conversion.
     const MILLIS_PER_SECOND: u64 = 1_000;
 
-    /// THE PLANE'S OWN BOUNDS: its section's reserved `work: {max_live, retain_s}` sub-key
-    /// (`busbar_contract::section::RESERVED_WORK_KEY`), each key it leaves out taken from
-    /// `fallback` (the host's bounds); no `work:` at all is `fallback` whole.
-    ///
-    /// # Errors
-    ///
-    /// The refusal naming the key: `work:` that is not a map, a key it does not know, a
-    /// `max_live` that is not a whole number above zero, a `retain_s` that is not a whole number
-    /// of seconds (or overflows in milliseconds).
     pub fn of_section(
         section: &str,
         value: &serde_yaml::Value,
@@ -133,7 +89,6 @@ impl WorkBounds {
     }
 }
 
-/// The owner digest of a unit's principal: its key's id, or the ungoverned principal.
 #[must_use]
 pub fn owner_of(principal: Option<&str>) -> Owner {
     let mut ctx = digest::Context::new(&digest::SHA256);
@@ -150,13 +105,11 @@ pub fn owner_of(principal: Option<&str>) -> Owner {
     owner
 }
 
-/// A reference as the plugin holds it: lowercase hex.
 #[must_use]
 pub fn reference_text(r: &Reference) -> String {
     hex::encode(r)
 }
 
-/// A reference the plugin handed back, or `None` for anything but [`reference_text`]'s form.
 #[must_use]
 pub fn parse_reference(text: &[u8]) -> Option<Reference> {
     if text.len() != 32 || !text.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
@@ -194,7 +147,6 @@ pub struct Work {
 }
 
 impl Work {
-    /// The state byte `work.find` and `work.resume` answer.
     #[must_use]
     pub fn state(&self) -> u8 {
         if self.live {
@@ -204,7 +156,6 @@ impl Work {
         }
     }
 
-    /// The row this handle is written as; `None` when it does not fit a record.
     #[must_use]
     pub fn row(&self) -> Option<RecordBytes> {
         let kind = self.kind.as_bytes();
@@ -224,8 +175,6 @@ impl Work {
         RecordBytes::new(b).ok()
     }
 
-    /// The handle a row describes, or `None` for a row that does not decode (a tombstone
-    /// included).
     #[must_use]
     pub fn read(instance: &Arc<str>, reference: Reference, row: &[u8]) -> Option<Self> {
         let (&version, rest) = row.split_first()?;
@@ -267,10 +216,8 @@ impl Work {
     }
 }
 
-/// The version byte every row leads with.
 const ROW_VERSION: u8 = 1;
 
-/// The store key of `reference` under `instance`.
 #[must_use]
 pub fn work_key(instance: &str, reference: &Reference) -> Vec<u8> {
     record_key(instance, reference)
@@ -308,17 +255,16 @@ impl Book {
     }
 }
 
-/// Why a work call was refused, in the words the service answers.
 pub mod refusal {
-    /// `work.open` at the instance's bound of live handles.
+
     pub const AT_BOUND: &str = "the instance holds its bound of live work handles";
-    /// A handle that is not one of the caller's, or whose principal is not the calling unit's.
+
     pub const NOT_A_HANDLE: &str = "not a work handle of the caller";
-    /// `work.settle` of a handle already settled.
+
     pub const SETTLED: &str = "the work handle is already settled";
-    /// A record past `MAX_WORK_RECORD`, or a kind too long to keep.
+
     pub const TOO_LONG: &str = "the work record is longer than MAX_WORK_RECORD";
-    /// A work call from a crossing that serves no unit in flight.
+
     pub const NO_UNIT: &str = "the crossing serves no unit in flight";
 }
 
@@ -334,18 +280,11 @@ impl WorkBook {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Whether `instance`'s rows have been read from the store in this process.
     #[must_use]
     pub fn loaded(&self, instance: &str) -> bool {
         self.lock().loaded.contains(instance)
     }
 
-    /// Read `instance`'s rows once (an earlier process's handles), adopting every row not yet in
-    /// the book. `Err` when the store did not answer; the instance stays unloaded.
-    ///
-    /// # Errors
-    ///
-    /// The store's.
     pub fn load(&self, rows: &dyn RecordRows, instance: &Arc<str>) -> Result<(), StoreError> {
         if self.loaded(instance) {
             return Ok(());
@@ -368,9 +307,6 @@ impl WorkBook {
         Ok(())
     }
 
-    /// THE SWEEP, run from a submit: every settled handle of `instance` settled at or before
-    /// `now_ms - retain_ms` leaves the book; their references are answered, for the caller to strike
-    /// from the store.
     pub fn sweep(&self, instance: &str, now_ms: u64, retain_ms: u64) -> Vec<Reference> {
         let mut book = self.lock();
         let gone: Vec<u64> = book
@@ -388,10 +324,6 @@ impl WorkBook {
             .collect()
     }
 
-    /// Reserve a live handle for `work` unless `instance` already holds `max_live`: the handle, or
-    /// `None` at the bound. The reservation is the bound's: two racing opens never both pass it.
-    /// Only a handle opened in THIS process holds a slot: one read from the store (`opened_by` is
-    /// `None`) is an earlier process's, whose work died with it.
     #[must_use]
     pub fn reserve(&self, work: Work, max_live: usize) -> Option<u64> {
         let mut book = self.lock();
@@ -406,12 +338,10 @@ impl WorkBook {
         Some(book.insert(work))
     }
 
-    /// Drop a reservation the store refused.
     pub fn unreserve(&self, handle: u64) {
         self.lock().remove(handle);
     }
 
-    /// The handle `reference` names under `instance`, if the book holds it.
     #[must_use]
     pub fn by_reference(&self, instance: &str, reference: &Reference) -> Option<(u64, Work)> {
         let book = self.lock();
@@ -419,13 +349,10 @@ impl WorkBook {
         book.handles.get(&h).map(|w| (h, w.clone()))
     }
 
-    /// Adopt a handle read from the store; its handle (an existing one when the book already holds
-    /// the reference).
     pub fn adopt(&self, work: Work) -> u64 {
         self.lock().insert(work)
     }
 
-    /// Handle `handle`, when it is `instance`'s.
     #[must_use]
     pub fn get(&self, instance: &str, handle: u64) -> Option<Work> {
         self.lock()
@@ -435,20 +362,6 @@ impl WorkBook {
             .cloned()
     }
 
-    /// Prepare `instance`'s live handle `handle` for settlement, answering the proposed durable
-    /// state. Until `commit_settle`, readers and capacity admission keep its current live state.
-    /// Only one settlement owns the handle; `cancel_settle` retires an unconfirmed proposal.
-    ///
-    /// THE SETTLE IS SCOPED WHILE THE HANDLE'S UNIT RUNS (ARCHITECT 2026-10-07 K4-11 (B)): while
-    /// the unit that opened the handle, or the unit that last resumed it, is in flight by the
-    /// kernel's unit table (`in_flight`), only `owner` (the principal of the unit the settling
-    /// crossing serves) settles it when it is the handle's; anyone else is refused as a handle
-    /// nobody holds is. Once those units have ended (a lapse ends a unit too), the instance
-    /// settles it from any unit (the plane's sweeps). Nothing the plane says decides which.
-    ///
-    /// # Errors
-    ///
-    /// [`refusal::NOT_A_HANDLE`] or [`refusal::SETTLED`].
     pub fn settle(
         &self,
         instance: &str,
@@ -480,8 +393,6 @@ impl WorkBook {
         Ok(settled)
     }
 
-    /// Publish a Store-confirmed settlement and release its live reservation together. A unit
-    /// that resumed the live handle while the Store call ran keeps its binding.
     pub fn commit_settle(&self, handle: u64, settled: Work) {
         let mut book = self.lock();
         if !book.settling.remove(&handle) {
@@ -494,18 +405,10 @@ impl WorkBook {
         }
     }
 
-    /// Retire a refused, dropped, unwound or unknown Store settlement without changing the
-    /// published Work or releasing the live reservation. A later retry may own it again.
     pub fn cancel_settle(&self, handle: u64) {
         self.lock().settling.remove(&handle);
     }
 
-    /// Bind `instance`'s handle `handle` to `unit`, when `owner` is the handle's: the handle as it
-    /// now stands.
-    ///
-    /// # Errors
-    ///
-    /// [`refusal::NOT_A_HANDLE`].
     pub fn bind(
         &self,
         instance: &str,
@@ -523,10 +426,6 @@ impl WorkBook {
         Ok(w.clone())
     }
 
-    /// The owner found live `handle` from `unit`: `unit` becomes the unit it is bound to, so a
-    /// handle read back from the store (no unit of this process) is scoped while its finder runs.
-    /// A unit bound to it and still in flight (`in_flight`) is not displaced; a settled handle is
-    /// left as it is.
     pub fn found(&self, handle: u64, unit: u64, in_flight: &dyn Fn(u64) -> bool) {
         if let Some(w) = self.lock().handles.get_mut(&handle) {
             if w.live && !w.bound.is_some_and(in_flight) {
@@ -535,7 +434,6 @@ impl WorkBook {
         }
     }
 
-    /// How many handles the book holds, live and settled.
     #[must_use]
     pub fn held(&self) -> usize {
         self.lock().handles.len()

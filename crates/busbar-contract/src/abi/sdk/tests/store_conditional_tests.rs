@@ -127,7 +127,7 @@ fn all_truncations_trailing_bytes_and_unknown_versions_refuse() {
 fn malformed_recognized_intent_never_falls_back() {
     let encoded = candidate().encode().unwrap();
     let ext = extensions::encode(&[(INTENT, &encoded)]);
-    // Even a missing value-length is a recognized malformed intent.
+
     for end in 2 + INTENT.len()..ext.len() {
         assert!(intent(&ext[..end]).is_err(), "end={end}");
     }
@@ -210,7 +210,7 @@ fn result_requires_ready_lease_presence_and_complete_correlation() {
             Ok(decision)
         );
         assert!(read_result(Outcome::Ready, false, &ext, &request).is_err());
-        // SHORT is a FAILED answer in the existing ABI, even if it incorrectly carries a lease.
+
         for outcome in [
             Outcome::Failed,
             Outcome::Pending,
@@ -435,7 +435,7 @@ fn invalid_range_length_and_all_mutation_overlaps_refuse() {
     let mut request = candidate();
     request.mutations = vec![range(b"abcd", 3)];
     assert!(request.validate().is_err());
-    // Reversing mutation order must not change overlap refusal.
+
     for pair in [
         vec![range(b"ab", 4), point(b"abcd")],
         vec![range(b"ab", 4), range(b"abc", 4)],

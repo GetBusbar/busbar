@@ -1,33 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `providers:` config SHAPES — an upstream catalog's vocabulary: the catalog definition
-//! (`ProviderDef`, from providers.yaml), the operator deployment (`ProviderDeploy`, from
-//! config.yaml), the frozen whole-entry parse shape (`ProviderCfg`), the active-health block and the
-//! per-provider auth-style selector (`ProviderAuth`); and the RESOLVED provider the runtime reads
-//! ([`ResolvedProvider`]), which is not config grammar. The kernel parses the section into these and
-//! merges each catalog entry with its deployment (`resolve`). Plane-owned request-shape keys
-//! are parsed from the consuming plane's neutral provider descriptor.
-//!
-//! THE SPLIT (row 155 B1; BUSBAR-1.6.0.md #49, THE DESIGN §4 "its `api_key`, `auth`, `token_url`,
-//! `scope` and `subject` bind the auth object (§6); its dialect fields go to the planes that use the
-//! provider"). A resolved provider carries the keys the KERNEL owns typed ([`CORE_PROVIDER_KEYS`]:
-//! the destination, the credential and its auth binding, the health probe and the metadata
-//! carve-outs) and every other key of the entry as an OPAQUE [`ProviderTable`] the kernel carries,
-//! merges by one neutral rule ([`merge_tables`]) and hands to the plane. The kernel names none of
-//! the table's keys.
-//!
-//! Moved VERBATIM back from `busbar-substrate-values` when that crate was deleted (#83a SD-8): same
-//! type names, field names, order, types and serde attributes, so every parse, every refusal text and
-//! the config-schema snapshot are byte-identical.
-//!
-//! `ModelCfg` (the per-entry config) lives in `busbar-contract` (DECISIONS #40/#38) because a
-//! plugin crate (`busbar-plane-decisions`) reuses it verbatim for its own `decisions.models.<name>`;
-//! it is re-exported below at its historical path.
-//!
-//! This file is config grammar: the config-schema gate tracks it, so every `Deserialize` shape below
-//! is frozen additive-only.
-
 pub use busbar_contract::config::{neg1, ModelCfg};
 
 use std::collections::HashMap;
@@ -40,7 +13,7 @@ use busbar_contract::secret_ref::SecretRef;
 use super::provider_grammar::{Form, ValueSeed};
 
 #[derive(Serialize)]
-#[serde(deny_unknown_fields)] // a typo'd provider key must fail boot, not be silently ignored.
+#[serde(deny_unknown_fields)]
 pub struct ProviderCfg {
     /// The dialect the provider speaks, as the catalog (or a deployment override) names it, carried
     /// as an opaque word. The kernel supplies no dialect of its own (BUSBAR-1.6.0.md #49: the kernel
@@ -56,7 +29,7 @@ pub struct ProviderCfg {
     /// Active health-probe settings for this provider's lanes (mode + interval + timeout).
     #[serde(default)]
     pub health: Option<HealthCfg>,
-    // error_map is REQUIRED on every provider — NO default (fail loud if missing)
+
     pub error_map: HashMap<String, String>,
     /// Optional upstream request-path override (see ProviderDef::path).
     #[serde(default)]
@@ -110,7 +83,7 @@ struct ProviderCfgCore {
     api_key: SecretRef,
     #[serde(default)]
     health: Option<HealthCfg>,
-    // error_map is REQUIRED on every provider — NO default (fail loud if missing)
+
     error_map: HashMap<String, String>,
     #[serde(default)]
     path: Option<String>,
@@ -343,13 +316,11 @@ struct ProviderDeployCore {
 pub struct ProviderAuth(String);
 
 impl ProviderAuth {
-    /// The style word, as the configuration writes it.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// The style `word`, unchecked: a fixture or a rewrite that already holds a declared word.
     #[must_use]
     pub fn named(word: impl Into<String>) -> Self {
         Self(word.into())
@@ -367,9 +338,6 @@ impl<'de> Deserialize<'de> for ProviderAuth {
     }
 }
 
-/// serde's unknown-variant refusal, word for word (`serde::de::Error::unknown_variant` and its
-/// `OneOf` list), over the declared styles in listing order: the text the previous release's closed
-/// enum refused an unknown `auth:` with, its list the declared one.
 fn unknown_style(word: &str, declared: &[busbar_contract::auth_calls::DeclaredStyle]) -> String {
     let quoted: Vec<String> = declared.iter().map(|s| format!("`{}`", s.name)).collect();
     match quoted.as_slice() {
@@ -383,21 +351,8 @@ fn unknown_style(word: &str, declared: &[busbar_contract::auth_calls::DeclaredSt
     }
 }
 
-// ── the resolved provider ─────────────────────────────────────────────────────────────────────────
-
-/// THE PLANE-SHAPED KEYS OF ONE PROVIDER ENTRY, as written (catalog-merged), carried unread: every
-/// key of the entry that is not one of [`CORE_PROVIDER_KEYS`]. The kernel holds it as data, merges it
-/// by [`merge_tables`] and hands it to the plane that speaks the provider, which parses it (THE
-/// DESIGN §4: "A plane receives, at open, the dialect fields of the providers it references and
-/// resolves model -> dialect itself").
 pub type ProviderTable = serde_json::Map<String, Value>;
 
-/// THE KEYS OF A PROVIDER ENTRY THE KERNEL OWNS (row 155 B1 split, ARCHITECT ruling): the
-/// destination it dials and guards (`base_url`, and the `path` / `path_base` composed onto it,
-/// re-judged against the metadata denylist at boot as 1.5.5's `config_validate` did at :406/:430),
-/// the credential and its outbound-auth binding (`api_key`, `auth`, `token_url`, `scope`,
-/// `subject`; THE DESIGN §6), the health probe (`health`) and the metadata carve-outs
-/// (`allow_metadata_hosts`). Everything else is the plane's ([`ProviderTable`]).
 pub const CORE_PROVIDER_KEYS: &[&str] = &[
     "api_key",
     "base_url",
@@ -440,9 +395,6 @@ pub struct ResolvedProvider {
     pub table: ProviderTable,
 }
 
-/// The [`ProviderTable`] of one parsed entry: the entry as written, less [`CORE_PROVIDER_KEYS`] and
-/// less every key it left unset (an absent key and an unset optional one are the same thing to the
-/// plane that reads the table).
 pub fn plane_table<T: Serialize>(entry: &T) -> ProviderTable {
     let Ok(Value::Object(mut table)) = serde_json::to_value(entry) else {
         return ProviderTable::new();
@@ -454,8 +406,6 @@ pub fn plane_table<T: Serialize>(entry: &T) -> ProviderTable {
     table
 }
 
-/// [`plane_table`] of `entry` with its [`ProviderDeploy::options`] laid in, each under the name the
-/// operator wrote.
 fn with_options<T: Serialize>(entry: &T, options: &ProviderTable) -> ProviderTable {
     let mut table = plane_table(entry);
     for (name, value) in options {
@@ -464,8 +414,6 @@ fn with_options<T: Serialize>(entry: &T, options: &ProviderTable) -> ProviderTab
     table
 }
 
-/// THE KEYS A DEPLOYMENT'S TYPED GRAMMAR READS ([`ProviderDeploy`]), in its order; every other key
-/// of the entry is one of its [`ProviderDeploy::options`]. A test holds this list to the struct's.
 pub const DEPLOY_KEYS: &[&str] = &[
     "api_key",
     "protocol",
@@ -481,13 +429,6 @@ pub const DEPLOY_KEYS: &[&str] = &[
     "health",
 ];
 
-/// THE `providers:` SECTION OF `config.yaml`, read: each entry's typed keys ([`DEPLOY_KEYS`]) by its
-/// derived grammar, straight off the document so a refusal keeps its path and position, and every
-/// other key into its [`ProviderDeploy::options`], for the plane to judge.
-///
-/// # Errors
-///
-/// The typed grammar's, or a key written twice.
 pub fn deployments<'de, D: serde::Deserializer<'de>>(
     de: D,
 ) -> Result<HashMap<String, ProviderDeploy>, D::Error> {
@@ -495,8 +436,6 @@ pub fn deployments<'de, D: serde::Deserializer<'de>>(
     Ok(entries)
 }
 
-/// THE KEYS A CATALOG ENTRY'S TYPED GRAMMAR READS ([`ProviderDef`]), in its order; every other key
-/// of the entry is one of its [`ProviderDef::options`]. A test holds this list to the struct's.
 pub const CATALOG_KEYS: &[&str] = &[
     "protocol",
     "base_url",
@@ -511,7 +450,6 @@ pub const CATALOG_KEYS: &[&str] = &[
     "allow_metadata_hosts",
 ];
 
-/// The remote derive's own typed catalog field list, used by migration.
 pub(super) fn catalog_grammar_keys() -> &'static [&'static str] {
     super::migrate_catalog::struct_keys(ProviderDefCore::deserialize)
 }
@@ -521,13 +459,6 @@ pub(super) fn deploy_grammar_keys() -> &'static [&'static str] {
     super::migrate_catalog::struct_keys(ProviderDeployCore::deserialize)
 }
 
-/// THE `providers.yaml` CATALOG, read as [`deployments`] reads `config.yaml`'s section: each entry's
-/// typed keys ([`CATALOG_KEYS`]) by its derived grammar, every other key into its
-/// [`ProviderDef::options`], judged at resolve.
-///
-/// # Errors
-///
-/// The typed grammar's, or a key written twice.
 pub fn catalog<'de, D: serde::Deserializer<'de>>(
     de: D,
 ) -> Result<HashMap<String, ProviderDef>, D::Error> {
@@ -535,8 +466,6 @@ pub fn catalog<'de, D: serde::Deserializer<'de>>(
     Ok(entries)
 }
 
-/// Keep the entry-name boundary strict too: HashMap's ordinary reader silently replaces a
-/// previous provider with the same name, including a duplicate introduced by interpolation.
 fn unique_entries<'de, D, T>(de: D) -> Result<HashMap<String, T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -569,18 +498,10 @@ where
     de.deserialize_map(Entries(std::marker::PhantomData))
 }
 
-/// [`catalog`] over a `providers.yaml` text.
-///
-/// # Errors
-///
-/// The YAML library's, with the path and position of the node it names.
 pub fn catalog_from_str(text: &str) -> Result<HashMap<String, ProviderDef>, serde_yaml::Error> {
     catalog(serde_yaml::Deserializer::from_str(text))
 }
 
-// Remote derives retain the core fields' streaming serde errors. Plane-owned fields are
-// consumed beside them, using the owning plane's neutral descriptor, before its values
-// enter the opaque options table. Direct entry parsing follows this same path.
 macro_rules! provider_entry {
     ($ty:ident, $core:ident, $keys:ident, $form:ident) => {
         impl<'de> Deserialize<'de> for $ty {
@@ -638,8 +559,6 @@ const ENTRY_KEYS: &[&str] = &[
     "allow_metadata_hosts",
 ];
 
-/// A map read that hands the typed grammar only the keys it reads ([`DEPLOY_KEYS`]) and sets every
-/// other key, with its value, aside.
 struct OptionsAside<'a, A> {
     inner: A,
     keys: &'static [&'static str],
@@ -689,31 +608,14 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAsi
     }
 }
 
-/// THE OPTIONS OF ONE RESOLVED PROVIDER, judged by the plane that speaks its dialect: the folded
-/// door that states the provider keys (`plane_driver::door::provider_keys`) validates
-/// `{"providers": {<name>: <table>}}` and answers in its own words, which name the key and list
-/// the names the dialect accepts. `Ok` when the entry sets no option.
-///
-/// # Errors
-///
-/// The plane's refusal, or, when no loaded plane judges provider entries, the first option named.
 pub fn judge_options(name: &str, provider: &ResolvedProvider) -> Result<(), String> {
     judge_table(name, &provider.table, false)
 }
 
-/// [`judge_options`] of one CATALOG entry, alone: its typed keys and its options, as the plane would
-/// receive them were config.yaml to deploy it.
-///
-/// # Errors
-///
-/// As [`judge_options`].
 pub fn judge_catalog_entry(name: &str, def: &ProviderDef) -> Result<(), String> {
     judge_table(name, &with_options(def, &def.options), false)
 }
 
-/// An unused catalog can contain another plane's provider options. A plane that owns the row still
-/// validates it; without an owner these options remain inert until a provider is deployed. Core
-/// fields have already passed the same typed parse, and deployed providers always require a judge.
 pub(super) fn judge_unused_catalog_entry(name: &str, def: &ProviderDef) -> Result<(), String> {
     judge_table(name, &with_options(def, &def.options), true)
 }
@@ -734,7 +636,6 @@ fn judge_table(name: &str, table: &ProviderTable, defer_unowned: bool) -> Result
     }
 }
 
-/// Remove every `null` member, at every depth: an unset optional key is an absent one.
 fn drop_unset(table: &mut ProviderTable) {
     table.retain(|_, v| !v.is_null());
     for value in table.values_mut() {
@@ -752,17 +653,10 @@ fn drop_unset(table: &mut ProviderTable) {
     }
 }
 
-/// Whether `value` is a STRING MAP: an object every member of which is a string.
 fn is_str_map(value: &ProviderTable) -> bool {
     value.values().all(Value::is_string)
 }
 
-/// THE NEUTRAL MERGE of a catalog entry's table with its deployment's (ARCHITECT ruling, row 155
-/// B1b): a key the deployment sets wins; where both sides hold a STRING MAP the two merge member by
-/// member, the deployment's member winning; every other value is REPLACED whole. This is the
-/// previous release's merge, stated without naming a key: its one map-valued key (the upstream
-/// error map) unioned with the deployment's entries winning, and every other key was a deployment
-/// override of the catalog default (a list of rules is replaced, not appended).
 #[must_use]
 pub fn merge_tables(mut catalog: ProviderTable, deployment: ProviderTable) -> ProviderTable {
     for (key, value) in deployment {
@@ -779,20 +673,13 @@ pub fn merge_tables(mut catalog: ProviderTable, deployment: ProviderTable) -> Pr
     catalog
 }
 
-/// The key of the table a plane's dialect word is read under, while the kernel still reads it
-/// (TRANSITIONAL, below): the contract's neutral model-entry key, not a kernel spelling.
 fn dialect_key() -> &'static str {
     busbar_contract::section::MODEL_PROTOCOL_KEYS[0]
 }
 
-/// The key of the table the upstream error map is read under, while the kernel still reads it
-/// (TRANSITIONAL, below).
 const ERROR_MAP_KEY: &str = "error_map";
 
 impl ResolvedProvider {
-    /// The resolved provider of one catalog definition and its deployment: each kernel-owned key the
-    /// deployment sets wins over the catalog default (1.5.5's merge), and the two tables merge by
-    /// [`merge_tables`].
     #[must_use]
     pub fn merge(def: &ProviderDef, deploy: &ProviderDeploy) -> Self {
         Self {
@@ -801,8 +688,7 @@ impl ResolvedProvider {
                 .clone()
                 .unwrap_or_else(|| def.base_url.clone()),
             api_key: deploy.api_key.clone(),
-            // Deployment health config wins over the catalog default (mirrors path/auth), so the
-            // `health:` block documented in config.yaml actually takes effect.
+
             health: deploy.health.clone().or_else(|| def.health.clone()),
             path: deploy.path.clone().or_else(|| def.path.clone()),
             path_base: deploy.path_base.clone().or_else(|| def.path_base.clone()),
@@ -810,7 +696,7 @@ impl ResolvedProvider {
             scope: deploy.scope.clone().or_else(|| def.scope.clone()),
             subject: deploy.subject.clone().or_else(|| def.subject.clone()),
             auth: deploy.auth.clone().or_else(|| def.auth.clone()),
-            // A deployment list (`Some`) replaces the catalog default.
+
             allow_metadata_hosts: deploy
                 .allow_metadata_hosts
                 .clone()
@@ -822,9 +708,6 @@ impl ResolvedProvider {
         }
     }
 
-    /// TRANSITIONAL (row 155 B1b; drains at B1c, where the plane states its provider keys through
-    /// its Statement and answers the checks that read this word at their points): the dialect word
-    /// the table carries, or empty. Read only by the provider checks that still run kernel-side.
     #[must_use]
     pub fn dialect(&self) -> &str {
         self.table
@@ -833,8 +716,6 @@ impl ResolvedProvider {
             .unwrap_or("")
     }
 
-    /// TRANSITIONAL (row 155 B1b; drains at B1c, as [`Self::dialect`]): the upstream error map the
-    /// table carries, `(code, class)` in the table's order; empty when it carries none.
     pub fn error_map(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.table
             .get(ERROR_MAP_KEY)
@@ -845,8 +726,6 @@ impl ResolvedProvider {
     }
 }
 
-/// A whole-entry parse ([`ProviderCfg`]) as a resolved provider: the kernel-owned keys moved, the
-/// rest the table.
 impl From<ProviderCfg> for ResolvedProvider {
     fn from(p: ProviderCfg) -> Self {
         let table = with_options(&p, &p.options);
@@ -866,10 +745,6 @@ impl From<ProviderCfg> for ResolvedProvider {
     }
 }
 
-/// A URL as a `Debug` print shows it: the authority's userinfo replaced by a fixed marker
-/// (`busbar_kernel_egress::trust::net::redact_userinfo`, the form `--validate` repeats a base URL
-/// in), quoted as a string prints. Only the PRINT: the field keeps the URL as written, because its
-/// userinfo is the Basic credential the outbound request presents (row 74, F25).
 struct PrintedUrl<'a>(&'a str);
 
 impl std::fmt::Debug for PrintedUrl<'_> {
@@ -881,15 +756,9 @@ impl std::fmt::Debug for PrintedUrl<'_> {
     }
 }
 
-/// An optional URL as a `Debug` print shows it (see [`PrintedUrl`]).
 fn printed_url(url: Option<&String>) -> Option<PrintedUrl<'_>> {
     url.map(|u| PrintedUrl(u))
 }
-
-// THE PROVIDER STRUCTS' `Debug`, written out so `base_url` and `token_url` print through
-// [`PrintedUrl`]: a `user:pass@` the operator wrote never reaches a `{:?}` (CREDENTIAL-LOCKDOWN
-// A.3). Each destructures every field, so a field added later fails to compile here until it is
-// printed (or deliberately not).
 
 impl std::fmt::Debug for ProviderCfg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -921,7 +790,6 @@ impl std::fmt::Debug for ProviderCfg {
             .field("subject", subject)
             .field("auth", auth)
             .field("allow_metadata_hosts", allow_metadata_hosts)
-            // The names alone: a value is the plane's to judge, and is never printed.
             .field("options", &options.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -955,7 +823,6 @@ impl std::fmt::Debug for ProviderDef {
             .field("subject", subject)
             .field("auth", auth)
             .field("allow_metadata_hosts", allow_metadata_hosts)
-            // The names alone: a value is the plane's to judge, and is never printed.
             .field("options", &options.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -991,7 +858,6 @@ impl std::fmt::Debug for ProviderDeploy {
             .field("auth", auth)
             .field("allow_metadata_hosts", allow_metadata_hosts)
             .field("health", health)
-            // The names alone: a value is the plane's to judge, and is never printed.
             .field("options", &options.keys().collect::<Vec<_>>())
             .finish()
     }

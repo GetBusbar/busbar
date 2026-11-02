@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The normal kernel library keeps neutral defaults until a test kit installs its responses.
-
 use busbar_kernel::ingress::protocols::{self, ProtocolTestHooks};
 
 #[test]

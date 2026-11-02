@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The sink fill: wire bytes first, then pieces as far as the sink holds (a piece that does not fit
-//! whole is split, its end-of-frame on its last part), head words in their slots, then the yield
-//! flags; and a field block is cut only where a continuation extends a value.
 
 use super::*;
 use crate::abi::sdk::test_support::zeroed;
@@ -104,7 +102,7 @@ fn wire_bytes_go_first_and_the_rest_is_owed() {
 }
 
 /// A piece that does not fit whole is split: its first part ends no frame, its last part does,
-/// and only the last part of a failure says the stream failed.
+
 #[test]
 fn a_piece_that_does_not_fit_is_split_its_end_on_its_last_part() {
     let mut f = Framing::default();
@@ -125,7 +123,7 @@ fn a_piece_that_does_not_fit_is_split_its_end_on_its_last_part() {
 }
 
 /// A status maps to its class and its fault; the end and the writable signal are said, never
-/// inferred; an ended connection with nothing owed says so, and its deadline rides the yield.
+
 #[test]
 fn the_flags_say_what_each_piece_carries() {
     let mut f = Framing {
@@ -168,7 +166,7 @@ fn the_flags_say_what_each_piece_carries() {
 }
 
 /// A head's words ride its stream's head slots, their bytes in the frame ahead of the piece's; a
-/// host that takes no slots is not handed them.
+
 #[test]
 fn head_words_ride_the_head_slots_ahead_of_the_head() {
     let words = HeadWords {
@@ -202,17 +200,17 @@ fn head_words_ride_the_head_slots_ahead_of_the_head() {
 }
 
 /// A field block is cut only at a line's start or inside a value, never inside a name: the host
-/// refuses any continuation that does not extend a value.
+
 #[test]
 fn a_field_block_is_cut_only_where_a_continuation_extends_a_value() {
     let block = b"date: Mon\r\nx-a: 1\r\n";
     assert_eq!(field_cut(block, 64, false), block.len());
-    // Inside "date": back to the start; just past the colon: a value.
+
     assert_eq!(field_cut(block, 3, false), 0);
     assert_eq!(field_cut(block, 5, false), 5);
-    // Inside "x-a" on the second line: back to the line's start.
+
     assert_eq!(field_cut(block, 13, false), 11);
-    // Opening inside a value, every byte up to the next name may go.
+
     assert_eq!(field_cut(b"on\r\nx: 1\r\n", 5, true), 4);
 }
 

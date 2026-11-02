@@ -82,7 +82,6 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    /// The level a config word names: `off`, `error`, `warn`, `info`, `debug` or `trace`.
     pub fn parse(word: &str) -> Option<Self> {
         Some(match word {
             "off" => Self::Off,
@@ -95,7 +94,6 @@ impl LogLevel {
         })
     }
 
-    /// The level a reply's severity carries.
     fn of_severity(severity: u8) -> Self {
         match severity {
             SEVERITY_ERROR => Self::Error,
@@ -107,7 +105,6 @@ impl LogLevel {
         }
     }
 
-    /// The level a sink holds as a byte (`self as u8`).
     fn of_u8(n: u8) -> Self {
         match n {
             0 => Self::Off,
@@ -119,7 +116,6 @@ impl LogLevel {
         }
     }
 
-    /// The level as a line shows it, five wide.
     fn label(self) -> &'static str {
         match self {
             Self::Off => "OFF  ",
@@ -158,16 +154,11 @@ pub struct PluginLogConfig {
     live: Live,
 }
 
-/// `plugins.logs.dir` when unset.
 pub const DEFAULT_DIR: &str = "logs/plugins";
-/// `plugins.logs.keep` when unset.
+
 pub const DEFAULT_KEEP: u32 = 5;
 
 impl PluginLogConfig {
-    /// Resolve the `plugins.logs` block: `dir` (default [`DEFAULT_DIR`]), `level` (default `info`),
-    /// per-instance `levels`, `rotate_mb` (unset: never rotate) and `keep` (default
-    /// [`DEFAULT_KEEP`]). A level word that names no level, or a zero `rotate_mb`, is an error
-    /// naming its key.
     pub fn from_words(
         dir: Option<&str>,
         level: Option<&str>,
@@ -199,17 +190,14 @@ impl PluginLogConfig {
         })
     }
 
-    /// The level `instance` logs at.
     pub fn level_for(&self, instance: &str) -> LogLevel {
         self.current().level_for(instance)
     }
 
-    /// The file `instance`, of `kind`, logs to.
     pub fn path_for(&self, instance: &str, kind: KindCode) -> PathBuf {
         self.current().dir.join(file_name(instance, kind))
     }
 
-    /// This configuration's own words.
     fn words(&self) -> Words {
         Words {
             dir: self.dir.clone(),
@@ -221,8 +209,6 @@ impl PluginLogConfig {
         }
     }
 
-    /// The words sinks follow now: the last [`reconfigure`](Self::reconfigure)d, else this
-    /// configuration's own.
     fn current(&self) -> Arc<Words> {
         self.live
             .0
@@ -231,11 +217,6 @@ impl PluginLogConfig {
             .unwrap_or_else(|| Arc::new(self.words()))
     }
 
-    /// FOLLOW A CONFIG APPLY: every sink opened from this configuration (or any clone of it) takes
-    /// `next`'s level at once and its directory and rotation at its next line, and every sink
-    /// opened after takes all of `next`. A named directory is created now if it is missing
-    /// (create-or-reuse); one that cannot be used is reported on the host's log, and its lines are
-    /// reported lost as they come. Words equal to the ones in force change nothing.
     pub fn reconfigure(&self, next: &PluginLogConfig) {
         let words = Arc::new(next.words());
         if *self.current() == *words {
@@ -262,12 +243,6 @@ impl PluginLogConfig {
         });
     }
 
-    /// OPEN the sink a plugin instance is bound with: its log records and declared diagnostics go
-    /// to its own file, its metrics (and every drop) go on to `metrics`. Under a named directory it
-    /// creates the directory if it is missing and opens the file, and an unusable directory is
-    /// refused as `plugins.logs.dir <dir>: <error>`; under the default one the file is created at
-    /// its first line ([`PluginLogConfig::named_dir`]). Every sink of one file writes through ONE
-    /// writer and one file state, so the file rotates once and no line goes to an archive.
     pub fn sink(
         &self,
         instance: &str,
@@ -323,11 +298,6 @@ impl PluginLogConfig {
     }
 }
 
-/// The file name `instance`, of `kind`, logs to: `<section>.<instance>`, the kind's config section
-/// before the instance name (instance names are unique only within a kind, so a store and an auth
-/// provider may share one), with every byte outside `[A-Za-z0-9._-]` written as `_`, then `.log`.
-/// A name that already carries its section (`export.metrics`) is not prefixed twice; a plane's
-/// instance is its own section (its verb).
 fn file_name(instance: &str, kind: KindCode) -> String {
     let qualified = match crate::boot::kind_of(kind).root_key() {
         Some(section)
@@ -349,7 +319,7 @@ fn file_name(instance: &str, kind: KindCode) -> String {
             }
         })
         .collect();
-    // A name of dots only would name the directory itself or its parent.
+
     let stem = if stem.bytes().all(|b| b == b'.') {
         stem.replace('.', "_")
     } else {
@@ -358,7 +328,6 @@ fn file_name(instance: &str, kind: KindCode) -> String {
     format!("{stem}.log")
 }
 
-/// The refusal an unusable directory earns, naming the key and the directory.
 fn refusal(path: &Path, e: &std::io::Error) -> String {
     let dir = path.parent().unwrap_or(path);
     format!("plugins.logs.dir {}: {e}", dir.display())
@@ -422,45 +391,36 @@ impl Now {
     }
 }
 
-/// One sink's instance and its level, which a reconfigure sets.
 struct Admit {
     instance: String,
     level: AtomicU8,
 }
 
-/// The instance and kind a line names.
 struct Tag {
     instance: String,
     kind: String,
 }
 
-/// Seconds since the epoch, on the wall clock.
 fn wall_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-/// The most lines one file's writer holds unwritten. A line handed over while it is full is not
-/// written: it is counted, and the count is ONE line once the writer has caught up.
 pub const LOG_QUEUE_LINES: usize = 1024;
 
-/// ONE plugin instance's log file, as an [`EnvelopeSink`]. It formats nothing and touches no file:
-/// each admitted record is copied, stamped and handed to its file's writer thread without waiting
-/// ([`LOG_QUEUE_LINES`]).
 pub struct PluginLogSink {
     tag: Arc<Tag>,
     admit: Arc<Admit>,
-    /// The file as the sink was opened (a reconfigure may move the writer to another).
+
     #[cfg(test)]
     path: PathBuf,
     metrics: Arc<dyn EnvelopeSink>,
     clock: fn() -> u64,
-    /// The file's writer; its queue is never waited on from [`EnvelopeSink`].
+
     lane: Arc<Lane>,
 }
 
-/// One file's writer: its queue, and the lines the queue had no room for.
 struct Lane {
     queue: SyncSender<Job>,
     over: Arc<Over>,
@@ -473,18 +433,16 @@ struct Over {
     at: AtomicU64,
 }
 
-/// What a writer thread is handed.
 enum Job {
-    /// One record: who sent it, its time, its level and its text as the plugin sent it.
     Line {
         tag: Arc<Tag>,
         at: u64,
         level: LogLevel,
         text: Vec<u8>,
     },
-    /// Report the lines a full queue refused.
+
     Tally,
-    /// Answer once every line handed over before this one is written.
+
     #[cfg(test)]
     Flush(SyncSender<()>),
 }
@@ -503,21 +461,17 @@ impl std::fmt::Debug for PluginLogSink {
 }
 
 impl PluginLogSink {
-    /// The same sink with its time read from `clock` (seconds since the epoch).
     #[cfg(test)]
     #[must_use]
     pub fn with_clock(self, clock: fn() -> u64) -> Self {
         Self { clock, ..self }
     }
 
-    /// The file this sink was opened on.
     #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Wait until every line handed over before this call is in the file (or was reported lost).
-    /// It waits on the writer: a test's, never a dispatch worker's.
     #[cfg(test)]
     pub fn flush(&self) {
         let (done, wait) = sync_channel(1);
@@ -526,8 +480,6 @@ impl PluginLogSink {
         }
     }
 
-    /// Hand one line at `level` to the writer, if the instance's level admits it. Never waits: a
-    /// full queue counts the line instead, and the count is written once the writer catches up.
     fn line(&self, level: LogLevel, text: Vec<u8>) {
         if level == LogLevel::Off
             || level > LogLevel::of_u8(self.admit.level.load(Ordering::Acquire))
@@ -537,7 +489,6 @@ impl PluginLogSink {
         let at = (self.clock)();
         let over = &self.lane.over;
         if over.lines.load(Ordering::Acquire) > 0 {
-            // The lines lost so far are reported before this one, in the file's order.
             let _ = self.lane.queue.try_send(Job::Tally);
         }
         let job = Job::Line {
@@ -551,15 +502,13 @@ impl PluginLogSink {
         {
             over.at.store(at, Ordering::Release);
             over.lines.fetch_add(1, Ordering::AcqRel);
-            // The writer may have emptied the queue since: then this Tally reports the count; if
-            // the queue is still full, the writer reports it when it has drained what it holds.
+
             let _ = self.lane.queue.try_send(Job::Tally);
         }
     }
 }
 
 impl Lane {
-    /// Start the writer of the file `name`, under `words` now and whatever `now` says later.
     fn start(
         name: &str,
         now: &Arc<Now>,
@@ -571,7 +520,7 @@ impl Lane {
         let writer = Writer {
             name: name.to_string(),
             now: Arc::clone(now),
-            // Unseen: the first line takes up whatever a reconfigure published meanwhile.
+
             seen: u64::MAX,
             path: words.dir.join(name),
             words,
@@ -586,27 +535,21 @@ impl Lane {
     }
 }
 
-/// THE WRITER: one file's lines, written by its own thread. Every open, rotation and write happens
-/// here (or in another writer of the same file, through the same [`FileSlot`]), never on the
-/// thread that crossed into the plugin.
 struct Writer {
     name: String,
     now: Arc<Now>,
-    /// The generation of the words this writer follows.
+
     seen: u64,
     words: Arc<Words>,
     path: PathBuf,
-    /// The file's one state, once a line has needed it.
+
     slot: Option<Arc<FileSlot>>,
     over: Arc<Over>,
-    /// The sender of the last line written (at first, the sink that started the writer): whose
-    /// name a count line carries.
+
     last: Arc<Tag>,
 }
 
 impl Writer {
-    /// Write every job until every sink is gone; whenever the queue runs empty, report what a full
-    /// queue refused.
     fn drain(mut self, jobs: &Receiver<Job>) {
         while let Ok(job) = jobs.recv() {
             self.run(job);
@@ -637,7 +580,6 @@ impl Writer {
         }
     }
 
-    /// The lines a full queue refused, as ONE line saying how many.
     fn tally(&mut self) {
         let n = self.over.lines.swap(0, Ordering::AcqRel);
         if n == 0 {
@@ -649,7 +591,6 @@ impl Writer {
         self.line(&tag, at, LogLevel::Warn, text.as_bytes());
     }
 
-    /// Take up the words a reconfigure published since the last line.
     fn follow(&mut self) {
         let generation = self.now.generation.load(Ordering::Acquire);
         if generation == self.seen {
@@ -666,8 +607,6 @@ impl Writer {
         }
     }
 
-    /// Write one line. A failure to write is reported on the host's own log and the line is lost;
-    /// it never reaches the plugin.
     fn line(&mut self, tag: &Tag, at: u64, level: LogLevel, text: &[u8]) {
         self.follow();
         let line = render(tag, at, level, text);
@@ -709,9 +648,6 @@ impl Writer {
     }
 }
 
-/// One line as the file holds it: the time, the level, the instance, the kind, then the text,
-/// every control character in it escaped so a record is one line and writes nothing raw to a
-/// terminal: a line break is `\n`, a carriage return `\r`, any other `\u{..}` (ESC is `\u{1b}`).
 fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
     let mut line = format!(
         "{} {} {} {} ",
@@ -725,7 +661,6 @@ fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
     line
 }
 
-/// `text` appended to `line` with every control character escaped (see [`render`]).
 fn escape_into(line: &mut String, text: &[u8]) {
     use std::fmt::Write as _;
     for c in String::from_utf8_lossy(text).chars() {
@@ -740,12 +675,6 @@ fn escape_into(line: &mut String, text: &[u8]) {
     }
 }
 
-/// THE HOST LOG'S COPY of a plugin's WARN or ERROR line (1.5.5 printed its plugins' and planes'
-/// warnings in busbar's own log, and a log pipeline that watches only that log must still see
-/// them): one host line at the same level, written as 1.5.5 wrote it, the record's message and
-/// fields without the module path the plugin's file leads with, escaped as the file holds it. The
-/// line carries no field 1.5.5's never did, so it reads byte for byte as 1.5.5's; the plugin's own
-/// file names the instance. Lines below WARN stay in the plugin's file alone.
 fn mirror(level: LogLevel, text: &[u8]) {
     if !matches!(level, LogLevel::Error | LogLevel::Warn) {
         return;
@@ -762,9 +691,6 @@ fn mirror(level: LogLevel, text: &[u8]) {
     }
 }
 
-/// `text` without its ` diag=<code>` field: 1.5.5 printed a plugin's line with no code (the code
-/// is the plugin's own file's, and a declared diagnostic reaches busbar's log under it through the
-/// host's observer).
 fn without_diag_field(text: &str) -> std::borrow::Cow<'_, str> {
     const FIELD: &str = " diag=";
     let Some(at) = text.find(FIELD) else {
@@ -775,14 +701,10 @@ fn without_diag_field(text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned([&text[..at], &text[end..]].concat())
 }
 
-/// The target a mirrored plugin line carries in busbar's own log ([`mirror`]).
 pub const MIRROR_TARGET: &str = "busbar::plugin";
 
-/// Every log file in the process, by its path with the directory resolved: ONE state per file,
-/// whichever writers, of whichever configuration, write it.
 static FILES: Mutex<Option<HashMap<PathBuf, Weak<FileSlot>>>> = Mutex::new(None);
 
-/// ONE log file's state: its open descriptor, the bytes it holds, and its rotation.
 struct FileSlot {
     path: PathBuf,
     state: Mutex<FileState>,
@@ -798,13 +720,11 @@ struct FileState {
     failing: bool,
 }
 
-/// A rotation that failed, reported once until one succeeds.
 struct RotationReport {
     failed: Vec<crate::host::FailedStep>,
 }
 
 impl RotationReport {
-    /// The line the file itself carries about it.
     fn line(&self, limit: u64) -> String {
         format!(
             "busbar: this log file could not be rotated ({}); it is tried again once it holds another {limit} bytes",
@@ -814,7 +734,6 @@ impl RotationReport {
 }
 
 impl FileSlot {
-    /// The one state of the file at `path`, its directory created if missing (create-or-reuse).
     fn of(path: &Path) -> std::io::Result<Arc<Self>> {
         let (dir, name) = match (path.parent(), path.file_name()) {
             (Some(dir), Some(name)) => (dir, name),
@@ -840,7 +759,6 @@ impl FileSlot {
         Ok(slot)
     }
 
-    /// Open the file now, if it is not open.
     fn open(&self) -> std::io::Result<()> {
         let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if st.file.is_none() {
@@ -849,7 +767,6 @@ impl FileSlot {
         Ok(())
     }
 
-    /// Open the file for append (created if absent), with the bytes it holds.
     fn opened(&self) -> std::io::Result<(File, u64)> {
         let f = std::fs::OpenOptions::new()
             .create(true)
@@ -859,9 +776,6 @@ impl FileSlot {
         Ok((f, held))
     }
 
-    /// Append `bytes`, rotating first when the file holds `rotate` bytes. A rotation that fails is
-    /// tried again only once the file holds another `rotate` bytes, and the first failure since a
-    /// success is handed back to be reported.
     fn append(
         &self,
         bytes: &[u8],
@@ -911,10 +825,6 @@ impl EnvelopeSink for PluginLogSink {
     fn diag(&self, d: Diagnostic<'_>) {
         let level = LogLevel::of_severity(d.severity);
         if d.id == DIAG_LOG {
-            // Busbar's own log gets its copy HERE, in the order the plugin logged it among the
-            // host's own lines, as 1.5.5 printed them; only WARN and ERROR, whatever the file's
-            // level. A declared diagnostic is not copied: the host's observer already writes it
-            // to busbar's log under its code.
             mirror(level, d.text);
             return self.line(level, d.text.to_vec());
         }
@@ -937,8 +847,6 @@ impl EnvelopeSink for PluginLogSink {
     }
 }
 
-/// The plugin-logging witness, compiled in: the LINKED door of the tests below (the same source is
-/// the `log_witness_door` example `cdylib`, the DROPPED door).
 #[cfg(test)]
 #[path = "../../tests/fixtures/log_witness_plugin.rs"]
 mod log_witness_plugin;

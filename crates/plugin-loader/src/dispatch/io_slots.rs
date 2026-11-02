@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST'S I/O SLOTS, HOST SIDE (`abi::host::io`, `io.*`): the [`IoSlots`] table every instance
-//! is handed ([`IO_SLOTS`]), each slot a thin frame over the [`IoHost`] its dispatcher serves
-//! ([`super::Dispatcher::install_io`]), called under the instance's own identity: a handle another
-//! instance made is refused there, never here.
-//!
-//! * The frame checks the head (its op and its size), a slot that may pend has a ticket (REFUSED
-//!   otherwise, never run), and an address buffer is at least `MAX_ADDR`.
-//! * A slot that may pend hands the host the ticket's WAKER: an inline ticket's (`super::inline`)
-//!   is its task's own; any other ticket's wakes it through the dispatcher's route, as the host's
-//!   `wake` does.
-//! * Every error text is interned: a `ServiceOut::error` is valid for the process's life, and the
-//!   distinct texts the system answers are few.
-//!
-//! A panic answers FAULT; the whole `out` is written.
-
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -34,7 +19,6 @@ use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 use super::services::{write_out, Answered};
 use super::ticket::Waking;
 
-/// The table every instance is handed.
 pub static IO_SLOTS: IoSlots = IoSlots {
     size: size_of::<IoSlots>() as u32,
     slots: SLOTS,
@@ -50,14 +34,12 @@ pub static IO_SLOTS: IoSlots = IoSlots {
     ends: Some(ends),
 };
 
-/// The refusal of an instance whose dispatcher serves no host I/O.
 pub const NO_IO: &str = "no host I/O is bound";
-/// The refusal of a slot that may pend, made on no ticket.
+
 pub const UNTICKETED: &str = "an io slot that may pend is callable only inside a ticketed op";
-/// The refusal of an address buffer below `MAX_ADDR`.
+
 pub const SHORT_ADDR: &str = "an address buffer holds at least MAX_ADDR bytes";
 
-/// The host's I/O refusal, as the plugin reads it.
 fn refusal(e: IoRefusal) -> Answered {
     match e {
         IoRefusal::Refused(t) => Answered::bare(Outcome::Refused, crate::intern_name(&t)),
@@ -65,7 +47,6 @@ fn refusal(e: IoRefusal) -> Answered {
     }
 }
 
-/// A polled I/O's answer: PENDING, `ok`'s, or its refusal.
 fn polled<T>(p: Poll<Result<T, IoRefusal>>, ok: impl FnOnce(T) -> Answered) -> Answered {
     match p {
         Poll::Pending => Answered::bare(Outcome::Pending, ""),
@@ -74,18 +55,14 @@ fn polled<T>(p: Poll<Result<T, IoRefusal>>, ok: impl FnOnce(T) -> Answered) -> A
     }
 }
 
-/// The calling instance as the host knows it: its identity, its route, and the I/O it is served.
 struct Caller {
     owner: u64,
-    /// The route, and the instance as the supplier of every ticket it hands the I/O (#74).
+
     waking: Waking,
     io: Arc<dyn IoHost>,
 }
 
 impl Caller {
-    /// The waker of `ticket`'s op: a held inline ticket's task, or the dispatcher's route, which
-    /// judges any other ticket when the wake fires (#74: a generation never minted, inline or not,
-    /// quarantines this caller, the supplier the waker carries).
     fn waker(&self, ticket: Ticket) -> Waker {
         if let Some(w) = self
             .waking
@@ -102,7 +79,6 @@ impl Caller {
     }
 }
 
-/// A wake through the dispatcher's route, as the host's own `wake` makes it.
 struct Routed {
     waking: Waking,
     ticket: Ticket,
@@ -124,7 +100,6 @@ fn caller(ctx: HostCtx) -> Option<Caller> {
     })
 }
 
-/// ONE SLOT'S FRAME (module docs).
 fn slot<I: Copy>(
     ctx: HostCtx,
     input: *const c_void,
@@ -132,9 +107,6 @@ fn slot<I: Copy>(
     service: u32,
     body: impl FnOnce(&I, &Caller, Ticket) -> Answered,
 ) -> RawOutcome {
-    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
-    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
-    // smaller one is never overrun).
     let lent = if out.is_null() {
         0
     } else {

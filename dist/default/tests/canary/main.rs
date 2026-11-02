@@ -1,28 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CREDENTIAL CANARY HARNESS. MEASUREMENT ONLY: it changes
-//! no production code and no behaviour.
-//!
-//! The owner's rule is "credentials never leave the secret boundary". No unit test can prove that
-//! property: it is about every sink at once. So this binary PLANTS a unique fake credential (a
-//! canary, `CANARY-<kind>-<random hex>`) through each credential input kind busbar resolves, drives
-//! the node, and SEARCHES every sink a black box can see for each one:
-//!
-//! * the served node (`blackbox::node`): its whole log (every tracing line, any panic message),
-//!   every admin and data-plane response, the exported request log, `--validate` output, and what
-//!   each far end received;
-//! * refusals (`blackbox::refusals`): `--validate` over configs built to be refused around a canary;
-//! * the plugin ABI (`abi::run`): every byte the recording host-table shim (`recorder`) saw cross
-//!   between host and plugin, for a linked and a dropped-in door (settings, declared secrets, outbound and passthrough
-//!   credentials).
-//!
-//! EVERY CANARY IS XFAIL BY DEFAULT where it leaks today: [`EXPECT`] marks each kind
-//! `Expect::Leaks` (passes while its hits exist, listing them) or `Expect::Clean` (any hit fails).
-//! A `Leaks` canary that stops leaking still passes and says "NOW CLEAN: flip to Expect::Clean";
-//! flipping it makes the fix permanent. The baseline may only shrink.
-//!
-//! The listing of every hit is written to `target/canary-report/<scenario>.txt`.
 #![cfg(unix)]
 #![allow(dead_code)]
 
@@ -36,45 +14,29 @@ mod recorder;
 
 use canary::{Canary, Expect, Sink};
 
-/// THE EXPECTATION TABLE: one row per planted kind, what it does TODAY. Flip a row to
-/// `Expect::Clean` when its leak is fixed (the harness says when); never flip one back.
 pub const EXPECT: &[(&str, Expect)] = &[
-    // ── the served node ──
-    // A provider key through an env / file SecretRef: only its own far end sees it.
     ("provider-key-env-ref", Expect::Clean),
     ("provider-key-file-ref", Expect::Clean),
-    // `${VAR}` into the request-log webhook's auth header and a token in the webhook URL's path: no
-    // delivery is observed inside the sweep's window today, and a delivery failure logs the URL, so
-    // these stay XFAIL until a fix pins them.
     ("plugin-setting-interp", Expect::Leaks),
     ("export-url-path-token", Expect::Leaks),
-    // A provider base_url's userinfo password: only its own far end sees it (as Basic).
     ("provider-url-userinfo", Expect::Clean),
     ("provider-url-userinfo-unreachable", Expect::Clean),
     ("admin-token", Expect::Clean),
     ("caller-cookie", Expect::Clean),
-    // The caller's custom auth header is relayed to every far end.
     ("caller-custom-auth-header", Expect::Leaks),
-    // ── refusals ──
     ("refusal-inline-api-key", Expect::Clean),
-    // Serde's `invalid type: string "<value>"` carries the header value into the refusal.
     ("refusal-webhook-auth-header-shape", Expect::Leaks),
-    // Both ACCEPTED by `--validate` today (the report notes it), so nothing echoes them.
     ("refusal-webhook-url-query-token", Expect::Clean),
     ("refusal-base-url-userinfo", Expect::Clean),
     ("refusal-signing-key-file-content", Expect::Clean),
-    // ── the plugin ABI (credentials cross it by design today) ──
     ("abi-secret-refs-file-ref", Expect::Leaks),
     ("abi-settings-env-ref", Expect::Leaks),
-    // An `env-template` ref at a plugin setting's top level is NOT resolved for an auth plugin
-    // today: the raw reference crosses and the plugin refuses it, so its value never crosses.
     ("abi-settings-env-template", Expect::Clean),
     ("abi-settings-interp", Expect::Leaks),
     ("abi-outbound-credential", Expect::Leaks),
     ("abi-passthrough-caller-credential", Expect::Leaks),
 ];
 
-/// A fresh canary for `kind`, under its [`EXPECT`] row.
 pub fn canary(kind: &'static str) -> Canary {
     let expect = EXPECT
         .iter()
@@ -84,8 +46,6 @@ pub fn canary(kind: &'static str) -> Canary {
     Canary::new(kind, expect)
 }
 
-/// THE SERVED NODE: env/file refs, `${VAR}` into a plugin setting, URL userinfo, the admin token, an
-/// export URL's path token and the caller's own credentials, searched in every black-box sink.
 #[test]
 fn served_node_sinks() {
     let userinfo = canary("provider-url-userinfo");
@@ -93,7 +53,6 @@ fn served_node_sinks() {
     let dead = canary("provider-url-userinfo-unreachable");
     let dead_form = blackbox::basic_form(&dead.value);
     let c = blackbox::NodeCanaries {
-        // A provider key reaching ITS OWN far end is the designed delivery, not a leak.
         env_ref: canary("provider-key-env-ref").delivered_to("far-end:mock"),
         file_ref: canary("provider-key-file-ref").delivered_to("far-end:mockfile"),
         interp: canary("plugin-setting-interp"),
@@ -110,7 +69,6 @@ fn served_node_sinks() {
     canary::sweep("served-node", &c.all(), &sinks, &notes);
 }
 
-/// REFUSALS: `--validate` over configs refused around a canary.
 #[test]
 fn refusal_sinks() {
     let c = blackbox::RefusalCanaries {
@@ -124,7 +82,6 @@ fn refusal_sinks() {
     canary::sweep("refusals", &c.all(), &sinks, &notes);
 }
 
-/// THE PLUGIN ABI: what crosses between host and plugin, recorded by the shim.
 #[test]
 fn abi_crossings() {
     let c = abi::AbiCanaries {
@@ -139,10 +96,6 @@ fn abi_crossings() {
     canary::sweep("abi", &c.all(), &sinks, &notes);
 }
 
-// ── SELF-TESTS: the harness is not vacuous ─────────────────────────────────────────────────────
-
-/// The search finds a planted value in every sink shape (a line of text, bytes, an encoded form),
-/// skips a designed delivery, and finds nothing that was not planted.
 #[test]
 fn self_test_the_search_finds_what_was_planted() {
     let c = Canary::new("self-test", Expect::Clean).also("ZW5jb2RlZA".into());
@@ -174,8 +127,6 @@ fn self_test_the_search_finds_what_was_planted() {
     assert!(canary::search(&other, &sinks).is_empty());
 }
 
-/// The verdicts: a CLEAN canary that leaks fails; a LEAKS canary that is clean passes and says to
-/// flip it; a LEAKS canary that leaks passes, listing its hits.
 #[test]
 fn self_test_the_verdicts_hold_the_expectation() {
     let hit = vec![canary::Hit {
@@ -200,8 +151,6 @@ fn self_test_the_verdicts_hold_the_expectation() {
     }
 }
 
-/// The black-box capture is live: a value planted where the binary is known to print it back (a
-/// model's unknown provider NAME, not a credential) is found in the captured `--validate` refusal.
 #[test]
 fn self_test_a_black_box_sink_finds_a_planted_value() {
     let c = Canary::new("self-test-provider-name", Expect::Leaks);
@@ -237,8 +186,6 @@ fn self_test_a_black_box_sink_finds_a_planted_value() {
     );
 }
 
-/// The recording shim is live: a value planted as a `secret_refs` setting of a wrapped door is
-/// recorded crossing into the plugin's `open`, and found there by the search.
 #[test]
 fn self_test_the_shim_records_a_planted_crossing() {
     let c = Canary::new("self-test-shim", Expect::Leaks);

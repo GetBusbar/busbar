@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Wiped HMAC-SHA256, HMAC-SHA1 and SHA-256 for authentication material. Padded keys, pad blocks,
-//! digest states and outputs live in buffers wiped on drop. HMAC-SHA1 borrows its key from a
-//! [`Cred`] without exposing the credential bytes to the caller.
 
 use zeroize::Zeroizing;
 
@@ -94,9 +92,7 @@ const K: [u32; 64] = [
 ];
 
 /// Run SHA-256's compression function (FIPS 180-4, 6.2.2) over one whole `block` into `state`.
-/// Written here rather than taken from a library's feature: the message schedule and the working
-/// variables carry key-derived words, so they live in wiped buffers too, and the binary's
-/// unified dependency features stay the ones every linked plugin declares.
+
 fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
     let mut w = Zeroizing::new([0_u32; 64]);
     for (t, word) in block.as_chunks::<4>().0.iter().enumerate() {
@@ -131,7 +127,7 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
 }
 
 /// SHA-256 of `prefix` (one whole block, or none) followed by `data`. The chaining state and the
-/// padded final blocks (which carry `data`'s tail) are wiped on drop, and so is the digest.
+
 pub(crate) fn sha256_wiped(prefix: Option<&[u8; BLOCK]>, data: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut state = Zeroizing::new(SHA256_IV);
     let mut total = data.len() as u64;
@@ -163,9 +159,7 @@ pub(crate) fn sha256_wiped(prefix: Option<&[u8; BLOCK]>, data: &[u8]) -> Zeroizi
 }
 
 /// HMAC-SHA256 of `data` under `key` (RFC 2104; a key past the block size is hashed first). HMAC
-/// accepts a key of any length, so there is no error arm. Every key-derived value — the padded key,
-/// the inner and outer pad blocks, the chaining states and the inner digest — lives in a buffer
-/// wiped on drop, and so does the answer: no key state outlives the call unwiped.
+
 pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut k0 = Zeroizing::new([0_u8; BLOCK]);
     if key.len() > BLOCK {
@@ -185,7 +179,7 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Zeroizing<[u8; 32]> {
 }
 
 /// HMAC-SHA1 of the concatenation of `parts` under `key` (RFC 2104). Keys longer than the block
-/// size are hashed first. Every key-derived buffer and the returned digest are wiped on drop.
+
 pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
     let key = key.wire();
     let mut k0 = Zeroizing::new([0_u8; BLOCK]);
@@ -211,7 +205,7 @@ pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
 }
 
 /// SHA-256 of the concatenation of `parts`. Message copies, digest states and the returned digest
-/// are wiped on drop.
+
 pub fn sha256(parts: &[&[u8]]) -> Zeroizing<[u8; 32]> {
     digests::sha256(parts)
 }

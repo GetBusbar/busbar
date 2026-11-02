@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE AXIS, BOTH WAYS (WIRE-STORE Q8/Q9; the boot store door): the store boot opens is
-//! loaded through the ONE dispatcher and opened through the store v3 table, whichever door it came
-//! in by. The build's store (its row reached by KIND) is opened through [`DoorStoreAxis`] LINKED
-//! (its row's door, as the registry hands it) and DROPPED IN (the `store_v3_door` example
-//! `cdylib`, admitted against the linked door's Statement), and both answer one script through
-//! the 1.5.5 op set and the v3 calls, equal line for line.
-//!
-//! RED: the registry hands boot a store's DOOR, never its in-process open: a linked store row with
-//! no door, and a store plugin that states none (a 1.5.5 JSON-contract plugin), are refused naming
-//! the rebuild; a row with its door resolves to it.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::store::OpId;
@@ -21,7 +10,6 @@ use busbar_contract::store_calls::{OpenedStore, StoreAxis, StoreDoor};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher, PluginLogConfig};
 use crate::store_v3::DoorStoreAxis;
 
-/// This test's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
 fn mint() -> OpId {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     OpId::from_parts(
@@ -49,8 +37,6 @@ fn block<T>(f: impl std::future::Future<Output = T>) -> T {
         .block_on(f)
 }
 
-/// One script through both surfaces of an opened store: the 1.5.5 op set (a key written, read
-/// back, listed, a miss) and the v3 calls (a cap, a reserve, a release).
 fn transcript(s: &OpenedStore) -> Vec<String> {
     let mut out = Vec::new();
     let key = VirtualKey {

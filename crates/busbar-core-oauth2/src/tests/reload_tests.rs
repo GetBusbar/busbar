@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A RELOAD CARRIES THE AUTHORIZATION SERVER (audit core-oauth2#3). Every config apply or reload
-//! builds a new generation through the kernel's one construction path (`build_app_from_config`
-//! with the prior `App`). What the server HOLDS must survive the swap: a replay-ledger entry
-//! (a DPoP proof or client-assertion `jti` seen once stays refused), a registered client, the
-//! operator's consent session with its staked answer, and the ephemeral signing key the tokens it
-//! issued verify against.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -17,9 +10,6 @@ use oauth_as::store::Storage as _;
 use crate::plane::AsPlane;
 use crate::testkit::oauth_as_plane;
 
-/// The resolved config of a deployment that is an authorization server (no `signing_key`: the
-/// key is an ephemeral one). Its `store:` is the kernel's own compiled-in module, named by the
-/// kernel: this crate names no store instance.
 fn cfg() -> busbar_kernel::config::RootCfg {
     crate::testkit::install_test_seam();
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
@@ -32,7 +22,6 @@ fn cfg() -> busbar_kernel::config::RootCfg {
     busbar_kernel::config::resolve(&deploy, &HashMap::new()).expect("the config resolves")
 }
 
-/// One generation, built as boot (`prior` = `None`) or a reload builds it.
 fn generation(
     rt: &tokio::runtime::Runtime,
     prior: Option<&busbar_kernel::state::App>,
@@ -56,8 +45,6 @@ fn client(id: &str) -> oauth_as::client::Client {
     }
 }
 
-/// RED (audit core-oauth2#3): before the fix the reload built the server from nothing, so the
-/// `jti` was claimable again, the client unknown, the session gone and the key another.
 #[test]
 fn a_reload_carries_the_servers_records_sessions_and_key() {
     busbar_kernel_testkit::test_support::metrics::init();

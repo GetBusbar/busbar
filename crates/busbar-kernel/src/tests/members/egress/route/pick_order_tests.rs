@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The pick order, and where a member is excluded from it.
-//!
-//! Carried over from the previous release's ordered-walk tests. The claims are the same ones: a
-//! ranking is honoured but never over an unhealthy or drained member; an unranked member is
-//! lowest priority and still reachable; session affinity is a preference that drain overrides;
-//! and the one member that consumes a turn of the rotation is the one that was at capacity.
-
 use super::harness::Health;
 use super::{member, Node};
 use crate::test_support::tokens::pass;
@@ -74,7 +67,7 @@ fn a_ranking_walks_past_a_member_this_request_already_tried() {
 #[test]
 fn a_ranking_that_covers_only_unhealthy_members_falls_through_to_the_floor() {
     let (mut node, members) = three_lanes();
-    // The ranking names only the suppressed member; the other two are healthy and unranked.
+
     node.preference = Some(vec![DestinationId::new(2)]);
     node.breaker.set(
         DestinationId::new(2),
@@ -99,10 +92,6 @@ fn an_empty_ranking_is_the_plain_floor() {
     assert!(node.pick("p", &members, &mut ctx).is_some());
 }
 
-/// F25 row 552: rehomed from the retired engine crate's src/engine/tests/ordered_walk_tests.rs::ordered_walk_empty_order_is_swrr.
-/// An empty ranking over three healthy members is the weighted floor: nine picks land on more than
-/// one member (it spreads, never pins one); with member 0's breaker tripped Open in the served
-/// breaker, nine more picks land only on member 1 or 2.
 #[test]
 fn ordered_walk_empty_order_is_swrr() {
     use super::walk_tests::RealBreaker;
@@ -152,9 +141,6 @@ fn ordered_walk_empty_order_is_swrr() {
     }
 }
 
-/// F25 row 553: rehomed from the retired engine crate's src/engine/tests/ordered_walk_tests.rs::request_ctx_new_huge_deadline_does_not_panic.
-/// A request context built with an operator's extreme failover timeout (u64::MAX, u64::MAX / 2,
-/// 10^18 seconds) constructs without panicking, and reads back a positive remaining budget now.
 #[test]
 fn request_ctx_new_huge_deadline_does_not_panic() {
     use busbar_kernel_egress::ports::Clock;
@@ -206,7 +192,7 @@ fn a_fully_drained_pool_selects_nothing() {
 fn session_affinity_never_pins_to_a_drained_member() {
     let (mut node, mut members) = three_lanes();
     members[0].weight = 0;
-    // A hash that lands on position zero, which is the drained member.
+
     node.affinity = Some(3);
     let mut ctx = node.request_ctx();
     let picked = node.pick("p", &members, &mut ctx).expect("a member");
@@ -313,7 +299,6 @@ fn health_only_exhaustion_records_exact_reasons_without_admission_or_a_rotation_
         .is_empty());
     assert!(node.breaker.log.lock().unwrap().is_empty());
 
-    // The read did not spend a credit: recovery follows exactly a fresh pool's rotation.
     let (fresh, _) = three_lanes();
     for destination in 0..3 {
         node.breaker
@@ -353,10 +338,6 @@ fn health_only_reasons_omit_drained_and_already_tried_members_and_expired_picks(
 
 #[test]
 fn only_a_member_at_capacity_spends_a_turn_of_the_rotation() {
-    // Two members. One is suppressed, so it is filtered before the rotation and can never spend a
-    // turn; the other is at capacity, so it is selected and only then refused, which is what
-    // spends one. The proof is that the healthy-but-busy member is the ONLY one the admission was
-    // ever asked about.
     let node = Node::with_lanes(&["a", "b"]);
     let members = vec![
         member(DestinationId::new(0), "a"),
@@ -391,7 +372,6 @@ fn only_a_member_at_capacity_spends_a_turn_of_the_rotation() {
     drop(held);
 }
 
-/// Three members stated at tiers `0`, `1` and `2`, every one of weight 1.
 fn tiered() -> (Node, Vec<busbar_kernel_egress::pool::Member>) {
     let (node, mut members) = three_lanes();
     for (tier, m) in (0u32..).zip(members.iter_mut()) {
@@ -400,10 +380,6 @@ fn tiered() -> (Node, Vec<busbar_kernel_egress::pool::Member>) {
     (node, members)
 }
 
-/// THE LOWEST TIER IS THE PICK (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b),
-/// R2-G l.4285): while the tier-0 member is healthy every request is sent to it, never rotated
-/// onto the tier-1 or tier-2 member. RED with the tier unread: the weighted floor turns over all
-/// three (`a`, `b`, `c`, `a`).
 #[test]
 fn the_lowest_tier_takes_every_request_while_it_is_healthy() {
     let (node, members) = tiered();
@@ -414,8 +390,6 @@ fn the_lowest_tier_takes_every_request_while_it_is_healthy() {
     }
 }
 
-/// A suppressed lower tier is passed over for the next tier up, and only for it: the tier-1 member
-/// takes the request while the tier-0 member cools, never the tier-2 one.
 #[test]
 fn a_suppressed_lower_tier_hands_the_request_to_the_next_tier() {
     let (node, members) = tiered();
@@ -433,8 +407,6 @@ fn a_suppressed_lower_tier_hands_the_request_to_the_next_tier() {
     }
 }
 
-/// Members at one tier keep the weighted order among themselves: a pool that states no tier (every
-/// member at `0`) turns as it always did.
 #[test]
 fn members_at_one_tier_keep_the_weighted_rotation() {
     let (node, members) = three_lanes();

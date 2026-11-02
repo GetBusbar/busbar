@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! AWS Signature Version 4: the day's signing key and the request signature, made by the
-//! credential. The canonical request is built here, so a session token signed into it never
-//! passes through the plugin.
 
 use zeroize::Zeroizing;
 
@@ -139,7 +137,7 @@ fn string_to_sign(
 
 impl Cred {
     /// The day's SigV4 signing key derived from this secret access key: `HMAC` over date, region,
-    /// service and `aws4_request`. The key is itself a credential, held by the chip.
+
     pub fn aws4_day_key(&self, datestamp: &str, region: &str, service: &str) -> Cred {
         let mut seed = Zeroizing::new(Vec::with_capacity(4 + self.len()));
         seed.extend_from_slice(b"AWS4");
@@ -157,10 +155,7 @@ impl Cred {
     }
 
     /// Sign `r` under this day key ([`Cred::aws4_day_key`]), the session `token` (if any) signed
-    /// in as `x-amz-security-token`.
-    ///
-    /// # Errors
-    /// The session token is not text.
+
     pub fn aws4_sign(
         &self,
         r: &Aws4Request<'_>,
@@ -181,7 +176,7 @@ impl Cred {
     }
 
     /// Whether `presented` (lowercase hex) is this secret access key's signature of `r`, compared
-    /// over SHA-256 digests (constant time).
+
     pub fn aws4_verify(&self, r: &Aws4Request<'_>, presented: &str) -> bool {
         let key = self.aws4_day_key(r.datestamp, r.region, r.service);
         let Ok(sig) = key.aws4_sign(r, None) else {

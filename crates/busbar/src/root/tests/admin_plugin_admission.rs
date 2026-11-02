@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OPERATOR SURFACE'S PLUGIN VERBS UNDER THE ROOT'S REAL ADMISSION (`BUSBAR-1.6.0.md` THE
-//! DESIGN l.322: the kernel never names the loader, and neither does the admin crate). The admin
-//! crate judges an uploaded, inspected, listed or rolled-back tarball only through the kernel's
-//! `PluginAdmission` seam; what a REAL tarball is judged — its structure, its signature, the trust
-//! posture, the anti-downgrade floors, the conflict with the installed set and the one-version rule
-//! against the linked rows — is the root's admission ([`crate::root::admission::ADMISSION`]) over
-//! the loader. These tests pack real tarballs and drive the admin surface over the wire on a
-//! snapshot carrying that admission, so they prove the admission the shipped binary installs. The
-//! admin surface's own mechanics (the catalog cache, its gate, the filename gate, the schema
-//! bounds) stay in the admin crate over a test-local admission.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -23,15 +12,11 @@ use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use crate::root::admission::ADMISSION;
 use crate::root::loader::sign::{sign, Manifest, SigningKey};
 
-// ── fixtures ────────────────────────────────────────────────────────────────────────────────────
-
-/// A unique temp plugins directory for one test (isolated so parallel tests never collide).
 fn tmp_plugins_dir(tag: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    // pid + counter alone is NOT unique over time: these dirs are never cleaned up and the OS
-    // reuses pids, so a once-per-process clock token makes the name unique across pid reuse.
+
     static PROC_TOKEN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
     let token = PROC_TOKEN.get_or_init(|| {
         std::time::SystemTime::now()
@@ -48,7 +33,6 @@ fn tmp_plugins_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// A well-formed manifest for tests (sha256/signature completed by `sign`).
 fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Manifest {
     Manifest {
         name: name.into(),
@@ -75,32 +59,25 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
     }
 }
 
-/// `lib` packed UNSIGNED under `m`, the manifest bound to the library's hash.
 fn unsigned_tarball(mut m: Manifest, lib: &[u8]) -> Vec<u8> {
     m.sha256 = crate::root::loader::sign::sha256_hex(lib);
     crate::root::loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// Package a signed plugin tarball in memory.
 fn signed_tarball(key: &SigningKey, m: Manifest, lib: &[u8]) -> Vec<u8> {
     let m = sign(key, m, lib);
     crate::root::loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// Build an UNSIGNED (structurally valid) plugin tarball in memory for the HTTP lifecycle tests.
 fn admin_test_tarball(name: &str, alias: &str) -> Vec<u8> {
     admin_test_tarball_versioned(name, alias, "1.0.0")
 }
 
-/// As `admin_test_tarball`, with an explicit version so a test can build two SAME-NAME tarballs that
-/// differ only in version (and thus filename) - the same-name-different-file case.
 fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u8> {
     let lib = format!("junk library bytes for {name} {version} (never dlopened)").into_bytes();
     unsigned_tarball(test_manifest(name, alias, "acme", version), &lib)
 }
 
-/// As `admin_test_tarball_versioned`, but for an arbitrary plugin `kind` (the `type=secret`
-/// support / richer `auth` rows need a non-`store` fixture to test against).
 fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
     let lib = format!("junk library bytes for {name} (never dlopened)").into_bytes();
     let mut m = test_manifest(name, alias, "acme", "1.0.0");
@@ -112,19 +89,16 @@ fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
     unsigned_tarball(m, &lib)
 }
 
-/// The STRICT default posture: no publishers, no opt-ins.
 fn strict_posture() -> busbar_kernel::config::PluginsCfg {
     busbar_kernel::config::PluginsCfg::default()
 }
 
-/// A permissive posture (allow_unsigned): an unsigned upload installs "unverified".
 fn unsigned_ok_posture() -> busbar_kernel::config::PluginsCfg {
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.trust.allow_unsigned = true;
     cfg
 }
 
-/// A posture that allowlists one third-party publisher key.
 fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::PluginsCfg {
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.trust.publishers = vec![busbar_kernel::config::PluginPublisher {
@@ -134,7 +108,6 @@ fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::Plu
     cfg
 }
 
-/// Governance holding the operator token `admin_token`, with a token signer.
 fn gov_with_signer(admin_token: Option<String>) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
@@ -151,8 +124,6 @@ fn gov_with_signer(admin_token: Option<String>) -> Arc<GovState> {
     )
 }
 
-/// Serve the admin router over an App whose plugin surface is `dir` under `cfg`, judged by THE
-/// ROOT'S ADMISSION, with `hook_env` when given, and the known admin token `admintok`.
 async fn serve_admission(
     dir: PathBuf,
     cfg: busbar_kernel::config::PluginsCfg,
@@ -168,9 +139,7 @@ async fn serve_admission_with_inputs(
     disk_paths: Option<(PathBuf, PathBuf)>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     busbar_core_admin::install();
-    // The operator credential's row on the auth axis, as boot links it (`register_planes`): the
-    // admin chain authenticates `x-admin-token` through the root's REAL operator door (a test build
-    // of the kernel answers no operator row of its own; the first install stands).
+
     busbar_kernel::preflight::install_linked_auth(
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
@@ -200,21 +169,12 @@ async fn serve_admission_with_inputs(
     (addr, handle)
 }
 
-/// Serve a router whose App points its plugin surface at `dir` (allow_unsigned posture, no
-/// publishers), with a known admin token — for the install/list/remove/reload plugin endpoints.
 async fn serve_with_plugins_dir(
     dir: PathBuf,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    // The lifecycle test installs an UNSIGNED plugin tarball, so opt in to unsigned plugins (the
-    // trust DEFAULT rejects unsigned artifacts). The trust-default behavior itself is covered by
-    // the dedicated trust tests; this test is about the install/list/reload/remove lifecycle.
     serve_admission(dir, unsigned_ok_posture(), None).await
 }
 
-/// As `serve_with_plugins_dir`, but with a caller-supplied `hook_env` — for tests that need the
-/// live `hook_env.registry` (e.g. `GET /plugins/{name}/schema`) populated from the dir's actual
-/// contents, since the plain `TestApp` builder defaults it to an empty registry regardless of
-/// `plugins_dir` (that field only feeds the filesystem-scanning install/list/remove/reload paths).
 async fn serve_with_plugins_dir_and_hook_env(
     dir: PathBuf,
     hook_env: busbar_kernel::hooks::HookEnv,
@@ -222,9 +182,6 @@ async fn serve_with_plugins_dir_and_hook_env(
     serve_admission(dir, unsigned_ok_posture(), Some(hook_env)).await
 }
 
-/// The hook environment over what the boot's scan admits from `dir` under an `allow_unsigned`
-/// policy: the REAL registry (the same `scan_and_validate` production boot uses) and the root's
-/// hook axis over it.
 fn scanned_hook_env(dir: &std::path::Path) -> busbar_kernel::hooks::HookEnv {
     let policy = crate::root::loader::sign::TrustPolicy {
         allow_unsigned: true,
@@ -249,7 +206,6 @@ struct Upload<'a> {
 }
 
 impl<'a> Upload<'a> {
-    /// `tarball` under `file`, base64-encoded as the contract carries it.
     fn of(file: &'a str, tarball: &[u8]) -> serde_json::Value {
         Self::raw(
             file,
@@ -257,7 +213,6 @@ impl<'a> Upload<'a> {
         )
     }
 
-    /// `file` with `tarball_b64` as given (a malformed body's).
     fn raw(file: &'a str, tarball_b64: impl Into<String>) -> serde_json::Value {
         serde_json::to_value(Upload {
             file,
@@ -280,7 +235,6 @@ struct InstallShape {
     version: String,
 }
 
-/// A catalog or install row's artifact file (`None` for a compiled-in row), read by its field.
 fn file_of(row: &serde_json::Value) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct Filed {
@@ -289,8 +243,6 @@ fn file_of(row: &serde_json::Value) -> Option<String> {
     serde_json::from_value::<Filed>(row.clone()).ok()?.file
 }
 
-/// The key of the first store this build links: the store catalog's compiled-in head, read off the
-/// installed root rows (the root's table, or a test build's stand-in), never spelled here.
 fn linked_store_key() -> &'static str {
     busbar_kernel_testkit::test_support::root::ensure();
     busbar_kernel::preflight::root_rows()
@@ -300,7 +252,6 @@ fn linked_store_key() -> &'static str {
         .expect("the build links a store")
 }
 
-/// `POST /api/v1/admin/plugins` of `tarball` as `file`: (status, body).
 async fn install(
     addr: std::net::SocketAddr,
     file: &str,
@@ -317,7 +268,6 @@ async fn install(
     (status, resp.json().await.unwrap_or(serde_json::Value::Null))
 }
 
-/// `POST /api/v1/admin/plugins/inspect` of `tarball`: (status, body).
 async fn inspect(addr: std::net::SocketAddr, tarball: &[u8]) -> (u16, serde_json::Value) {
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
@@ -330,7 +280,6 @@ async fn inspect(addr: std::net::SocketAddr, tarball: &[u8]) -> (u16, serde_json
     (status, resp.json().await.unwrap_or(serde_json::Value::Null))
 }
 
-/// `GET /api/v1/admin/plugins?type=store`'s rows.
 async fn store_catalog(addr: std::net::SocketAddr) -> Vec<serde_json::Value> {
     let list: serde_json::Value = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
@@ -344,16 +293,10 @@ async fn store_catalog(addr: std::net::SocketAddr) -> Vec<serde_json::Value> {
     list["items"].as_array().unwrap().clone()
 }
 
-/// A refusal body's message.
 fn message(body: &serde_json::Value) -> &str {
     body["error"]["message"].as_str().unwrap_or("")
 }
 
-// ── POST /plugins/inspect ──────────────────────────────────────────────────────────────────
-
-/// A trusted, unsigned-under-`allow_unsigned` candidate previews cleanly: the SAME response
-/// shape `GET /plugins/{name}/schema` carries, PLUS `name`/`version`/`kind` — and NOTHING is
-/// written to disk (an inspect is stateless: no install, no conflict check).
 #[tokio::test]
 async fn inspect_previews_a_trusted_candidate_without_installing() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -387,10 +330,9 @@ async fn inspect_previews_a_trusted_candidate_without_installing() {
         v["schema"].is_object(),
         "schema round-trips as real JSON: {v}"
     );
-    // `secret` kind defaults to restart-required.
+
     assert_eq!(v["restart_required_default"], true);
 
-    // NOTHING was written — inspect never installs, never touches `plugins.dir`.
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),
         0,
@@ -399,9 +341,6 @@ async fn inspect_previews_a_trusted_candidate_without_installing() {
     handle.abort();
 }
 
-/// An UNTRUSTED (unsigned, strict posture) candidate is REPORTED as `trust: "rejected"`, not
-/// refused with an error — the whole point of inspect is previewing what a not-yet-trusted
-/// plugin would need without ever installing or executing it.
 #[tokio::test]
 async fn inspect_reports_rejected_trust_rather_than_erroring() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -410,7 +349,7 @@ async fn inspect_reports_rejected_trust_rather_than_erroring() {
         test_manifest("acme-store-untrusted", "untrusted", "acme", "1.0.0"),
         b"lib bytes",
     );
-    // STRICT posture: no publishers allowlisted, no allow_unsigned opt-in.
+
     let (addr, handle) = serve_admission(dir, strict_posture(), None).await;
 
     let (status, v) = inspect(addr, &tarball).await;
@@ -420,8 +359,6 @@ async fn inspect_reports_rejected_trust_rather_than_erroring() {
     handle.abort();
 }
 
-/// Structurally invalid bytes (not a tarball at all) are a `Validation` error, same as install's
-/// structural gate — inspect shares the exact same in-memory unpack path.
 #[tokio::test]
 async fn inspect_rejects_invalid_tarball() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -433,9 +370,6 @@ async fn inspect_rejects_invalid_tarball() {
     handle.abort();
 }
 
-// ── POST /plugins ──────────────────────────────────────────────────────────────────────────
-
-/// Install rejects an upload that is not a valid plugin tarball, and leaves NOTHING behind.
 #[tokio::test]
 async fn install_rejects_invalid_tarball() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -450,8 +384,6 @@ async fn install_rejects_invalid_tarball() {
     handle.abort();
 }
 
-/// A VALIDLY-SIGNED but structurally malformed manifest (bad `kind`) is a 400 — structural
-/// validation is independent of trust.
 #[tokio::test]
 async fn install_rejects_signed_but_malformed_manifest() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -470,9 +402,6 @@ async fn install_rejects_signed_but_malformed_manifest() {
     handle.abort();
 }
 
-/// Under the STRICT default posture, an UNSIGNED upload is rejected as a conflict naming the
-/// opt-in flag, and nothing is written. The endpoint is MANIFEST-ONLY: the (junk) library
-/// bytes are never executed, so pushing over the API cannot bypass the trust model.
 #[tokio::test]
 async fn install_strict_posture_rejects_unsigned() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -491,8 +420,6 @@ async fn install_strict_posture_rejects_unsigned() {
     handle.abort();
 }
 
-/// A first-party tarball SEALED (`docs/design/release-trust.md`) under a keys document and a
-/// release manifest that both expired at `expires` (Unix seconds), signed by throwaway ed25519 keys.
 fn sealed_tarball_expiring(expires: u64) -> Vec<u8> {
     use crate::root::loader::release_trust::{
         wire, KeysDoc, ReleaseKey, Role, Target, TargetsDoc, PLUGINS_ROLE, PLUGIN_TARGET,
@@ -549,14 +476,11 @@ fn sealed_tarball_expiring(expires: u64) -> Vec<u8> {
     crate::root::loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// INSTALL judges expiry (TUF's semantics, `docs/design/release-trust.md`): an upload of a
-/// first-party plugin whose release seal has expired is refused, explained with its audit code, and
-/// nothing is written.
 #[tokio::test]
 async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
     busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("expired-seal");
-    let tarball = sealed_tarball_expiring(1_600_000_000); // 2020
+    let tarball = sealed_tarball_expiring(1_600_000_000);
     let (addr, handle) = serve_admission(dir.clone(), strict_posture(), None).await;
     let (status, b) = install(addr, "sealed.tar.gz", &tarball).await;
     assert!(
@@ -569,8 +493,6 @@ async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
     handle.abort();
 }
 
-/// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
-/// a copy of it dropped in must carry to be the same plugin at the same version.
 fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
     busbar_kernel_testkit::test_support::root::ensure();
     let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
@@ -596,8 +518,6 @@ fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
     )
 }
 
-/// `rendering` with its Statement's version restated as `version` (the rendering's head is the
-/// magic, four `u32`s, then the name and the version, each a `u32` length and its bytes).
 fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
     let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
     let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
@@ -609,8 +529,6 @@ fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
     out
 }
 
-/// A copy of the linked store, `name` aliased `alias`, unsigned over junk library bytes, stating
-/// the store's Statement restated at `version`.
 fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
     let (_, _, _, statement) = linked_store();
     let lib = b"junk lib bytes of a linked plugin";
@@ -619,10 +537,6 @@ fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
     unsigned_tarball(m, lib)
 }
 
-/// THE ONE-VERSION RULE AT THE ADMIN INSTALL (ARCHITECT C'), SAME VERSION: uploading a copy of a
-/// plugin this build LINKS, at the version the linked plugin states, is an accepted no-op — the
-/// linked build already serves it, and nothing is written. RED before: it was published, and the
-/// next boot met the same plugin by both doors.
 #[tokio::test]
 async fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -646,8 +560,6 @@ async fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
     handle.abort();
 }
 
-/// THE ONE-VERSION RULE AT THE ADMIN INSTALL, ANOTHER VERSION: refused before anything is written,
-/// in the words boot refuses the pair with. RED before: published, bricking the next boot.
 #[tokio::test]
 async fn install_of_a_linked_plugin_at_another_version_is_refused() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -669,9 +581,6 @@ async fn install_of_a_linked_plugin_at_another_version_is_refused() {
     handle.abort();
 }
 
-/// THE ONE-VERSION RULE COMPARES STATEMENT VERSIONS ONLY at the admin install: a copy of a linked
-/// plugin stating no Statement is refused, naming it, whatever its manifest `version` says; nothing
-/// is written.
 #[tokio::test]
 async fn install_of_a_linked_plugin_stating_no_version_is_refused() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -690,8 +599,6 @@ async fn install_of_a_linked_plugin_stating_no_version_is_refused() {
     handle.abort();
 }
 
-/// TRUST BEFORE IDENTITY at the admin install: under the strict posture an UNSIGNED copy of a
-/// linked plugin at another version is refused by the trust policy, never compared.
 #[tokio::test]
 async fn install_judges_trust_before_the_one_version_rule() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -714,22 +621,15 @@ async fn install_judges_trust_before_the_one_version_rule() {
     handle.abort();
 }
 
-/// ROLLBACK RESOLUTION (1.5.0), the EXPLICIT-downgrade core: a TRUSTED third-party artifact whose
-/// version is BELOW its configured base floor — which the AUTOMATIC path (`install`) rejects as an
-/// anti-downgrade — is ACCEPTED as a rollback target, because the rollback lowers the floor to the
-/// target's own version. The admin surface's own half (the target read off the plugins directory,
-/// the not-found answer and the merged pin map) is the admin crate's to prove
-/// (`rollback_reads_the_target_and_merges_pins`).
 #[test]
 fn rollback_resolves_a_trusted_below_floor_target_and_merges_pins() {
     let dir = tmp_plugins_dir("rollback-ok");
     let acme = SigningKey::from_bytes(&[11u8; 32]);
-    // Base posture: allowlist acme AND floor this plugin at 2.0.0.
+
     let mut cfg = publisher_posture("acme", &acme);
     cfg.min_versions
         .insert("acme-store-x".to_string(), "2.0.0".to_string());
 
-    // The PRIOR artifact at 1.4.0 (the rollback target) sits in the plugins dir.
     let lib = b"prior artifact bytes";
     let tarball = signed_tarball(
         &acme,
@@ -738,7 +638,6 @@ fn rollback_resolves_a_trusted_below_floor_target_and_merges_pins() {
     );
     std::fs::write(dir.join("old.tar.gz"), &tarball).unwrap();
 
-    // The automatic install path REJECTS the below-floor artifact (anti-downgrade).
     let install_err = ADMISSION
         .admit_upload(&dir, "old.tar.gz", &tarball, &cfg)
         .unwrap_err();
@@ -747,7 +646,6 @@ fn rollback_resolves_a_trusted_below_floor_target_and_merges_pins() {
         "automatic install of a below-floor artifact is a conflict, got {install_err:?}"
     );
 
-    // The EXPLICIT rollback resolves it, lowering the floor to 1.4.0.
     let manifest = ADMISSION
         .rollback_target("old.tar.gz", &tarball, &cfg)
         .expect("rollback resolves the trusted below-floor target");
@@ -755,13 +653,8 @@ fn rollback_resolves_a_trusted_below_floor_target_and_merges_pins() {
     assert_eq!(manifest.version, "1.4.0");
 }
 
-/// ROLLBACK is FAIL-CLOSED: an UNTRUSTED target (unsigned under a strict posture) is refused even
-/// with the floor lowered — a rollback authenticates the OPERATOR, never the ARTIFACT. (An ABSENT
-/// target's 404 is the admin surface's, proven in the admin crate.)
 #[test]
 fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
-    // An UNSIGNED artifact, under the STRICT posture: trust refuses it even for a rollback (the
-    // floor was lowered, but the signature/opt-in gate still fails).
     let lib = b"unsigned prior artifact";
     let tarball = unsigned_tarball(test_manifest("acme-store-x", "x", "acme", "1.4.0"), lib);
     let err = ADMISSION
@@ -773,9 +666,6 @@ fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
     );
 }
 
-/// SECURITY: under the DEFAULT (strict) posture, an unsigned tarball present in the plugins dir
-/// is reported present + `rejected` by the catalog WITHOUT ever being `dlopen`ed — the catalog
-/// path is manifest-only (pure data), so the junk library bytes here can never execute.
 #[tokio::test]
 async fn catalog_does_not_dlopen_an_untrusted_plugin() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -806,8 +696,6 @@ async fn catalog_does_not_dlopen_an_untrusted_plugin() {
     handle.abort();
 }
 
-/// A SIGNED upload from an allowlisted third-party publisher installs as `trusted`, and the
-/// catalog reports the signed metadata + trusted verdict.
 #[tokio::test]
 async fn install_signed_is_trusted() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -843,9 +731,6 @@ async fn install_signed_is_trusted() {
     handle.abort();
 }
 
-/// ANTI-DOWNGRADE at the ADMIN INSTALL boundary: a `plugins.min_versions` floor rejects a
-/// VALIDLY-SIGNED but older release of the same plugin (keyed on the manifest NAME) — a
-/// rollback/replay is a `409`, nothing is written. The release at/above the floor installs.
 #[tokio::test]
 async fn install_downgraded_version_is_rejected_by_floor() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -857,7 +742,6 @@ async fn install_downgraded_version_is_rejected_by_floor() {
     let dir = tmp_plugins_dir("downgrade");
     let (addr, handle) = serve_admission(dir.clone(), cfg, None).await;
 
-    // A validly-signed 1.9.0 is below the 2.0.0 floor -> rejected, nothing published.
     let old = signed_tarball(
         &key,
         test_manifest("acme-store-disk", "acmedisk", "acme", "1.9.0"),
@@ -870,7 +754,6 @@ async fn install_downgraded_version_is_rejected_by_floor() {
     );
     assert!(!dir.join("old.tar.gz").exists());
 
-    // The current 2.1.0 clears the floor and installs as trusted.
     let cur = signed_tarball(
         &key,
         test_manifest("acme-store-disk", "acmedisk", "acme", "2.1.0"),
@@ -886,8 +769,6 @@ async fn install_downgraded_version_is_rejected_by_floor() {
     handle.abort();
 }
 
-/// A signed upload whose publisher is NOT allowlisted is untrusted; under the strict default it
-/// is a conflict (rejected), and nothing is written.
 #[tokio::test]
 async fn install_unknown_publisher_rejected() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -905,9 +786,6 @@ async fn install_unknown_publisher_rejected() {
     handle.abort();
 }
 
-/// CONFLICT at the ADMIN INSTALL boundary: an upload whose alias collides with a DIFFERENT
-/// already-installed loadable plugin is a `409` naming both ("can't use valkey and a
-/// third-party valkey"); overwriting the SAME plugin (same name, same file) is a legal upgrade.
 #[tokio::test]
 async fn install_alias_conflict_is_rejected() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -923,7 +801,6 @@ async fn install_alias_conflict_is_rejected() {
     let (status, b) = install(addr, "first.tar.gz", &first).await;
     assert_eq!(status, 201, "first install: {b}");
 
-    // A DIFFERENT plugin claiming the same alias -> conflict naming both.
     let clash = signed_tarball(
         &key,
         test_manifest("other-store-kv", "kv", "acme", "1.0.0"),
@@ -938,7 +815,6 @@ async fn install_alias_conflict_is_rejected() {
     );
     assert!(!dir.join("clash.tar.gz").exists());
 
-    // Upgrading the SAME plugin in place (same name, same file) is allowed.
     let upgrade = signed_tarball(
         &key,
         test_manifest("acme-store-kv", "kv", "acme", "1.1.0"),
@@ -949,9 +825,6 @@ async fn install_alias_conflict_is_rejected() {
     handle.abort();
 }
 
-/// THE ROOT'S ADMISSION REPORTS AN UPLOAD'S TRUST IN THE ADMIN SURFACE'S CLASSES: an unsigned
-/// upload under `allow_unsigned` is `Allowed` and an allowlisted signature is `Trusted` naming its
-/// publisher; nothing is written by the admission itself.
 #[test]
 fn the_root_admission_classes_an_upload_and_writes_nothing() {
     let dir = tmp_plugins_dir("admission-classes");
@@ -979,14 +852,6 @@ fn the_root_admission_classes_an_upload_and_writes_nothing() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
-// ── over the wire ──────────────────────────────────────────────────────────────────────────────
-
-/// THE ONE-VERSION RULE OVER THE WIRE (ARCHITECT C'): `POST /plugins` with a copy of a plugin this
-/// build LINKS, at the version its Statement states, answers exactly as every successful install
-/// has since 1.5.5 — `201 Created` with the install view (v1.5.5 had no "already installed" answer:
-/// `crates/busbar/src/admin/v1/json/handlers.rs:211` is its one success, and
-/// `crates/busbar/src/admin/v1/service.rs:1873` overwrote a same-file upload) — its note saying the
-/// linked build serves it, and NOTHING is written to the plugins directory.
 #[tokio::test]
 async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -995,8 +860,7 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
     let file = "linked-copy.tar.gz";
     let dir = tmp_plugins_dir("linked-copy");
     let (addr, _handle) = serve_with_plugins_dir(dir.clone()).await;
-    // The install view's shape is every one of its fields (both optional ones present, each of
-    // its type) and nothing else.
+
     let (status, v) = install(addr, file, &tarball).await;
     assert_eq!(status, 201, "the install view, as every success");
     let mut fields: Vec<&str> = v
@@ -1031,10 +895,6 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// FULL LIFECYCLE over the wire: `POST /plugins` installs an (unsigned, allow_unsigned-posture)
-/// plugin tarball → `GET /plugins?type=store` lists it as a dynamic-library row → `POST
-/// /plugins/reload` reports it → `DELETE /plugins/{file}` removes it (204) → a second DELETE is
-/// 404. Every mutation is admin-token guarded and audited; the uploaded code is never executed.
 #[tokio::test]
 async fn test_admin_v1_plugin_install_list_reload_remove() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1044,7 +904,6 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
-    // INSTALL — 201 with a trust verdict of "unverified" (unsigned under allow_unsigned).
     let body = Upload::of(file, &tarball);
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins"))
@@ -1063,7 +922,6 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     );
     assert!(dir.join(file).exists(), "tarball published to disk");
 
-    // A mutation WITHOUT the admin token is rejected (401) — the whole surface is guarded.
     let unauth = client
         .post(format!("http://{addr}/api/v1/admin/plugins"))
         .json(&body)
@@ -1072,7 +930,6 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .unwrap();
     assert_eq!(unauth.status().as_u16(), 401);
 
-    // LIST — the store catalog reports the memory head + our dynamic plugin (ready).
     let list: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
         .header("x-admin-token", "admintok")
@@ -1092,7 +949,6 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     assert_eq!(dyn_row["target"], file);
     assert_eq!(dyn_row["name"], "acme-store-junk");
 
-    // RELOAD — reports the reconciled dynamic set (no memory head).
     let reload: serde_json::Value = client
         .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
         .header("x-admin-token", "admintok")
@@ -1104,7 +960,6 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .unwrap();
     assert_eq!(reload["plugins"].as_array().unwrap().len(), 1);
 
-    // REMOVE — 204, then a second remove is 404 in the frozen envelope.
     let del = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
         .header("x-admin-token", "admintok")
@@ -1124,7 +979,6 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     let b: serde_json::Value = del2.json().await.unwrap();
     assert_eq!(b["error"]["code"], "not_found");
 
-    // The install + remove both left audit rows (every mutation is audited).
     let audit: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/audit"))
         .header("x-admin-token", "admintok")
@@ -1153,11 +1007,6 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     handle.abort();
 }
 
-/// `GET /plugins?type=secret` lists `kind: secret` plugins ONLY — a `kind: store`
-/// tarball dropped in the same directory does not leak into it, and vice versa (the pre-existing
-/// scan used to be unfiltered by kind at all, so this also proves the fix rather than just the
-/// addition). `type=secret` previously did not exist as an accepted value (400 `invalid_request`
-/// before this change).
 #[tokio::test]
 async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1232,10 +1081,6 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     handle.abort();
 }
 
-/// `GET /plugins` list rows carry `schema_url`: a non-null, admin-prefixed RELATIVE path
-/// whenever the manifest declared `settings_schema` at all — and
-/// following it returns the SAME schema `GET /plugins/{name}/schema` would. A plugin with no
-/// `settings_schema` gets `schema_url: null` (absence, not an empty string or omitted field).
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1250,12 +1095,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     let mut m = test_manifest("acme-store-schemaurl", "schemaurl", "acme", "1.0.0");
     m.settings_schema = Some(schema.to_string());
     let tarball = unsigned_tarball(m, &lib);
-    // Write directly to disk (not via `POST /plugins`) so `hook_env.registry` — which the
-    // per-plugin `GET /plugins/{name}/schema` endpoint resolves against, a SEPARATE path from the
-    // directory-scanning list endpoint below — can be built from the same directory's real
-    // contents up front (mirrors `test_admin_v1_plugin_schema_round_trips_from_manifest`, since the
-    // plain `TestApp`/`serve_with_plugins_dir` builder otherwise defaults `hook_env` to an empty
-    // registry regardless of `plugins_dir`).
+
     std::fs::write(dir.join("acme-store-schemaurl.tar.gz"), &tarball).unwrap();
     let hook_env = scanned_hook_env(&dir);
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
@@ -1283,7 +1123,6 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     );
     assert_eq!(row["schema_error"], serde_json::Value::Null);
 
-    // Following it returns the same schema.
     let followed: serde_json::Value = client
         .get(format!("http://{addr}{schema_url}"))
         .header("x-admin-token", "admintok")
@@ -1295,8 +1134,6 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .unwrap();
     assert_eq!(followed["schema"], schema);
 
-    // The `memory` compiled-in row (no manifest at all) has `schema_url: null` — absence, not an
-    // error, and distinct from "declared but unparseable".
     let memory_row = list["items"]
         .as_array()
         .unwrap()
@@ -1309,11 +1146,6 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     handle.abort();
 }
 
-/// `GET /plugins` list rows carry `file` (the artifact
-/// filename — the exact string `DELETE /plugins/{file}` and `GET /plugins/{file}/schema` key off)
-/// and `has_schema` (mirrors `schema_url.is_some()`, so a catalog can flag configurable rows
-/// without a fetch per row). Covers a dynamic-library row WITH a schema, a dynamic-library row
-/// WITHOUT one, and the compiled-in `memory` row (no backing artifact at all).
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1333,8 +1165,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     );
     m_with.settings_schema = Some(schema.to_string());
     let tarball_with = unsigned_tarball(m_with, &lib_with);
-    // Deliberately different FILENAME than the manifest NAME, so a test that only checked `name`
-    // could not accidentally pass — `file` must be the on-disk artifact filename.
+
     std::fs::write(
         dir.join("acme-store-filecheck-with-1.0.0.tar.gz"),
         &tarball_with,
@@ -1387,8 +1218,6 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
         "sanity: has_schema tracks schema_url"
     );
 
-    // Round-trip: `file` is exactly what `DELETE /plugins/{file}` and `GET /plugins/{file}/schema`
-    // take.
     let file = file_of(with_row).expect("the row names its file");
     let schema_resp: serde_json::Value = client
         .get(format!(
@@ -1442,9 +1271,6 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     handle.abort();
 }
 
-/// Over the wire: a candidate tarball previews cleanly, NEVER lands on disk, and never appears in
-/// `GET /plugins?type=store` afterward — inspect is genuinely stateless, not "install with extra
-/// steps".
 #[tokio::test]
 async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1469,7 +1295,6 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     assert_eq!(v["source"], "manifest");
     assert_eq!(v["trust"], "unverified");
 
-    // NOTHING was written — a subsequent list shows no such plugin, and the directory is empty.
     assert_eq!(
         std::fs::read_dir(&dir).unwrap().count(),
         0,
@@ -1493,13 +1318,6 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
         "an inspected candidate must not appear in the catalog: {list}"
     );
 
-    // A read-only-scoped token (no `full`/`mint`/`hooks-register`) can still call it — `read-only`
-    // scope, not a mutation scope (docs/admin-api.md).
-    // (This server's operator token already holds `full`, which trivially satisfies `read-only` —
-    // the scope MATRIX assignment itself is asserted structurally in contract::mod.rs's own tests;
-    // this test's job is the wire behavior, not re-deriving the scope lattice.)
-
-    // Malformed body (bad base64) is a 400, never a panic/500.
     let bad = Upload::raw("x.tar.gz", "not-base64!!");
     let bad_resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
@@ -1512,7 +1330,6 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     let bad_body: serde_json::Value = bad_resp.json().await.unwrap();
     assert_eq!(bad_body["error"]["code"], "invalid_request");
 
-    // Malformed JSON body entirely is also a 400.
     let malformed_resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .header("x-admin-token", "admintok")
@@ -1523,7 +1340,6 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
         .unwrap();
     assert_eq!(malformed_resp.status().as_u16(), 400);
 
-    // No admin token at all → 401, same as every other admin endpoint.
     let unauth = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
         .json(&body)
@@ -1536,11 +1352,6 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     handle.abort();
 }
 
-/// The manifest-embedded `settings_schema` round-trips over the
-/// wire: install a tarball whose SIGNED manifest carries a JSON Schema document, then `GET
-/// /plugins/{file}/schema` returns it as real parsed JSON (not a JSON string containing JSON). A
-/// plugin installed WITHOUT a `settings_schema` reports `"schema": null` rather than 404/erroring —
-/// absence is a valid, common state (most plugins today have none), not a fault.
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1558,16 +1369,12 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let tarball = unsigned_tarball(m, &lib);
     let file = "acme-store-withschema.tar.gz";
     let dir = tmp_plugins_dir("schema");
-    // Drop the tarball into the plugins dir BEFORE boot (the same "file-drop-then-boot" mechanism a
-    // real operator uses) and scan it into a REAL `PluginRegistry` (the same
-    // `scan_and_validate` production boot uses) so `hook_env.registry` — what `GET .../schema`
-    // reads — is populated exactly as it would be at a real boot.
+
     std::fs::write(dir.join(file), &tarball).unwrap();
     let hook_env = scanned_hook_env(&dir);
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
-    // GET .../schema returns the schema as real JSON, resolved by NAME (not filename).
     let got_resp = client
         .get(format!(
             "http://{addr}/api/v1/admin/plugins/acme-store-withschema/schema"
@@ -1583,15 +1390,11 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     assert_eq!(got["schema"], schema);
     assert_eq!(got["schema_error"], serde_json::Value::Null);
     assert_eq!(got["source"], "manifest");
-    // Unsigned tarball under an `allow_unsigned` posture (no publisher allowlist) → "unverified",
-    // the real catalog vocabulary (never "verified").
+
     assert_eq!(got["trust"], "unverified");
 
     handle.abort();
 
-    // A schemaless plugin reports `"schema": null`, not an error — dropped in and
-    // rebooted the same way, since (as above) ephemeral test apps only pick up the plugins dir at
-    // initial load.
     let no_schema_tarball = admin_test_tarball("acme-store-junk", "junkstore");
     std::fs::write(dir.join("acme-store-junk.tar.gz"), &no_schema_tarball).unwrap();
     let hook_env2 = scanned_hook_env(&dir);
@@ -1608,7 +1411,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         .await
         .unwrap();
     assert_eq!(got2["schema"], serde_json::Value::Null);
-    // The schema-carrying plugin from the first boot is still resolvable (both files on disk now).
+
     let got1_again: serde_json::Value = client
         .get(format!(
             "http://{addr2}/api/v1/admin/plugins/acme-store-withschema/schema"
@@ -1625,9 +1428,6 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let _ = std::fs::remove_dir_all(&dir);
     handle2.abort();
 
-    // A manifest that SET settings_schema but to unparseable text reports `schema_error`,
-    // distinct from a manifest that never set the field at all (both used to
-    // collapse to `schema: null` via `.ok()`, silently hiding a real authoring bug).
     let bad_lib = b"junk library bytes for acme-store-badschema (never dlopened)".to_vec();
     let mut bad_m = test_manifest("acme-store-badschema", "badschema", "acme", "1.0.0");
     bad_m.settings_schema = Some("{ not valid json".into());
@@ -1653,7 +1453,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         got_bad["schema_error"].as_str().is_some(),
         "corrupt settings_schema reports schema_error, not a bare null: {got_bad}"
     );
-    // An unknown plugin name is 404, distinguishing "no schema" from "no such plugin".
+
     let missing = client
         .get(format!(
             "http://{bad_addr}/api/v1/admin/plugins/nope/schema"
@@ -1668,24 +1468,16 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     bad_handle.abort();
 }
 
-/// Bricks next boot: installing a SAME-NAME plugin under a DIFFERENT filename (e.g. a version
-/// bump `-1.1.0.tar.gz` over an installed `-1.0.0.tar.gz`) must be a 409, NOT admitted. Two files
-/// claiming the same plugin name are a hard conflict at boot (registry::conflicts()) - admitting the
-/// second bricks the next restart. A same-name upgrade must REUSE the existing filename. The old gate
-/// exempted this case (`&& existing.manifest.name != manifest.name`).
 #[tokio::test]
 async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
     busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("h2");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
 
-    // v1.0.0 installs cleanly.
     let v1 = admin_test_tarball_versioned("busbar-store-x", "storex", "1.0.0");
     let (s1, _) = install(addr, "busbar-store-x-1.0.0.tar.gz", &v1).await;
     assert_eq!(s1, 201, "first install succeeds");
 
-    // v1.1.0 - SAME manifest name, DIFFERENT filename - must be a 409 (boot would reject two files
-    // claiming the same name), NOT a silent second publish.
     let v2 = admin_test_tarball_versioned("busbar-store-x", "storex", "1.1.0");
     let (s2, b) = install(addr, "busbar-store-x-1.1.0.tar.gz", &v2).await;
     assert_eq!(
@@ -1697,7 +1489,7 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
         !dir.join("busbar-store-x-1.1.0.tar.gz").exists(),
         "the conflicting second file must NOT be published"
     );
-    // The original is untouched (still exactly one plugin file on disk).
+
     let tars: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -1709,14 +1501,11 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
     handle.abort();
 }
 
-/// Fail-open: a CORRUPT tarball already sitting in the plugins dir makes scan_and_validate Err.
-/// The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Now a new
-/// install returns an error (never 201) until the offending tarball is fixed/removed.
 #[tokio::test]
 async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() {
     busbar_kernel_testkit::test_support::metrics::init();
     let dir = tmp_plugins_dir("m7");
-    // Plant a corrupt (non-tarball) *.tar.gz that discover() picks up but examine() cannot parse.
+
     std::fs::write(
         dir.join("busbar-store-corrupt.tar.gz"),
         b"not a real tarball",
@@ -1740,10 +1529,6 @@ async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() 
     handle.abort();
 }
 
-/// A malformed install body (bad base64) is a `400 invalid_request` in the frozen envelope, a
-/// non-tarball upload is a `400`, and an UNSIGNED upload under the STRICT default posture is a
-/// `409 conflict` (the trust gate cannot be bypassed by pushing over the API) — nothing is
-/// published in any case, and the rejects are audited.
 #[tokio::test]
 async fn test_admin_v1_plugin_install_rejections() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -1751,7 +1536,6 @@ async fn test_admin_v1_plugin_install_rejections() {
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
-    // Bad base64.
     let bad = client
         .post(format!("http://{addr}/api/v1/admin/plugins"))
         .header("x-admin-token", "admintok")
@@ -1763,7 +1547,6 @@ async fn test_admin_v1_plugin_install_rejections() {
     let b: serde_json::Value = bad.json().await.unwrap();
     assert_eq!(b["error"]["code"], "invalid_request");
 
-    // Valid base64 but not a plugin tarball → structural validation fails (400).
     let (status, _) = install(addr, "nope.tar.gz", b"not a tarball").await;
     assert_eq!(status, 400);
     assert_eq!(
@@ -1772,7 +1555,6 @@ async fn test_admin_v1_plugin_install_rejections() {
         "nothing published"
     );
 
-    // TRUST NO-BYPASS: a STRICT-posture server rejects an unsigned upload as 409 conflict.
     {
         let strict_dir = tmp_plugins_dir("strict");
         let (strict_addr, strict_handle) =
@@ -1797,9 +1579,6 @@ async fn test_admin_v1_plugin_install_rejections() {
     handle.abort();
 }
 
-/// THE INSPECT OF A BODY THAT IS NO TARBALL is refused as the invalid tarball it is, in the
-/// loader's words (`POST /plugins/inspect`'s 400 `invalid_request`; the admin crate proves the
-/// envelope carries the admission's refusal through).
 #[test]
 fn an_inspect_of_no_tarball_is_refused_as_an_invalid_plugin_tarball() {
     let Err(Refusal::Validation(why)) =
@@ -1853,7 +1632,7 @@ async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_befor
     assert_eq!(status, 409, "{body}");
     assert!(message(&body).contains("exact archive SHA-256"), "{body}");
     assert_eq!(std::fs::read(dir.join(file)).unwrap(), first);
-    // A deliberate base-pin change does not authorize the different installed rollback archive.
+
     write_base(&crate::root::loader::sign::sha256_hex(&changed));
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))

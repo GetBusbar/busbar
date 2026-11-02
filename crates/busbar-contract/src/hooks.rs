@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The HOOK contract: the transport-agnostic [`RoutingPolicy`] trait and the read-only projections
-//! it is invoked with. The engine builds the projections once per request (and only for pools with
-//! a policy — the default weighted path never constructs them); a policy implementation ranks,
-//! decides, or transforms on them and can never touch the mutable IR or engine state.
 
 /// A read-only, cheaply-constructed projection of the request for routing decisions. Built ONCE per
 /// request from the NORMALIZED IR — the same representation the request that goes upstream is built
@@ -87,8 +84,7 @@ pub struct PromptProjection<'a> {
 }
 
 /// Debug REDACTS the content: this struct exists precisely because the operator opted prompt text
-/// into the hook payload, and a stray `{:?}` on the routing path (a debug log while chasing a hook
-/// issue) must not fan that text out into log aggregators. Shapes only.
+
 impl std::fmt::Debug for PromptProjection<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PromptProjection")
@@ -116,7 +112,7 @@ pub struct CallerIdentity {
 }
 
 /// Debug shows the operator-facing key labels but REDACTS the end-user identifier — it is caller
-/// PII that the operator opted into the hook payload, not into every debug log on the routing path.
+
 impl std::fmt::Debug for CallerIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CallerIdentity")
@@ -143,12 +139,12 @@ pub struct Candidate<'a> {
     pub weight: u32,
     /// Member context-window ceiling. Projected to the hook wire so a hook can route by context-fit.
     pub context_max: Option<usize>,
-    // ── operator-declared member metadata (config) ───────────────────────────────────────────────
+
     pub tier: Option<&'a str>,
     pub cost_per_mtok: Option<f64>,
     /// Free-form operator tags. Projected to the hook wire (omitted when empty).
     pub tags: &'a [String],
-    // ── live signals (read per-request from the store at the seam) ───────────────────────────────
+
     /// Rolling EWMA of recent end-to-end latency for this lane, in milliseconds. `None` until the
     /// lane has served at least one request.
     pub latency_ms: Option<f64>,
@@ -215,13 +211,11 @@ pub struct RoutingContext<'a> {
 }
 
 /// A boxed, thread-safe policy error. Kept dependency-free (no `anyhow`/`thiserror`) so the routing
-/// contract adds no new crate. A transport surfaces transient failures (a webhook 500, a socket
-/// disconnect, a marshaling error) as this; the caller coerces any `Err` to the pool's `on_error`
-/// fallback, so an error NEVER propagates to the client — it degrades to weighted/reject/first.
+
 pub type PolicyError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The result of a policy decision. `Ok(Abstain)` is the clean "no opinion" path; `Err` is coerced
-/// to `on_error` by the caller (never surfaced to the client).
+
 pub type PolicyResult = Result<RoutingDecision, PolicyError>;
 
 /// The decision: an ordered preference, or an explicit abstention.
@@ -251,8 +245,7 @@ pub enum RoutingDecision {
 
 impl RoutingDecision {
     /// Normalize a raw ranked list into a clean `Prefer`/`Abstain`: drop unknown idxs (not in
-    /// `valid`), dedup while preserving first-seen order, and coerce an empty result to `Abstain`.
-    /// Shared by every transport so the same liberal-in-what-you-accept rules hold everywhere.
+
     pub fn from_ranked(
         raw: impl IntoIterator<Item = usize>,
         valid: &std::collections::HashSet<usize>,
@@ -317,13 +310,7 @@ pub enum TransformOutcome {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HookStatus {
     pub settings_version: Option<u64>,
-    // settings-leak-lint: allow — NON-PROJECTION engine type. This struct derives no `Serialize`:
-    // it is the parsed INBOUND `status` reply (the twin of `hooks::wire::StatusReply`, which
-    // carries the same marker for the same reason), held so the engine can compare key names. The
-    // one admin read behind it, `GET /hooks/{name}/status`, serves `HookStatusView`, whose
-    // `reported` side is `HookReportedStatus { settings_keys, settings_version }` — key names only,
-    // projected through `admin::v1::service::settings_keys`, with drift computed by
-    // `hooks::settings_drift_keys`, which also compares names. No wire member carries this bag.
+
     pub settings: Option<serde_json::Map<String, serde_json::Value>>,
     /// Raw metrics ARRAY (each entry `{name, type, value, labels?, quantiles?, ...}`); the engine
     /// validates + bounds entries before exposing them.

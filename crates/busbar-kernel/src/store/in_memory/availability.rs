@@ -3,8 +3,6 @@ use super::*;
 use crate::diagnostics::{diag_warn, LANE_HARD_DOWN_ALL_CELLS};
 
 impl HealthState {
-    /// The lane-global gates every availability answer reads first, SEPARATELY, so a dead lane and a
-    /// budget-exhausted one get distinct taxonomy variants.
     fn lane_gates(&self, lane: usize) -> Result<(), Unavailable> {
         let ls = self.get_lane(lane);
         if ls.dead.load(Ordering::Relaxed) {
@@ -16,7 +14,6 @@ impl HealthState {
         Ok(())
     }
 
-    /// A read-only verdict, as the availability taxonomy words a refusal.
     fn verdict_gate(v: BreakerVerdict) -> Result<(), Unavailable> {
         match v {
             BreakerVerdict::Open { until } => Err(Unavailable::BreakerOpen { until }),
@@ -25,11 +22,6 @@ impl HealthState {
         }
     }
 
-    /// The one breaker's admission, as the taxonomy words it. A refusal names the situation the
-    /// SAME read refused on (item 142): a cooling cell is `BreakerOpen { until }` — its real
-    /// deadline, never the 250 ms probe hint — and only a cell whose probe a peer holds is
-    /// `ProbeInFlight`. `Some(epoch)` iff this admission won the half-open probe (the dispatch path
-    /// then owns an owner-checked release); `None` is a Closed-ready admit that owns nothing.
     fn admission(a: ProbeAdmit) -> Result<Option<u64>, Unavailable> {
         match a {
             ProbeAdmit::Denied(DeniedBy::Cooling { until }) => {
@@ -41,16 +33,7 @@ impl HealthState {
         }
     }
 
-    /// Aggregate the per-cell verdict (the one breaker's SINGLE decoder, `BreakerCell::verdict`)
-    /// across the cells production actually routes through — the SAME cell-selection rule as
-    /// [`lane_usable_any_cell`](Self::lane_usable_any_cell): the per-pool cells if the lane has any,
-    /// else the lane-default cell — into ONE lane-global verdict. "Best" wins so the aggregate matches
-    /// `usable` (any admitting cell ⇒ the lane can serve): `Ready` beats `ProbeWinnable` beats
-    /// `HalfOpen` beats `Open`; among `Open` cells the SOONEST recovery deadline is kept (when the lane
-    /// could next serve). Read-only — no probe CAS, no Open→HalfOpen transition. There is exactly one
-    /// breaker decoder, so this can never drift from the per-(pool, lane) `classify`/`try_admit`.
     fn lane_breaker_verdict(&self, lane: usize, now: u64) -> BreakerVerdict {
-        // Priority-fold two verdicts, keeping the more-available (and, among Opens, the sooner).
         fn better(a: BreakerVerdict, b: BreakerVerdict) -> BreakerVerdict {
             fn rank(v: BreakerVerdict) -> u8 {
                 match v {
@@ -75,31 +58,16 @@ impl HealthState {
                 .map(|(_, c)| c.verdict(now))
                 .reduce(better)
                 .unwrap_or(BreakerVerdict::Ready),
-            // Direct/ad-hoc-only lane (no per-pool cells): the default cell IS the routed cell.
+
             _ => self.get_lane(lane).cell.verdict(now),
         }
     }
 
-    /// READ-ONLY lane-GLOBAL classification over the shared [`Unavailable`] taxonomy — the `/stats`
-    /// (per-lane, pool-agnostic) analogue of the per-(pool, lane) [`classify`](LaneRuntime::classify).
-    /// Same lane-global gates read SEPARATELY (`Dead` vs `BudgetExhausted`), the SAME
-    /// `breaker_verdict` decoder aggregated across routed cells via
-    /// [`lane_breaker_verdict`](Self::lane_breaker_verdict), then the SAME lane-global permit peek —
-    /// so the `/stats` availability can never drift from the routing verdict. Side-effect-free.
-    /// Breaker-first: an Open-and-at-capacity lane returns `BreakerOpen` (the orthogonal
-    /// `at_capacity`/`breaker_state` snapshot fields keep each axis independently legible).
-    // Retained as the direct (verdict-computing) entry point exercised by the store tests as the
-    // canonical statement of the lane-global taxonomy; `snapshot` uses the `_from_verdict` arm to avoid
-    // a second fold, so this has no non-test caller.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn classify_lane(&self, lane: usize, now: u64) -> Result<(), Unavailable> {
         self.classify_lane_from_verdict(lane, self.lane_breaker_verdict(lane, now))
     }
 
-    /// [`classify_lane`](Self::classify_lane) with a PRE-COMPUTED breaker verdict. `snapshot` derives
-    /// both the availability and the breaker-state axes from ONE `lane_breaker_verdict` call (an RwLock
-    /// read + per-cell fold) rather than folding it twice; this arm carries the verdict in. The
-    /// dead/budget/permit reads are cheap atomics, so recomputing them per axis costs nothing.
     fn classify_lane_from_verdict(
         &self,
         lane: usize,
@@ -111,8 +79,7 @@ impl HealthState {
             BreakerVerdict::HalfOpen => return Err(Unavailable::ProbeInFlight),
             BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable => {}
         }
-        // Permits are lane-global (shared across pools). `available_permits` reports an effectively-
-        // unbounded count for an unbounded lane, so `== 0` is only ever a bounded lane at its cap.
+
         if self.available_permits(lane) == 0 {
             Err(Unavailable::AtCapacity {
                 drain_hint_ms: None,
@@ -122,19 +89,11 @@ impl HealthState {
         }
     }
 
-    /// Lane-GLOBAL aggregate breaker FSM state for `/stats`, mapped from
-    /// [`lane_breaker_verdict`](Self::lane_breaker_verdict) so it shares the ONE decoder. A dead lane
-    /// reports `Open { until: u64::MAX }` (matching `breaker_state_for`). An expired-Open cell maps to
-    /// `Open` (its cooldown deadline is in the past) even though it would win a probe — the RAW FSM
-    /// state, so an operator sees `open` alongside `at_capacity` for the wedge case.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn lane_breaker_state(&self, lane: usize, now: u64) -> BreakerState {
         self.lane_breaker_state_from_verdict(lane, self.lane_breaker_verdict(lane, now), now)
     }
 
-    /// [`lane_breaker_state`](Self::lane_breaker_state) with a PRE-COMPUTED breaker verdict — the
-    /// breaker-state twin of [`classify_lane_from_verdict`](Self::classify_lane_from_verdict), so
-    /// `snapshot` derives both axes from a SINGLE `lane_breaker_verdict` fold.
     fn lane_breaker_state_from_verdict(
         &self,
         lane: usize,
@@ -147,8 +106,7 @@ impl HealthState {
         match verdict {
             BreakerVerdict::Ready => BreakerState::Closed,
             BreakerVerdict::HalfOpen => BreakerState::HalfOpen,
-            // Expired-Open (`ProbeWinnable`) is still FSM-Open until a probe actually closes it; its
-            // cooldown deadline has already elapsed, so report `until = now`.
+
             BreakerVerdict::ProbeWinnable => BreakerState::Open { until: now },
             BreakerVerdict::Open { until } => BreakerState::Open { until },
         }
@@ -169,13 +127,10 @@ impl LaneRuntime for HealthState {
     }
 
     fn ready_in(&self, pool: &str, lane: usize, now: u64) -> bool {
-        // Read-only, pool-aware health peek (lane-admissible + non-mutating `BreakerCell::ready`).
-        // Never the probe-stealing `usable`.
         self.ready_for(pool, lane, now)
     }
 
     fn available_permits(&self, lane: usize) -> usize {
-        // Read-only snapshot of free concurrency permits — racy by nature (a ranking hint).
         self.get_lane(lane).sem.available_permits()
     }
 
@@ -184,11 +139,10 @@ impl LaneRuntime for HealthState {
     }
 
     fn lane_budget_remaining(&self, lane: usize) -> Option<i64> {
-        self.get_lane(lane).budget.remaining() // None: unlimited / unmetered
+        self.get_lane(lane).budget.remaining()
     }
 
     fn lane_latency_ms(&self, lane: usize) -> Option<f64> {
-        // `0` bits is the "no sample yet" sentinel (a real latency EWMA is strictly positive).
         let bits = self
             .get_lane(lane)
             .latency_ewma_bits
@@ -201,26 +155,20 @@ impl LaneRuntime for HealthState {
     }
 
     fn record_latency_in(&self, _pool: &str, lane: usize, latency_ms: f64) {
-        // Ignore a non-finite or non-positive sample — it would poison the EWMA (and `<= 0` collides
-        // with the "no sample" sentinel). A real end-to-end latency is always strictly positive.
         if !latency_ms.is_finite() || latency_ms <= 0.0 {
             return;
         }
         let atomic = &self.get_lane(lane).latency_ewma_bits;
-        // Lock-free read-modify-write CAS loop, the same idiom `spend_budget` uses. Contention here is
-        // negligible (one update per completed request, off the selection path), so a CAS retry is far
-        // cheaper than a lock and keeps the no-new-locks-on-the-hot-path requirement.
+
         let mut cur = atomic.load(Ordering::Relaxed);
         loop {
             let next = if cur == 0 {
-                // First sample seeds the EWMA directly.
                 latency_ms
             } else {
                 let prev = f64::from_bits(cur);
                 LATENCY_EWMA_ALPHA * latency_ms + (1.0 - LATENCY_EWMA_ALPHA) * prev
             };
-            // Guard against a degenerate update landing on the sentinel (e.g. underflow to +0.0),
-            // which would silently reset the lane to "no sample". Keep the previous value instead.
+
             let next_bits = next.to_bits();
             if next_bits == 0 {
                 return;
@@ -228,28 +176,20 @@ impl LaneRuntime for HealthState {
             match atomic.compare_exchange_weak(cur, next_bits, Ordering::Relaxed, Ordering::Relaxed)
             {
                 Ok(_) => return,
-                Err(observed) => cur = observed, // a concurrent update won; retry on the fresh value
+                Err(observed) => cur = observed,
             }
         }
     }
 
     fn acquire_for_dispatch_in(&self, pool: &str, lane: usize, now: u64) -> bool {
-        // Mutating: the single dispatched lane does the Open→HalfOpen + probe CAS here. Lane-global
-        // gates are re-checked (state may have changed since selection's read-only filter).
         self.usable_for(pool, lane, now)
     }
 
-    // (lane-global classify + aggregate breaker state live as inherent helpers above `snapshot`.)
-
     fn classify(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable> {
-        // Read `dead` and `budget` SEPARATELY (NOT the bool-collapsing `lane_admissible`) so a
-        // dead lane and a budget-exhausted lane get DISTINCT taxonomy variants.
         self.lane_gates(lane)?;
-        // Breaker peek via the one breaker's decoder — read-only, no probe CAS.
+
         Self::verdict_gate(self.cell(pool, lane).verdict(now))?;
-        // Breaker would admit; peek permits (racy — advisory). `available_permits` reports an
-        // effectively-unbounded count for unbounded lanes, so `== 0` is only ever a bounded lane
-        // truly at its `max_concurrent` limit.
+
         if self.available_permits(lane) == 0 {
             Err(Unavailable::AtCapacity {
                 drain_hint_ms: None,
@@ -260,20 +200,15 @@ impl LaneRuntime for HealthState {
     }
 
     fn try_admit(&self, pool: &str, lane: usize, now: u64) -> Result<Admit, Unavailable> {
-        // Same lane-global gates as `classify`, same SEPARATE reads.
         self.lane_gates(lane)?;
         let cell = self.cell(pool, lane);
-        // Peek the breaker BEFORE the permit, so a refused lane never holds a slot.
+
         Self::verdict_gate(cell.verdict(now))?;
-        // Acquire the concurrency PERMIT before the probe acquisition: an expired-Open cell that is
-        // ALSO at capacity returns `AtCapacity` WITHOUT touching its probe, so the probe is kept for
-        // an attempt that can actually dispatch (`test_try_admit_probe_winnable_at_capacity_
-        // preserves_probe`).
+
         let permit = self.try_acquire(lane).ok_or(Unavailable::AtCapacity {
             drain_hint_ms: None,
         })?;
-        // The one breaker's admission: a refusal carries the situation that refused it, decided by
-        // the same read (item 142). A refused admission drops the permit it grabbed.
+
         let probe_epoch = Self::admission(cell.acquire(now))?;
         Ok(Admit {
             permit,
@@ -283,9 +218,7 @@ impl LaneRuntime for HealthState {
 
     fn lane_semaphore(&self, lane: usize) -> Option<Arc<Semaphore>> {
         let ls = self.get_lane(lane);
-        // An unbounded lane's `max` is `>= Semaphore::MAX_PERMITS` (the same sentinel `try_acquire`
-        // reads to short-circuit to `Permit::Unbounded`); it is never `AtCapacity`, so it is never a
-        // queue candidate — hand back `None` rather than a semaphore whose permits are meaningless.
+
         if ls.max >= Semaphore::MAX_PERMITS {
             return None;
         }
@@ -298,16 +231,11 @@ impl LaneRuntime for HealthState {
         lane: usize,
         now: u64,
     ) -> Result<Option<u64>, Unavailable> {
-        // Same lane-global gates as `try_admit`: the lane may have gone dead/budget-exhausted while
-        // the caller was parked on the semaphore. The breaker may have TRIPPED Open (or a peer may
-        // have taken the probe) meanwhile too, which the acquisition itself answers — with the
-        // cooldown that refused it, not a guess (item 142).
         self.lane_gates(lane)?;
         Self::admission(self.cell(pool, lane).acquire(now))
     }
 
     fn release_probe_in(&self, pool: &str, lane: usize) {
-        // Unowned: releases whichever probe is live now (the owner-checked form, at the live epoch).
         let cell = self.cell(pool, lane);
         cell.release_probe_owned(cell.probe_epoch());
     }
@@ -321,18 +249,10 @@ impl LaneRuntime for HealthState {
     }
 
     fn breaker_state_snapshot_in(&self, pool: &str, lane: usize) -> BreakerState {
-        // Same PURE-projection core the `#[cfg(test)]` `breaker_state`/`breaker_state_in` methods
-        // use (`breaker_state_for`) — no probe CAS, no Open→HalfOpen transition — just released
-        // for production reads (the `CandidateBreakerState` catalog entry).
         self.breaker_state_for(pool, lane)
     }
 
     fn error_rate_in(&self, pool: &str, lane: usize, now: u64) -> Option<f64> {
-        // The breaker's OWN sliding outcome window — already maintained on every success/error
-        // regardless of whether any consumer declares this signal (it feeds the error-rate trip
-        // mode), so this is a pure projection, not new collection. A fixed window matching
-        // `TripConfig::default().window_s` (30s): precise per-pool trip-window alignment is a
-        // config-plumbing follow-up, not required for an O(1), always-computable health signal.
         let (count, errors) = self
             .cell(pool, lane)
             .outcomes_in_window(now, DEFAULT_ERROR_RATE_WINDOW_S);
@@ -365,33 +285,22 @@ impl LaneRuntime for HealthState {
 
     fn record_probe_success_all_cells(&self, lane: usize, now: u64) {
         let ls = self.get_lane(lane);
-        // Administratively-dead lane: count the success for observability (matching
-        // `record_success_for`'s dead-lane branch) but do not touch the breaker. Bump `ok` exactly
-        // once and return, mirroring `record_probe_failure_all_cells`'s dead-lane early-out.
+
         if ls.dead.load(Ordering::Relaxed) {
             ls.ok.add();
             return;
         }
-        // `record_success` pushes the success outcome into every cell's window (the default cell —
-        // IS the `LaneState` — and every existing per-pool cell, the SAME windows the failed-probe
-        // path trips) and runs the HalfOpen→Closed CAS. It does NOT touch `ok`/`err`, so it never
-        // double-counts the lane-global stat. The CAS is *usually* a no-op here because the 2xx caller
-        // runs `recover_lane` first — but only when `lane_needs_probe` is true, and even then a peer
-        // (organic request, hard-down) can move a cell back to HalfOpen between that recovery and this
-        // push.
+
         self.close_all_cells(lane, |c| {
             let _ = c.record_success(now);
         });
-        // Bump the lane-GLOBAL `ok` counter EXACTLY ONCE per probe (not once per cell): the prior
-        // per-cell `record_success_in` loop bumped `LaneState.ok` (N+1) times for a lane in N pools.
-        // Mirrors `record_probe_failure_all_cells`, which bumps `LaneState.err` once.
+
         ls.ok.add();
     }
 
     fn record_client_fault(&self, lane: usize) {
         let ls = self.get_lane(lane);
-        // Client faults do NOT increment err, streak, or trigger cooldowns.
-        // They are tracked separately for observability.
+
         ls.client_fault.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -434,13 +343,8 @@ impl LaneRuntime for HealthState {
     }
 
     fn record_hard_down_all_cells(&self, lane: usize, reason: &str, now: u64) -> bool {
-        // Mirror `record_probe_failure_all_cells` exactly: operate on the per-pool cell Arcs while
-        // holding the `pool_cells` lock, applying the SAME cell mutation `record_hard_down_for` does
-        // (sticky Open + cooldown, probe released) — NOT by re-calling `record_hard_down_for`, which
-        // re-locks `pool_cells` via `self.cell()` and would deadlock here.
         let ls = self.get_lane(lane);
-        // Hard-down is RECOVERABLE: a sticky cooldown + Open, recovered via the half-open probe; do
-        // NOT set `dead` (that would block recovery). Record the reason once, lane-wide.
+
         *lock_recover(&ls.dead_reason) = reason.to_string();
         let hard_down_cooldown_secs = self.unit.hard_down_cooldown_secs();
         diag_warn!(
@@ -450,9 +354,7 @@ impl LaneRuntime for HealthState {
             cooldown_secs = hard_down_cooldown_secs,
             "lane hard-down (all cells); sticky cooldown (recovers via half-open probe)"
         );
-        // The one breaker's fan-out: the default cell and every pool cell registered for this lane,
-        // each under its own transition lock. `true` iff the DEFAULT cell was a genuine fresh trip
-        // (Closed beforehand), so a persistently-dead lane's recovery-probe cycle counts nothing.
+
         let default_was_closed = self.unit.hard_down_all(lane_destination(lane), now);
         if default_was_closed {
             self.count_trip(ls, now);
@@ -461,25 +363,12 @@ impl LaneRuntime for HealthState {
     }
 
     fn recover_lane(&self, lane: usize, now: u64) {
-        // A health probe tests the UPSTREAM, which is shared across pools — so a successful probe
-        // recovers EVERY cell for this lane (the default/direct-route cell and all per-pool cells),
-        // clearing both a tripped (non-Closed) breaker AND a soft cooldown on a Closed cell.
-        // Lock-free pre-filter: skip cells that are plainly Closed-and-cooled so we don't take the
-        // transition lock for the common already-healthy case.
-        // It returns the cooldown value it OBSERVED (`Some(observed)`) so the under-lock close can
-        // re-validate against it. This pre-read is ONLY a fast path AND the snapshot — the
-        // authoritative decision happens under the transition lock in `close_if_recoverable`,
-        // which closes the TOCTOU: a concurrent hard-down can park a cell Open with a fresh
-        // sticky cooldown between this read and the close, and an unconditional close would clobber
-        // that just-armed cooldown.
         let observe = |c: &FsmCell| -> Option<u64> {
             let cooldown = c.cooldown_until();
             let suppressed = !matches!(c.state(), FsmState::Closed) || cooldown > now;
             suppressed.then_some(cooldown)
         };
-        // Close a cell only if it both passed the pre-filter and survives the under-lock re-validation
-        // against the cooldown the pre-filter observed: a cell a peer re-armed mid-race is left
-        // suppressed.
+
         self.close_all_cells(lane, |c| {
             if let Some(observed) = observe(c) {
                 let _ = c.close_if_recoverable(now, observed);
@@ -495,26 +384,19 @@ impl LaneRuntime for HealthState {
         retry_after: Option<u64>,
         now: u64,
     ) {
-        // Administratively-dead lanes ignore failure recording (matches record_failure_for).
         if self.get_lane(lane).dead.load(Ordering::Relaxed) {
             return;
         }
-        // Default cell (direct/ad-hoc routes) — resolved against the `""` (no-pool) config. The
-        // returned trip bool is intentionally discarded: the out-of-band prober does not emit
-        // `BREAKER_TRIPS_TOTAL` (that counter is reserved for the organic request path). `retry_after`
-        // (the probe's server-requested cooldown floor) is forwarded so a 429/Retry-After probe honors
-        // the upstream's backoff; `record_failure` applies it only when `honor_retry_after` is set.
+
         let max_honored = self.unit.max_honored_retry_after_secs();
         let record = |c: &FsmCell, cfg: BreakerCfg| {
             let _ = c.record_failure(now, &fsm_cfg(&cfg), retry_after, max_honored);
         };
         let ls = self.get_lane(lane);
         record(&ls.cell, resolve_cfg(""));
-        // The lane-GLOBAL error counter, once per probe (not once per cell).
+
         ls.err.fetch_add(1, Ordering::Relaxed);
-        // Every existing per-pool cell for this lane — the cells organic traffic is selected against,
-        // each evaluated against ITS OWN pool's resolved breaker config. (A cell not yet created
-        // inherits health lazily on first access via `cell`.)
+
         let cells = read_recover(&self.pool_cells);
         for (pool_name, cell) in cells.get(&lane).into_iter().flatten() {
             record(cell, resolve_cfg(pool_name));
@@ -537,10 +419,7 @@ impl LaneRuntime for HealthState {
 
     fn try_acquire(&self, lane: usize) -> Option<Permit> {
         let ls = self.get_lane(lane);
-        // Unbounded lane (`max_concurrent` omitted, realized as MAX_PERMITS): nothing to enforce,
-        // nothing counted — skip the semaphore's shared atomics entirely. /stats `inflight` reads
-        // 0 for such lanes (observational; the routing seam's availability signal is unaffected —
-        // it already reads "effectively infinite" either way).
+
         if ls.max >= Semaphore::MAX_PERMITS {
             return Some(Permit::Unbounded);
         }
@@ -548,52 +427,38 @@ impl LaneRuntime for HealthState {
     }
 
     fn spend_budget(&self, lane: usize) -> bool {
-        // One unit of the lane's `max_requests` budget, spent on the one breaker's own counter: a
-        // CAS loop that never drives it negative, so the cap is a hard ceiling under a burst.
         self.get_lane(lane).budget.spend()
     }
 
     fn refund_budget(&self, lane: usize) {
-        // Inverse of a single `spend_budget` (the 2xx headers were charged; the body then failed).
         self.get_lane(lane).budget.refund()
     }
 
     fn snapshot(&self, lane: usize, t: u64) -> LaneSnapshot {
         let ls = self.get_lane(lane);
-        // Compute the lane-global breaker verdict ONCE (RwLock read + per-cell fold) and derive both
-        // the availability and breaker_state fields from it below (perf: was folded twice).
+
         let breaker_verdict = self.lane_breaker_verdict(lane, t);
         LaneSnapshot {
             member: ls.member.clone(),
             route: ls.route.clone(),
             max_concurrent: ls.max,
-            // In-flight count derived from the semaphore (the source of truth): a held permit is an
-            // in-flight request. `max - available` rather than a separate counter that can drift.
+
             inflight: ls.max.saturating_sub(ls.sem.available_permits()) as i64,
             free_slots: ls.sem.available_permits(),
-            // Bounded lane (`max < MAX_PERMITS`): report real available permits and whether it is at
-            // its cap. Unbounded lane: `available = None` (nothing to count) and never at-capacity.
+
             available: if ls.max >= Semaphore::MAX_PERMITS {
                 None
             } else {
                 Some(ls.sem.available_permits())
             },
             at_capacity: ls.max < Semaphore::MAX_PERMITS && ls.sem.available_permits() == 0,
-            // Render availability from the SAME taxonomy routing dispatches on,
-            // aggregated lane-globally, so `/stats` cannot silently drift from behaviour. The breaker
-            // axis is surfaced separately via `lane_breaker_state`. BOTH axes derive from ONE
-            // `lane_breaker_verdict` fold (RwLock read + per-cell scan) computed here, rather than each
-            // helper re-folding it independently — halving snapshot()'s breaker-cell scan cost.
+
             availability: self.classify_lane_from_verdict(lane, breaker_verdict),
             breaker_state: self.lane_breaker_state_from_verdict(lane, breaker_verdict, t),
             ok: ls.ok.sum(),
             err: ls.err.load(Ordering::Relaxed),
             client_fault: ls.client_fault.load(Ordering::Relaxed),
-            // Side-effect-FREE readiness peek, NOT the mutating `usable()`. `snapshot` feeds the
-            // /stats observer; the mutating path would transition an expired-Open default cell to
-            // HalfOpen and CAS-acquire the single-flight recovery probe, so a monitor polling /stats
-            // would steal the probe from organic traffic and falsely flip the reported state. `is_ready`
-            // reports the same admission verdict without touching the breaker FSM.
+
             usable: self.lane_usable_any_cell(lane, t),
             dead: ls.dead.load(Ordering::Relaxed),
             dead_reason: lock_recover(&ls.dead_reason).clone(),
@@ -605,15 +470,13 @@ impl LaneRuntime for HealthState {
         }
     }
 
-    #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+    #[cold]
     #[inline(never)]
     fn export_health(&self) -> Vec<LaneHealthSnapshot> {
         self.lanes
             .iter()
             .enumerate()
             .map(|(idx, ls)| {
-                // (state, cooldown) read as ONE pair under the cell's transition lock — a lock-free
-                // pair of loads can straddle a transition and persist a tripped lane as healthy.
                 let cell = ls.cell.snapshot();
                 LaneHealthSnapshot {
                     member: ls.member.clone(),

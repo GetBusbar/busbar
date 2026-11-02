@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Proves `busbar-unit-egress`'s `ports::Breaker` seam is implementable over
-//! `busbar-unit-breaker`'s real API — not a fixture shaped to fit an imagined one.
-//!
-//! Test-only, on purpose: this crate's library code names no other unit crate (see
-//! `ports.rs`'s module doc — every seam is a `// contract:` trait, bound by the integrator, not by
-//! this crate). `BreakerAdapter` below is the integrator's binding, written once here to prove the
-//! two units' real APIs actually meet, and it lives under `tests/` so it can never be reached from
-//! `busbar_kernel_egress`'s own `src/`.
-//!
-//! The destination locator needs no narrowing: both units name `busbar_contract::DestinationId`.
-//! The upstream status needs one small step: this crate's `UpstreamStatus` carries the transport's
-//! class (the fee leg) and its fault reading (the breaker's leg); the breaker unit reads the fault
-//! reading alone, or, when neither was stated, the fact that no answer came. No number crosses.
-
 use crate::test_support::tokens::pass;
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -25,9 +11,6 @@ use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, DestinationId, Disposition, Outcome, Unavailable, UpstreamStatus,
 };
 
-/// The integrator's binding of the egress unit's `Breaker` port onto the breaker unit's
-/// `BreakerUnit`. A thin wrapper with no policy of its own beyond the one status fold the module
-/// doc above names; the destination goes across untouched.
 struct BreakerAdapter(BreakerUnit, BreakerCfg);
 
 impl BreakerAdapter {
@@ -35,14 +18,10 @@ impl BreakerAdapter {
         Self::with_cfg(BreakerCfg::default())
     }
 
-    /// The same adapter over a stated ladder. The default base cooldown (15s) is longer than any
-    /// realistic `Retry-After` a test would state, so a test about the upstream's own floor needs
-    /// a ladder short enough for the floor to be the thing that decides.
     fn with_cfg(cfg: BreakerCfg) -> Self {
         Self(BreakerUnit::new(), cfg)
     }
 
-    /// The breaker unit's reading: the fault reading, or no answer when neither leg was stated.
     fn reading(status: UpstreamStatus) -> Reading {
         if status.class.is_none() && status.fault.is_none() {
             return Reading::NoAnswer;
@@ -58,22 +37,19 @@ impl Breaker for BreakerAdapter {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable> {
-        self.0.try_admit(pool, destination, now).map_err(|state| {
-            match state {
+        self.0
+            .try_admit(pool, destination, now)
+            .map_err(|state| match state {
                 busbar_kernel_breaker::LaneState::Suppressed { until } => {
                     Unavailable::BreakerOpen { until }
                 }
                 busbar_kernel_breaker::LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
                 busbar_kernel_breaker::LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
-                // `try_admit` only errs on a non-`Ready` state; the breaker unit tracks no
-                // administrative "Dead" fact of its own (that is the egress/config layer's, per
-                // `ports.rs`'s own doc comment on `Unavailable::Dead`), so `Ready` never reaches
-                // this arm in practice.
+
                 busbar_kernel_breaker::LaneState::Ready => {
                     unreachable!("BreakerUnit::try_admit does not return Err(Ready)")
                 }
-            }
-        })
+            })
     }
 
     fn unavailable(
@@ -101,9 +77,6 @@ impl Breaker for BreakerAdapter {
     }
 
     fn admissible(&self, destination: DestinationId) -> bool {
-        // The breaker unit's destination-scoped fact is the lifetime budget alone; whether a
-        // destination is administratively "Dead" is declared configuration this unit does not
-        // hold (see `Unavailable::Dead`'s own doc comment) — out of scope for this adapter.
         self.0.budget_remaining(destination) != Some(0)
     }
 
@@ -137,8 +110,6 @@ impl Breaker for BreakerAdapter {
         now: u64,
         token: &Pass<Route>,
     ) -> bool {
-        // Both crates name the same `busbar-caps` `Pass<Route>`, so the token this call was
-        // actually lent is what crosses the seam — no adapter-minted stand-in.
         self.0
             .observe(pool, destination, outcome, &self.1, now, token)
     }
@@ -171,8 +142,6 @@ impl Breaker for BreakerAdapter {
     }
 }
 
-// ── proof: the seam is implementable, and behaves as both sides' docs promise ──────────────────
-
 #[test]
 fn a_fresh_destination_is_ready_and_admits() {
     let breaker = BreakerAdapter::new();
@@ -186,7 +155,6 @@ fn a_fresh_destination_is_ready_and_admits() {
 
 #[test]
 fn classify_reads_the_callers_fault_reading_as_nothing_recorded() {
-    // No number crosses the port: the transport read the answer as the caller's fault.
     let breaker = BreakerAdapter::new();
     let out = breaker.classify(
         DestinationId::new(9),
@@ -203,8 +171,6 @@ fn classify_reads_the_callers_fault_reading_as_nothing_recorded() {
 
 #[test]
 fn classify_never_reads_the_class_in_place_of_a_fault_reading() {
-    // THE RED ARM'S RUNTIME HALF: a framer with no fault table states a class and no reading.
-    // The class is the fee leg, never the breaker's: the answer is read as the caller's.
     let breaker = BreakerAdapter::new();
     let out = breaker.classify(
         DestinationId::new(1),
@@ -217,7 +183,7 @@ fn classify_never_reads_the_class_in_place_of_a_fault_reading() {
     );
     assert_eq!(out.disposition, Disposition::ClientFault);
     assert_eq!(out.outcome, Outcome::RecordNothing);
-    // And with neither leg stated, no answer came: a transient failure of the destination.
+
     let none = breaker.classify(DestinationId::new(1), UpstreamStatus::default());
     assert_eq!(none.disposition, Disposition::TransientUpstream);
 }
@@ -225,8 +191,7 @@ fn classify_never_reads_the_class_in_place_of_a_fault_reading() {
 #[test]
 fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects() {
     let breaker = BreakerAdapter::new();
-    // Touch the "pool" cell before the trip — `hard_down_all` fans out only to pools already
-    // known for this destination (the default `""` cell is always included).
+
     assert!(breaker.ready("pool", DestinationId::new(4), 0, &pass::<Route>()));
     let tripped = breaker.observe(
         "pool",
@@ -248,10 +213,6 @@ fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects(
     );
 }
 
-/// A refused credential is a caller-fault CLASS (the fee leg), and the class alone would record
-/// nothing at all. The transport's fault reading says the credential was refused, which is a fact
-/// about the SHARED destination — so the disposition is hard-down and the trip fans out to every pool cell that
-/// names the destination, not just the pool the failing attempt ran through.
 #[test]
 fn a_hard_reading_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with_it() {
     let breaker = BreakerAdapter::new();
@@ -273,8 +234,6 @@ fn a_hard_reading_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destina
     );
     assert_eq!(out.outcome, Outcome::HardDown);
 
-    // Two pools name the same destination. Touch both so both cells exist — `hard_down_all` fans
-    // out to the pools already known for the destination.
     assert!(breaker.ready("primary", destination, 0, &pass::<Route>()));
     assert!(breaker.ready("secondary", destination, 0, &pass::<Route>()));
 
@@ -287,9 +246,6 @@ fn a_hard_reading_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destina
     assert!(!breaker.ready("secondary", destination, 0, &pass::<Route>()));
 }
 
-/// The upstream asked for seven seconds, so it waits seven seconds — the ladder's own (much
-/// shorter, here) cooldown is raised to the upstream's floor rather than the two being added or
-/// the upstream's being ignored.
 #[test]
 fn a_transient_reading_with_a_stated_wait_of_seven_sets_a_seven_second_cooldown() {
     let breaker = BreakerAdapter::with_cfg(BreakerCfg {
@@ -323,8 +279,6 @@ fn a_transient_reading_with_a_stated_wait_of_seven_sets_a_seven_second_cooldown(
     );
 }
 
-/// And an upstream that asked for nothing gets the ladder, untouched. The default is a decision,
-/// not a fallback for a wait that went missing on the way here.
 #[test]
 fn a_transient_reading_with_no_stated_wait_keeps_the_ladders_own_cooldown() {
     let breaker = BreakerAdapter::with_cfg(BreakerCfg {
@@ -346,9 +300,7 @@ fn a_transient_reading_with_no_stated_wait_keeps_the_ladders_own_cooldown() {
     assert_eq!(out.outcome, Outcome::Transient { retry_after: None });
 
     breaker.observe("primary", destination, out.outcome, 100, &pass::<Route>());
-    // The failure streak is incremented before the cooldown is computed, so the first failure is
-    // already one rung up the ladder (`base << 1` = 40), and every trip is jittered ±10% — so the
-    // claim is the BAND that value sits in, not a point a reseeded jitter would break.
+
     let remaining = breaker.cooldown_remaining("primary", destination, 100, &pass::<Route>());
     assert!(
         (36..=44).contains(&remaining),
@@ -369,8 +321,7 @@ fn budget_spend_and_refund_cross_the_seam() {
 #[test]
 fn probe_release_crosses_the_seam() {
     let breaker = BreakerAdapter::new();
-    // Trip and let the cooldown expire so the next admit wins a half-open recovery probe. Touch
-    // "pool" first, same as above: `hard_down_all` only fans out to pools already known.
+
     breaker.ready("pool", DestinationId::new(5), 0, &pass::<Route>());
     breaker.observe(
         "pool",
@@ -389,7 +340,7 @@ fn probe_release_crosses_the_seam() {
         breaker.try_admit("pool", DestinationId::new(5), 100_000),
         Err(Unavailable::ProbeInFlight)
     );
-    // Release without completing dispatch; the next caller must win a new single-flight probe.
+
     breaker.release_probe("pool", DestinationId::new(5), epoch, 100_000);
     let next = breaker
         .try_admit("pool", DestinationId::new(5), 100_000)

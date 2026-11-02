@@ -1,25 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The closed kernel-verb table: ONE const [`TABLE`] of rows, and everything else a filter over it.
-//!
-//! Every [`KernelVerb`] has exactly one [`VerbRow`] carrying its method, path, name, class, scope
-//! and whether this build binds an effect to it. The class says which of five groups it is in:
-//!
-//! - [`Class::Legacy`]: the 66 operations derived from 1.5.5's `openapi.json` (49 paths, 34
-//!   read-only / 32 full); `tests/table_matches_openapi.rs` fails if these rows and the committed
-//!   fixture disagree by one operation, one scope or one name;
-//! - [`Class::New`]: the 11 new 1.6.0 verbs. The scope is the 1.5.5 rule on the method: the three
-//!   `GET` ones are read-only, the rest are `Full` mutations;
-//! - [`Class::Ledger`]: the five 1.6.0 ledger views, reads of what the ledger already holds;
-//! - [`Class::Audit`]: the three 1.6.0 audit-chain reads (pull, never push);
-//! - [`Class::Named`]: the non-admin surfaces (token exchanges, model listings, stats, health,
-//!   metrics). They are not part of the admin `openapi.json` table and never resolve through it.
-//!
-//! [`LEGACY_VERBS`], [`NEW_VERBS`], [`LEDGER_VERBS`], [`AUDIT_VERBS`] and [`NAMED_SURFACES`] are
-//! const filters of [`TABLE`] by class. The enum is exhaustively matched everywhere, so adding an
-//! operation means adding a variant and a row here, in the open.
-
 /// The two-rung authorization scope every verb requires. Mirrors 1.5.5's `Scope` exactly (a strict
 /// chain: `ReadOnly` is satisfied by anything, `Full` only by `Full`) — reproduced here rather than
 /// imported because this crate depends on nothing but `busbar-caps`, and the scope model is three
@@ -33,7 +14,6 @@ pub enum VerbScope {
 }
 
 impl VerbScope {
-    /// The stable wire token (matches 1.5.5's `Scope::as_str`).
     pub fn as_str(self) -> &'static str {
         match self {
             VerbScope::ReadOnly => "read-only",
@@ -41,7 +21,6 @@ impl VerbScope {
         }
     }
 
-    /// Does holding `self` satisfy a requirement of `needed`?
     pub fn allows(self, needed: VerbScope) -> bool {
         match needed {
             VerbScope::ReadOnly => true,
@@ -88,8 +67,6 @@ pub struct VerbRow {
     pub bound: bool,
 }
 
-/// 1.5.5's scope rule for a (method, path): every read is `ReadOnly`; the two stateless dry-run
-/// POSTs are `ReadOnly`; everything else is `Full`.
 const fn scope_for(method: &str, path: &str) -> VerbScope {
     match (method.as_bytes(), path.as_bytes()) {
         (b"GET" | b"HEAD", _)
@@ -107,8 +84,6 @@ const fn row(
     name: &'static str,
     class: Class,
 ) -> VerbRow {
-    // A named surface is never checked against the two-rung scope model (see `Verbs::execute`);
-    // it is `ReadOnly` only so `required_scope` stays total.
     let scope = match class {
         Class::Named => VerbScope::ReadOnly,
         _ => scope_for(method, path),
@@ -129,7 +104,6 @@ const fn row(
 /// Every variant has one row in [`TABLE`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KernelVerb {
-    // ---- legacy: config ----
     GetConfig,
     PostConfigApply,
     GetConfigDiff,
@@ -140,10 +114,10 @@ pub enum KernelVerb {
     PostConfigValidate,
     GetConfigVersions,
     GetConfigVersionsV,
-    // ---- legacy: admin-auth ----
+
     GetAdminAuth,
     PutAdminAuth,
-    // ---- legacy: audit / auth / models / info / usage / openapi ----
+
     GetAudit,
     GetAuth,
     PostAuthCacheFlush,
@@ -151,13 +125,13 @@ pub enum KernelVerb {
     GetInfo,
     GetUsage,
     GetOpenapiJson,
-    // ---- legacy: export ----
+
     GetExport,
     DeleteExportName,
     GetExportName,
     PutExportName,
     PatchExportNameSettings,
-    // ---- legacy: groups ----
+
     GetGroups,
     PostGroups,
     DeleteGroupsName,
@@ -165,7 +139,7 @@ pub enum KernelVerb {
     PatchGroupsName,
     PutGroupsName,
     GetGroupsNameUsage,
-    // ---- legacy: hooks ----
+
     GetHooks,
     PostHooks,
     DeleteHooksName,
@@ -175,13 +149,13 @@ pub enum KernelVerb {
     GetHooksNameSchema,
     PatchHooksNameSettings,
     GetHooksNameStatus,
-    // ---- legacy: identity providers ----
+
     GetIdentityProviders,
     DeleteIdentityProvidersName,
     GetIdentityProvidersName,
     PutIdentityProvidersName,
     PatchIdentityProvidersNameSettings,
-    // ---- legacy: keys ----
+
     GetKeys,
     PostKeys,
     DeleteKeysId,
@@ -190,9 +164,9 @@ pub enum KernelVerb {
     PostKeysIdRevoke,
     PostKeysIdRotate,
     GetKeysIdUsage,
-    // ---- legacy: overlay ----
+
     DeleteOverlaySection,
-    // ---- legacy: plugins ----
+
     GetPlugins,
     PostPlugins,
     PostPluginsInspect,
@@ -200,15 +174,14 @@ pub enum KernelVerb {
     PostPluginsRollback,
     DeletePluginsFile,
     GetPluginsFileSchema,
-    // ---- legacy: pools / providers ----
+
     GetPools,
     GetPoolsName,
     GetProviders,
-    // ---- legacy: restart / signing key ----
+
     PostRestart,
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (11) ----
     Verify,
     PlaneFacts,
     PlaneRecordWrite,
@@ -221,19 +194,16 @@ pub enum KernelVerb {
     TrustApprove,
     TrustRevoke,
 
-    // ---- 1.6.0 ledger views (5) ----
     GetLedgerTotals,
     GetLedgerCheckpoints,
     GetLedgerReconciliation,
     GetLedgerMigration,
     GetLedgerOpenapiJson,
 
-    // ---- the three 1.6.0 audit-chain reads ----
     GetAuditHead,
     GetAuditRange,
     GetAuditKeys,
 
-    // ---- named non-admin surfaces ----
     PostAuthToken,
     GetAuthToken,
     GetV1Models,
@@ -250,12 +220,6 @@ macro_rules! table {
     };
 }
 
-/// THE table, one row per line: class, verb, method, path, name. Legacy rows first, in the order
-/// 1.5.5's `openapi.json` lists them (alphabetised by path, then method), then the 1.6.0 additions,
-/// then the named surfaces. `verify` and `plane_facts` are bound `GET` and read-only (BUSBAR-1.6.0.md,
-/// CG-56); the other new money-governance paths are a judgment call, `POST /api/v1/admin/<kebab>`,
-/// except `amend_rate_history` (bound under `/ledger/` by the dated rate-card-history design) and
-/// the trust verbs (ARCHITECT 2026-10-06).
 pub const TABLE: &[VerbRow] = table! {
     Legacy GetAdminAuth "GET" "/api/v1/admin/admin-auth" "get_admin_auth";
     Legacy PutAdminAuth "PUT" "/api/v1/admin/admin-auth" "put_admin_auth";
@@ -364,7 +328,6 @@ const fn count(class: Class) -> usize {
     n
 }
 
-/// The rows of one class, in table order.
 const fn rows_of<const N: usize>(class: Class) -> [VerbRow; N] {
     let mut out = [TABLE[0]; N];
     let (mut i, mut n) = (0, 0);
@@ -378,7 +341,6 @@ const fn rows_of<const N: usize>(class: Class) -> [VerbRow; N] {
     out
 }
 
-/// The verbs of one class, in table order.
 const fn verbs_of<const N: usize>(class: Class) -> [KernelVerb; N] {
     let rows = rows_of::<N>(class);
     let mut out = [TABLE[0].verb; N];
@@ -390,36 +352,25 @@ const fn verbs_of<const N: usize>(class: Class) -> [KernelVerb; N] {
     out
 }
 
-/// The 66 legacy rows.
 pub const LEGACY_VERBS: &[VerbRow] = &rows_of::<{ count(Class::Legacy) }>(Class::Legacy);
 
-/// The 11 new 1.6.0 verbs: scope is the method rule, so the `GET` ones are reads and the rest are
-/// `Full` mutations. Membership is what spends the mutation budget in `Verbs::admit`.
 pub const NEW_VERBS: &[KernelVerb] = &verbs_of::<{ count(Class::New) }>(Class::New);
 
-/// The five 1.6.0 ledger views. A view mutates nothing and needs no more authority than the legacy
-/// `GET /usage` that reads the same money from the other side.
 pub const LEDGER_VERBS: &[KernelVerb] = &verbs_of::<{ count(Class::Ledger) }>(Class::Ledger);
 
-/// The three audit-chain reads. Their whole purpose is to be read by somebody who does NOT trust
-/// the node, so gating them behind a full-scope credential would defeat them.
 pub const AUDIT_VERBS: &[KernelVerb] = &verbs_of::<{ count(Class::Audit) }>(Class::Audit);
 
-/// The named non-admin surfaces, each pinned by its own handler in 1.5.5.
 pub const NAMED_SURFACES: &[KernelVerb] = &verbs_of::<{ count(Class::Named) }>(Class::Named);
 
-/// The row for `verb`.
 #[must_use]
 pub fn row_of(verb: KernelVerb) -> Option<&'static VerbRow> {
     TABLE.iter().find(|r| r.verb == verb)
 }
 
-/// The admin rows (every class but [`Class::Named`]): the ones a request line can resolve to.
 pub fn admin_rows() -> impl Iterator<Item = &'static VerbRow> {
     TABLE.iter().filter(|r| r.class != Class::Named)
 }
 
-/// The admin verb a templated (method, path) names.
 #[must_use]
 pub fn verb_for(method: &str, path: &str) -> Option<KernelVerb> {
     admin_rows()
@@ -427,18 +378,11 @@ pub fn verb_for(method: &str, path: &str) -> Option<KernelVerb> {
         .map(|r| r.verb)
 }
 
-/// Whether this build binds an effect to `verb` — the one question the administrative mount asks
-/// before it takes a request into the loop, and the one the generated document asks before it
-/// describes an operation. A verb with no row is not bound.
 #[must_use]
 pub fn effect_bound(verb: KernelVerb) -> bool {
     row_of(verb).is_some_and(|r| r.bound)
 }
 
-/// The operation name of a 1.6.0 verb (new, ledger or audit), the spelling its row carries. `None`
-/// for the 66 legacy operations and the named surfaces: those are joined on the method and path
-/// the pinned 1.5.5 document fixed, which is stronger than a casing convention. A gap and a
-/// failure must never be the same output, hence an option rather than an empty string.
 #[must_use]
 pub fn verb_name(verb: KernelVerb) -> Option<&'static str> {
     row_of(verb)

@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE STREAM, FRAMED BY ITS CLAIM'S FRAMER: a neutral framer under the claim `lp` (each message
-//! one length byte, then its bytes; its numbering `0..=9`) frames one accepted stream: body in,
-//! messages out; a message in, body out; its close as the closing field block, the final status
-//! rendered by the framer alone. RED: a final status past the claim's numbering never crosses.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,7 +40,7 @@ fn door() -> Arc<LengthDoor> {
         facts: DoorFacts {
             name: "lp".into(),
             claims: vec!["web", "lp"],
-            // It frames messages over the carrier the connector chose: a framer, stated.
+
             role: busbar_contract::abi::transport::ROLE_FRAMER,
             composes_over: Vec::new(),
             ported: false,
@@ -138,7 +135,6 @@ impl FramerDoor for LengthDoor {
                 ok
             }
             Call::Refuse(i, o) => {
-                // Head lines only where no head went out: then the block is the whole answer.
                 let head = if i.head_sent == 0 {
                     format!(":status: 200\r\nlp-status: {}\r\n", i.status)
                 } else {
@@ -202,15 +198,15 @@ fn a_stream_is_framed_by_its_claims_framer_and_closed_with_the_units_final_statu
         d.framings.lock().unwrap().values().next().map(|s| s.sides),
         Some(SIDE_ACCEPT_STREAM)
     );
-    // Body in, messages out, a message split across two reads included.
+
     assert_eq!(
         s.ingest(b"\x02hi\x03ab", false).unwrap(),
         vec![b"hi".to_vec()]
     );
     assert_eq!(s.ingest(b"c", true).unwrap(), vec![b"abc".to_vec()]);
-    // A message in, body out.
+
     assert_eq!(s.emit(b"yes", true).unwrap(), b"\x03yes".to_vec());
-    // The close: the framer renders the unit's status, message and details itself.
+
     let block = s.finish(5, b"not here", &[0xde, 0xad]).expect("finish");
     assert_eq!(
         block,
@@ -243,7 +239,7 @@ fn a_final_status_past_the_claims_numbering_never_crosses() {
     assert_eq!(refused.outcome, Outcome::Fault);
     assert!(refused.error.contains("finish.final_status"), "{refused:?}");
     assert!(d.finishes.lock().unwrap().is_empty(), "nothing crossed");
-    // The stream can still be ended another way.
+
     let block = s.refuse(b"plane fault", 502, false).expect("refuse");
     assert_eq!(
         block,
@@ -256,7 +252,7 @@ fn a_final_status_past_the_claims_numbering_never_crosses() {
 }
 
 /// A refusal after the stream's response head went out is told so, and its block is closing lines
-/// with no head line in them; one before the head is the whole answer.
+
 #[test]
 fn a_refusal_after_the_head_is_told_the_head_went_out() {
     for head_sent in [false, true] {
@@ -323,7 +319,7 @@ fn field_lines_read_a_closing_block_in_order() {
 }
 
 /// A stream begins with its listener's scheme: SECURE where the connector terminated connection
-/// security on the listener, PLAIN where it did not; never undeclared.
+
 #[test]
 fn a_stream_begins_with_its_listeners_scheme() {
     for scheme in [SCHEME_SECURE, SCHEME_PLAIN] {

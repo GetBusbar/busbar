@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SEALED FIRST-PARTY PLUGIN through the loader's own trust evaluation ([`evaluate`]): it loads as
-//! first-party when its release seal's chain holds, and every broken link is refused by default
-//! with a reason that names the audit code and says what to do. A revoked artefact or signer and a
-//! rolled-back keys document are refused whatever the operator opted in to.
-
 use super::*;
 use crate::release_trust::tests::{
     checks, entry, keys_doc, seal_keys, seal_targets, targets_doc, TestSigner, NOW,
@@ -27,7 +22,6 @@ fn unsealed() -> Manifest {
     }
 }
 
-/// The artefact digest a release lists for `m`.
 fn listed(m: &Manifest) -> String {
     sha256_hex(&canonical_manifest_bytes(m))
 }
@@ -58,8 +52,6 @@ impl Release {
         }
     }
 
-    /// `m` sealed: a keys document `root` signed naming the signer, a release manifest listing
-    /// `entries` (each `(name, version, target, sha256)`) that `by` signed.
     fn seal(
         &self,
         m: Manifest,
@@ -76,7 +68,6 @@ impl Release {
         }
     }
 
-    /// `m` sealed by a good release vouched for by `root`.
     fn good(&self, m: Manifest, root: &TestSigner) -> Manifest {
         let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
         self.seal(m, &keys_doc(&[&self.signer]), root, vec![e], &self.signer)
@@ -90,7 +81,6 @@ fn first_party() -> Verdict {
     }
 }
 
-/// A default-posture refusal: `kind`, and a reason naming `code`.
 #[track_caller]
 fn refused(r: Result<Verdict, Rejected>, kind: RejectKind, code: &str) -> Rejected {
     let e = r.expect_err("refused");
@@ -121,12 +111,12 @@ fn a_plugin_sealed_under_the_piv_root_loads_as_first_party() {
 fn a_tampered_plugin_byte_is_refused() {
     let r = Release::new();
     let m = r.good(unsealed(), &r.kms);
-    // The library alone changed: its manifest no longer binds it.
+
     let mut lib = LIB.to_vec();
     lib[5] ^= 1;
     let e = evaluate(&lib, &m, &r.policy()).expect_err("refused");
     assert_eq!(e.kind, RejectKind::Tampered, "{}", e.reason);
-    // The library changed and the manifest re-pinned to it: not the artefact the release lists.
+
     let repinned = Manifest {
         sha256: sha256_hex(&lib),
         ..m
@@ -171,7 +161,7 @@ fn a_plugin_the_release_does_not_list_is_refused() {
 fn a_release_signed_by_an_unlisted_key_is_refused() {
     let r = Release::new();
     let stranger = TestSigner::p256();
-    // The release manifest signed by a key the keys document does not name.
+
     let m = unsealed();
     let e = entry(&m.name, &m.version, PLUGIN_TARGET, &listed(&m));
     let m = r.seal(
@@ -186,7 +176,7 @@ fn a_release_signed_by_an_unlisted_key_is_refused() {
         RejectKind::Tampered,
         "release-signature",
     );
-    // A keys document vouched for by a key that is not a root of this build.
+
     let m = r.seal(
         unsealed(),
         &keys_doc(&[&stranger]),
@@ -224,8 +214,6 @@ fn a_plugin_listed_for_another_target_is_refused() {
     assert!(e.reason.contains(PLUGIN_TARGET), "{}", e.reason);
 }
 
-/// INSTALL (an upload, its preview, a fetch, an update) judges expiry: a plugin whose keys document
-/// has expired is refused.
 #[test]
 fn installing_a_plugin_whose_keys_document_has_expired_is_refused() {
     let r = Release::new();
@@ -242,8 +230,6 @@ fn installing_a_plugin_whose_keys_document_has_expired_is_refused() {
     );
 }
 
-/// BOOT does not: a plugin already installed whose keys document (90 days) and release manifest have
-/// since expired still loads as first-party.
 #[test]
 fn an_installed_plugin_whose_documents_have_since_expired_still_loads_at_boot() {
     let r = Release::new();
@@ -256,7 +242,6 @@ fn an_installed_plugin_whose_documents_have_since_expired_still_loads_at_boot() 
     assert_eq!(evaluate(LIB, &m, &boot), Ok(first_party()));
 }
 
-/// BOOT still honours a revocation, digest or signer, in a keys document that has expired.
 #[test]
 fn a_revocation_is_refused_at_boot_though_the_keys_document_has_expired() {
     let r = Release::new();

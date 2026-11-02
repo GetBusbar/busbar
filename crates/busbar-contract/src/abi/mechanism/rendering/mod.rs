@@ -71,11 +71,11 @@ pub use tail::{read_auth_tail, read_plane_cli_help, ReadAuthTail, ReadStyle};
 pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT03";
 
 /// The rendering before a need's response-header retention policy was rendered: its signed facts
-/// do not bind the actual policy, so a manifest carrying it must be repacked.
+
 pub const RENDERING_MAGIC_WITHOUT_NEED_RETENTION: &[u8; 8] = b"BBSTMT02";
 
 /// The first eight bytes of the rendering before the kind tail was rendered whole: a manifest that
-/// carries one was packed by an older pack tool, and is repacked.
+
 pub const RENDERING_MAGIC_TAIL_SIZE_ONLY: &[u8; 8] = b"BBSTMT01";
 
 /// Why a Statement does not render.
@@ -282,8 +282,6 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, RenderError> {
     Ok(o.0)
 }
 
-// ── reading a rendering back (every no-dlopen reader: `--validate`, `--list-plugins`, Discover) ───
-
 /// A blob, read back: its format, its flags and its bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadBlob {
@@ -389,11 +387,7 @@ pub struct Read {
 
 impl Read {
     /// Its reference-capable, not-secret settings paths: what its extensions state under
-    /// [`super::extensions::EXT_REFERENCE_FIELDS`] (lead ruling item 7a).
-    ///
-    /// # Errors
-    ///
-    /// The extensions state a value that is not a JSON list of settings paths.
+
     pub fn reference_fields(&self) -> Result<Vec<String>, String> {
         super::extensions::reference_fields(&self.extensions.bytes)
     }
@@ -437,8 +431,7 @@ impl In<'_> {
     fn count(&mut self, what: &'static str) -> Result<usize, Unreadable> {
         let at = self.at;
         let n = self.u32(what)? as usize;
-        // Every item is at least four bytes: a count no rest could hold is refused before any
-        // allocation is sized by it.
+
         if n > self.b.len().saturating_sub(self.at) / 4 {
             return Err(Unreadable { at, what });
         }
@@ -466,11 +459,7 @@ impl In<'_> {
 }
 
 /// THE RENDERING READ BACK: the inverse of [`render`], for a reader that must not open the plugin.
-/// The whole input must be one rendering: trailing bytes are refused.
-///
-/// # Errors
-///
-/// [`Unreadable`], at the first byte that is not what the format states.
+
 pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let mut i = In { b: bytes, at: 0 };
     let magic = i.take(RENDERING_MAGIC.len(), "the magic")?;

@@ -229,7 +229,6 @@ fn service_result_bytes_wipe_after_clone_cancel_forget_failure_unwind_and_transf
                 drop(next);
             }
             "late" => {
-                // A completion whose receiver disappeared drops the still-owned result.
                 let (tx, rx) = std::sync::mpsc::channel();
                 drop(rx);
                 drop(tx.send(stored));

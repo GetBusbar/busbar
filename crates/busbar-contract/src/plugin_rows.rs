@@ -2,16 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLUGIN ROWS, AS THE KERNEL READS THEM (`BUSBAR-1.6.0.md` THE DESIGN, "One dispatcher" and
-//! the boot stages: the kernel never names the loader). The composition root builds the plugin
-//! registry — the linked rows and the plugins directory's, admitted through the one registration —
-//! and hands the kernel this view of it: what each admitted row states about itself (its signed
-//! manifest's statements and the trust verdict), why a reference resolves to nothing, and the one
-//! door a store reference opens through. The kernel names no registry type, no manifest type and no
-//! load; the per-kind capabilities (the contract's `<Kind>Axis`) are built by the root over the
-//! same rows ([`PluginRows::as_any`] hands the root its own type back).
-//!
-//! A [`PluginRows`] is one build's: a configuration apply or a plugins refresh builds a new one,
-//! and the kernel keys what it resolved against it by its identity (the `Arc` address).
 
 use std::any::Any;
 use std::sync::Arc;
@@ -123,8 +113,7 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     fn resolve(&self, name_or_alias: &str) -> Option<Row>;
 
     /// SHA-256 of the exact admitted archive from which the retained native image was read.
-    /// Host metadata, not a plugin assertion or a fresh filesystem read. Linked rows need no
-    /// archive; a registry that cannot supply this proof returns `None`.
+
     fn archive_sha256(&self, _name_or_alias: &str) -> Option<String> {
         None
     }
@@ -142,31 +131,22 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     fn skipped(&self) -> Vec<Skipped>;
 
     /// THE DOOR the store `name_or_alias` resolves to opens through
-    /// ([`crate::store_calls::StoreAxis`]).
-    ///
-    /// # Errors
-    /// No store resolves to it, or the store states no door (a 1.5.5 JSON-contract plugin,
-    /// refused naming the rebuild).
+
     fn store_door(&self, name_or_alias: &str) -> Result<crate::store_calls::StoreDoor, String>;
 
     /// Why no secret plugin answers `name_or_alias` on the secret axis, in the registry's words.
     fn secret_refusal(&self, name_or_alias: &str) -> String;
 
     /// Why no `kind` plugin answers `name_or_alias` on that kind's axis, in the registry's words:
-    /// no row of `kind` resolves to it (`purpose` saying what the row could not do), or the row
-    /// resolves and states no door of `kind` (a 1.5.5 JSON-contract plugin, refused naming the
-    /// rebuild).
+
     fn kind_refusal(&self, kind: &str, purpose: &str, name_or_alias: &str) -> String;
 
     /// The secret reference keys the row `name_or_alias` resolves to states in its Statement
-    /// (`secret_refs`): the settings keys the loader lifts out and lends as secret blobs. Empty when
-    /// the row resolves to nothing, states none, or states a Statement that does not read back.
+
     fn secret_slots(&self, name_or_alias: &str) -> Vec<String>;
 
     /// The REFERENCE-CAPABLE, NOT-SECRET settings paths the row `name_or_alias` resolves to states
-    /// in its Statement's extensions (`reference_fields`, lead ruling item 7a): a reference there is
-    /// resolved in place to its string, a literal passes as written, and nothing is lent. Empty when
-    /// the row resolves to nothing, states none, or states a Statement that does not read back.
+
     fn reference_slots(&self, name_or_alias: &str) -> Vec<String> {
         let _ = name_or_alias;
         Vec::new()

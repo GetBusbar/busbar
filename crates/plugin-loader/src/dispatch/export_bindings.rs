@@ -42,8 +42,6 @@ pub(crate) struct Admission {
     ticket: Ticket,
 }
 
-/// Ticket cleanup may run while the worker owns its state lock. Retire the connection generation
-/// and wake refresh waiters when the worker drops this value outside that lock.
 pub(crate) struct Forgotten {
     binding: Option<Arc<Generation>>,
     waiting: Vec<Ticket>,
@@ -113,8 +111,6 @@ impl Bindings {
         Some(generation)
     }
 
-    /// A refresh owns its candidate for every crossing, including host-service results
-    /// retained while Pending. Resuming must never redeclare it under a different owner.
     pub(crate) fn staged(&self, ticket: Ticket) -> Option<Arc<Generation>> {
         self.0
             .lock()
@@ -234,8 +230,6 @@ impl Drop for Admission {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             if self.refresh {
-                // First-crossing admission transfers to the pending lifecycle. Its terminal
-                // REFRESH, CANCEL, or ticket cleanup releases the barrier.
                 if state.refreshing == Some(self.ticket) && !state.pending_refresh {
                     state.refreshing = None;
                 }

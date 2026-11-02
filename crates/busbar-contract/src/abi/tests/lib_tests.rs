@@ -34,7 +34,6 @@ impl Pod {
 
 #[test]
 fn preamble_layout_is_frozen() {
-    // The three frozen offsets. A change here is a MAJOR event and also trips the layout golden.
     assert_eq!(core::mem::offset_of!(AbiPreamble, magic), 0);
     assert_eq!(core::mem::offset_of!(AbiPreamble, abi_major), 8);
     assert_eq!(core::mem::offset_of!(AbiPreamble, abi_minor), 12);
@@ -50,9 +49,9 @@ fn sized_field_guard_hides_truncated_tail() {
         unsafe { read_sized_field!(&g, g.size, Pod, flags) },
         Some(0)
     );
-    // A sender that advertised only the preamble reveals nothing past it.
+
     let mut truncated = g;
-    // size(u32)=4 + version(u16)=2 — preamble only.
+
     truncated.size = 6;
     // SAFETY: the whole initialized `Pod` also covers the shorter advertised prefix.
     assert_eq!(
@@ -62,38 +61,28 @@ fn sized_field_guard_hides_truncated_tail() {
 }
 
 /// A peer's attested size is CLAMPED to this build's struct: an over-claim never widens the read
-/// window, and a shorter claim is honoured verbatim (the append-only rule).
+
 #[test]
 fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
     let ours = core::mem::size_of::<Pod>();
     assert_eq!(honoured_size(u32::MAX, ours), ours as u32);
     assert_eq!(honoured_size(ours as u32 + 1, ours), ours as u32);
-    // A shorter claim is honoured verbatim — that is the append-only rule, untouched.
+
     assert_eq!(honoured_size(16, ours), 16);
     assert_eq!(honoured_size(ours as u32, ours), ours as u32);
 }
 
 /// The sized-field guard must be safe to point at a peer buffer that is SHORTER than the struct it
-/// describes. Reading through a reference cannot be: a `&Pod` asserts the whole struct is valid and
-/// dereferenceable the instant it is formed, which over a shorter peer buffer is a claim about memory
-/// that does not exist. The pointer form makes the advertised size the only thing consulted, and
-/// touches nothing past it.
+
 #[test]
 fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
-    // A peer that advertises only the prefix before `tail_ptr`, in a buffer that is only that long —
-    // there are no bytes at all where `tail_ptr`/`tail_len` would sit.
     const PREFIX: usize = core::mem::offset_of!(Pod, tail_ptr);
-    // Deliberately a HEAP buffer, not the array clippy would prefer: the point of the test is that
-    // the allocation ENDS at `PREFIX`, so a read past it is a real out-of-bounds access that Miri or
-    // ASan will flag. A stack array is surrounded by other live stack bytes and would swallow it.
+
     #[allow(clippy::useless_vec)]
     let mut buf = vec![0u8; PREFIX];
     buf[..4].copy_from_slice(&(PREFIX as u32).to_ne_bytes());
     let p = buf.as_ptr().cast::<Pod>();
 
-    // `p` addresses `PREFIX` live bytes whose leading `size` says exactly that; the guard reads
-    // nothing beyond it. SAFETY for the three calls below: the allocation covers the advertised
-    // prefix; every included field read is an initialized `Copy` scalar with a valid zero value.
     assert_eq!(
         unsafe { read_sized_field!(p, PREFIX as u32, Pod, tail_ptr) },
         None
@@ -102,7 +91,7 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
         unsafe { read_sized_field!(p, PREFIX as u32, Pod, tail_len) },
         None
     );
-    // A field inside the prefix still reads.
+
     assert_eq!(
         unsafe { read_sized_field!(p, PREFIX as u32, Pod, tokens) },
         Some(0)
@@ -110,7 +99,7 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
 }
 
 /// THE AUTH TAIL'S FACT BITS are distinct single bits, the default inbound style among them (row
-/// 159, K3#1: the host's default inbound style is a stated fact, so the kernel names no line).
+
 #[test]
 fn the_auth_fact_bits_are_distinct_and_name_the_default_inbound_style() {
     use crate::abi::auth::{

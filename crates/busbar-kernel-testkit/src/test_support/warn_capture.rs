@@ -30,15 +30,6 @@
 //! `WarnCapture`s at once (e.g. a positive + a negative `cap`/`cap2`) without self-deadlocking; a
 //! DIFFERENT thread blocks until the holder fully releases.
 
-// INTEREST. `tracing` caches each callsite's interest PROCESS-GLOBALLY, and a callsite first
-// evaluated with no subscriber installed at all is cached "never" — after which no later
-// `with_default` capture can see it, because the macro short-circuits before it ever asks the
-// thread's dispatcher. That is a test in one file silently blinding a test in another, decided by
-// run order. So the FIRST `WarnCapture` built in a process installs a bare, layer-less registry as
-// the GLOBAL default and rebuilds the interest cache ONCE (`std::sync::Once`): every callsite then
-// answers "yes, someone is interested", forever, and the cache is never toggled back. It produces
-// no output and captures nothing — the actual capture is still the thread-local `with_default`
-// subscriber, unchanged — it only stops "interested" from ever being cached as "no".
 #[derive(Clone)]
 pub struct WarnCapture {
     messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -63,8 +54,6 @@ impl Default for WarnCapture {
 }
 
 impl WarnCapture {
-    /// A capture that admits DEBUG-and-above (DEBUG, INFO, WARN, ERROR), for asserting on a
-    /// benign-recurring diagnostic that emits at `diag_debug!`.
     pub fn capturing_debug() -> Self {
         ensure_capture_interest();
         Self {
@@ -74,19 +63,14 @@ impl WarnCapture {
         }
     }
 
-    /// Every captured message recorded so far, each as `"{message} {field}={value} ..."`.
     pub fn messages(&self) -> Vec<String> {
         self.messages.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
-    /// True when some captured WARN message contains `needle`.
     pub fn contains(&self, needle: &str) -> bool {
         self.messages().iter().any(|m| m.contains(needle))
     }
 
-    /// How many captured WARN/ERROR messages contain `needle`. The regression guard for the
-    /// log-spam class: a warn-once latch or a per-tick aggregation asserts this stays at 1 across
-    /// repeated ticks / many keys, where the unguarded code would have produced N.
     pub fn count(&self, needle: &str) -> usize {
         self.messages()
             .iter()
@@ -102,14 +86,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         if *event.metadata().level() > self.max_level {
-            // `tracing::Level` orders ERROR < WARN < INFO < ... (lower = more severe), so a WARN
-            // threshold admits WARN+ERROR and excludes INFO/DEBUG/TRACE; a DEBUG threshold admits
-            // everything down to DEBUG.
             return;
         }
-        // Capture the rendered `message` AND every other field (e.g. a structured `pool`/`hook`
-        // name on a diagnostic) so a test can assert on a field value, not just the static
-        // message text. Fields are flattened into one `key=value` string per event.
+
         #[derive(Default)]
         struct Vis {
             message: String,
@@ -144,27 +123,14 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
     }
 }
 
-/// Make every callsite's interest permanently "yes", ONCE per process — see the module note. A
-/// callsite fired with no subscriber installed caches "never" and is invisible to every later
-/// capture; a bare registry as the global default plus one rebuild makes that unreachable, and
-/// nothing rebuilds the cache again (a rebuild racing a concurrent test is the flake this
-/// replaces, not a second copy of it).
 fn ensure_capture_interest() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // A layer-less `Registry` filters nothing and emits nothing: installing it as the global
-        // default only makes `register_callsite` answer yes. Ignore the error — a binary that has
-        // already set a global default is already past the failure mode this closes.
         let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
         tracing::callsite::rebuild_interest_cache();
     });
 }
 
-// ── The process-global reentrant serialization gate (see the module docs). ──────────────────────
-
-/// The gate's shared state: the current OWNER thread and its reentrancy count, or `None` when free.
-/// The mutex is held only for the O(1) acquire/release bookkeeping — NEVER across the code under
-/// test — so a panicking test cannot poison it.
 struct CaptureGate {
     state: std::sync::Mutex<Option<(std::thread::ThreadId, usize)>>,
     cv: std::sync::Condvar,
@@ -178,14 +144,9 @@ fn capture_gate() -> &'static CaptureGate {
     })
 }
 
-/// An RAII hold of the reentrant capture gate: one is minted per `WarnCapture` constructor and
-/// dropped when that capture (and every `clone()` of it) is gone, releasing one reentrant level.
 struct GateHold;
 
 impl GateHold {
-    /// Acquire one reentrant level of the process-global gate, blocking while a DIFFERENT thread
-    /// holds it; a re-acquire by the OWNER thread just bumps the count, so one test may hold several
-    /// captures at once without self-deadlocking.
     fn acquire() -> std::sync::Arc<Self> {
         let gate = capture_gate();
         let me = std::thread::current().id();

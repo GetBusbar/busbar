@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROCESS'S ONE DISPATCHER (BUSBAR-1.6.0.md THE DESIGN, §11.2: one entry point per plugin,
-//! one loading path, one dispatcher). The composition root builds it at boot, one plugin worker per
-//! data worker, and every kind's wiring reaches its plugins through it: the root opens each kind's
-//! instances on it and hands the kernel contract-level per-kind handles (`busbar_contract::*_calls`),
-//! so the kernel never names the loader or this dispatcher.
-//!
-//! Built once; the first build stands. A build that never booted (a test binary) gets the default
-//! shape on first use.
-
 use std::sync::{Arc, OnceLock};
 
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
@@ -17,9 +8,6 @@ use crate::root::serve::LateServices;
 
 static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
 
-/// The dispatcher's shape for `workers` data workers: one plugin worker each, the default watchdog
-/// budgets. Host services are bound when the kernel serves them (BUSBAR-1.6.0.md THE DESIGN, §11.5,
-/// `abi/host/`).
 #[must_use]
 pub fn config(workers: usize) -> DispatchConfig {
     DispatchConfig {
@@ -28,16 +16,10 @@ pub fn config(workers: usize) -> DispatchConfig {
     }
 }
 
-/// Build the process's dispatcher for `workers` data workers, at boot, before any plugin loads,
-/// serving `services` (the composition's, installed once the configuration loads). The first build
-/// stands; a later call answers it.
 pub fn boot(workers: usize, services: &LateServices) -> Arc<Dispatcher> {
     Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(workers, services))))
 }
 
-/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`' slot, lent the
-/// kernel's seal (Part 2 #54: a door it binds reveals a resolved `Secret` it hands a plugin only
-/// under it).
 #[must_use]
 pub fn build(workers: usize, services: &LateServices) -> Dispatcher {
     let dispatcher = Dispatcher::with_slot(config(workers), services.slot());
@@ -45,27 +27,14 @@ pub fn build(workers: usize, services: &LateServices) -> Dispatcher {
     dispatcher
 }
 
-/// The process's dispatcher (built at boot; built with one worker and no installed services on
-/// first use where no boot ran).
 #[must_use]
 pub fn dispatcher() -> Arc<Dispatcher> {
     boot(1, &LateServices::new())
 }
 
-/// THE AUTH AXIS of one build: that build's registry's auth rows, opened on the process's dispatcher
-/// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1). Handed to the kernel as its auth-axis opener on the
-/// root's install record (`busbar_kernel::preflight::RootInstall::auth_axis`), so the kernel opens
-/// every auth instance through the contract's `AuthAxis` and names neither the loader's rows nor
-/// this dispatcher.
-///
-/// Its outbound half ([`busbar_contract::auth_calls::AuthAxis::serving`]) is the process's one set
-/// of outbound auth instances ([`crate::root::door_steps::process_auths`]): an outbound style is
-/// served by the same opened instance whichever build binds it, its tick schedule running once.
 pub fn auth_axis(
     registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
-    // The rows the kernel holds, read back as the registry this root built them as; rows this root
-    // did not build (a test build's rows double) are answered over this build's linked rows.
     let registry = crate::root::loader::rows::registry_arc(registry)
         .unwrap_or_else(|| Arc::new(crate::root::boot::linked_registry()));
     Arc::new(RootAuthAxis(
@@ -75,7 +44,6 @@ pub fn auth_axis(
     ))
 }
 
-/// One build's auth rows, with the process's outbound auth instances as its outbound half.
 struct RootAuthAxis(crate::root::loader::auth_axis::AuthRows);
 
 impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
@@ -154,8 +122,6 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
     }
 }
 
-/// The process's one connection table, as an auth instance opened to serve declares its needs on
-/// it (read when the instance opens, never at the axis's install).
 fn conns() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
     crate::root::connector::the().clone()
 }
@@ -164,10 +130,6 @@ fn conns() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
 #[path = "tests/dispatch.rs"]
 mod tests;
 
-// The suite binds each dialect's declared scheme on the LINKED auth plugins serving its style (the
-// static schemes and the signing scheme; the default distribution links a plugin serving each). A
-// build missing an auth row may link no plugin serving one of the styles, so the bind is refused
-// there: the suite rides every linked auth row (`linked_every_auth`, build.rs).
 #[cfg(all(test, linked_every_auth))]
 #[path = "tests/declared_credentials.rs"]
 mod declared_credentials_tests;

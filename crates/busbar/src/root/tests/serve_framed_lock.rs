@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! NO PLUGIN CODE RUNS UNDER A HOST LOCK (`BUSBAR-1.6.0.md` §11), on a framed stream: a write has
-//! the stream out of its slot while its framer is crossed, so a framer `emit` that hangs holds no
-//! lock, and the unit's close beside it never waits on it. The close is the write's to make, as it
-//! puts the stream back.
-
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
@@ -18,9 +13,6 @@ use busbar_kernel::plane_driver::CallerEnd;
 
 use super::{refused, shared, FramedCaller, IngressCaller};
 
-/// A framer that answers every op with nothing, and whose `emit` HANGS once armed: it says it is
-/// inside the crossing, then does not come back until the test lets it. Every crossing is recorded
-/// with the thread it ran on.
 struct Hanging {
     facts: DoorFacts,
     gate: Mutex<Option<(mpsc::Sender<ThreadId>, mpsc::Receiver<()>)>>,
@@ -58,10 +50,6 @@ impl FramerDoor for Hanging {
     }
 }
 
-/// RED before a write had the stream out of its slot: the slot's lock was held across the framer's
-/// `emit`, so the unit's close (its final status) beside a hung emit waited on the plugin for as
-/// long as it hung, and so did the answer's refusal. Now both return while the emit still hangs,
-/// and the write makes the close itself, on its own thread, as it puts the stream back.
 #[test]
 fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
     let door = Arc::new(Hanging {
@@ -105,7 +93,6 @@ fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
         .recv_timeout(Duration::from_secs(10))
         .expect("the write reaches the framer");
 
-    // BESIDE IT, on another thread: the answer's refusal and the unit's final status.
     let (done_tx, done) = mpsc::channel();
     let closing = Arc::clone(&caller);
     let answered = Arc::clone(&stream);

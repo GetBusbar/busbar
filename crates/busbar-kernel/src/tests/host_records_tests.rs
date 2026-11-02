@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The queued-write overlay and the list rule (`host_records.rs`).
-
 use super::*;
 
 #[test]

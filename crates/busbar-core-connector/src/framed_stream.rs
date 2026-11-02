@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE STREAM, FRAMED BY ITS CLAIM'S FRAMER.
-//!
-//! One listener port carries the streams of every claim, so the host's own framer keeps the
-//! connection and each stream's head, and a stream whose claim another framer answers is framed
-//! by that framer alone, stream by stream ([`SIDE_ACCEPT_STREAM`]): its body bytes go in and come
-//! back as messages, the unit's messages go in and come back as body bytes, and its close (a
-//! refusal, or the final status the unit stated) comes back as the stream's closing field block,
-//! which the host sends verbatim. The host renders nothing of the claim's wire and names no
-//! transport: which framer frames a stream is the claim the stream resolved to.
 
 use std::sync::Arc;
 
@@ -48,13 +40,7 @@ fn fault(error: impl Into<String>) -> Refused {
 
 impl FramedStream {
     /// Open the stream that arrived at `target` with `head` (its head fields, as the caller sent
-    /// them) on `claim`, a claim `door` answers. Its binding has no auth. `scheme` is the
-    /// listener's (`SCHEME_*`, `BeginIn::scheme`): secure when the connector terminated connection
-    /// security on the listener the stream arrived at, plain when it did not.
-    ///
-    /// # Errors
-    ///
-    /// `door` does not answer `claim`, or its framer refused the stream.
+
     pub fn open(
         door: Arc<dyn FramerDoor>,
         claim: &str,
@@ -66,14 +52,7 @@ impl FramedStream {
     }
 
     /// [`FramedStream::open`] over `binding`. A stream is framed TICKET-LESS, so a binding with
-    /// auth points (guest lines whose auth needs a point) is refused before anything crosses
-    /// ([`crate::framer::TICKET_LESS_AUTH`]): its framer may call the auth service, which may
-    /// pend, and only a ticketed framing can park it.
-    ///
-    /// # Errors
-    ///
-    /// The binding has auth points, `door` does not answer `claim`, or its framer refused the
-    /// stream.
+
     pub fn open_bound(
         door: Arc<dyn FramerDoor>,
         claim: &str,
@@ -124,18 +103,14 @@ impl FramedStream {
     }
 
     /// Initial response fields supplied by the stream's framer at Begin, before any body or
-    /// terminal outcome. These include its own declaration of closing fields when its carrier
-    /// needs one. The host copies these fields without inventing protocol names.
+
     #[must_use]
     pub fn opening_fields(&self) -> &[HeadWords] {
         &self.opening
     }
 
     /// The stream's body bytes (`end` = its last); the messages they complete, in order.
-    ///
-    /// # Errors
-    ///
-    /// The framer failed the stream (its bytes are no message of the claim's).
+
     pub fn ingest(&mut self, body: &[u8], end: bool) -> Result<Vec<Vec<u8>>, Refused> {
         let mut y = self.framing.ingest(body, end)?;
         let mut messages = Vec::new();
@@ -158,10 +133,7 @@ impl FramedStream {
     }
 
     /// One reply message's bytes (`ends` = they complete it); the stream's body bytes.
-    ///
-    /// # Errors
-    ///
-    /// The framer refused them.
+
     pub fn emit(&mut self, message: &[u8], ends: bool) -> Result<Vec<u8>, Refused> {
         self.framing
             .emit(STREAM, message, ends, false)
@@ -169,12 +141,7 @@ impl FramedStream {
     }
 
     /// End the stream refused: `bytes` and the refusal's neutral `status`; the closing field block.
-    /// `head_sent` = the host already sent the stream's response head, so the block is closing
-    /// lines only; otherwise it is the whole answer.
-    ///
-    /// # Errors
-    ///
-    /// The framer refused to render it, or its block is no field lines.
+
     pub fn refuse(
         &mut self,
         bytes: &[u8],
@@ -188,12 +155,7 @@ impl FramedStream {
     }
 
     /// End the stream with the final status the unit stated (`status` in the claim's numbering,
-    /// its message and details, each empty where none); the closing field block.
-    ///
-    /// # Errors
-    ///
-    /// The status is not the claim's ([`Framing::finish_final`]: nothing crossed), or the framer
-    /// refused it.
+
     pub fn finish(
         &mut self,
         status: u32,
@@ -208,7 +170,7 @@ impl FramedStream {
 }
 
 /// An initial field block must be wholly parsed and carry only valid ordinary field names and
-/// values. A malformed suffix must not disappear when the host constructs its response head.
+
 fn opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
     use busbar_contract::abi::transport::fields;
     let mut read = 0;
@@ -241,11 +203,7 @@ fn closing(y: &Yielded) -> Result<Vec<HeadWords>, Refused> {
 }
 
 /// FIELD LINES (`name: value` CRLF each, a blank line or the end closing them), read in order. A
-/// name may be a pseudo-field's (`:status`), as the data listener's own wire states its head's.
-///
-/// # Errors
-///
-/// A line with no name, or no `:`.
+
 pub fn field_lines(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
     let mut out = Vec::new();
     for line in block.split(|b| *b == b'\n') {

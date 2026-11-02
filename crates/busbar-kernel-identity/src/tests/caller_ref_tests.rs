@@ -39,8 +39,6 @@ fn the_reference_never_carries_the_principal() {
 
 #[test]
 fn the_reference_is_hmac_sha256_under_the_hkdf_derived_key() {
-    // A pinned value, so a change to the label, the hash or the derivation is a visible break of
-    // every reference already handed to a far end.
     let key = CallerRefKey::derive(MATERIAL);
     let pinned = key.caller_ref("vk-alice");
     assert_eq!(

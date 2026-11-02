@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
-
 use super::*;
 
 #[test]
@@ -213,7 +211,6 @@ fn migrate_identity_providers_still_deduplicates_equal_and_complementary_fields(
     }
 }
 
-/// A representative 1.4.x config exercising every deterministic transform at once.
 const LEGACY_14X: &str = r#"
 listen: "0.0.0.0:8080"
 auth:
@@ -271,7 +268,6 @@ observability:
   otlp_endpoint: "http://otel:4318/v1/traces"
 "#;
 
-/// Every 1.x structural marker is DETECTED and NAMED; a clean 1.5.0 document yields none.
 #[test]
 fn legacy_markers_detected_and_named() {
     let doc: serde_yaml::Value = serde_yaml::from_str(LEGACY_14X).unwrap();
@@ -299,7 +295,6 @@ fn legacy_markers_detected_and_named() {
         "the refusal must name the version family: {err}"
     );
 
-    // A clean 1.5.0 shape (the canonical example) has NO markers.
     let clean = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/clean-config-1.5.0.yaml"),
@@ -312,7 +307,6 @@ fn legacy_markers_detected_and_named() {
     );
 }
 
-/// `auth.mode:` alone (the oldest marker) trips the detector too.
 #[test]
 fn auth_mode_marker_detected() {
     let doc: serde_yaml::Value =
@@ -324,13 +318,8 @@ fn auth_mode_marker_detected() {
     );
 }
 
-/// The migrated output covers every deterministic transform, parses as YAML, and its VALUE TREE
-/// deserializes into the 1.5.0 `DeployCfg` (boot-parses) - the round-trip that makes the
-/// migration path real.
 #[test]
 fn migrate_14x_round_trips_into_deploy_cfg() {
-    // This test needs a plane registered so the migrated `pools:` section resolves (not real
-    // llm/mcp/a2a behaviour — it only asserts the migrated document's SHAPE).
     crate::test_support::register_neutral_test_plane();
     let out = migrate_config(LEGACY_14X).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
@@ -346,7 +335,6 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         cur
     };
 
-    // governance dissolved.
     assert!(root.get(serde_yaml::Value::from("governance")).is_none());
     assert_eq!(get(&["store", "module"]).as_str(), Some("acme-durable"));
     assert_eq!(
@@ -362,7 +350,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         get(&["rate_card", "widget", "input_utok"]).as_f64(),
         Some(3.0)
     );
-    // budget_groups -> groups with window nouns (daily -> day, monthly -> month).
+
     let growth_limits = get(&["groups", "growth", "limits"]);
     let growth_limit = &growth_limits.as_sequence().unwrap()[0];
     assert_eq!(
@@ -374,8 +362,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         Some("day")
     );
     assert_eq!(get(&["groups", "growth", "parent"]).as_str(), Some("acme"));
-    // admin_token ${VAR} -> the operator credential's secret ref, under the provider word the root
-    // hands in (this build's double; the root pins 1.5.5's bytes: `root::tests::legacy_table`).
+
     let op = crate::config::operator_provider();
     let admin_auth = get(&["auth", "admin_auth"]);
     assert_eq!(
@@ -383,12 +370,12 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         Some(op),
         "a 1.5.3 admin chain is a list of bare PROVIDER NAMES"
     );
-    // The operator credential rode along onto the `identity-providers:` DEFINITION.
+
     let token_env = get(&["identity-providers", op, "token", "env"])
         .as_str()
         .map(str::to_string);
     assert_eq!(token_env.as_deref(), Some("BUSBAR_ADMIN_TOKEN"));
-    // group_map -> role_bindings nested under the ONE external chain module.
+
     assert_eq!(
         get(&[
             "auth",
@@ -400,7 +387,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         .as_str(),
         Some("growth")
     );
-    // Inline caps became a generated group bound to the role.
+
     assert_eq!(
         get(&[
             "auth",
@@ -415,14 +402,12 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     let ml = get(&["groups", "migrated-capped", "limits"]);
     let limits = ml.as_sequence().unwrap();
     assert_eq!(limits.len(), 3, "rpm + tpm + budget -> three limits");
-    // api_key_env -> secret ref.
+
     assert_eq!(
         get(&["providers", "vendor-a", "api_key", "env"]).as_str(),
         Some("VENDOR_A_KEY")
     );
-    // target -> model; cost off members; alias renames. The member stays a rich object (the 1.5.5
-    // member grammar is the 1.6.0 grammar): `target` is renamed to `model` in place and
-    // `cost_per_mtok` is dropped, but nothing rewrites it to a bare name.
+
     let members = get(&["pools", "fast", "members"]);
     let member = members.as_sequence().unwrap()[0]
         .as_mapping()
@@ -456,9 +441,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         get(&["pools", "fast", "failover", "max_hops"]).as_u64(),
         Some(3)
     );
-    // 1.5.3 named hooks: the 1.x registry became the top-level `hooks:` DEFINITION map (module:
-    // derived from the socket/webhook transport); the pool keeps its BARE reference; the
-    // `global: true` tap moved to the reserved `pools.hooks:` all-pools attach.
+
     assert_eq!(
         get(&["hooks", "pii-screen", "module"]).as_str(),
         Some("socket"),
@@ -496,15 +479,13 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         ["audit-tap"],
         "the global: true tap became the reserved pools.hooks all-pools attach"
     );
-    // otlp_endpoint -> otlp_url -> the `module: otlp` export instance (1.5.3 deletes the
-    // `observability:` block; `export:` is the single telemetry-egress surface).
+
     assert_eq!(get(&["export", "traces", "module"]).as_str(), Some("otlp"));
     assert_eq!(
         get(&["export", "traces", "settings", "url"]).as_str(),
         Some("http://otel:4318/v1/traces")
     );
 
-    // The LOUD [] warning fired for the platform role's semantic flip, exactly once.
     assert_eq!(
         out.warnings
             .iter()
@@ -514,11 +495,9 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         "warnings: {:?}",
         out.warnings
     );
-    // The output document itself carries the warning as a comment.
+
     assert!(out.yaml.contains("# WARNING(migrate):"));
 
-    // ROUND-TRIP: the migrated document deserializes into the 1.5.0 DeployCfg (boot-parses) and
-    // trips NO legacy marker.
     assert!(detect_legacy_markers(&doc).is_empty());
     let deploy: Result<crate::config::DeployCfg, _> =
         crate::config::deploy_from_yaml_str(&out.yaml);
@@ -529,14 +508,12 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     );
 }
 
-/// Small helper: migrate `raw` and return the parsed output document (panics if migrate fails).
 fn migrate_to_value(raw: &str) -> (MigrateOutput, serde_yaml::Value) {
     let out = migrate_config(raw).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     (out, doc)
 }
 
-/// Path-getter over a parsed migrated document.
 fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
     let mut cur = doc;
     for k in path {
@@ -545,11 +522,6 @@ fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::
     Some(cur)
 }
 
-/// THE user-reported seed bug (and every 1.4.x `on_exhausted` spelling): a pool's
-/// `on_exhausted: { action: … }` is rewritten to the 1.5.0 shape (bare `reject` / `least_bad`, or
-/// `{ fallback_pool: <pool> }`). Before the fix the `action:` wrapper passed straight through and
-/// `deny_unknown_fields` rejected it at `--validate` with "unknown field `action`" - a migrate that
-/// reported changes but emitted an unbootable config. The migrated document must BOOT-PARSE.
 #[test]
 fn migrate_on_exhausted_all_arms_round_trip() {
     crate::test_support::register_neutral_test_plane();
@@ -578,13 +550,12 @@ pools:
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // fallback_pool:<name> -> { fallback_pool: <name> }.
     assert_eq!(
         dig(&doc, &["pools", "primary", "on_exhausted", "fallback_pool"]).and_then(|v| v.as_str()),
         Some("overflow"),
         "fallback_pool:<name> must become the structured 1.5.0 form"
     );
-    // bare keywords stay bare.
+
     assert_eq!(
         dig(&doc, &["pools", "overflow", "on_exhausted"]).and_then(|v| v.as_str()),
         Some("least_bad")
@@ -593,12 +564,12 @@ pools:
         dig(&doc, &["pools", "strict", "on_exhausted"]).and_then(|v| v.as_str()),
         Some("reject")
     );
-    // status_503 (a 1.4.x alias) -> bare `reject`.
+
     assert_eq!(
         dig(&doc, &["pools", "legacy503", "on_exhausted"]).and_then(|v| v.as_str()),
         Some("reject")
     );
-    // the `action:` wrapper is GONE everywhere.
+
     for pool in [
         "primary",
         "overflow",
@@ -612,7 +583,7 @@ pools:
             "pool {pool} still carries the 1.4.x on_exhausted.action wrapper"
         );
     }
-    // the two undecidable arms are FLAGGED, never silently wrong.
+
     assert!(
         out.todos.iter().any(|t| t.contains("nameless")),
         "an empty fallback_pool must raise a TODO: {:?}",
@@ -623,7 +594,7 @@ pools:
         "an unknown action must raise a TODO: {:?}",
         out.todos
     );
-    // THE round-trip: the migrated config boot-parses (the user's failure is gone).
+
     assert!(
         crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "on_exhausted-bearing config must boot-parse: {:?}",
@@ -631,12 +602,6 @@ pools:
     );
 }
 
-/// The REAL shipped 1.4.x (`v1.4.1`) `DeployCfg` put `group_map:` / `admin_auth:` at the TOP LEVEL
-/// (not under `auth:`), used `auth.chain: [tokens]` with `auth.client_tokens`, and could carry
-/// per-module `auth.modules:` caps. Before the fix the migrator only knew the NESTED `auth.group_map`
-/// shape, so a real config passed group_map / admin_auth / modules / `tokens` straight through to a
-/// `deny_unknown_fields` rejection. Everything must now migrate into the 1.5.0 auth shape and
-/// boot-parse.
 #[test]
 fn migrate_real_14x_top_level_auth_surfaces() {
     crate::test_support::register_neutral_test_plane();
@@ -660,7 +625,6 @@ pools: {}
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // chain: tokens -> keys (deduped), test-idp-double carries its folded max_admin_scope.
     let chain = dig(&doc, &["auth", "chain"])
         .unwrap()
         .as_sequence()
@@ -677,7 +641,7 @@ pools: {}
         Some("full"),
         "auth.modules.test-idp-double.max_admin_scope must fold onto the identity-providers DEFINITION"
     );
-    // top-level group_map -> auth.role_bindings nested under the ONE external module (test-idp-double).
+
     assert_eq!(
         dig(
             &doc,
@@ -694,14 +658,14 @@ pools: {}
         Some(1),
         "top-level group_map must migrate to auth.role_bindings.<module>"
     );
-    // top-level admin_auth -> auth.admin_auth (nested).
+
     assert!(
         dig(&doc, &["auth", "admin_auth"])
             .and_then(|v| v.as_sequence())
             .is_some(),
         "top-level admin_auth must move under auth"
     );
-    // nothing auth-shaped survives at the ROOT (all would be deny_unknown_fields rejections).
+
     for k in ["group_map", "admin_auth", "modules"] {
         assert!(
             doc.as_mapping()
@@ -711,13 +675,13 @@ pools: {}
             "top-level `{k}` must be gone after migration"
         );
     }
-    // allowed_groups has no 1.5.0 home -> an explicit TODO, never a silent drop.
+
     assert!(
         out.todos.iter().any(|t| t.contains("allowed_groups")),
         "dropping auth.modules.*.allowed_groups must raise a TODO: {:?}",
         out.todos
     );
-    // boot-parses.
+
     assert!(
         crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "real top-level 1.4.x auth surfaces must migrate to a bootable config: {:?}",
@@ -725,10 +689,6 @@ pools: {}
     );
 }
 
-/// The 1.4.x TOP-LEVEL `global_hooks: [<name>]` (a list of REGISTRY names) → the reserved
-/// `pools.hooks:` all-pools attach (1.5.3). A registry name becomes a NAMED DEFINITION under
-/// `hooks:` and a BARE reference in `pools.hooks:`; a hook that is BOTH named in global_hooks AND
-/// flagged `global: true` must appear exactly ONCE in the all-pools list (no duplicate).
 #[test]
 fn migrate_global_hooks_names_resolve_and_dedup() {
     crate::test_support::register_neutral_test_plane();
@@ -744,7 +704,7 @@ hooks:
 global_hooks: [audit-tap]
 "#;
     let (out, doc) = migrate_to_value(raw);
-    // No top-level global_hooks survives.
+
     assert!(
         dig(&doc, &["global_hooks"]).is_none(),
         "the removed top-level global_hooks: must not survive"
@@ -756,7 +716,7 @@ global_hooks: [audit-tap]
         ["audit-tap"],
         "the doubly-named global hook is a single BARE all-pools reference: {all:?}"
     );
-    // The name resolves to a named DEFINITION whose module: came from the webhook transport.
+
     assert_eq!(
         dig(&doc, &["hooks", "audit-tap", "module"]).and_then(|v| v.as_str()),
         Some("webhook"),
@@ -769,9 +729,6 @@ global_hooks: [audit-tap]
     );
 }
 
-/// The detector must NAME every real 1.4.x marker so boot/`--validate` refuse the old format
-/// loudly: the top-level group_map / admin_auth, per-module `auth.modules`, an
-/// `auth.chain: [tokens]`, and a pool `on_exhausted.action`.
 #[test]
 fn detect_real_14x_top_level_and_on_exhausted_markers() {
     let raw = r#"
@@ -803,8 +760,6 @@ pools:
     }
 }
 
-/// `price_per_1k_tokens_cents` synthesizes a flagged rate_card entry per model (N cents/1k =
-/// 10N micro-units/token on every tier).
 #[test]
 fn migrate_price_per_1k_synthesizes_rate_card() {
     let raw = r#"
@@ -843,8 +798,6 @@ pools: {}
     );
 }
 
-/// REGRESSION: a pool `policy:` migrates to `hooks: [<strategy>, ...]` even when the config has
-/// NO top-level `hooks:` registry block (the block-processing pass returns early in that case).
 #[test]
 fn migrate_pool_policy_without_hooks_block() {
     crate::test_support::register_neutral_test_plane();
@@ -868,14 +821,13 @@ pools:
         .and_then(|v| v.as_sequence())
         .expect("policy became a hooks list");
     assert_eq!(hooks[0].as_str(), Some("cheapest"));
-    // The migrated document boot-parses (no leftover `policy:` unknown-field).
+
     assert!(
         crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
         "policy-only pool must migrate to a bootable config"
     );
 }
 
-/// `auth.mode` mapping: passthrough -> upstream_credentials; token -> keys chain + a re-mint TODO.
 #[test]
 fn migrate_auth_mode_arms() {
     let out = migrate_config("auth:\n  mode: passthrough\nproviders: {}\nmodels: {}\npools: {}\n")
@@ -892,8 +844,6 @@ fn migrate_auth_mode_arms() {
     );
 }
 
-/// A group_map with an AMBIGUOUS module home (no external chain module) gets the placeholder +
-/// TODO, never a silent guess.
 #[test]
 fn migrate_group_map_without_module_flags_placeholder() {
     let raw = r#"
@@ -912,11 +862,6 @@ pools: {}
         .any(|t| t.contains("replace the '<module>' placeholder")));
 }
 
-/// REGRESSION: a top-level `group_map:` alongside a NON-MAPPING `auth:` (e.g. `auth: null`) must
-/// NOT silently vanish. Before the fix, `migrate_auth` took `group_map` off `root` up front, then
-/// hit `let Value::Mapping(auth) = ... else { return; }` when `auth:` was present but not a
-/// mapping - the early `return` dropped the already-extracted `group_map` with no warning/TODO,
-/// violating this module's own "never silently drop, pass through or TODO" contract.
 #[test]
 fn migrate_group_map_survives_a_non_mapping_auth() {
     let raw = r#"
@@ -929,9 +874,7 @@ models: {}
 pools: {}
 "#;
     let out = migrate_config(raw).unwrap();
-    // The data must survive SOMEWHERE in the migrated document - either restored at the top level,
-    // or (if a future fix manages to migrate it) folded into auth.role_bindings. Either way it must
-    // not disappear, and there must be a loud TODO/warning naming the problem.
+
     assert!(
         out.yaml.contains("group_map") || out.yaml.contains("role_bindings"),
         "group_map data must not silently vanish from the migrated document:\n{}",
@@ -947,13 +890,6 @@ pools: {}
     );
 }
 
-/// REGRESSION (the mirror image of `migrate_group_map_survives_a_non_mapping_auth`): `group_map:`
-/// ITSELF being a non-mapping (`group_map: [foo]`) while `auth:` IS a mapping must NOT silently
-/// vanish either. Before the fix, `migrate_auth`'s `if let Value::Mapping(gm) = gm { .. }` treated
-/// anything else as a silent no-op: `bindings` stayed empty but execution fell straight through to
-/// unconditionally emit an EMPTY `auth.role_bindings.<module>: {}` plus a MISLEADING "auth.group_map
-/// -> auth.role_bindings" changelog entry, as if the data had actually migrated - the group_map
-/// content itself was gone with no warning/TODO at all.
 #[test]
 fn migrate_non_mapping_group_map_survives_a_mapping_auth() {
     let raw = r#"
@@ -978,7 +914,7 @@ pools: {}
         out.todos,
         out.warnings
     );
-    // The misleading "migrated" changelog entry must not appear when nothing actually migrated.
+
     assert!(
         !out.changes
             .iter()
@@ -988,12 +924,6 @@ pools: {}
     );
 }
 
-/// REGRESSION: a REALISTIC 1.4.x `governance:` block -- no `store:` key, because 1.4.x's
-/// `GovernanceCfg` never had one (its only durable backend was SQLite at `db_path`). Before the
-/// fix, gating the store migration on that nonexistent key silently dropped `db_path` and emitted
-/// NO `store:` section at all, which defaults to the ephemeral in-memory store on boot -- orphaning
-/// every real key/budget/audit row in the operator's actual database. The migrated document must
-/// carry the real `db_path` forward as `store: { module: sqlite, settings: { db_path } }`.
 #[test]
 fn migrate_realistic_14x_governance_preserves_the_real_db_path() {
     let raw = r#"
@@ -1030,10 +960,6 @@ pools: {}
     );
 }
 
-/// REGRESSION, the omitted-`db_path` case: a 1.4.x config that never set `db_path` explicitly relied
-/// on 1.4.x's real default (`busbar-governance.db`). Migration must reproduce THAT default, not
-/// silently select the 1.5.0-side in-memory default, or the operator's real (implicitly-named)
-/// database becomes unreachable after migration too.
 #[test]
 fn migrate_14x_governance_with_no_explicit_db_path_uses_the_14x_default() {
     let raw = r#"
@@ -1067,10 +993,6 @@ pools: {}
     );
 }
 
-/// 1.5.2 SCOPE COLLAPSE migration: a config still naming the retired delegated `mint` /
-/// `hooks-register` admin scopes — in a `group_map` `admin_scope` (→ `role_bindings`) and in an
-/// `auth.modules` `max_admin_scope` (→ the chain entry) — is rewritten to `full`, with a loud
-/// per-site WARNING so the operator can tighten it back to `read-only`.
 #[test]
 fn migrate_dropped_scopes_map_to_full_with_warning() {
     let raw = r#"
@@ -1100,7 +1022,6 @@ pools:
         .and_then(|v| v.as_mapping())
         .expect("auth mapping");
 
-    // (a) role_bindings.test-idp-double.minter.admin_scope: mint -> full.
     let bound_scope = auth
         .get(serde_yaml::Value::from("role_bindings"))
         .and_then(|v| v.as_mapping())
@@ -1116,9 +1037,6 @@ pools:
         "the retired `mint` admin_scope must be rewritten to `full`; got {bound_scope:?}"
     );
 
-    // (b) the test-idp-double provider's max_admin_scope: hooks-register -> full. 1.5.3: the cap lives on the
-    // `identity-providers:` DEFINITION, which the chain now references by bare name — so
-    // the scope rewrite and the definition lift compose in ONE migrator run.
     let oidc_cap = dig(
         &doc,
         &["identity-providers", "test-idp-double", "max_admin_scope"],
@@ -1138,7 +1056,6 @@ pools:
         "the chain references the provider by BARE NAME: {chain:?}"
     );
 
-    // Loud, per-site warnings naming both rewrites.
     assert!(
         out.warnings.iter().any(|w| w.contains("mint -> full")),
         "a warning must name the mint -> full rewrite; got {:?}",
@@ -1153,10 +1070,6 @@ pools:
     );
 }
 
-/// `observability.emit_server_timing` -> `advanced.response_headers.server_timing`. The
-/// key is REMOVED from `observability` (else `deny_unknown_fields` rejects the migrated document —
-/// see `test_migrated_configs_boot_parse`-style coverage) and reappears nested under the new
-/// `advanced.response_headers` block, alongside any advanced fields that were already present.
 #[test]
 fn migrate_emit_server_timing_moves_to_advanced_response_headers() {
     let raw = r#"
@@ -1170,25 +1083,21 @@ observability:
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // The old key is GONE (a raw pass-through would `deny_unknown_fields`-reject at boot instead of
-    // silently keeping stale semantics). 1.5.3 deletes the whole enclosing block, so assert that.
     assert!(
         dig(&doc, &["observability"]).is_none(),
         "the whole observability block must not survive migration: {doc:?}"
     );
-    // The new key carries the SAME value, in its new home.
+
     assert_eq!(
         dig(&doc, &["advanced", "response_headers", "server_timing"]).and_then(|v| v.as_bool()),
         Some(true)
     );
-    // A pre-existing sibling `advanced:` field (rate_sweep_interval) is preserved, not clobbered by
-    // the cross-section splice.
+
     assert_eq!(
         dig(&doc, &["advanced", "rate_sweep_interval"]).and_then(|v| v.as_u64()),
         Some(64)
     );
-    // The sibling otlp_endpoint rename still fires in the same run and then FOLDS into the `otlp`
-    // export instance (the migrations chain rather than colliding).
+
     assert_eq!(
         dig(&doc, &["export", "traces", "settings", "url"]).and_then(|v| v.as_str()),
         Some("http://otel:4318/v1/traces")
@@ -1201,7 +1110,6 @@ observability:
         out.changes
     );
 
-    // The migrated document must boot-parse cleanly (deny_unknown_fields would catch a stray key).
     let deploy: Result<crate::config::DeployCfg, _> =
         crate::config::deploy_from_yaml_str(&out.yaml);
     assert!(
@@ -1211,10 +1119,6 @@ observability:
     );
 }
 
-/// 1.5.3 HARD tap-stage rename: an old inline hook instance carrying `at:` (`route`/`attempt`/
-/// `completion`) lifts to a NAMED DEFINITION whose `phase:` list uses the new vocabulary
-/// (`candidate`/`routing`/`response`). The pool keeps BARE references; the result must BOOT-PARSE
-/// (the old `at:` strings would otherwise fail as unknown `HookStage` variants).
 #[test]
 fn migrate_hook_stage_at_values_are_renamed() {
     crate::test_support::register_neutral_test_plane();
@@ -1232,8 +1136,6 @@ global_hooks:
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // Every hook is now a named DEFINITION; the `at:` renamed onto its `phase:` list. Locate each by
-    // its distinguishing settings.url (auto-generated names are not asserted directly).
     let defs = dig(&doc, &["hooks"]).unwrap();
     let defs = defs.as_mapping().unwrap();
     let phase_for = |url_suffix: &str| -> Option<String> {
@@ -1267,7 +1169,6 @@ global_hooks:
         "`at: completion` must migrate to `phase: [response]`"
     );
 
-    // The pool keeps BARE references, and the global instance became a reserved all-pools attach.
     let pool_hooks = dig(&doc, &["pools", "primary", "hooks"])
         .unwrap()
         .as_sequence()
@@ -1283,7 +1184,6 @@ global_hooks:
         "the global instance became a reserved pools.hooks attach"
     );
 
-    // Boot-parse proves the rename closed the loud-fail (old `at:` strings would 400 as variants).
     let deploy: Result<crate::config::DeployCfg, _> =
         crate::config::deploy_from_yaml_str(&out.yaml);
     assert!(
@@ -1293,9 +1193,6 @@ global_hooks:
     );
 }
 
-/// A config that never set `emit_server_timing` (or had no `observability:` block at all) migrates
-/// with NO `advanced.response_headers` block synthesized — the migrator must not manufacture config
-/// the operator never wrote.
 #[test]
 fn migrate_emit_server_timing_absent_is_a_no_op() {
     let raw = "providers: {}\nmodels: {}\n";
@@ -1311,13 +1208,6 @@ fn migrate_emit_server_timing_absent_is_a_no_op() {
     );
 }
 
-/// 1.5.3 observability→export lift-out: an un-migrated config carrying `observability.request_log_webhook_url`
-/// or a top-level `metrics:` block LOUD-FAILS at boot/`--validate` — `detect_legacy_markers` names
-/// each retired key with the migrate breadcrumb.
-///
-/// Before 1.5.3 these keys parsed silently (they were live `ObservabilityCfg` /
-/// `MetricsCfg` fields), so `detect_legacy_markers` returned NO marker for them — this assertion fails
-/// on the pre-retirement tree.
 #[test]
 fn detect_retired_observability_export_keys_loud_fail() {
     let raw = r#"
@@ -1341,20 +1231,13 @@ pools: {}
         joined.contains("metrics"),
         "the retired top-level metrics block must loud-fail; got: {joined}"
     );
-    // Each marker names its new home under the export exporters so the operator knows where it went.
+
     assert!(
         joined.contains("export.request-log-webhook") && joined.contains("export.prometheus"),
         "markers must name the new export home; got: {joined}"
     );
 }
 
-/// `--migrate-config` mechanically REWRITES the retired observability keys into the new `export:`
-/// surface (built-in exporters, so a full rewrite — not a printed TODO). The webhook URL + limits land
-/// under `export.request-log-webhook.settings`, the metrics block under `export.prometheus.settings`,
-/// and the old keys are gone from `observability:` / the top level. Idempotent.
-///
-/// `migrate_observability_export` did not exist before 1.5.3, so the migrated
-/// document had no `export:` block — these `dig` lookups return `None` on the pre-migration tree.
 #[test]
 fn migrate_observability_export_rewrites_old_to_new() {
     crate::export::scrape::tests::installed_axis();
@@ -1374,8 +1257,6 @@ pools: {}
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // request-log-webhook exporter — 1.5.3: a NAMED instance (`req-log`) whose `module:` says which
-    // built-in backs it, not a type key.
     assert_eq!(
         dig(&doc, &["export", "req-log", "module"]).and_then(|v| v.as_str()),
         Some("request-log-webhook"),
@@ -1400,7 +1281,7 @@ pools: {}
         .and_then(|v| v.as_u64()),
         Some(5),
     );
-    // prometheus exporter — likewise a NAMED instance (`metrics`).
+
     assert_eq!(
         dig(&doc, &["export", "metrics", "module"]).and_then(|v| v.as_str()),
         Some("prometheus"),
@@ -1413,8 +1294,7 @@ pools: {}
         dig(&doc, &["export", "metrics", "settings", "key_gauge_limit"]).and_then(|v| v.as_u64()),
         Some(1500),
     );
-    // 1.5.3: `otlp_url` folds into an `otlp` export instance and the `observability:` BLOCK IS
-    // DELETED outright — `export:` is the single telemetry-egress surface.
+
     assert_eq!(
         dig(&doc, &["export", "traces", "module"]).and_then(|v| v.as_str()),
         Some("otlp"),
@@ -1441,8 +1321,6 @@ pools: {}
         out.changes
     );
 
-    // The migrated document BOOT-PARSES as a 1.5.3 config, and resolves to the typed export block —
-    // a golden that would catch a rewrite that produces a shape the parser rejects.
     let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
     let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&migrated_yaml)
         .expect("the migrated config must boot-parse");
@@ -1452,7 +1330,6 @@ pools: {}
     assert_eq!(webhooks(&deploy.export), 1);
     assert!(export.recorder.is_some() && export.plugins.iter().any(|p| p.def.module == "otlp"));
 
-    // IDEMPOTENT: re-migrating the already-new document moves nothing more, and the TREE is stable.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);
     assert!(
         !out2
@@ -1467,10 +1344,6 @@ pools: {}
     assert_eq!(doc, doc2, "the migration is a fixed point after one run");
 }
 
-/// GOLDEN (a): a 1.5.0/1.5.2 config with an INLINE `global_hooks:` instance AND an inline pool-hook
-/// instance converges to the 1.5.3 shape — a top-level `hooks:` DEFINITION map, the reserved
-/// `pools.hooks:` all-pools attach, and BARE per-pool references — boot-parses, and re-running the
-/// migrator over the output is a NO-OP on the config tree (idempotent / golden-stable).
 #[test]
 fn migrate_1_5_x_inline_hooks_converge_and_are_idempotent() {
     crate::test_support::register_neutral_test_plane();
@@ -1487,7 +1360,7 @@ global_hooks:
   - { module: busbar-audit, settings: { url: "https://s/audit" }, kind: tap, at: completion }
 "#;
     let out1 = migrate_config(raw).expect("migrates");
-    // Boot-parses into the 1.5.3 DeployCfg and trips no legacy marker.
+
     let doc: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).expect("valid YAML");
     assert!(
         detect_legacy_markers(&doc).is_empty(),
@@ -1496,8 +1369,6 @@ global_hooks:
     let deploy: crate::config::DeployCfg =
         crate::config::deploy_from_yaml_str(&out1.yaml).expect("migrated config boot-parses");
 
-    // The named-definition map holds both lifted hooks; the pool keeps its strategy + a BARE ref; the
-    // global instance became the reserved all-pools attach.
     assert!(
         !deploy.hooks.is_empty(),
         "named hooks: definition map present"
@@ -1522,12 +1393,10 @@ global_hooks:
         deploy.hooks.contains_key(&deploy.pools.all_pool_hooks[0]),
         "the all-pools reference resolves to a named definition"
     );
-    // The lifted def's `at: completion` renamed onto `phase: [response]`.
+
     let audit = &deploy.hooks[&deploy.pools.all_pool_hooks[0]];
     assert_eq!(audit.phase, vec![crate::config::HookStage::Response]);
 
-    // IDEMPOTENT: re-migrating the output leaves the config tree byte-for-byte identical (the header
-    // comment block carries run-specific todos, so compare the parsed VALUE, not the raw text).
     let out2 = migrate_config(&out1.yaml).expect("re-migrates");
     let v1: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).unwrap();
     let v2: serde_yaml::Value = serde_yaml::from_str(&out2.yaml).unwrap();
@@ -1537,20 +1406,6 @@ global_hooks:
     );
 }
 
-// ── 1.5.3 GRAMMAR-LOCK migration GOLDENS ─────────────────────────────────────────────────────────
-//
-// One golden per retired key. Each asserts the same four things, because those four together are
-// what "a migration path" means for a break-once release:
-//   1. the retired key LOUD-FAILS the boot detector with the `--migrate-config` breadcrumb (an
-//      operator can never silently boot a config whose semantics moved);
-//   2. `--migrate-config` mechanically rewrites it into the 1.5.3 home (nothing is merely a TODO —
-//      every one of these is deterministic, so leaving it to a human would be a lost setting);
-//   3. the migrated document BOOT-PARSES and resolves (a rewrite that produces an unparseable shape
-//      is worse than no rewrite);
-//   4. re-running the migrator is a FIXED POINT — the tree is byte-identical (shape-convergent).
-
-/// Assert the boot detector names `needle` and points at the migrator, for a config the operator
-/// might really still have. Shared by the goldens below so each one states only what is specific.
 fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
     let doc: serde_yaml::Value = serde_yaml::from_str(raw).expect("valid YAML");
     let markers = detect_legacy_markers(&doc);
@@ -1565,8 +1420,6 @@ fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
     );
 }
 
-/// Migrate `raw`, assert the result BOOT-PARSES, and assert a second run is a fixed point.
-/// Returns the migrated document for the golden's own shape assertions.
 fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_yaml::Value) {
     let (out, doc) = migrate_to_value(raw);
     let yaml = serde_yaml::to_string(&doc).expect("serializable");
@@ -1580,11 +1433,6 @@ fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_ya
     (out, doc)
 }
 
-/// GOLDEN — `admin_insecure: true` -> `admin_require_mtls: false` (the flag INVERTED so the safe
-/// posture is the default).
-///
-/// `admin_require_mtls` did not exist before 1.5.3, and `admin_insecure` was a
-/// live field that parsed clean — so neither the loud-fail nor the rewrite existed.
 #[test]
 fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
     crate::test_support::register_neutral_test_plane();
@@ -1607,8 +1455,6 @@ fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
         out.changes
     );
 
-    // The other polarity: an explicit `false` (guard ON) becomes `true` (guard ON) — the BEHAVIOR is
-    // preserved across the inversion, which is the only thing an operator cares about.
     let (_, doc) = migrate_golden("admin_insecure: false\nproviders: {}\nmodels: {}\npools: {}\n");
     assert_eq!(
         dig(&doc, &["admin_require_mtls"]).and_then(|v| v.as_bool()),
@@ -1616,11 +1462,6 @@ fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
     );
 }
 
-/// GOLDEN — `auth.upstream_credentials:` -> the reserved `pools.upstream_credentials:` all-pools
-/// default (whose credential reaches the upstream is a ROUTING property, not an inbound-auth one).
-///
-/// `pools.upstream_credentials` did not exist before 1.5.3 and
-/// `auth.upstream_credentials` was a live field, so there was nothing to detect and nowhere to move.
 #[test]
 fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
     crate::test_support::register_neutral_test_plane();
@@ -1647,11 +1488,6 @@ fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
     );
 }
 
-/// GOLDEN — the `observability:` BLOCK is DELETED and its last field folds into a `module: otlp`
-/// `export:` instance, so `export:` is the single telemetry-egress surface.
-///
-/// There was no `otlp` export module before 1.5.3, so `otlp_url` had nowhere
-/// to go and the block could not be deleted without losing the trace sink.
 #[test]
 fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
     crate::test_support::register_neutral_test_plane();
@@ -1679,7 +1515,6 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
         out.changes
     );
 
-    // The 1.4.x spelling chains through the `otlp_endpoint -> otlp_url` rename in the SAME run.
     let (_, doc) = migrate_golden(
         "observability:\n  otlp_endpoint: \"http://otel:4318/v1/traces\"\n\
          providers: {}\nmodels: {}\npools: {}\n",
@@ -1690,11 +1525,6 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
     );
 }
 
-/// GOLDEN — the TYPE-KEYED `export:` block becomes the NAMED map (`<name>: { module, settings }`),
-/// which is what makes two instances of one module expressible at all.
-///
-/// The type-keyed shape was the live grammar before 1.5.3, so there was
-/// nothing to detect and no named map to converge on.
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
     crate::export::scrape::tests::installed_axis();
@@ -1715,9 +1545,7 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         dig(&doc, &["export", "req-log", "module"]).and_then(|v| v.as_str()),
         Some("request-log-webhook")
     );
-    // The retired `generic-webhook` exporter FOLDS into `request-log-webhook`: its only extra was
-    // `auth_header:` (now a setting there) and its other reason to exist — a SECOND target — is
-    // exactly what the named map provides. So the migrated config has TWO webhook instances.
+
     assert_eq!(
         dig(&doc, &["export", "req-log-audit", "module"]).and_then(|v| v.as_str()),
         Some("request-log-webhook")
@@ -1731,7 +1559,6 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         Some("Authorization")
     );
 
-    // And the migrated document really resolves to two independent webhook sinks.
     let deploy: crate::config::DeployCfg =
         crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
@@ -1742,21 +1569,10 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
     assert!(export.recorder.is_some());
 }
 
-/// GOLDEN — inline `auth.chain:`/`auth.admin_auth:` entries and the `auth.methods:` block all
-/// lift into ONE `identity-providers:` definition per module, referenced by bare name.
-///
-/// This is THE point of the redesign, and the assertion that proves it is the DEDUPE: `test-idp-double` appears in
-/// BOTH chains and in `methods:` in the source, and there is exactly ONE definition afterwards,
-/// carrying the union of what the three sites contributed. Under the retired grammar the operator
-/// wrote those settings three times and nothing stopped the copies from drifting.
-///
-/// `identity-providers:` did not exist before 1.5.3, so there was no map to
-/// converge onto and the inline form was the live grammar.
 #[test]
 fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     crate::test_support::register_neutral_test_plane();
-    // The operator credential's provider is the word the root hands in (this build's double; the
-    // root pins 1.5.5's bytes: `root::tests::legacy_table`).
+
     let op = crate::config::operator_provider();
     let raw = format!(
         "auth:\n\
@@ -1778,7 +1594,6 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
 
     let (out, doc) = migrate_golden(raw);
 
-    // Both chains are now lists of BARE NAMES.
     assert_eq!(
         dig(&doc, &["auth", "chain"])
             .and_then(|v| v.as_sequence().cloned())
@@ -1802,7 +1617,6 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         "the parallel methods map is gone"
     );
 
-    // THE DEDUPE: exactly ONE `test-idp-double` definition, carrying the union of all three source sites.
     let defs = dig(&doc, &["identity-providers"])
         .and_then(|v| v.as_mapping().cloned())
         .expect("identity-providers map");
@@ -1866,7 +1680,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         Some("busbar-web"),
         "browser_login is PER-PROVIDER in 1.5.3"
     );
-    // The operator credential rides onto its own definition, not the chain entry.
+
     assert_eq!(
         dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
         Some("BUSBAR_ADMIN_TOKEN")
@@ -1877,8 +1691,6 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         out.changes
     );
 
-    // And the migrated config RESOLVES: both chains point at the SAME definition, so their entries
-    // are identical by construction — the drift the retired grammar allowed is now impossible.
     let deploy: crate::config::DeployCfg =
         crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
@@ -1892,16 +1704,6 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     assert_eq!(auth.chain[1], auth.admin_auth[1]);
 }
 
-/// GOLDEN — a legacy TAP with no `at:` must migrate to an EXPLICIT `phase: [request]`.
-///
-/// Under the frozen 1.5.3 rule an omitted `phase:` means ALL FOUR core stages, but a 1.5.0/1.5.2 tap
-/// with no `at:` fired at the REQUEST stage ONLY (`resolve_tap_hooks_admits_only_request_stage_taps`).
-/// Migrating it without pinning the stage would silently take that tap from one firing per request to
-/// four — a behavior change smuggled in by a config migration. A migration must be
-/// semantics-preserving, so the old default is written out explicitly.
-///
-/// `hook_entry_to_def` only emitted `phase:` when `at:` was PRESENT, so a bare tap
-/// migrated with no `phase:` at all and silently widened to four stages.
 #[test]
 fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
     crate::test_support::register_neutral_test_plane();
@@ -1929,7 +1731,6 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
          not silently widen it to the four core stages"
     );
 
-    // A GATE has no stage default to preserve, so it is left alone (omitted `phase:` is correct).
     let raw_gate = "global_hooks:\n  - { module: busbar-phi, kind: gate }\n\
                     providers: {}\nmodels: {}\npools: {}\n";
     let (_, doc_gate) = migrate_golden(raw_gate);
@@ -1945,13 +1746,6 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
     );
 }
 
-/// A MIGRATION MUST NEVER SILENTLY DROP OPERATOR CONFIG. `root.remove()` takes the
-/// `auth:` key whatever its shape, so a MALFORMED block (`auth: null`, `auth: []`, a scalar — real
-/// hand-edited shapes) hit the `let … else` and returned, leaving the migrated document with NO
-/// `auth:` key and NO ledger entry at all. The block must survive VERBATIM and be named in the todos.
-///
-/// On the pre-fix tree the migrated document has no `auth:` key for any of these
-/// three shapes and `out.todos` never mentions `auth:`.
 #[test]
 fn migrate_never_drops_a_malformed_auth_block() {
     for (shape, raw_auth) in [
@@ -1984,12 +1778,6 @@ fn migrate_never_drops_a_malformed_auth_block() {
     }
 }
 
-/// The same rule for the OTHER map this pass takes: a malformed `identity-providers:` is put back
-/// verbatim (together with the `auth:` block already removed by then) and flagged, rather than being
-/// replaced by synthesized definitions.
-///
-/// Pre-fix, `identity-providers: 7` vanished from the output entirely (the `match`
-/// fell through to `Mapping::new()`), taking the operator's line with it.
 #[test]
 fn migrate_never_drops_a_malformed_identity_providers_block() {
     let raw =
@@ -2016,12 +1804,6 @@ fn migrate_never_drops_a_malformed_identity_providers_block() {
     );
 }
 
-/// The `observability:`/`metrics:` blocks ARE deleted in 1.5.3 (retired sections), so a
-/// malformed one legitimately disappears; what must not happen is it disappearing with NO record. The
-/// deletion is recorded in `changes` so an operator diffing the ledger sees it.
-///
-/// Pre-fix, `observability: null` / `metrics: null` were removed by `root.remove()`
-/// and the `let … else` returned — `out.changes` mentions neither.
 #[test]
 fn migrate_records_the_deletion_of_a_malformed_retired_block() {
     let raw = "observability:\nmetrics: []\nproviders: {}\nmodels: {}\npools: {}\n";
@@ -2047,14 +1829,6 @@ fn migrate_records_the_deletion_of_a_malformed_retired_block() {
     );
 }
 
-/// THE DEDUPE MUST NOT EAT A CHAIN'S SETTINGS. One module configured on BOTH auth
-/// chains with DIFFERENT settings (the data chain against one OIDC issuer, the admin chain against
-/// another) was deduped into ONE definition carrying only the FIRST chain's settings — so the
-/// migrated config authenticated admins against the wrong issuer. Two definitions is the honest
-/// outcome: `<module>-admin` carries the admin chain's settings and `auth.admin_auth` references it.
-///
-/// Pre-fix the migrated doc has ONE `test-idp-double` definition whose `settings.issuer` is
-/// `data.example.com`, `auth.admin_auth` is `[test-idp-double]`, and `admin.example.com` appears nowhere.
 #[test]
 fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     let raw = "auth:\n  \
@@ -2122,8 +1896,6 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
         out.todos
     );
 
-    // AND THE DEDUPE STILL WINS when there is nothing to lose: identical settings on both planes
-    // (and a plane that states none) still fold into exactly ONE definition.
     let same = "auth:\n  \
                   chain: [{ test-idp-double: { settings: { issuer: https://one.example.com } } }]\n  \
                   admin_auth: [{ test-idp-double: { settings: { issuer: https://one.example.com } } }, { tokens: {} }]\n\
@@ -2147,17 +1919,6 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     );
 }
 
-/// A 1.4.x `budget_period` the migrator cannot express EXACTLY must never collapse silently
-/// onto the ALL-TIME window.
-///
-/// `weekly` and `hourly` are both real 1.4.x periods (the tree's own admin tests name `weekly`), and
-/// the old `_ => "total"` catch-all mapped BOTH to `per: total` — `WINDOW_TOTAL => 0`, the window
-/// that NEVER ROLLS. That silently turned a recurring cap into a LIFETIME cap: once the group spends
-/// it, it is blocked forever, with nothing in `changes`/`todos` to say so. The goldens only ever
-/// exercised `monthly`/`daily`, which is why they stayed green.
-///
-/// So: `hourly` now maps EXACTLY (`hour`), `weekly` lands on the longest ROLLING window with a loud
-/// TODO naming both the period and the window, and NOTHING recurring reaches `total`.
 #[test]
 fn unmappable_budget_period_never_silently_becomes_the_all_time_window() {
     let raw = "\
@@ -2184,10 +1945,8 @@ pools: {}
             .to_string()
     };
 
-    // `hourly` has an EXACT 1.5.3 window; it must land there and stay silent.
     assert_eq!(per("hourly-team"), "hour", "hourly -> the `hour` window");
 
-    // `weekly` has NO 1.5.3 window. Whatever it maps to, it must still ROLL.
     let weekly = per("weekly-team");
     assert_ne!(
         weekly, "total",
@@ -2203,7 +1962,6 @@ pools: {}
         out.todos
     );
 
-    // An unrecognized word gets the same treatment, never a silent all-time collapse.
     let burst = per("burst-team");
     assert_ne!(
         burst, "total",
@@ -2217,7 +1975,6 @@ pools: {}
         out.todos
     );
 
-    // …while an EXPLICIT all-time cap still maps to `total`, silently: that one really is all-time.
     assert_eq!(per("forever-team"), "total");
     assert!(
         !out.todos.iter().any(|t| t.contains("forever-team")),
@@ -2226,19 +1983,6 @@ pools: {}
     );
 }
 
-/// An APPROXIMATED window may never loosen the operator's cap.
-///
-/// `weekly -> month` errs TIGHTER (a week's allowance has to last a month) — fail-closed, fine.
-/// `yearly -> month` errs LOOSER, and the migrator carried the AMOUNT over unchanged: the operator's
-/// `max_budget_cents: 1200000, budget_period: yearly` came out as `{ budget: 1200000, per: month }`
-/// — TWELVE TIMES the annual cap they wrote, in force from the first boot for anyone who does not
-/// act on the TODO. A migration is allowed to approximate; it is not allowed to hand out budget
-/// nobody authorised.
-///
-/// The choice made: RESCALE proportionally (a year is 12 months), preserving spend per unit time,
-/// rounding DOWN with a floor of 1 so the error can only ever go the fail-closed way and the output
-/// still satisfies the `amount > 0` rule in `config_validate::validate` (NOT `validate_groups`,
-/// which checks pool refs, parent existence and acyclicity only). The TODO says both numbers out loud.
 #[test]
 fn a_yearly_budget_period_is_rescaled_never_loosened_onto_the_month_window() {
     let raw = "\
@@ -2269,7 +2013,6 @@ pools: {}
             .unwrap_or(serde_yaml::Value::Null)
     };
 
-    // GOLDEN: the whole migrated limit, both members, for every yearly spelling.
     for group in ["annual-team", "annual-alias"] {
         assert_eq!(
             field(group, "per"),
@@ -2284,8 +2027,6 @@ pools: {}
         );
     }
 
-    // Rounding is DOWN (never up: up is the loosening direction) with a floor of 1, so the emitted
-    // config still satisfies the `amount > 0` rule in `config_validate::validate` (not `validate_groups`).
     assert_eq!(
         field("tiny-annual", "budget"),
         serde_yaml::Value::from(1u64),
@@ -2293,7 +2034,6 @@ pools: {}
          the migrated config refuse to boot"
     );
 
-    // A SHORTER period already errs tighter, so its amount is untouched.
     assert_eq!(
         field("weekly-team", "per"),
         serde_yaml::Value::from("month")
@@ -2304,7 +2044,6 @@ pools: {}
         "weekly -> month is already fail-CLOSED; rescaling it would loosen the cap"
     );
 
-    // LOUD: the todo names the period, the window, and the rescale.
     let todo = out
         .todos
         .iter()
@@ -2316,15 +2055,6 @@ pools: {}
     );
 }
 
-/// The rescale-never-loosen invariant must hold for EVERY longer-than-month period the migrator can
-/// name, not just `yearly`.
-///
-/// `quarterly` and `biannually` fell through the old year-only classifier onto the `divisor == 1`
-/// branch, which carried the amount UNCHANGED onto the `month` window — a `quarterly` cap then spent
-/// its whole allowance EVERY MONTH (3x the operator's cap), a `biannually` cap 6x, while the emitted
-/// TODO wrongly claimed "(tighter, never looser)". Both must now RESCALE (quarter -> /3, biannual
-/// -> /6, rounded DOWN, floor 1) so the migrated cap can never spend MORE per unit time than the
-/// original, and the TODO must name the divisor it applied.
 #[test]
 fn quarterly_and_biannual_budget_periods_are_rescaled_never_loosened_onto_the_month_window() {
     let raw = "\
@@ -2349,8 +2079,6 @@ pools: {}
             .unwrap_or(serde_yaml::Value::Null)
     };
 
-    // quarterly: lands on the month window with the amount DIVIDED BY 3 (900_000/quarter is
-    // 300_000/month, NOT 900_000/month — carrying it unchanged is a 3x cap the operator never wrote).
     assert_eq!(
         field("quarter-team", "per"),
         serde_yaml::Value::from("month")
@@ -2361,7 +2089,6 @@ pools: {}
         "900_000/quarter must become 300_000/month; carrying it unchanged loosens the cap 3x"
     );
 
-    // biannually / semiannual (twice-a-year = a 6-month period): DIVIDED BY 6.
     for group in ["biannual-team", "semiannual-team"] {
         assert_eq!(field(group, "per"), serde_yaml::Value::from("month"));
         assert_eq!(
@@ -2371,13 +2098,10 @@ pools: {}
         );
     }
 
-    // The invariant, stated as arithmetic: the migrated PER-MONTH cap must be <= the original cap's
-    // spend per month (original amount / months in the period), for each group.
     let per_month = |group: &str| field(group, "budget").as_u64().unwrap();
     assert!(per_month("quarter-team") <= 900000 / 3);
     assert!(per_month("biannual-team") <= 600000 / 6);
 
-    // LOUD: each todo names the period, the month window, and the divisor it applied.
     let todo_for = |needle: &str| {
         out.todos
             .iter()
@@ -2399,18 +2123,6 @@ pools: {}
     );
 }
 
-/// The migrator NEVER takes a key off the document and then discards the value because it was
-/// not the shape the migration expected.
-///
-/// Three sites did exactly that, with no `changes`, no `todos` and no warning: the top-level
-/// `hooks:` map, the top-level `global_hooks:` list, and the PER-POOL `hooks:` list. The reported
-/// failure is the third: an operator writes the scalar form `pools: { frontier: { hooks: baa-gate }
-/// }`, hits a loud 1.5.3 parse error, runs `busbar --migrate-config` — and the key is dropped on the
-/// floor. `busbar --validate` then PASSES, because an ABSENT `hooks:` is the legal default, so the
-/// pool ships with its rejecting compliance gate silently gone.
-///
-/// The contract asserted here (and enforced structurally by `Taken`): every malformed-shape key is
-/// still IN the migrated document, EXACTLY as written, and is named in `todos`.
 #[test]
 fn a_wrong_shaped_key_is_never_taken_and_discarded() {
     let raw = "\
@@ -2425,7 +2137,6 @@ pools:
 ";
     let (out, doc) = migrate_to_value(raw);
 
-    // THE reported case: the pool's compliance gate survives the migration.
     assert_eq!(
         dig(&doc, &["pools", "frontier", "hooks"]).and_then(|v| v.as_str()),
         Some("baa-gate"),
@@ -2434,7 +2145,7 @@ pools:
          Migrated document:\n{}",
         out.yaml
     );
-    // …and the other two take-then-discard sites.
+
     assert_eq!(
         dig(&doc, &["hooks"]).and_then(|v| v.as_str()),
         Some("some-hook-name"),
@@ -2448,7 +2159,6 @@ pools:
         out.yaml
     );
 
-    // Surviving silently is not enough — the operator has to be TOLD, per key.
     for key in ["pools.frontier.hooks", "hooks", "global_hooks"] {
         assert!(
             out.todos.iter().any(|t| t.starts_with(&format!("{key}:"))),
@@ -2492,7 +2202,6 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
              providers: {{}}\nmodels: {{}}\npools: {{}}\n"
         );
 
-        // (a) the loud fail-closed detector.
         let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
         let joined = detect_legacy_markers(&doc).join("\n");
         assert!(
@@ -2501,7 +2210,6 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
              got: {joined}"
         );
 
-        // (b) the mechanical rewrite.
         let (out, doc) = migrate_to_value(&raw);
         assert_eq!(
             dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
@@ -2509,8 +2217,7 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
             "`store.module: {old}` must be rewritten to the new alias; migrated:\n{}",
             out.yaml
         );
-        // The settings bag rides along untouched — the URL SCHEME is the upstream driver's, not a
-        // busbar-owned name, so the migrator must not touch it.
+
         assert_eq!(
             dig(&doc, &["store", "settings", "url"]).and_then(|v| v.as_str()),
             Some("kv://127.0.0.1:6379/0"),
@@ -2523,8 +2230,6 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
             out.changes
         );
 
-        // The migrated document must not itself trip the detector (the operator ran the migrator;
-        // running it again must not keep telling them to run it).
         assert!(
             detect_legacy_markers(&doc).is_empty(),
             "the migrated document still trips the 1.x detector: {:?}",
@@ -2532,7 +2237,6 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
         );
     }
 
-    // IDEMPOTENT: a config already on the new alias is untouched and un-flagged.
     let already =
         format!("store:\n  module: {renamed}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n");
     let (out, doc) = migrate_to_value(&already);
@@ -2545,7 +2249,7 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
         "a config already on the new alias must produce no store.module change; got {:?}",
         out.changes
     );
-    // …and an UNRELATED store module is not touched either.
+
     let other = "store:\n  module: acme-durable\nproviders: {}\nmodels: {}\npools: {}\n";
     let (_, doc) = migrate_to_value(other);
     assert_eq!(
@@ -2554,11 +2258,6 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
     );
 }
 
-/// See `a_wrong_shaped_key_is_never_taken_and_discarded`, for the 1.5.3 store rename: a `store:`
-/// block written in a shape the rename cannot read is LEFT EXACTLY AS WRITTEN, in place, and named
-/// in `todos` — never lifted out of the document and dropped. An absent `store:` is the legal
-/// `memory` default, so a silent drop here would turn a durable deployment ephemeral and still pass
-/// `--validate`: precisely the failure mode `Taken` exists to make structurally impossible.
 #[test]
 fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
     let raw = "store: acme-kv\nproviders: {}\nmodels: {}\npools: {}\n";
@@ -2576,19 +2275,8 @@ fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════════════════════
-// 1.5.3 — the EXPORT PROJECTION GRAMMAR migration (`streams:` made explicit).
-// ═══════════════════════════════════════════════════════════════════════════════════════════════
-
-/// Today's `export:` shape carries no `streams:`, so the projection it grants is IMPLIED by the
-/// module. The migrator makes it EXPLICIT, in the order the operator wrote the instances, and says
-/// so in the ledger — the grammar is taught by the migrated document rather than by a doc page.
-///
-/// GOLDEN, not a sed: the migrated document must boot-parse and resolve to the SAME projection the
-/// pre-migration document meant.
 #[test]
 fn migrate_export_adds_the_explicit_streams_projection() {
-    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
     crate::export::scrape::tests::installed_axis();
     let raw = "\
 export:
@@ -2631,7 +2319,7 @@ export:
             out.changes
         );
     }
-    // Instance ORDER is preserved (delivery order is deterministic and operator-visible).
+
     let names: Vec<String> = dig(&doc, &["export"])
         .unwrap()
         .as_mapping()
@@ -2641,9 +2329,6 @@ export:
         .collect();
     assert_eq!(names, vec!["metrics", "req-log", "tail", "traces"]);
 
-    // GOLDEN: the migrated `export:` block PARSES under the 1.5.3 grammar and resolves — with NO
-    // validation errors — to the projection the pre-migration document already meant. A rewrite that
-    // wrote a projection the validator rejects would fail right here.
     let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
     let defs: crate::config::ExportDefs =
         serde_yaml::from_value(dig(&doc, &["export"]).unwrap().clone())
@@ -2651,12 +2336,10 @@ export:
     let mut errs = Vec::new();
     let export = crate::config::resolve_export(&built_ins(&defs), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    // The webhook instance's projection is the sink's own to resolve (it is an export-axis module);
-    // what the migration writes for it is `logs`, the stream it carries.
+
     assert_eq!(webhooks(&defs), 1);
     let _ = export;
 
-    // IDEMPOTENT: a second run writes nothing more.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);
     assert!(
         !out2.changes.iter().any(|c| c.contains("streams")),
@@ -2669,9 +2352,6 @@ export:
     );
 }
 
-/// A MALFORMED instance is LEFT EXACTLY AS WRITTEN with a TODO naming it — the `Taken<T>` discipline
-/// (`take_mapping` is take-on-match). Silently dropping or "fixing" an operator's export instance is
-/// the bug class that machinery exists to kill.
 #[test]
 fn migrate_export_leaves_a_malformed_instance_alone_with_a_todo() {
     let raw = "export:\n  broken: null\n  ok:\n    module: request-log-file\n    settings:\n      path: /tmp/x.jsonl\n";
@@ -2685,12 +2365,10 @@ fn migrate_export_leaves_a_malformed_instance_alone_with_a_todo() {
         "a malformed instance must be flagged; got {:?}",
         out.todos
     );
-    // Its healthy sibling is still migrated.
+
     assert!(dig(&doc, &["export", "ok", "streams"]).is_some());
 }
 
-/// An instance whose `module:` this build does not know cannot have its projection inferred. The
-/// migrator must NOT guess — it flags it and leaves the instance alone.
 #[test]
 fn migrate_export_flags_an_unknown_module_rather_than_guessing() {
     let raw = "export:\n  siem:\n    module: some-third-party-sink\n    settings: {}\n";
@@ -2705,9 +2383,6 @@ fn migrate_export_flags_an_unknown_module_rather_than_guessing() {
     );
 }
 
-/// `audit` was REMOVED as a stream. A hand-written `streams: [audit]` is NOT silently rewritten (a
-/// projection is a security-relevant declaration — the operator decides what replaces it); it is
-/// left as written with a TODO that names the replacement shape.
 #[test]
 fn migrate_export_flags_the_retired_audit_stream() {
     let raw = "export:\n  soc2:\n    module: request-log-webhook\n    streams: [logs, audit]\n    settings:\n      url: https://siem.example.com/l\n";
@@ -2727,11 +2402,6 @@ fn migrate_export_flags_the_retired_audit_stream() {
     );
 }
 
-// ══ 1.6.0 POOLS-UNDER-THEIR-VERB MIGRATOR ══════════════════════════════════════════════════════════
-
-/// The unreleased 1.6.0-dev `tool_pools:`/`agent_pools:` sections MOVE under their section's reserved
-/// `pools` sub-key, verbatim (they already carry the uniform `members:`/`repeatable:` grammar), and the
-/// old section keys disappear. The top-level `pools:` is the model plane's alone.
 #[test]
 fn migrate_moves_tool_and_agent_pools_under_their_verb() {
     let tools = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
@@ -2780,8 +2450,6 @@ fn migrate_moves_tool_and_agent_pools_under_their_verb() {
     );
 }
 
-/// RED ARM: a top-level `pools:` entry whose members name no `models:` entry is another plane's,
-/// and the migrator reports it for the operator to move rather than leaving it silently in place.
 #[test]
 fn migrate_reports_a_top_level_pool_of_another_plane() {
     let raw = "providers: {}\nmodels: {}\npools:\n  search:\n    members: [search-eu, search-us]\n";
@@ -2795,10 +2463,6 @@ fn migrate_reports_a_top_level_pool_of_another_plane() {
     );
 }
 
-/// Rich pool members (`{ model, weight, ... }`) are the 1.5.5 grammar AND the 1.6.0 grammar, so
-/// the migrator leaves them exactly as written: no bare-name rewrite, no lifted `weights:` map, no
-/// change line, no todo. This pins the byte-for-byte agreement with what the 1.5.5 binary emitted
-/// for the same input.
 #[test]
 fn migrate_leaves_rich_pool_members_untouched() {
     let raw = "providers: {}\nmodels: {}\npools:\n  model1:\n    members:\n\
@@ -2843,9 +2507,6 @@ fn migrate_leaves_rich_pool_members_untouched() {
     );
 }
 
-/// 1.6.0: an ALREADY-named-shape `hooks:` map (every entry names `module:`) that still carries the
-/// retired single-stage `at:` key is rewritten to `phase:` by `migrate_hook_def_keys` — the pass that
-/// catches a config `migrate_hooks_block` passes through untouched because it is already new-shaped.
 #[test]
 fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
     crate::test_support::register_neutral_test_plane();
@@ -2867,26 +2528,6 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
     );
 }
 
-// END-TO-END, 1.6.0: a COMPLETE 1.5.x-shaped config that uses EVERY deprecated spelling at once —
-// a hook written with the retired `plugin:` key AND the retired single-stage `at:` key, a model pool
-// with rich weighted members (still the 1.6.0 grammar, carried through unchanged), and the
-// unreleased `tool_pools:`/`agent_pools:` sections — runs through `busbar --migrate-config` and the
-// output (a) parses into the 1.6.0 `DeployCfg`, (b) `config::resolve` + `config_validate::validate`
-// clean, and (c) contains NONE of the deprecated spellings. This migrate→validate round-trip on a
-// full config is the only thing that proves the migrator is comprehensive: a code read of what it
-// "thinks" it handles is not enough.
-//
-// MOVED to `crates/busbar/tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
-// fixture's `tools:`/`agents:` blocks need the REAL `busbar_mcp` and agent-engine planes registered to
-// resolve past `resolve`'s "compiled without the plane that owns it" refusal — a neutral fake plane
-// cannot stand in, since the assertions below read `cfg.tool_pools`/`cfg.agent_pools`, which only
-// exist once the real MCP/A2A failover planes actually claimed those sections. That only
-// type-checks with ONE `busbar_kernel` in the graph, which is exactly what an integration-test
-// target gives. See that file's header.
-
-/// 1.6.0 verify-on-call: the per-server `refresh_ttl:` under `tools:` is renamed to `verify_ttl:`, the value is
-/// carried over, and a loud WARNING names the server and the semantics change (a former sweep cadence
-/// is now a drift-serving window on the call path).
 #[test]
 fn migrate_renames_a_tool_server_refresh_ttl_to_verify_ttl_with_a_warning() {
     let raw = r#"
@@ -2913,7 +2554,6 @@ tools:
         v
     };
 
-    // The old key is GONE and the new one carries the value verbatim.
     assert!(
         get(&["tools", "servers", "fs", "refresh_ttl"]).is_null(),
         "the old `refresh_ttl` key must be removed: {}",
@@ -2925,10 +2565,9 @@ tools:
         "the value is carried over onto `verify_ttl`: {}",
         out.yaml
     );
-    // A server that never set it is untouched.
+
     assert!(get(&["tools", "servers", "docs", "verify_ttl"]).is_null());
 
-    // The semantics change is surfaced LOUDLY, naming the server.
     assert!(
         out.warnings.iter().any(|w| {
             w.contains("tools.servers.fs.refresh_ttl -> verify_ttl") && w.contains("MAX staleness")
@@ -2938,10 +2577,6 @@ tools:
     );
 }
 
-/// The 1.6.0 FLAT `tools:` shape (`tools.<id>`, no `servers:` level) gets the same rename: the
-/// trust doc promises `--migrate-config` carries an MCP `refresh_ttl:` over to `verify_ttl:` with a
-/// loud warning, whichever shape the entry is written in.
-/// RED: a flat entry's `refresh_ttl` is left in place and nothing warns.
 #[test]
 fn migrate_renames_a_flat_tools_entry_refresh_ttl() {
     let raw = r#"
@@ -2980,11 +2615,6 @@ tools:
     );
 }
 
-/// MIGRATION NEVER INVENTS `api_key: none`. Whether an upstream takes a credential is a fact about
-/// the deployment, not something readable off the config file: guessing `none` for a provider with
-/// no `api_key_env` to convert would silently disarm a provider that does need one — the same quiet
-/// failure the boot degrade used to cause, moved into the migrator. The migration converts an
-/// `api_key_env` it can SEE and otherwise leaves the field absent, so the operator has to decide.
 #[test]
 fn migrate_never_invents_a_keyless_api_key() {
     let raw = "providers:\n  vendor-a: { api_key_env: VENDOR_A_KEY }\n  local: { base_url: 'http://127.0.0.1:11434' }\n";
@@ -3000,15 +2630,12 @@ fn migrate_never_invents_a_keyless_api_key() {
     );
 }
 
-/// The `request-log-webhook` instances of a migrated `export:` block — an export-axis module (the
-/// `busbar-export-webhook` plugin), which this test binary has no axis for.
 fn webhooks(defs: &crate::config::ExportDefs) -> usize {
     defs.values()
         .filter(|d| d.module.trim() == "request-log-webhook")
         .count()
 }
 
-/// `defs` without its `request-log-webhook` instances — what this test binary can resolve.
 fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
     defs.iter()
         .filter(|(_, d)| d.module.trim() != "request-log-webhook")
@@ -3016,10 +2643,6 @@ fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
         .collect()
 }
 
-/// The terraform-provider-busbar acceptance boot config (a 1.5.2-shaped config: the retired
-/// `admin_insecure:` waiver plus an INLINE `auth.admin_auth` operator-credential entry). Boot refuses
-/// it with the `--migrate-config` breadcrumb, exactly as 1.5.5 did; the migrator must then turn it
-/// into a config that boot-parses, keeps the admin waiver, and keeps the operator credential.
 #[test]
 fn golden_migrate_terraform_acceptance_admin_insecure_inline_admin_auth() {
     crate::test_support::register_neutral_test_plane();
@@ -3060,8 +2683,6 @@ auth:
     );
 }
 
-/// A chain that already names `keys` (no `tokens` rewrite) with no `auth.signing_key` still needs
-/// one to `--validate`: the migrator must say so in the header, never leave it silent.
 #[test]
 fn a_keys_chain_without_a_signing_key_gets_the_signing_key_todo() {
     let raw = "listen: 0.0.0.0:8080\nauth:\n  chain: [keys]\n";
@@ -3081,7 +2702,6 @@ fn a_keys_chain_without_a_signing_key_gets_the_signing_key_todo() {
         out.yaml
     );
 
-    // With a signing key present there is nothing to say.
     let with = "listen: 0.0.0.0:8080\nauth:\n  chain: [keys]\n  signing_key: { env: K }\n";
     let out = migrate_config(with).expect("migrates");
     assert!(

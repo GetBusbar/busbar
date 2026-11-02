@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! PLANE RECORDS as store v3 slots (B.1 "Slots": "plane records"): the neutral kind-tagged verbs
-//! of `records.rs:1481-1597`. The sidecar `{kind, id, parent, seq, ts, disposition}` is fixed; the
-//! body is opaque octets the store keeps verbatim and never decodes. Reads on the request path
-//! write into HOST buffers under the short-buffer answer (M-SB, stated on the mechanism's `OutHead`).
 
 use super::money::OpId;
 use super::{HostBlobs, HostBuf};
@@ -12,7 +9,7 @@ use crate::abi::mechanism::call::{AbiStr, Blob, InHead};
 use crate::abi::mechanism::decl::abi_struct;
 
 /// [`PlaneRecordRow::disposition`]: the record may still change (`PlaneDisposition::Active`).
-/// `0`, so an unwritten disposition is kept by a terminal-only purge, never dropped.
+
 pub const DISPOSITION_ACTIVE: u32 = 0;
 /// [`PlaneRecordRow::disposition`]: the record is final (`PlaneDisposition::Terminal`).
 pub const DISPOSITION_TERMINAL: u32 = 1;
@@ -20,23 +17,18 @@ pub const DISPOSITION_TERMINAL: u32 = 1;
 /// [`ListPlaneRecordsIn::selector`]: every record of the kind (`PlaneSelector::All`).
 pub const SELECT_ALL: u32 = 0;
 /// [`ListPlaneRecordsIn::selector`]: one parent's records, oldest first by `seq`
-/// (`PlaneSelector::Parent`).
+
 pub const SELECT_PARENT: u32 = 1;
 
 /// [`KindBeforeIn::retention`]: every row of the kind older than `before` goes (`Retention::Age`).
-/// `0`, so an `in` that ends before the field (an older host's) purges by age, as that host did.
+
 pub const RETENTION_AGE: u32 = 0;
 /// [`KindBeforeIn::retention`]: only the kind's `DISPOSITION_TERMINAL` rows older than `before`
-/// go (`Retention::TerminalOnly`); an active row is kept however old.
+
 pub const RETENTION_TERMINAL_ONLY: u32 = 1;
 
 /// [`KindBeforeIn::retention`]: THE USAGE LEDGER'S PURGE (open160 ST6; no slot of its own, so the
-/// table's layout does not move). `kind` is empty; every usage window (the `(bucket,
-/// window_start)` cells `get_usage`, `put_usage` and `add_usage_batch` keep) whose `window_start`
-/// is NONZERO and earlier than `before` goes, and the answer counts the windows removed. The
-/// all-time window `0` is never purged. The kernel drives it past its own 31-day window horizon:
-/// nothing reads a durable window older than that. A store built before this code refuses it, as
-/// any unknown code.
+
 pub const RETENTION_USAGE_WINDOWS: u32 = 2;
 
 abi_struct! {

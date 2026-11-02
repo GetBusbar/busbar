@@ -48,35 +48,20 @@ pub const SECRET_MODULE_ENV: &str = "env";
 /// The built-in `file` secret module name (settings: `{ path: <FILE> }`).
 pub const SECRET_MODULE_FILE: &str = "file";
 /// The DECLARED-KEYLESS module name: `api_key: none` (a plain scalar — the only spelling) says
-/// "this upstream takes NO credential".
-///
-/// It exists because a secret reference that fails to resolve now REFUSES BOOT instead of degrading
-/// to an empty credential, and a keyless upstream (one that legitimately requires no credential at
-/// all) needs a way to say so on purpose rather than by pointing at a variable it knows is unset. It
-/// names no source and carries
-/// no settings, so it resolves to NOTHING: a resolver asked for its bytes is a hard error, and only
-/// a call site that genuinely permits an absent credential may accept it.
+
 pub const SECRET_MODULE_NONE: &str = "none";
 /// The `env` module's settings key naming the environment variable.
 pub const SECRET_ENV_SETTING_KEY: &str = "key";
 /// The `file` module's settings key naming the file path.
 pub const SECRET_FILE_SETTING_PATH: &str = "path";
 /// The TEMPLATE reference's module name: a credential value `${VAR}` filled only in part
-/// (`"Bearer ${TOKEN}"`). Its settings' `text` is the value as written, each `${VAR}` an `env`
-/// reference the host resolves where it reads the value ([`SecretRef::resolve_template`]); the
-/// text itself holds no secret byte. It names no secret module: only a host reader that resolves
-/// templates accepts it, and every other resolver refuses it as an unknown module (fail-closed).
-/// Not the bare word `template`: the config grammar already spells that word (a prompt's
-/// `template`), and a module name is one no other config word shares.
+
 pub const SECRET_MODULE_TEMPLATE: &str = "env-template";
 /// The template module's settings key holding the value as written.
 pub const SECRET_TEMPLATE_SETTING_TEXT: &str = "text";
 
 /// "At least one non-whitespace character", as [`oneof_schema`] states the non-empty rule. The
-/// visitor's own check is `value.trim().is_empty()`, and `minLength: 1` is NOT that: a string of
-/// three spaces has length three, so the schema accepted `{ env: "   " }` while the engine refused
-/// it — a form that validates in busbar-ui and then fails at boot. This pattern says what the
-/// deserializer means.
+
 const NON_BLANK: &str = r"\S";
 
 /// A reference to a secret, resolved through a secret MODULE. See the module docs for the accepted
@@ -88,13 +73,6 @@ pub struct SecretRef {
     /// plugin's name/alias).
     pub module: String,
     /// The module's own settings (opaque to busbar; the built-ins read `key` / `path`).
-    // settings-leak-lint: allow — DECLARATION, not a projection. This bag is the REFERENCE itself
-    // — which environment variable, which path, which plugin-module key names the secret — and
-    // holding it is the entire reason this type exists: a config that carried the credential
-    // inline would not need a `SecretRef` at all. The resolved bytes never land here. The one
-    // admin read that serializes a tree containing one, `GET /config/settings`, runs
-    // `admin::v1::service::redact_settings_bags` structurally over the whole body, which rewrites
-    // every `settings` member at any depth — this one included — into `settings_keys`.
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -126,7 +104,7 @@ impl SecretRef {
     }
 
     /// A TEMPLATE reference over `text`, a value as written whose every `${VAR}` names an
-    /// environment variable ([`SECRET_MODULE_TEMPLATE`]).
+
     pub fn template(text: impl Into<String>) -> Self {
         let mut settings = serde_json::Map::new();
         settings.insert(
@@ -151,13 +129,7 @@ impl SecretRef {
     }
 
     /// THE VALUE THIS REFERENCE NAMES, resolved through `resolve`: a template's text with each
-    /// `${VAR}` replaced by what `resolve` answers for `{ env: VAR }`, any other reference handed to
-    /// `resolve` whole. `${VAR}` is read as the config interpolation reads it (every byte up to the
-    /// first `}`); a `$` that opens no `${VAR}` is kept as written.
-    ///
-    /// # Errors
-    ///
-    /// `resolve`'s error for the first reference that does not resolve, or a template with no text.
+
     pub fn resolve_template(
         &self,
         resolve: &dyn Fn(&SecretRef) -> Result<String, String>,
@@ -189,7 +161,7 @@ impl SecretRef {
     }
 
     /// The `none` reference: an EXPLICIT declaration that there is no credential. See
-    /// [`SECRET_MODULE_NONE`].
+
     pub fn none() -> Self {
         Self {
             module: SECRET_MODULE_NONE.to_string(),
@@ -225,7 +197,7 @@ impl SecretRef {
     }
 
     /// A short display form for error messages: `none`, `env:VAR`, `file:/path`, or
-    /// `module '<name>'`.
+
     pub fn describe(&self) -> String {
         if self.is_none() {
             SECRET_MODULE_NONE.to_string()
@@ -240,9 +212,7 @@ impl SecretRef {
 }
 
 /// THE REFUSAL OF A SECRET WRITTEN INLINE, the one sentence every secret field answers a literal
-/// with: a core secret field (this type's `Deserialize`) and a plugin's declared secret setting
-/// (the kernel's settings resolution) alike. Names the accepted shapes and NEVER echoes what it was
-/// handed: the value it was handed is the secret.
+
 pub const INLINE_LITERAL_REFUSAL: &str = "a secret value must be a REFERENCE, never an inline \
      literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, \
      { module: <secret-module>, settings: {…} }, or the bare scalar `none` to declare an upstream \
@@ -257,7 +227,7 @@ impl<'de> Deserialize<'de> for SecretRef {
 
         impl RefVisitor {
             /// The one refusal message every inline-scalar spelling shares. Names the accepted
-            /// shapes and NEVER echoes what it was handed — the value it was handed is the secret.
+
             fn inline_literal<E: de::Error>() -> E {
                 E::custom(INLINE_LITERAL_REFUSAL)
             }
@@ -273,16 +243,6 @@ impl<'de> Deserialize<'de> for SecretRef {
                 )
             }
 
-            // A bare scalar here is almost always a LITERAL SECRET pasted inline (the exact
-            // mistake this type exists to prevent). Reject it with a message that NEVER echoes
-            // the value — serde's default invalid-type error would print the value verbatim
-            // into boot logs.
-            //
-            // The ONE exception is the reserved word `none`: the explicit "this upstream takes no
-            // credential" declaration (see [`SECRET_MODULE_NONE`]). It is a SCALAR and only a
-            // scalar — it names no source, so a `{ none: … }` map form would invite settings that
-            // mean nothing. A real secret that happened to be the literal string `none` would fail
-            // CLOSED here (no credential presented), never leak.
             fn visit_str<E>(self, v: &str) -> Result<SecretRef, E>
             where
                 E: de::Error,
@@ -293,12 +253,6 @@ impl<'de> Deserialize<'de> for SecretRef {
                 Err(Self::inline_literal())
             }
 
-            // Every OTHER scalar form, for the same reason and with the same non-echoing message.
-            // A secret is not always quoted: `api_key: 483920175534` and `api_key: true` are
-            // perfectly ordinary YAML, and each one landed on serde's default `invalid type`
-            // error — which prints the value it received. The one path this type exists to keep a
-            // secret off (the boot log) is exactly where it went, and unquoted is the spelling
-            // nobody thinks to check.
             fn visit_u64<E>(self, _v: u64) -> Result<SecretRef, E>
             where
                 E: de::Error,
@@ -348,11 +302,7 @@ impl<'de> Deserialize<'de> for SecretRef {
                             if module.is_some() {
                                 return Err(de::Error::duplicate_field("module"));
                             }
-                            // Read as an untyped value and check the shape ourselves: a typed
-                            // `next_value::<String>()` on a mismatched scalar makes serde echo the
-                            // scalar verbatim into the boot log, and this deserializer NEVER echoes
-                            // what it was handed. A non-string `module:` names no module — refuse
-                            // without printing the value.
+
                             match map.next_value::<serde_json::Value>()? {
                                 serde_json::Value::String(s) => module = Some(s),
                                 _ => {
@@ -367,9 +317,7 @@ impl<'de> Deserialize<'de> for SecretRef {
                             if settings.is_some() {
                                 return Err(de::Error::duplicate_field("settings"));
                             }
-                            // Untyped-then-shape-check: `settings:` given as a scalar is a pasted
-                            // credential in the wrong slot; a typed `next_value::<Map>()` would echo
-                            // it. Refuse with the shared non-echoing message.
+
                             match map.next_value::<serde_json::Value>()? {
                                 serde_json::Value::Object(m) => settings = Some(m),
                                 _ => return Err(RefVisitor::inline_literal()),
@@ -381,8 +329,7 @@ impl<'de> Deserialize<'de> for SecretRef {
                                     "a secret reference takes exactly one of `env:` / `file:`",
                                 ));
                             }
-                            // Untyped-then-shape-check: a non-string `env:` (e.g. an unquoted YAML
-                            // number/bool, or a nested map holding a literal) must not be echoed.
+
                             match map.next_value::<serde_json::Value>()? {
                                 serde_json::Value::String(s) => {
                                     sugar = Some((SECRET_MODULE_ENV, s))
@@ -458,22 +405,7 @@ impl<'de> Deserialize<'de> for SecretRef {
 }
 
 /// Derive the `x-busbar-secret` field's `oneOf` JSON Schema (2020-12) fragment DIRECTLY from
-/// [`SecretRef`]'s own accepted shapes — the canonical `{ module, settings }` form plus the `{ env }`
-/// / `{ file }` sugar. This is the schema busbar-ui composes a secret reference against — never a
-/// bare string.
-///
-/// This fragment is WRITTEN OUT here rather than mechanically generated from the `Deserialize` impl
-/// — serde exposes no schema to generate one from — so "it cannot drift" is not something the code
-/// makes true on its own. What pins it is the round-trip test in this module's own suite: one table
-/// of shapes, each fed to BOTH the validator built from this fragment and `SecretRef::deserialize`,
-/// with the two verdicts asserted equal. Change either side alone and that test says so. It was
-/// added because the two HAD drifted: `minLength: 1` accepted a whitespace-only `{ env: "   " }`
-/// that the visitor's `trim().is_empty()` check refuses.
-///
-/// `{ "literal": <value> }` is excluded, and needs no special-casing to be: `literal` was never one
-/// of `SecretRef`'s accepted shapes in the first place (it is handled one layer above `SecretRef`
-/// parsing, inside busbar's `resolve_settings()`, as an escape hatch for a plugin whose own config
-/// happens to collide with a reference shape).
+
 pub fn oneof_schema() -> serde_json::Value {
     serde_json::json!({
         "oneOf": [
@@ -506,10 +438,8 @@ pub fn oneof_schema() -> serde_json::Value {
     })
 }
 
-// ── THE DECLARED SUGARS ────────────────────────────────────────────────────────────────────────
-
 /// The reference keys that are core secret-reference grammar, which no plugin may declare as its
-/// sugar: the canonical form's two keys, the keyless declaration and the settings escape hatch.
+
 const CORE_WORDS: [&str; 4] = ["module", "settings", SECRET_MODULE_NONE, "literal"];
 
 /// ONE DECLARED SUGAR, as a secret plugin's Statement states it (its `REWRITE_SUGAR*` rewrites):
@@ -542,15 +472,7 @@ pub struct Sugars {
 
 impl Sugars {
     /// Declare every sugar `plugin`'s Statement rewrites state (`(class, from, to)`, as a Statement
-    /// rendering reads back): each `REWRITE_SUGAR` a sugar, each `REWRITE_SUGAR_SHOWN`,
-    /// `REWRITE_SUGAR_NAMES` and `REWRITE_SUGAR_ROLE` a fact about one of them. Every other class is
-    /// not a sugar's and is passed over.
-    ///
-    /// # Errors
-    ///
-    /// A word another plugin already declares, a word that is core grammar, a sugar with no
-    /// settings key, a fact about a word this Statement does not declare, an unknown role, or a role
-    /// another plugin already claims. Each refusal names the word and both plugins.
+
     pub fn declare(
         &mut self,
         plugin: &str,
@@ -662,9 +584,7 @@ impl Sugars {
     }
 
     /// The sugar the core grammar's `role` names ([`SUGAR_ROLE_FILL`], [`SUGAR_ROLE_PATH`]).
-    ///
-    /// [`SUGAR_ROLE_FILL`]: crate::abi::mechanism::door::SUGAR_ROLE_FILL
-    /// [`SUGAR_ROLE_PATH`]: crate::abi::mechanism::door::SUGAR_ROLE_PATH
+
     pub fn with_role(&self, role: &str) -> Option<&Sugar> {
         self.roles
             .iter()

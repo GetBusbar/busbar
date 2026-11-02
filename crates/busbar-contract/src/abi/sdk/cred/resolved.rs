@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A SECRET PLUGIN'S ANSWER goes directly into host-owned secret memory: the resolved value goes
-//! straight into the HOST'S zeroed buffer (`ResolveIn::secret_buf`) and the plugin's own copy is
-//! wiped as the answer is made. No lease, no copy left on the plugin's side, and no getter on the
-//! way: the value reaches the SDK in a [`Held`] and leaves it only into host memory.
 
 use zeroize::Zeroize;
 
@@ -21,11 +18,7 @@ pub const EMPTY_VALUE: &str =
     "the secret resolved to an EMPTY value; a secret must be non-empty (fail-closed)";
 
 /// Answer `resolve` with `value`: written into the host's buffer (READY), or, when it does not fit,
-/// the short-buffer answer naming its full length (FAILED, `needed`; the host re-calls once with a
-/// buffer that size and the plugin resolves again). An empty value is FAILED, `ERROR_KIND_INVALID`
-/// ([`EMPTY_VALUE`]): the host refuses a READY answer that names no material; so is a value over
-/// [`MAX_SECRET_BYTES`], which no host buffer is lent for. `value` is wiped
-/// before this returns, either way.
+
 pub fn resolved<V: Zeroize + AsRef<[u8]>>(
     input: Lent<'_, ResolveIn>,
     out: &mut Out<'_, ResolveOut>,

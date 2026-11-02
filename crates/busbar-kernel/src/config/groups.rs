@@ -36,22 +36,13 @@
 
 use std::collections::BTreeMap;
 
-// Re-exported so `use super::*;` in this module's tests (which construct a `ScopeRef` directly,
-// matching what the pre-move `groups.rs` imported for the same purpose) keeps resolving.
 pub use busbar_contract::records::ScopeRef;
 
-/// Validate the whole `groups:` tree: parents exist, acyclic, and every `pool:`
-/// qualifier on a limit (own `limits` and `child_default.limits` alike) names a pool that exists.
-/// `pool_exists` abstracts the pool namespace so boot (`cfg.pools`), `--validate`, and the live
-/// config-apply path share this verbatim and cannot drift. Returns paste-ready errors in the
-/// config_validate style.
 pub fn validate_groups(
     groups: &std::collections::BTreeMap<String, GroupCfg>,
     pool_exists: &dyn Fn(&str) -> bool,
     errors: &mut Vec<String>,
 ) {
-    // Metrics of one logical bucket intentionally merge, but distinct component tuples must
-    // never share the persisted string used by governance and the Store.
     let mut identities: BTreeMap<String, (&str, &str, Option<&ScopeRef>)> = BTreeMap::new();
     for (name, group) in groups {
         for limit in &group.limits {
@@ -73,19 +64,13 @@ pub fn validate_groups(
                 identities.insert(id, components);
             }
         }
-        // A pool-qualified limit against a pool that doesn't exist would silently never match any
-        // traffic (an unenforced budget) - reject it at the door instead.
+
         let own = group.limits.iter().map(|l| (l, "limits"));
         let tmpl = group
             .child_default
             .iter()
             .flat_map(|cd| cd.limits.iter().map(|l| (l, "child_default.limits")));
         for (limit, field) in own.chain(tmpl) {
-            // Every `scope`/`downgrade_to` reaching here is `kind: "pool"` (the only registered
-            // kind, and the deserializer only ever produces `ScopeRef::pool`); validate its
-            // `.value` against the pool namespace, per the generalized discipline ("validated
-            // against the config's registered universe for that scope's kind" — for `pool` that
-            // universe is still `pools:`, unchanged).
             if let Some(scope) = &limit.scope {
                 let pool = &scope.value;
                 if !pool_exists(pool) {
@@ -116,8 +101,7 @@ pub fn validate_groups(
                 continue;
             }
         }
-        // Walk the parent chain from this node: a repeat visit is a cycle. The visited-path check
-        // is what makes the walk terminate; the path can never exceed the number of groups.
+
         let mut cursor = group.parent.as_deref();
         let mut path = vec![name.as_str()];
         while let Some(cur) = cursor {
@@ -135,15 +119,6 @@ pub fn validate_groups(
     }
 }
 
-/// Resolve the `child_default` template for a new child provisioned under `parent`, NEAREST-ANCESTOR
-/// WINS: walk up the chain from `parent` and return the first group that sets a `child_default`.
-/// `None` means no ancestor sets one -> the new child is inherit-only (no limits of its own, capped
-/// solely by the parent chain). An unknown `parent` yields `None`.
-///
-/// Config reaching here is validated ACYCLIC, so the walk terminates on its own; the `groups.len()`
-/// bound is a principled backstop (a distinct-node walk cannot exceed the number of groups without
-/// revisiting one, i.e. a cycle) — deliberately NOT the arbitrary depth policy constant.
-// Wired by the self-mint auto-provisioning path that binds a freshly issued key to a new leaf group.
 pub fn resolve_child_default<'a>(
     groups: &'a BTreeMap<String, GroupCfg>,
     parent: &str,
@@ -160,13 +135,6 @@ pub fn resolve_child_default<'a>(
     None
 }
 
-/// Build the leaf group to auto-provision as a child under `parent` (e.g. a `user:<sub>` leaf on first
-/// self-mint): `parent` set, enabled, and limits copied from the nearest-ancestor `child_default`
-/// (inherit-only -> empty limits when no ancestor sets one). The caller persists it via the overlay
-/// (`overlay::persist_groups`) and binds the new key to it; the enforcement chain then caps the leaf by
-/// `leaf ∩ parent ∩ ...`. Pure: does not mutate `groups`. `child_default` on the leaf itself is left
-/// unset (a per-user leaf is not itself a template source).
-// Wired by the self-mint auto-provisioning path that binds a freshly issued key to a new leaf group.
 pub fn provision_child(groups: &BTreeMap<String, GroupCfg>, parent: &str) -> GroupCfg {
     let limits = resolve_child_default(groups, parent)
         .map(|cd| cd.limits.clone())
@@ -182,7 +150,6 @@ pub fn provision_child(groups: &BTreeMap<String, GroupCfg>, parent: &str) -> Gro
 #[path = "tests/groups_tests.rs"]
 mod tests;
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use std::fmt;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
@@ -214,9 +181,6 @@ pub struct GroupCfg {
 }
 
 impl Default for GroupCfg {
-    /// Matches the serde defaults of a bare `groups:` entry (enabled, no parent, no limits, no
-    /// child_default), so construction sites can use `..Default::default()` and a future field
-    /// addition touches ONE place instead of every literal.
     fn default() -> Self {
         GroupCfg {
             parent: None,
@@ -237,7 +201,6 @@ pub struct ChildDefault {
     pub limits: Vec<LimitCfg>,
 }
 
-/// The serde default for `GroupCfg::enabled` (a group is live unless it says otherwise).
 pub fn default_true() -> bool {
     true
 }
@@ -266,7 +229,6 @@ pub enum LimitMetric {
 }
 
 impl LimitMetric {
-    /// The config spelling (also the metrics/error vocabulary).
     pub fn as_str(&self) -> &'static str {
         match self {
             LimitMetric::Requests => "requests",
@@ -280,10 +242,6 @@ impl LimitMetric {
         }
     }
 
-    /// THE METER CLASS A PER-CLASS TOKEN CAP COUNTS, read off its config word: a `tokens_<class>`
-    /// limit caps the ledger class `<class>`, exactly the class name the plane declares and the
-    /// ledger keys its counts by. `None` for every metric that is not a per-class cap. The
-    /// governance check reads the class from here and names none itself.
     pub fn capped_class(&self) -> Option<&'static str> {
         match self {
             LimitMetric::Requests
@@ -310,7 +268,6 @@ pub enum LimitWindow {
 }
 
 impl LimitWindow {
-    /// Every window supported by the group projector.
     pub const ALL: [LimitWindow; 5] = [
         LimitWindow::Minute,
         LimitWindow::Hour,
@@ -319,8 +276,6 @@ impl LimitWindow {
         LimitWindow::Total,
     ];
 
-    /// The config spelling - ALSO the runtime window-period sentinel (`governance::budget_window`
-    /// matches these exact strings) and the metrics/error vocabulary. One vocabulary everywhere.
     pub fn as_str(&self) -> &'static str {
         match self {
             LimitWindow::Minute => "minute",
@@ -411,8 +366,6 @@ pub enum ExhaustionMode {
 }
 
 impl ExhaustionMode {
-    /// The mode a unit governed by `limits` runs under: any governing `cut-stream` cuts (the
-    /// strictest wins, as every other limit does); otherwise the unit finishes.
     pub fn governing<'a>(limits: impl IntoIterator<Item = &'a LimitCfg>) -> Self {
         if limits
             .into_iter()
@@ -426,8 +379,6 @@ impl ExhaustionMode {
 }
 
 impl AdmissionMode {
-    /// The mode a unit governed by `limits` is admitted under: any governing `estimate` estimates;
-    /// otherwise the admission is exact.
     pub fn governing<'a>(limits: impl IntoIterator<Item = &'a LimitCfg>) -> Self {
         if limits
             .into_iter()
@@ -440,7 +391,6 @@ impl AdmissionMode {
     }
 }
 
-/// Read the value of a non-metric limit key into its `slot`, refusing the key written twice.
 fn once<'de, A: MapAccess<'de>, T: Deserialize<'de>>(
     map: &mut A,
     slot: &mut Option<T>,
@@ -463,13 +413,6 @@ impl<'de> Deserialize<'de> for LimitCfg {
         impl<'de> Visitor<'de> for LimitVisitor {
             type Value = LimitCfg;
 
-            /// FROZEN (PB-40): 1.5.5's words, and only 1.5.5's four metric names. The four 1.6.0
-            /// `tokens_*` metrics are accepted by `visit_map` below and are deliberately absent
-            /// here — the same discipline the config pre-pass applies to the 1.6.0-additive
-            /// top-level keys, which parse without joining the frozen `expected one of` list an
-            /// operator's log matcher already reads. Pinned by
-            /// `frozen_limit_grammar_tests::the_expecting_line_is_1_5_5s` against the committed
-            /// 1.5.5 golden for BOOT-P30.
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(
                     "a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }` where \
@@ -505,16 +448,10 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         "pool" => once(&mut map, &mut pool, "pool")?,
                         "on_exhaust" => once(&mut map, &mut on_exhaust, "on_exhaust")?,
                         "downgrade_to" => once(&mut map, &mut downgrade_to, "downgrade_to")?,
-                        // 1.6.0-additive (`BUSBAR-1.6.0.md` §7): parsed, and deliberately NOT named in the
-                        // frozen `expected one of` list below, as the `tokens_*` metrics are not.
+
                         "admission" => once(&mut map, &mut admission, "admission")?,
                         "on_exhaustion" => once(&mut map, &mut on_exhaustion, "on_exhaustion")?,
                         other => {
-                            // FROZEN (PB-40): the `expected one of` list serde builds from this
-                            // slice is 1.5.5's EIGHT keys. The four 1.6.0 `tokens_*` metrics are
-                            // matched above — they parse — and are deliberately not named here.
-                            // Pinned by `frozen_limit_grammar_tests::the_unknown_field_list_is_1_5_5s`
-                            // against the committed 1.5.5 golden for BOOT-P29.
                             return Err(de::Error::unknown_field(
                                 other,
                                 &[
@@ -543,10 +480,6 @@ impl<'de> Deserialize<'de> for LimitCfg {
                 }
 
                 let Some((metric, amount)) = metric else {
-                    // FROZEN (PB-40): 1.5.5's sentence and 1.5.5's four metric names; the 1.6.0
-                    // `tokens_*` metrics parse but do not join the list. Pinned by
-                    // `frozen_limit_grammar_tests::the_no_metric_key_refusal_is_1_5_5s` against
-                    // the committed 1.5.5 golden for BOOT-P20.
                     return Err(de::Error::custom(
                         "a limit needs exactly one metric key \
                          (requests | tokens | budget | concurrent)",
@@ -559,8 +492,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                          qualifier; remove `pool`",
                     ));
                 }
-                // The exhaustion pair is shape-checked HERE (metric + coupling are parse-time
-                // facts); the pools' existence is validated with the tree.
+
                 if on_exhaust == Some(OnExhaust::Downgrade) && downgrade_to.is_none() {
                     return Err(de::Error::custom(
                         "`on_exhaust: downgrade` requires `downgrade_to: <pool>` - where should \
@@ -642,12 +574,6 @@ impl<'de> Deserialize<'de> for LimitCfg {
     }
 }
 
-/// Serialize mirrors the custom deserializer: a limit is a map with its ONE metric key + amount, plus
-/// `per: <window>` for the windowed metrics (never for `concurrent`). This is what lets a group survive
-/// in the config OVERLAY (the Admin-API-mutable persistence layer): the round-trip `{ budget: 1000,
-/// per: month }` -> LimitCfg -> `{ budget: 1000, per: month }` is exact, so an API-applied group budget
-/// re-parses identically at boot. Deliberately hand-written (not derived) so it can never drift from the
-/// `{ <metric>: <amount>, per: <window> }` shape the deserializer enforces.
 impl Serialize for LimitCfg {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -665,9 +591,7 @@ impl Serialize for LimitCfg {
         if let Some(window) = self.per {
             map.serialize_entry("per", window.as_str())?;
         }
-        // Wire-compat: a `kind: "pool"` scope still serializes under the bare `pool:`
-        // YAML key. There is no second kind yet, so every `scope` reaching here IS `kind: "pool"`
-        // by construction (the deserializer above only ever produces `ScopeRef::pool`).
+
         if let Some(scope) = &self.scope {
             map.serialize_entry("pool", &scope.value)?;
         }

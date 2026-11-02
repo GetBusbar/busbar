@@ -9,11 +9,6 @@ use crate::caps::token::Grant;
 use crate::ClassDirection;
 
 /// The most lines one unit's usage report may carry. A bound, not a guess: the record the journal
-/// writes is fixed-size, so the report that feeds it has to be bounded too.
-///
-/// The contract's number, not a second copy of it. A plane's usage locators are bounded by the
-/// contract's ceiling and the report built from them is bounded by this one; if the two ever
-/// differed, a plane could name locators for lines the report has no room to settle.
 pub use crate::MAX_USAGE_LINES;
 
 /// Where in a decoded payload a locator found its value.
@@ -82,7 +77,7 @@ pub enum QuantitySource {
 
 impl QuantitySource {
     /// Whether the kernel derived this figure itself, rather than reading it from something
-    /// somebody else said.
+
     pub fn is_kernel_derived(&self) -> bool {
         matches!(
             self,
@@ -94,13 +89,13 @@ impl QuantitySource {
     }
 
     /// Whether this figure was reported by somebody other than the kernel, and therefore wants a
-    /// companion to be checked against.
+
     pub fn is_reported(&self) -> bool {
         !self.is_kernel_derived()
     }
 
     /// Whether a figure from this source is a floor rather than an exact count. Only the byte
-    /// division is: it floors, and a floor is an estimate.
+
     pub fn is_floor(&self) -> bool {
         matches!(self, QuantitySource::KernelBytes { .. })
     }
@@ -174,12 +169,7 @@ impl Usage {
     }
 
     /// The sum across every line, in no unit.
-    ///
-    /// Each line's quantity is in its own meter class's unit, so this is only a figure anyone can
-    /// use when every line is in the SAME class — a single-class report, which is what the kernel's
-    /// own settling sites build. Across classes it adds seconds to bytes, and it is never money:
-    /// what a report costs is the cost unit's answer, and the seam that moves money takes that
-    /// answer directly (see [`crate::caps::Posted::settle`]).
+
     pub fn total(&self) -> u64 {
         self.lines
             .iter()

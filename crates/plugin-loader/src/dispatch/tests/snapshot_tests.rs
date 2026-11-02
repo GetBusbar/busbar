@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the snapshot layout (`dispatch/snapshot.rs`): the bytes it uses are the bytes it
-//! said it needs, and nothing past them is touched. The read-back through the SDK is
-//! `host_services_tests::snapshot_read_lays_the_families_out_in_the_callers_buffer`.
-
 use super::*;
 use busbar_contract::export_calls::Sample;
 

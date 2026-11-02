@@ -1,11 +1,9 @@
 //! Tests for `verbs.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
 
 use super::*;
 
 /// The root's view of a row and this module's own view of it are the same row. If they ever
-/// disagreed, a root would be binding a verb the table does not hold.
+
 #[test]
 fn the_public_table_is_the_same_table_the_lookup_runs_against() {
     let public = table();
@@ -21,8 +19,7 @@ fn the_public_table_is_the_same_table_the_lookup_runs_against() {
 }
 
 /// A query string names arguments to an operation, not a different operation. The row a caller
-/// resolves has to be the same one either way, or an admin request with a `?limit=` would be
-/// an unsupported operation on a surface that has supported it since 1.5.5.
+
 #[test]
 fn resolve_reads_through_a_query_string_to_the_same_row() {
     let bare = resolve("GET", "/api/v1/admin/audit").expect("audit is in the table");
@@ -34,7 +31,7 @@ fn resolve_reads_through_a_query_string_to_the_same_row() {
 }
 
 /// A pair the table does not declare has no answer. The point of a closed table is that its
-/// silence is a refusal rather than a default.
+
 #[test]
 fn resolve_refuses_a_pair_the_table_does_not_declare() {
     assert!(resolve("GET", "/api/v1/admin/not-a-verb").is_none());
@@ -53,17 +50,14 @@ fn rejects_a_wrong_segment_count() {
 }
 
 /// An empty segment is a segment. A trailing slash, a doubled slash and a bare `{id}` position
-/// with nothing in it are three paths the mounted router does not carry, and the table may not
-/// normalise any of them onto a row it does — a `DELETE` that revoked on `/keys/abc/` would be
-/// a mutation on a request the previous release answers with its router's own 404.
+
 #[test]
 fn an_empty_segment_never_normalises_onto_a_row() {
     assert!(resolve("DELETE", "/api/v1/admin/keys/abc/").is_none());
     assert!(resolve("DELETE", "/api/v1/admin/keys/").is_none());
     assert!(resolve("DELETE", "/api/v1//admin/keys/abc").is_none());
     assert!(resolve("GET", "/api/v1/admin/audit/").is_none());
-    // and the paths the table DOES declare still resolve, so the check above is a filter and
-    // not a wall.
+
     assert!(resolve("DELETE", "/api/v1/admin/keys/abc").is_some());
     assert!(resolve("GET", "/api/v1/admin/audit").is_some());
     assert!(resolve("GET", "/api/v1/admin/audit?limit=4").is_some());
@@ -86,8 +80,7 @@ fn fixture() -> serde_json::Value {
 }
 
 /// Mechanically converts a `PascalCase` `operationId` (`GetKeysIdUsage`) to this crate's own
-/// `snake_case` verb name (`get_keys_id_usage`), so the fixture test below can compute the
-/// expected verb name rather than hand-transcribing a second copy of the 66-row mapping.
+
 fn snake_case(operation_id: &str) -> String {
     let mut out = String::new();
     for (i, c) in operation_id.chars().enumerate() {
@@ -104,16 +97,7 @@ fn snake_case(operation_id: &str) -> String {
 }
 
 /// The table test required by the crate's design brief: for every one of the 66 operations the
-/// pinned `testing/shadow-oracle/fixtures/openapi-1.5.5.json` fixture declares, `find_verb`
-/// resolves the right verb name and the right (`read_only`) scope. This is the boundary check
-/// that the closed table in this module (transcribed by hand from the same fixture) has not
-/// drifted from it.
-///
-/// The scope comes off the fixture's own `x-busbar-required-scope` column, which is the pinned
-/// tag's answer. It used to be RE-DERIVED here from the method plus two hand-listed path
-/// exceptions — a rule that happens to agree with the column today and is not the column: a
-/// seventh read-only `POST` added to the tag would have been checked against this file's
-/// reading of 1.5.5 rather than against 1.5.5.
+
 #[test]
 fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
     let doc = fixture();
@@ -164,13 +148,7 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
 }
 
 /// ITEM 149 — THE GATE AND THE VERB TABLE AGREE ON EVERY ADMIN ROUTE.
-///
-/// Three answers exist for "what scope does this admin operation need": the live gate's (method,
-/// path) matrix (`crate::v1::contract::required_scope`, the 1.5.5 rule the auth
-/// middleware and the admin units' approve step enforce), this table's per-row `read_only`, and the
-/// verbs unit's `verbs::required_scope(verb)`. For every row the closed table declares, all three
-/// must name the same rung. `POST /api/v1/admin/verify` was the one row where they did not: the gate
-/// demanded `full` of a verb the unit answers `read-only` for, refusing a read-only operator.
+
 #[test]
 fn the_live_gate_and_the_verb_table_agree_on_every_admin_route() {
     let mut checked = 0usize;
@@ -199,7 +177,7 @@ fn the_live_gate_and_the_verb_table_agree_on_every_admin_route() {
         "the live admin gate and the verb table disagree:\n{}",
         disagreements.join("\n")
     );
-    // The row this item moved: `verify` is the architecture's `GET`, and no `POST` row names it.
+
     assert_eq!(
         resolve("GET", "/api/v1/admin/verify").map(|r| r.verb),
         Some("verify")

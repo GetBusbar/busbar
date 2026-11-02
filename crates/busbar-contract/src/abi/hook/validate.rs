@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S ANSWER VALIDATORS, beside the shapes they judge: one pure `check_<op>` per
-//! answer, `u64` math, no statics, each answering the shared [`Fault`] (one [`Rule`] and one
-//! distinct field per arm). The dispatcher turns an `Err` into FAULT; no host re-implements a
-//! check.
-//!
-//! Per outcome:
-//! * `decide`/`transform` set EXACTLY one verb bit, and no unknown bit, on READY only: FAILED,
-//!   PENDING and REFUSED carry no verb ([`super::TransformOut`]'s doc).
-//! * The reject-status pairing, every `written <= cap`, and every blob's or list's pointer/length
-//!   pairing and size are judged on every outcome (a PENDING or REFUSED `out` the host zeroed
-//!   passes them).
-//! * A `needed_*` is non-zero only on FAILED, under the short-buffer rule
-//!   ([`OutHead`](crate::abi::mechanism::call::OutHead)). `decide` (three host buffers) and
-//!   `transform` (two) are each ONE short answer under the multi-buffer form: at least one
-//!   dimension's `needed_*` above its own cap (a dimension that fits may report its full size),
-//!   and nothing written in any dimension.
-//! * A lease (memory class iv) is judged on READY only: required exactly when the answer carries
-//!   material. `configure` acks the pushed version on READY only.
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
@@ -43,7 +26,7 @@ const DECIDE_VERB_MASK: u32 = VERB_PREFER | VERB_ABSTAIN | VERB_REJECT | VERB_RE
 const TRANSFORM_VERB_MASK: u32 = VERB_REWRITE | VERB_ABSTAIN | VERB_REJECT;
 
 /// On READY, `verbs & mask` sets exactly one bit, and no bit outside `mask |
-/// VERB_HAS_REJECT_STATUS` is set. `one` and `unknown` name the two arms.
+
 fn check_verbs(
     ready: bool,
     verbs: u32,
@@ -64,7 +47,7 @@ fn check_verbs(
 }
 
 /// One host-buffer dimension of a short-buffer answer ([`results`]), from the `usize` counts the
-/// hook shapes carry.
+
 const fn dim(written: usize, needed: usize, cap: usize, max: u64, field: &'static str) -> Dim {
     Dim {
         written: written as u64,
@@ -76,8 +59,7 @@ const fn dim(written: usize, needed: usize, cap: usize, max: u64, field: &'stati
 }
 
 /// `reject_status` comes only with [`VERB_HAS_REJECT_STATUS`] (a plugin cannot smuggle a status
-/// the kernel would apply by accident), and that bit only with [`VERB_REJECT`] (there is no reject
-/// to carry a status). `status` and `bit` name the two arms.
+
 fn check_reject_status(
     verbs: u32,
     reject_status: u16,
@@ -94,9 +76,7 @@ fn check_reject_status(
 }
 
 /// Validates `decide`'s `out` against the capacities [`super::DecideIn`] gave the plugin.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_decide(
     out: &DecideOut,
     reject_message_cap: usize,
@@ -145,9 +125,7 @@ pub fn check_decide(
 }
 
 /// Validates `transform`'s `out` against the capacities [`super::DecideIn`] gave the plugin.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_transform(
     out: &TransformOut,
     reject_message_cap: usize,
@@ -188,18 +166,13 @@ pub fn check_transform(
 }
 
 /// Validates `notify`'s `out` (the shared [`OutHead`]; `notify` reads nothing back beyond it).
-/// A FAILED answer's error text is judged; other outcomes state nothing here.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_notify(out: &OutHead) -> Result<(), Fault> {
     failed_error(out, "notify.error")
 }
 
 /// Validates `configure`'s `out`: a READY answer acks the version the host pushed.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_configure(out: &ConfigureOut, pushed_version: u64) -> Result<(), Fault> {
     if out.head.outcome.0 == (Outcome::Ready as u8) && out.acked_version != pushed_version {
         return Err(fault(Rule::Contradiction, "configure.acked_version"));
@@ -208,25 +181,19 @@ pub fn check_configure(out: &ConfigureOut, pushed_version: u64) -> Result<(), Fa
 }
 
 /// Validates `status`'s `out`.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
     leased_blob!(out, "status", status)
 }
 
 /// Validates `describe`'s `out`.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_describe(out: &DescribeOut) -> Result<(), Fault> {
     leased_blob!(out, "describe", describe)
 }
 
 /// Validates `serve`'s `out`.
-///
-/// # Errors
-/// The rule `out` breaks.
+
 pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
     let (h, n) = (out.headers_out, out.headers_out_len);
     served(&out.head, h, n, HARD_MAX_HEADERS_OUT_LEN, &out.body)
@@ -236,13 +203,7 @@ pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
 pub const HARD_MAX_MESSAGES: u64 = 65536;
 
 /// Validates a HOST-BUILT [`PromptView`] (`decide`/`transform`'s `in.prompt`) before a plugin
-/// reads it — the SDK's own reading of the view, since this half is the host's to get right:
-/// `messages` is non-NULL whenever `messages_len > 0`, `messages_len` is within
-/// [`HARD_MAX_MESSAGES`], `message_count` equals `messages_len` (the two state one length), and
-/// the body blob obeys the blob rules. An absent view (`VIEW_HAS_PROMPT` unset) is not judged.
-///
-/// # Errors
-/// The rule the view breaks.
+
 pub fn check_prompt_view(view: &PromptView) -> Result<(), Fault> {
     if view.messages_len > 0 && view.messages.is_null() {
         return Err(fault(Rule::NullWithCount, "prompt.messages"));
@@ -260,11 +221,7 @@ pub fn check_prompt_view(view: &PromptView) -> Result<(), Fault> {
 pub const HARD_MAX_SIGNALS: u64 = 1024;
 
 /// Validates a HOST-BUILT [`NotifyIn`] (WIRE-HOOK Q5): the signal list's pointer/length pairing
-/// and bound, no presence bit beyond [`VIEW_HAS_PROMPT`], and — when that bit is set — the prompt
-/// view by [`check_prompt_view`].
-///
-/// # Errors
-/// The rule the `in` breaks.
+
 pub fn check_notify_in(input: &NotifyIn) -> Result<(), Fault> {
     if input.signals_len > 0 && input.signals.is_null() {
         return Err(fault(Rule::NullWithCount, "notify.signals"));

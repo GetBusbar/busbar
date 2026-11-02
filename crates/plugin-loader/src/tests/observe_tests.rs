@@ -1,22 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the host side of the observability envelope (#85).
-//!
-//! Every test that reads folds takes `testing::exclusive()` first — the observer is a
-//! process-global `OnceLock` by design (the engine installs exactly one) and `cargo test` runs a
-//! binary's tests concurrently, so the log has to be serialized or a test reads its neighbour's
-//! folds and calls it a failure of the seam.
-
 use super::*;
 use testing::exclusive;
 
-/// [`Observing::fold`] on the test binary's own observability (its recorder installed).
 fn fold<R>(plugin: &str, kind: &str, envelope: &Envelope<R>) {
     testing::observing().fold(plugin, kind, envelope);
 }
 
-/// [`Observing::fold_entries`] on the test binary's own observability.
 fn fold_entries(
     plugin: &str,
     kind: &str,
@@ -26,8 +17,6 @@ fn fold_entries(
     testing::observing().fold_entries(plugin, kind, metrics, diagnostics);
 }
 
-/// A BARE envelope never reaches the observer at all. That is the common case on every kind, and it
-/// is what keeps the envelope from being a per-call tax on a plugin with nothing to say.
 #[test]
 fn a_bare_envelope_is_not_folded() {
     let _guard = exclusive();
@@ -35,9 +24,6 @@ fn a_bare_envelope_is_not_folded() {
     assert!(testing::folds().is_empty());
 }
 
-/// What a plugin reported reaches the observer VERBATIM — the loader does not parse, filter or
-/// rewrite it, because validating is the host's job and a loader that pre-parsed would be deciding
-/// which entries the decider gets to see.
 #[test]
 fn a_reported_back_channel_reaches_the_observer_verbatim() {
     let _guard = exclusive();
@@ -55,15 +41,10 @@ fn a_reported_back_channel_reaches_the_observer_verbatim() {
     assert_eq!(got[0].3, env.diagnostics);
 }
 
-/// THE PROVENANCE LABEL IS THE HOST'S. The plugin never sends its own name or its own kind — both
-/// come off the loaded handle, which was cross-checked against the signed manifest at load. So a
-/// plugin cannot attribute its metrics to another plugin, or claim to be another kind in order to
-/// pick up that kind's folding policy.
 #[test]
 fn provenance_comes_from_the_handle_not_the_wire() {
     let _guard = exclusive();
     let env = Envelope {
-        // A plugin trying to say who it is. Nothing reads these.
         result: serde_json::json!({"plugin": "somebody-else", "kind": "store"}),
         metrics: vec![serde_json::json!({"name": "x_total", "type": "counter"})],
         diagnostics: Vec::new(),
@@ -74,8 +55,6 @@ fn provenance_comes_from_the_handle_not_the_wire() {
     assert_eq!(got[0].1, "export");
 }
 
-/// Metrics WITHOUT diagnostics, and diagnostics WITHOUT metrics, both fold — the two halves are
-/// independent and neither gates the other.
 #[test]
 fn either_half_alone_still_folds() {
     let _guard = exclusive();
@@ -105,9 +84,6 @@ fn either_half_alone_still_folds() {
     assert_eq!(got[1].3.len(), 1);
 }
 
-/// The FIRST install wins and a later one is refused, so a second caller cannot silently re-point
-/// where plugin telemetry goes mid-process. (Every `Observing` of this test binary stands with the
-/// test recorder installed, so this call is the second one by construction.)
 #[test]
 fn a_second_install_is_refused() {
     struct Other;
@@ -122,11 +98,6 @@ fn a_second_install_is_refused() {
     assert!(observing.observer.get().is_some());
 }
 
-/// THE OBSERVER AND THE HOST'S SERIES ARE THE DISPATCHER'S, NOT A PROCESS SEAM (`door-only`
-/// static-seam rule, `BUSBAR-1.6.0.md` l.1475-1478, l.1543): a series predicate installed on one
-/// dispatcher's observability refuses a first-party claim on the host's series THERE and nowhere
-/// else, and a door bound on a dispatcher folds through that dispatcher's observability. RED before:
-/// the observer and the predicate were process-global statics the root installed Rust code into.
 #[test]
 fn the_observer_and_the_host_series_are_the_dispatchers() {
     use busbar_contract::abi::mechanism::observe::SeriesDecl;
@@ -145,7 +116,7 @@ fn the_observer_and_the_host_series_are_the_dispatchers() {
     assert!(refused.contains("dispatcher_owned_host_total"), "{refused}");
     let _held = grant_series(other.observing(), "seam-other", true, &claim)
         .expect("a dispatcher whose host named no series refuses nothing");
-    // The door's envelope sink is the adopting dispatcher's observability.
+
     let adopted = mine
         .adopter()
         .observing()
@@ -154,10 +125,6 @@ fn the_observer_and_the_host_series_are_the_dispatchers() {
     assert!(!std::ptr::eq(&*adopted, other.observing()));
 }
 
-/// K9b: a first-party sink's declaration marked `shed` is the counter the host counts its shed
-/// deliveries on. RED ARMS, in the same test: an unmarked declaration, a non-counter marked one, and
-/// the same marked declaration made by a plugin that is not first-party are none of them a shed
-/// counter.
 #[test]
 fn a_granted_shed_declaration_is_the_hosts_shed_counter() {
     use busbar_contract::abi::mechanism::observe::SeriesDecl;
@@ -178,13 +145,6 @@ fn a_granted_shed_declaration_is_the_hosts_shed_counter() {
     assert!(shed_series("k9b-third-party").is_empty());
 }
 
-/// A FIRST-PARTY GRANT GOES WITH ITS LAST INSTANCE (THE DESIGN `docs/design/BUSBAR-1.6.0.md`
-/// §11.12 H2: a per-instance host registry lets go with its instance). While one first-party
-/// instance holds its grant, the name is first-party and its series are its own; once the last
-/// holder goes, the name is not first-party (a third party loaded under it renders as a third
-/// party) and the series is free for the plugin that replaces it, with no restart. RED before: the
-/// grant and the first-party name were written at open into process-global tables nothing ever
-/// cleared.
 #[test]
 fn a_first_party_grant_goes_with_its_last_instance() {
     use busbar_contract::abi::mechanism::observe::SeriesDecl;
@@ -247,8 +207,6 @@ fn a_live_series_name_cannot_be_reclaimed_with_a_different_kind_or_shed_flag() {
     .expect("the name is available after its last writer is gone");
 }
 
-// ── ENVELOPE-ALL (ARCHITECT ruling 2026-10-03): every kind's envelope, through a bounded intake ──
-
 /// A binder's own sink, recorded: what the door's binder still receives once the host's
 /// observability stands before it.
 #[derive(Default)]
@@ -269,13 +227,6 @@ impl crate::dispatch::EnvelopeSink for Binder {
     }
 }
 
-/// THE ONE BIND OBSERVES EVERY KIND: `door` (a real plugin's, where the kind has one in this
-/// crate's graph; the kind's existing fixture otherwise) bound through the one load with a sink of
-/// its binder's own, and handed — as the dispatcher hands every reply's ingested envelope — a
-/// declared diagnostic and a log record. The diagnostic reaches the host's observer under the
-/// plugin's Statement name and `kind`; the log record does not (it is the plugin log's); the
-/// binder's sink still receives both. RED before the ruling: every binder but export's bound
-/// `NoSink` downstream of the log sink, and the observer received nothing.
 fn observed_through_its_bind<K: crate::dispatch::Kind>(
     door: busbar_contract::abi::mechanism::door::DoorFn,
     kind: &str,
@@ -334,7 +285,6 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
     );
 }
 
-/// `kind: plane` — the plane kind's door fixture (no real plane door in this crate's graph).
 #[test]
 fn a_plane_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::plane::Plane>(
@@ -343,7 +293,6 @@ fn a_plane_envelope_reaches_the_host_observer() {
     );
 }
 
-/// `kind: auth` — the real operator admin-tokens module (the `auth-verify` both-ways row).
 #[test]
 fn an_auth_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::auth::Auth>(
@@ -352,7 +301,6 @@ fn an_auth_envelope_reaches_the_host_observer() {
     );
 }
 
-/// `kind: store` — the real in-memory store's door (the `store` both-ways row).
 #[test]
 fn a_store_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::store::Store>(
@@ -361,7 +309,6 @@ fn a_store_envelope_reaches_the_host_observer() {
     );
 }
 
-/// `kind: hook` — the hook kind's door fixture (no real hook door in this crate's graph).
 #[test]
 fn a_hook_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::hook::Hook>(
@@ -370,7 +317,6 @@ fn a_hook_envelope_reaches_the_host_observer() {
     );
 }
 
-/// `kind: secret` — the real env secret source's door (the `secret` both-ways row).
 #[test]
 fn a_secret_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::secret::Secret>(
@@ -379,7 +325,6 @@ fn a_secret_envelope_reaches_the_host_observer() {
     );
 }
 
-/// `kind: transport` — the real transport door of the `transport` both-ways row.
 #[test]
 fn a_transport_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
@@ -388,7 +333,6 @@ fn a_transport_envelope_reaches_the_host_observer() {
     );
 }
 
-/// `kind: export` — the real sink door of the `export` both-ways row.
 #[test]
 fn an_export_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::export::Export>(
@@ -397,9 +341,6 @@ fn an_export_envelope_reaches_the_host_observer() {
     );
 }
 
-/// A declared metric family's entry is folded named by its family, through the one bind's observer
-/// as through the export arm's (`export_conformance_tests`): every metric of a door reaches the
-/// host the same way.
 #[test]
 fn a_metric_is_named_by_its_family_for_every_kind() {
     use crate::dispatch::EnvelopeSink as _;
@@ -448,12 +389,6 @@ fn a_metric_is_named_by_its_family_for_every_kind() {
     }
 }
 
-/// THE INTAKE IS BOUNDED AND NEVER BLOCKS: with the observer stalled, a plugin's back-channels
-/// past the intake's room are DROPPED at once — the reporting call returns without waiting — and
-/// every one dropped is counted to the observer ([`PluginObserver::dropped`], the host's
-/// `busbar_plugin_observations_dropped_total`); once the observer catches up it has every one that
-/// was kept. RED: an inline (or blocking) intake stalls the reporting calls for as long as the
-/// observer does.
 #[test]
 fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
     use std::sync::atomic::Ordering;
@@ -482,7 +417,7 @@ fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
         took < std::time::Duration::from_secs(2),
         "the reporting calls waited on a stalled observer: {took:?}"
     );
-    // The observer thread may hold one it took before the stall, beside a full intake.
+
     assert!(kept <= INTAKE_BOUND + 1, "kept {kept}");
     assert!(kept >= 1, "nothing reached the observer");
     assert!(
@@ -491,13 +426,6 @@ fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
     );
 }
 
-/// A READER COUNTS ONLY ITS OWN TEST'S FOLDS (busbar status row 118). The `exclusive` guard
-/// serializes the tests that READ the fold log, never the rest of the binary: any test driving a
-/// door with a non-bare envelope folds into the one process-wide observer while a reader holds the
-/// guard (the row's evidence: `dispatch-test-plugin`'s `m1_calls`, folded by a dispatch test, in
-/// the export envelope test's count). Here a neighbour on a thread of its own folds between the
-/// reader's own two folds; the reader's log holds exactly its two. RED before the per-test scope:
-/// the neighbour's fold is counted, three where the reader folded two.
 #[test]
 fn a_reader_counts_only_its_own_tests_folds() {
     let _guard = exclusive();

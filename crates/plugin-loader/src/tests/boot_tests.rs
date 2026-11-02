@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BOOT STAGES' PROOFS: what a document uses, Select over discovered candidates (pure, RED arm
-//! per class), and the one load binding each selected instance, linked and dropped, to its own log
-//! file — an unselected plugin is never opened.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,7 +17,6 @@ fn doc(json: &str) -> serde_json::Value {
     serde_json::from_str(json).unwrap()
 }
 
-/// A candidate of `kind` named `name`, with `aliases`, `sugar`, `verbs`, `schemes`.
 fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&str]) -> Candidate {
     Candidate {
         kind,
@@ -43,7 +38,6 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
     }
 }
 
-/// A document using the fixture plane door's verb (`door`), so the plane is selected.
 fn uses_door() -> Uses {
     Uses::of(&doc(r#"{"door": {}}"#))
 }
@@ -201,8 +195,6 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
     .is_err());
 }
 
-/// A dropped transport is selected by the URL schemes its signed rendering claims: Discover reads
-/// them off the rendering, so nothing is opened to learn them (ARCHITECT ruling 2026-09-29).
 #[test]
 fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
     const CLAIMS: &[busbar_contract::abi::mechanism::call::AbiStr] =
@@ -236,7 +228,7 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
         picked(&select(&u, &cands), &cands),
         vec![("sockets".to_string(), "sockets".to_string())]
     );
-    // RED: the same transport claiming nothing is not selected.
+
     let cands = vec![dropped(&busbar_contract::abi::mechanism::door::Statement {
         claims_len: 0,
         ..st
@@ -262,16 +254,12 @@ fn example_cdylib(name: &str) -> PathBuf {
     path
 }
 
-/// RED: an absent example is a hard failure naming the command that builds it, never a skip.
 #[test]
 #[should_panic(expected = "is not built: run")]
 fn red_an_absent_example_cdylib_panics_with_its_build_command() {
     example_cdylib("no_such_example");
 }
 
-/// THE ONE LOAD, both origins: the plane door linked and the same plane dropped in (its verified
-/// bytes), each selected by its verb under its own instance and bound to its own log file; an
-/// unselected candidate is never opened (its bytes are not a library at all).
 #[test]
 fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
     let dir = std::env::temp_dir().join(format!("busbar-boot-load-{}", std::process::id()));
@@ -295,7 +283,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         file: "plane-door.tar.gz".into(),
         bytes: Arc::new(std::fs::read(path).unwrap()),
     };
-    // A second instance of the same verb is taken by the first candidate: select it by hand.
+
     cands.push(dropped);
     let mut never = cand(
         KindCode::Plane,
@@ -345,8 +333,6 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RED: an instance that will not bind refuses the load, naming it — here a dropped plugin whose
-/// stated Statement is not its door's.
 #[test]
 fn red_an_instance_that_will_not_bind_is_named() {
     let path = example_cdylib("plane_door_plugin");
@@ -381,11 +367,6 @@ fn red_an_instance_that_will_not_bind_is_named() {
     assert!(err.starts_with("door: ") && err.contains("repack"), "{err}");
 }
 
-/// THE PLANE AXIS, BOTH DOORS, ONE LOAD (ARCHITECT ruling 2026-09-29): the plane door linked
-/// into the build and the same plane dropped into `plugins/` (an admitted tarball whose manifest
-/// states its Statement) are discovered by `open_planes` as door candidates stating the same
-/// rendering, and `load_planes` binds each through the one load — the dropped one over its verified
-/// bytes. A dropped plane with no Statement is refused (`plane_conformance_tests`).
 #[test]
 fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let path = example_cdylib("plane_door_plugin");
@@ -475,12 +456,6 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// LAW 7, THE PLANES' ONE LOAD (BUSBAR-1.6.0.md §2 "A plugin loads if and only if config uses
-/// it. There are no special plugins.", §4 "A plane loads iff its verb is present."): a plane config
-/// does not use is never opened, compiled in or dropped in. The dropped-in plane here is a door whose
-/// library bytes are not a library: OPENING it is the only way to learn that, and refuses the load,
-/// so a load that answers proves it was never opened. RED before: every discovered plane was bound,
-/// the unused one's open refused the whole load, and with no plane used the linked one bound anyway.
 #[test]
 fn a_plane_config_does_not_use_is_never_opened() {
     let rendering = crate::dispatch::LinkedRow::of(plug::door)
@@ -521,17 +496,12 @@ fn a_plane_config_does_not_use_is_never_opened() {
         Vec::<String>::new(),
         "a compiled-in plane config does not use is not bound either"
     );
-    // The GREEN twin: config using the dropped-in plane's verb opens it, and its bytes refuse.
+
     let err =
         bind(&Uses::of(&doc(r#"{"unused": {}}"#))).expect_err("an opened non-library refuses");
     assert!(err.contains("unused-plane"), "{err}");
 }
 
-/// A SECTION THAT SELECTS ITS PLANE (`SECTION_SELECTS`, Law 7): a plane is used when config carries
-/// its verb or a section its Statement marks as selecting it; a section it only consumes or
-/// requires selects nothing. The dropped-in plane's facts are read off its signed rendering, so
-/// nothing is opened to learn them. RED before: only the verb selected a plane, so a document
-/// routing to models directly (no `pools:`) used no plane.
 #[test]
 fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
     use busbar_contract::abi::mechanism::door::{Section, SECTION_REQUIRED, SECTION_SELECTS};
@@ -581,16 +551,12 @@ fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
     );
     let pooled = Uses::of(&doc(r#"{"pools": {}}"#));
     assert_eq!(plane_use(&pooled, &cands[0]), Some("pools"));
-    // A section it only consumes or requires is no use of it: `providers` alone selects nothing.
+
     let catalog_only = Uses::of(&doc(r#"{"providers": {}}"#));
     assert_eq!(plane_use(&catalog_only, &cands[0]), None);
     assert!(select(&catalog_only, &cands).is_empty());
 }
 
-/// A plane whose Statement tail declares a rooted pin naming NO mechanism is refused at boot: the
-/// tail's trust keys are judged per element when the plane binds (`open_planes` discovers it,
-/// `load_planes` refuses it), exactly as the door plane's whole tail is. The plane is the fixture's
-/// own door with its tail's `trust_keys` swapped for a pin that names nothing to be rooted in.
 #[test]
 fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
     use busbar_contract::abi::mechanism::door::{Door, DoorParts, KindTailHead, Statement};
@@ -651,7 +617,7 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
     )
     .expect_err("a pin naming no mechanism must refuse the boot");
     assert!(err.contains("trust_key.mechanisms"), "{err}");
-    // The GREEN twin: the unmodified door binds.
+
     let ok = crate::PluginRegistry::empty()
         .open_planes(&[plug::door])
         .unwrap();
@@ -665,8 +631,6 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
     )
     .expect("the well-formed plane binds");
 }
-
-// ── INBOUND: listener needs and their binds ──
 
 fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
     ReadNeed {
@@ -704,9 +668,6 @@ fn sel(candidate: usize, instance: &str) -> Selected {
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 
-/// Every selected instance's INBOUND need is collected with the bind its settings block states — a
-/// plane's from its verb's section, an export's from its entry's `settings` — the TLS block kept raw
-/// (secret references unresolved), the cap defaulted; outbound needs and unselected plugins are not.
 #[test]
 fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
     let d = doc(r#"{
@@ -769,8 +730,6 @@ fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
     assert_eq!(got[1].tls, None);
 }
 
-/// RED: an inbound need with no block, no `listen`, a bad address or a bad cap is refused, naming
-/// the setting.
 #[test]
 fn red_an_inbound_need_without_a_usable_bind_is_refused_by_its_setting() {
     let one = |settings: &str, target_from: &str| {
@@ -805,9 +764,6 @@ fn red_an_inbound_need_without_a_usable_bind_is_refused_by_its_setting() {
     );
 }
 
-/// RED: two listeners on one address, or a listener on an address the host's own listener takes
-/// (the root `listen`), are refused before anything binds; an unspecified IP takes the port on
-/// every address.
 #[test]
 fn red_two_listeners_on_one_address_are_refused() {
     let d = doc(r#"{
@@ -864,7 +820,6 @@ fn red_two_listeners_on_one_address_are_refused() {
     );
 }
 
-/// A Statement's needs are read off its rendering into the candidate.
 #[test]
 fn a_candidate_carries_its_statements_needs() {
     use busbar_contract::abi::host::conn::connector::{Need, KEEP_NAMED};
@@ -913,8 +868,6 @@ fn a_candidate_carries_its_statements_needs() {
     );
 }
 
-/// The secret kind's resolver, for the boot witnesses: an `env` reference to `OIDC_SECRET`
-/// resolves to the auth witness's secret; anything else does not resolve.
 struct Resolver;
 
 impl busbar_contract::secret::SecretResolve for Resolver {
@@ -941,8 +894,6 @@ impl busbar_contract::secret::SecretResolve for Resolver {
     }
 }
 
-/// Boot one auth instance `oidc` of the witness `door` named `name`, its settings block `settings`
-/// (JSON), through the one load with its opening: the number of instances bound, or the refusal.
 fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> {
     use crate::dispatch::{DispatchConfig, Dispatcher};
     let d = Dispatcher::new(DispatchConfig::default());
@@ -976,10 +927,6 @@ fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> 
     .map(|l| l.bound.len())
 }
 
-/// DISCOVERY AT BOOT (ARCHITECT 2026-10-02): the one load OPENS every auth instance it binds and
-/// awaits its `ready` before it answers, so before any listener binds. RED: an auth door whose
-/// `ready` errs refuses the boot with the plugin's own text, named by its instance (1.5.5 refused
-/// the boot when discovery failed). The GREEN twin boots.
 #[test]
 fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
     use crate::dispatch::ready::ready_plugins::auth::{with_ready, NAME};
@@ -1006,10 +953,6 @@ fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
     );
 }
 
-/// THE DECLARED SECRETS AT AUTH OPEN (ARCHITECT 2026-10-02): an auth door that declares a secret
-/// reference is handed it RESOLVED, through the secret kind, as its `OpenIn::secrets` entry — and
-/// the reference is gone from its settings. RED before the resolver: it was handed an empty list
-/// and its open refused. A reference that will not resolve refuses the boot, naming the key.
 #[test]
 fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
     use crate::dispatch::ready::ready_plugins::auth::{with_secret, SECRET_NAME};
@@ -1039,8 +982,6 @@ fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
     );
 }
 
-/// `cand` at `version`, LINKED (its door states nothing: the linked origin of a candidate built by
-/// hand).
 fn linked_cand(name: &str, version: &str) -> Candidate {
     Candidate {
         version: version.into(),
@@ -1052,7 +993,6 @@ fn linked_cand(name: &str, version: &str) -> Candidate {
     }
 }
 
-/// `cand` at `version`, DROPPED IN as `<name>.tar.gz`.
 fn dropped_cand(name: &str, version: &str) -> Candidate {
     Candidate {
         version: version.into(),
@@ -1060,11 +1000,6 @@ fn dropped_cand(name: &str, version: &str) -> Candidate {
     }
 }
 
-/// THE ONE-VERSION RULE ON AN AXIS'S CANDIDATES (ARCHITECT C'): one plugin (one Statement name)
-/// linked and dropped in at ONE version is one plugin — admitted, the linked row first (it serves),
-/// and named once for the log; at TWO versions the boot is refused, naming the plugin, both doors
-/// and both versions. RED before: every same-name pair was skipped whatever its versions, so the
-/// linked row silently won over a dropped-in copy of another version.
 #[test]
 fn one_plugin_by_both_doors_is_one_version_or_refused() {
     let same = [
@@ -1107,7 +1042,7 @@ fn one_plugin_by_both_doors_is_one_version_or_refused() {
         );
         assert!(both_doors(&pair).is_empty());
     }
-    // A Statement stating no version cannot be compared: refused, naming the plugin.
+
     assert_eq!(
         one_owner(&[
             linked_cand("busbar-hook-x", "1.2.3"),
@@ -1119,7 +1054,7 @@ fn one_plugin_by_both_doors_is_one_version_or_refused() {
                 .to_string()
         )
     );
-    // Two DROPPED-IN candidates of one name are not two doors: phase 3 holds those.
+
     let dropped = [
         dropped_cand("busbar-hook-x", "1.2.3"),
         dropped_cand("busbar-hook-x", "1.2.4"),
@@ -1127,12 +1062,6 @@ fn one_plugin_by_both_doors_is_one_version_or_refused() {
     one_owner(&dropped).expect("not the one-version rule's pair");
 }
 
-/// LAW 7 FOR PLANES (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff** its configuration
-/// section is present. No verb configured → that plugin is never loaded."; l.547: "A plane loads
-/// iff its verb is present.").
-///
-/// RED before the boot bound only the planes the configuration uses: every discovered plane door,
-/// linked or dropped in, was bound on the dispatcher whatever the document wrote.
 #[test]
 fn a_plane_the_configuration_does_not_use_is_never_bound() {
     let set = crate::PluginRegistry::empty()
@@ -1155,10 +1084,6 @@ fn a_plane_the_configuration_does_not_use_is_never_bound() {
     );
 }
 
-/// EVERY SECRET IS A REFERENCE, NEVER A LITERAL, AT A WILDCARD PATH TOO (security.md:316, lead
-/// ruling item 7b): a plain value matched by a declared WILDCARD path (`hosts.*.password`) refuses
-/// exactly as one at a declared EXACT path does: as not a secret reference, naming the position and
-/// never a byte of the value. RED before the fix: the wildcard match was lent as written.
 #[test]
 fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
@@ -1174,7 +1099,6 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() 
             "settings.hosts.0.password",
         ),
     ] {
-        // Matched, not `expect_err`: that would print the lent secrets.
         let Err(e) = resolve_secrets(&mut block, &keys, &Resolver, &scope) else {
             panic!("a literal at {at} refuses");
         };

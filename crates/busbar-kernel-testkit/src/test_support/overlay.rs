@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-//! A real record Store for configuration persistence tests, with controlled transport outcomes.
+
 use crate::config::overlay::OverlayStore;
 use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Request};
 use busbar_contract::abi::store::OpId;
@@ -35,8 +35,6 @@ struct ReplyPause {
     waker: Option<std::task::Waker>,
 }
 
-/// A real Pending Store reply. Dropping the controlling handle releases its waiter as well, so
-/// an assertion failure cannot strand a transaction's blocking task or its mutation guard.
 pub struct TestOverlayPause(Arc<Mutex<ReplyPause>>);
 
 impl TestOverlayPause {
@@ -160,7 +158,7 @@ impl TestOverlayStore {
     pub fn on_next_read_reply(&self, callback: impl FnOnce() + Send + 'static) {
         self.calls.0.lock().unwrap().after_read = Some(Box::new(callback));
     }
-    /// Seed even corrupt/newer JSON as a complete immutable Store generation.
+
     pub fn seed_bytes(&self, bytes: &[u8]) {
         let generation = crate::door::op_id().0;
         let digest: [u8; 32] = Sha256::digest(bytes).into();

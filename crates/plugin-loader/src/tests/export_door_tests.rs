@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! [`ExportInstance`] on the one dispatcher, over the real prometheus sink LINKED by its door: its
-//! Statement tail read at bind, its settings judged before it opens, its scrape rendering the host
-//! snapshot, the one re-call a short answer earns, and the ops it does not serve answered as such.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::export::ExportStream;
@@ -13,8 +9,6 @@ use busbar_contract::export_calls::{parse_families, ServeRequest};
 use super::*;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, LinkedRow, NoSink};
 
-/// The real scrape sink's door, LINKED, reached by the both-ways table's `export-scrape` row: the
-/// one place the loader's export tests take it (`conformance::export`'s unjudged test restates it).
 pub(crate) const SCRAPE_DOOR: busbar_contract::abi::mechanism::door::DoorFn =
     crate::both_ways::export_scrape_fixture::door::door;
 
@@ -102,7 +96,7 @@ fn a_scrape_renders_the_snapshot_and_a_short_answer_is_re_called_once() {
     let (plugin, dispatcher) = linked();
     let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
         .expect("the sink opens");
-    // Larger than the first exposition buffer: the sink answers short, the host grows it once.
+
     let mut text = String::from("# TYPE busbar_big counter\n");
     for i in 0..4000 {
         text.push_str(&format!("busbar_big{{n=\"{i:020}\"}} {i}\n"));
@@ -115,10 +109,6 @@ fn a_scrape_renders_the_snapshot_and_a_short_answer_is_re_called_once() {
     assert_eq!(sink.scrape(&[]).expect("an empty snapshot"), b"");
 }
 
-/// THE HOOK FAMILIES' FLAG RIDES THROUGH THE DISPATCHER (P2 D4): `scrape_hooks` sets
-/// `SCRAPE_FLAG_HOOK_FAMILIES` on the head, the dispatcher keeps it (it clears only its own bit), and
-/// the sink renders the 1.5.5 `/metrics/hooks` layout — on the short answer's re-call too. RED: a
-/// dispatcher that zeroes the head renders the `/metrics` layout (a blank line after each family).
 #[test]
 fn a_hook_scrape_carries_its_flag_through_the_call_and_the_re_call() {
     let (plugin, dispatcher) = linked();
@@ -168,8 +158,6 @@ fn the_ops_the_sink_does_not_serve_are_answered_as_such() {
         .is_empty());
 }
 
-/// Exercise the public refresh caller over the real door: refused and accepted settings both
-/// leave the same opened export usable for the next scrape.
 #[test]
 fn refresh_refusal_and_success_leave_the_opened_export_usable() {
     let (plugin, dispatcher) = linked();
@@ -191,8 +179,6 @@ fn refresh_refusal_and_success_leave_the_opened_export_usable() {
     assert!(sink.plugin().is_open());
 }
 
-/// RED (export ABI defect 4): dropping an opened instance sends its `close`. Before, the export
-/// path never closed an instance, so each instance a configuration check opened stayed open.
 #[test]
 fn a_dropped_instance_is_closed() {
     let (plugin, dispatcher) = linked();
@@ -274,8 +260,7 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
         node: node_id(),
         minted: AtomicU64::new(0),
     });
-    // Drive the real flusher synchronously after queueing, so its stop wins deterministically
-    // before any queued line is delivered. No test-only production hook is needed.
+
     let sink = ExportInstance {
         shared: Arc::clone(&shared),
         flusher: Mutex::new(None),
@@ -409,10 +394,6 @@ impl busbar_contract::io_host::IoHost for Reaps {
     }
 }
 
-/// RED (transport ABI defect 2): an instance the host lets go has every host I/O handle it still
-/// owns released for it (`IoHost::reap`, under the instance's own handle), so a listener or socket
-/// it never closed does not outlive it. Before, the host released a handle only when the plugin
-/// closed it.
 #[test]
 fn an_instance_let_go_has_its_io_handles_reaped() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -433,7 +414,6 @@ fn an_instance_let_go_has_its_io_handles_reaped() {
     assert_eq!(*io.0.lock().unwrap(), vec![owner]);
 }
 
-/// The scrape sink's door with `span_records: true` added to its Statement's extensions.
 extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::mechanism::door::{Door, Statement};
     use busbar_contract::abi::mechanism::extensions::{encode, statement_blob};
@@ -470,11 +450,6 @@ extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::d
     unsafe { &*door }
 }
 
-/// A DOOR STATES IT TAKES FULL SPAN RECORDS through its Statement's extensions (`span_records`,
-/// status row 173): the instance it opens answers `takes_span_records`, so the kernel adds each
-/// `traces` line's `span` member (everything the previous release's exporter sent: attributes,
-/// events, status). A door that states nothing takes none. RED: an instance that never answers it
-/// leaves every export door's span record unsent.
 #[test]
 fn a_door_that_states_span_records_takes_them() {
     let open = |door: busbar_contract::abi::mechanism::door::DoorFn| {
@@ -495,9 +470,6 @@ fn a_door_that_states_span_records_takes_them() {
     assert!(!open(SCRAPE_DOOR).takes_span_records());
 }
 
-/// THE LEAK WITNESS: an export door whose `status` answers FAILED and whose `check` answers REFUSED,
-/// each still naming a lease over bytes it holds, and whose `serve` answers READY with how many
-/// leases it still holds as its status code.
 mod leaky {
     use busbar_contract::abi::export::{
         CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
@@ -613,9 +585,6 @@ mod leaky {
     }
 }
 
-/// RED (export ABI defect 6): a lease an answer names is released whatever the outcome. Before, the
-/// host released a lease only on READY, so a FAILED `status` or a REFUSED `check` that named one
-/// left the plugin holding its memory for the instance's life.
 #[test]
 fn a_lease_named_on_a_failed_or_refused_answer_is_released() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -648,8 +617,6 @@ fn a_lease_named_on_a_failed_or_refused_answer_is_released() {
     );
 }
 
-/// A PUSH-ONLY export door: it carries `logs`, declares no route and states no `scrape` and no
-/// `serve` (both NULL in its table); `ROUTED` declares a route and still states no `serve`.
 mod push_only {
     use busbar_contract::abi::export::{
         CheckIn, CheckOut, DeliverIn, ExportStream, Route, StatusOut, Tail, ROUTE_AUTH_KEY,
@@ -725,10 +692,6 @@ mod push_only {
     }
 }
 
-/// RED (export ABI defect 2): the export kind's own ops a door's Statement makes unreachable are
-/// optional — `scrape` with no `metrics` stream, `serve` with no route, `deliver` with no stream
-/// but `metrics` — so a push sink states neither `scrape` nor `serve`. A door that declares a route
-/// still owes `serve`. Before, every export slot was mandatory and the push sink was refused.
 #[test]
 fn a_push_sink_may_leave_scrape_and_serve_unstated() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));

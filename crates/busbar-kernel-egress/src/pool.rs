@@ -2,23 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The pool: the set of members a route may be sent to, per transport and destination, and the
-//! settings the walk over them reads.
-//!
-//! The design gives this unit the pool per `(transport, destination)`. That is what is here: the
-//! membership, each member's weight and its own overrides, the walk's deadline and hop count, the
-//! per-pool member blocklist, and what to do when the walk finds nowhere to send. Nothing here
-//! decides anything — the deciding is in the walk, the order and the terminals, each of which
-//! reads these values and none of which invents one.
 
 use crate::ports::DestinationId;
 use crate::select::WeightedFloor;
 
 /// The walk's deadline when the pool names none. Whole seconds, and the deadline is checked before
-/// every attempt including a streaming one.
+
 pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
 
 /// How many further members the walk may try after the first when the pool names no cap. The walk
-/// runs this many PLUS ONE attempts: the cap counts hops, and the first attempt is not a hop.
+
 pub const DEFAULT_FAILOVER_CAP: usize = 3;
 
 /// One member of a pool.
@@ -144,15 +137,7 @@ impl Pool {
     }
 
     /// This pool's membership with its own blocklist applied.
-    ///
-    /// The blocklist is applied here, once, before the walk starts and before any terminal reads
-    /// the membership — which is what stops a blocklisted member being reached by the least-bad
-    /// terminal or counted into a shed's retry hint.
-    ///
-    /// A pool that blocklists nobody — the common case, and the one every hop of every walk pays
-    /// for — has nothing to filter, so it borrows its own membership rather than copying it. Only a
-    /// pool that actually excludes somebody builds a membership of its own. The answer derefs to
-    /// `&[Member]` either way, so a caller reads it exactly as it read the copy.
+
     #[must_use]
     pub fn admissible_members(&self) -> std::borrow::Cow<'_, [Member]> {
         if self.failover.exclusions.is_empty() {

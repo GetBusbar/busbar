@@ -26,8 +26,7 @@ impl SecretBytes {
             let capacity = len.max(self.0.capacity().saturating_mul(2)).max(8);
             let mut next = Zeroizing::new(Vec::with_capacity(capacity));
             next.extend_from_slice(&self.0);
-            // Assignment drops and wipes the old allocation before it is freed. Calling reserve
-            // on the live credential buffer would instead free an unwiped previous allocation.
+
             self.0 = next;
         }
         self.0.extend_from_slice(bytes);

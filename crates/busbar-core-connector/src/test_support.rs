@@ -2,17 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CONNECTOR'S TLS TEST KIT: the TLS far ends and the recording TLS fixture server, for the
-//! tests that need a real handshake.
-//! TLS stays in the connector (THE DESIGN), so no other crate names a TLS library —
-//! not even in a test — and every row that needs a real handshake lives in this crate's own suite
-//! (a plane's transport battery rides the kernel's TLS test double instead).
-//!
-//! Test machinery only: compiled under `cfg(test)` for this crate's own suite, and under the
-//! `test-support` feature for a PLUGIN REPO'S conformance test (the adapter lives in the plugin
-//! repo, a dev-dependency), so the far end's TLS is still this crate's and the plugin names no TLS
-//! library. Nothing in a shipped build reaches it. The gate below restates, on the file itself, the
-//! gate `lib.rs` puts on `pub mod test_support;`, so a per-file reader (`cargo xtask loc`) counts
-//! this file as the test machinery it is.
+
 #![cfg(any(test, feature = "test-support"))]
 
 use std::io::{self, Read, Write};
@@ -23,7 +13,7 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 /// A real held datagram upstream for composition-root tests. Its exchange, writer, reader and
-/// teardown are the connector's private `Dialled` implementation, with no substitute leg sink.
+
 pub struct DatagramSession(crate::dialled::Dialled);
 
 impl DatagramSession {
@@ -84,8 +74,7 @@ impl Drop for DatagramSession {
 }
 
 /// The default association's actual conservative pre-crossing reservation, including lease
-/// metadata. Regression budgets add their independently chosen live-frontier storage to this
-/// value instead of copying a production budget or depending on allocator capacity identity.
+
 #[must_use]
 pub fn datagram_output_reservation_bytes() -> usize {
     let copied = crate::framer::Buffers::default()
@@ -110,9 +99,7 @@ pub struct TestCa {
 }
 
 /// A fresh [`TestCa`].
-///
-/// # Panics
-/// The key or a certificate does not mint.
+
 #[must_use]
 pub fn private_ca() -> TestCa {
     use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
@@ -134,9 +121,7 @@ pub fn private_ca() -> TestCa {
 }
 
 /// Every certificate in a PEM bundle, DER.
-///
-/// # Panics
-/// A section that does not parse.
+
 #[must_use]
 pub fn certs_from_pem(pem: &str) -> Vec<Vec<u8>> {
     CertificateDer::pem_slice_iter(pem.as_bytes())
@@ -151,10 +136,7 @@ pub struct ServerTls(Arc<rustls::ServerConfig>);
 
 impl ServerTls {
     /// From DER: the chain (leaf first), the private key (PKCS#8, PKCS#1 or SEC1), the client CA
-    /// certificates (none = no client certificate asked for), the ALPN protocols agreed.
-    ///
-    /// # Errors
-    /// The material is not a usable server identity.
+
     pub fn new(
         chain: &[Vec<u8>],
         key: &[u8],
@@ -166,9 +148,7 @@ impl ServerTls {
     }
 
     /// [`ServerTls::new`] from PEM.
-    ///
-    /// # Errors
-    /// The material does not parse or is not a usable server identity.
+
     pub fn from_pem(
         chain_pem: &str,
         key_pem: &str,
@@ -199,7 +179,6 @@ impl ServerTls {
         client_ca: Option<&[Vec<u8>]>,
         alpn: &[&[u8]],
     ) -> Result<Self, String> {
-        // Ring installed as the process's backend first, so the builders below read it.
         let _ = crate::tls::installed_crypto();
         let builder = rustls::ServerConfig::builder();
         let builder = match client_ca {
@@ -228,17 +207,13 @@ impl ServerTls {
     }
 
     /// Run the server handshake on a blocking std stream. The handshake may FAIL (a client refusing
-    /// the certificate, or this end refusing a client that presented no identity); the ClientHello
-    /// has been read either way, so what it carried is on the session on both arms.
-    ///
-    /// # Errors
-    /// The session could not be created at all.
+
     pub fn accept_std(&self, mut tcp: TcpStream) -> io::Result<StdServerSession> {
         let mut conn =
             rustls::ServerConnection::new(Arc::clone(&self.0)).map_err(io::Error::other)?;
         let refused = match conn.complete_io(&mut tcp) {
             Ok(_) => None,
-            // This end's OWN reason for refusing, as the TLS stack words it.
+
             Err(e) => Some(
                 conn.process_new_packets()
                     .err()
@@ -314,9 +289,7 @@ pub struct ClientTls(Arc<rustls::ClientConfig>);
 
 impl ClientTls {
     /// The connector's client TLS for `trust`.
-    ///
-    /// # Errors
-    /// The trust does not build a client config.
+
     pub fn new(trust: &busbar_contract::transport::trust::EgressTrust) -> Result<Self, String> {
         crate::tls::client::build_client_config(trust)
             .map(|c| Self(Arc::new(c)))
@@ -324,10 +297,7 @@ impl ClientTls {
     }
 
     /// Run the client handshake for `server` on the blocking `tcp` to completion, verified against
-    /// the trust this was built with.
-    ///
-    /// # Errors
-    /// `server` is not a usable name, or the handshake failed.
+
     pub fn connect_std(&self, server: &str, mut tcp: TcpStream) -> io::Result<StdClientSession> {
         let name = rustls::pki_types::ServerName::try_from(server.to_owned())
             .map_err(|e| io::Error::other(format!("server name {server:?}: {e}")))?;
@@ -413,7 +383,6 @@ pub enum ClientAuth {
     /// No client certificate is asked for.
     None,
     /// The handshake REQUIRES a client certificate chaining to this root; a client presenting
-    /// nothing is refused by the server, which is the behaviour an mTLS upstream shows busbar.
     Required {
         /// The root, PEM.
         ca_pem: String,
@@ -435,8 +404,7 @@ pub struct TlsServerSpec {
 }
 
 /// A live TLS fixture server: its dial address plus the per-connection records, readable while
-/// connections are still open (a pooled client keeps its connection alive between requests, and the
-/// reuse assertion must read the count mid-life).
+
 pub struct TlsFixture {
     /// Where to dial it.
     pub addr: SocketAddr,
@@ -445,9 +413,7 @@ pub struct TlsFixture {
 
 impl TlsFixture {
     /// Snapshot of every connection's record, in accept order.
-    ///
-    /// # Panics
-    /// A fixture thread panicked holding the records.
+
     #[must_use]
     pub fn records(&self) -> Vec<ConnRecord> {
         self.records
@@ -460,12 +426,7 @@ impl TlsFixture {
     }
 
     /// Snapshot once `pred` holds, polling with a bound. A client learns about a REFUSED handshake
-    /// the moment it sends its alert — often before the server thread has finished writing what it
-    /// observed — so a test that asserts on a refusal's record waits for the record to settle rather
-    /// than racing the fixture thread.
-    ///
-    /// # Panics
-    /// At the bound: a record that never settles is a fixture defect, not a pass.
+
     pub fn records_when(&self, pred: impl Fn(&[ConnRecord]) -> bool) -> Vec<ConnRecord> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -483,13 +444,7 @@ impl TlsFixture {
 }
 
 /// Spawn the recording TLS server: HTTP/1.1, pinned via ALPN, so the recorded request and
-/// connection counts stay meaningful whichever client drives it. The accept loop lives on an OS
-/// thread for the lifetime of the process's test run, each connection on its own thread (a pooled
-/// client holding one connection open never blocks the next); ephemeral loopback ports keep
-/// parallel fixtures independent.
-///
-/// # Panics
-/// The spec's material does not make a server, or no loopback port binds.
+
 #[must_use]
 pub fn spawn_tls(spec: TlsServerSpec) -> TlsFixture {
     let client_ca = match &spec.client_auth {
@@ -565,8 +520,7 @@ fn serve_tls_conn(
 }
 
 /// Read one HTTP/1.1 request off the stream: the head to its blank line, then exactly
-/// `content-length` body bytes so the next read starts at the next request. Returns the full
-/// request HEAD text, or `None` on a closed/broken connection.
+
 fn read_one_request<S: Read>(stream: &mut S) -> Option<String> {
     let mut head: Vec<u8> = Vec::with_capacity(512);
     let mut buf = [0u8; 512];

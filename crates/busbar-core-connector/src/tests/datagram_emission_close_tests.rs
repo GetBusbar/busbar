@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! An association that ends while an incremental producer has it out must resolve every waiter
-//! parked on its emission (`emission_ready`, `poll_line`), exactly as the sibling teardown paths
-//! (`PortAssociations::remove`, `poll_line`, `Taken::drop`) do, and must leave the port's other
-//! associations untouched.
-//!
-//! The producer is held inside a real framer crossing (the scripted door's `Parks::Ingest`), so
-//! the waiters park deterministically behind it: no sleeps, no timing. Each waiter is polled by
-//! hand with its own counting waker, so a resolution that was never signalled is observable.
 
 use super::*;
 use std::future::Future;
@@ -37,7 +30,7 @@ fn woken(w: &Woken) -> usize {
 }
 
 /// A port with association `a` (a framer that fails its first clear-lane datagram when
-/// `fail_clear`) and a healthy sibling `b`, `b` already routed by a heard check.
+
 fn port_with(fail_clear: bool) -> (Arc<PortAssociations>, Arc<Scripted>, u64, u64) {
     let da = scripted(Knobs {
         fail_clear,
@@ -59,7 +52,7 @@ fn port_with(fail_clear: bool) -> (Arc<PortAssociations>, Arc<Scripted>, u64, u6
 }
 
 /// Hold association `a` out in a framer crossing on its own thread: its incremental producer
-/// answers a heard check, and is returned once released.
+
 fn produce(
     port: &Arc<PortAssociations>,
     door: &Scripted,
@@ -93,8 +86,6 @@ fn a_failed_incremental_producer_closes_and_wakes_its_parked_waiters_and_spares_
     let now = Instant::now();
     let (producer, release) = produce(&port, &door);
 
-    // Three waiters park behind the producer's custody: one holding the order permit and waiting
-    // for the association to come back, one queued on the order permit, one LINE poll.
     let (first_woke, first_waker) = counting();
     let (queued_woke, queued_waker) = counting();
     let (line_woke, line_waker) = counting();
@@ -124,13 +115,10 @@ fn a_failed_incremental_producer_closes_and_wakes_its_parked_waiters_and_spares_
         "nothing resolved while the producer is still crossing"
     );
 
-    // The producer's framer fails the association.
     release.send(()).unwrap();
     let answered = producer.join().unwrap();
     assert!(matches!(answered.as_slice(), [(id, Err(_))] if *id == a));
 
-    // Every waiter was signalled by the failure itself (no later remove is needed or possible:
-    // the association is already forgotten) and now resolves as closed.
     assert!(woken(&first_woke) > 0, "emission_ready waiter was woken");
     assert!(woken(&queued_woke) > 0, "order-queued waiter was woken");
     assert!(woken(&line_woke) > 0, "poll_line waiter was woken");
@@ -161,7 +149,6 @@ fn a_failed_incremental_producer_closes_and_wakes_its_parked_waiters_and_spares_
         "the failed association takes no more writes"
     );
 
-    // The healthy sibling is still carried, writable, and has its emission turn.
     assert_eq!(port.len(), 1);
     assert!(port.emit(b, 1, b"m", true, false, now, &none).0);
     let mut sibling = Box::pin(port.emission_ready(b));
@@ -200,7 +187,6 @@ fn an_association_removed_during_its_incremental_producer_resolves_its_waiters_a
         )
         .is_pending());
 
-    // Teardown while the producer holds it: waiters resolve now, the holder finishes it later.
     port.remove(a);
     assert!(woken(&ready_woke) > 0 && woken(&line_woke) > 0);
     assert!(matches!(

@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The security invariants of the authenticate step, stated over every shape rather than sampled.
-//!
-//! Each of these is a property the ported suite checks one instance of. One instance is what a
-//! reader believes; every instance is what a change has to survive. They are written as exhaustive
-//! walks over the chain shapes the configuration can produce, so a change that keeps the sampled
-//! case working and breaks a neighbouring one has nowhere to land.
 
 use super::{entry, Canned, OneKey};
 use crate::chain::{AuthChain, ChainEntry, ChainVerdict};
@@ -26,17 +21,8 @@ fn answering(name: &'static str, outcome: AuthOutcome) -> Box<dyn AuthModule> {
     Box::new(Canned::new(name, outcome))
 }
 
-// A Reject is never a Pass.
-
 /// A `Reject` ANYWHERE in the chain denies, whatever is behind it.
-///
-/// The three answers are not interchangeable and only one of them is a refusal: `Reject` means this
-/// module recognised the credential and refuses it, and `Pass` means it is not this module's
-/// credential at all. Turning the first into the second is the whole failure mode this chain shape
-/// exists to prevent — the module that KNOWS the credential is bad steps aside, and the next module,
-/// or the keys arm, admits it. The suite checks one two-module chain. This checks every position in
-/// chains of every length up to four, with something behind the rejection that would have admitted:
-/// a module that identifies, the built-in keys arm holding a valid token, and both.
+
 #[test]
 fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
     const TOKEN: &str = "the-token";
@@ -49,7 +35,6 @@ fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
                     let m = if i == reject_at {
                         answering(name, AuthOutcome::Reject)
                     } else if i > reject_at {
-                        // Behind the rejection: a module that WOULD identify.
                         identifies(name)
                     } else {
                         answering(name, AuthOutcome::Pass)
@@ -74,10 +59,7 @@ fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
 }
 
 /// A `Reject` is re-asked every time: an invalid credential re-runs its module on every call, so
-/// the moment the module changes its mind the chain does too.
-///
-/// This is the deny path's instant-revocation property: nothing sits in front of the rejecting
-/// module that could skip it without the module ever being asked.
+
 #[test]
 fn a_rejection_is_re_asked_every_time() {
     let rejecting = Canned::new("m", AuthOutcome::Reject);
@@ -98,11 +80,7 @@ fn a_rejection_is_re_asked_every_time() {
 }
 
 /// A chain that only ever passes ends DENIED, never open.
-///
-/// The open door is one condition and one only: no boxed module and no keys arm. A chain that has
-/// modules, all of which say "not mine", has not authenticated anybody — collapsing that into the
-/// anonymous admit would turn "no module recognised this credential" into "no module was
-/// configured", which is the operator's most consequential posture decided by accident.
+
 #[test]
 fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
     for len in 1..=4usize {
@@ -120,14 +98,14 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
             "len={len}: every module said 'not mine', which is not an admission"
         );
     }
-    // The keys arm alone keeps the door shut too: it runs, and with no verifier it denies.
+
     let arm_only = AuthChain::new(Vec::new(), true);
     assert!(!arm_only.is_open());
     assert_eq!(
         arm_only.run_chain_with(Some("cred"), None, 1000, None),
         ChainVerdict::Denied
     );
-    // And the one shape that opens.
+
     let unconfigured = AuthChain::new(Vec::new(), false);
     assert!(unconfigured.is_open());
     assert_eq!(
@@ -135,5 +113,3 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
         ChainVerdict::Open
     );
 }
-
-// One authenticate path.

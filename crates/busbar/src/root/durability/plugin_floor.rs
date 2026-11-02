@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FIRST-PARTY ANTI-DOWNGRADE FLOOR IN THE STORE, per host (`docs/plugins.md` security-model
-//! item 3).
-//!
-//! Application registry scans check the already-opened bootstrap Store's marks before any
-//! subsequent native load. Real admission raises the marks atomically; a dry run only checks.
-//! Bootstrap Store/secret/transport code is independently authorized by an immutable archive
-//! hash in the operator's base configuration, because the Store cannot judge its own unread
-//! contents before it opens. No application floor is kept in a local data-directory file.
-//!
-//! Keyed per HOST, so one upgraded node never refuses its siblings' boots during a rolling rollback.
-//! An explicit rollback pin (`POST /plugins/rollback`, kept in the overlay's `plugin_versions`) replaces a name's mark, as it does
-//! in the scan. A compiled-in row is the binary's own and is never floored.
-//! Authenticated release keys-document versions have their own Store high-water mark. Plugin
-//! rollback pins never relax it; the exact retained native image is checked again before opening.
-
 use std::collections::BTreeMap;
 
 use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Predicate};
@@ -25,18 +10,14 @@ use busbar_contract::store_calls::StoreCalls;
 use super::store_chain::wait_for;
 use crate::root::loader::sign::{valid_semver, version_at_least};
 
-/// The host record schema the marks are kept under: one record per `(host, plugin name)`.
 pub const PLUGIN_FLOOR_SCHEMA: &str = "busbar.plugin_floor.v1";
 
-/// The authenticated release keys-document high-water mark, independently of plugin rollback pins.
-/// One unsigned 64-bit big-endian value per host; application state is kept only in the Store.
 pub const RELEASE_KEYS_FLOOR_SCHEMA: &str = "busbar.release_keys_floor.v1";
 
 fn release_keys_key(host: &str) -> Vec<u8> {
     floor_key(host, "busbar-release-keys")
 }
 
-/// Recover the host's authenticated keys-document floor before evaluating a new candidate.
 pub fn release_keys_floor(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
     let held = wait_for(calls.record_get(RELEASE_KEYS_FLOOR_SCHEMA, &release_keys_key(host)))
         .map_err(|e| format!("the release keys-document floor: {e}"))?;
@@ -96,7 +77,6 @@ fn enforce_release_keys(
     }
 }
 
-/// The key of `name`'s mark on `host`: each length-prefixed.
 fn floor_key(host: &str, name: &str) -> Vec<u8> {
     let mut key = Vec::new();
     for part in [host, name] {
@@ -106,8 +86,6 @@ fn floor_key(host: &str, name: &str) -> Vec<u8> {
     key
 }
 
-/// Check the Store's floor before any candidate can enter native code. This read-only pass
-/// also serves dry-run validation; only `hold` may raise a mark during real admission.
 pub fn check(
     calls: &dyn StoreCalls,
     host: &str,
@@ -117,12 +95,6 @@ pub fn check(
     enforce(calls, host, rows, pins, false)
 }
 
-/// HOLD THE FLOOR on `host`: refuse a loadable dropped-in first-party plugin below the mark the
-/// store keeps for its name (unless `pins` names it), then raise each name's mark to what loaded.
-///
-/// # Errors
-///
-/// A plugin below its floor, named with the way past it; or the store would not answer.
 pub fn hold(
     calls: &dyn StoreCalls,
     host: &str,
@@ -139,8 +111,6 @@ fn enforce(
     pins: &BTreeMap<String, String>,
     raise: bool,
 ) -> Result<(), String> {
-    // This is the root's own registry view. Only the evaluator's retained authenticated evidence
-    // can advance this floor; a plugin assertion or an allowed-but-unverified row cannot do so.
     let registry = crate::root::loader::rows::registry_of(rows);
     let versions: Vec<_> = rows
         .loadable()
@@ -155,7 +125,6 @@ fn enforce(
     Ok(())
 }
 
-/// Recheck one exact native candidate at the shared staging boundary, after its Store is bound.
 pub fn check_candidate(
     calls: &dyn StoreCalls,
     host: &str,

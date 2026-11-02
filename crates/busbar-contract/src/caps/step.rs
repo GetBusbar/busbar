@@ -2,30 +2,18 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The ten steps of the loop, as type-level markers, and the facts each step hands the next.
-//!
-//! The design names ten steps and fixes their order: arrival, decode, authenticate, verify,
-//! approve, admit, route, meter, audit, encode. Three of them — arrival, decode and encode — are
-//! the kernel's own work and their tokens are never lent to a unit; the other seven each belong to
-//! exactly one unit.
-//!
-//! The marker types exist so the ORDER is carried by types instead of by discipline. A unit asked
-//! to answer one step is handed the token for that step and can only build the answer for that
-//! step, so it can neither reply to a question it was not asked nor skip ahead to a later one.
 
 use crate::caps::{Admission, Usage, VerifiedDestination};
 
 /// The seal on [`Step`]. Only the ten markers declared in this module implement it, so nothing
-/// outside can invent an eleventh step or a private marker that would mint tokens of its own.
+
 mod sealed {
     /// The private supertrait no downstream type can name, and therefore cannot implement.
     pub trait Sealed {}
 }
 
 /// One step of the loop, as a zero-sized type-level marker.
-///
-/// `Facts` is what a successful pass through this step hands to the next one; `NAME` is the same
-/// step as a plain runtime value, for refusals and audit rows; `KERNEL_OWNED` says whether the
-/// token for this step is ever lent out at all.
+
 pub trait Step: sealed::Sealed + Send + Sync + 'static {
     /// What a "proceed" answer for this step carries forward.
     type Facts: Send + 'static;
@@ -78,9 +66,7 @@ impl StepName {
     ];
 
     /// Whether a hold is open at this step — strictly after the door.
-    ///
-    /// A refusal here is audited WITH the hold: the admission stands and the caller was charged.
-    /// A refusal at or before the door is audited without one, because nothing was charged.
+
     pub fn under_hold(self) -> bool {
         self > StepName::Admit
     }
@@ -149,12 +135,6 @@ step_markers! {
     Encode => Frame, true;
 }
 
-// The facts each step carries forward are the contract crate's own types, named here rather than
-// restated. A capability is keyed on the contract's objects; it does not own a second spelling of
-// them. Three steps carry a type whose contract spelling borrows the frame buffer and therefore
-// cannot be a step's `Facts` (which outlives the borrow): decode hands forward the operation class
-// it recognised, which is the part of the draft every later step reads, while the draft itself
-// stays with the kernel.
 pub use crate::{
     ArrivalRecord, AuditFacts, Challenge, Frame, LaneId, MeterClassId, OpClassId, PrincipalId,
     RoutePlan, ScopeFacts, UnitKey,

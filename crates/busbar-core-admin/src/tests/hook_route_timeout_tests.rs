@@ -1,5 +1,3 @@
-//! Actual admin PUT keeps route-bearing hook policy and HTTP calls on one candidate instance.
-
 use busbar_contract::abi::mechanism::{
     endpoint::{EndpointRequest, EndpointResponse},
     route::{Route, RouteAuth, RouteMethod},

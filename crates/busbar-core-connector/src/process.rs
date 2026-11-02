@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PROCESS'S ONE CONNECTOR, AS THE BOOT PATH BUILDS IT (`BUSBAR-1.6.0.md` THE DESIGN, section 5
-//! "Connections"; section 8: the connector is the sole holder of TLS trust roots; one destination
-//! check, in the connector, for every outbound connection). [`dest_judge`] builds the deployment's
-//! one destination judge ([`GuardJudge`]: the one [`Guard`], the system resolver, each egress
-//! class's scheme rule); the root hands that same judge to [`build_with_secrets`] (the connector's
-//! dial judge, [`judge`]) and to the kernel (`dest.judge` and the kernel's own clients), so every
-//! dial of every kind is judged by one guard. The root hands in the deployment's values and holds
-//! what it returns; nothing here keeps a second.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
@@ -28,19 +21,7 @@ use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, JudgedAll, Verdict, WakeTicket};
 
 /// THE PROCESS'S CONNECTOR over the framer entries `entries` yields, judging every dial through
-/// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), dialling a framed
-/// connection through the proxy the process's environment names ([`crate::proxy`]), securing a
-/// connection with the default outbound trust where its target asks for it, waking a plugin's
-/// ticket through `wake`, keeping a dialled connection whose exchange finished whole under the
-/// deployment's `pool` posture ([`crate::pool`]), and resolving a program's environment references
-/// through `spawn_secrets` at config time ([`crate::spawn_env`]). The trust is built before `entries` is asked for,
-/// so a boot that cannot secure a connection loads no transport door.
-///
-/// # Errors
-///
-/// The default outbound trust will not build, a proxy variable is set and does not parse,
-/// `entries` refuses, two entries claim one scheme, or
-/// an entry states no claim.
+
 pub fn build_with_secrets(
     entries: impl FnOnce() -> Result<Vec<Entry>, String>,
     dest: Arc<dyn DestJudge>,
@@ -51,8 +32,7 @@ pub fn build_with_secrets(
 ) -> Result<Arc<Connector>, String> {
     let tls = crate::tls::client::build_client_config(&EgressTrust::default())
         .map_err(|e| format!("its connection security: {e}"))?;
-    // THE PROXY ENVIRONMENT, read once: a set variable that does not parse refuses the boot, as the
-    // kernel engine's install did.
+
     let proxy = crate::proxy::from_env().map_err(|e| format!("its proxy environment: {e}"))?;
     let view = Transports::new(entries()?).map_err(|e| e.to_string())?;
     Ok(Arc::new(
@@ -64,10 +44,7 @@ pub fn build_with_secrets(
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.
-///
-/// # Errors
-///
-/// An `advanced.allow_destinations` entry the guard refuses (the boot refusal, naming it).
+
 pub fn dest_judge(d: &Destinations) -> Result<Arc<GuardJudge>, String> {
     Ok(Arc::new(GuardJudge::new(
         Guard::from_config(d)?,
@@ -76,10 +53,7 @@ pub fn dest_judge(d: &Destinations) -> Result<Arc<GuardJudge>, String> {
 }
 
 /// THE DESTINATION JUDGE (`busbar_kernel::host_services::DestJudge`) over the one [`Guard`]: a
-/// destination's scheme under its egress class (open-web secure only; loopback-allowed plaintext
-/// to loopback only; every other class takes its target's scheme), then the guard's name arm,
-/// then (a name) ONE resolution off the caller's thread and the guard's answer arm, the FIRST
-/// address of an admitted answer pinned.
+
 pub struct GuardJudge {
     guard: Guard,
     resolver: Arc<dyn Resolve>,
@@ -99,10 +73,7 @@ impl GuardJudge {
     }
 
     /// The name and scheme arms: the host, port and scheme to dial, and the literal when the host
-    /// is one. The host handed back is the one a URL client dials, the name the guard judged
-    /// ([`url_host_to_ascii`]: a non-ASCII name its UTS #46 punycode, `bücher.example` read as
-    /// `xn--bcher-kva.example`), so a resolution asks for the name judged and the name 1.5.5's
-    /// client resolved, never the spelling as written. An ASCII host is handed back as written.
+
     fn named(
         &self,
         dest: &str,
@@ -110,7 +81,6 @@ impl GuardJudge {
         strict: bool,
         reach: bool,
     ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
-        // The classes a need may declare are 0..=4; a destination under any other names none.
         if class > EGRESS_LOOPBACK_ALLOWED {
             return Err(DEST_NO_HOST);
         }
@@ -125,7 +95,7 @@ impl GuardJudge {
         if literal.is_some() {
             plaintext_to_loopback(class, https, &host)?;
         }
-        // The guard admitted the host, so it maps; a host that did not would be unjudgeable.
+
         let host = match url_host_to_ascii(&host) {
             Ok(dialled) => dialled.into_owned(),
             Err(_) => return Err(DEST_NO_HOST),
@@ -135,8 +105,7 @@ impl GuardJudge {
 }
 
 /// Loopback-allowed's scheme rule, held once the guard admitted the destination: plaintext only to
-/// a host WRITTEN as loopback ([`names_loopback`]), as 1.5.5's collector and webrequest guards
-/// ruled on the URL's host, never on what a name resolved to.
+
 fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64> {
     if class == EGRESS_LOOPBACK_ALLOWED && !https && !names_loopback(host) {
         return Err(DEST_PLAINTEXT);
@@ -145,14 +114,11 @@ fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64>
 }
 
 /// A destination as `(host, port, https)`: an `http(s)` URL (any other scheme refused, userinfo
-/// refused), or a bare `host[:port]` authority (secure, port 443 unless named). The scheme is read
-/// without case, as RFC 3986 reads it and as 1.5.5 read every URL it judged (`scheme_is`: v1.5.5
-/// `crates/busbar/src/observability.rs:180-183`, `config_validate/mod.rs:1857`; `HTTP://` and
-/// `HTTPS://` were accepted wherever their lower-case spelling was).
+
 fn split(dest: &str) -> Result<(String, u16, bool), u64> {
     if let Some((scheme, rest)) = dest.split_once("://") {
         let lowered = format!("{}://{rest}", scheme.to_ascii_lowercase());
-        // The one http(s) URL reader (scheme allowlist, userinfo refused, the scheme's port).
+
         return match busbar_kernel_egress::trust::net::split_url(&lowered) {
             Ok((https, host, port, _)) => Ok((host, port, https)),
             Err(busbar_kernel_egress::trust::net::AddressRefusal::Scheme { .. }) => {
@@ -233,7 +199,7 @@ impl DestJudge for GuardJudge {
 
 impl GuardJudge {
     /// The judgement [`DestJudge::judge`] and [`DestJudge::judge_reaching`] share: `reach`, the
-    /// need's private reach to the destination ([`Guard::judge_name_with`]).
+
     fn judged(
         &self,
         dest: &str,
@@ -250,13 +216,12 @@ impl GuardJudge {
             return Some(Ok((SocketAddr::new(ip, port), vec![ip])));
         }
         let guard = self.guard.clone();
-        // The mapped name ([`GuardJudge::named`]): the one judged, and the one a URL client resolves.
+
         let name = host.clone();
         self.resolver.resolve(
             &name,
             Box::new(move |answer| {
                 done(match answer {
-                    // The resolver's own reason, named.
                     Err(reason) => Err(Refused {
                         verdict: DEST_UNRESOLVABLE,
                         detail: Some(reason),
@@ -268,8 +233,6 @@ impl GuardJudge {
                             detail: r.addr.map(|a| a.to_string()),
                         })
                         .and_then(|()| {
-                            // All admitted, so the first is a choice between equals that keeps
-                            // the resolver's own ordering.
                             plaintext_to_loopback(class, https, &host)?;
                             Ok((SocketAddr::new(addrs[0], port), addrs))
                         }),
@@ -281,10 +244,7 @@ impl GuardJudge {
 }
 
 /// THE DIAL JUDGE the one Connector holds (spec section 5, "Dialing only what the kernel
-/// judged"): the deployment's one destination judge, every dial under the need's own egress
-/// class, the address it pinned dialled exactly. A loopback-allowed need is held off the node
-/// itself: a pinned loopback (or unspecified) address on one of the node's `own_ports` is refused
-/// as internal, whether the judgement answered at once or after resolving a name.
+
 #[must_use]
 pub fn judge(dest: Arc<dyn DestJudge>, own_ports: &[u16]) -> Arc<dyn DialJudge> {
     Arc::new(OneJudge {
@@ -301,7 +261,7 @@ struct OneJudge {
 
 impl OneJudge {
     /// A dial judged by `judging` (the plain judgement or the reaching one), its pin held off the
-    /// node itself.
+
     fn pinned(
         &self,
         class: u32,
@@ -313,7 +273,7 @@ impl OneJudge {
     }
 
     /// [`Self::pinned`], the pended answer naming the name's other admitted addresses on the same
-    /// port, each held off the node as the pin is.
+
     fn pinned_all(
         &self,
         class: u32,
@@ -323,8 +283,6 @@ impl OneJudge {
         let later = Arc::clone(&self.own);
         let pin = |v: &Admitted| v.as_ref().map(|(at, _)| *at).map_err(|r| r.verdict);
         let pended: Box<dyn FnOnce(Admitted) + Send> = Box::new(move |v| {
-            // Recovery may replace the listener ports while resolution is pending. Read the
-            // ports when the answer arrives, and release the metadata lock before its callback.
             let own = Arc::clone(&later.read().expect("own ports"));
             let also = match &v {
                 Ok((at, addrs)) => addrs
@@ -396,7 +354,7 @@ impl DialJudge for OneJudge {
 }
 
 /// A loopback-allowed pin on one of the node's own ports, refused (`DEST_INTERNAL`); any other
-/// judgement as it was.
+
 fn not_the_node(
     class: u32,
     own: &[u16],
@@ -415,7 +373,7 @@ fn not_the_node(
 }
 
 /// The ports the node listens on, read off its listen addresses (`listen`, `admin_listen`): an
-/// address without a port names none.
+
 #[must_use]
 pub fn own_ports(listens: &[&str]) -> Vec<u16> {
     listens

@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CATALOGUE — the "what may this caller SEE" walk and its judgement, defined inline HERE, in
-//! core. It moved down into `busbar-substrate` in Phase-B B1 and was merged back by the W4.b P2
-//! engine drain; this file is its only home, not a re-export of one elsewhere. It also hosts the
-//! core-only catalogue tests, which name `crate::trust::validate::validate_visibility`.
-
-// The catalogue serves whichever protocol planes are installed and nothing else; with none installed
-// no in-core caller uses what it defines or imports, exactly as the pre-split module read dead
-// there. Unconditional (the neutral seam names no plane feature — the items are public API whichever
-// planes are compiled in).
 #![allow(unused_imports)]
 #[cfg(test)]
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use busbar_contract::records::VirtualKey;
 
 use crate::trust::validate::{Generations, Grant};
@@ -38,59 +28,28 @@ pub struct Caller<'a> {
     pub generation: Generations,
 }
 
-/// ONE KIND OF CATALOGUE ITEM. Implementing this is the ENTIRE cost of a new plane's catalogue: the
-/// walk, the fail-closed floor, the entitlement-before-fitness ordering, the inventory order and the
-/// render-after-filter rule are all inherited.
 pub trait CatalogueItem {
-    /// WHY an item is not in a caller's catalogue, in the plane's own words. Returned rather than
-    /// merely filtered, because "why can this key not see the planner" is the question an operator
-    /// actually asks, and a filter that only ever returns survivors cannot answer it.
     type Excluded;
 
-    /// Everything the plane's structural fitness test needs beyond the item itself — a task shape, a
-    /// delegating agent, `()` where there is nothing. NEVER caller-authored content: a catalogue
-    /// that reads prose is a catalogue the upstream steers.
     type Query;
 
-    /// What a SUCCESSFUL fitness test learned and the caller needs — the matched skill on A2A, `()`
-    /// where fitness is a yes/no. Carried out of [`judge`] rather than recomputed, so the answer the
-    /// caller acts on is the answer the filter reached.
     type Fit;
 
-    /// THE WIRE FORM of one item. The plane owns the artifact: busbar publishes what the protocol
-    /// defines, and core has no opinion about its shape.
     type Wire<'a>
     where
         Self: 'a;
 
-    /// EVERY grant a principal must hold to SEE this item, pushed onto `out`. All of them,
-    /// conjunctively — that is [`crate::trust::validate`]'s rule and not a second one here.
-    ///
-    /// Pushing NONE makes the item invisible rather than public — see the module header.
     fn required_grants<'g>(&'g self, query: &'g Self::Query, out: &mut Vec<Grant<'g>>);
 
-    /// ASK THE ORDERED GATE, with the grants core has just collected.
-    ///
-    /// The plane chooses the ENTRY POINT and supplies the rest of the ask — its approval, its
-    /// sighting, its fingerprint where it has one — because which question a catalogue is asking is
-    /// a fact about the protocol. It does NOT choose an order, and it cannot evaluate a grant of its
-    /// own: the grants arrive as a slice it can only pass on.
     fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), Self::Excluded>;
 
-    /// STRUCTURAL FITNESS, applied only AFTER entitlement. An item the caller may not see is never
-    /// fitness-tested, so a fitness test can never become a way to probe for what is hidden.
     fn fit(&self, query: &Self::Query) -> Result<Self::Fit, Self::Excluded>;
 
-    /// The plane's refusal for "this item declares no grant at all", which is the fail-closed floor
-    /// and never reaches the validator. One method rather than a shared arm, because a plane must be
-    /// able to keep spelling its refusals the way its audit vocabulary already does.
     fn ungranted(&self) -> Self::Excluded;
 
-    /// Render this item as its protocol carries it.
     fn render(&self) -> Self::Wire<'_>;
 }
 
-/// ONE ENTITLED ITEM: the item, and what its fitness test learned.
 pub struct Entitled<'i, I: CatalogueItem> {
     pub item: &'i I,
     pub fit: I::Fit,
@@ -129,13 +88,6 @@ where
     }
 }
 
-/// JUDGE ONE ITEM for one caller. THE single place entitlement and fitness are sequenced, and the
-/// order is load-bearing: GRANTS FIRST, then fitness.
-///
-/// The order is not a preference, and it is the same argument [`crate::trust::validate`] makes for
-/// putting grant before artifact. Fitness reads the item's own content, and running it on an item
-/// the caller may not see would make the REASON a caller is refused depend on what is inside
-/// something it was never entitled to know exists — which is how a filter becomes an oracle.
 pub fn judge<'i, I: CatalogueItem>(
     item: &'i I,
     caller: &Caller<'_>,
@@ -143,9 +95,7 @@ pub fn judge<'i, I: CatalogueItem>(
 ) -> Result<Entitled<'i, I>, I::Excluded> {
     let mut grants: Vec<Grant<'_>> = Vec::new();
     item.required_grants(query, &mut grants);
-    // THE FAIL-CLOSED FLOOR, and it is checked before the gate rather than by it: an EMPTY grant
-    // list is honest at `validate_visibility`'s door (some asks legitimately need no grant) and is
-    // never honest for an item in an inventory.
+
     if grants.is_empty() {
         return Err(item.ungranted());
     }
@@ -154,12 +104,6 @@ pub fn judge<'i, I: CatalogueItem>(
     Ok(Entitled { item, fit })
 }
 
-/// THE CATALOGUE: walk an inventory, apply the caller's grants, keep the entitled subset.
-///
-/// ORDER IS THE INVENTORY'S, never re-sorted here. Both planes hand this an ordered inventory (a
-/// `BTreeMap`'s values on MCP, config insertion order on A2A) precisely so an operator-facing
-/// listing is deterministic rather than hash-ordered, and a re-sort here would take that away from
-/// whichever plane got it right.
 pub fn entitled<'i, I: CatalogueItem + 'i>(
     items: impl IntoIterator<Item = &'i I>,
     caller: &Caller<'_>,
@@ -171,7 +115,6 @@ pub fn entitled<'i, I: CatalogueItem + 'i>(
         .collect()
 }
 
-/// The entitled subset as ITEMS — the same walk, for a caller that has no use for the fitness value.
 pub fn visible<'i, I: CatalogueItem + 'i>(
     items: impl IntoIterator<Item = &'i I>,
     caller: &Caller<'_>,
@@ -183,9 +126,6 @@ pub fn visible<'i, I: CatalogueItem + 'i>(
         .collect()
 }
 
-/// The entitled subset AS THE WIRE CARRIES IT. Rendering happens after the filter and never before:
-/// an item is rendered only once it has been decided the caller may see it, so no rendering path can
-/// be the one that leaks.
 pub fn rendered<'i, I: CatalogueItem + 'i>(
     items: impl IntoIterator<Item = &'i I>,
     caller: &Caller<'_>,

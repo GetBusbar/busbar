@@ -1,14 +1,4 @@
 //! The bounded types hold their bounds, and the constants are the design's numbers.
-//!
-//! Two things are asserted here. First, that each pinned number is what the crate-graph section of
-//! the design pins it at — a constant that drifts is a bound nobody is enforcing. Second, that the
-//! types built on those numbers actually refuse at them: a ceiling that is only in a comment is a
-//! ceiling the first busy afternoon removes.
-//!
-//! The two bounds asserted on a sealed unit (its draft facts and its leg replies) need a minted
-//! token to build that unit, so they live in the kernel
-//! (`busbar-kernel/src/tests/caps_tests/bounded_limits.rs`), where a token constructor may be
-//! spelled (construction `token-sealed`).
 
 use busbar_contract::bounded::{
     BoundedVec, FactValue, Facts, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, SlabBytes,
@@ -34,7 +24,6 @@ fn the_constants_are_the_designs_numbers() {
 /// A fact map refuses the thirty-third distinct key and keeps the thirty-two it has.
 #[test]
 fn a_fact_map_refuses_past_its_key_ceiling() {
-    // The keys have to outlive the map, which is exactly the arena's job in production.
     let keys: Vec<String> = (0..=MAX_KEYS).map(|i| format!("key-{i}")).collect();
     let mut facts = Facts::new();
     for key in keys.iter().take(MAX_KEYS) {
@@ -113,7 +102,6 @@ fn the_two_byte_handles_do_what_they_say() {
     assert_eq!(slab.as_slice(), &[2, 3]);
     assert_eq!(slab.len(), 2);
 
-    // A window past the end of the slab is clamped, never a panic and never a read past the end.
     let clamped = SlabBytes::window(std::sync::Arc::from(&owned[..]), 3, 99);
     assert_eq!(clamped.as_slice(), &[4]);
     let inverted = SlabBytes::window(std::sync::Arc::from(&owned[..]), 3, 1);
@@ -121,10 +109,7 @@ fn the_two_byte_handles_do_what_they_say() {
 }
 
 /// A plane may name two places for the response ceiling, and the FIRST that resolves is the one.
-///
-/// The case is one dialect accepting the ceiling under an older member name and a newer one.
-/// Declaration order is precedence order, so a request carrying both means the older, and a request
-/// carrying only the newer is still read instead of sizing a hold off a key nobody sent.
+
 #[test]
 fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
     use busbar_contract::bounded::{BoundedVec, Ir, MAX_RESPONSE_PTRS};
@@ -147,7 +132,6 @@ fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
         ..AdmitFacts::default()
     };
 
-    // Only the newer spelling arrived: the older misses, the newer answers.
     let only_newer = br#"{"max_completion_tokens":256}"#;
     let ir = Ir::new(
         only_newer,
@@ -155,7 +139,6 @@ fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
     );
     assert_eq!(facts.max_response_bytes(&ir), Some(&b"256"[..]));
 
-    // Both arrived: the first declared wins.
     let both = br#"{"max_tokens":1,"max_completion_tokens":2}"#;
     let ir = Ir::new(
         both,
@@ -166,17 +149,14 @@ fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
     );
     assert_eq!(facts.max_response_bytes(&ir), Some(&b"1"[..]));
 
-    // Neither arrived: no ceiling, which is a missing value and not a refusal.
     let ir = Ir::new(b"{}", &[]);
     assert_eq!(facts.max_response_bytes(&ir), None);
 
-    // A plane that names no place at all answers nothing, exactly as before.
     assert_eq!(AdmitFacts::default().max_response_bytes(&ir), None);
 }
 
 /// An arena that leaks, because a span table handed back from `spans::resolve` borrows the arena
-/// for as long as the caller holds it and a test's own local buffer does not live that long. A
-/// short-lived leak in a test process is the honest double; this crate forbids unsafe code.
+
 struct LeakPlaneAlloc;
 
 static PLANE_ALLOC: LeakPlaneAlloc = LeakPlaneAlloc;
@@ -205,10 +185,7 @@ impl PlaneAlloc for LeakPlaneAlloc {
 }
 
 /// A pointer the body does not carry is ABSENT from the table, not present and empty.
-///
-/// The two are different facts and the loop settles them differently: "the client sent nothing"
-/// and "the client sent something empty" are not the same request. A table that carried a row for
-/// every declared pointer would make them indistinguishable to every reader downstream.
+
 #[test]
 fn only_the_declared_pointers_the_body_carries_reach_the_table() {
     let body = br#"{"model":"model-1"}"#;
@@ -225,10 +202,7 @@ fn only_the_declared_pointers_the_body_carries_reach_the_table() {
 }
 
 /// The table stops at the same ceiling the fact map does.
-///
-/// A plane that declared more places than the kernel can hold facts about is describing a body no
-/// unit could be settled against, so the extra pointers are not considered rather than silently
-/// overrunning a fixed table.
+
 #[test]
 fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
     let declared = MAX_KEYS + 2;
@@ -243,7 +217,6 @@ fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
     }
     body.push('}');
 
-    // Every one of them resolves, so nothing but the ceiling can shorten the table.
     for pointer in &pointers {
         assert!(matches!(
             busbar_contract::spans::resolve_pointer(body.as_bytes(), pointer),
@@ -258,17 +231,12 @@ fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
 }
 
 /// The cursor stops at the ceiling its own documentation claims.
-///
-/// It counted what a plane had consumed and handed over every frame regardless, so the sentence
-/// "it never exposes more than the per-connection ceiling" was true of nothing. A plane that kept
-/// calling was handed as much as the connection had produced, which is the unbounded prefix the
-/// bound exists to refuse.
+
 #[test]
 fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
     use busbar_contract::wire::{Frame, FrameCursor, FrameMeta};
     use busbar_contract::{Direction, StreamId};
 
-    // Sixteen frames of 8 KiB is 128 KiB — twice the ceiling, so exactly eight are readable.
     let chunk: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0u8; 8 * 1024].into_boxed_slice());
     let frames: Vec<Frame> = (0..16)
         .map(|i| Frame {
@@ -295,19 +263,14 @@ fn the_frame_cursor_stops_at_the_per_connection_ceiling() {
 
     assert_eq!(read, MAX_CURSOR_BYTES / (8 * 1024));
     assert_eq!(cursor.scanned_bytes(), MAX_CURSOR_BYTES);
-    // And it stays stopped: the frames are still there, and it still says no.
+
     assert!(cursor.peek().is_none());
     assert!(cursor.next_frame().is_none());
     assert!(cursor.remaining() > 0);
 }
 
 /// The two answers a plane returns per frame stay small enough to return by value.
-///
-/// A fact map is a fixed array of MAX_KEYS entries — over a kilobyte — and both of these carried
-/// one (or two) inline. Every frame of every open unit crosses the dyn call returning one of them,
-/// so the kilobyte was memcpy'd on the hottest path in the node, twice per relayed frame, for a
-/// map that is usually a handful of keys. The payloads are behind a pointer now, and this is the
-/// number that says so: a future arm that embeds a fact map by value turns this red.
+
 #[test]
 fn the_per_frame_plane_answers_are_pointer_sized_payloads() {
     use busbar_contract::plane::{Ingress, Progress};

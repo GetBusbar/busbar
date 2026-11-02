@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The credential positions `${VAR}` filled, and what a plane is handed over them
-//! ([`super::plane_bound`]). Every test interpolates under its own section key and its own variable,
-//! so the process-wide ledger other tests write into never decides one of these.
-
 use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV};
 use serde_json::json;
 
 use super::{plane_bound, plane_bound_bytes};
 use crate::config::{interpolate_env_with, EnvSubst};
 
-/// A member program's environment key (`busbar_contract::conn::PROGRAM_KEYS`).
 const ENV: &str = busbar_contract::conn::PROGRAM_KEYS[2];
 
-/// `{ env: VAR }`: the reference a plane is handed where `${VAR}` filled a whole credential value.
 fn env_ref(var: &str) -> serde_json::Value {
     json!({ SECRET_MODULE_ENV: var })
 }
 
-/// Interpolate `template` with `vars` set, as boot does, and parse it.
 fn interpolated(template: &str, vars: &[(&str, &str)]) -> serde_yaml::Value {
     for (k, v) in vars {
         std::env::set_var(k, v);
@@ -33,8 +26,6 @@ fn section(doc: &serde_yaml::Value, key: &str) -> serde_json::Value {
     serde_json::to_value(doc.get(key).expect("written")).expect("json")
 }
 
-/// A credential field `${VAR}` filled whole reaches a plane as `{ env: VAR }`; `url`, `command`,
-/// `args`, `cwd` and `token_url` keep the load-time interpolation, as 1.5.5 handed them on.
 #[test]
 fn a_credential_field_reaches_a_plane_as_its_reference_and_every_other_field_as_interpolated() {
     const VAR: &str = "BUSBAR_FILLED_WHOLE_SECRET";
@@ -66,9 +57,6 @@ fn a_credential_field_reaches_a_plane_as_its_reference_and_every_other_field_as_
     );
 }
 
-/// A credential field `${VAR}` filled only in PART reaches a plane as a TEMPLATE reference over the
-/// value as written: no byte of the secret, nothing refused (no 1.5.5 narrowing), and the host
-/// resolves it back to the interpolated value.
 #[test]
 fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
     const VAR: &str = "BUSBAR_FILLED_PART_SECRET";
@@ -99,7 +87,6 @@ fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
     assert_eq!(resolved, format!("Bearer {PLAIN}"));
 }
 
-/// The kernel-owned `upstream_credentials` block is credential material at every depth.
 #[test]
 fn the_upstream_credentials_block_is_credential_material_at_every_depth() {
     const VAR: &str = "BUSBAR_FILLED_UPSTREAM_SECRET";
@@ -161,7 +148,7 @@ fn a_literal_equal_to_the_secret_elsewhere_and_a_changed_value_are_left_as_writt
         json!({"token": env_ref(VAR), "secret": PLAIN}),
         "only the position"
     );
-    // The same path holding a value `${VAR}` did not fill (an admin write since) is not one.
+
     let changed = plane_bound(
         &["filled_literal"],
         json!({"token": "written-by-the-admin-api"}),

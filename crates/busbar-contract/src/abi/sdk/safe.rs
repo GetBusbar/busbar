@@ -2,42 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A SLOT BODY WITH NO `unsafe` (THE DESIGN, plugins: a plugin crate stays
-//! `#![forbid(unsafe_code)]`; the plugin ABI: the SDK's typed wrappers). A plugin implements [`SafeSlot`] and names it in
-//! [`plugin_door!`](crate::plugin_door) as [`Safe<S>`]. The body is handed:
-//!
-//! * its `in` as a [`Lent`] (`abi::sdk::lent`): host-lent memory, read and filled without
-//!   `unsafe`, for the call only;
-//! * its instance as an [`Instance<T>`]: the plugin's own state, typed.
-//!
-//! THE INSTANCE, OWNED BY THE SDK. `open` installs the state with [`Instance::open`]; the SDK boxes
-//! it and answers the box as `open`'s instance, whatever the body wrote there, and only when `open`
-//! answers READY (a state installed by an `open` that answers anything else, or panics, is dropped).
-//! Every later call reads it with [`Instance::get`], as `&T`: ops on distinct tickets run
-//! concurrently on one instance (`abi::mechanism::lifecycle`, CONCURRENCY), so the SDK never hands out
-//! `&mut T` — a state that changes holds its own locks or atomics. When `close` answers READY the
-//! SDK drops the state (its `Drop` runs; a `Drop` that panics is caught and `close` still answers
-//! READY, since the box is gone either way); a `close` answering anything else leaves it in place,
-//! since the host keeps calling an instance whose `close` was not READY. So the body never frees
-//! it, and nothing can free it twice or use it after.
-//!
-//! AN OP'S PARKED CONTINUATION, OWNED BY THE SDK. A body that answers PENDING parks what it has
-//! done on its call's ticket ([`Instance::park`]) and takes it back when the host re-enters the op
-//! with `FLAG_RESUME` ([`Instance::resume`]). The SDK keeps it beside the state and drops it
-//! whenever it can no longer be the RESUME of the op that parked it: on any entry on that ticket
-//! WITHOUT `FLAG_RESUME` (a fresh op, possibly on a recycled ticket under another principal), on
-//! every answer that is not PENDING (READY or any failure: the op is over), and on `cancel` of that
-//! ticket. So a recycled ticket never resumes a finished op's state.
-//!
-//! AN ANSWER'S OWN MEMORY, KEPT BY ITS INSTANCE. The box also holds the instance's [`Kept`]: the
-//! owned failure texts and reported envelopes its answers name, grouped by ticket
-//! (`abi::sdk::out`). Nothing is kept per thread or per process, so two instances of one plugin
-//! never see each other's answers. A call with no instance yet (`validate`, `open`) is handed the
-//! host's lent reason buffer instead.
-//!
-//! THE CALL CONTRACT this relies on (`Entry::enter`): the host passes back the pointer `open`
-//! answered READY, until `close` answers READY, and runs `close` with no other op in flight. The
-//! state is boxed behind its type's `TypeId`, so a slot naming a different `T` reads `None` rather
-//! than another type's bytes.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell, UnsafeCell};
@@ -55,8 +19,7 @@ use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::out::{holders_live, Holders, Kept, Out, Reason, ReplyKey, Reporting};
 
 /// One op's parked continuation, its type erased: an `Option<S>` kept boxed in its slot. When the
-/// op ends it is emptied, not freed, so the next `S` parked in the slot reuses the allocation
-/// (BUSBAR-1.6.0.md A.8: a not-ready continuation comes from a recycled pool).
+
 trait Continuation: Send + Sync {
     /// Drop what is held, keeping the allocation.
     fn clear(&mut self);
@@ -75,16 +38,14 @@ impl<S: Send + Sync + 'static> Continuation for Option<S> {
 }
 
 /// How many slots each segment of an instance's parked table holds. The trampoline is not handed
-/// the Statement's `max_inflight`, and tickets outside it park too (the driver ticket, a duplex
-/// connection's second side), so the table opens with one segment in the instance box and grows by
-/// a segment only when every slot holds a parked op: an allocation at the peak, never per crossing.
+
 const SEGMENT: usize = 16;
 
 /// A free slot's key.
 const FREE: u64 = 0;
 
 /// A ticket as a slot's key: its two words side by side, compared, never decoded (the encoding is
-/// the host's). A real ticket's generation is never `0`, so its key is never [`FREE`].
+
 fn key(ticket: Ticket) -> u64 {
     (u64::from(ticket.slot) << 32) | u64::from(ticket.generation)
 }
@@ -113,7 +74,7 @@ impl Slot {
     }
 
     /// The slot, locked. Only parties on the slot's own ticket meet here (its entry and a `cancel`
-    /// of it), or a claimer that saw the slot free and lets go at once: never another ticket's op.
+
     fn hold(&self) -> Held<'_> {
         while self
             .lock
@@ -145,7 +106,7 @@ impl Slot {
 }
 
 /// A slot, locked; dropping it frees the slot's key when `free` says so, then lets go of the lock
-/// (a panic in a continuation's `Drop` included).
+
 struct Held<'a> {
     slot: &'a Slot,
     free: bool,
@@ -223,13 +184,11 @@ impl Drop for Segment {
 }
 
 /// What the SDK keeps in every instance box whatever the state's type: the tag, then the parked
-/// continuations, then what the instance's answers name.
+
 #[repr(C)]
 struct Head {
     tag: TypeId,
     /// The parked continuations, by ticket: slots claimed by compare-and-swap on the ticket, each
-    /// locked only by its own ticket's parties, so no crossing waits on another ticket's op, and
-    /// none allocates once its slot's continuation is pooled (BUSBAR-1.6.0.md decision #30, A.8).
     parked: Segment,
     kept: Kept,
 }
@@ -248,7 +207,7 @@ impl Head {
     }
 
     /// The slot `ticket`'s op is parked in, locked; `None` when nothing is parked on it, without
-    /// taking any lock.
+
     fn find(&self, ticket: Ticket) -> Option<Held<'_>> {
         if ticket.is_none() {
             return None;
@@ -257,7 +216,7 @@ impl Head {
         for slot in self.slots() {
             if slot.key.load(Ordering::Acquire) == key {
                 let held = slot.hold();
-                // Freed before the lock was taken: the ticket's op is no longer parked here.
+
                 if slot.key.load(Ordering::Acquire) == key {
                     return Some(held);
                 }
@@ -267,7 +226,7 @@ impl Head {
     }
 
     /// A free slot claimed for `ticket` by compare-and-swap, locked: first one whose pooled
-    /// continuation is an `S` (or none yet), then any free one, then one in a new segment.
+
     fn claim<S: Send + Sync + 'static>(&self, ticket: Ticket) -> Held<'_> {
         let key = key(ticket);
         for any in [false, true] {
@@ -289,7 +248,7 @@ impl Head {
     }
 
     /// `slot` claimed for `key`, locked, when it is free and (unless `any`) pools an `S` or
-    /// nothing.
+
     fn claim_free<S: 'static>(slot: &Slot, key: u64, any: bool) -> Option<Held<'_>> {
         if slot.key.load(Ordering::Relaxed) != FREE {
             return None;
@@ -305,7 +264,7 @@ impl Head {
                 .key
                 .compare_exchange(FREE, key, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok();
-        // Not claimed: `held` lets go of the lock as it drops.
+
         if claimed {
             Some(held)
         } else {
@@ -314,7 +273,7 @@ impl Head {
     }
 
     /// Park `state` on `ticket`, replacing what was parked there, in the slot's pooled allocation
-    /// when it holds an `S`. What it replaces is dropped outside the slot's lock.
+
     fn park<S: Send + Sync + 'static>(&self, ticket: Ticket, state: S) {
         if ticket.is_none() {
             return;
@@ -333,14 +292,14 @@ impl Head {
             drop(old);
             return;
         }
-        // The slot's first `S`: the one allocation, kept for every later op parked here.
+
         let old = cell.replace(Box::new(Some(state)));
         drop(held);
         drop(old);
     }
 
     /// Take back what `ticket` parked as an `S`, freeing its slot (the allocation stays, pooled);
-    /// `None` when nothing is, or another type is (it stays).
+
     fn take<S: Send + Sync + 'static>(&self, ticket: Ticket) -> Option<S> {
         let mut held = self.find(ticket)?;
         let taken = held
@@ -354,8 +313,7 @@ impl Head {
     }
 
     /// Retire `ticket` before dropping its state outside the slot lock. Return the emptied pooled
-    /// allocation only if nobody has reused the slot meanwhile. A destructor may re-enter the
-    /// instance, including cancelling this ticket or parking a new operation on it.
+
     fn forget(&self, ticket: Ticket) {
         let Some(mut held) = self.find(ticket) else {
             return;
@@ -367,8 +325,7 @@ impl Head {
         if let Some(c) = retired.as_mut() {
             c.clear();
         }
-        // Cleanup may have re-entered and reused the slot. Never replace that operation's state
-        // or reset its ticket; a busy slot simply keeps its own allocation.
+
         if let Some(mut held) = slot.try_hold() {
             if slot.key.load(Ordering::Acquire) == FREE && held.cell().is_none() {
                 *held.cell() = retired.take();
@@ -391,7 +348,7 @@ impl Head {
 }
 
 /// The box an instance pointer points to: the [`Head`] at offset `0` whatever `T` is
-/// (`#[repr(C)]`), so any slot can read the tag before it trusts the type, then the state.
+
 #[repr(C)]
 struct Tagged<T> {
     head: Head,
@@ -409,7 +366,7 @@ unsafe fn head<'a>(instance: *mut c_void) -> Option<&'a Head> {
 }
 
 /// The plugin's instance state, as a slot body is handed it. Only the SDK makes one; it lives for
-/// the call.
+
 pub struct Instance<'call, T> {
     ptr: *mut c_void,
     index: u32,
@@ -417,8 +374,6 @@ pub struct Instance<'call, T> {
     resuming: bool,
     opened: &'call Cell<Option<Box<Tagged<T>>>>,
     /// INVARIANT in `'call`: an instance cannot be shortened to a local's
-    /// lifetime, so the generation borrow it lends ([`Instance::generation`]) holds only what the
-    /// instance state lives for.
     _call: PhantomData<fn(&'call ()) -> &'call ()>,
 }
 
@@ -435,7 +390,7 @@ impl<T> std::fmt::Debug for Instance<'_, T> {
 
 impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     /// The state `open` installed; `None` before `open` (in `validate` and `open` itself) or when
-    /// it was installed as another type.
+
     #[must_use]
     pub fn get(&self) -> Option<&'call T> {
         if self.ptr.is_null() {
@@ -454,10 +409,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// Install the state, in `open`. It becomes the instance only if `open` answers READY; a
-    /// second call replaces the first.
-    ///
-    /// # Panics
-    /// In any slot but `open` (the trampoline answers FAULT).
+
     pub fn open(&self, state: T) {
         assert!(
             self.index == slot::OPEN,
@@ -470,11 +422,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// Install the state in `open`, PRE-PARKING `parked` on this call's ticket — for an `open`
-    /// whose connect step answered PENDING. The box is minted and RETAINED across the pend (the
-    /// trampoline keeps it rather than dropping it), so plugin-owned per-instance memory carries
-    /// what the step parked to the RESUME, which reads it back with [`Instance::resume`]. There is
-    /// no module static: the half-open state lives in the instance box, like every other op's. A
-    /// call with no ticket parks nothing (it may not pend). Panics outside `open`, as [`open`].
+
     pub fn open_parking<S: Send + Sync + 'static>(&self, state: T, parked: S) {
         assert!(
             self.index == slot::OPEN,
@@ -484,7 +432,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             head: Head::new(TypeId::of::<T>()),
             state,
         });
-        // A call with no ticket parks nothing (`Head::park`).
+
         tagged.head.park(self.ticket, parked);
         self.opened.set(Some(tagged));
     }
@@ -513,8 +461,6 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     /// ```
     #[must_use]
     pub fn generation(&self) -> Gen<'call> {
-        // `close` frees the state its borrow names before the host reads the `out`; the
-        // trampoline clears what `close` named (above), and a `close` has no use for it.
         debug_assert_ne!(
             self.index,
             slot::CLOSE,
@@ -534,12 +480,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// PARK `state` on this call's ticket across its PENDING answer: the op's own continuation
-    /// (what it has done, buffers a pending service reads or writes). It replaces what was parked
-    /// there. The SDK drops it unless this call answers PENDING and the host's next entry on the
-    /// ticket is its RESUME; a call with no ticket or no instance parks nothing (it may not pend).
-    ///
-    /// It takes no lock another ticket's op holds, and once the instance has parked an `S` its
-    /// allocation is reused: a warm park allocates nothing.
+
     pub fn park<S: Send + Sync + 'static>(&self, state: S) {
         if let Some(h) = self.head() {
             h.park(self.ticket, state);
@@ -547,9 +488,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// Take back what [`Instance::park`] parked on this call's ticket, in the op's RESUME, by
-    /// value: its allocation stays in the instance's pool for the next park, so the crossing
-    /// allocates nothing. `None` in a fresh entry, when nothing is parked, or when another type is
-    /// (it stays).
+
     #[must_use]
     pub fn resume_value<S: Send + Sync + 'static>(&self) -> Option<S> {
         if !self.resuming {
@@ -559,7 +498,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 
     /// [`Instance::resume_value`], boxed. The box is a fresh allocation: a body on the request path
-    /// takes the value with [`Instance::resume_value`].
+
     #[must_use]
     pub fn resume<S: Send + Sync + 'static>(&self) -> Option<Box<S>> {
         self.resume_value().map(Box::new)
@@ -585,7 +524,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
 }
 
 /// A slot body with no `unsafe`: [`RawSlot`](crate::abi::sdk::door::RawSlot)'s safe form, named in
-/// [`plugin_door!`](crate::plugin_door) as [`Safe<Self>`].
+
 pub trait SafeSlot {
     /// The slot's `in`.
     type In: AbiIn;
@@ -594,9 +533,7 @@ pub trait SafeSlot {
     /// The plugin's instance state: one type for every slot of the plugin.
     type State: Send + Sync + 'static;
     /// The body. `input` is the host's `in`, lent for the call; `out` a private copy of the
-    /// host's `out`, written back when the body returns (the trampoline's rules, `abi::sdk::door`),
-    /// handed as an [`Out`]: scalars set directly, every pointer through an SDK writer
-    /// (`abi::sdk::out`).
+
     fn call(
         instance: Instance<'_, Self::State>,
         input: Lent<'_, Self::In>,
@@ -708,7 +645,6 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
     const SAFE: bool = true;
 
     unsafe fn enter(instance: *mut c_void, index: u32, input: &S::In, out: &mut S::Out) -> Outcome {
-        // What `open` installs; dropped on the way out, a panic included, unless handed over.
         let opened = Cell::new(None);
         // SAFETY: every `in` leads with its `InHead` (`AbiIn`'s contract); `input` is live.
         let call = unsafe { std::ptr::from_ref(input).cast::<InHead>().read() };
@@ -718,7 +654,6 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
         let reply_key = ReplyKey::of(call.ticket);
         let prior_report = parked.and_then(|h| h.kept.begin(reply_key));
         if let (Some(h), false) = (parked, resuming) {
-            // A fresh op on this ticket: nothing parked there is its continuation.
             h.forget(call.ticket);
         }
         let handle = Instance {
@@ -729,12 +664,11 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
             opened: &opened,
             _call: PhantomData,
         };
-        // What the body reports is built here and handed to the instance when it returns.
+
         let reporting: Reporting = Cell::new(prior_report);
-        // What its answer leased or published from, checked when it returns.
+
         let holders: Holders = RefCell::new(Vec::new());
-        // A failed OPEN frees its partial instance before returning, including on resume.
-        // Its owned reason must therefore live in the host's buffer rather than that instance.
+
         let written = match parked {
             Some(h) if index != slot::OPEN => Out::kept(&mut *out, &h.kept, &reporting, &holders),
             // SAFETY: `input` is the trampoline's copy of the host's `in` for slot `index`.
@@ -744,8 +678,6 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.
         let mut answered = S::call(handle, unsafe { Lent::new(input) }, written);
         if !holders_live(&holders) {
-            // The answer names memory a lease table or published generations held, and that
-            // table went with the body (one it made for itself): the host must read none of it.
             answered = Outcome::Fault;
         }
         let reported = reporting.take();
@@ -754,7 +686,6 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
             .is_some_and(|report| report.has_envelope());
         if let Some(h) = parked {
             if answered != Outcome::Pending {
-                // The op is over (READY or a failure): no RESUME will come for what it parked.
                 h.forget(call.ticket);
             }
             if index == slot::CANCEL {
@@ -763,39 +694,27 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
                     .downcast_ref::<CancelIn>()
                     .map(|c| c.ticket)
                     .or_else(|| {
-                        // A kind that widens `cancel` embeds the lifecycle's `in` first.
                         any.downcast_ref::<crate::abi::plane::PlaneCancelIn>()
                             .map(|c| c.cancel.ticket)
                     });
                 if let Some(ticket) = cancelled {
-                    // `cancel`: the cancelled ticket's op will not resume either.
                     h.forget(ticket);
                 }
             }
         }
-        // Continuation cleanup can call the host and re-enter an unticketed slot on this
-        // actual thread. Keep this answer local until those callbacks finish, then publish it;
-        // a nested crossing must never retire the reply that the outer crossing has not returned.
+
         if let (Some(h), Some(r)) = (parked, reported) {
             h.kept.keep(reply_key, r);
         }
         match index {
             slot::OPEN => {
-                // Every kind's `open` `out` leads with the lifecycle's `OpenOut` (`KindOps`).
                 debug_assert!(size_of::<S::Out>() >= size_of::<OpenOut>());
                 let minted = match (answered, opened.take()) {
-                    // A FRESH open installed a box: hand it to the host when the open is READY, or
-                    // RETAIN it across a PENDING so the open's RESUME finds its half-open state on
-                    // the same box (plugin-owned memory, no module static). Any other outcome drops
-                    // the box (the `take` above).
                     (Outcome::Ready | Outcome::Pending, Some(b)) => {
                         Box::into_raw(b).cast::<c_void>()
                     }
                     (_, Some(_)) => std::ptr::null_mut(),
-                    // A RESUME of a pended open installs no new box; the box IS the instance the
-                    // host kept across the pend. Keep it while the open runs (READY completes it,
-                    // PENDING pends again). A failure frees it: an open never leaves a half-open
-                    // box behind, and no `close` will come for an instance that never opened.
+
                     (Outcome::Ready | Outcome::Pending, None) => instance,
                     (_, None) if !instance.is_null() => {
                         // SAFETY: the SDK's `Tagged<S::State>` box this open minted on its earlier
@@ -814,18 +733,14 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
                 // SAFETY: as `Instance::get`: the tag at offset 0 of the SDK's box.
                 let tag = unsafe { instance.cast::<TypeId>().read() };
                 if tag != TypeId::of::<S::State>() {
-                    // Not this state's box: leave it rather than free it as another type.
                     return Outcome::Fault;
                 }
                 // SAFETY: every `out` leads with its `OutHead` (`AbiOut`); `out` is live.
                 let head = unsafe { &mut *std::ptr::from_mut(out).cast::<OutHead>() };
-                // Whatever `close` named in its `out` may live in the box that goes now (a reason
-                // leased from the state's table, a string the generation borrow named): the host
-                // reads the `out` after this call, so it names none of it (status row 194).
+
                 head.error = crate::abi::mechanism::call::AbiStr::ABSENT;
                 head.extensions = crate::abi::mechanism::call::Blob::ABSENT;
                 if kept_report {
-                    // What `close` reported lives in the box that goes now: it is not reported.
                     head.envelope.metrics = std::ptr::null();
                     head.envelope.metrics_len = 0;
                     head.envelope.diags = std::ptr::null();
@@ -834,10 +749,7 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
                 // SAFETY: the SDK's `Tagged<S::State>` box from `open`; `close` answered READY with
                 // no other op in flight, so the host never passes it again (the call contract).
                 let gone = unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) };
-                // The state's `Drop` is plugin code and may panic. The box is deallocated during
-                // that unwind all the same, so the answer stays READY: a FAULT here would tell the
-                // host the instance is still live while its memory is gone. The panic dies at the
-                // boundary's one reviewed catch ([`crate::abi::sdk::boundary::caught`]).
+
                 let _ = crate::abi::sdk::boundary::caught(move || drop(gone));
             }
             _ => {}
@@ -874,7 +786,6 @@ unsafe fn lent_reason<I: 'static>(index: u32, input: &I) -> Option<Reason> {
             (v.err_buf, v.err_cap, false)
         }
         slot::OPEN => {
-            // Every kind's `open` `in` leads with the lifecycle's `OpenIn` (`KindOps`).
             debug_assert!(size_of::<I>() >= size_of::<OpenIn>());
             // SAFETY: at OPEN, `I` is the kind's `open` `in`, which leads with an `OpenIn`
             // (`KindOps`'s contract).

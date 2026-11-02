@@ -2,21 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE DECLARATION PER SHAPE AND PER OP: the macros a kind's `abi/<kind>/` states its shapes and
-//! its answer checks with, so each is written once.
-//!
-//! - `abi_struct!` states `#[repr(C)]` structs as written (attributes, docs and fields pass
-//!   through unchanged) and adds each one's `FIELDS` (name, type, offset, size, in declaration
-//!   order) and `LAYOUT` (the words [`crate::layout_shape!`] folds into the kind's fingerprint).
-//! - `abi_op!` states one op's answer validator as an ordered list of per-field rules
-//!   (`blob`, `code`, `bits`, `zero`, `list`, `span`, `within`) and hand steps (`then`), and
-//!   generates the straight-line `check_<op>` plus its RED table ([`RedCase`]): one case per
-//!   (field, rule), each naming the [`Rule`] and the fault field the check answers.
-//! - `abi_answers!` states a kind's answers by slot and generates `answer::<op>` and the kind's
-//!   `check_answer`, the one call the loader makes per op answer (the `in`/`out` size checks
-//!   included).
-//!
-//! The rules run in the order they are listed, so a fault's field is the one today's checks name
-//! first. A rule that relates two fields (a contradiction) is a `then` step: explicit code.
 
 use super::check::Rule;
 
@@ -35,7 +20,7 @@ pub struct AbiField {
 }
 
 /// One RED case of an `abi_op!` validator: `red` breaks exactly one declared rule of a GREEN
-/// answer, and the validator then answers `Fault { rule, field }`.
+
 pub struct RedCase<T> {
     /// The rule the broken answer faults under.
     pub rule: Rule,

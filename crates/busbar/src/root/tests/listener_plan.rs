@@ -960,8 +960,6 @@ async fn newly_opened_data_paths_are_physically_served_without_a_restart_report(
     );
 }
 
-/// The default data chain's keys position is implemented by the kernel, with no AuthCalls
-/// object. Listener preparation must preserve that position while collecting only plugin calls.
 #[tokio::test]
 async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     use busbar_contract::abi::auth::{POINT_HEAD, POINT_HEAD_BODY};

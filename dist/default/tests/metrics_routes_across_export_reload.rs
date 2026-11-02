@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE TWO WELL-KNOWN SCRAPE ROUTES ACROSS A RELOAD, AS 1.5.5 ANSWERED THEM**. `/metrics` and `/metrics/hooks` are the scrape sink's own routes
-//! now, but that moved their owner, not their
-//! behaviour. Through the shipped binary, booted with a `module: prometheus` instance:
-//!
-//! * a reload that REMOVES the instance (`config.yaml` edited, `POST /api/v1/admin/config/reload`)
-//!   is live and reports
-//!   nothing awaiting a restart; `/metrics` then `404`s (1.5.5's plugin route resolved its owner
-//!   from the current snapshot) while `/metrics/hooks` keeps answering `200` under its own content
-//!   type (1.5.5's core route, mounted with the recorder at boot, answered for the process's life);
-//! * a reload that ADDS a prometheus instance back, under another name, serves `/metrics` again —
-//!   1.5.5's host-held recorder answered whatever the instance was called — and reports nothing
-//!   awaiting a restart, because the path was mounted at boot.
-
 #![cfg(unix)]
 #![cfg(linked_axis_export_doors)]
 
@@ -91,7 +78,6 @@ models:
     .unwrap();
 }
 
-/// Kill the child when the test ends, however it ends.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -100,7 +86,6 @@ impl Drop for Reap {
     }
 }
 
-/// One answer: status, the `content-type` header, the body.
 struct Answer {
     status: u16,
     content_type: String,
@@ -145,8 +130,6 @@ fn http(addr: &str, method: &str, path: &str, body: Option<&str>, token: Option<
     })
 }
 
-/// `POST /api/v1/admin/config/reload`: applied, and naming no well-known scrape path as awaiting a
-/// restart (the removal is live, and `/metrics` was mounted at boot).
 fn reload(admin: &str) -> Answer {
     let r = http(
         admin,
@@ -177,7 +160,6 @@ fn read_to_string(path: &Path) -> String {
     s
 }
 
-/// `GET path` until it answers anything but the recorder's boot-window `503`.
 fn settled(data: &str, path: &str, token: &str) -> Answer {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -243,7 +225,6 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
         .unwrap_or_else(|| panic!("the admin API mints a key: {}", minted.body))
         .to_string();
 
-    // Booted with the scrape sink: both routes answer, each under its 1.5.5 content type.
     let metrics = settled(&data, "/metrics", &token);
     assert_eq!(
         (metrics.status, metrics.content_type.as_str()),
@@ -259,8 +240,6 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
         hooks.body
     );
 
-    // THE RELOAD THAT REMOVES IT: config.yaml loses its `export:` block and the admin API reloads
-    // it from disk — live, and nothing awaits a restart.
     let config = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
     let without = config.replace(
         "export:\n  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
@@ -282,8 +261,6 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
         hooks.body
     );
 
-    // THE RELOAD THAT ADDS ONE BACK, under another name: /metrics serves again, and the path was
-    // mounted at boot, so nothing awaits a restart.
     std::fs::write(
         dir.join("config.yaml"),
         config.replace(
@@ -305,17 +282,6 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_metrics_requires_auth_in_chain_mode`
-/// 1.5.5: with a data-plane auth chain configured, `GET /metrics` with
-/// NO credential is refused `401` (the scrape is credential-gated, never exempt), while the same
-/// credential-less client still reaches the declared-open routes: `/healthz` answers with its own
-/// verdict (`200` or `503`, never the chain's `401`) and `GET /auth/token?logout=1` serves its
-/// signed-out page (`200`). The same scrape with a chain-admitted credential is `200` and carries
-/// a series (the legacy test seeded the request counter in process; a spawned node with no traffic
-/// yet renders its scrape-time lane series, `busbar_lane_state`).
-///
-/// RED: `/metrics` is re-exempted (a credential-less `200`), the chain shuts the declared-open
-/// routes too, or an admitted credential's scrape is refused.
 #[test]
 fn test_metrics_requires_auth_in_chain_mode() {
     let dir = fixture_dir();
@@ -365,7 +331,7 @@ fn test_metrics_requires_auth_in_chain_mode() {
         .and_then(|rest| rest.split('"').next())
         .unwrap_or_else(|| panic!("the admin API mints a key: {}", minted.body))
         .to_string();
-    // The admitted scrape first, past the recorder's boot window.
+
     let authed = settled(&data, "/metrics", &token);
     assert_eq!(
         authed.status, 200,

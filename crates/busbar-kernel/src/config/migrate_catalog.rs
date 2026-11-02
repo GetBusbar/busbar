@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROVIDERS CATALOG'S STRAY KEYS (owner ruling 2026-10-27): a `providers.yaml` catalog entry
-//! refuses a key its grammar ([`ProviderDef`]) does not read. 1.5.5 ignored such a key, so removing
-//! it keeps exactly what 1.5.5 did: `busbar --migrate-config` rewrites the catalog without them, one
-//! change line each. The keys the grammar reads are read off the grammar itself (its derive's own
-//! field list), never written here.
-
 use serde_yaml::Value;
 
 use super::providers;
@@ -53,8 +47,7 @@ impl<'de> serde::Deserializer<'de> for Probe {
         ignored_any
     }
 }
-/// The keys a derived struct reads, as its `Deserialize` derive states them (the `fields` it hands
-/// `deserialize_struct`); empty when the type does not read a struct.
+
 pub(super) fn struct_keys<T>(
     read: impl FnOnce(Probe) -> Result<T, Fields>,
 ) -> &'static [&'static str] {
@@ -64,17 +57,11 @@ pub(super) fn struct_keys<T>(
     }
 }
 
-/// The keys a catalog entry reads.
 #[must_use]
 pub fn catalog_keys() -> &'static [&'static str] {
     providers::catalog_grammar_keys()
 }
 
-/// `raw`, a `providers.yaml` catalog (`shown` is how its path is printed), without the keys its
-/// entries' grammar does not read. `None` when it has none to remove.
-///
-/// # Errors
-/// The catalog is not YAML, or the grammar's keys cannot be read (nothing is then removed).
 pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration>, String> {
     let keys = catalog_keys();
     if keys.is_empty() {
@@ -84,8 +71,7 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
     let Value::Mapping(mut catalog) = doc else {
         return Ok(None);
     };
-    // Plane-owned typed keys are also grammar: migration must never erase an option a loaded
-    // plane reads merely because the kernel carries it opaquely.
+
     let descriptor =
         crate::plane_driver::door::provider_keys(crate::plane_driver::registry::plane_decls());
     let mut changes = Vec::new();

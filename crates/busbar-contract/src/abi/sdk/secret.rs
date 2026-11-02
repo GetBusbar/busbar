@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SECRET KIND'S SHARED SOURCE PIECES (`abi::secret`): what every Rust secret source answered
-//! alike, stated once.
-//!
-//! * [`error_kind`] — a [`SecretErrorKind`] as the ABI's `ERROR_KIND_*` code.
-//! * [`settings_of`] — a reference's settings bytes as the JSON object they must be.
-//! * [`takes_no_settings`] — the instance settings of a source that takes none: empty or `{}`.
-//! * [`failed`] — `resolve`'s failure answer: the error's code and its text, FAILED.
 
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::sdk::life::Refusal;
@@ -31,9 +25,7 @@ pub const fn error_kind(kind: SecretErrorKind) -> u32 {
 }
 
 /// A resolve's settings bytes as the JSON object they must be (empty = none).
-///
-/// # Errors
-/// [`SecretErrorKind::Invalid`]: the bytes are not a JSON object.
+
 pub fn settings_of(bytes: &[u8]) -> SecretResult<serde_json::Map<String, serde_json::Value>> {
     if bytes.is_empty() {
         return Ok(serde_json::Map::new());
@@ -44,11 +36,7 @@ pub fn settings_of(bytes: &[u8]) -> SecretResult<serde_json::Map<String, serde_j
 }
 
 /// The instance settings of the source `module`, which takes none: empty bytes or an empty object.
-/// Anything else is refused naming why; `names` says where a reference names its value instead
-/// (`"variable in its own settings.key"`).
-///
-/// # Errors
-/// The settings are not a JSON object, or name a setting.
+
 pub fn takes_no_settings(bytes: &[u8], module: &str, names: &str) -> Result<(), String> {
     if bytes.is_empty() {
         return Ok(());

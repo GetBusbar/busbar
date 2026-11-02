@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! EVERY UNIT THAT ARRIVED IS CLOSED EXACTLY ONCE (`plane_driver/close.rs`), against the double,
-//! which counts each unit's closing calls by its key: the `on_piece` answer that says its reply is
-//! complete, a `refusal` naming it, a `cancel` naming it or the op it had in flight.
-//!
-//! A plane keeps a unit from `arrive` until its closing call and lets it go there (`abi::plane`,
-//! "ONE UNIT, ONE KEY"); a plane that bounds the units it keeps refuses every arrival once units
-//! that never had theirs fill it. Two exits left a unit with none: its caller went away while the
-//! gate-first screen ran, and it failed after its answer had begun (a store outage on a record
-//! write), so no `refusal` was rendered. The table holds every other exit to one close too, and a
-//! completed unit is never closed twice. None of it writes a byte to the caller: the close is the
-//! plane's, after the caller's answer.
-
 use super::hook_cases::Nobody;
 use super::*;
 
@@ -22,12 +10,10 @@ use busbar_kernel::plane_driver::{FarEnd, PlaneUnits};
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
 
-/// The closing calls the double had for the unit keyed `key`.
 fn closes(plane: &Double, key: u64) -> u32 {
     plane.closes.lock().unwrap().get(&key).copied().unwrap_or(0)
 }
 
-/// Run one unit keyed `key` over `far` through the one loop; its outcome.
 async fn drive_as<F: FarEnd>(
     units: &PlaneUnits<'_, common::TestUnits, F, cases::Caller>,
     key: u64,
@@ -55,8 +41,6 @@ async fn drive_as<F: FarEnd>(
     }
 }
 
-/// A gate-first entry's rewrite hook whose first `stuck` calls never answer (a hook still
-/// thinking when the caller goes away), or that panics; every other call abstains.
 struct Stuck {
     stuck: AtomicU32,
     panics: bool,
@@ -95,7 +79,6 @@ impl busbar_contract::hooks::RoutingPolicy for Stuck {
     }
 }
 
-/// A gate-first binder attaching `rewrite` as the entry's one rewrite hook.
 struct Rewrites(Arc<Stuck>);
 
 impl busbar_kernel::plane_driver::HookBinder for Rewrites {
@@ -129,7 +112,6 @@ impl busbar_kernel::plane_driver::HookBinder for Rewrites {
     }
 }
 
-/// A driver whose gate-first screen's rewrite hook sticks on its first `stuck` units, or panics.
 fn screened(stuck: u32, panics: bool) -> (Arc<Double>, PlaneDriver) {
     let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     let binder = Rewrites(Arc::new(Stuck {
@@ -139,8 +121,6 @@ fn screened(stuck: u32, panics: bool) -> (Arc<Double>, PlaneDriver) {
     (r.plane, r.driver.with_hooks(Arc::new(binder)))
 }
 
-/// A driver whose ROUTED request stage (the head of the route leg, before the unit's pump and its
-/// ticket exist) runs a rewrite hook that sticks on its first unit.
 fn routed() -> (Arc<Double>, PlaneDriver) {
     let stuck: Arc<dyn busbar_contract::hooks::RoutingPolicy> = Arc::new(Stuck {
         stuck: AtomicU32::new(1),
@@ -167,11 +147,6 @@ fn routed() -> (Arc<Double>, PlaneDriver) {
     (r.plane, r.driver)
 }
 
-/// RED, THE FIRST REPORTED EXIT: the caller goes away while a gate-first plane's screen is still
-/// running its hook, after `arrive` and before the door. The unit is owed its close and nothing
-/// crosses inside the drop; the next arrival's decode pays it with the host's `cancel` naming the
-/// unit, once, and the caller was written nothing. Before the fix the unit was never closed: the
-/// plane held it for as long as the instance lived.
 #[tokio::test]
 async fn a_unit_whose_caller_goes_away_at_the_gated_screen_is_closed_once() {
     let (plane, driver) = screened(1, false);
@@ -197,7 +172,6 @@ async fn a_unit_whose_caller_goes_away_at_the_gated_screen_is_closed_once() {
     assert_eq!(caller.status(), None, "the caller was answered nothing");
     assert_eq!(caller.text(), "");
 
-    // The next arrival pays it at its decode.
     let (steps, far, next) = (
         common::TestUnits::passing(),
         cases::Far::new(&["ok"], cases::CHUNKS),
@@ -212,10 +186,6 @@ async fn a_unit_whose_caller_goes_away_at_the_gated_screen_is_closed_once() {
     assert_eq!(next.text(), "hello far end");
 }
 
-/// RED, THE SECOND REPORTED EXIT: a unit fails after its answer began (the plane's record write on
-/// the answer's second window finds the store out), so the caller keeps what streamed and no
-/// `refusal` is rendered. The unit is owed its close, paid once by the next sweep, and the caller's
-/// bytes are exactly what streamed before the failure. Before the fix the unit was never closed.
 #[tokio::test]
 async fn a_unit_that_fails_after_its_answer_began_is_closed_once() {
     let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
@@ -251,8 +221,6 @@ async fn a_unit_that_fails_after_its_answer_began_is_closed_once() {
     );
 }
 
-/// A COMPLETED UNIT IS CLOSED ONCE, BY ITS OWN LAST ANSWER, AND NEVER AGAIN: the plane's `EMIT_DONE`
-/// is its close, so nothing is owed for it, and the sweeps and arrivals after it add no second call.
 #[tokio::test]
 async fn a_completed_unit_is_closed_once_and_never_again() {
     let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
@@ -356,10 +324,8 @@ const EXITS: [Exit; 23] = [
     Exit::SessionEnded,
 ];
 
-/// The unit's key on every exit.
 const KEY: u64 = 41;
 
-/// One unit through `exit` on a driver of its own, then the sweep: the closing calls it had.
 async fn closed_by(exit: Exit) -> u32 {
     let passing = common::TestUnits::passing;
     let unit_on = |far: &'static str| (cases::Far::new(&[far], cases::CHUNKS), "/call");
@@ -376,7 +342,7 @@ async fn closed_by(exit: Exit) -> u32 {
                 cases::Far::new(&["ok"], &[]),
                 cases::Caller::default(),
             );
-            // A body of one `user` turn, so the routed rewrite has a prompt to see.
+
             let arrival = cases::arrival("/call", b"user:hello");
             let units = driver.unit(&steps, &far, &caller, arrival, 0);
             {
@@ -458,7 +424,6 @@ async fn closed_by(exit: Exit) -> u32 {
         Exit::DoneAnswerRacingTheDeadline
         | Exit::DoneAnswerRacingAClientDrop
         | Exit::RetryDoneAnswerRacingTheDeadline => {
-            // Two windows: the first streams, the second (the reply done) is held past the cut.
             let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
             let (steps, far, caller) = (
                 passing(),
@@ -714,15 +679,6 @@ async fn closed_by(exit: Exit) -> u32 {
     }
 }
 
-/// EVERY EXIT CLOSES AN ARRIVED UNIT, AND THE GUARD NEVER ADDS A CALL: whichever way a unit that
-/// crossed `arrive` leaves (completed, answered locally, refused at its arrival, its identity, the
-/// door or the screen, its caller gone at the screen, the routed hook stage or mid-answer, a panic
-/// unwinding it, failed before or after its answer began, past its deadline, drained by a reload,
-/// the walk out of members after a failover or a dial that brought nothing back, a refusal handed
-/// as a piece first, a session ended), the plane has exactly one closing call for it once the
-/// sweep has run. A cancellation's later refusal renders without naming the closed unit.
-/// RED before the fix: the gated screen's two
-/// exits, the routed hook stage's, and the failures after the answer began had none.
 #[tokio::test]
 async fn every_exit_closes_an_arrived_unit_exactly_once() {
     let mut wrong = Vec::new();

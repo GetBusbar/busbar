@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Kill the node at every durability point there is.
-//!
-//! There is no interesting subset of the byte offsets a crash can stop at, so none is chosen: the
-//! battery writes a run of records, truncates the segment at EVERY offset from zero to the end,
-//! recovers, and asserts the recovered records are exactly the longest complete prefix of what was
-//! written. A special case in the scan shows up here as the one offset the loop fails on.
-//!
-//! A crash does not only shorten a file. The space a segment claims ahead of its writes is zeros,
-//! so a write that stopped part way leaves the file its full length with zeros from the stopping
-//! point on — and that is walked at every offset too, and must read as a torn tail, never as
-//! corruption.
-
 use busbar_kernel_wal::backend::{MemoryFactory, SegmentFactory as _};
 use busbar_kernel_wal::record::{Record, FRAME_BYTES};
 use busbar_kernel_wal::recover::recover_and_truncate;
@@ -20,15 +8,9 @@ use busbar_kernel_wal::segment::Segment;
 
 use super::fixtures::{durability_token, records};
 
-/// A ceiling small enough that the space a segment claims ahead of its writes stays in the
-/// kilobytes. The rule under test is about frame boundaries, not about how large a segment can get.
 const TEST_CEILING: u64 = 256 * FRAME_BYTES as u64;
 
-/// Write `written` into a fresh memory segment and return exactly the committed bytes — not the
-/// claimed-ahead zeros after them, which are not part of what a crash can tear.
 fn lay_down(written: &[Record]) -> Vec<u8> {
-    // Retaining, because the bytes are read back after the log that wrote them is gone: a plain
-    // factory releases a segment the moment nothing is writing to it.
     let mut factory = MemoryFactory::retaining();
     let mut wal = busbar_kernel_wal::wal::Wal::with_parts(
         Box::new(factory.clone()),
@@ -50,7 +32,6 @@ fn lay_down(written: &[Record]) -> Vec<u8> {
     bytes
 }
 
-/// Recover from exactly these bytes, cutting whatever does not verify.
 fn recover_from(bytes: &[u8]) -> Vec<Record> {
     let shared =
         busbar_kernel_wal::backend::SharedBytes::new(std::sync::Mutex::new(bytes.to_vec()));
@@ -65,8 +46,6 @@ fn recover_from(bytes: &[u8]) -> Vec<Record> {
     .records
 }
 
-/// Write each of `commits` as its own group commit into a fresh memory segment and return exactly
-/// the committed bytes.
 fn lay_down_commits(commits: &[Vec<Record>]) -> Vec<u8> {
     let mut factory = MemoryFactory::retaining();
     let mut wal = busbar_kernel_wal::wal::Wal::with_parts(
@@ -93,7 +72,6 @@ fn lay_down_commits(commits: &[Vec<Record>]) -> Vec<u8> {
     bytes
 }
 
-/// How many whole records survive a cut at `offset`, given the frame count of each record.
 fn expected_prefix(written: &[Record], offset: usize) -> usize {
     let mut end = 0usize;
     let mut kept = 0usize;
@@ -110,8 +88,6 @@ fn expected_prefix(written: &[Record], offset: usize) -> usize {
 
 #[test]
 fn a_cut_at_every_byte_offset_recovers_the_longest_complete_prefix() {
-    // Bodies chosen so the run mixes single-frame records with two- and three-frame ones: the rule
-    // is about RECORDS, and a run of uniform single-frame records would never exercise it.
     let mut written = Vec::new();
     for (i, body_len) in [0usize, 10, 415, 416, 417, 900, 1000]
         .into_iter()
@@ -144,15 +120,6 @@ fn a_cut_at_every_byte_offset_recovers_the_longest_complete_prefix() {
     }
 }
 
-/// **A WRITE THAT STOPPED AT ANY BYTE, WITH ZEROS AFTER IT, IS A TORN TAIL — NEVER CORRUPTION**
-///
-/// The shape a crash mid-commit really leaves on a segment that claimed its space ahead: the file
-/// keeps its length, the bytes up to where the write stopped are there, and everything after is the
-/// claimed zeros. Walked at every byte of two group commits. Nothing past the stopping point was
-/// acknowledged — the commit it is in never synced, and nothing after it was written — so the cut is
-/// silent: no quarantine, no identity taken. RED before the fix: a stop inside a frame's payload
-/// (its header and digest written, its payload not) read as a whole frame altered afterwards, and
-/// raised a corruption alarm over an ordinary crash.
 #[test]
 fn a_zero_padded_tear_at_every_byte_offset_is_torn_never_corrupt() {
     let mut first = Vec::new();
@@ -171,7 +138,7 @@ fn a_zero_padded_tear_at_every_byte_offset_is_torn_never_corrupt() {
     let bytes = lay_down_commits(&[first.clone(), second.clone()]);
     let mut written = first;
     written.extend(second);
-    // Space claimed ahead of the writes, which a crash leaves as zeros too.
+
     let claimed = bytes.len() + 4 * FRAME_BYTES;
 
     for stop in 0..=bytes.len() {
@@ -204,8 +171,6 @@ fn a_zero_padded_tear_at_every_byte_offset_is_torn_never_corrupt() {
 
 #[test]
 fn a_cut_mid_record_drops_the_whole_record_not_a_short_one() {
-    // One record that needs three frames. A cut after two of them must produce nothing: a truncated
-    // body would be a fact the recovery path invented.
     let written = vec![Record::new(1, 1, vec![9u8; 1000])];
     assert_eq!(written[0].frame_count(), 3);
     let bytes = lay_down(&written);
@@ -220,10 +185,6 @@ fn a_cut_mid_record_drops_the_whole_record_not_a_short_one() {
     assert_eq!(recover_from(&bytes), written);
 }
 
-/// **A FLIPPED BYTE ANYWHERE COSTS THAT RECORD AND NO OTHER**. Every byte
-/// of every frame is flipped in turn. The frame is whole, so the damage is acknowledged: the record
-/// it is in is set aside and every record behind it is kept. RED before the fix: the scan stopped at
-/// the damaged record for good, and every record behind it was cut with it.
 #[test]
 fn a_single_flipped_byte_anywhere_sets_aside_that_record_and_no_other() {
     let written = records(3, 1, 4, 200);
@@ -246,7 +207,7 @@ fn a_single_flipped_byte_anywhere_sets_aside_that_record_and_no_other() {
 fn recovery_cuts_the_backing_so_the_next_append_lands_on_a_boundary() {
     let written = records(5, 1, 3, 100);
     let bytes = lay_down(&written);
-    // Stop one byte into the third record's frame.
+
     let torn = &bytes[..2 * FRAME_BYTES + 1];
     let shared = busbar_kernel_wal::backend::SharedBytes::new(std::sync::Mutex::new(torn.to_vec()));
     let backend = Box::new(busbar_kernel_wal::backend::MemorySegment::over(
@@ -263,15 +224,13 @@ fn recovery_cuts_the_backing_so_the_next_append_lands_on_a_boundary() {
     assert_eq!(recovered.discarded_bytes, 1);
     assert_eq!(shared.lock().unwrap().len(), 2 * FRAME_BYTES);
     assert_eq!(segment.write_offset(), 2 * FRAME_BYTES as u64);
-    // A torn tail is a crash mid-append: cut silently, nothing set aside.
+
     assert!(recovered.quarantined.is_empty());
     assert!(sink.quarantined().is_empty());
 }
 
 #[test]
 fn a_restart_replays_to_the_recovered_head_and_appends_after_it() {
-    // Retaining: the segment has to outlive the first log so the tail can be torn and a second log
-    // opened over the same bytes, which is the whole shape of a restart here.
     let mut factory = MemoryFactory::retaining();
     let token = durability_token();
     let first = records(1, 1, 3, 50);
@@ -287,7 +246,7 @@ fn a_restart_replays_to_the_recovered_head_and_appends_after_it() {
         wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &first)
             .unwrap();
     }
-    // Tear the tail: lose the last frame and one byte of the one before it.
+
     {
         let shared = factory.segment_bytes(0);
         let mut held = shared.lock().unwrap();

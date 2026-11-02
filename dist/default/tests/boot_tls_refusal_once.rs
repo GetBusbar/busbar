@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A listener whose `tls:` material does not parse refuses boot with ONE line naming it, exactly as
-//! the published 1.5.5 binary does (oracle cell `boot.refusal|BOOT-181|boot`):
-//!
-//! `[error] TLS configuration error for '<addr>': TLS cert (env:…) contains no certificates …`
-//!
-//! `busbar_core_connector::tls::FailClosed` already renders that prefix; the composition root wrapped it in
-//! the same prefix a second time (since 029230dd7), so the line read `TLS configuration error for
-//! '<addr>': TLS configuration error for '<addr>': …`. This boots the real binary on the oracle's own
-//! mutation (non-PEM bytes resolved from the environment) and counts the prefix.
-//!
-//! The fixture is a node-plane config (`providers:`/`models:`/`pools:`), so it needs that plane in
-//! the build: without the door that declares `pools:` no plane owns those sections and boot refuses
-//! them before the listener is ever reached — the same gate every such boot test in `cli_validate.rs`
-//! carries.
 #![cfg(all(unix, linked_section_pools))]
 
 mod common;

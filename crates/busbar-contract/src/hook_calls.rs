@@ -2,20 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (the design: hooks on the memory
-//! ABI, the off-worker lane and quarantine rulings; the K1 `PlaneCalls` pattern): [`HookCalls`],
-//! one opened hook instance on the process dispatcher, and [`HookAxis`], which opens one and which
-//! the composition root implements and installs. The kernel names these and nothing behind them.
-//! Nothing here crosses the plugin boundary: the hook kind's ABI is `abi::hook`, and its views are
-//! built by `abi::host::hook`.
-//!
-//! Every call runs on the dispatcher's workers, off the caller's own, and is bounded by the
-//! call's `budget` — the hook's `timeout_ms` — which is the op's DEADLINE on the dispatcher: the
-//! op is cancelled at `timeout_ms`, exactly as 1.5.5's per-hook timeout behaved. QUARANTINE is the dispatcher watchdog's alone: a crossing that outlives its watch
-//! budget — the longer of the Call class budget and the call's `budget` (the design's hook kind
-//! as ruled: "The watchdog's budget is the hook's `timeout_ms`"; HOOKCAP-Q1) — faults the
-//! instance, and the implementation brings a FRESH instance back after a backoff through one
-//! trial call. There is one watchdog mechanism; the hook's budget rides each op it watches. A
-//! call made while quarantined waits for the trial window within its own budget, never beyond it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -27,7 +13,7 @@ use crate::abi::host::hook::{DecideFrame, NotifyFrame};
 use crate::abi::mechanism::call::Outcome;
 
 /// A call in flight: the caller's task awaits it; no thread is parked. Dropping it is a client
-/// drop.
+
 pub type Pending<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// How one `decide`/`transform` ended.
@@ -64,7 +50,7 @@ pub trait HookCalls: Send + Sync {
     }
 
     /// Serve an owned, already authenticated request on the dispatcher. The request remains
-    /// lent through every pending poll and cancellation, and the response is copied before release.
+
     fn serve(
         &self,
         _request: crate::abi::mechanism::endpoint::EndpointRequest,
@@ -87,7 +73,7 @@ pub trait HookCalls: Send + Sync {
     fn notify(&self, frame: Arc<NotifyFrame>, budget: Duration) -> Pending<()>;
 
     /// `configure`: push `settings` (a JSON object) at `version` for the instance `name`; `Ok`
-    /// only when the plugin acknowledged exactly `version`.
+
     fn configure(
         &self,
         name: &str,
@@ -121,15 +107,11 @@ pub struct HookFacts {
 }
 
 /// What [`HookAxis::probe`] answers of a module: the facts its Statement states (`None` when it
-/// will not load here) and its own validation of the instance's settings, verbatim.
+
 pub type Probed = (Option<HookFacts>, Vec<String>);
 
 /// THE HOOK AXIS, as the kernel asks it (the opener seam; the
-/// template is the export kind's `ExportAxis`): every `kind: hook` row the composition root
-/// admitted (compiled in or dropped in, one registration), resolved by `module:` name or alias.
-/// The root implements it over its plugin registry and the process's one dispatcher and installs
-/// it once; the kernel probes and opens hook instances through it and names nothing behind it.
-/// The hook kind has no cross-instance `check` op, so the axis has no `check`.
+
 pub trait HookAxis: Send + Sync {
     /// Validated routes stated by this module, without opening an instance. Legacy axes serve none.
     fn routes(
@@ -142,18 +124,11 @@ pub trait HookAxis: Send + Sync {
     }
 
     /// `None` when no `kind: hook` row names `module`; else what [`Probed`] states, asked while the
-    /// configuration is resolved (`instance` names the configured hook in any refusal).
+
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed>;
 
     /// OPEN one instance of `module` with `settings` (the operator's section, secrets resolved),
-    /// under the host's instance `label` (unique per opened instance: the name every host service
-    /// keys its caller by). `budget` is the instance's call budget (its `timeout_ms`): every call's
-    /// dispatcher deadline, and the watchdog's budget over its crossings wherever it is longer than
-    /// the Call class budget (the design's hook kind as ruled). A management instance
-    /// (configure/status/describe) is just another instance.
-    ///
-    /// # Errors
-    /// Why it will not open, naming the module.
+
     fn open(
         &self,
         module: &str,
@@ -166,8 +141,7 @@ pub trait HookAxis: Send + Sync {
     fn linked(&self, module: &str) -> bool;
 
     /// The dispatcher's Call class budget: the deadline of a call no operator `timeout_ms` bounds
-    /// (a pool's ranking strategy). Such a hook is pure compute and answers READY
-    /// on its first poll, so this deadline is never the one that ends it.
+
     fn call_budget(&self) -> Duration;
 
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.

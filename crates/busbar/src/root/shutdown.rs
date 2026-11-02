@@ -26,19 +26,11 @@ use busbar_kernel::governance::GovState;
 use crate::root::durability::Durability;
 use crate::root::serve::{drain_records, LateServices, RECORD_DRAIN};
 
-/// Run the shutdown tail: flush `governance`'s write-behind, drain the plane records `late`
-/// queued, then drain the journal lane of the book `journal` holds (a book over the configured
-/// store has one; none, or a book with no lane, has nothing queued). Governance waits for its store
-/// calls to return; the record drains retain their deadlines. Failures are logged, never fatal.
 pub async fn tail(
     governance: Option<Arc<GovState>>,
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
 ) {
-    // The background flusher is not joined by either caller. Own and await the final writes here
-    // before retiring records and the host lease. Store progress may require this runtime, so the
-    // synchronous final methods run on the blocking pool. A failed write reports terminal loss;
-    // completion of the attempt alone does not promise persistence.
     if let Some(gov) = governance {
         let budgets = gov.clone();
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -54,7 +46,7 @@ pub async fn tail(
                 "budget shutdown flush task failed"
             ),
         }
-        // A budget task panic must not skip the independent metering flush or record retirement.
+
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
         match tokio::task::spawn_blocking(move || {
             tracing::dispatcher::with_default(&dispatch, || gov.flush_metering_final())
@@ -69,14 +61,11 @@ pub async fn tail(
             ),
         }
     }
-    // THE PLANE RECORD WRITE-BEHIND, drained before the store closes.
+
     if !drain_records(late).await {
         tracing::warn!("plane record writes were still queued at shutdown");
     }
-    // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline — with
-    // what the journal holds back after a full lane turned it away: that batch is outside the lane,
-    // so it is re-offered before each drain until the journal holds nothing back (audit root r4
-    // B-6). An empty lane takes it whole, so a drained lane is followed by one more offer at most.
+
     let Some(book) = journal else {
         return;
     };
@@ -107,9 +96,7 @@ pub async fn tail(
         tracing::warn!("journal records were still queued for the store at shutdown");
         return;
     }
-    // THE NODE'S LEASE ON ITS HOST NAME, held on that lane, released once its chain reached the
-    // store, so the next boot of this host resumes it at once. Off the runtime: it waits on
-    // the store.
+
     let _released = tokio::task::spawn_blocking(move || lane.release_held_lease()).await;
 }
 

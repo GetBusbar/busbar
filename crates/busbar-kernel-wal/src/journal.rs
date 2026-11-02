@@ -2,77 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The journal: ONE chain of fixed records, and every unit's records go on it.
-//!
-//! ## Why there is one and not several
-//!
-//! The audit unit seals records. The ledger posts settlements and seals checkpoints. The migration
-//! step writes a marker saying this deployment has opened its balances. Before this module each of
-//! those kept its own private notion of where its records lived — a chain in memory, a marker in a
-//! node-local shim — and none of them could be verified against the others, because there was no
-//! order they all agreed on.
-//!
-//! A journal is exactly that agreement: one sequence, one hash chain, one head. A record's position
-//! in it is a fact about the whole node rather than about whichever unit wrote it, so "what happened
-//! at 14:32" has an answer that does not depend on who is asked.
-//!
-//! ## The record is fixed
-//!
-//! Every journal record opens with a [`JOURNAL_HEADER_BYTES`]-byte header of fixed offsets: the
-//! magic, the layout version, the class, the writer's identity, the two epochs, the two clocks, the
-//! body length, the body digest, the previous record's chain hash and this record's own. The body
-//! that follows is opaque — the journal has no opinion about what a posting or a sealed audit record
-//! contains, and a journal that could parse them would be a journal that has to change whenever they
-//! do.
-//!
-//! The header being fixed is what makes verification cheap and total: a reader walks the run,
-//! recomputes each body digest and each chain hash from the record's own bytes, and a record whose
-//! body or header was edited fails at exactly that record rather than somewhere later.
-//!
-//! ## The chain hash, and what it covers
-//!
-//! `body_hash = SHA-256(body)`, and `hash = SHA-256(header[0 .. hash field])` — which is the
-//! contract's `H(version ‖ node ‖ node_seq ‖ prev_hash ‖ body_hash)` with the rest of the fixed
-//! header included as well. It is a superset deliberately: the class, the epochs and the two clocks
-//! are as much part of what happened as the identity is, and a chain that did not cover them would
-//! let a record be re-classed without breaking.
-//!
-//! ## Where the records physically go
-//!
-//! Through the log, which is the durable form of this chain and not a second one. With a data
-//! directory the log's segments are files and the journal is on that disk. Without one the log is
-//! memory-buffered and the records are shipped through the [`Shipper`] seam, which the composition
-//! root binds to the store — so there is still no file, no probe and no warning; the journal did not
-//! acquire a disk by acquiring a name. Which store verb that is on the other side is deliberately
-//! not this crate's business: a log that knew the name of a database would be a log with an opinion
-//! about deployments.
-//!
-//! ## The buffer is bounded, and full is a decision
-//!
-//! Without a data directory the store is where durability lives, so a batch the store refuses is
-//! retained and offered again. Retained where? In a buffer of at most [`MEMORY_BUFFER_RECORDS`]
-//! records — 8192 of them, which at the fixed frame size is 4 MiB. A bound is not optional: a node
-//! whose store is unreachable for an hour must not answer that by exhausting its own memory.
-//!
-//! What happens at the bound is a NAMED decision and is on the chain. The oldest unshipped records
-//! are dropped, and a [`RecordClass::ChainBreak`] record is sealed naming how many went and the
-//! identity range they covered. That break is a record like any other and is buffered like any
-//! other, so the room made at the bound accounts for it as well as for the batch — a bound that
-//! counted only the batch would be one the buffer sat above for the whole length of an outage.
-//! Three things about the decision are deliberate:
-//!
-//! - It is not a silent drop. The loss is a record, in the chain, in order, and it is the class the
-//!   contract already uses for a lost durable write.
-//! - It is not a refusal. A deployment that configures no data directory is the previous release's
-//!   shape, and that shape never refused admission for durability; making it start refusing when a
-//!   store hiccups would be a deployment that stopped serving requests it used to serve.
-//! - The oldest go, not the newest. What is nearest the head is what a reader is most likely to
-//!   need, and a break at a known old position is easier to reconcile from a backup than a hole
-//!   punched at the tail.
-//!
-//! A caller may instead keep every record at the bound ([`Journal::retaining_at_bound`]) when it
-//! makes the full buffer a decision of its own: the composition root over a store refuses new
-//! money-bearing work while its store cannot keep up, so nothing is dropped and the refusal is the
-//! named decision.
 
 use std::collections::VecDeque;
 
@@ -88,29 +17,22 @@ use crate::wal::{BatchAck, Clock, Mode, OpenError, Wal};
 pub const JOURNAL_MAGIC: [u8; 4] = *b"BJRN";
 
 /// The journal record layout version. A reader that meets one it does not know stops rather than
-/// guessing at field offsets.
+
 pub const JOURNAL_VERSION: u16 = 1;
 
 /// How long a journal record's fixed header is. The body follows it.
 pub const JOURNAL_HEADER_BYTES: usize = 160;
 
 /// How many records the memory-buffered journal will hold for a store that has not acknowledged
-/// them. At the log's fixed frame size this is 4 MiB.
-///
-/// Pinned rather than configurable: it is a bound on how much of a node's memory an unreachable
-/// store may consume, and an operator who could raise it could turn a store outage into an
-/// out-of-memory kill, which is strictly worse than a named break.
+
 pub const MEMORY_BUFFER_RECORDS: usize = 8192;
 
 /// How many overflows the in-memory history names in detail.
-///
-/// Every overflow seals a `ChainBreak` record carrying the same detail durably, so this window is a
-/// convenience for a caller reading the node's current state, not the record of what was dropped.
-/// Unbounded it would be a per-request cost for the whole length of a store outage.
+
 pub const OVERFLOW_HISTORY_RECORDS: usize = 16;
 
 /// Where in the header each field sits. Offsets are named rather than spelled at each use so that a
-/// layout change is one edit and a reader can check the table against the module preamble.
+
 mod at {
     /// The magic.
     pub const MAGIC: usize = 0;
@@ -276,7 +198,7 @@ pub struct Entry {
 
 impl Entry {
     /// An entry of `class` carrying `body`, with the clocks and epochs at zero — the shape a caller
-    /// that has no epoch to report writes.
+
     #[must_use]
     pub fn new(class: RecordClass, body: Vec<u8>) -> Self {
         Entry {
@@ -361,16 +283,7 @@ impl JournalRecord {
     }
 
     /// Read one record back out of its bytes.
-    ///
-    /// Field-shape only: the digests are checked by [`verify`], because a caller reading a run wants
-    /// to be told WHICH record broke and how, and a decode that refused would only be able to say
-    /// that one did.
-    ///
-    /// # Errors
-    ///
-    /// The bytes are not a journal record: too short for the header, no magic, a layout version this
-    /// build does not read, a class byte it does not know, or a body length that does not match what
-    /// is there.
+
     pub fn decode(bytes: &[u8]) -> Result<Self, JournalBreak> {
         if bytes.len() < JOURNAL_HEADER_BYTES {
             return Err(JournalBreak {
@@ -431,7 +344,7 @@ impl JournalRecord {
     }
 
     /// The chain hash this record's own fields should carry — everything in the header before the
-    /// hash field, which is what makes an edit anywhere in the header break the chain.
+
     #[must_use]
     pub fn digest_of_chain(&self) -> [u8; 32] {
         let bytes = self.encode();
@@ -569,46 +482,13 @@ impl std::fmt::Display for JournalBreak {
 impl std::error::Error for JournalBreak {}
 
 /// Whether a run of journal records links and digests correctly, oldest first.
-///
-/// Four separate checks, and they are separate because they fail differently: a body that was edited
-/// is not the same event as a record that was removed, and an operator handed one break needs to
-/// know which of them happened.
-///
-/// A run that carries a quarantine's `ChainBreak` verifies across the hole that break names, and
-/// only there: see [`verify_bridged`].
-///
-/// # Errors
-///
-/// The first record that does not verify, with what is wrong with it.
+
 pub fn verify(records: &[JournalRecord]) -> Result<(), JournalBreak> {
     verify_bridged(records, &[])
 }
 
 /// [`verify`], crossing the holes recovery set aside — those named by a quarantine `ChainBreak` in
-/// the run, and those in `known` (the log's own quarantines, on the boot that found them, before
-/// their break is on the chain).
-///
-/// ## The one place a chain may skip
-///
-/// A record recovery set aside is acknowledged, so its number stays taken and the chain resumes
-/// past it: a sequence gap where it stood. And a record kept behind it links to it, a link nothing
-/// can check now. Without a rule for that, one damaged record left every later replay of the chain
-/// unverifiable, and a boot answers an unverifiable chain by rebuilding an empty book. So a hole is
-/// crossed exactly where a quarantine names it, by the last record kept before it ([`Bridge::before`]):
-///
-/// - the record kept right after it ([`Bridge::after`]) follows `before` with any higher number,
-///   and its link — to the set-aside record — is not checked; or
-/// - a later record RE-ANCHORS on `before`: it links to `before`'s own hash, with any higher
-///   number. That is the record the journal sealed next over a log whose tail was set aside, and it
-///   is also how a copy that still holds the set-aside record (a store's) reads past it.
-///
-/// Every other gap, and every other link that does not match, fails exactly as before. The body
-/// and chain digests of every record are checked whatever the bridge, so a record crossed into is
-/// still one that hashes to itself.
-///
-/// # Errors
-///
-/// The first record that does not verify, with what is wrong with it.
+
 pub fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(), JournalBreak> {
     let mut bridges: Vec<Bridge> = known.to_vec();
     bridges.extend(
@@ -617,8 +497,7 @@ pub fn verify_bridged(records: &[JournalRecord], known: &[Bridge]) -> Result<(),
             .filter(|r| r.class == RecordClass::ChainBreak)
             .filter_map(|r| QuarantineNote::read(&r.body).and_then(|note| note.bridge)),
     );
-    // The hashes of the records a hole re-anchors on, and only those: a hash per record would cost
-    // memory in the length of the chain.
+
     let anchors: std::collections::HashSet<(u64, u64)> = bridges.iter().map(|b| b.before).collect();
     let mut anchored: std::collections::HashMap<(u64, u64), [u8; 32]> =
         std::collections::HashMap::new();
@@ -683,29 +562,22 @@ impl Bridge {
         record: &JournalRecord,
         anchored: &std::collections::HashMap<(u64, u64), [u8; 32]>,
     ) -> bool {
-        // The chain only ever resumes FORWARD of the record it re-anchors on.
         if record.node == self.before.0 && record.node_seq <= self.before.1 {
             return false;
         }
         let named_after = self.after == Some(record.identity());
-        // The record kept right behind the hole: its predecessor is the record set aside.
+
         if named_after && prev.identity() == self.before {
             return true;
         }
-        // The chain re-anchored on the last record kept before the hole.
+
         (named_after || self.after.is_none())
             && anchored.get(&self.before) == Some(&record.prev_hash)
     }
 }
 
 /// Decode a run of log records into journal records, in order.
-///
-/// This is how a reader gets the chain back out of whatever carried it — the log's own tail, or the
-/// batches a store acknowledged.
-///
-/// # Errors
-///
-/// A record's bytes are not a journal record.
+
 pub fn decode_run(records: &[Record]) -> Result<Vec<JournalRecord>, JournalBreak> {
     records
         .iter()
@@ -720,11 +592,7 @@ pub fn decode_run(records: &[Record]) -> Result<Vec<JournalRecord>, JournalBreak
 }
 
 /// Where a node's own chain has reached in a run of records: the head to link onto and the sequence
-/// number to take next.
-///
-/// Only this node's records count. A run that carries several nodes' records — a store's replay, a
-/// peer's shipment — must not advance this node's own numbering, because `(node, node_seq)` is the
-/// identity the log deduplicates on and two nodes numbering from one shared counter would collide.
+
 #[must_use]
 pub fn tail_of(records: &[JournalRecord], node: u64) -> Option<([u8; 32], u64)> {
     records
@@ -752,8 +620,7 @@ pub struct Overflow {
 
 impl Overflow {
     /// The `ChainBreak` body: how many went, then the two identities that bracket them — five
-    /// fixed-width numbers, in the order the fields are named above. The break record's own sequence
-    /// number is not in the body because the record already carries it in its header.
+
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let mut body = Vec::with_capacity(40);
@@ -787,14 +654,12 @@ pub struct Journal {
     head: [u8; 32],
     capacity: usize,
     /// The most recent overflows, oldest first. A window, because during an outage every append
-    /// overflows and the detail is already durable in the sealed break.
     overflows: VecDeque<Overflow>,
     /// How many overflows there have been, window or not.
     overflows_seen: usize,
     /// How many records the bound has cost in total.
     dropped_total: u64,
     /// What reaching the bound does: drop the oldest and seal a break (the default), or keep every
-    /// record and leave the decision to the caller ([`Journal::retaining_at_bound`]).
     drop_at_bound: bool,
 }
 
@@ -813,20 +678,14 @@ impl std::fmt::Debug for Journal {
 
 impl Journal {
     /// A journal over a memory-buffered log shipping through `shipper` — the default, and the shape a
-    /// deployment that names no data directory and no store runs. It starts a fresh chain each
-    /// process; a node over a configured store resumes the store's chain through
-    /// [`Journal::memory_resumed`] instead.
+
     #[must_use]
     pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper<Record>>, clock: Clock) -> Self {
         Journal::over(Wal::memory_buffered_to(shipper, clock), node)
     }
 
     /// A journal whose log keeps its segments as files under `dir`, resuming from whatever chain is
-    /// already there.
-    ///
-    /// # Errors
-    ///
-    /// The directory could not be opened, or the log already there could not be read.
+
     pub fn in_directory(
         node: u64,
         dir: impl AsRef<std::path::Path>,
@@ -837,13 +696,7 @@ impl Journal {
     }
 
     /// [`Journal::in_directory`], writing as the node the directory's chain ALREADY names: the
-    /// newest record on the recovered tail decides, and `fallback` is the identity of a directory
-    /// that holds no record yet. A chain on a disk keeps the identity it was written under, whatever
-    /// identity the node would take today, so it is never continued under a second one.
-    ///
-    /// # Errors
-    ///
-    /// As [`Journal::in_directory`].
+
     pub fn in_directory_adopting(
         fallback: u64,
         dir: impl AsRef<std::path::Path>,
@@ -859,14 +712,7 @@ impl Journal {
     }
 
     /// A journal over an already-open log, resuming from the tail the log recovered.
-    ///
-    /// This is the seam a battery drives, and it is also how the on-disk case resumes: the log's
-    /// recovered tail IS the chain, so the head and the next sequence number come off it rather than
-    /// being carried in a side file that could disagree with it.
-    ///
-    /// That tail is the end of the log wherever the log has got to — the last segment that holds a
-    /// record, not the first segment ever written. A journal resumed from anything else would number
-    /// its next record with a number it has already used.
+
     #[must_use]
     pub fn over(log: Wal, node: u64) -> Self {
         let mut journal = Journal {
@@ -880,38 +726,20 @@ impl Journal {
             dropped_total: 0,
             drop_at_bound: true,
         };
-        // A tail that does not decode leaves the chain's HEAD at genesis rather than resuming from
-        // bytes this build cannot read. The records are still on the medium; nothing on it is
-        // destroyed by declining to chain onto them.
+
         if let Ok(records) = decode_run(journal.log.recovered()) {
             if let Some((head, next_seq)) = tail_of(&records, node) {
                 journal.head = head;
                 journal.next_seq = next_seq;
             }
         }
-        // The NUMBERING is a separate question, and it is not one the head can be allowed to answer
-        // on its own. The log seeds its idempotence marks from the same tail whether or not this
-        // build could read it, so a chain that started numbering from one over a tail it declined to
-        // decode would seal records under identities the log already holds — and the log passes
-        // those over as duplicates and answers `Ok`. The record would be on no medium, the append
-        // would report success, and the loss would be silent, which is the one outcome a journal may
-        // not produce. Taking the log's own floor costs a visible link break at the resumption point
-        // and never a lost record.
+
         journal.floor_seq_to_the_log();
         journal
     }
 
     /// A memory-buffered journal RESUMED from the chain the configured store kept: `records` are
-    /// that chain's records as the store returned them, oldest first. They go into the log's buffer
-    /// without being shipped again ([`Wal::memory_seeded`]), so [`Journal::replay`] answers them, and
-    /// the head and the next sequence number continue from this node's newest one among them.
-    ///
-    /// This is the node with no data directory whose durability is its store: without it a restart
-    /// opened an empty chain, and every record the store took was never read again.
-    ///
-    /// # Errors
-    ///
-    /// The records could not be written into the buffer.
+
     pub fn memory_resumed(
         node: u64,
         records: &[Record],
@@ -919,8 +747,7 @@ impl Journal {
         clock: Clock,
     ) -> Result<Self, OpenError> {
         let log = Wal::memory_seeded(records, shipper, clock)?;
-        // A run that does not decode resumes the HEAD at genesis — a visible link break — and the
-        // numbering still continues past every identity the log took, as `over` does for a tail.
+
         let (head, next_seq) = decode_run(records)
             .ok()
             .and_then(|decoded| tail_of(&decoded, node))
@@ -928,21 +755,13 @@ impl Journal {
         let mut journal = Journal::over(log, node);
         journal.head = head;
         journal.next_seq = next_seq.max(1);
-        // The number is where the store's chain got to, and the seeded log holds that chain, so the
-        // two agree. Where they do not, the store's number would re-use identities the log already
-        // carries, and the log answers a duplicate identity by passing over the record and reporting
-        // success. The floor is what keeps that from being a settlement lost behind an `Ok`.
+
         journal.floor_seq_to_the_log();
         Ok(journal)
     }
 
     /// The same journal KEEPING every record at its bound instead of dropping the oldest.
-    ///
-    /// For a caller that decides what a full buffer means itself and has said so: the composition
-    /// root over a store, which refuses new money-bearing work while its store lane is full
-    /// (records are never dropped). What it costs is that the buffer is then bounded by the
-    /// caller's refusal rather than by this journal, so a caller that keeps admitting work while
-    /// the store refuses grows it.
+
     #[must_use]
     pub fn retaining_at_bound(mut self) -> Self {
         self.drop_at_bound = false;
@@ -956,23 +775,13 @@ impl Journal {
     }
 
     /// Put every quarantine the log made at open on the chain, as one `ChainBreak` record each —
-    /// the durable statement of what recovery set aside: the segment file, the byte offset, the
-    /// byte count and where the bytes went. See [`crate::recover::Quarantine::body`].
-    ///
-    /// Called once, by the composition root, right after a boot that found corruption: this crate
-    /// holds no token and reads no clock, so the root supplies both. `wall` is seconds since the
-    /// Unix epoch. Nothing is appended when the log set nothing aside.
-    ///
-    /// # Errors
-    ///
-    /// The journal could not make the records durable.
+
     pub fn record_quarantines(
         &mut self,
         token: &Grant<DurableWrite>,
         at: StepName,
         wall: u64,
     ) -> Result<Option<JournalAck>, DurabilityLost> {
-        // Damage is left in place and found again at every boot; each hole goes on the chain once.
         let noted = self.quarantines_on_chain();
         let entries: Vec<Entry> = self
             .log
@@ -988,8 +797,7 @@ impl Journal {
     }
 
     /// Every `(segment, first byte)` a quarantine `ChainBreak` already on the chain names. A log
-    /// that cannot be read back names none, and a hole is then recorded again — a duplicate
-    /// statement of the same loss, never a missing one.
+
     fn quarantines_on_chain(&self) -> std::collections::HashSet<(u64, u64)> {
         let Ok(back) = self.log.read_back() else {
             return std::collections::HashSet::new();
@@ -1004,7 +812,7 @@ impl Journal {
     }
 
     /// The same journal with a different buffer bound. For batteries that need to reach the bound
-    /// without writing [`MEMORY_BUFFER_RECORDS`] records to get there.
+
     #[must_use]
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.capacity = capacity.max(1);
@@ -1054,10 +862,7 @@ impl Journal {
     }
 
     /// The most recent times the bound was reached, oldest first, at most
-    /// [`OVERFLOW_HISTORY_RECORDS`] of them.
-    ///
-    /// Every one of them also sealed a `ChainBreak` record naming the same thing, so this window is
-    /// what the node can tell you about right now — not the record of what was dropped.
+
     #[must_use]
     pub fn overflows(&self) -> Vec<Overflow> {
         self.overflows.iter().cloned().collect()
@@ -1082,18 +887,7 @@ impl Journal {
     }
 
     /// Seal a batch of entries onto the chain and commit them through the log.
-    ///
-    /// The records are chained BEFORE the log is asked to take them, and the chain advances whether
-    /// or not the log's answer is a durability loss. That is deliberate: a batch the store refused is
-    /// retained by the log and offered again unchanged, so its records exist and are numbered — what
-    /// is in doubt is whether anything else has them yet, and re-numbering them on the retry would
-    /// make the chain disagree with the copy already in flight.
-    ///
-    /// # Errors
-    ///
-    /// The log could not make the batch durable. Without a data directory that means the store
-    /// refused it; with one it means a write, a sync or the roll to a fresh segment failed. Either
-    /// way the records are retained and re-offered on the next append, up to the bound.
+
     pub fn append(
         &mut self,
         token: &Grant<DurableWrite>,
@@ -1104,23 +898,6 @@ impl Journal {
 
         let mut sealed = Vec::with_capacity(entries.len() + usize::from(overflow.is_some()));
         if let Some(overflow) = &overflow {
-            // THE BREAK IS DATED TO THIS BATCH'S OWN CLOCK, NOT LEFT AT EPOCH 0.
-            //
-            // Sealed with a bare `Entry`, the break carries `wall: 0` — 1970 — because
-            // [`Entry::new`] stamps both clocks at zero and only [`Entry::at`] moves them. Every
-            // retention pass in this tree is the same predicate over a record's own instant
-            // (`r.ts < before` in `purge_plane_records_before`, under either retention rule the
-            // host passes, and each `compact(before)` above it), so a record dated 0 is older than
-            // EVERY positive cutoff and the FIRST sweep at any window deletes it. The one record
-            // that says entries were lost here would be the first thing lost — the audit evidence a
-            // store outage most needs to keep, and the same defect already fixed on the
-            // plane-record path where `append_scoped` hardcoded `ts: 0`.
-            //
-            // The break marks the moment THIS batch displaced the older records, so it takes the
-            // latest clock the batch carries. A batch is stamped from the unit's pinned arrival
-            // epoch (the composition root reads the clock, never this crate), so the newest entry in
-            // it is the instant the displacement happened. An empty batch cannot reach the bound and
-            // so cannot produce an overflow; `unwrap_or(0)` is the unreachable arm, not a default.
             let wall = entries.iter().map(|e| e.wall).max().unwrap_or(0);
             let mono = entries.iter().map(|e| e.mono).max().unwrap_or(0);
             sealed.push(
@@ -1146,13 +923,7 @@ impl Journal {
     }
 
     /// Read the chain back out of the whole log, every segment oldest first, verifying as it goes.
-    ///
-    /// # Errors
-    ///
-    /// The log could not be read, or what came back does not verify.
-    ///
-    /// The chain is verified across every hole recovery set aside — those whose `ChainBreak` is on
-    /// the chain, and those the log found at this open, whose break the boot has not sealed yet.
+
     pub fn replay(&self) -> std::io::Result<Result<Vec<JournalRecord>, JournalBreak>> {
         let back = self.log.read_back()?;
         let known: Vec<Bridge> = self
@@ -1166,11 +937,7 @@ impl Journal {
     }
 
     /// Raise the next number to one the log does not already hold for this node.
-    ///
-    /// Only ever raises. Every path that positions a chain goes through here, because the number is
-    /// the one thing a journal cannot get wrong quietly: the log deduplicates on `(node, node_seq)`
-    /// and cannot tell a fresh record offered under a used number from an honest re-offer of the
-    /// record already there, so it passes the fresh one over and answers `Ok`.
+
     fn floor_seq_to_the_log(&mut self) {
         self.next_seq = u64::max(self.next_seq, self.log.next_free_seq(self.node));
     }
@@ -1197,13 +964,7 @@ impl Journal {
     }
 
     /// Make room for `incoming` records, dropping the oldest unacknowledged ones if the bound would
-    /// otherwise be passed. Returns what went, so the caller can seal a break for it.
-    ///
-    /// Room is made for one record more than the batch when the bound is reached, because the break
-    /// the caller then seals is itself a record the buffer holds — a chained `ChainBreak` that goes
-    /// through the log with the batch and is retained beside it if the store refuses again. Counting
-    /// only the batch leaves the buffer one record over the bound for as long as the outage lasts,
-    /// which is the one thing a pinned bound exists to make impossible.
+
     fn make_room(&mut self, incoming: usize) -> Option<Overflow> {
         let held = self.log.owed().len();
         if !self.drop_at_bound || held.saturating_add(incoming) <= self.capacity {
@@ -1212,9 +973,7 @@ impl Journal {
         let wanted = held.saturating_add(incoming).saturating_add(1);
         let excess = wanted.saturating_sub(self.capacity);
         let dropped = self.log.forget_owed(excess);
-        // The bound was reached even when nothing was sitting in the buffer to evict — a single
-        // batch larger than the capacity does that on its own. The break still has to be sealed, so
-        // an empty `dropped` names no identities rather than skipping the seal.
+
         let first = dropped.first().map_or((0, 0), Record::identity);
         let last = dropped.last().map_or((0, 0), Record::identity);
         let overflow = Overflow {
@@ -1335,7 +1094,7 @@ impl<'a> BodyReader<'a> {
     }
 
     /// Whether every byte has been read. A reader that stops short has not read the body it
-    /// thinks it has.
+
     #[must_use]
     pub fn is_done(&self) -> bool {
         self.at == self.bytes.len()

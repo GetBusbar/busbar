@@ -1,34 +1,11 @@
 //! The closed JSON span grammar, on the plugin surface.
-//!
-//! One serialization, one scanner, one reading. The grammar itself is
-//! [`json_grammar`](crate::json_grammar) — folded in from the former `busbar-grammar` crate
-//! (DECISIONS #40) and still naming nothing of busbar's; this module is how a plugin reaches it,
-//! so a plane resolving the pointers it declared and the kernel resolving the same pointers are
-//! the same walk over the same bytes. Before this existed the contract handed a plane no scanner
-//! at all, and four planes each carried their own approximation of a grammar the design says is
-//! closed.
-//!
-//! A pointer resolves to a [`Span`] of the CALLER's bytes: nothing is parsed into a document,
-//! nothing is copied, and nothing is allocated by the scan itself.
 
 pub use crate::json_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
 
 use crate::bounded::{PlaneAlloc, PlaneAllocBudget, MAX_KEYS};
 
 /// Resolve a plane's declared pointers over a body, into a table the unit can hold.
-///
-/// This is the whole of what a plane needs from the grammar. It walks the body once per pointer,
-/// keeps only the pointers that RESOLVED — a pointer the body does not carry is absent from the
-/// table rather than present and empty, because "the client sent nothing" and "the client sent
-/// something empty" are different facts the loop settles differently — and copies the resulting
-/// pairs into the arena so the table lives as long as the unit that reads it.
-///
-/// At most [`MAX_KEYS`] pointers are considered, which is the same ceiling the fact map carries: a
-/// plane that declared more places than the kernel can hold facts about is describing a body no
-/// unit could be settled against.
-///
-/// # Errors
-/// The arena had no room for the table.
+
 pub fn resolve<'a>(
     body: &[u8],
     pointers: &[&'a str],
@@ -46,15 +23,7 @@ pub fn resolve<'a>(
 }
 
 /// THE JSON NESTING-DEPTH GUARD: does `bytes` nest `{`/`[` deeper than `max`?
-///
-/// A security floor, not a tunable: a parser that builds a tree iteratively still hands back a
-/// tree that is re-serialized and dropped recursively, and a body some thousands of levels deep
-/// overflows the stack on that walk and aborts the process. Every parse boundary calls this with
-/// [`MAX_JSON_DEPTH`] first and refuses on `true`, so no such tree is ever built.
-///
-/// One pass, string-aware: brackets inside a string literal, and a `\`-escaped quote, do not count.
-/// It answers `true` as soon as `max` is exceeded. It does not validate: an unbalanced closer
-/// floors at zero, and unterminated input is judged on what it holds. O(n), no allocation.
+
 #[must_use]
 pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
     let mut depth: usize = 0;
@@ -86,19 +55,6 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
     false
 }
 
-// ══ BYTE-LEVEL OBJECT MEMBERS, AND THE SPLICES OVER THEM ═════════════════════════════════════════
-//
-// The one way a plane walks the members of a JSON object it relays and edits it in place (promoted
-// from plane-llm `codec/json_splice.rs`): a member's value is replaced where it stands, a member is
-// removed with exactly one adjacent comma, a missing member is inserted right after the opening
-// brace. Every other byte (key order, whitespace, number spelling, escapes) stays the caller's.
-// Nothing is parsed into a tree and nothing is re-serialized.
-//
-// It locates; it does not validate. A string ends at its first unescaped quote, a container at its
-// balanced closer (strings stepped over), a scalar at the next `,`, `}`, `]` or JSON whitespace.
-// Whitespace is JSON's own four bytes. A body it cannot read as an object is left alone and the
-// caller decides what that means.
-
 use std::borrow::Cow;
 
 /// `i` moved past the JSON whitespace (space, tab, line feed, carriage return) at it.
@@ -110,7 +66,7 @@ fn past_ws(b: &[u8], mut i: usize) -> usize {
 }
 
 /// One past the closing quote of the JSON string whose opening quote is at `open_quote`, honouring
-/// `\`-escapes. `None` when the string is unterminated or `b[open_quote]` is not a quote.
+
 #[must_use]
 pub fn string_end(b: &[u8], open_quote: usize) -> Option<usize> {
     if b.get(open_quote) != Some(&b'"') {
@@ -128,15 +84,13 @@ pub fn string_end(b: &[u8], open_quote: usize) -> Option<usize> {
 }
 
 /// One past the JSON value that starts at `start` (whitespace before it allowed), respecting nested
-/// objects and arrays and the strings inside them. `None` when the value is unterminated or there
-/// is none.
+
 #[must_use]
 pub fn value_end(b: &[u8], start: usize) -> Option<usize> {
     let mut i = past_ws(b, start);
     match b.get(i)? {
         b'"' => string_end(b, i),
         b'{' | b'[' => {
-            // Balanced nesting, stepping over strings so a closer inside one never closes.
             let mut depth = 0usize;
             while let Some(c) = b.get(i) {
                 match c {
@@ -158,8 +112,6 @@ pub fn value_end(b: &[u8], start: usize) -> Option<usize> {
             None
         }
         _ => {
-            // A scalar: number, `true`, `false` or `null`, ending at the next structural byte or
-            // whitespace.
             let first = i;
             while !matches!(
                 b.get(i),
@@ -222,8 +174,7 @@ impl RawMember<'_> {
 }
 
 /// SCAN the object whose opening brace is the first significant byte at or after `at`, meeting
-/// each member in order, allocating nothing. Answers `(open, close)`, the positions of its braces,
-/// or `None` when the bytes cannot be read as an object.
+
 pub fn scan<'a>(
     b: &'a [u8],
     at: usize,
@@ -309,7 +260,7 @@ impl Object {
 }
 
 /// The MEMBERS of the object whose opening brace is the first significant byte at or after `at`.
-/// `None` when the bytes cannot be read as an object or a key cannot be unescaped.
+
 #[must_use]
 pub fn members(b: &[u8], at: usize) -> Option<Object> {
     let mut members = Vec::new();
@@ -365,14 +316,14 @@ fn same_value(a: &[u8], b: &[u8]) -> bool {
 type Cut<'a> = (usize, usize, Cow<'a, [u8]>);
 
 /// APPLY `edits` to the object `obj` of `b` (a later edit of a key overrides an earlier one).
-/// `None` when nothing changes.
+
 #[must_use]
 pub fn apply(b: &[u8], obj: &Object, edits: &[Edit<'_>]) -> Option<Vec<u8>> {
     render(b, edit_cuts(b, obj, edits)?)
 }
 
 /// APPLY `edits` to the top-level object of `b`. `None` when `b` is not an object or nothing
-/// changes.
+
 #[must_use]
 pub fn apply_top(b: &[u8], edits: &[Edit<'_>]) -> Option<Vec<u8>> {
     apply(b, &members(b, 0)?, edits)
@@ -380,7 +331,6 @@ pub fn apply_top(b: &[u8], edits: &[Edit<'_>]) -> Option<Vec<u8>> {
 
 /// The cuts `edits` make to `obj`; `None` when the object's punctuation cannot be read.
 fn edit_cuts<'a>(b: &'a [u8], obj: &Object, edits: &'a [Edit<'a>]) -> Option<Vec<Cut<'a>>> {
-    // The winning edit per key, in first-mention order.
     let mut wins: Vec<&Edit<'_>> = Vec::new();
     for e in edits {
         match wins.iter_mut().find(|w| w.key() == e.key()) {
@@ -395,7 +345,7 @@ fn edit_cuts<'a>(b: &'a [u8], obj: &Object, edits: &'a [Edit<'a>]) -> Option<Vec
         .iter()
         .map(|m| matches!(edit_of(&m.key), Some(Edit::Remove(_))))
         .collect();
-    // (start, end, replacement) over `b`, in order, never overlapping.
+
     let mut cuts: Vec<Cut<'_>> = Vec::new();
     let mut inserted: Vec<u8> = Vec::new();
     for w in &wins {
@@ -429,16 +379,14 @@ fn edit_cuts<'a>(b: &'a [u8], obj: &Object, edits: &'a [Edit<'a>]) -> Option<Vec
             i += 1;
             continue;
         }
-        // A run of removed members [i, j].
+
         let mut j = i;
         while j + 1 < n && removed[j + 1] {
             j += 1;
         }
         let (start, end) = if i > 0 {
-            // A kept member precedes: the run goes with the comma before it.
             (obj.members[i - 1].comma?, obj.members[j].value_end)
         } else if j + 1 < n {
-            // The run opens the object and a kept member follows: it goes with the comma after it.
             (obj.members[i].key_start, obj.members[j].comma? + 1)
         } else {
             (obj.members[i].key_start, obj.members[j].value_end)

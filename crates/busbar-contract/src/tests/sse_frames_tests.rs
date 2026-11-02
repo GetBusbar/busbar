@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The event-stream frame reassembler. The cases are plane-a2a's `SseReader` battery
-//! (`tests/sse_tests.rs`), over the reassembler both it and plane-llm's stream readers frame with.
 
 use super::*;
 
@@ -36,8 +35,7 @@ fn every_spec_line_terminator_pairing_ends_a_frame() {
         let (out, _) = frames(&[input.as_bytes()]);
         assert_eq!(out, vec![framed.as_bytes().to_vec()], "input {input:?}");
     }
-    // The lone trailing CR is not yet knowable (it may still turn out to be a CRLF), so it frames
-    // nothing until more bytes arrive.
+
     let (out, _) = frames(&[b"data: a\r"]);
     assert!(
         out.is_empty(),
@@ -46,15 +44,13 @@ fn every_spec_line_terminator_pairing_ends_a_frame() {
 }
 
 /// A terminator split across a chunk boundary still ends the frame: the scan resumes three bytes
-/// behind where it stopped.
+
 #[test]
 fn a_terminator_split_across_chunks_still_frames() {
     for (head, tail, framed, leftover) in [
         ("data: a\r\n", "\r\n", "data: a\r\n\r\n", ""),
         ("data: a\r\n\r", "\n", "data: a\r\n\r\n", ""),
         ("data: a\n", "\n", "data: a\n\n", ""),
-        // A bare CR ending the tail is itself ambiguous, so the tail carries one more,
-        // unambiguous byte after it; that byte is not part of the terminator and stays pending.
         ("data: a\r", "\rx", "data: a\r\r", "x"),
     ] {
         let (out, r) = frames(&[head.as_bytes()]);
@@ -82,7 +78,7 @@ fn a_terminator_split_across_chunks_still_frames() {
 }
 
 /// An unterminated frame trickled a byte at a time is scanned once: each scan resumes where the
-/// last stopped, so the work is linear in the bytes fed, not bytes x chunks.
+
 #[test]
 fn a_frame_trickled_byte_by_byte_is_scanned_once() {
     const N: usize = 8192;
@@ -103,7 +99,7 @@ fn a_frame_trickled_byte_by_byte_is_scanned_once() {
 }
 
 /// One chunk of many small frames frames them all without moving the buffer once per frame: the
-/// framed prefix is dropped once, at the next push.
+
 #[test]
 fn many_frames_in_one_chunk_are_dropped_once() {
     const N: usize = 4096;
@@ -134,7 +130,7 @@ fn frames_are_whole_and_in_order_however_chunked() {
     for size in 1..=stream.len() {
         let chunks: Vec<&[u8]> = stream.chunks(size).collect();
         let (mut out, mut r) = frames(&chunks);
-        // The trailing bare CR waits: the last frame is whole once a byte shows it is not a CRLF.
+
         assert_eq!(out, want[..2], "chunked by {size}");
         assert_eq!(r.pending(), want[2].len(), "chunked by {size}");
         r.push(b"x");

@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The one-time secret placeholder, read back: bound to one unit and one target, and never printing
-//! the nonce that IS the secret.
-//!
-//! `SecretOnce::mint(` is spelled only in this crate, the verbs unit's home (construction
-//! `token-sealed:secret-once-mint`), so these tests moved here from busbar-contract
-//! (`src/caps/tests/mod.rs`, `src/caps/tests/what_the_record_reads.rs`,
-//! `tests/secret_carriers_print_nothing.rs`). The verbs unit's token comes from the kernel's
-//! named seam, `Kernel::admin_token`, exactly as the composition root lends it to the unit; this
-//! file spells no token constructor and never the seal.
-//!
-//! One type carries the name, `busbar_contract::SecretOnce` (#73, X-1802): the capability
-//! module's second copy folded into it, so the placeholder these tests read is the one a verb mints.
-
 use busbar_contract::caps::UnitKey;
 use busbar_kernel::teller::Kernel;
 
@@ -39,8 +26,6 @@ fn the_one_shot_secret_capability_never_prints_what_it_carries() {
 
 #[test]
 fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
-    // The mint is reversed unless the nonce appears exactly once at exactly this target, so both
-    // facts have to be readable — and the nonce, which IS the secret, must not be.
     let kernel = Kernel::new();
     let once = busbar_contract::SecretOnce::mint(
         &kernel.admin_token(),
@@ -53,8 +38,6 @@ fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
     assert!(once.matches(42));
     assert!(!once.matches(43));
 
-    // A second placeholder at a different target is a different capability, and the accessor is what
-    // the substitution site reads to tell them apart.
     let elsewhere = busbar_contract::SecretOnce::mint(
         &kernel.admin_token(),
         42,

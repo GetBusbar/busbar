@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE 1.5.5 HOOK WIRE, REQUEST SIDE: the JSON projection a hook was handed (`decide`,
-//! `transform`, `notify`), shared by the host and the SDK so the two can never drift. The HOST
-//! never builds it on the request path any more (the design: hooks are on the memory ABI);
-//! the SDK's [`crate::abi::sdk::hook`] rebuilds it, byte for byte, from the fixed views a hook is
-//! handed, for a plugin written against the 1.5.5 JSON. Moved here from the kernel's
-//! `hooks::wire` (an F12 relocation: the same lines, re-exported there).
 
 use crate::hooks::{Candidate, RoutingContext, RoutingRequest};
 use serde::Serialize;
@@ -15,11 +10,7 @@ use serde::Serialize;
 pub mod reply;
 
 /// PER-REQUEST message kinds — the explicit `op` discriminator every per-request payload carries
-/// (before it, the three kinds were wire-indistinguishable; a hook binary receiving bytes
-/// had to infer the kind from field presence/endpoint, and two registrations sharing one socket
-/// provably could not tell them apart). MANAGEMENT messages stay key-discriminated (a top-level
-/// `configure` / `describe` / `status` key); everything else is a per-request message and `op`
-/// says which. The vocabulary is append-only — hooks MUST ignore unknown ops per the contract.
+
 pub const OP_DECIDE: &str = "decide";
 pub const OP_TRANSFORM: &str = "transform";
 pub const OP_NOTIFY: &str = "notify";
@@ -157,8 +148,7 @@ pub struct HookCandidate<'a> {
     /// Member context-window ceiling — lets a hook route by context-fit. `None` if unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_max: Option<usize>,
-    // Optional live signals — omitted when unset (ONE idiom across the wire: absent = unset,
-    // never a mix of `null` and absence).
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,7 +189,7 @@ pub struct HookContext<'a> {
 }
 
 /// Build the wire projection from the live request/candidates/context. Borrows everywhere — the
-/// projection is serialized immediately by the transport, never stored.
+
 pub fn build<'a>(
     op: &'static str,
     req: &'a RoutingRequest<'_>,
@@ -217,9 +207,7 @@ pub fn build<'a>(
             total_chars: req.total_chars,
             max_tokens: req.max_tokens,
             stream: req.stream,
-            // The opt-in projections: `None` (and thus ABSENT from the JSON) unless the pool set
-            // `policy.send_prompt` / `policy.send_user` — `forward` only populates the source
-            // fields behind those flags, so absence here is enforced upstream by construction.
+
             system: req.prompt.as_ref().and_then(|p| p.system.as_deref()),
             messages: req.prompt.as_ref().map(|p| {
                 p.messages
@@ -272,9 +260,7 @@ pub struct RestrictReply {
 }
 
 /// Parse the untyped `restrict` value fail-closed. A well-formed restrict is `{"tags_any": [non-empty
-/// strings]}`; anything else (not an object, missing/empty/non-array `tags_any`, no usable string
-/// entries) yields `None` — the caller treats that as the gate's `on_error`, never allow-all. Tag
-/// strings are trimmed; empty/whitespace-only entries are dropped.
+
 pub fn parse_restrict(value: &serde_json::Value) -> Option<RestrictReply> {
     let tags_any: Vec<String> = value
         .get("tags_any")?

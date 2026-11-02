@@ -242,7 +242,7 @@ fn tick_pending_ends_its_frame_and_drive_receives_the_same_inspection() {
             .load(std::sync::atomic::Ordering::SeqCst),
         1
     );
-    drop(done); // the TICK frame is actually gone before observing the later DRIVE.
+    drop(done);
     let start = std::time::Instant::now();
     loop {
         // SAFETY: the plugin remains open, and its observation list has its own lock.
@@ -405,12 +405,9 @@ fn ticketless_cancel_invalidates_the_ticket_named_in_its_body() {
     d.recycle(ticket);
 }
 
-// The loader path-mounts test-kit sources to avoid a loader/test-kit dependency cycle.
 #[path = "../../../busbar-test-kit/src/alloc_counter.rs"]
 mod alloc_counter;
 
-// The witness reads allocations immediately before free, never dangling pointers. No other
-// allocator is installed in this unit-test binary.
 #[global_allocator]
 static INSPECTION_ALLOCATOR: alloc_counter::Counting = alloc_counter::Counting::new();
 
@@ -505,7 +502,7 @@ fn secret_input_flags_survive_pending_resume_short_replay_and_cancel() {
     );
     drop(first);
     assert_eq!(input.extensions.ptr, original.ptr);
-    // RESUME, a short recall, and an exact replay all see the same immutable owned receipt.
+
     let mut seen = None;
     for flags in [FLAG_RESUME, FLAG_RESUME, 0] {
         input.flags = flags;
@@ -624,7 +621,7 @@ fn unrelated_truncated_extensions_and_full_input_keep_old_call_behavior() {
     use busbar_contract::abi::mechanism::extensions;
     let (_route, wake, mut input) = input_route();
     let mut old = extensions::encode(&[("unrelated", b"first"), ("unrelated", b"second")]);
-    old.push(0xFF); // the existing extension iterator ignores an incomplete trailing entry.
+    old.push(0xFF);
     let mut output = out_head();
     output.extensions = Blob {
         ptr: old.as_ptr(),
@@ -770,7 +767,7 @@ fn actual_plane_calls_tick_releases_the_pending_lease_before_returning() {
 #[test]
 fn composed_loans_end_each_crossing_while_a_driver_keeps_its_epoch() {
     let (route, wake, mut input) = input_route();
-    route.store.keep(input.ticket, 41); // an unrelated result holds the epoch open.
+    route.store.keep(input.ticket, 41);
     let caller = caller_key(wake);
     let (epoch, _) = route
         .store
@@ -896,7 +893,7 @@ fn plane_tick_lease_is_released_if_settled_reply_is_never_polled() {
     let (instance, state) = plane_rig();
     let driver = instance.driver().unwrap();
     let future = instance.tick(driver, 1);
-    // DRIVE occurs only after TICK has published its reply. The future has not been polled.
+
     let start = std::time::Instant::now();
     let state = unsafe { &*state };
     while state.observed.lock().unwrap().is_empty() {

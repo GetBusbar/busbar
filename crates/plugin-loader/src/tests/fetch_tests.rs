@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/fetch.rs`.
-
 use super::*;
 
 fn tmpdir() -> std::path::PathBuf {
@@ -25,8 +23,6 @@ fn spec(url: &str, sha: Option<&str>, file: &str) -> FetchSpec {
     }
 }
 
-/// A pre-placed tarball hashing to the pin ⇒ Cached, and the (bogus, would-panic) downloader is
-/// NEVER called.
 #[test]
 fn cached_by_pin_skips_network() {
     let dir = tmpdir();
@@ -51,7 +47,6 @@ fn cached_by_pin_skips_network() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Served bytes ≠ pin ⇒ error, and `dir` is unchanged (no file written).
 #[test]
 fn hash_mismatch_never_writes() {
     let dir = tmpdir();
@@ -69,7 +64,7 @@ fn hash_mismatch_never_writes() {
         !dir.join("p.tar.gz").exists(),
         "no file must be written on mismatch"
     );
-    // No leftover temp files either.
+
     let leftovers: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -78,7 +73,6 @@ fn hash_mismatch_never_writes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An unreachable spec: boot (fatal=true) ⇒ Err; reload (fatal=false) ⇒ Ok + Warned.
 #[test]
 fn boot_miss_fatal_reload_miss_warns() {
     let dir = tmpdir();
@@ -103,17 +97,12 @@ fn boot_miss_fatal_reload_miss_warns() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Plugin#2 regression: a `filename` that is not a single path component (a `../../` traversal or an
-/// absolute path) is REFUSED before any `dir.join`, so it can never escape `plugins.dir` at either
-/// the cache-probe or the durable-write join. At boot it is fatal; the downloader is never touched
-/// and nothing is written anywhere.
 #[test]
 fn traversal_filename_is_refused_at_both_sites() {
     let dir = tmpdir();
     let body = b"payload";
     let pin = sha256_hex(body);
-    // A downloader that WOULD succeed — so if the guard were absent, the escaping path would be
-    // written. It must never be called, and nothing must land.
+
     let dl = |_: &str| Ok(body.to_vec());
 
     for evil in [
@@ -124,7 +113,6 @@ fn traversal_filename_is_refused_at_both_sites() {
         ".",
         "",
     ] {
-        // Pinned: exercises the cache-probe join AND the verify-then-write join.
         let err = fetch_plugins(
             &dir,
             &[spec("https://x/p.tar.gz", Some(&pin), evil)],
@@ -138,7 +126,6 @@ fn traversal_filename_is_refused_at_both_sites() {
         );
     }
 
-    // The escaping targets a `../` guard would have created must not exist, and `dir` stays empty.
     assert!(!dir.parent().unwrap().join("evil").exists());
     let leftovers: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
@@ -146,7 +133,6 @@ fn traversal_filename_is_refused_at_both_sites() {
         .collect();
     assert!(leftovers.is_empty(), "dir must be untouched: {leftovers:?}");
 
-    // A plain single-component filename still works (the guard is not over-broad).
     let out = fetch_plugins(
         &dir,
         &[spec("https://x/p.tar.gz", Some(&pin), "good.tar.gz")],
@@ -163,7 +149,6 @@ fn traversal_filename_is_refused_at_both_sites() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A verified download is written atomically and readable back byte-for-byte.
 #[test]
 fn verified_download_is_written() {
     let dir = tmpdir();
@@ -187,7 +172,6 @@ fn verified_download_is_written() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A sealed first-party tarball whose keys document expired at `expires` (Unix seconds).
 fn sealed_tarball(expires: u64) -> Vec<u8> {
     use crate::release_trust::tests::{
         entry, keys_doc, seal_keys, seal_targets, targets_doc, TestSigner,
@@ -225,12 +209,10 @@ fn sealed_tarball(expires: u64) -> Vec<u8> {
     crate::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// FETCH is install time (TUF's semantics): a downloaded sealed tarball whose keys document has
-/// expired is refused and never written, naming the audit code.
 #[test]
 fn a_fetched_tarball_whose_seal_has_expired_is_refused_and_not_written() {
     let dir = tmpdir();
-    let body = sealed_tarball(1_600_000_000); // 2020
+    let body = sealed_tarball(1_600_000_000);
     let dl = |_: &str| Ok(body.clone());
     let err = fetch_plugins(
         &dir,
@@ -256,7 +238,6 @@ fn a_fetched_tarball_whose_seal_has_expired_is_refused_and_not_written() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An INSTALLED (cached, pinned) tarball is not re-judged for expiry: boot keeps it.
 #[test]
 fn an_installed_tarball_whose_seal_has_since_expired_is_kept() {
     let dir = tmpdir();
@@ -280,9 +261,6 @@ fn an_installed_tarball_whose_seal_has_since_expired_is_kept() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An UNPINNED fetch re-downloads at every boot. When it returns the SAME bytes as the installed
-/// copy, nothing new is installed: they are judged by boot rules (the scan's chain, revocation and
-/// rollback), not for expiry, so a boot after the keys document expired still succeeds.
 #[test]
 fn an_unpinned_refetch_of_the_installed_bytes_is_not_judged_for_expiry() {
     let dir = tmpdir();
@@ -306,8 +284,6 @@ fn an_unpinned_refetch_of_the_installed_bytes_is_not_judged_for_expiry() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The same unpinned fetch returning CHANGED bytes is an install: an expired seal is refused,
-/// explained (the audit code, and that the installed copy is kept), and nothing is written.
 #[test]
 fn an_unpinned_fetch_of_changed_bytes_with_an_expired_seal_is_refused() {
     let dir = tmpdir();

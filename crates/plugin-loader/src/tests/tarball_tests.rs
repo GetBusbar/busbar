@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/tarball.rs`.
-
 use super::*;
 use crate::sign::{sign, SigningKey};
 
@@ -47,10 +45,6 @@ fn garbage_is_refused() {
     assert!(unpack(&[]).is_err());
 }
 
-/// A tarball cut short inside its manifest member refuses with 1.5.5's words for it: `cannot read
-/// manifest member: unexpected end of file` (oracle cell `boot.refusal|BOOT-135|boot`, which cuts
-/// the published webrequest tarball to 200 bytes). flate2 1.1.10 words the same condition
-/// "incomplete deflate stream"; the surface prints the condition's kind, not a dependency's prose.
 #[test]
 fn a_tarball_cut_inside_the_manifest_refuses_in_1_5_5_words() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
@@ -58,7 +52,7 @@ fn a_tarball_cut_inside_the_manifest_refuses_in_1_5_5_words() {
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
         .collect();
     let mut m = sign(&key, manifest(), &lib);
-    // A manifest long enough that 200 compressed bytes end inside it, as the real one's does.
+
     m.description = (0..400).map(|i| format!("{i:x}")).collect();
     let tarball = package(&m, "libbusbar_store_gamma.so", &lib).unwrap();
     let err = unpack(&tarball[..200]).unwrap_err();
@@ -67,7 +61,6 @@ fn a_tarball_cut_inside_the_manifest_refuses_in_1_5_5_words() {
 
 #[test]
 fn missing_manifest_or_lib_is_refused() {
-    // Only a library, no manifest.
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut t = tar::Builder::new(gz);
     let mut h = tar::Header::new_gnu();
@@ -79,7 +72,6 @@ fn missing_manifest_or_lib_is_refused() {
     let err = unpack(&bytes).unwrap_err();
     assert!(err.contains("no manifest.json"), "got {err}");
 
-    // Only a manifest, no library.
     let m = manifest();
     let json = serde_json::to_vec(&m).unwrap();
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -95,9 +87,6 @@ fn missing_manifest_or_lib_is_refused() {
     assert!(err.contains("no library member"), "got {err}");
 }
 
-/// X-2017, ruled: a member name with a relative directory prefix is keyed on its basename, as
-/// 1.5.5's `unpack` keyed it, so a tarball a 1.5.5 operator built from a directory still loads.
-/// A refusal here would be a customer-visible change nobody signed.
 #[test]
 fn a_nested_member_name_flattens_to_its_basename_as_in_1_5_5() {
     let m = manifest();
@@ -123,10 +112,9 @@ fn a_nested_member_name_flattens_to_its_basename_as_in_1_5_5() {
 
 #[test]
 fn extra_members_and_traversal_are_refused() {
-    // Three regular files: manifest + two libraries.
     let m = manifest();
     let t1 = package(&m, "lib.so", b"abc").unwrap();
-    // Rebuild with an extra member by unpacking the raw tar and appending.
+
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut t = tar::Builder::new(gz);
     let json = serde_json::to_vec(&m).unwrap();
@@ -146,8 +134,6 @@ fn extra_members_and_traversal_are_refused() {
     assert!(err.contains("more than one library"), "got {err}");
     drop(t1);
 
-    // Parent-reference path. `tar::Builder::append_data` itself refuses `..`, so write the
-    // hostile name into the raw 512-byte header directly (what an attacker's tool would emit).
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut t = tar::Builder::new(gz);
     let mut h = tar::Header::new_gnu();
@@ -166,7 +152,6 @@ fn extra_members_and_traversal_are_refused() {
 
 #[test]
 fn oversized_manifest_member_is_refused() {
-    // A "manifest.json" bigger than the cap is refused by DECLARED size before reading.
     let big = vec![b'x'; (MAX_MANIFEST_BYTES + 1) as usize];
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut t = tar::Builder::new(gz);
@@ -194,9 +179,6 @@ fn tarball_extension_matcher() {
     assert!(!is_plugin_tarball("x.zip"));
 }
 
-// The three size-cap constants are each a computed literal (multiplication / addition); assert
-// their CONCRETE values directly rather than re-deriving them symbolically in the test (which
-// would just re-run the same arithmetic and trivially agree with a mutated constant too).
 #[test]
 fn size_cap_constants_have_the_documented_concrete_values() {
     assert_eq!(MAX_MANIFEST_BYTES, 1_048_576, "1 MiB");
@@ -210,19 +192,12 @@ fn size_cap_constants_have_the_documented_concrete_values() {
 
 #[test]
 fn manifest_member_at_exactly_the_cap_is_accepted_one_byte_over_is_refused() {
-    // A manifest whose bytes deserialize is padded with trailing whitespace up to the exact
-    // cap, then cap+1, to exercise `read_entry_bounded`'s `size > cap` boundary in both
-    // directions (a `>` mutated to `==`/`>=` would wrongly refuse the exact-cap case).
-    // Pad by inflating the `description` field so the member stays valid JSON at exactly the
-    // cap (rather than appending raw bytes, which would break JSON parsing).
     let mut m_padded = manifest();
     let base_len = serde_json::to_vec(&m_padded).unwrap().len() as u64;
     let pad_needed = (MAX_MANIFEST_BYTES - base_len) as usize;
     m_padded.description = "x".repeat(pad_needed);
     let mut exact = serde_json::to_vec(&m_padded).unwrap();
-    // `description`'s serialized length isn't 1:1 with `pad_needed` bytes of `x` once escaped
-    // (plain ASCII `x` needs no JSON escaping, so it is 1:1) — assert the construction is
-    // exact before trusting the boundary test built on it.
+
     assert_eq!(exact.len() as u64, MAX_MANIFEST_BYTES);
 
     let build = |manifest_bytes: &[u8]| -> Vec<u8> {
@@ -246,8 +221,6 @@ fn manifest_member_at_exactly_the_cap_is_accepted_one_byte_over_is_refused() {
     let up = unpack(&bytes).expect("a manifest of exactly MAX_MANIFEST_BYTES must be accepted");
     assert_eq!(up.manifest.description.len(), pad_needed);
 
-    // One byte over the cap: refused (already covered for declared-size by
-    // `oversized_manifest_member_is_refused`, kept here only as the paired boundary case).
     exact.push(b' ');
     let bytes = build(&exact);
     let err = unpack(&bytes).unwrap_err();

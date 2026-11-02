@@ -147,15 +147,11 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 2;
 
 /// The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
-/// the hook table. A door states it as built
-/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
-/// `tests/layout_fingerprint.rs` holds it to its fold.
+
 pub const LAYOUT_FINGERPRINT: u64 = 0xe66698e71abe2054;
 
 /// The hook kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-/// crossing its table, each with every field. A struct `abi/hook/` gains is listed here (gate
-/// `abi-location`).
+
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
         head, decide, transform, notify, configure, status, describe, serve
@@ -289,8 +285,6 @@ pub struct Ops {
     pub serve: Option<Op>,
 }
 
-// ── Signals (OLD `Signal`/`SignalBag`, `busbar-contract/src/signal.rs`) ─────────────────────────
-
 /// One requested/reported signal, in push (insertion) order: a signal bag in fixed layout.
 pub mod signal {
     /// The model the request asked for.
@@ -347,8 +341,7 @@ pub union SignalValue {
 
 impl std::fmt::Debug for SignalValue {
     /// A union carries no tag of its own — printing a specific field without first consulting
-    /// [`SignalEntry::tag`] would read whichever bytes happen to be there under the wrong type, so
-    /// this never does.
+
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignalValue").finish_non_exhaustive()
     }
@@ -366,8 +359,6 @@ pub struct SignalEntry {
     /// The value; read the field `tag` names.
     pub value: SignalValue,
 }
-
-// ── Views ────────────────────────────────────────────────────────────────────────────────────
 
 /// [`RequestView::flags`]: `max_tokens` is present.
 pub const REQUEST_HAS_MAX_TOKENS: u32 = 1 << 0;
@@ -568,7 +559,7 @@ pub const VIEW_HAS_PROMPT: u32 = 1 << 0;
 /// [`DecideIn`]'s `present`: the user view is populated.
 pub const VIEW_HAS_USER: u32 = 1 << 1;
 /// [`DecideIn`]'s `present`: `budget_remaining` (the pool's remaining request budget) is
-/// populated.
+
 pub const VIEW_HAS_BUDGET_REMAINING: u32 = 1 << 2;
 
 /// `decide`'s and `transform`'s shared `in` (both ops see identical views; only their `out` and
@@ -633,8 +624,7 @@ pub const VERB_REJECT: u32 = 1 << 2;
 /// [`DecideOut::verbs`]: narrow to `restrict_tags`.
 pub const VERB_RESTRICT: u32 = 1 << 3;
 /// [`DecideOut::verbs`]/[`TransformOut::verbs`]: `reject_status` is populated; unset means the
-/// mechanism's 403 default applies regardless of `reject_status`'s bytes (ARCHITECT review
-/// ruling 7).
+
 pub const VERB_HAS_REJECT_STATUS: u32 = 1 << 4;
 
 /// `decide`'s output sets exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`], or [`VERB_RESTRICT`]. The validator faults on zero or multiple bits.
@@ -673,9 +663,6 @@ pub struct DecideOut {
 
 /// [`TransformOut::verbs`]: apply the rewrite bytes.
 pub const VERB_REWRITE: u32 = 1 << 0;
-// VERB_ABSTAIN and VERB_REJECT (above) are reused for transform's OLD `Abstain`/`Reject`;
-// VERB_HAS_REJECT_STATUS is shared with decide's. OLD `Failed` maps to the mechanism's own
-// `Outcome::Failed` rather than a verb bit.
 
 /// `transform`'s `out`. The kernel reads ONLY `verbs`; the CALLER (whichever request-serving
 /// code invoked this chain) parses and validates the rewrite bytes, proceeding unmodified on
@@ -706,7 +693,7 @@ pub struct TransformOut {
 }
 
 /// [`StageView::stage_present`]: the stage fields are present at all (a REQUEST-stage tap sets
-/// none of the bits below: it has no stage).
+
 pub const STAGE_HAS_PROJECTION: u32 = 1 << 0;
 /// [`StageView::stage_present`]: `model` is present.
 pub const STAGE_HAS_MODEL: u32 = 1 << 1;
@@ -896,8 +883,6 @@ pub struct ServeOut {
     pub body: Blob,
 }
 
-// ── Statement tail ───────────────────────────────────────────────────────────────────────────
-
 /// [`Route::auth`]: no auth required before `serve`.
 pub const ROUTE_AUTH_NONE: u32 = 0;
 /// [`Route::auth`]: a data-plane key required before `serve`.
@@ -932,7 +917,7 @@ pub const PROMPT_NO: u32 = 0;
 /// [`Tail::prompt_access`]: read-only prompt view/body.
 pub const PROMPT_RO: u32 = 1;
 /// [`Tail::prompt_access`]: read-write — the same view/body as `ro`, PLUS the `transform` rewrite
-/// grant.
+
 pub const PROMPT_RW: u32 = 2;
 
 /// [`Tail::user_access`]: no user view (the default).
@@ -975,10 +960,10 @@ pub struct Tail {
 }
 
 /// HOW THE HOOK KIND TAIL IS MADE: from [`Tail::EMPTY`], its plain fields set
-/// directly and each list by its setter, to items that live for the program.
+
 impl Tail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-    /// sized to the whole tail.
+
     pub const EMPTY: Tail = Tail {
         head: KindTailHead {
             size: core::mem::size_of::<Tail>() as u32,
@@ -996,7 +981,7 @@ impl Tail {
     };
 
     /// This tail with its class and its two grants set: the one constructor a hook plugin's
-    /// `const` goes through, so the plugin SDK names no field of the grants.
+
     #[must_use]
     pub const fn with_access(mut self, kind_class: u32, content: u32, user: u32) -> Tail {
         self.kind_class = kind_class;
@@ -1013,16 +998,13 @@ impl Tail {
 }
 
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
-///
-/// ASSUMPTION (M3-SHAPES): B.4 does not enumerate a cancel disposition vocabulary; a hook reply is
-/// never partially committed (the kernel normalizer runs on a complete `out` or not at all), so
-/// the two dispositions below cover every `may_pend` op (`decide`/`transform`/`serve`) uniformly.
+
 pub mod cancel {
     /// The pending op was aborted before it produced a verdict/response; `on_error` runs as
-    /// though this call had answered [`super::super::mechanism::call::Outcome::Failed`].
+
     pub const ABORTED: u32 = 0;
     /// The op had already completed when the cancel arrived (a race with the deadline); its
-    /// result stands.
+
     pub const RACED_TO_COMPLETION: u32 = 1;
 }
 

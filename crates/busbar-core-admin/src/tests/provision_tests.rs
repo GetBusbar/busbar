@@ -1,11 +1,3 @@
-//! THE POST-COMMIT FAILURE BRANCH of `POST /keys` with auto-provisioning.
-//!
-//! `Outcome::commit_then` runs a config PERSIST-and-SWAP and then a store write, under one guard.
-//! The two halves cannot be atomic with each other: once the swap has happened it is visible to
-//! every in-flight request and un-persisting is itself fallible. So the honest semantics are not
-//! "compensate" but "the provision is committed, and it is RECORDED at commit time" — which is what
-//! these tests pin, on the branch where the config half commits and the store half then fails.
-
 use crate::admin_state::AppAdmin as _;
 use std::sync::Arc;
 
@@ -18,8 +10,6 @@ use busbar_kernel::governance::GovState;
 use busbar_kernel::state::AppHandle;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-/// A store whose KEY WRITES always fail — the mint half of `commit_then` cannot succeed, while the
-/// config half (which never touches the store) commits normally. Everything else delegates.
 struct RefusesKeyWrites(MemoryStore);
 
 impl busbar_contract::records::RecordStore for RefusesKeyWrites {
@@ -125,9 +115,6 @@ async fn mint_with_parent(
     .await
 }
 
-/// `mint_with_parent`, but naming the CALLER. Audit rows carry `actor_id()`, so a test that asserts
-/// on the process-global audit log can filter to rows only IT could have written — the same reason
-/// each test provisions its own group name.
 async fn mint_as(
     handle: &Arc<AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
@@ -148,19 +135,12 @@ async fn mint_as(
     .status()
 }
 
-/// The group THIS test provisions. Unique to it on purpose: the audit log is process-global and the
-/// assertions below filter it by `(action, resource)`, so any other test provisioning the same name
-/// lands a row inside this test's filter. Three of them used to share `user:alice`, and one foreign
-/// row is enough to break the count-equality assertion on the retry (observed 1→2).
 const PROVISION_FAIL_GROUP: &str = "user:alice-mint-fail";
-/// The audit `resource` for [`PROVISION_FAIL_GROUP`] — `record_by` writes `group:<name>`.
+
 const PROVISION_FAIL_RESOURCE: &str = "group:user:alice-mint-fail";
-/// The version-log summary fragment naming that provision.
+
 const PROVISION_FAIL_VERSION_SUMMARY: &str = "group.provision group:user:alice-mint-fail";
 
-/// A mint that fails AFTER the auto-provision has committed leaves the group live — and says so.
-/// The group.provision audit row and the version-log entry are written at COMMIT time, so the
-/// committed config change is never invisible, and the retry is idempotent (the group now exists).
 #[tokio::test]
 async fn mint_failure_after_the_provision_commit_still_records_the_committed_group() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -182,7 +162,6 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         "the mint half fails, so the request fails"
     );
 
-    // THE COMMITTED HALF IS LIVE: the leaf was persisted and swapped before the mint ran.
     let live = handle.load();
     assert!(
         live.groups_registry.contains_key(PROVISION_FAIL_GROUP),
@@ -193,8 +172,6 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         "and it is in the enforcement model, so a retry can bind to it"
     );
 
-    // AND IT IS RECORDED — at COMMIT time, so a mint that fails afterwards cannot erase the fact
-    // that the config changed.
     assert!(
         busbar_kernel::audit::auditlog::AUDIT_LOG
             .list_filtered(
@@ -216,22 +193,12 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         .iter()
         .find(|v| v.summary.contains(PROVISION_FAIL_VERSION_SUMMARY))
         .expect("the version entry names the provisioned group");
-    // The recorded version is the COMMITTED snapshot's own, read inside the transaction — not
-    // whatever a post-lock-release `handle.load()` happened to observe.
+
     assert_eq!(
         entry.version, live.config_version,
         "the version entry is attributed to the snapshot that was actually committed"
     );
 
-    // THE RETRY IS IDEMPOTENT: the group exists now, so a second attempt takes the no-provision
-    // path (it still fails on the store, but it does not re-provision or double-record).
-    //
-    // Scoped by resource (PROVISION_FAIL_RESOURCE), which removes cross-test contamination, but
-    // NOT by seq — `AUDIT` is a 1000-entry ring (`MAX_AUDIT_ENTRIES`), and a large enough
-    // concurrent admin-mutation burst between the two reads below could evict this test's own rows
-    // before the second read. Latent: nothing in this suite currently drives that many concurrent
-    // audit writes. Accepted rather than bracketed by seq, which would narrow the window but not
-    // defeat eviction.
     let audit_rows_before = busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(
             0,
@@ -256,14 +223,8 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     );
 }
 
-/// The principal this test mints as, so its audit rows are distinguishable from every other
-/// refused mint in the binary (they all share the `key:-` resource).
 const CEILING_ACTOR: &str = "test:ceiling-audit";
 
-/// Auto-provision-on-mint had NO ceiling on the NUMBER of groups, so a `mint`-scope credential
-/// could grow the limit tree without bound — every leaf is a new enforcement bucket, version-log
-/// entry and persisted overlay row. `limits.max_auto_provisioned_groups` caps it; explicitly
-/// configured groups and mints that bind to an EXISTING group are unaffected.
 #[tokio::test]
 async fn auto_provision_stops_at_the_group_ceiling() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -273,7 +234,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        // Ceiling of 2: the base `team` group plus exactly ONE auto-provisioned leaf.
+
         inner.max_auto_provisioned_groups = 2;
     }
     let handle = Arc::new(AppHandle::new(app));
@@ -283,9 +244,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         StatusCode::CREATED,
         "the first self-mint provisions its leaf"
     );
-    // A refused mint records `key.create`/rejected against `key:-` — a resource EVERY refused mint
-    // in the binary shares, so this filters to rows written by THIS test's principal. Without that
-    // a concurrent test's refusal satisfies the assertion and it passes with the fix reverted.
+
     let ceiling_actor = busbar_kernel::auth::AuthPrincipal(Some(
         busbar_contract::auth::Principal::from_id(CEILING_ACTOR),
     ));
@@ -314,7 +273,6 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         "the ceiling refusal must write its own `key.create`/rejected audit row"
     );
 
-    // Binding to an EXISTING group still works at the ceiling — only auto-provisioning is gated.
     assert_eq!(
         mint_with_parent(&handle, "k3", "user:alice", "team").await,
         StatusCode::CREATED,

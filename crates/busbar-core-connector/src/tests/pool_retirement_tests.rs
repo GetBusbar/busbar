@@ -82,7 +82,7 @@ fn recovered_pooling_retires_idle_cache_without_closing_an_active_anchor() {
         let c = pooled_messages(Duration::from_secs(60));
         c.declare_over(OWNER, NeedId(0), "messages").unwrap();
         let idle = completed(&c, &far).await;
-        // Keep the first connection busy while a second is opened, then return only the first.
+
         let active = completed(&c, &far).await;
         c.close(OWNER, idle).unwrap();
         let (_, held) = c.slab.get(OWNER, active).unwrap();
@@ -172,8 +172,6 @@ fn a_close_that_took_its_conn_before_forget_closes_the_retired_line() {
         c.declare_over(OWNER, NeedId(0), "messages").unwrap();
         let id = completed(&c, &far).await;
 
-        // The exact close/forget interleaving, using their existing operations: close has taken
-        // the ConnId, so forget cannot close it through the slab. Its pool membership goes first.
         let held = c.slab.remove(OWNER, id).unwrap();
         let (shard, key) = held.pooled.as_ref().unwrap();
         let (line, stream) = held.line.lock().unwrap().take().unwrap();
@@ -200,8 +198,6 @@ fn an_unregistered_release_preserves_its_holder_without_retaining_the_key() {
         let (line, stream) = held.line.lock().unwrap().take().unwrap();
         c.forget(OWNER);
 
-        // A missing key while another holder still owns the line must neither close that line
-        // nor pin the key's trust config in an otherwise empty map entry.
         let trust = Arc::new(
             rustls::ClientConfig::builder()
                 .with_root_certificates(rustls::RootCertStore::empty())
@@ -458,7 +454,7 @@ fn idle_probe_loses_retired_membership(retire: impl FnOnce(&Connector)) {
         release.send(()).unwrap();
         let lent = probe.join().unwrap();
         let was_lent = lent.is_some();
-        // Clean up the old implementation's incorrect loan before reporting its failure.
+
         if let Some(line) = lent {
             line.leave(crate::compose::EXCHANGE_STREAM, false);
             c.pools.drop_line(shard, &key, &line);

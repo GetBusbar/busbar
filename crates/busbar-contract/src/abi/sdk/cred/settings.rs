@@ -42,7 +42,7 @@ impl SettingsError {
 }
 
 /// `settings: ` and serde's own words, every value in them written `***` ([`SettingsError::path`]
-/// names where).
+
 impl fmt::Display for SettingsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "settings: {}", self.what)
@@ -118,27 +118,17 @@ impl de::Error for SettingsError {
 }
 
 /// Parse a plugin's settings document into `T`. Every [`Cred`] and [`CredUrl`] field is sealed as
-/// it is read, every string the parse tree held is wiped, and the error names a path and a type,
-/// never a value.
-///
-/// # Errors
-/// The document is not JSON, or does not match `T`.
+
 pub fn settings<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, SettingsError> {
     T::deserialize(Node::new(document(bytes)?, String::new()))
 }
 
 /// The key of the marker a host writes where it took a value at a declared wildcard secret path
-/// (`servers.*.env.*`) out of the settings: `{"$secret": <index into the lent secrets>}`.
+
 pub const SECRET_MARKER: &str = "$secret";
 
 /// [`settings`] over a document the host lent secrets with: each `{"$secret": <index>}` marker is
-/// replaced by `lent[index]` as a string before `T` is read, so a [`Cred`] field there is sealed
-/// from the lent bytes. Everything is wiped as [`settings`] wipes it, the substituted strings
-/// included, and no error quotes a value.
-///
-/// # Errors
-/// The document is not JSON; a marker's index is not a whole number or is out of range; the lent
-/// bytes it names are not UTF-8; or the document does not match `T`.
+
 pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<T, SettingsError> {
     let mut value = document(doc)?;
     if let Err(e) = substitute(&mut value, lent, "") {

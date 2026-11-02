@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE DRIVER, BOTH WAYS (`BUSBAR-1.6.0.md` Part 3, §12). One test plane, LINKED (its door
-//! compiled into this test) and DROPPED (its `cdylib`, dlopened), each loaded through the one
-//! path, handed to the kernel's plane driver as the contract's `PlaneCalls`, and driven by the one
-//! loop (`run_unit_async` / `open_unit`) through every case in `plane_driver_cases.rs`. Beside
-//! them: a plane's `drive` through the dispatcher's own driver ticket, the crossing's cost, and
-//! the duplex session (K6) the driver pumps after `open_unit` admitted it.
-
 #[path = "../../../crates/busbar-kernel/tests/common/mod.rs"]
 mod common;
 
@@ -18,7 +11,6 @@ mod plane;
 #[path = "../../../crates/busbar-kernel/tests/support/plane_driver_cases.rs"]
 mod cases;
 
-// This crate's one plugin fixture: the panic a missing `cdylib` raises.
 #[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod fixture_plugins;
 
@@ -51,12 +43,9 @@ use busbar_plugin_loader::dispatch::{
     Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
 };
 
-/// The dispatcher's clock, the one a unit's deadline is on.
 pub(crate) fn now_ns() -> u64 {
     dispatch_now()
 }
-
-// ── the doors ────────────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Way {
@@ -64,8 +53,6 @@ pub(crate) enum Way {
     Dropped,
 }
 
-/// The example `cdylib` beside this test binary. A missing artifact is a failure in every run,
-/// never a skip of the dropped door.
 fn dropped_path() -> std::path::PathBuf {
     let name = "plane_driver_test_plane";
     let exe = std::env::current_exe().expect("the test binary's path");
@@ -85,23 +72,18 @@ fn dropped_path() -> std::path::PathBuf {
     path
 }
 
-/// The doors every run drives: both.
 pub(crate) fn ways() -> Vec<Way> {
     vec![Way::Linked, Way::Dropped]
 }
 
-/// Load and open the test plane through `way`, adopted by `dispatcher`.
 fn load(way: Way, dispatcher: &Dispatcher) -> Arc<Plugin<Plane>> {
     load_with(way, dispatcher, Arc::new(NoSink))
 }
 
-/// [`load`], with the #85 envelope going to `sink`.
 fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> Arc<Plugin<Plane>> {
-    // These rows never dial: the plane's need is not declared, bound as a probe.
     load_open(way, dispatcher, sink, ConnTable::Probe).0
 }
 
-/// [`load_with`], its need declared on `conns` when given.
 fn load_over(
     way: Way,
     dispatcher: &Dispatcher,
@@ -112,8 +94,6 @@ fn load_over(
     load_open(way, dispatcher, sink, conns).0
 }
 
-/// [`load_over`], and the first generation's snapshot as the host copied it. The plugin is shared
-/// (a `Plugin` is `!Clone`): the rig, its plane instance and the case's reads hold the same `Arc`.
 fn load_open(
     way: Way,
     dispatcher: &Dispatcher,
@@ -123,7 +103,6 @@ fn load_open(
     load_open_capped(way, dispatcher, sink, conns, 64)
 }
 
-/// [`load_open`], the host clamping the plane's `max_inflight` to `cap`.
 fn load_open_capped(
     way: Way,
     dispatcher: &Dispatcher,
@@ -183,7 +162,6 @@ fn load_open_capped(
     (Arc::new(plugin), snapshot.expect("the snapshot is copied"))
 }
 
-/// The plane's own counters, read through `arrive` on `/stats`.
 fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
     let mut units = [UnitCount {
         class: 0,
@@ -259,8 +237,6 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
     out
 }
 
-// ── the rig the cases run on ─────────────────────────────────────────────────────────────────────
-
 pub(crate) struct Rig {
     plugin: Arc<Plugin<Plane>>,
     pub(crate) driver: PlaneDriver,
@@ -272,7 +248,6 @@ impl Rig {
         stats(&self.plugin)
     }
 
-    /// The plane's session counters (`/sessions`), in [`plane::Sessions`] order.
     fn sessions(&self) -> [u64; plane::SESSIONS] {
         let all = arrive_at(&self.plugin, "/sessions");
         let mut out = [0; plane::SESSIONS];
@@ -316,8 +291,6 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
     }
 }
 
-// ── the plane's driver ticket ────────────────────────────────────────────────────────────────────
-
 /// The envelope gauges the host accepted, by family.
 #[derive(Default)]
 struct Gauges(Mutex<Vec<(u32, f64)>>);
@@ -330,10 +303,6 @@ impl EnvelopeSink for Gauges {
     fn dropped(&self, _: Dropped) {}
 }
 
-/// A plane's `drive`, run by the dispatcher's own driver ticket, crosses with the plane's
-/// `PlaneDriveIn`/`PlaneDriveOut` and is judged by the plane's `check_drive`: its answer is
-/// accepted (its envelope reaches the host). With the lifecycle's bare `DriveIn`/`OutHead` frame
-/// every plane `drive` was FAULT, its envelope never read.
 #[test]
 fn a_plane_driven_through_its_driver_ticket_answers_under_its_own_frame() {
     for way in ways() {
@@ -355,12 +324,10 @@ fn a_plane_driven_through_its_driver_ticket_answers_under_its_own_frame() {
     }
 }
 
-/// Wake ticket `t` through the plane (only a plugin holds the host's wake).
 fn wake(plugin: &Plugin<Plane>, t: busbar_contract::abi::mechanism::ticket::Ticket) {
     arrive_at(plugin, &format!("/wake:{}:{}", t.slot, t.generation));
 }
 
-/// One `arrive` on `target`, READY.
 fn arrive_at(plugin: &Plugin<Plane>, target: &str) -> [u64; 16] {
     let target = target.as_bytes().to_vec();
     let mut units = [UnitCount {
@@ -436,9 +403,6 @@ fn zero_arrive_out() -> ArriveOut {
     }
 }
 
-// ── the instance's driver ticket: tick and drive ────────────────────────────────────────────────
-
-/// The plane's tick counters (`/ticks`).
 fn ticked(plugin: &Plugin<Plane>) -> [u64; plane::TICKED] {
     let all = arrive_at(plugin, "/ticks");
     let mut out = [0; plane::TICKED];
@@ -446,7 +410,6 @@ fn ticked(plugin: &Plugin<Plane>) -> [u64; plane::TICKED] {
     out
 }
 
-/// The kernel's driver of `plugin`'s instance, on the dispatcher's one worker (worker 0).
 fn driver_of(plugin: &Arc<Plugin<Plane>>, dispatcher: Arc<Dispatcher>) -> PlaneDriver {
     let calls = Arc::new(PlaneInstance::new(Arc::clone(plugin), dispatcher, 0));
     let refusal_statuses = calls.refusal_statuses();
@@ -466,12 +429,10 @@ fn driver_of(plugin: &Arc<Plugin<Plane>>, dispatcher: Arc<Dispatcher>) -> PlaneD
     .expect("the instance is admitted")
 }
 
-/// The kernel's host services, with no egress class and no store.
 fn services() -> Arc<KernelServices> {
     Arc::new(KernelServices::new())
 }
 
-/// Wait up to 5 s for `done`.
 fn until(what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !done() {
@@ -480,9 +441,6 @@ fn until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// THE KERNEL TICKS A PLANE INSTANCE (spec :3288, B.3.7): at once, then at each `next_tick_ns` it
-/// answered, never before it, on the instance's driver ticket (the head carries it); dropping the
-/// driver ends the schedule. RED before K-TICK: nothing ever called `tick`.
 #[tokio::test]
 async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
     for way in ways() {
@@ -518,9 +476,6 @@ async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
     }
 }
 
-/// A plane that answers `next_tick_ns = 0` and never wakes its driver ticket is ticked once and
-/// never again (R-PUSH: `0` names no tick until a wake, and no wake comes). A one-direction plane
-/// that answers `0` and never wakes counts exactly this.
 #[tokio::test]
 async fn no_tick_follows_a_tick_that_asks_for_none() {
     for way in ways() {
@@ -532,14 +487,11 @@ async fn no_tick_follows_a_tick_that_asks_for_none() {
     }
 }
 
-/// The schedule after an answer of `0` (R-PUSH): one tick, then parked on a wake that does not come.
 async fn parks_after_one_tick(driver: &PlaneDriver) {
     let run = tokio::time::timeout(Duration::from_millis(300), driver.ticks()).await;
     assert!(run.is_err(), "the schedule parks on an answer of 0");
 }
 
-/// R-PUSH through the real loader: a wake of the driver ticket runs `drive` and then re-polls
-/// `tick`, though the last answer was `0`. RED on the base: the schedule had ended.
 #[tokio::test]
 async fn a_wake_of_the_driver_ticket_runs_drive_then_ticks_again() {
     for way in ways() {
@@ -604,7 +556,7 @@ impl DeclaredConns for Far {
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
         self.slab.check_need(owner, need).ok().map(Ok)
     }
-    /// The test plane's need is over the one wire this table serves.
+
     fn serves_scheme(&self, _: &str) -> bool {
         true
     }
@@ -666,13 +618,6 @@ impl Conns for Far {
     }
 }
 
-/// A HOP INSIDE `tick` PENDS AND RESUMES THROUGH `drive` (ARCHITECT S7-TICK; spec :3470-3471, the `tick` and `drive` rows of the `bb_ops_head` table):
-/// the plane ESTABLISHes its need (READY: the table holds the dial) and READs it inside `tick`; the
-/// read is PENDING on the instance's driver ticket, not refused for want of one, and `tick` answers
-/// PENDING, which ends it (a driver ticket's op is never resumed: what pended goes on through
-/// `drive`); the table's wake on that ticket calls `drive`, whose read on the driver ticket gets the
-/// bytes. RED before K-TICK: no `tick` ran, so nothing pended; with a PENDING tick held open, the
-/// schedule never ends.
 #[tokio::test]
 async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive() {
     for way in ways() {
@@ -696,7 +641,7 @@ async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive
             "{way:?}: interest under the driver ticket"
         );
         *far.bytes.lock().unwrap() = Some(b"hello".to_vec());
-        // The table's readiness wake, on the ticket it registered.
+
         wake(&plugin, ticket_of(ticket));
         until("drive read the bytes", || {
             ticked(&plugin)[plane::Ticked::DriveRead as usize] == 5
@@ -708,13 +653,6 @@ async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive
     }
 }
 
-/// EACH TICK WITH NOTHING HELD STARTS A NEW CYCLE ON THE DRIVER TICKET (ARCHITECT S7-TICK (iii)):
-/// once the `drive` that read the first tick's stream answered READY (nothing held), the services'
-/// kept answers under the driver ticket are forgotten when the next tick starts, so the second
-/// tick's ESTABLISH (handle 1 again) runs afresh instead of answering the first tick's stream; the
-/// cycle's kept count reaches the dispatcher's high-water gauge. RED before: the driver ticket is
-/// never recycled, the second ESTABLISH replayed the first one's answer (one connection opened) and
-/// the kept answers grew without bound.
 #[tokio::test]
 async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
     for way in ways() {
@@ -725,7 +663,7 @@ async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
         for round in 1..=2 {
             arrive_at(&plugin, "/tick-read");
             parks_after_one_tick(&driver).await;
-            // The far end answers and `drive` reads it: nothing is held on the driver ticket.
+
             *far.bytes.lock().unwrap() = Some(vec![b'x'; round]);
             let ticket = ticked(&plugin)[plane::Ticked::Ticket as usize];
             wake(&plugin, ticket_of(ticket));
@@ -745,7 +683,6 @@ async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
     }
 }
 
-/// Wait up to 5 s for `done`, without parking the runtime's thread (the schedule runs beside it).
 async fn eventually(what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !done() {
@@ -754,7 +691,6 @@ async fn eventually(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// `script` beside the plane's tick schedule, which must outlast it.
 async fn beside_ticks(
     way: Way,
     driver: &PlaneDriver,
@@ -770,16 +706,6 @@ async fn beside_ticks(
     .expect("the script finished");
 }
 
-/// TWO EXCHANGES HELD SIDE BY SIDE ON ONE DRIVER TICKET (THE DESIGN: every call is Ready or
-/// Pending(wake), `BUSBAR-1.6.0.md` :1282, and a Pending is honoured; R-PUSH, the `tick` row of
-/// `bb_ops_head`, :3614): the first tick's exchange pends; a wake runs `drive`, which carries it on
-/// (still PENDING), and then the re-polled tick starts a second exchange beside it. The second's
-/// far end answers first: it completes while the first stays pending, and the first, still held,
-/// then completes on its own connection when its far end answers. Each exchange dialled ONCE: a
-/// tick kept the held exchange's ESTABLISH answer, so its replay through `drive` answered its
-/// stream again. RED before: a `drive` that answered PENDING re-polled no `tick` (the second never
-/// started), and a tick's start forgot every kept answer under the driver ticket, so the held
-/// exchange's replay dialled again and its first connection's answer reached no one.
 #[tokio::test]
 async fn a_tick_keeps_every_held_exchange_and_the_second_completes_while_the_first_pends() {
     for way in ways() {
@@ -834,7 +760,6 @@ async fn a_tick_keeps_every_held_exchange_and_the_second_completes_while_the_fir
     }
 }
 
-/// The test plane over `far`, its `max_inflight` clamped to `cap`.
 fn load_capped(way: Way, dispatcher: &Dispatcher, far: &Arc<Far>, cap: u32) -> Arc<Plugin<Plane>> {
     let conns: Arc<dyn DeclaredConns> = far.clone();
     let (plugin, _) = load_open_capped(
@@ -848,12 +773,6 @@ fn load_capped(way: Way, dispatcher: &Dispatcher, far: &Arc<Far>, cap: u32) -> A
     plugin
 }
 
-/// A HANDLE IS NEVER ISSUED TWICE IN A KEPT CYCLE (THE DESIGN: Ready|Pending(wake), :1282; the
-/// replay rule): while the first exchange is held, a tick whose new exchange issues the first
-/// one's handles is answered FAULT on that call, by the existing fault answer, and nothing runs; it
-/// never reads the held exchange's kept ESTABLISH answer (its stream). The held exchange is
-/// untouched and completes on its own connection. RED before: the reused ESTABLISH answered the
-/// held exchange's stream, and the new exchange read it as its own.
 #[tokio::test]
 async fn a_tick_that_reuses_a_held_handle_is_faulted_not_answered_the_held_answer() {
     for way in ways() {
@@ -895,12 +814,6 @@ async fn a_tick_that_reuses_a_held_handle_is_faulted_not_answered_the_held_answe
     }
 }
 
-/// THE HELD SET IS BOUNDED BY THE INSTANCE'S `max_inflight`, AND A SLOT FREES PER EXCHANGE
-/// (`BUSBAR-1.6.0.md` A.4.1, :3627, the per-instance capacity; no new figure): with the host
-/// clamping it to 2, two exchanges are held and the tick that would start a third is parked, not
-/// crossed. When ONE held exchange ends, its slot frees: the third tick crosses while the other
-/// exchange still pends (no head-of-line wait on the slowest). RED before: the held count fell only
-/// when a `drive` answered that nothing was held, so the third waited on the first.
 #[tokio::test]
 async fn the_held_set_on_a_driver_ticket_is_bounded_by_max_inflight_and_frees_per_exchange() {
     for way in ways() {
@@ -952,10 +865,6 @@ async fn the_held_set_on_a_driver_ticket_is_bounded_by_max_inflight_and_frees_pe
     }
 }
 
-/// THE PARKED TICK IS WOKEN BY THE SLOT, NOT BY ITS CALLER: a tick submitted straight on the driver
-/// ticket (as any tick loop does, auth's among them, which stops on a PENDING answer naming no
-/// next tick) while two exchanges are held under a cap of 2 is not answered; when one held exchange
-/// ends, that same tick crosses and is answered, with no further tick submitted and no other poke.
 #[tokio::test]
 async fn a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke() {
     for way in ways() {
@@ -986,7 +895,7 @@ async fn a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke() {
         assert_eq!(t(plane::Ticked::HoldStarted), 2, "{way:?}: not crossed");
         let first = far.ids.lock().unwrap()[0];
         far.ready.lock().unwrap().insert(first, b"first".to_vec());
-        // The far end's own readiness wake: the held exchange ends in the `drive` it runs.
+
         wake(&plugin, drv);
         let done = parked
             .wait(Duration::from_secs(5))
@@ -1009,11 +918,6 @@ async fn a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke() {
     }
 }
 
-// ── the crossing's cost ──────────────────────────────────────────────────────────────────────────
-
-/// One `on_piece` crossing (host→plane, through the table, its answer judged by the kind's check),
-/// p50 and p99 over batches, per door. The budget (under 1 µs) is asserted in release builds; a
-/// debug build prints the figures only.
 #[test]
 fn the_crossing_is_under_a_microsecond() {
     for way in ways() {
@@ -1071,7 +975,7 @@ fn the_crossing_is_under_a_microsecond() {
             },
             zero_piece_out(),
         );
-        // Unit 0 arrives first (its `arrive` on `/stats`), so the plane holds its head.
+
         stats(&plugin);
         const BATCH: u32 = 1_000;
         let mut samples = Vec::new();
@@ -1133,9 +1037,6 @@ fn zero_piece_out() -> OnPieceOut {
     }
 }
 
-// ── the plane's `serve` op on the admin table (B.9; ARCHITECT C2c S5 Q1-Q6) ─────────────────────
-
-/// The test plane's admin table, as the composition root publishes an open instance's snapshot.
 fn serve_table(
     way: Way,
     instance: &str,
@@ -1170,8 +1071,6 @@ fn serve_table(
     (plugin, table)
 }
 
-/// One admin request through the admin router's fallback over `tables`: its status and body, or
-/// `None` when no published instance names the path (the router's own `404`).
 fn admin(
     tables: &busbar_kernel::plane_driver::serve::ServeTables,
     method: &str,
@@ -1201,7 +1100,6 @@ fn admin(
     })
 }
 
-/// The audit rows written for `resource` under the test plane's audit verb.
 fn rows(resource: &str) -> Vec<String> {
     busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES, None, None)
@@ -1212,27 +1110,18 @@ fn rows(resource: &str) -> Vec<String> {
         .collect()
 }
 
-/// A DECLARED ADMIN ROUTE REACHES `serve`, AND NOTHING ELSE DOES, both ways. The plane is handed
-/// the request's own head fields without a credential, answers with its own status, fields
-/// and body, and reports the audit row the kernel writes under the route's audit word:
-/// 1.5.5's two `400`s, one unaudited (a malformed body), one audited `rejected` (a disagreement).
-/// An undeclared path, a public route and an unpublished instance are the router's `404`; a
-/// declared path under another verb is the admin `405`; an index past the snapshot never crosses;
-/// a short answer is re-called once, and a second short answer or an unknown audit code is `502`.
-/// A route that overlaps another instance's, or a kernel route, is refused at publish.
 #[test]
 fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     use busbar_kernel::plane_driver::serve::{serve, ServeTables, Unserved};
     let _one = PUBLISHED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
-    // test harness registers it, so the rows this test writes reach the seam's read model.
+
     let _ = busbar_kernel_testkit::test_support::TestApp::new().build();
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");
-        // Unpublished: nothing mounts.
+
         let tables = ServeTables::default();
         assert_eq!(admin(&tables, "POST", &act, "go"), None, "{way:?}");
         let (_plugin, table) = serve_table(way, "the-instance");
@@ -1330,16 +1219,8 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     }
 }
 
-/// The process's one operator audit ring the served routes write their rows on: one test serves at
-/// a time.
 static PUBLISHED: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// RED (SEAM-4o): a PUBLIC route the published snapshot states (`ROUTE_PUBLIC`) is served on the
-/// public serve path by the plane's own `serve`, to a caller that presents no busbar credential:
-/// the plane sees the request's own head fields with every credential field struck, and answers
-/// with its own status and body. The admin route is not public (`404` there), an unknown path is
-/// `404`, and a withdrawn instance serves nothing. RED before: the kernel filtered public routes
-/// out of every table, so nothing served them.
 #[test]
 fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
     use busbar_kernel::plane_driver::serve::ServeTables;
@@ -1389,10 +1270,6 @@ fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
     }
 }
 
-/// GREEN beside SEAM-4o's red arm (`BUSBAR-1.6.0.md` l.4882: a callback route "is auth `none`;
-/// the plane checks its own callback correlation token"): a PUBLIC route whose snapshot states
-/// `ROUTE_CARRIES_OWN_TOKEN` is lent the request's `authorization` (the plane's own token, no
-/// caller's credential), and every other credential field is struck as on any public route.
 #[test]
 fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else() {
     use busbar_contract::abi::plane::{ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
@@ -1445,8 +1322,6 @@ fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else(
     }
 }
 
-// ── duplex sessions (K6) ─────────────────────────────────────────────────────────────────────────
-
 /// One line of a session caller's script.
 #[derive(Debug, Clone, Copy)]
 enum Line {
@@ -1458,8 +1333,6 @@ enum Line {
     Hold,
 }
 
-/// A session's caller: it sends its script's pieces, waits where the script says, and keeps what
-/// the plane wrote to it. Its side ends when the script does.
 struct Scripted {
     script: Mutex<std::collections::VecDeque<Line>>,
     heard: Mutex<Vec<u8>>,
@@ -1488,7 +1361,6 @@ impl busbar_kernel::plane_driver::CallerEnd for Scripted {
 }
 
 impl busbar_kernel::plane_driver::SessionCaller for Scripted {
-    /// Cancel-safe: a line leaves the script only once it is answered.
     async fn read(&self) -> Option<Vec<u8>> {
         loop {
             let front = self.script.lock().unwrap().front().copied();
@@ -1508,8 +1380,6 @@ impl busbar_kernel::plane_driver::SessionCaller for Scripted {
     }
 }
 
-/// Open a session on `r`'s driver through the one loop's opener (unit `key`, its stream), then pump
-/// it under the admission it handed back.
 async fn session(
     r: &Rig,
     far: &cases::Far,
@@ -1519,7 +1389,6 @@ async fn session(
     session_on(&r.driver, far, caller, cases::arrival("/call", b""), key).await
 }
 
-/// [`session`] on any plane's `driver`, for `arrival`, over any far end and caller.
 async fn session_on<F, C>(
     driver: &PlaneDriver,
     far: &F,
@@ -1563,12 +1432,8 @@ where
     units.session(&route, &ctx, &destinations).await
 }
 
-/// The lane the test steps' Verify seals: the one destination a session's turns may reach.
 const SEALED: &str = "fixture-lane";
 
-/// A DUPLEX SESSION, both ways (K6): the caller's pieces cross on the session's caller-side
-/// ticket, under the unit's stream, and the plane's answers reach the caller; the caller's last
-/// piece ends it, and its one cleanup runs once. Nothing reaches the far end without a turn.
 #[tokio::test]
 async fn a_duplex_session_answers_its_caller_and_cleans_up_once() {
     for way in ways() {
@@ -1602,16 +1467,11 @@ async fn a_duplex_session_answers_its_caller_and_cleans_up_once() {
     }
 }
 
-/// UNSOLICITED OUTPUT (R-B), both ways: the plane holds output for a session and wakes the
-/// instance's ONE driver ticket; its `drive` names the session, the driver wakes it, and the
-/// session collects the output (`FROM_KERNEL`, no bytes) on its own caller-side ticket, so the
-/// caller hears it. No ticket of the session's own is a driver ticket. RED without the fan-out
-/// (`PlaneDriver::drives`, or the loader handing `drive`'s names on): the caller never hears it.
 #[tokio::test]
 async fn unsolicited_output_reaches_the_caller_through_the_instances_one_driver_ticket() {
     for way in ways() {
         let r = rig(way, BufferCaps::default(), cases::Book::default());
-        // The plane learns its driver ticket from its first tick.
+
         parks_after_one_tick(&r.driver).await;
         let far = cases::Far::new(&[SEALED], &[b"x"]);
         let caller = Scripted::new([Line::Send(b"push:hello"), Line::Hear("hello")]);
@@ -1637,11 +1497,6 @@ async fn unsolicited_output_reaches_the_caller_through_the_instances_one_driver_
     }
 }
 
-/// A TURN LEG IS A ROUTE WALK under the session's one admission, inside the destination set
-/// sealed at the open, both ways: the caller's piece the plane binds for the far end is walked on
-/// the session's far-side ticket; the walk's member outside the sealed set is passed over without
-/// a crossing, and the far end's answer reaches the caller. RED without the sealed-set check: the
-/// first attempt goes to the outsider.
 #[tokio::test]
 async fn a_turn_leg_walks_inside_the_destination_set_sealed_at_the_open() {
     for way in ways() {
@@ -1677,14 +1532,6 @@ async fn a_turn_leg_walks_inside_the_destination_set_sealed_at_the_open() {
     }
 }
 
-/// THE SESSION'S FAR END IS HELD (ARCHITECT Q-L5-FAR (A); THE DESIGN "every turn leg under the
-/// session's ONE admission inside the destination set sealed at open"), both ways: the first turn
-/// dials the far end once, inside the sealed set; its socket stays open, and the second caller
-/// frame is WRITTEN INTO THAT SOCKET while it is open, never a second dial. The far end's frames
-/// reach the caller as they arrive, interleaved with the caller's (its greeting before any answer,
-/// each answer after its frame), and the session ends with its caller although the far end never
-/// hangs up. RED before: the first turn's walk read until the socket closed, so frame two queued
-/// behind it forever and the caller never heard its answer.
 #[tokio::test]
 async fn a_held_far_end_takes_every_turn_while_its_socket_stays_open() {
     for way in ways() {
@@ -1734,11 +1581,6 @@ async fn a_held_far_end_takes_every_turn_while_its_socket_stays_open() {
     }
 }
 
-/// THE FAR END HANGING UP ENDS THE SESSION, both ways: the held far end answers the caller's
-/// `bye` and closes its socket; the far side ends on its own, and the caller's side, though its
-/// caller still holds it open, ends with the caller's last piece, so the plane settles the session
-/// once and nothing is cancelled. RED without the far side's end reaching the caller side: the
-/// session stayed open for as long as its caller did.
 #[tokio::test]
 async fn a_far_end_that_hangs_up_ends_the_session_with_its_caller() {
     for way in ways() {
@@ -1776,9 +1618,6 @@ async fn a_far_end_that_hangs_up_ends_the_session_with_its_caller() {
     }
 }
 
-/// CLEANUP RUNS EXACTLY ONCE when the session's caller drops it mid-flight, both ways: the guard
-/// runs the session's cleanup once, its two tickets are buried (nothing crosses inside a `Drop`),
-/// and the sweep cancels each once; nothing runs it again.
 #[tokio::test]
 async fn a_dropped_session_cleans_up_exactly_once() {
     for way in ways() {
@@ -1809,7 +1648,6 @@ async fn a_dropped_session_cleans_up_exactly_once() {
     }
 }
 
-/// A money seam that states no session money.
 struct Unstated;
 
 impl busbar_kernel::plane_driver::MoneySeam for Unstated {
@@ -1829,8 +1667,6 @@ impl busbar_kernel::plane_driver::MoneySeam for Unstated {
     fn abandoned(&self, _: &busbar_kernel::teller::UnitCtx, _: busbar_kernel::teller::Ended) {}
 }
 
-/// THE SESSION MONEY GUARD (K6-4 not landed): under a money seam that states no session money a
-/// session is refused at its open as `Unpriced`, before any ticket is minted or piece crosses.
 #[tokio::test]
 async fn a_session_is_refused_while_its_money_is_unstated() {
     for way in ways() {

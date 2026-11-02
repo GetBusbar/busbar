@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CONSENT SCREEN'S RETURN TARGET, adversarially. Each value below is one a browser reads as a
-//! URL on ANOTHER host once it lands in a `Location` header, so each must be refused. The first
-//! group were accepted before the fix (a prefix check that a browser's own URL cleaning walks past):
-//! each one is its own RED.
-
 use super::is_local_path;
 
-/// What the authorization endpoint actually sends the screen: its own request target.
 #[test]
 fn the_authorization_request_target_is_a_local_path() {
     for ok in [
@@ -22,9 +16,6 @@ fn the_authorization_request_target_is_a_local_path() {
     }
 }
 
-/// THE BYPASSES THE OLD CHECK LET THROUGH. A browser removes every ASCII tab and newline from a
-/// URL before it reads it, so each of these is `//evil.example` (or `/\evil.example`, which it reads
-/// the same way) to the browser that follows the redirect.
 #[test]
 fn a_control_character_that_a_browser_strips_is_refused() {
     for bypass in [
@@ -49,8 +40,6 @@ fn a_control_character_that_a_browser_strips_is_refused() {
     }
 }
 
-/// THE FORMS THE OLD CHECK ALREADY REFUSED, held: a scheme-relative URL, a backslash anywhere (a
-/// browser reads `\` as `/` in a special URL), an absolute URL, and nothing at all.
 #[test]
 fn scheme_relative_backslash_and_absolute_forms_are_refused() {
     for bypass in [

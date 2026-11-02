@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LINKED RANKING DOOR, PROVEN WHERE IT IS LINKED (R-FIX3). The kernel's test build no longer
-//! takes the ranking plugin: it links its in-crate double (`busbar_kernel_testkit::test_support::
-//! ranking_double`), and its own hook tests run against that. These are the twins of the kernel's
-//! ranking tests, run against the REAL door through the axis the shipped binary installs
-//! (`crate::root::hooks::axis` over `crate::LINKED.hook_doors`), never through the kernel's
-//! stand-in rows. And they prove the double copies the real door: the same Statement, the same
-//! refusals, the same decisions.
-
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +20,6 @@ use busbar_kernel_testkit::test_support::ranking_double;
 use crate::root::loader::hook_door::HookRows;
 use crate::root::loader::PluginRegistry;
 
-/// The hook axis the shipped binary installs, over an empty registry: the linked rows alone.
 fn linked_axis() -> Arc<dyn HookAxis> {
     crate::root::hooks::axis(
         &(Arc::new(PluginRegistry::empty()) as Arc<dyn busbar_contract::plugin_rows::PluginRows>),
@@ -36,7 +27,6 @@ fn linked_axis() -> Arc<dyn HookAxis> {
     .expect("the linked hook rows")
 }
 
-/// An axis over the kernel's ranking double alone, on the same dispatcher.
 fn double_axis() -> Arc<dyn HookAxis> {
     let rows = HookRows::new(
         &[ranking_double::door],
@@ -47,7 +37,6 @@ fn double_axis() -> Arc<dyn HookAxis> {
     Arc::new(rows)
 }
 
-/// `(idx, cost, latency, concurrency, rate headroom)`.
 type Row = (usize, Option<f64>, Option<f64>, usize, Option<f64>);
 
 fn cand(&(idx, cost, lat, conc, rate): &Row) -> Candidate<'static> {
@@ -88,9 +77,6 @@ fn request() -> RoutingRequest<'static> {
     }
 }
 
-/// The 1.5.5 natives' cases (the ranking plugin's lib_tests before the door), as the kernel's
-/// `each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error` states them:
-/// word, candidates, the decision 1.5.5 answered.
 fn cases() -> Vec<(&'static str, Vec<Row>, RoutingDecision)> {
     let prefer = |o: &[usize]| RoutingDecision::Prefer(o.to_vec());
     vec![
@@ -218,9 +204,6 @@ fn cases() -> Vec<(&'static str, Vec<Row>, RoutingDecision)> {
     ]
 }
 
-/// `word` opened on `axis` with `{"policy": "<word>"}` under the axis's Call class budget, and
-/// asked to `decide` over `rows`: the decision read back as the host reads a ranking's answer
-/// (PREFER = the order, unknown indices dropped; ABSTAIN), or why there was none.
 async fn decide(
     axis: &Arc<dyn HookAxis>,
     word: &str,
@@ -258,7 +241,6 @@ async fn decide(
     }
 }
 
-/// The historical bare strategy words, excluding `weighted`, the inline floor.
 fn strategy_words() -> Vec<&'static str> {
     RESERVED_HOOK_NAMES
         .iter()
@@ -267,10 +249,6 @@ fn strategy_words() -> Vec<&'static str> {
         .collect()
 }
 
-/// The twin of the kernel's test of the same name, on the REAL door: the built-in ranking
-/// strategies are the HOOK WORDS of ONE linked ranking door on the hook axis — each
-/// strategy word names that row, and opens (with `{"policy": "<word>"}`). `weighted` stays the
-/// inline floor (no row). The words are the door's Statement marks, never registry aliases.
 #[test]
 fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
     let axis = linked_axis();
@@ -295,11 +273,6 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
     );
 }
 
-/// The twin of the kernel's test of the same name, on the REAL door: each of
-/// the four strategy words, opened through the hook axis and called through the hook seam,
-/// answers exactly the decision 1.5.5's in-process native answered on the ranking parity cases.
-/// Every answer is `Ok`: the call never fails, times out or reaches `on_error`. Its deadline is
-/// the dispatcher's Call class budget, never the 1 ms gate default.
 #[tokio::test]
 async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reaches_on_error() {
     let axis = linked_axis();
@@ -317,7 +290,6 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
     }
 }
 
-/// The linked door that claims `word` as a hook word.
 fn linked_door_claiming(word: &str) -> DoorFn {
     *crate::LINKED
         .hook_doors
@@ -339,14 +311,6 @@ fn hook_words(r: &rendering::Read) -> Vec<String> {
         .collect()
 }
 
-/// R-FIX3: THE KERNEL'S RANKING DOUBLE STATES WHAT THE LINKED RANKING DOOR STATES, so the kernel's
-/// hook tests, which run against the double, judge the door the binary ships. Both Statements
-/// rendered: the same kind, `max_inflight`, flag marks, hook words and tail, and the tail's facts
-/// the same (class and grants, as the hook axis reads them); the name is the double's own (the
-/// kernel names no plugin, C1). Both opened: the same refusals, byte for byte once each door's own
-/// name is read as one (the host names it; neither door spells it). Both asked: the same decision on every 1.5.5 parity case.
-///
-/// RED by flipping any copied literal or rule in the double (e.g. `least_busy` ascending).
 #[tokio::test]
 async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() {
     let real = read(linked_door_claiming("cheapest"));
@@ -369,7 +333,7 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
     for word in hook_words(&real) {
         let settings = serde_json::json!({ "policy": word });
         let facts = |axis: &Arc<dyn HookAxis>| axis.probe(&word, &word, &settings);
-        // The door's facts, its Statement name read as the double's own (C1).
+
         let want = facts(&linked).map(|(stated, problems)| {
             let stated = stated.map(|f| HookFacts {
                 name: ranking_double::NAME.to_string(),
@@ -386,10 +350,7 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
     ] {
         let refusal =
             |axis: &Arc<dyn HookAxis>, name: &str| axis.open(name, name, &settings, budget).err();
-        // The door's refusal, its Statement name read as the double's name. Its words are bare:
-        // the host names the plugin (`plugin '<name>' open failed: ...`). The pinned door from
-        // before that rule spelled `hook-ranking: ` or `ranking: ` at the start of its reason.
-        // Only that prefix is read as absent; the remaining reason is compared byte for byte.
+
         let want = refusal(&linked, &real.name).map(|e| {
             let envelope = format!("plugin '{}' open failed: ", real.name);
             let reason = e

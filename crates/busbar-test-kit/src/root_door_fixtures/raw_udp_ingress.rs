@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Real clear-lane ingress with valid rendezvous terms, using only live ABI loans.
-
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::transport::{FramePiece, LANE_CLEAR, PIECE_END_OF_FRAME};
@@ -10,7 +8,6 @@ use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
 
 use super::datagram_order::Recording;
 
-/// An accepting association that records raw input and yields media on its selected stream.
 pub struct Ingress {
     recording: Arc<Recording>,
     received: Mutex<Vec<Vec<u8>>>,
@@ -18,7 +15,6 @@ pub struct Ingress {
 }
 
 impl Ingress {
-    /// Distinct credentials allow several real associations to share a host socket.
     pub fn new(user: &[u8], stream: u64) -> Arc<Self> {
         Arc::new(Self {
             recording: Recording::with_user(user),
@@ -27,12 +23,10 @@ impl Ingress {
         })
     }
 
-    /// The existing fixture's Emit recording and park observer.
     pub fn recording(&self) -> &Arc<Recording> {
         &self.recording
     }
 
-    /// Initialized input copied during each real clear-lane crossing.
     pub fn received(&self) -> Vec<Vec<u8>> {
         self.received.lock().unwrap().clone()
     }
@@ -55,7 +49,7 @@ impl FramerDoor for Ingress {
                     unsafe { std::slice::from_raw_parts(input.bytes, input.len) }
                 };
                 self.received.lock().unwrap().push(bytes.to_vec());
-                // A verified check establishes the source path; media exercises real output.
+
                 if bytes.first().is_some_and(|b| (128..=191).contains(b)) {
                     assert!(bytes.len() <= input.sink.frame_cap && input.sink.pieces_cap > 0);
                     // SAFETY: both output loans have the checked capacities for these writes.
@@ -86,7 +80,6 @@ impl FramerDoor for Ingress {
     }
 }
 
-/// An authenticated check under the matching fixture's local credentials.
 pub fn check(user: &str, transaction: u8) -> Vec<u8> {
     let username = format!("{user}:farfrag").into_bytes();
     let padded = username.len().div_ceil(4) * 4;

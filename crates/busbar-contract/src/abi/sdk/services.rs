@@ -2,21 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOST SERVICES, PLUGIN SIDE (`BUSBAR-1.6.0.md` THE DESIGN, host services; the plugin ABI: the
-//! SDK's typed wrappers): safe calls into the [`HostSlots`] table the host handed an instance at
-//! `open`, the one home of every host-service wrapper. The `unsafe` of a call through the table
-//! (a raw frame, a raw `out`) stays here; a plugin crate calling these stays
-//! `#![forbid(unsafe_code)]`. Every answer is judged by the service's own `check_*` before it is
-//! read, so a host that answers outside the rules is a [`ServiceError::Broken`], never a value.
-//!
-//! A service that MAY PEND answers a [`Pend`]: [`Poll::Pending`] means the host holds the call on
-//! the handle's ticket and wakes it; the op answers PENDING and, re-entered, re-issues the SAME
-//! handle to read the stored answer. Allocating wrappers are [`Services::hook_call`] (temporary
-//! descriptors for borrowed messages), [`Judged::within`] (the address
-//! set an ESTABLISH takes), the auth handle's three wrappers ([`Services::auth_call`],
-//! [`Services::unit_hand_in`], [`Services::unit_refuse`]), which lend buffers of their own and
-//! answer copies, and [`Services::records_secret`] (a credential's secret, copied into the
-//! zeroizing [`CredentialSecret`] the plugin owns): every other result is a scalar or a view into
-//! the caller's own buffers.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -121,7 +106,7 @@ pub struct Judged<'b> {
 
 impl<'b> Judged<'b> {
     /// What decided a refusal the caller asked explained (`DEST_EXPLAIN`): the refused address,
-    /// or the resolver's reason; `None` on admission or when the name alone decided it.
+
     #[must_use]
     pub fn detail(&self) -> Option<&'b str> {
         if self.verdict == DEST_ALLOWED {
@@ -131,7 +116,7 @@ impl<'b> Judged<'b> {
     }
 
     /// The addresses as the set an ESTABLISH's dial must land on (`EstablishIn::within`): so the
-    /// judge, the caller's overlap check and the dial see one address set.
+
     #[must_use]
     pub fn within(&self) -> String {
         self.addresses
@@ -299,7 +284,7 @@ pub struct RefusalCopy {
 }
 
 /// The first byte capacity [`Services::auth_call`] lends; a short answer earns one re-call at the
-/// size the host names.
+
 const AUTH_CALL_BYTES: usize = 1024;
 /// The first span capacity [`Services::auth_call`] lends.
 const AUTH_CALL_SPANS: usize = 16;
@@ -444,12 +429,7 @@ impl Services {
     }
 
     /// `clock.now`: the kernel's one clock, wall and monotonic, so a plugin reads no clock of its
-    /// own and a test or the oracle controls its time. `handle` is the op's own completion handle.
-    /// Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: the host serves no `clock.now`, declined it, or broke its rules.
+
     pub fn clock_now(&self, handle: CompletionHandle) -> Result<ClockReading, ServiceError> {
         let mut reading = ClockReading {
             size: size_of::<ClockReading>() as u32,
@@ -471,11 +451,7 @@ impl Services {
     }
 
     /// `entitlement.check`: whether the unit the calling op serves is entitled to `target`,
-    /// `"<scope_kind>:<name>"`. `handle` is the op's own completion handle. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: the host serves no `entitlement.check`, declined it, or broke its rules.
+
     pub fn entitled(&self, handle: CompletionHandle, target: &str) -> Result<bool, ServiceError> {
         let input = EntitlementCheckIn {
             head: head::<EntitlementCheckIn>(op::ENTITLEMENT_CHECK, handle),
@@ -494,13 +470,7 @@ impl Services {
     }
 
     /// `random.fill`: fill `buf` from the kernel's CSPRNG. `buf` holds 1 to `MAX_RANDOM_FILL`
-    /// bytes; any other length is REFUSED here, before the host is called. `handle` is the op's
-    /// own completion handle. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: the host serves no `random.fill`, it or this wrapper declined it, or the
-    /// host broke its rules.
+
     pub fn random_fill(
         &self,
         handle: CompletionHandle,
@@ -533,14 +503,7 @@ impl Services {
     }
 
     /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session` (the number
-    /// its arrivals' [`CARRIER_SESSION_FIELD`](crate::abi::host::service::CARRIER_SESSION_FIELD)
-    /// named), outside any unit. Unbilled and audited by the host as a session event. An empty
-    /// write or session `0` is REFUSED here, before the host is called. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: the host serves no `session.emit`, it refused the write (the session is not
-    /// open, or not this instance's), or the host broke its rules.
+
     pub fn session_emit(
         &self,
         handle: CompletionHandle,
@@ -570,21 +533,7 @@ impl Services {
     }
 
     /// `ticket.mint`: a ticket for the principal of the unit this crossing serves, living
-    /// `ttl_secs` (the host clamps it to its mint ceiling), with `record` stored beside it. Ready:
-    /// the ticket and its expiry.
-    ///
-    /// THE TICKET IS SEALED (R7: a plane never holds credential bytes). It is a bearer credential,
-    /// so the host writes it into a zeroizing buffer the SDK owns and the plane gets it only as a
-    /// [`Cred`](crate::abi::sdk::cred::Cred), which it can hand on in its answer
-    /// ([`SealedJson::sealed`](crate::abi::sdk::cred::SealedJson::sealed)) but never read. A ticket
-    /// longer than the first buffer is the short answer: this re-calls ONCE, on the same handle,
-    /// with the size the host named, inside this call. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// As every service: unserved, declined (no unit, no principal, no declared issued-id prefix, a
-    /// lifetime of zero or a record over the cap), or broken (a ticket not UTF-8, or a second short
-    /// answer, is broken).
+
     pub fn ticket_mint(
         &self,
         handle: CompletionHandle,
@@ -612,7 +561,6 @@ impl Services {
             let out = match crossed.and_then(ready) {
                 Ok(out) => out,
                 Err(ServiceError::Short { bytes, .. }) => {
-                    // The check held it within the service caps.
                     let Ok(bytes) = usize::try_from(bytes) else {
                         return Err(ServiceError::Broken);
                     };
@@ -621,8 +569,7 @@ impl Services {
                 }
                 Err(e) => return Err(e),
             };
-            // The check held `len` within the buffer. The ticket stays in the zeroizing buffer
-            // it was written into: truncated in place, never copied out as text.
+
             buf.truncate(out.len as usize);
             if std::str::from_utf8(&buf).is_err() {
                 return Err(ServiceError::Broken);
@@ -636,13 +583,7 @@ impl Services {
     }
 
     /// `ticket.take`: the record of the ticket that admitted the unit this crossing serves, once.
-    /// Ready: `Some` the record, written into the caller's preallocated `buf`, or `None` when a key
-    /// admitted the unit. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError::Short`] when `buf` is short (re-call once, same handle); otherwise as every
-    /// service: unserved, declined (no unit, or a second take), or broken.
+
     pub fn ticket_take<'b>(
         &self,
         handle: CompletionHandle,
@@ -663,13 +604,7 @@ impl Services {
     }
 
     /// `dest.judge`: the host's ONE destination judge over `dest` (a URL or `host:port` named
-    /// inside content) under egress class `egress_class` (`0` = the host's default), without
-    /// dialing. Ready: the `DEST_*` verdict, `DEST_ALLOWED` = admissible. A refusal the name decides
-    /// answers at once. With `resolve` (the caller's preallocated bytes and spans) the name is then
-    /// resolved and every address judged; admitted, those addresses are written there and answered
-    /// ([`Judged::within`] is the set an ESTABLISH lands within). Resolving may pend, so it is
-    /// callable only from a ticketed op (on `Ticket::NONE` the host refuses it). A short answer is
-    /// [`ServiceError::Short`]: re-call once, same handle, with the sizes it names.
+
     pub fn dest_judge<'b>(
         &self,
         handle: CompletionHandle,
@@ -681,8 +616,7 @@ impl Services {
     }
 
     /// [`Self::dest_judge`] with the caller's further `flags` (`DEST_REFUSE_PRIVATE`,
-    /// `DEST_EXPLAIN`; `DEST_RESOLVE` follows `resolve`): asked to explain, a refusal an address
-    /// or the resolution decided names it ([`Judged::detail`]).
+
     pub fn dest_judge_as<'b>(
         &self,
         handle: CompletionHandle,
@@ -716,8 +650,7 @@ impl Services {
     }
 
     /// `trust.sight`: report `counterparty`'s catalogue hash; the KERNEL judges it. Ready: a
-    /// `TRUST_*` verdict (new, same, drifted, quarantined). May pend (the kernel writes a
-    /// demotion or its clearing durably before it answers), so callable only from a ticketed op.
+
     pub fn trust_sight(
         &self,
         handle: CompletionHandle,
@@ -728,12 +661,7 @@ impl Services {
     }
 
     /// `trust.sight` with [`TRUST_UNREACHABLE`]: the plane could NOT reach `counterparty` to look.
-    /// Ready: the KERNEL's last `TRUST_*` verdict, nothing changed; the plane fails its call as an
-    /// upstream failure. Never drifts, never clears, never quarantines.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::trust_sight`].
+
     pub fn trust_unreachable(&self, handle: CompletionHandle, counterparty: &str) -> Pend<u64> {
         self.sighting(handle, counterparty, "", TRUST_UNREACHABLE)
     }
@@ -761,12 +689,7 @@ impl Services {
     }
 
     /// `trust.sight_item`: report the digest ONE ITEM of `counterparty` is offered at now (the
-    /// plane's live re-fetch); the KERNEL records it. Ready: a `TRUST_*` sighting verdict. Never
-    /// pends.
-    ///
-    /// # Errors
-    ///
-    /// As every service: unserved, declined, or broken.
+
     pub fn trust_sight_item(
         &self,
         handle: CompletionHandle,
@@ -790,13 +713,7 @@ impl Services {
     }
 
     /// `trust.serves`: THE KERNEL'S APPROVE as a query, for a route leg after its live re-fetch:
-    /// whether `counterparty` serves `item` (`None` = as a whole) at `digest` (`None` = its last
-    /// sighting). Ready: `DISTRUST_NONE`, or the `DISTRUST_*` that refuses it (an unknown item
-    /// apart from a known one ungranted). Never pends.
-    ///
-    /// # Errors
-    ///
-    /// As every service: unserved, declined, or broken.
+
     pub fn trust_serves(
         &self,
         handle: CompletionHandle,
@@ -820,15 +737,7 @@ impl Services {
     }
 
     /// `trust.decide`: THE OPERATOR'S DECISION about one of this instance's trust keys
-    /// (`counterparty`, or `item` there), made through the plane's own administrative verb: the
-    /// same durable decision the core-admin `POST /api/v1/admin/trust/approve` and `/revoke` make.
-    /// An approval approves what the caller saw: `expected` (the catalogue hash or item digest),
-    /// when stated, must be the key's current sighting. Ready: the `TRUST_DECIDED_*` verdict after
-    /// it, or the `UNDECIDED_*` that refused it. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// As every service: unserved, declined, or broken.
+
     pub fn trust_decide(
         &self,
         handle: CompletionHandle,
@@ -859,13 +768,7 @@ impl Services {
     }
 
     /// `trust.state`: the KERNEL'S TRUST STATE of `counterparty` and its items, as the core-admin
-    /// `GET /api/v1/admin/trust` lists them, for the plane's own administrative views; written into
-    /// the caller's preallocated `buf` and `spans`. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError::Short`] when the buffers are short (re-call once, same handle); otherwise
-    /// as every service: unserved, declined (an undeclared counterparty), or broken.
+
     pub fn trust_state<'b>(
         &self,
         handle: CompletionHandle,
@@ -897,12 +800,7 @@ impl Services {
     }
 
     /// `trust.due`: the counterparties the kernel's `tick` marked for re-verification, written
-    /// into the caller's preallocated `buf` and `spans`. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError::Short`] when the buffers are short (re-call once, same handle); otherwise
-    /// as every service: unserved, declined, or broken (a name absent or not UTF-8 is broken).
+
     pub fn trust_due<'b>(
         &self,
         handle: CompletionHandle,
@@ -918,15 +816,7 @@ impl Services {
     }
 
     /// `trust.verify`: verify `signatures` (the document's signature list as written, one JSON
-    /// array; empty = none) over `payload` against the root key the kernel holds for
-    /// `counterparty`; the KERNEL judges. Ready: the `SIGNED_*` verdict and, for
-    /// `SIGNED_ALGORITHM` / `SIGNED_CRITICAL`, the name it refused, written into the caller's
-    /// preallocated `buf`. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError::Short`] when `buf` is short (re-call once, same handle); otherwise as every
-    /// service: unserved, declined, or broken (a name that is not UTF-8 is broken).
+
     pub fn trust_verify<'b>(
         &self,
         handle: CompletionHandle,
@@ -959,14 +849,7 @@ impl Services {
     }
 
     /// `sign`: sign `data` with busbar's key under the plugin's declared signing domain and key-id
-    /// prefix (the host refuses a plugin that declares none). Ready: span `0`, the key id (UTF-8)
-    /// and the signature, written into the caller's preallocated `buf` and `spans`. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError::Short`] when the buffers are short (re-call once, same handle); otherwise
-    /// as every service: unserved, declined, or broken (no span, a key id absent or not UTF-8, or
-    /// a signature absent is broken).
+
     pub fn sign<'b>(
         &self,
         handle: CompletionHandle,
@@ -981,7 +864,7 @@ impl Services {
         };
         let out = ready(self.cross(op::SIGN, |t| t.sign, &input, check_sign)?)?;
         let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
-        // The service's check held `len` and `items` within the caps and every span inside `len`.
+
         let (bytes, spans) = (&buf[..out.len as usize], &spans[..out.items as usize]);
         let first = spans.first().ok_or(ServiceError::Broken)?;
         let key_id = name(bytes, first).ok_or(ServiceError::Broken)?;
@@ -990,11 +873,7 @@ impl Services {
     }
 
     /// `records.get`: the record `key` of the caller's own record `kind`, written into the caller's
-    /// preallocated `buf`; reads see the instance's own queued writes. Ready: `Some` the record's
-    /// value, or `None` when there is no such record (a tombstone reads absent). May pend (the
-    /// kernel reads the store off the calling thread), so callable only from a ticketed op: on
-    /// [`Poll::Pending`] re-issue the SAME handle to read the stored answer. A short `buf` is
-    /// [`ServiceError::Short`]: re-call once, same handle, with the bytes it names.
+
     pub fn records_get<'b>(
         &self,
         handle: CompletionHandle,
@@ -1023,7 +902,7 @@ impl Services {
             if out.value != FOUND {
                 return Ok(None);
             }
-            // FOUND writes the record into span `0`; one without it broke the rule.
+
             let s = span.get(..out.items as usize).and_then(<[ItemSpan]>::first);
             s.and_then(|s| present(&buf[..out.len as usize], s.value))
                 .map(Some)
@@ -1032,11 +911,7 @@ impl Services {
     }
 
     /// `records.list`: the caller's own records of `kind` whose keys start with `prefix` (empty =
-    /// every key), in key order after `after` (`None` = from the first), at most `limit` (`0` = as
-    /// many as fit `MAX_SPANS`), written into the caller's preallocated `into` (bytes and spans).
-    /// A tombstoned key is not listed. May pend, so callable only from a ticketed op; a short
-    /// answer is [`ServiceError::Short`] (re-call once, same handle). A page's
-    /// [`Records::last_key`] is the next page's `after`.
+
     pub fn records_list<'b>(
         &self,
         handle: CompletionHandle,
@@ -1066,8 +941,6 @@ impl Services {
         }
         let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
         Poll::Ready(crossed.and_then(ready).and_then(|out| {
-            // The service's check held `len` and `items` within the caps and every span inside
-            // `len`.
             let records = Records {
                 bytes: &buf[..out.len as usize],
                 spans: &spans[..out.items as usize],
@@ -1081,10 +954,7 @@ impl Services {
     }
 
     /// `records.claim`: claim `key` of the caller's own record `kind` once, for `ttl_ms`
-    /// milliseconds: a put-if-absent, THE ONE path for approval redemption and replay refusal.
-    /// Ready: `true` when this call won the claim, `false` when the key was already claimed. A
-    /// claim with no time to live is REFUSED here, before the host is called (there is no
-    /// default). May pend, so callable only from a ticketed op.
+
     pub fn records_claim(
         &self,
         handle: CompletionHandle,
@@ -1111,28 +981,7 @@ impl Services {
     }
 
     /// `records.secret`: the secret of the host-held credential `id` of `kind` (a kind the plugin's
-    /// Statement declares it reads,
-    /// [`with_credential_kinds`](crate::abi::sdk::auth_door::with_credential_kinds); the host
-    /// declines any other REFUSED), and whether it is live. THE SECRET IS THE PLUGIN'S OWN: copied
-    /// into a [`CredentialSecret`], a zeroizing holder the plugin owns (no lifetime tied to the
-    /// host), and the crossing's own buffer is wiped before this returns.
-    ///
-    /// AN UNKNOWN ID IS NOT AN ERROR. The host answers a fixed dummy secret, not live, in the same
-    /// time as a known id, so a reply never says whether the id exists: the answer is READY with
-    /// [`CredentialSecret::live`] `false`, and the plugin runs its whole check over the dummy and
-    /// rejects on `live` last, so its own timing says nothing either.
-    ///
-    /// May pend (a store-backed credential), so callable only on a ticket: on [`Poll::Pending`] the
-    /// host holds the call on `handle`'s ticket and wakes it; the op answers PENDING and, re-entered,
-    /// re-issues the SAME handle to read the stored answer. A secret longer than the first buffer
-    /// is the short answer: this re-calls ONCE, on the same handle, with the sizes the host named,
-    /// inside this call.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: the host serves no `records.secret`, declined it (an undeclared kind or a
-    /// ticket-less call is REFUSED), or broke its rules (a READY with no secret in span `0` is
-    /// broken).
+
     pub fn records_secret(
         &self,
         handle: CompletionHandle,
@@ -1167,7 +1016,6 @@ impl Services {
             let out = match crossed.and_then(ready) {
                 Ok(out) => out,
                 Err(ServiceError::Short { bytes, items }) => {
-                    // The check held both within the service caps.
                     let (Ok(bytes), Ok(items)) = (usize::try_from(bytes), usize::try_from(items))
                     else {
                         return Poll::Ready(Err(ServiceError::Broken));
@@ -1177,8 +1025,7 @@ impl Services {
                 }
                 Err(e) => return Poll::Ready(Err(e)),
             };
-            // The service's check held `len` and `items` within the caps and every span inside
-            // `len`; READY writes the secret into span `0`, and one without it broke the rule.
+
             let secret = spans
                 .get(..out.items as usize)
                 .and_then(<[ItemSpan]>::first)
@@ -1191,14 +1038,12 @@ impl Services {
                 }
             }));
         }
-        // A second short answer: the host FAULTs it; this never reads one.
+
         Poll::Ready(Err(ServiceError::Broken))
     }
 
     /// `work.open`: open a durable work handle of `kind` (one of the plugin's record kinds) for the
-    /// principal of the unit the op serves, with `record` (at most `MAX_WORK_RECORD` bytes). Ready:
-    /// the handle and its reference, written into the caller's preallocated `buf` (at least
-    /// `WORK_REFERENCE_LEN` bytes) and `spans` (at least one). May pend.
+
     pub fn work_open<'b>(
         &self,
         handle: CompletionHandle,
@@ -1229,8 +1074,7 @@ impl Services {
     }
 
     /// `work.find`: the handle `reference` names, within this instance and the principal of the
-    /// unit the op serves. Ready `None` for every denial alike; found, the handle, its state byte
-    /// and its record, a view into the caller's `buf`. May pend.
+
     pub fn work_find<'b>(
         &self,
         handle: CompletionHandle,
@@ -1276,8 +1120,7 @@ impl Services {
     }
 
     /// `work.resume`: bind this instance's handle `work` to the unit the op serves (a continuation,
-    /// of the principal the handle recorded). Ready: its state byte and record, a view into the
-    /// caller's `buf`. May pend.
+
     pub fn work_resume<'b>(
         &self,
         handle: CompletionHandle,
@@ -1307,10 +1150,7 @@ impl Services {
     }
 
     /// `unit.nest`: run a nested unit on whatever serves the claim `verb` `target` names, as a
-    /// child of the unit the op serves (its principal, its scope, its admission chain), with
-    /// `body`. Ready: the child's whole reply, a view into the caller's preallocated `buf` and
-    /// `spans` (at least one, plus one per head field it keeps). May pend; a short answer is
-    /// [`ServiceError::Short`]: re-call once, same handle, with the sizes it names.
+
     pub fn unit_nest<'b>(
         &self,
         handle: CompletionHandle,
@@ -1352,10 +1192,7 @@ impl Services {
     }
 
     /// `verify.lookup`: the instance's own entry under `key` in the host-side verify cache,
-    /// single-flight. Ready: a hit or a followed leader's entry, a view into the caller's
-    /// preallocated `buf`, or [`Verified::Lead`] (this caller fetches, then [`Self::verify_store`]s).
-    /// A follower pends until its leader stores, so callable only from a ticketed op; a short
-    /// `buf` is [`ServiceError::Short`] (re-call once, same handle).
+
     pub fn verify_lookup<'b>(
         &self,
         handle: CompletionHandle,
@@ -1382,7 +1219,7 @@ impl Services {
             if out.value == VERIFY_LEAD {
                 return Ok(Verified::Lead);
             }
-            // A hit or a follow carries the entry in span `0`.
+
             let entry = span
                 .get(..out.items as usize)
                 .and_then(<[ItemSpan]>::first)
@@ -1397,11 +1234,7 @@ impl Services {
     }
 
     /// `verify.store`: store the `entry` this caller fetched under `key` for `ttl_ms` (`0` = the
-    /// host's default), releasing every caller that followed its lead. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: the host serves no `verify.store`, declined it, or broke its rules.
+
     pub fn verify_store(
         &self,
         handle: CompletionHandle,
@@ -1430,8 +1263,7 @@ impl Services {
     }
 
     /// `content.scan`: pass a piece of in-session `content` through the gates the unit the op
-    /// serves binds. Ready: whether it passed, and the content as a gate rewrote it, when one did
-    /// (a view into the caller's `buf`). May pend, so callable only from a ticketed op.
+
     pub fn content_scan<'b>(
         &self,
         handle: CompletionHandle,
@@ -1514,7 +1346,7 @@ impl Services {
             let bytes = &buf[..out.len as usize];
             match out.value {
                 0 => Hooked::Pass,
-                // `check_hook_call` held a stop within the band and a resume within the cap.
+
                 v if v >= HOOK_STOP_MIN => Hooked::Stop {
                     status: u16::try_from(v).unwrap_or(u16::MAX),
                     words: bytes,
@@ -1528,18 +1360,7 @@ impl Services {
     }
 
     /// `snapshot.read`: THE HOST SNAPSHOT SERVICE — the host's metric families of `scope`
-    /// (`SNAPSHOT_SCOPE_WHOLE` | `SNAPSHOT_SCOPE_HOOKS`), laid out by the host in the caller's
-    /// preallocated `buf` (words, so it holds the layout's alignment) and read back here, every
-    /// pointer checked inside the bytes the host wrote. Ready: `Some` the families, in the host's
-    /// order; `None` = NOT READY (the host's recorder is not installed yet: answer "not ready,
-    /// retry"). Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError::Short`] when `buf` is short (re-call once with at least the bytes it names;
-    /// a ticketless re-call reads the snapshot again); otherwise as every service: unserved,
-    /// declined (REFUSED: this crossing was not granted the snapshot), or broken (a pointer outside
-    /// the layout, or text that is not UTF-8).
+
     pub fn snapshot_read(
         &self,
         handle: CompletionHandle,
@@ -1551,13 +1372,7 @@ impl Services {
     }
 
     /// [`Self::snapshot_read`] together with the exact successful layout size, in bytes. The
-    /// receipt describes the bytes the host wrote, not the caller's buffer capacity, so a caller
-    /// can size its next scratch buffer from the latest snapshot rather than a historical peak.
-    /// A not-ready answer carries no size receipt.
-    ///
-    /// # Errors
-    /// The same errors as [`Self::snapshot_read`]; a size is returned only after every pointer in
-    /// the successful layout has been checked.
+
     pub fn snapshot_read_with_used(
         &self,
         handle: CompletionHandle,
@@ -1594,19 +1409,7 @@ impl Services {
     }
 
     /// `auth.call`: call the auth `auth` names at `point` through the host (THE DESIGN, Auth points
-    /// and guest lists). `unit` is [`UnitRef::NONE`] on the request's first call and at the peer
-    /// point, and the answered unit on every later call; `body` only at the body point. The
-    /// wrapper lends its own buffers and owns the short-buffer rule: a short answer is re-called
-    /// ONCE on the same handle at the sizes the host names. May pend (an auth's call may be
-    /// not-ready with a wake), so callable only from a ticketed op: on [`Poll::Pending`] the op
-    /// answers PENDING and, woken, re-issues the SAME handle to read the stored answer. Every
-    /// buffer that held the answer is zeroised before this returns.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: unserved, declined (the host refused the handle, the unit or the `in`),
-    /// broken (the answer broke the rules, or a name-only span is neither a field nor a query key),
-    /// or short twice.
+
     #[allow(clippy::too_many_arguments)]
     pub fn auth_call<O: OwnerSeal>(
         &self,
@@ -1665,18 +1468,12 @@ impl Services {
                 Err(e) => return Poll::Ready(Err(e)),
             }
         }
-        // A second short answer on one handle breaks the rule.
+
         Poll::Ready(Err(ServiceError::Broken))
     }
 
     /// `unit.hand_in`: hand the request in with the line the transport matched; the kernel's
-    /// checks answer the flow (`FLOW_STOP`: ask [`Services::unit_refuse`]) and the request's unit
-    /// (minted here for a `none` line, whose `unit` is [`UnitRef::NONE`]). Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: unserved, declined (the host refused the handle, the unit or the `in`), or
-    /// broken.
+
     #[allow(clippy::too_many_arguments)]
     pub fn unit_hand_in(
         &self,
@@ -1712,16 +1509,8 @@ impl Services {
     }
 
     /// `unit.refuse`: the refusal of a request, as the kernel owns and audits it (`cause` one of
-    /// the `REFUSE_*`; `line` = `LINE_NONE` exactly for `REFUSE_NO_ROUTE`; `unit` none when there
-    /// is none; `request` the request being refused, as decoded, whose method and target shape the
-    /// listener's 1.5.5 bytes for a refusal with no unit). The kernel's answer is copied out before
-    /// this returns, so nothing borrowed from the kernel outlives the call. Never pends.
-    ///
-    /// # Errors
-    ///
-    /// [`ServiceError`]: unserved, declined, or broken (a field or the body a count behind NULL,
-    /// or a field name that is not UTF-8).
-    #[allow(clippy::too_many_arguments)] // one argument per `UnitRefuseIn` field, as `auth_call`
+
+    #[allow(clippy::too_many_arguments)]
     pub fn unit_refuse(
         &self,
         handle: CompletionHandle,
@@ -1786,7 +1575,7 @@ impl Services {
     }
 
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
-    /// outcome, the `out` and how it filled the caller's buffers.
+
     fn cross<I>(
         &self,
         service: u32,
@@ -1835,8 +1624,7 @@ const NO_BLOB: Blob = Blob {
 };
 
 /// `auth.call`'s READY answer, copied out of `written` and `spans`: a span with a value is an
-/// auth field to join the head; a span without one is a name to strip, exactly one of
-/// `FIELD_SENSITIVE` (a field line) or `FIELD_QUERY` (a query key).
+
 fn called<O: OwnerSeal>(
     answer: AuthAnswer,
     written: &[u8],
@@ -1884,15 +1672,14 @@ fn bufs(buf: &mut [u8], spans: &mut [ItemSpan]) -> ServiceBufs {
 }
 
 /// A naming service's crossed answer over the caller's `buf` and `spans`: READY, its `out` and the
-/// names it wrote; a short answer, [`ServiceError::Short`]; any other outcome declined. A name
-/// absent or not UTF-8 is broken.
+
 fn named<'b>(
     crossed: (Outcome, ServiceOut, Filled),
     buf: &'b [u8],
     spans: &'b [ItemSpan],
 ) -> Result<(ServiceOut, Names<'b>), ServiceError> {
     let out = ready(crossed)?;
-    // The service's check held `len` and `items` within the caps and every span inside `len`.
+
     let names = Names {
         bytes: &buf[..out.len as usize],
         spans: &spans[..out.items as usize],
@@ -1904,7 +1691,7 @@ fn named<'b>(
 }
 
 /// A crossed answer that writes the caller's buffers: READY, its `out`; a short answer,
-/// [`ServiceError::Short`]; any other outcome declined.
+
 fn ready(
     (outcome, out, filled): (Outcome, ServiceOut, Filled),
 ) -> Result<ServiceOut, ServiceError> {
@@ -2018,7 +1805,7 @@ pub struct Found<'b> {
 }
 
 /// A found handle's answer over the caller's `buf` and `spans`: span `0`'s one-byte key is the
-/// state, its value the record; anything else is broken.
+
 fn found<'b>(
     out: &ServiceOut,
     buf: &'b [u8],
@@ -2088,8 +1875,7 @@ pub struct Signature<'b> {
 }
 
 /// What `records.secret` answered: a credential's secret, in a holder the plugin owns that wipes
-/// it when dropped (or on [`Zeroize::zeroize`]), and whether the credential is live. Its `Debug`
-/// never shows the bytes.
+
 pub struct CredentialSecret {
     secret: Zeroizing<Vec<u8>>,
     live: bool,
@@ -2103,7 +1889,7 @@ impl CredentialSecret {
     }
 
     /// Whether the credential is live (`SECRET_LIVE`: its key enabled and not revoked); `false` for
-    /// anything else, an unknown id included (its secret is then the host's dummy).
+
     #[must_use]
     pub const fn live(&self) -> bool {
         self.live
@@ -2126,15 +1912,14 @@ impl Zeroize for CredentialSecret {
     }
 }
 
-// Its one secret field is a `Zeroizing`, which wipes it on drop.
 impl ZeroizeOnDrop for CredentialSecret {}
 
 /// The bytes the first `records.secret` crossing lends: above any secret a credential kind holds
-/// today; a longer one is the short answer's one re-call.
+
 const SECRET_FIRST_BYTES: usize = 256;
 
 /// The bytes the first `ticket.mint` crossing lends: above a ticket's prefix and signed body; a
-/// longer ticket is the short answer's one re-call.
+
 const TICKET_FIRST_BYTES: usize = 512;
 
 /// The head of an `I` for `service`, under `handle`.
@@ -2186,15 +1971,14 @@ fn blank_out() -> ServiceOut {
 mod tests;
 
 /// THE SNAPSHOT LAYOUT, READ BACK: the export kind's scrape layout the host wrote into the caller's
-/// own buffer (`snapshot.read`), lifted into owned families with every pointer checked to name a
-/// range of the bytes the host wrote.
+
 mod snapshot {
     use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};
     use crate::abi::mechanism::call::AbiStr;
     use crate::export_calls::{Family, Sample};
 
     /// `n` records of `T` at `p`, when they lie inside `laid` (and `p` is aligned for `T`); NULL
-    /// with `n == 0` is the empty list.
+
     fn list<T>(laid: &[u8], p: *const T, n: usize) -> Option<&[T]> {
         if n == 0 {
             return Some(&[]);
@@ -2233,7 +2017,6 @@ mod snapshot {
         let families = list(laid, laid.as_ptr().cast::<ScrapeFamily>(), n)?;
         let mut decoded = Vec::new();
         for f in families {
-            // Install the wiping owner before another field can refuse a malformed layout.
             let mut family = Family {
                 name: String::new(),
                 help: None,
@@ -2252,7 +2035,6 @@ mod snapshot {
                 };
                 sample.name = text(laid, s.name)??;
                 for l in list::<ScrapeLabel>(laid, s.labels, s.labels_len)? {
-                    // A valid key followed by an invalid value must wipe that partial pair too.
                     let mut key = zeroize::Zeroizing::new(text(laid, l.key)??);
                     let value = text(laid, l.value)??;
                     sample.labels.push((std::mem::take(&mut *key), value));
@@ -2272,7 +2054,7 @@ mod snapshot {
         use std::mem::size_of;
 
         /// Construct the real ABI layout in initialized, aligned owned storage. The malformed
-        /// arm rejects only after decoding the family, sample and first label key.
+
         fn layout(malformed: bool) -> Vec<u64> {
             let mut buf = vec![0u64; 256];
             let base = buf.as_mut_ptr().cast::<u8>();

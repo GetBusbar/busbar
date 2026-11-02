@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Old-public API witness: a real OPEN reply advertises a valid configured subset through the
-//! existing extensions field. No new SDK trait, lifecycle method, or production constant is used.
-
 use super::*;
 use crate::dispatch::{load_linked, Bind, ConnTable, DispatchConfig, LinkedRow};
 use busbar_contract::abi::auth::{AuthPoints, Ops};
@@ -94,8 +91,7 @@ extern "C" fn selected_door() -> &'static Door {
         unsafe {
             let mut parts = Door::read_parts(base::door());
             parts.ops = std::ptr::from_ref(Box::leak(Box::new(ops))).cast();
-            // The copied ops table is leaked; its complete nested graph and Statement retain
-            // the original SDK door's immutable static backing, independent of this value.
+
             crate::conformance::StaticDoor::new(Door::__from_parts(parts))
         }
     })
@@ -135,7 +131,7 @@ fn configured_instances_read_their_own_subset_from_ready_open_extensions() {
     for calls in [&first, &second, &default] {
         crate::dispatch::lifecycle::close(calls.plugin());
     }
-    // Expected behavioral RED on e5997407: its loader returns the full Statement union for both.
+
     assert_eq!(selected.0, ["x-first"]);
     assert_eq!(selected.1, ["x-second"]);
     assert_eq!(selected.2, ["x-first", "x-second"]);

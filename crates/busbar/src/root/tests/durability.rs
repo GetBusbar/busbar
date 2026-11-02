@@ -1,14 +1,7 @@
-//! Tests for `durability.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
-
 use super::*;
 use busbar_kernel_audit::{Recipe, UsageLine};
 use busbar_kernel_wal::{decode_run, verify_journal, NullShipper};
 
-/// A scratch directory that removes itself, following the journal unit's own test fixture: the
-/// point of these tests is what is and is not created, so each needs a directory nobody else is
-/// writing to.
 struct ScratchDir {
     path: PathBuf,
 }
@@ -30,7 +23,6 @@ impl ScratchDir {
     }
 }
 
-/// What is in one directory now, by name and in order.
 fn entries_of(path: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(path)
         .expect("the directory is readable")
@@ -40,17 +32,6 @@ fn entries_of(path: &std::path::Path) -> Vec<String> {
     names
 }
 
-/// The directory the process was started in, watched for anything that appears in it.
-///
-/// This is the directory the "no file was created" claim has to be made about. A scratch
-/// directory the builder was never told the name of is not somewhere a stray journal could
-/// land: a journal opened at a RELATIVE path follows the PROCESS, and the process is here. The
-/// scratch directory beside it says only that the fixture tidied up after itself, which is a
-/// claim about the test rather than about the node.
-///
-/// Nothing is changed about the process — no directory is entered and none is created — because
-/// a test binary runs its cases on one process's threads and moving that process out from under
-/// the others is a fixture that breaks its neighbours.
 struct WorkingDir {
     path: PathBuf,
     before: Vec<String>,
@@ -63,7 +44,6 @@ impl WorkingDir {
         WorkingDir { path, before }
     }
 
-    /// What is in it now that was not in it when the watch started.
     fn appeared(&self) -> Vec<String> {
         entries_of(&self.path)
             .into_iter()
@@ -82,7 +62,6 @@ fn token() -> Grant<DurableWrite> {
     busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>()
 }
 
-/// A journal over `cfg` as node `node`, with no card holder to rebuild.
 fn boot(
     slots: &crate::root::store_double::RecordSlots,
     cfg: &DurabilityConfig,
@@ -92,15 +71,12 @@ fn boot(
     build_on_store(cfg, node, lane, None)
 }
 
-/// Seal one unit's audit record onto `durability`'s journal: the record every unit leaves.
 fn seal(durability: &mut Durability, unit: u64) {
     durability
         .seal_unit(audit_inputs(unit), audit_pass(), &token())
         .expect("the record goes on the chain");
 }
 
-/// The unset branch, and the assertion that matters: the working directory the node was started
-/// in is untouched. Not "no journal was opened" — no FILE appeared, checked by listing.
 #[test]
 fn no_data_dir_creates_no_file() {
     let scratch = ScratchDir::new("unset");
@@ -126,9 +102,6 @@ fn no_data_dir_creates_no_file() {
     );
 }
 
-/// And writing every kind of record to it still creates nothing. The branch above says the
-/// journal was built without a disk; this says it stays that way once the units start using it,
-/// which is the claim an operator actually cares about.
 #[test]
 fn no_data_dir_creates_no_file_even_once_every_unit_has_written() {
     let scratch = ScratchDir::new("unset-in-use");
@@ -153,7 +126,6 @@ fn no_data_dir_creates_no_file_even_once_every_unit_has_written() {
     assert!(!durability.on_disk());
 }
 
-/// A sealed audit record for a unit that ran.
 fn audit_inputs(unit: u64) -> AuditInputs {
     use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
@@ -197,14 +169,10 @@ fn audit_inputs(unit: u64) -> AuditInputs {
     }
 }
 
-/// A pass the audit step was lent, as the loop hands it back with the unit's facts.
 fn audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
     busbar_kernel_testkit::test_support::tokens::pass()
 }
 
-/// A UNIT'S RECORD GOES ON THE JOURNAL WHOLE (`audit.v4`): the record read back off the chain is the
-/// record sealed, stamped with this boot's incarnation — and the epochs it ran under land in the
-/// journal header, which is where a reader asking "under which policy" looks.
 #[test]
 fn a_sealed_audit_record_goes_on_the_journal_whole() {
     let mut durability = build_for_node(
@@ -237,9 +205,6 @@ fn a_sealed_audit_record_goes_on_the_journal_whole() {
     assert_eq!(durability.audit_records, vec![sealed]);
 }
 
-/// TWO BOOTS THAT MINT THE SAME UNIT KEY SEAL TWO DIFFERENT, VERIFIED RECORDS. The unit key restarts
-/// with the process; the incarnation does not. The second boot's record continues the first boot's
-/// chain (its link names the first record), and the whole chain read back verifies from genesis.
 #[test]
 fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -278,8 +243,6 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
     assert!(reread.retained_audit_findings().is_empty());
 }
 
-/// A WINDOW OLDER THAN THE CACHE IS READ BACK OFF THE JOURNAL after a restart — never answered as
-/// empty because the in-memory ring let it go.
 #[test]
 fn a_range_older_than_the_ring_is_read_back_after_a_restart() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -319,7 +282,6 @@ fn a_range_older_than_the_ring_is_read_back_after_a_restart() {
     assert_eq!(newest[0].seq, total);
 }
 
-/// A RETAINED RECORD EDITED AFTER IT WAS SEALED IS A `/verify` FINDING.
 #[test]
 fn a_tampered_retained_record_is_a_verify_finding() {
     let mut durability = build_for_node(
@@ -342,7 +304,6 @@ fn a_tampered_retained_record_is_a_verify_finding() {
     );
 }
 
-/// Bind the deployment keyset over `dir`, as the boot does.
 fn bind_keyset(durability: &mut Durability, dir: &std::path::Path) {
     crate::root::keyset::bind(
         durability,
@@ -354,17 +315,11 @@ fn bind_keyset(durability: &mut Durability, dir: &std::path::Path) {
     .expect("the keyset binds");
 }
 
-/// Strip a retained record's signature. The signature is not in the digest, so the chain stays
-/// whole: only the unsigned rule can see it.
 fn strip_signature(record: &mut AuditRecord) {
     record.signature = None;
     record.key_id = None;
 }
 
-/// AN UNSIGNED RECORD SEALED WHILE THE KEYSET WAS BOUND IS A `/verify` FINDING (MONEY-AUDIT E5):
-/// in the boot that sealed it, and after a restart, where the `Bootstrap` on the chain says the key
-/// was bound before it. RED arm: the walk skipped every record naming no key, so a record whose
-/// signature was stripped verified clean.
 #[test]
 fn an_unsigned_record_sealed_under_a_bound_keyset_is_a_verify_finding() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -399,9 +354,6 @@ fn an_unsigned_record_sealed_under_a_bound_keyset_is_a_verify_finding() {
     );
 }
 
-/// A RECORD SEALED BEFORE THE KEYSET WAS BOUND IS UNSIGNED, AND THAT IS NOT A FINDING: a chain a
-/// keyless boot began, continued by a boot that binds a key, verifies clean across both — before
-/// and after a restart.
 #[test]
 fn records_sealed_before_the_keyset_was_bound_are_not_findings() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -439,8 +391,6 @@ fn records_sealed_before_the_keyset_was_bound_are_not_findings() {
     );
 }
 
-/// A JOURNALLED RECORD NAMING A CLASS NOBODY DECLARES HERE IS A RESTART FINDING, never a record
-/// silently skipped or a line silently dropped.
 #[test]
 fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -473,7 +423,6 @@ fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
     );
 }
 
-/// A legacy directory cannot make a bare shipper into a restart-durable journal.
 #[test]
 fn a_bare_shipper_with_a_data_dir_keeps_only_ram() {
     let scratch = ScratchDir::new("set");
@@ -492,7 +441,6 @@ fn a_bare_shipper_with_a_data_dir_keeps_only_ram() {
     assert!(scratch.entries().is_empty());
 }
 
-/// Both accepted configuration shapes build the same in-process audit chain for a bare shipper.
 #[test]
 fn both_legacy_config_shapes_build_the_same_helper_audit_records() {
     let scratch = ScratchDir::new("same");
@@ -509,19 +457,16 @@ fn both_legacy_config_shapes_build_the_same_helper_audit_records() {
     )
     .expect("the Store reads back");
 
-    // The audit chains start at the same place on both, because neither is a function of where
-    // the journal lives.
     assert_eq!(buffered.record.next_seq(), configured.record.next_seq());
-    // And the journal starts at genesis on both.
+
     assert_eq!(buffered.journal.head(), configured.journal.head());
     assert_eq!(buffered.journal.next_seq(), 1);
 }
 
-/// An unusable legacy path is never opened by a helper, which makes no restart durability claim.
 #[test]
 fn a_bare_shipper_never_opens_even_an_unusable_data_dir() {
     let scratch = ScratchDir::new("unopenable");
-    // A regular file where the legacy directory would be: any attempted open would fail.
+
     let blocked = scratch.path.join("not-a-directory");
     std::fs::write(&blocked, b"").expect("write the blocking file");
 
@@ -534,8 +479,6 @@ fn a_bare_shipper_never_opens_even_an_unusable_data_dir() {
     assert_eq!(std::fs::read(cfg.data_dir.unwrap()).unwrap(), b"");
 }
 
-/// A node journalling its units has only its own records on the journal: an administrative row
-/// never leaks onto it.
 #[test]
 fn journalling_carries_no_admin_row() {
     let mut durability = build_for_node(
@@ -579,8 +522,6 @@ impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for KeepingShipper {
     }
 }
 
-/// The shipped batches ARE the chain, so a node with no data directory that shipped everything
-/// has lost nothing it shipped.
 #[test]
 fn what_the_store_took_is_the_chain() {
     let shipper = KeepingShipper::default();
@@ -604,7 +545,6 @@ fn what_the_store_took_is_the_chain() {
     );
 }
 
-/// A claim's balance as the admin claim journal writes it.
 fn claim(claim: &str) -> ClaimBalance {
     ClaimBalance {
         claim: claim.to_string(),
@@ -617,9 +557,6 @@ fn claim(claim: &str) -> ClaimBalance {
     }
 }
 
-/// EVERY IDEMPOTENCY CLAIM A PREDECESSOR TOOK IS VOIDED AT THE NEXT BOOT — once. No unit's state
-/// outlives its process here (there are no holds on the journal), so a kept claim would answer a
-/// client's retry with a unit that never ran on this boot.
 #[test]
 fn every_idempotency_claim_a_predecessor_took_is_voided_once_at_boot() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -665,7 +602,6 @@ fn every_idempotency_claim_a_predecessor_took_is_voided_once_at_boot() {
     );
 }
 
-/// A corrupt legacy local segment is untouched and cannot become the source of a Store boot.
 #[test]
 fn a_corrupt_legacy_segment_is_preserved_without_local_quarantine() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -684,16 +620,10 @@ fn a_corrupt_legacy_segment_is_preserved_without_local_quarantine() {
     assert_eq!(dir.entries(), vec!["0000000000000000.wal"]);
 }
 
-// ---------------------------------------------------------------------------------------------
-// H3: THE JOURNAL KEPT BY THE CONFIGURED STORE
-// ---------------------------------------------------------------------------------------------
-
-/// A book over `slots` with an unusable legacy directory, as node `node`.
 fn store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -> Durability {
     store_book_bounded(slots, node, busbar_kernel_wal::MEMORY_BUFFER_RECORDS)
 }
 
-/// [`store_book`], its lane to the store bounded at `capacity` records.
 fn store_book_bounded(
     slots: &crate::root::store_double::RecordSlots,
     node: u64,
@@ -712,7 +642,6 @@ fn store_book_bounded(
     .expect("the store reads back")
 }
 
-/// Wait until the store took everything the book's lane holds.
 fn drained(durability: &Durability) {
     assert!(
         durability
@@ -723,14 +652,6 @@ fn drained(durability: &Durability) {
     );
 }
 
-/// **A NODE WITH NO DATA DIRECTORY KEEPS ITS CHAIN IN ITS STORE ACROSS A RESTART** (ARCHITECT
-/// 2026-10-07 H3 ruling (a)-(b); THE DESIGN §7). Sealed audit records go on the chain and the node
-/// is killed (kill -9); a second journal over the SAME store resumes that chain: the audit cache is
-/// rebuilt from it and the numbering continues past every stored record.
-///
-/// RED before the fix: the store adapter's shipper acknowledged every batch and kept a count, and a
-/// memory-buffered journal opened empty, so the restarted node had no audit record and numbered
-/// from one again.
 #[test]
 fn a_restart_over_the_same_store_keeps_the_chain_and_the_audit_records() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -741,7 +662,7 @@ fn a_restart_over_the_same_store_keeps_the_chain_and_the_audit_records() {
         }
         drained(&durability);
         let out = (durability.journal.head(), durability.journal.next_seq());
-        // kill -9: no destructor of the journal, nothing flushed on the way out.
+
         std::mem::forget(durability);
         out
     };
@@ -780,9 +701,6 @@ fn a_restart_over_the_same_store_keeps_the_chain_and_the_audit_records() {
     );
 }
 
-/// **A STORE THAT REFUSES DOES NOT REFUSE A DATA UNIT** (ARCHITECT 2026-10-07 H3 ruling (c)): the
-/// unit's record waits in the lane and is re-offered, and it lands once the store recovers — read
-/// back by the next boot. Meanwhile the lane is unhealthy, which is what a durable verb refuses on.
 #[test]
 fn a_data_unit_rides_a_refusing_store_and_its_record_lands_once_it_recovers() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -817,17 +735,13 @@ fn a_data_unit_rides_a_refusing_store_and_its_record_lands_once_it_recovers() {
     );
 }
 
-/// **A FULL LANE FAILS CLOSED AND DROPS NOTHING** (ARCHITECT 2026-10-07 H3 ruling): with the store
-/// refusing, the lane fills; the node then refuses new work with its reason, the
-/// journal keeps every record it is handed (no `ChainBreak`, nothing dropped), and once the store
-/// recovers everything lands and the book admits again.
 #[test]
 fn a_full_lane_refuses_new_money_and_drops_no_record() {
     let slots = crate::root::store_double::RecordSlots::new();
     let mut durability = store_book_bounded(&slots, 13, 4);
     slots.refuse(true);
     assert!(durability.refuses_money().is_none());
-    // Records past the lane's bound: each unit's audit record is one.
+
     let mut lost = 0;
     for unit in 1..=6 {
         if durability
@@ -858,7 +772,7 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
 
     slots.refuse(false);
     drained(&durability);
-    // The journal's retained batch is re-offered on its next append.
+
     durability
         .journal
         .append(
@@ -880,24 +794,13 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
     );
 }
 
-/// **A LONG OUTAGE DOES NOT WEDGE THE BOOK** (a full lane fails closed "until the
-/// store takes what waits" and "no record is dropped"). With the store refusing, the journal
-/// keeps appending past the lane's bound — what a fail-closed node still writes (admin units, the
-/// checkpoint cadence, accruals) — so the batch it retains grows past the bound too. Once the store
-/// recovers and the lane drains, the next append's re-offer is taken whole: every record reaches the
-/// store and the book admits money again.
-///
-/// RED before the fix: the lane took a batch only if it fit beside what waits, so the retained
-/// batch, over the bound, was turned away even by an empty lane on every re-offer: the book refused
-/// new money-bearing work until a restart, and the retained records, only in memory, were lost by
-/// it.
 #[test]
 fn a_retained_batch_past_the_lanes_bound_drains_once_the_store_recovers() {
     let slots = crate::root::store_double::RecordSlots::new();
     let mut durability = store_book_bounded(&slots, 15, 4);
     drained(&durability);
     slots.refuse(true);
-    // Past the lane's bound and then some: the lane holds four, the journal retains six.
+
     for _ in 0..10 {
         let _ = durability.journal.append(
             &token(),
@@ -944,18 +847,6 @@ fn a_retained_batch_past_the_lanes_bound_drains_once_the_store_recovers() {
     );
 }
 
-/// **A CHAIN READ WHILE THE LANE IS BETWEEN TWO PARTS OF A RECORD IS NOT A TORN RECORD.** A slot
-/// carries 510 bytes of a record, so a journal record past that (a 160-byte header and its body)
-/// crosses to the store as two or more puts, and the lane's worker runs beside the book. A chain read
-/// that lands between two of them (the boot's own `arm_checkpoints` and the keyset's sealed
-/// Bootstrap read do, right after the opening seal ships) finds the record's first part in the store
-/// and the whole record still in the lane. The record is read whole from the lane and nothing is
-/// reported: a record the lane still holds was never torn, it is being put. Posed here as a store
-/// that takes the first part and answers no more, which holds that moment still.
-///
-/// RED before the fix: the read warned "the stored journal holds a record whose parts are not all
-/// there" on a clean boot (oracle cells boot.warning|BOOT-W21, BOOT-W34, neutrality|boot-lines),
-/// a line 1.5.5 never printed.
 #[test]
 fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -967,7 +858,6 @@ fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
         .expect("sealed");
     drained(&durability);
 
-    // A body past one slot's bound: two parts at the least.
     slots.take_then_refuse(1);
     durability
         .journal
@@ -1019,11 +909,6 @@ fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
     );
 }
 
-// ---------------------------------------------------------------------------------------------
-// H3 follow-up: THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
-// ---------------------------------------------------------------------------------------------
-
-/// A book over `slots` as node `node`, its deployment keyset bound the way the boot binds it.
 fn keyed_store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -> Durability {
     let mut durability = store_book(slots, node);
     crate::root::keyset::bind(
@@ -1037,12 +922,6 @@ fn keyed_store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -
     durability
 }
 
-/// **A RESTART OVER THE SAME STORE VERIFIES THE PRIOR BOOT'S RECORDS**: with no data directory the deployment keyset is kept in the store and
-/// read back, so the audit records a predecessor signed verify under the key this boot holds, and
-/// `/admin/verify`'s walks find nothing.
-///
-/// RED before the follow-up: the keyset was minted per process, so the resumed records named a key
-/// this boot did not hold and every one was a finding.
 #[test]
 fn a_restart_over_the_same_store_verifies_the_prior_boots_records() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1070,14 +949,6 @@ fn a_restart_over_the_same_store_verifies_the_prior_boots_records() {
     assert_eq!(walk.findings, Vec::<String>::new());
 }
 
-/// **THE WALK OF EVERY STORED CHAIN DOES NOT CALL THIS NODE'S RECORD MID-PUT TORN.** The walk
-/// (`/admin/verify`) reads the store without the book's lock while the lane's worker puts this
-/// node's records part by part. A record whose first part is in the store and which the lane still
-/// holds is being put, not torn, and the walk says nothing about it. A record missing a part that
-/// the node does not hold is torn, and the walk still says so.
-///
-/// RED before the fix: the walk read this node's chain with the plain stored read and warned "the
-/// stored journal holds a record whose parts are not all there" for the lane's record mid-put.
 #[test]
 fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -1089,7 +960,6 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
         .expect("sealed");
     drained(&durability);
 
-    // A body past one slot's bound: two parts at the least. The store takes the first, no more.
     slots.take_then_refuse(1);
     durability
         .journal
@@ -1130,7 +1000,6 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
         cap.messages()
     );
 
-    // A part with no first part, past anything the node holds: torn, and said so.
     let stray = newest + 10;
     slots.put_row(JOURNAL_SCHEMA, &part_key(own, stray, 1), &[0, 2, 9]);
     let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
@@ -1141,13 +1010,6 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
     assert_eq!(cap.count(TORN), 1, "a torn record is still reported");
 }
 
-/// **ON A CHAIN THE STORE KEEPS, EVERY RECORD NAMES THE NODE THE STORE ASSIGNED** (THE DESIGN §1:
-/// "when (wall + monotonic, node)"; H3 with #662): an audit record's `node` is the id its chain is
-/// keyed by and `/admin/verify` walks it under, the same before a restart and after it — not the
-/// per-process draw that is the node half of this process's op ids.
-///
-/// RED before the fix: the book sealed as `busbar_kernel::door::node()`, a fresh draw per process,
-/// so the records on one host's stored chain named a node the store never assigned.
 #[test]
 fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1201,17 +1063,6 @@ fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
     );
 }
 
-/// **THE WALK OF EVERY STORED CHAIN FINDS AN UNSIGNED RECORD SEALED AFTER THAT CHAIN'S
-/// `Bootstrap`** (BUSBAR-1.6.0.md l.193, "integrity (prev hash)"; l.2285, #82(a) "sign at seal
-/// time, in the process that sealed it"): the signature is not in the digest and the journal's
-/// links are unkeyed, so an edit to a stored record that strips its signature and recomputes its
-/// digest and the links leaves a chain that verifies whole, and only the unsigned rule sees it. The
-/// stored walk keeps that rule per chain, as the retained walk keeps it for this node: every record
-/// from the first one journalled after the chain's `Bootstrap` on is signed. The peer's chain here
-/// is sealed unsigned past its `Bootstrap`, the bytes such an edit leaves, and the node walking it
-/// never held that record in its own retained cache.
-///
-/// RED before the fix: the walk skipped every record naming no key, and found nothing.
 #[test]
 fn the_stored_walk_finds_an_unsigned_record_after_a_chains_bootstrap() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1222,7 +1073,7 @@ fn the_stored_walk_finds_an_unsigned_record_after_a_chains_bootstrap() {
         durability
             .seal_unit(audit_inputs(1), audit_pass(), &token())
             .expect("sealed");
-        // From here on the peer's chain seals unsigned, past its Bootstrap.
+
         durability.record = AuditChain::resume(&durability.audit_records).sealing_as(peer);
         let stripped = durability
             .seal_unit(audit_inputs(2), audit_pass(), &token())
@@ -1248,12 +1099,6 @@ fn the_stored_walk_finds_an_unsigned_record_after_a_chains_bootstrap() {
     );
 }
 
-/// **A STORED RECORD SEALED BEFORE ITS CHAIN'S `Bootstrap` IS UNSIGNED, AND THAT IS NOT A FINDING**
-/// (the green twin of the test above; BUSBAR-1.6.0.md l.2285, #82(a): "records sealed before"
-/// a key was bound stay unsigned, which is the truth about them): a chain a keyless boot began over
-/// the store, continued by a boot that binds the deployment keyset, walks clean.
-///
-/// Green before the fix and after it: the rule starts at the chain's `Bootstrap`, never before.
 #[test]
 fn the_stored_walk_accepts_records_sealed_before_a_chains_bootstrap() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1279,12 +1124,6 @@ fn the_stored_walk_accepts_records_sealed_before_a_chains_bootstrap() {
     assert_eq!(walk.findings, Vec::<String>::new());
 }
 
-/// **AN AUDIT BODY ON A STORED CHAIN THAT DOES NOT DECODE IS A FINDING OF THE WALK**, never a
-/// record silently dropped (BUSBAR-1.6.0.md l.193, "integrity"; the boot's resume reports the same
-/// record as a restart finding): a record the walk cannot read is one it cannot verify, so its
-/// digest, its link and its signature go unchecked, and the walk says so.
-///
-/// RED before the fix: the walk filtered the record out, and found nothing.
 #[test]
 fn the_stored_walk_reports_an_audit_body_that_does_not_decode() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1317,14 +1156,6 @@ fn the_stored_walk_reports_an_audit_body_that_does_not_decode() {
     );
 }
 
-/// **TWO NODES ON ONE STORE NEVER COLLIDE, AND VERIFY WALKS BOTH CHAINS** (ARCHITECT 2026-10-07 H3
-/// ruling, follow-up (2)): each host takes its own stable id from the store's node registry, a
-/// restart on the same host takes the same one back, each node resumes exactly its own chain, and
-/// the walk `/admin/verify` makes reads and verifies both — and names an edit made to the other
-/// node's chain in the store.
-///
-/// RED before the follow-up: every node wrote as node 0, so the second node's records overwrote the
-/// first's in the store.
 #[test]
 fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1390,7 +1221,6 @@ fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
     );
 }
 
-/// A delayed first boot cannot replace a key another first boot already confirmed.
 #[test]
 fn a_delayed_first_keyset_candidate_reads_the_atomic_winner() {
     use busbar_contract::abi::sdk::store::conditional::Mutation;
@@ -1531,7 +1361,6 @@ fn a_legacy_keyset_cache_never_repairs_corrupt_or_mismatched_store_state() {
     }
 }
 
-/// A committed key whose answer was lost replays one immutable transaction, including its op id.
 #[test]
 fn an_unknown_keyset_commit_replays_its_exact_candidate() {
     use std::sync::{Arc, Mutex};
@@ -1587,8 +1416,6 @@ fn racing_first_host_candidates_keep_one_stable_registry_pointer() {
     assert_eq!(slots.rows_under(store_identity::NODE_SCHEMA), 1);
 }
 
-/// A minted node id is claimed for good before it is kept: every id the registry gives a host is
-/// one the store's id claims hold, so no second host can be handed it.
 #[test]
 fn every_minted_node_id_is_held_by_its_claim() {
     use store_identity::MINT_CLAIM_KIND;
@@ -1601,8 +1428,6 @@ fn every_minted_node_id_is_held_by_its_claim() {
     assert_eq!(node_id(slots.calls().as_ref(), "host-x").expect("again"), a);
 }
 
-/// The page boundary is a Store response bound, never a fleet bound. Late-sorting peer chains
-/// participate in both migration and verification even after more than one registry page.
 #[test]
 fn a_saturated_registry_reads_the_late_peer_for_migration_and_verification() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1695,8 +1520,6 @@ fn a_malformed_registry_row_cannot_make_stored_verification_report_complete() {
     );
 }
 
-/// A LIVE HOLDER: `lease` refreshed on every lease poll until the guard drops, as a running node's
-/// flush tick refreshes it.
 struct Refreshing(
     std::sync::Arc<std::sync::atomic::AtomicBool>,
     Option<std::thread::JoinHandle<()>>,
@@ -1732,9 +1555,6 @@ impl Drop for Refreshing {
     }
 }
 
-/// Two LIVE nodes that share one host name — `host`, or none at all — on one store: each takes its
-/// identity and seals its own audit records, and each restarted journal over the store reads back
-/// exactly its own (Q128 root part 12 HIGH 2).
 fn two_live_nodes_keep_their_own_records(host: &str) {
     let slots = crate::root::store_double::RecordSlots::new();
     let a = take_node(slots.calls().as_ref(), host).expect("the first node's identity");
@@ -1784,31 +1604,16 @@ fn two_live_nodes_keep_their_own_records(host: &str) {
     );
 }
 
-/// **TWO LIVE NODES WITH ONE HOST NAME KEEP SEPARATE AUDIT RECORDS** (Q128 root part 12
-/// HIGH 2): the second takes a fresh id because the first holds the name's lease.
-///
-/// RED before the fix: the identity was the host name's alone, so both nodes journaled under one
-/// id and overwrote each other's records in the store.
 #[test]
 fn two_live_nodes_with_one_host_name_keep_separate_audit_records() {
     two_live_nodes_keep_their_own_records("host-same");
 }
 
-/// **TWO LIVE NAMELESS NODES KEEP SEPARATE AUDIT RECORDS** (Q128): no host name is one
-/// name, held under one lease like any other.
-///
-/// RED before the fix: every nameless host shared the empty name's one identity.
 #[test]
 fn two_live_nameless_nodes_keep_separate_audit_records() {
     two_live_nodes_keep_their_own_records("");
 }
 
-/// **A CRASH-RESTART RESUMES THE SAME CHAIN** (Q128): a node with no data directory killed (its
-/// lease neither released nor refreshed again) restarts at once; the new boot watches the lease,
-/// sees it lapse unrefreshed, takes the host's id back under a lease of its own and resumes its
-/// chain.
-///
-/// RED before the fix: no lease was taken, so the restart held nothing a second process would see.
 #[test]
 fn a_restart_after_the_lease_lapsed_resumes_the_chain() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1823,7 +1628,7 @@ fn a_restart_after_the_lease_lapsed_resumes_the_chain() {
             .seal_unit(audit_inputs(1), audit_pass(), &token())
             .expect("sealed");
         drained(&durability);
-        // kill -9: no release of the lease, nothing flushed on the way out.
+
         std::mem::forget(durability);
         std::mem::forget(first.lease);
     }
@@ -1832,7 +1637,7 @@ fn a_restart_after_the_lease_lapsed_resumes_the_chain() {
     assert!(again.lease.is_some(), "under a lease of its own");
     let restarted = store_book(&slots, again.id);
     assert_eq!(restarted.audit_records.len(), 1, "the chain is resumed");
-    // A clean shutdown releases the lease: the next boot resumes at once.
+
     again
         .lease
         .as_ref()
@@ -1843,10 +1648,6 @@ fn a_restart_after_the_lease_lapsed_resumes_the_chain() {
     assert_eq!(next.id, first.id, "a released lease is taken at once");
 }
 
-/// **A BOOT WHILE ITS PREDECESSOR STILL REFRESHES THE LEASE TAKES A FRESH ID**: the lease is refreshed while the second process watches it, so its holder is live, and
-/// the second journals under an id of its own and leaves the host's chain untouched.
-///
-/// RED before the fix: the second process took the host's id and wrote over the first's chain.
 #[test]
 fn a_restart_while_the_old_lease_is_live_takes_a_fresh_id() {
     let slots = crate::root::store_double::RecordSlots::new();
@@ -1886,7 +1687,6 @@ fn a_restart_while_the_old_lease_is_live_takes_a_fresh_id() {
     assert!(walk.chains.contains(&first.id) && walk.chains.contains(&second.id));
 }
 
-/// A book over the Store with a legacy directory supplied.
 fn dir_store_book(
     slots: &crate::root::store_double::RecordSlots,
     dir: &std::path::Path,
@@ -1904,7 +1704,6 @@ fn dir_store_book(
     .expect("the directory opens")
 }
 
-/// A legacy node-id file cannot override the Store registry or cause a local write.
 #[test]
 fn a_legacy_node_id_does_not_override_the_store_identity() {
     use store_identity::NODE_SCHEMA;
@@ -1935,7 +1734,6 @@ fn a_legacy_node_id_does_not_override_the_store_identity() {
     assert_eq!(dir.entries(), vec!["node_id"]);
 }
 
-/// Legacy directory states cannot select a different persistence or recovery source.
 #[test]
 fn every_legacy_data_dir_shape_resumes_the_store_without_creating_files() {
     let dir = ScratchDir::new("store-only-paths");
@@ -1979,7 +1777,6 @@ fn every_legacy_data_dir_shape_resumes_the_store_without_creating_files() {
     }
 }
 
-/// A paused Store future must be resumed even if an assertion unwinds the test.
 struct PausedStore(crate::root::store_double::RecordSlots);
 
 impl PausedStore {
@@ -2091,7 +1888,7 @@ fn an_unknown_store_commit_stays_queued_and_restart_resumes_the_committed_chain(
     assert_eq!(lane.pending(), 1, "unknown commit keeps custody");
     assert!(first.refuses_money().is_some());
     let head = first.journal.head();
-    // A fresh instance sees what the Store really committed, even while the first awaits its ack.
+
     let restarted = store_book(&slots, 74);
     assert_eq!(restarted.journal.head(), head);
     assert_eq!(restarted.audit_records.len(), 1);
@@ -2119,7 +1916,7 @@ fn dropping_a_book_with_a_pending_put_keeps_the_accepted_batch_in_the_store_lane
     while slots.rows_under(JOURNAL_SCHEMA) == 0 && std::time::Instant::now() < until {
         std::thread::yield_now();
     }
-    // Wait for every part, through the worker's backend calls, before building a new reader.
+
     let mut kept = read_chain(slots.calls().as_ref(), 75).unwrap();
     while kept.is_empty() && std::time::Instant::now() < until {
         std::thread::yield_now();

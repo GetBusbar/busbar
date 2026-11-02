@@ -58,21 +58,15 @@ use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::LoadError;
 use crate::store_v3::LoadedStore;
 
-/// This kind's section of the plugin's `conformance.json`, and its instance label: the kind's
-/// config root key, read off the kind list (`busbar_contract::plugin::Kind::verb`).
 const ROOT: &str = match busbar_contract::plugin::Kind::Store.root_key() {
     Some(key) => key,
     None => panic!("the store kind has a config root key"),
 };
 
-/// A bridge read answered under a lease: the read, then the `release` of its lease.
 const LEASED: u64 = 2;
 
-/// Clock-independent live deadline: these controls test first/duplicate crossings, not expiry.
 const LIVE_REPLAY_DEADLINE: u64 = u64::MAX;
 
-/// The plane scope kinds the engine registers at boot (busbar's data, not the plugin's: the
-/// scope-kind round trip proves a dropped-in store needs none of them registered).
 const PLANE_SCOPE_KINDS: &str = include_str!("../../tests/fixtures/plane_scope_kinds.txt");
 
 fn plane_kind(key: &str) -> &'static str {
@@ -87,7 +81,6 @@ fn plane_kind(key: &str) -> &'static str {
         .unwrap_or_else(|| panic!("tests/fixtures/plane_scope_kinds.txt has no `{key}` row"))
 }
 
-/// A result as one answer line: `Ok` by `Debug`, an error by its text.
 fn ans<T: Debug, E: Display>(r: Result<T, E>) -> String {
     match r {
         Ok(v) => format!("= {v:?}"),
@@ -103,15 +96,8 @@ fn block<T>(rt: &tokio::runtime::Runtime, f: impl std::future::Future<Output = T
     rt.block_on(f)
 }
 
-/// THE TABLE THIS SCRIPT DRIVES: 31 kind slots, every one of them stepped below. A slot added to
-/// the store table fails the build here until the script drives it.
 const _: () = assert!(busbar_contract::abi::store::KIND_SLOTS == 31);
 
-/// THE HOST'S OP-ID ALLOCATORS, ONE PER FOLD RUNNING. The bridge's mint is a plain `fn() -> OpId`
-/// (`OpIdMint`), so a fold's allocator is one of [`FOLDS`] static slots, each with its own node
-/// half and counter, held by the fold for as long as it runs ([`LegMint`]). Two folds of one test
-/// binary (libtest runs the emitted tests in parallel) never share a counter, so neither re-mints
-/// an op id the other already used, and each leg counts from 1 on its node's half, as before.
 const FOLDS: usize = 16;
 
 struct MintSlot {
@@ -119,17 +105,16 @@ struct MintSlot {
     next: std::sync::atomic::AtomicU64,
 }
 
-#[allow(clippy::declare_interior_mutable_const)] // the array's initializer, never read itself
+#[allow(clippy::declare_interior_mutable_const)]
 const FREE_SLOT: MintSlot = MintSlot {
     node: std::sync::atomic::AtomicU64::new(0),
     next: std::sync::atomic::AtomicU64::new(0),
 };
 static MINT_SLOTS: [MintSlot; FOLDS] = [FREE_SLOT; FOLDS];
-/// Which slots a running fold holds.
+
 static MINT_HELD: std::sync::Mutex<[bool; FOLDS]> = std::sync::Mutex::new([false; FOLDS]);
 static MINT_FREED: std::sync::Condvar = std::sync::Condvar::new();
 
-/// Slot `N`'s allocator: its node's half, counted from 1.
 fn mint_at<const N: usize>() -> OpId {
     use std::sync::atomic::Ordering::Relaxed;
     let slot = &MINT_SLOTS[N];
@@ -142,14 +127,11 @@ macro_rules! mints {
 const MINTS: [busbar_contract::store_calls::OpIdMint; FOLDS] =
     mints!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
 
-/// ONE FOLD'S OP-ID ALLOCATOR (`LoadedStore::open`'s mint), held until it drops: keep it alive
-/// for as long as the store it minted for.
 pub(super) struct LegMint {
     at: usize,
 }
 
 impl LegMint {
-    /// A free allocator on `node`'s half, counting from 1 (waits for one while all are held).
     pub(super) fn take(node: u64) -> Self {
         use std::sync::atomic::Ordering::Relaxed;
         let mut held = MINT_HELD.lock().unwrap_or_else(PoisonError::into_inner);
@@ -167,7 +149,6 @@ impl LegMint {
         Self { at }
     }
 
-    /// The allocator, as the bridge takes it.
     pub(super) fn mint(&self) -> busbar_contract::store_calls::OpIdMint {
         MINTS[self.at]
     }
@@ -226,11 +207,6 @@ fn meter(key_id: &str, provider: &str, input: u64) -> MeteringDelta {
     }
 }
 
-/// A credential of `kind` (Q-P4-7: the script writes, and looks up, the ONE kind the shipped store
-/// schemas hold, 1.5.5's `PutCredential` "today only" kind; a store whose schema
-/// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
-/// `store.credential_kind`, never a word this crate spells (`c1-literals`: the loader names no auth
-/// style). Its secret is in the contract's at-rest form (`CredentialSecret::secret`, `v1:plain`).
 pub(super) fn secret(kind: &str, id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
     CredentialSecret {
         meta: CredentialMeta {
@@ -267,8 +243,6 @@ fn plane(kind: &str, id: &str, parent: Option<&str>, seq: u64, body: &[u8]) -> P
     }
 }
 
-/// The key the scope-kind round trip stores: a pool grant beside two plane grants the plugin's
-/// process never registered.
 fn scoped_key() -> VirtualKey {
     VirtualKey {
         id: "vk_scopekinds".into(),
@@ -291,14 +265,11 @@ fn scoped_key() -> VirtualKey {
     }
 }
 
-/// `k` at a dotted `path`.
 fn at<'v>(k: &'v serde_json::Value, path: &str) -> &'v serde_json::Value {
     path.split('.').fold(k, |v, p| &v[p])
 }
 
-/// The store's inputs, read once.
 pub(super) struct Inputs<'a> {
-    /// The credential kind the shipped store schemas hold (`store.credential_kind`, Q-P4-7).
     pub(super) credential_kind: &'a str,
     node: u64,
     usage_bucket: &'a str,
@@ -337,11 +308,6 @@ impl<'a> Inputs<'a> {
     }
 }
 
-/// ONE STORE LEG AT A TIME, per process: [`leg_mint`] is a plain `fn` the bridge calls (it captures
-/// nothing), so its node and counter are process statics, reset at each leg's `open`. The suite's
-/// tests run in parallel threads (the both-ways arm, the RED count arm, the kind-ABI arm), and a leg
-/// opening in one would rewind another's counter mid-leg — the store refuses the replayed op id
-/// (`STORE_OPID_CONFLICT`), a failure of the suite, not of the plugin. Held for the whole leg.
 static LEG: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
@@ -357,8 +323,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     let d = dispatcher();
     let p = load::<Store>(s, leg, s.bind(&d, ROOT)).expect("the store door loads");
-    // The instance's crossing gate, held across `open` (which takes the plugin by value; a
-    // `Plugin` is `!Clone`, so the gate is held through its instance).
+
     let held = Arc::clone(&p.inner);
     let mut r = Recorder::new(crossings_of(&held));
     r.line("facts", 0, || {
@@ -375,11 +340,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         );
         format!("refused={right}")
     });
-    // ONE first invocation for `open`, and one for the `ready` the kernel awaits inside it; their
-    // resumes are reported (Q-P4-5).
+
     let open_pin = 1 + u64::from(p.has_ready());
-    // The bridge mints its writes' op ids from this fold's own allocator, on this node's half;
-    // held until the fold ends (declared before the store, so it outlives it).
+
     let minted = LegMint::take(i.node);
     let st = r.step("open", open_pin, || {
         match LoadedStore::open(p, Arc::clone(&d), &settings, minted.mint()) {
@@ -390,7 +353,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     ready_step(&mut r, s, st.plugin(), &d);
     let b: &dyn RecordStore = &st;
 
-    // ── keys: put_key, get_key, list_keys, delete_key, list_keys_since ──
     let keys = |r: Result<Vec<VirtualKey>, busbar_contract::records::RecordStoreError>| {
         ans(r.map(|mut ks| {
             ks.sort_by(|a, b| a.id.cmp(&b.id));
@@ -415,7 +377,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("relive plain", 1, || ans(b.put_key(&key(i.plain, None))));
     r.line("keys since 0", LEASED, || keys(b.list_keys_since(0)));
 
-    // ── usage: get_usage, add_usage, put_usage ──
     let (ub, w) = (i.usage_bucket, i.window);
     r.line("usage untouched", LEASED, || ans(b.get_usage(ub, w)));
     r.line("add usage", 1, || ans(b.add_usage(ub, w, &delta(2, 30))));
@@ -426,9 +387,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("usage j", LEASED, || ans(b.get_usage("j", w * 2)));
     r.line("usage again", LEASED, || ans(b.get_usage(ub, w)));
 
-    // ── metering: add_metering, list_metering ──
-    // Metering names a key the script has PUT (the grouped key, still live): a store whose metering
-    // rows reference its keys (a metering -> keys foreign key) holds them.
     r.line("meter p 3", 1, || {
         ans(b.add_metering(&meter(i.grouped, "p", 3)))
     });
@@ -445,7 +403,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
 
-    // ── credentials ──
     r.line("put k1", 1, || ans(b.put_key(&key("k1", None))));
     r.line("cred c1", 1, || {
         ans(b.put_credential(&secret(i.credential_kind, "c1", "k1", "pub1")))
@@ -475,9 +432,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
 
-    // ── audit and denylist ──
-    // No 1.5.5 audit row is written (no slot appends one), so both reads are empty lists, which hold
-    // no lease: one crossing each.
     r.line("audit", 1, || ans(b.list_audit()));
     r.line("audit tail 1", 1, || ans(b.list_audit_tail(1)));
     r.line("deny x", 1, || ans(b.add_denylist("x", "why")));
@@ -488,7 +442,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
 
-    // ── plane records through the bridge (`get`/`list` write into host buffers: no lease) ──
     let bodies = |r: busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>>| {
         ans(r.map(|v| {
             let mut v: Vec<String> = v.iter().map(|b| text_of(b)).collect();
@@ -525,9 +478,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("purge ev", 1, || {
         ans(b.purge_plane_records("ev", 100, busbar_contract::records::Retention::Age))
     });
-    // THE KIND'S RETENTION RULE (coordinator ruling (b)): the rule is the one the purge is handed,
-    // never one the store infers from the kind's name. Under `TerminalOnly` an old ACTIVE row is
-    // kept and an old TERMINAL one goes; under `Age` every old row goes.
+
     r.line("append rt1", 1, || {
         ans(b.append_plane_record(plane("rt", "r", Some("p"), 1, b"active").view()))
     });
@@ -552,8 +503,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             .get_plane_record("task", "t1")
             .map(|v| v.map(|v| text_of(&v))))
     });
-    // An upsert is keyed on (kind, id), parent or not: two ids under one parent are two records,
-    // each read and deleted by its own id, and both listed under the parent.
+
     r.line("upsert c1 under p", 1, || {
         ans(b.upsert_plane_record(plane("ctask", "c1", Some("p"), 0, b"c1").view()))
     });
@@ -589,7 +539,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ans(b.redeem_plane_token("tok", "x", LIVE_REPLAY_DEADLINE, 1))
     });
 
-    // ── the typed surface: every v3 addition, submitted and awaited ──
     let batch = [(ub, w, delta(1, 5)), (ub, w, delta(1, 5))];
     r.line("usage batch", 1, || {
         ans(block(&rt, st.add_usage_batch(op(8), &batch)))
@@ -629,7 +578,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     };
     r.line("record scan", 1, scan);
-    // AN EMPTY PUT REMOVES THE ROW (slot 26; ARCHITECT 2026-10-21): the host's strike.
+
     r.line("record put a/1 empty", 1, || {
         ans(block(&rt, st.record_put(i.schema, b"a/1", &rec(b""))))
     });
@@ -685,16 +634,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ))
     });
     r.line("usage at the end", LEASED, || ans(b.get_usage(ub, w)));
-    // The usage ledger's purge (slot 22 under `RETENTION_USAGE_WINDOWS`): every window started
-    // before `2w` goes (the one at `w`), the one at `2w` stays.
+
     r.line("usage purge", 1, || {
         ans(block(&rt, st.purge_usage_before(w * 2)))
     });
     r.line("usage purged", LEASED, || ans(b.get_usage(ub, w)));
     r.line("usage kept", LEASED, || ans(b.get_usage("j", w * 2)));
 
-    // ── the scope-kind round trip (DECISIONS #11): a plane's kinds are the key's own data, and a
-    // dropped-in store must hand the key back byte-identically ──
     let sk = scoped_key();
     r.line("scope-kind put", 1, || ans(b.put_key(&sk)));
     let back = r.step("scope-kind get", LEASED, || match b.get_key(&sk.id) {
@@ -732,10 +678,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     fold
 }
 
-/// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: the op_id
-/// dedupe (H4: a replay answers the original and applies nothing, a different body under a used
-/// op_id is `STORE_OPID_CONFLICT`), tombstones and forks refused, a token redeemed once, the ledger counting each write once, and a key handed
-/// back byte-identically whatever scope kinds it carries.
 fn contract(fold: &Fold, i: &Inputs<'_>) {
     let at = |label: &str| answer(fold, label);
     let tail = |label: &str| at(label).split_once(' ').map_or("", |x| x.1);
@@ -851,7 +793,7 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         "= [(\"a/2\", \"two\")]",
         "an empty put removes the row: the scan never returns it"
     );
-    // add_usage 2, then one batch of two cells of 1 applied once (its replay applied nothing).
+
     assert!(
         tail("usage again").contains("UsageLedger { requests: 2,"),
         "{}",
@@ -881,18 +823,6 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
 #[path = "../tests/conformance_store_runs_tests.rs"]
 mod runs_tests;
 
-/// THE STORE KIND'S FORWARD-COMPATIBILITY CASE (`abi::store`, FORWARD COMPATIBILITY): a durable
-/// store opened over a schema newer than its build refuses to open.
-///
-/// A door of another kind has no schema: nothing to prove. An EPHEMERAL store (its Statement's
-/// mark) keeps no schema and states no stamp. A durable store must state its stamp
-/// (`conformance_suite! { …, newer_schema: stamp }`): the case opens it in a fold's namespace (a
-/// first open records this build's schema), stamps the schema newer, and requires the next open to
-/// refuse with a text of its own.
-///
-/// # Panics
-/// On a durable store that states no stamp, does not open over its own schema, or opens over a
-/// newer one (the test's verdict).
 pub fn store_newer_schema(s: &Subject) {
     if s.kind() != busbar_contract::abi::mechanism::KindCode::Store {
         return;

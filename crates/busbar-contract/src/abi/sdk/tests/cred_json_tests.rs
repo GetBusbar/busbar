@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Tests for `abi/sdk/cred/json.rs`: a JSON reply's credential captured, a JSON answer's credential
-//! sealed, and a sealed answer streamed into a host buffer.
 
 use serde::Deserialize;
 
@@ -49,7 +48,7 @@ fn an_escaped_credential_is_captured_unescaped() {
 }
 
 /// RED: the decoder's own text quotes the value it met (`invalid type: string "<value>"`); the
-/// reply error names the class and the position only, the position serde_json states.
+
 #[test]
 fn a_reply_error_names_its_class_and_position_never_a_value() {
     let cases: [(String, JsonFailure); 4] = [
@@ -93,7 +92,7 @@ fn a_reply_error_names_its_class_and_position_never_a_value() {
 }
 
 /// RED: the sealed object encodes as `serde_json::to_vec` writes the same object, byte for byte,
-/// every escape included.
+
 #[test]
 fn a_sealed_object_encodes_as_serde_json_writes_it() {
     let tricky = [
@@ -131,7 +130,7 @@ fn a_sealed_object_encodes_as_serde_json_writes_it() {
 }
 
 /// The members go out in the order named: a plugin matching `json!` (members sorted, no
-/// `preserve_order`) names them sorted.
+
 #[test]
 fn the_members_go_out_in_the_order_named() {
     let mut w = SealedJson::new()
@@ -176,7 +175,7 @@ fn a_sealed_object_debugs_its_names_only() {
 }
 
 /// RED: a sealed answer streams into a host buffer (a plane's `reply_buf`) a buffer's room at a
-/// time, every byte once, in order.
+
 #[test]
 fn a_sealed_answer_streams_into_a_host_buffer() {
     let mut w = SealedJson::new()
@@ -219,7 +218,7 @@ fn a_sealed_answer_streams_into_a_host_buffer() {
 }
 
 /// RED: a host buffer reports no connection security, so an answer carrying a credential that must
-/// go out secured is refused there, nothing written (as `poll_io` refuses it).
+
 #[test]
 fn a_secure_required_credential_is_refused_into_a_host_buffer() {
     let mut w = SealedJson::new()
@@ -242,7 +241,7 @@ fn a_secure_required_credential_is_refused_into_a_host_buffer() {
 }
 
 /// RED: a captured token's public format marker (a provider's `ek_`) is checked without a getter:
-/// the answer is whether it matches, nothing else.
+
 #[test]
 fn a_credential_answers_whether_it_starts_with_a_marker() {
     let m: Minted = json_reply(format!(r#"{{"value":"{CANARY}"}}"#).as_bytes()).expect("reads");

@@ -2,30 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The credential typecheck is a mechanical, type-level
-//! inventory of every place core's production source holds, prints or copies credential material
-//! outside the sealed types. The run prints what it finds and passes; chip row 9 makes it assert
-//! that it finds nothing. Each rule's own planted case below is strict, so a rule that stops
-//! finding what it names fails.
-//!
-//! The rules (the finding key is `rule<TAB>file<TAB>item`, no line numbers, so an unrelated edit
-//! moves nothing):
-//!
-//! - `bare-field`: a field named for credential material is a bare string or byte holder (the
-//!   strict rule in `secrets.rs` exempts a reviewed few; the inventory lists them all).
-//! - `printable-bare-field`: the same field in a type that derives `Debug` or `Serialize`, one
-//!   `{:?}` or one serialisation away from a log or a response.
-//! - `printable-url`: a `*url`/`dsn` text field in a type that derives `Debug` or `Serialize`; a
-//!   URL can carry userinfo or a query token.
-//! - `unsealed-return`: a function that takes a `Secret`/`SecretRef` and returns bare text or
-//!   bytes: plaintext leaves the sealed type there.
-//! - `expose-copy`: an `.expose(..)` whose result is copied into an owned, unzeroized buffer in
-//!   the same statement (`.to_vec()`, `.to_string()`, `.to_owned()`, `String::from`, `Vec::from`).
-//! - `header-not-sensitive`: a function builds a `HeaderValue` from exposed or credential-named
-//!   material and never calls `set_sensitive`.
-//! - `url-in-sink`: a log or print macro names a `*url`/`dsn` value.
-//!
-//! The report of each run is written to `$CARGO_TARGET_TMPDIR/credential-typecheck.txt` and
-//! printed on stdout.
 
 use std::collections::BTreeMap;
 

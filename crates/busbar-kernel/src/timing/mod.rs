@@ -43,16 +43,9 @@
 //!   print its method-by-method breakdown. Accumulation is thread-local, so concurrent requests on
 //!   different workers never cross-contaminate.
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// FEATURE OFF (default): everything below is a no-op. `timeit!` -> `()`, `Timer` is a ZST with an
-// empty Drop, and the record/scope/dump/reset entry points are `#[inline]` empty fns the optimizer
-// deletes at every call site. No registry, no atomics, no thread-locals are compiled in.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 #[cfg(not(feature = "timing"))]
 mod imp {
-    /// Feature-OFF [`Timer`] guard: a ZERO-SIZED type with an empty `Drop`. `size_of::<Timer>() == 0`
-    /// (asserted by the `zero_cost_when_off` test) and dropping it does nothing, so an instrumented
-    /// `let _t = timeit!(..)` binds a ZST that leaves no trace in codegen.
+
     #[non_exhaustive]
     pub struct Timer;
 
@@ -61,36 +54,28 @@ mod imp {
         fn drop(&mut self) {}
     }
 
-    /// Feature-OFF constructor — used by the (rare) explicit-type call site; the `timeit!` macro
-    /// does not even reference it (it expands to `()`), but it exists so `Timer` has a public ctor.
     #[inline(always)]
     pub fn timer(_name: &'static str) -> Timer {
         Timer
     }
 
-    /// Feature-OFF [`crate::timing::record`]: no-op.
     #[inline(always)]
     pub fn record(_name: &'static str, _nanos: u64) {}
 
-    /// Feature-OFF [`crate::timing::scope`]: runs `f` with zero timing overhead.
     #[inline(always)]
     pub fn scope<T>(_name: &'static str, f: impl FnOnce() -> T) -> T {
         f()
     }
 
-    /// Feature-OFF [`crate::timing::dump`]: no-op.
     #[inline(always)]
     pub fn dump() {}
 
-    /// Feature-OFF [`crate::timing::dump_scoped`]: no-op.
     #[inline(always)]
     pub fn dump_scoped() {}
 
-    /// Feature-OFF [`crate::timing::reset`]: no-op.
     #[inline(always)]
     pub fn reset() {}
 
-    /// Feature-OFF [`crate::timing::enabled`]: always `false`.
     #[inline(always)]
     pub fn enabled() -> bool {
         false
@@ -118,12 +103,9 @@ macro_rules! timeit {
 }
 
 pub use imp::{dump, dump_scoped, enabled, record, reset, scope, timer, Timer};
-// `#[macro_export]` places `timeit!` at the crate root; this makes it `busbar_kernel::timing::timeit!` too.
+
 pub use crate::timeit;
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// FEATURE ON: the real registry.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 #[cfg(feature = "timing")]
 mod imp {
     use std::collections::HashMap;
@@ -132,15 +114,8 @@ mod imp {
     use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::Instant;
 
-    /// Number of log2 histogram buckets. A duration's bucket is `64 - leading_zeros(ns)` (0 for a
-    /// zero-ns sample), i.e. bucket `i` holds `[2^(i-1), 2^i)` ns. 65 buckets cover 0 ns up to
-    /// ~1.8e19 ns (584 years) — every conceivable in-process span — with NO per-sample allocation.
-    /// The spacing is coarse (a factor of 2 per bucket) but ample to tell 500ns from 25us apart,
-    /// which is the whole job of the p50/p99 columns here.
     const N_BUCKETS: usize = 65;
 
-    /// The bucket index for `ns`: `0` for a zero sample, else `64 - ns.leading_zeros()` so the
-    /// bucket's lower bound is `1 << (idx - 1)`. Branch-free, a few instructions, no allocation.
     #[inline(always)]
     fn bucket_of(ns: u64) -> usize {
         if ns == 0 {
@@ -150,8 +125,6 @@ mod imp {
         }
     }
 
-    /// The representative (lower-bound) nanosecond value for bucket `idx`, used when a percentile
-    /// falls in that bucket. Coarse by construction — a power of two.
     #[inline]
     fn bucket_floor(idx: usize) -> u64 {
         if idx == 0 {
@@ -208,7 +181,6 @@ mod imp {
             self.buckets[bucket_of(ns)] += 1;
         }
 
-        /// Fold `other` into `self` — the process-wide [`dump`] merge across per-thread registries.
         fn merge(&mut self, other: &MethodStat) {
             self.count += other.count;
             self.total_ns += other.total_ns;
@@ -219,9 +191,6 @@ mod imp {
             }
         }
 
-        /// Nearest-rank percentile from the histogram, reported as the bucket's lower bound (ns).
-        /// `p` in [0,1]. Coarse: resolution is a factor of two, which is all that is needed to
-        /// separate a sub-microsecond method from a tens-of-microseconds one.
         fn percentile(&self, p: f64) -> u64 {
             if self.count == 0 {
                 return 0;
@@ -238,67 +207,24 @@ mod imp {
         }
     }
 
-    /// One thread's method map. The hot path only ever touches its OWN thread's registry, so the
-    /// per-call lock below is uncontended in steady state (contended only briefly during a [`dump`]).
     type ThreadRegistry = HashMap<&'static str, MethodStat>;
 
-    /// The set of every LIVE thread's registry, so a process-wide [`dump`] can merge them. Each
-    /// thread pushes a handle here once, on first use. `Arc<Mutex<..>>` (not `RefCell`) because
-    /// [`dump`] reads another thread's data — the `Arc`/`Mutex` is what makes that sound, not
-    /// `unsafe`.
-    ///
-    /// The handle is a `Weak`, not an `Arc`. A strong reference here would make this vector the
-    /// OWNER of every registry it ever saw, so a thread's accumulator outlived the thread and the
-    /// vector grew without bound for the life of the process — one entry per thread ever spawned,
-    /// each still holding its whole `HashMap`. A long-running server with a churning worker pool
-    /// would accumulate them indefinitely, and the diagnostic would become the leak. With `Weak`,
-    /// the thread-local `Arc` is the sole owner: the registry dies with its thread and the stale
-    /// handle is a cheap tombstone the next walk sweeps out.
-    ///
-    /// That ownership rule is why the process accumulator below exists. A registry that dies with
-    /// its thread takes the thread's SAMPLES with it, so a process-wide table built from live
-    /// threads alone silently omitted every short-lived worker — exactly the threads whose call
-    /// counts the report is usually being read to explain. The samples are handed off (moved, see
-    /// [`LocalHandle`]) on the way out rather than kept alive here, so the vector stays bounded by
-    /// the number of LIVE threads while no sample is ever lost.
     fn threads() -> &'static Mutex<Vec<Weak<Mutex<ThreadRegistry>>>> {
         static THREADS: OnceLock<Mutex<Vec<Weak<Mutex<ThreadRegistry>>>>> = OnceLock::new();
         THREADS.get_or_init(|| Mutex::new(Vec::new()))
     }
 
-    /// The PROCESS-WIDE accumulator: the samples of every thread that has already exited, folded
-    /// together by method name. A thread's own registry is the only place its samples live WHILE it
-    /// runs; the instant it exits they move here, and here they stay for the life of the process.
-    ///
-    /// THE INVARIANT that keeps the process table honest: a sample lives in EXACTLY ONE of the two
-    /// places at any moment — its thread's live registry, or this accumulator — never both. The
-    /// hand-off in [`LocalHandle::drop`] MOVES the map out of the dying registry (`mem::take`)
-    /// rather than copying it, which is what makes "exactly one" true rather than merely usual. A
-    /// copying hand-off would leave the samples readable through the still-upgradeable `Weak` for
-    /// the remainder of the thread's teardown and a [`dump`] in that window would count them twice.
-    ///
-    /// LOCK ORDER, where both are taken: this accumulator FIRST, then a thread registry. Both the
-    /// hand-off and the merge obey it, so the two cannot deadlock; the recording hot path takes only
-    /// its own registry and so is unordered with respect to it. Holding this lock across the whole
-    /// merge is also what makes the merge atomic against a concurrent hand-off — a thread exiting
-    /// mid-merge waits, so its samples are read once from its registry rather than falling between
-    /// the two halves.
     fn accumulated() -> &'static Mutex<ThreadRegistry> {
         static ACCUMULATED: OnceLock<Mutex<ThreadRegistry>> = OnceLock::new();
         ACCUMULATED.get_or_init(|| Mutex::new(ThreadRegistry::new()))
     }
 
-    /// Fold `src` into `dst` by method name — the one merge shape used by both the exit hand-off and
-    /// the process-wide table build.
     fn fold_into(dst: &mut ThreadRegistry, src: &ThreadRegistry) {
         for (name, stat) in src.iter() {
             dst.entry(name).or_default().merge(stat);
         }
     }
 
-    /// Collect the registries of threads that are still alive, DROPPING the tombstones of those that
-    /// are not. Called from every path that already walks the vector, so the pruning costs nothing
-    /// extra and needs no reaper thread.
     fn live_registries() -> Vec<Arc<Mutex<ThreadRegistry>>> {
         let mut all = threads().lock().unwrap_or_else(|p| p.into_inner());
         let mut live = Vec::with_capacity(all.len());
@@ -312,20 +238,9 @@ mod imp {
         live
     }
 
-    /// The owning handle a thread keeps on its own registry. It exists for its `Drop`: the whole
-    /// point is to have something that runs AS THE THREAD ENDS and can move the thread's samples
-    /// somewhere that outlives it.
     struct LocalHandle(Arc<Mutex<ThreadRegistry>>);
 
     impl Drop for LocalHandle {
-        /// Hand this thread's samples to the process accumulator on the way out. TAKE, do not copy:
-        /// the registry is left empty, so from this instant the samples exist in the accumulator and
-        /// nowhere else, and a [`dump`] racing the thread's teardown cannot see them twice. Empty is
-        /// the common case (a thread that never recorded) and costs one uncontended lock.
-        ///
-        /// The accumulator lock is taken BEFORE the registry lock, per the order documented on
-        /// [`accumulated`] — and a merge in flight therefore blocks this hand-off until it has read
-        /// the registry, rather than the two interleaving into a lost or doubled row.
         fn drop(&mut self) {
             let mut acc = accumulated().lock().unwrap_or_else(|p| p.into_inner());
             let taken = std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()));
@@ -346,14 +261,9 @@ mod imp {
         };
     }
 
-    /// Runtime enable tri-state cache. `0` = unread, `1` = disabled, `2` = enabled. Read once from
-    /// the `BUSBAR_TIMING` env (any value = on), then cached — the hot path is a single relaxed load.
-    /// [`set_enabled`] can force it (used by the smoke test to drive a dump without touching the env).
     static ENABLED: AtomicU8 = AtomicU8::new(0);
     static ATEXIT_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-    /// True when method timing should record — one relaxed atomic load in steady state. Mirrors
-    /// `busbar_kernel::profile::enabled`: on iff `BUSBAR_TIMING` was present at first read (or forced).
     #[inline]
     pub fn enabled() -> bool {
         match ENABLED.load(Ordering::Relaxed) {
@@ -370,8 +280,6 @@ mod imp {
         }
     }
 
-    /// Force the runtime gate on/off, bypassing the env. Test/embedding hook: the smoke test calls
-    /// `set_enabled(true)` so it can record and [`dump`] without a `BUSBAR_TIMING` in the process env.
     pub fn set_enabled(on: bool) {
         ENABLED.store(if on { 2 } else { 1 }, Ordering::Relaxed);
         if on {
@@ -379,13 +287,6 @@ mod imp {
         }
     }
 
-    /// Install the process-exit dump once. `atexit(3)` runs the handler after `main` returns.
-    ///
-    /// It runs LATE — on glibc, after the thread-local destructors of the main thread have already
-    /// run. A handler that could only see live thread-locals therefore printed "(no samples)" on
-    /// Linux even for a single-threaded program that had recorded thousands, while printing a full
-    /// table on a platform that tears TLS down in the other order. Reading the process accumulator,
-    /// which by then owns everything every thread recorded, makes the exit table identical on both.
     fn install_atexit() {
         if ATEXIT_INSTALLED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -400,25 +301,10 @@ mod imp {
         }
     }
 
-    /// The `atexit(3)` handler. `atexit` takes a plain `extern "C"` fn pointer, so an unwind out of
-    /// this frame crosses into C — and the body reaches `eprintln!`, which CAN panic (a closed or
-    /// broken stderr on a shutting-down process is not exotic, and a poisoned lock elsewhere in the
-    /// dump path would do it too). Catching here keeps a failed diagnostic print at process exit a
-    /// failed diagnostic print, rather than an abort in the last moments of an otherwise clean run.
-    /// `dump` is a bare fn item with no captured state, so it is `UnwindSafe` on its own merits —
-    /// no `AssertUnwindSafe` wrapper is needed or wanted here.
     extern "C" fn timing_atexit() {
         let _ = catch_unwind(dump);
     }
 
-    /// Record `nanos` against `name`. No-op unless [`enabled`]. The recording cost is: a relaxed
-    /// atomic load, a thread-local access, an uncontended mutex lock, a `HashMap` probe and a
-    /// handful of integer updates. See `benches`/the report for the measured observer cost.
-    ///
-    /// `try_with`, not `with`: a `record` can legitimately arrive from another thread-local's own
-    /// destructor, i.e. after THIS thread's handle has already been dropped and handed its samples
-    /// off. `with` would panic there; instead the sample goes straight to the process accumulator,
-    /// which is where it was headed anyway. It still lands in exactly one place.
     #[inline]
     pub fn record(name: &'static str, nanos: u64) {
         if !enabled() {
@@ -441,15 +327,6 @@ mod imp {
         }
     }
 
-    /// The RAII guard `timeit!` expands to. Holds the `&'static str` name and the start `Instant`;
-    /// records its elapsed time on drop. Constructing it always takes an `Instant` (the runtime gate
-    /// is re-checked on drop), so prefer it at a method's top where the whole body is the scope.
-    /// `start` is `None` when the runtime gate was off at construction, which is what makes the
-    /// module header's claim — feature ON, env OFF costs one atomic load — actually true. It was
-    /// not: the constructor read the clock unconditionally and `Drop` read it a second time, so a
-    /// build with the feature compiled in but `BUSBAR_TIMING` unset paid TWO `Instant::now()` calls
-    /// at every instrumented call site. On most platforms that is a `clock_gettime`, which is not
-    /// remotely a predictable-branch atomic load.
     pub struct Timer {
         name: &'static str,
         start: Option<Instant>,
@@ -464,20 +341,17 @@ mod imp {
         }
     }
 
-    /// Feature-ON constructor for the `timeit!` macro (and explicit call sites).
     #[inline]
     pub fn timer(name: &'static str) -> Timer {
         Timer {
             name,
-            // Gate FIRST, clock second. A disabled build must not pay for a reading it will discard.
+
             start: enabled().then(Instant::now),
         }
     }
 
-    /// Time `f` under `name` and return its result — the fn form of `timeit!` for one expression.
     #[inline]
     pub fn scope<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
-        // Same discipline as `timer`: no clock read at all when the gate is off.
         let start = enabled().then(Instant::now);
         let out = f();
         if let Some(start) = start {
@@ -486,20 +360,12 @@ mod imp {
         out
     }
 
-    /// Clear THIS thread's accumulator — the open bracket of a per-request measurement. Pair with
-    /// [`dump_scoped`] at the end of the request to print only that request's methods.
-    ///
-    /// Thread-scoped, deliberately: it discards the samples this thread has not yet handed off and
-    /// leaves the process accumulator (other threads' history) untouched, because the bracket it
-    /// opens is one request on one worker, not the process.
     pub fn reset() {
         LOCAL.with(|h| h.0.lock().unwrap_or_else(|p| p.into_inner()).clear());
-        // Sweep the tombstones of threads that have exited since the last walk.
+
         drop(live_registries());
     }
 
-    /// Print the current thread's table — the per-request view (call after [`reset`] + the request).
-    /// No-op when disabled. Header line is tagged `BUSBAR_TIMING scope=thread`.
     pub fn dump_scoped() {
         if !enabled() {
             return;
@@ -508,9 +374,6 @@ mod imp {
         print_table("thread", &snapshot);
     }
 
-    /// Print the process-wide table — every thread's samples, whether or not the thread is still
-    /// running. No-op when disabled. Called on demand and from the `atexit` hook when
-    /// `BUSBAR_TIMING` is set. Header line is tagged `BUSBAR_TIMING scope=process`.
     pub fn dump() {
         if !enabled() {
             return;
@@ -518,12 +381,6 @@ mod imp {
         print_table("process", &merged_snapshot());
     }
 
-    /// The process-wide merge that [`dump`] renders: the [`accumulated`] history of every thread
-    /// that has exited, plus the still-unhanded-off samples of every thread that is still running.
-    ///
-    /// The two halves are disjoint by construction — the exit hand-off MOVES a registry's map into
-    /// the accumulator — so summing them counts each sample exactly once, and the accumulator lock is
-    /// held across the live walk so a thread exiting mid-merge cannot slip between the halves.
     fn merged_snapshot() -> ThreadRegistry {
         let acc = accumulated().lock().unwrap_or_else(|p| p.into_inner());
         let mut merged: ThreadRegistry = acc.clone();
@@ -534,9 +391,6 @@ mod imp {
         merged
     }
 
-    /// Render one `name -> MethodStat` map as the sorted table, largest `total` first. `count` is
-    /// the headline column. Durations are auto-scaled (ns/us/ms). Emitted on stderr, like the stage
-    /// profiler, so it never contaminates stdout.
     fn print_table(scope: &str, map: &ThreadRegistry) {
         if map.is_empty() {
             eprintln!("BUSBAR_TIMING scope={scope} (no samples)");
@@ -565,8 +419,6 @@ mod imp {
         }
     }
 
-    /// Human-scaled duration: ns under 1us, us under 1ms, else ms. Three significant figures is
-    /// plenty for a "where do the 65us go" read.
     fn fmt_ns(ns: u64) -> String {
         if ns < 1_000 {
             format!("{ns}ns")
@@ -581,21 +433,15 @@ mod imp {
     #[path = "tests/imp_tests.rs"]
     mod tests;
 
-    // Test-only: the cell sets and clears `BUSBAR_TIMING`, and env mutation is `unsafe` in 2024.
     #[cfg(test)]
     #[allow(unsafe_code)]
     #[path = "tests/mutation_hardening_tests.rs"]
     mod mutation_hardening_tests;
 }
 
-/// Feature-ON test/embedding hook to force the runtime gate. Absent (and unreferenced) when the
-/// feature is off.
 #[cfg(feature = "timing")]
 pub use imp::set_enabled;
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// ZERO-COST-WHEN-OFF PROOF (always compiled — this is the default build).
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 #[cfg(all(test, not(feature = "timing")))]
 #[path = "tests/zero_cost_when_off_tests.rs"]
 mod zero_cost_when_off;

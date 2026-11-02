@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOST CLOCK THE FRAMER'S DEADLINES ARE STATED ON: one fixed epoch, so a reading names the
-//! same instant however often it is mapped, and a deadline a framer stated from a reading at or
-//! before the caller's `now` is due at that `now` — through BOTH the legacy `timeout` and the
-//! incremental `timeout_step` of a datagram framing, exactly once.
-//!
-//! RED arms (against the unfixed mapping, which anchored every reading on a freshly sampled
-//! `Instant::now()`): repeated maps differ, an elapsed deadline maps later than the `now` captured
-//! after it was read (so the Timer never fires and the deadline is re-derived forever), and two
-//! future readings are not their exact nanosecond apart.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -29,7 +21,7 @@ fn one_reading_maps_to_one_instant_however_often_and_whenever() {
     let future = past + 60_000_000_000;
     let past_first = instant_of(past);
     let future_first = instant_of(future);
-    // Real time passes between the maps: a mapping anchored on a freshly sampled instant moves.
+
     std::thread::sleep(Duration::from_millis(2));
     assert_eq!(instant_of(past), past_first, "an elapsed reading drifted");
     assert_eq!(instant_of(future), future_first, "a future reading drifted");
@@ -47,7 +39,7 @@ fn an_elapsed_nonzero_deadline_is_due_at_a_now_captured_after_it_was_read() {
         instant_of(reading) <= now,
         "a reading taken before `now` must not map after it"
     );
-    // The very first nanosecond the clock can name is the epoch itself, never in the future.
+
     assert!(instant_of(1) <= now);
 }
 
@@ -59,7 +51,7 @@ fn mapped_future_readings_keep_their_exact_nanosecond_delta() {
     std::thread::sleep(Duration::from_millis(2));
     let later = instant_of(base + delta);
     assert_eq!(later.duration_since(earlier), Duration::from_nanos(delta));
-    // The mapping inverts the clock: a reading one nanosecond on is one nanosecond later.
+
     assert_eq!(
         instant_of(base + 1).duration_since(instant_of(base)),
         Duration::from_nanos(1)
@@ -67,8 +59,7 @@ fn mapped_future_readings_keep_their_exact_nanosecond_delta() {
 }
 
 /// A datagram framer that states one deadline at `begin` (the host's reading then, plus `ahead`
-/// nanoseconds), counts the Timer crossings it receives, and states no deadline in answer to any
-/// of them.
+
 struct Deadlined {
     facts: DoorFacts,
     ahead: u64,
@@ -137,7 +128,7 @@ fn framing(door: &Arc<Deadlined>) -> DatagramFraming {
 }
 
 /// Run one `timeout_step` and every same-op continuation it owes to completion; the number of
-/// batches it took.
+
 fn step_to_completion(framing: &mut DatagramFraming, now: Instant) -> usize {
     let mut batches = 0;
     let mut step = framing.timeout_step(now).expect("the clock step");
@@ -170,7 +161,6 @@ fn the_legacy_timeout_fires_an_elapsed_framer_deadline_once_and_states_no_replac
     assert_eq!(door.timers(), 1, "the elapsed deadline fires the Timer");
     assert_eq!(framing.deadline(), None, "the deadline was consumed");
 
-    // Consumed once: neither the same `now` nor a far later one crosses the Timer again.
     framing.timeout(now).expect("the host's clock");
     framing
         .timeout(now + Duration::from_secs(3600))

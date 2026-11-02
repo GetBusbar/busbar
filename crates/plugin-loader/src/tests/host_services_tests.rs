@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host services (`BUSBAR-1.6.0.md` THE DESIGN, §11.12) through the table an instance is
-//! handed, over a kind-neutral test double: a route that records its wakes and a provider with a
-//! fixed clock and a `dest.judge` that answers a scripted verdict at once, or pends until the test
-//! answers it by hand. The judgement itself is the kernel's and is tested there.
-//!
-//! SAFETY for raw service and validator calls below: every non-NULL answer slot and every reported
-//! in-cap span read belongs to the test's live initialized locals or to the host call
-//! just completed. Deliberately malformed metadata is rejected before any such read.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
@@ -57,8 +48,6 @@ impl Provider {
     }
 }
 
-/// Every service but `trust.sight`, which the contract's shared double refuses as unserved
-/// ([`UNIMPLEMENTED`]), as the loader refuses a slot with no service.
 impl crate::services_double::ServicesDouble for Provider {
     fn now(&self) -> Reading {
         Reading {
@@ -99,7 +88,6 @@ impl crate::services_double::ServicesDouble for Provider {
         Ran::Later
     }
 
-    /// [`LISTED`] after `after`, key then value per record, one span each, at once.
     fn records_list(&self, c: &Caller, list: RecordsList, _: Later) -> Ran {
         self.saw(c, "records.list", list.kind.as_bytes());
         let mut stored = Stored::ready(0);
@@ -143,14 +131,12 @@ impl crate::services_double::ServicesDouble for Provider {
         Stored::ready(0)
     }
 
-    /// Records `<counterparty>/<item> <digest>`; answers a new sighting.
     fn trust_sight_item(&self, c: &Caller, counterparty: &str, item: &str, digest: &str) -> Stored {
         let arg = format!("{counterparty}/{item} {digest}");
         self.saw(c, "trust.sight_item", arg.as_bytes());
         Stored::ready(svc::TRUST_NEW)
     }
 
-    /// Records `<counterparty>/<item>@<digest>`; answers that it serves.
     fn trust_serves(
         &self,
         c: &Caller,
@@ -167,7 +153,6 @@ impl crate::services_double::ServicesDouble for Provider {
         Stored::ready(svc::DISTRUST_NONE)
     }
 
-    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving.
     fn trust_decide(
         &self,
         c: &Caller,
@@ -185,7 +170,6 @@ impl crate::services_double::ServicesDouble for Provider {
         Stored::ready(svc::TRUST_DECIDED_SERVING)
     }
 
-    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same.
     fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
         self.saw(c, "trust.state", counterparty.as_bytes());
         let value = b"drifted\0d1\0d2";
@@ -201,13 +185,11 @@ impl crate::services_double::ServicesDouble for Provider {
         stored
     }
 
-    /// The last verdict, never a sighting: `TRUST_SAME`.
     fn trust_unreached(&self, c: &Caller, counterparty: &str) -> Stored {
         self.saw(c, "trust.unreached", counterparty.as_bytes());
         Stored::ready(svc::TRUST_SAME)
     }
 
-    /// Answers the payload's length as the verdict, and the counterparty as the bytes.
     fn trust_verify(&self, c: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
         self.saw(c, "trust.verify", &[payload, b"|", sigs].concat());
         Stored {
@@ -223,7 +205,6 @@ impl crate::services_double::ServicesDouble for Provider {
         Stored::ready(svc::ENTITLED)
     }
 
-    /// The ticket double: a ticket naming the unit, expiring `1_700_000_000 + ttl`.
     fn ticket_mint(&self, c: &Caller, unit: Option<u64>, ttl_secs: u64, record: &[u8]) -> Stored {
         let arg = format!("{unit:?} {ttl_secs} {}", String::from_utf8_lossy(record));
         self.saw(c, "ticket.mint", arg.as_bytes());
@@ -234,7 +215,6 @@ impl crate::services_double::ServicesDouble for Provider {
         }
     }
 
-    /// The take double: unit 7 was admitted by a ticket whose record is `rec`; any other by a key.
     fn ticket_take(&self, c: &Caller, unit: Option<u64>) -> Stored {
         self.saw(c, "ticket.take", format!("{unit:?}").as_bytes());
         if unit == Some(7) {
@@ -248,7 +228,6 @@ impl crate::services_double::ServicesDouble for Provider {
         }
     }
 
-    /// Every fill's bytes differ from the last one's: all `n`, the fill's ordinal.
     fn random_fill(&self, len: u64) -> Stored {
         let n = self.filled.fetch_add(1, Ordering::SeqCst) + 1;
         Stored {
@@ -258,7 +237,6 @@ impl crate::services_double::ServicesDouble for Provider {
         }
     }
 
-    /// The credential double: `<kind>:<id>` live, its secret `s3cr3t`, answered at once.
     fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
         self.secrets.lock().unwrap().push(format!("{kind}:{id}"));
         let mut stored = Stored::ready(svc::SECRET_LIVE);
@@ -271,7 +249,6 @@ impl crate::services_double::ServicesDouble for Provider {
         Ran::Later
     }
 
-    /// Records `<unit> <verb> <target> <body>`; answers status 201, the body `child`, no field.
     fn unit_nest(&self, c: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
         let arg = [
             format!("{unit:?} {} {} ", ask.verb, ask.target).as_bytes(),
@@ -292,7 +269,6 @@ impl crate::services_double::ServicesDouble for Provider {
         Ran::Later
     }
 
-    /// Records `<unit> <kind> <record>`; answers handle 5 and the reference `ref` in span 0.
     fn work_open(
         &self,
         c: &Caller,
@@ -316,27 +292,23 @@ impl crate::services_double::ServicesDouble for Provider {
         Ran::Later
     }
 
-    /// Records `<unit> <reference>`; answers absent.
     fn work_find(&self, c: &Caller, unit: Option<u64>, reference: &[u8], _: Later) -> Ran {
         let arg = [format!("{unit:?} ").as_bytes(), reference].concat();
         self.saw(c, "work.find", &arg);
         Ran::Now(Stored::ready(svc::ABSENT))
     }
 
-    /// Records `<unit> <handle> <record>`.
     fn work_settle(&self, c: &Caller, unit: Option<u64>, handle: u64, rec: &[u8], _: Later) -> Ran {
         let arg = [format!("{unit:?} {handle} ").as_bytes(), rec].concat();
         self.saw(c, "work.settle", &arg);
         Ran::Now(Stored::ready(0))
     }
 
-    /// Records `<unit> <handle>`.
     fn work_resume(&self, c: &Caller, unit: Option<u64>, handle: u64, _: Later) -> Ran {
         self.saw(c, "work.resume", format!("{unit:?} {handle}").as_bytes());
         Ran::Now(Stored::ready(0))
     }
 
-    /// Records the key; answers a hit whose entry is `entry`, in span 0, through `later`.
     fn verify_lookup(&self, c: &Caller, key: &[u8], later: Later) -> Ran {
         self.saw(c, "verify.lookup", key);
         let mut stored = Stored::ready(svc::VERIFY_HIT);
@@ -352,22 +324,18 @@ impl crate::services_double::ServicesDouble for Provider {
         Ran::Later
     }
 
-    /// Records `<key> <entry> <ttl>`.
     fn verify_store(&self, c: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
         let arg = [key, b" ", entry, format!(" {ttl_ms}").as_bytes()].concat();
         self.saw(c, "verify.store", &arg);
         Stored::ready(0)
     }
 
-    /// Records `<unit> <content>`; blocks it.
     fn content_scan(&self, c: &Caller, unit: Option<u64>, content: &[u8], _: Later) -> Ran {
         let arg = [format!("{unit:?} ").as_bytes(), content].concat();
         self.saw(c, "content.scan", &arg);
         Ran::Now(Stored::ready(svc::CONTENT_BLOCK))
     }
 
-    /// Records `<unit> <stage> <from> <system> <role>=<text>...`; answers `1 + from`, the bytes
-    /// `rw`.
     fn hook_call(&self, c: &Caller, unit: Option<u64>, ask: HookAsk, _: Later) -> Ran {
         let mut arg = format!("{unit:?} {} {} {:?}", ask.stage, ask.from, ask.system);
         for (role, text) in &ask.messages {
@@ -381,8 +349,6 @@ impl crate::services_double::ServicesDouble for Provider {
         })
     }
 
-    /// The disk-lane double: records the append and answers through `later` — READY with the
-    /// file rotated first, or, for a path ending `.fail`, FAILED at the open step.
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
         self.appended.lock().unwrap().push((dest.clone(), bytes));
         let failing = dest.path.ends_with(".fail");
@@ -411,15 +377,13 @@ impl crate::services_double::ServicesDouble for Provider {
     }
 }
 
-/// The records the double's `records.list` holds, in key order.
 const LISTED: [(&[u8], &[u8]); 2] = [(b"p/1", b"a"), (b"p/2", b"b")];
 
-/// The route half: records every wake.
 struct Route {
     store: Arc<ServiceStore>,
     provider: Arc<crate::services_double::Double<Provider>>,
     wakes: Mutex<Vec<Ticket>>,
-    /// The kernel's side of the auth handle, when a test installs one.
+
     auth: std::sync::OnceLock<Arc<dyn crate::dispatch::auth_handle::AuthHandleHost>>,
 }
 
@@ -511,7 +475,6 @@ const NO_SPAN: ItemSpan = ItemSpan {
     value: Span { offset: 0, len: 0 },
 };
 
-/// The kernel's admitted answer naming `addrs`, one span's key each.
 fn admitted(addrs: &[&str]) -> Stored {
     let mut s = Stored::ready(DEST_ALLOWED);
     for a in addrs {
@@ -568,8 +531,6 @@ fn clock_now_reads_the_one_clock_without_a_ticket() {
     );
 }
 
-/// A service that may pend, called with no ticket (a pure op's call), is REFUSED and never
-/// runs, for every may-pend service in the table.
 #[test]
 fn a_may_pend_service_from_a_ticketless_op_is_refused() {
     let d = double();
@@ -619,17 +580,14 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.ticket_take,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
-    // The room a READ service is handed, so its well-formed call can be answered whole.
+
     let (mut read_buf, mut read_spans) = ([0u8; 64], [NO_SPAN; 4]);
     for (service, f) in (0..SERVICES).zip(slots) {
-        // The largest `in` in the table, all zero past its head: every `in` fits it.
         let mut raw = [0u64; 32];
         let h = head(service, Ticket::NONE, 0, size_of_val(&raw));
         // SAFETY: the head fits the buffer's start.
         unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
-        // A read that answers into the caller's buffers is handed a WELL-FORMED `in` (a named
-        // counterparty, room for its items): the slot is served as any other is. Its all-zero
-        // `in` is a short answer of its own (`an_all_zero_trust_state_in_is_a_short_answer`).
+
         if service == op::TRUST_STATE {
             let well_formed = svc::TrustStateIn {
                 head: h,
@@ -651,7 +609,6 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNTICKETED, "service {service}");
         } else if service == op::NEED_ADMIT {
-            // The connection table's verdict: an instance handed no table declared nothing.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(
                 error(&o),
@@ -659,29 +616,23 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 "service {service}"
             );
         } else if service == op::TRUST_STATE {
-            // Its well-formed call, answered whole into the room it named.
             assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else if service == op::SESSION_EMIT {
-            // An emit naming no session and nothing to write is refused before the provider.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), EMIT_NOTHING, "service {service}");
         } else if matches!(service, op::UNIT_HAND_IN | op::UNIT_REFUSE) {
-            // The auth handle's `in` has one exact size; this one states the buffer's.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), NOT_EXACT, "service {service}");
         } else if service == op::TICKET_MINT {
-            // A mint asking no lifetime is refused before the provider.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), MINT_OUT_OF_RANGE, "service {service}");
         } else if service == op::VERIFY_STORE {
-            // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), NO_VERIFY_KEY, "service {service}");
         } else if matches!(
             service,
             op::TRUST_SIGHT_ITEM | op::TRUST_SERVES | op::TRUST_DECIDE
         ) {
-            // Served, with no ticket: the zeroed `in` names empty texts, which reach the kernel.
             assert_eq!(ret.outcome(), Outcome::Ready, "service {service}");
         } else {
             assert!(
@@ -699,7 +650,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 "service {service}"
             );
         }
-        // No slot of the table is left unserved.
+
         if !o.error.ptr.is_null() {
             assert_ne!(
                 error(&o),
@@ -735,9 +686,6 @@ fn blob_over(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
     }
 }
 
-/// `verify.lookup` reaches the kernel with the caller and the key, and the entry it answers is
-/// written into the caller's buffers; a lookup that names no key is REFUSED before the cache is
-/// read (RED arm).
 #[test]
 fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
     let d = double();
@@ -770,8 +718,6 @@ fn verify_lookup_answers_the_callers_cache_and_refuses_an_empty_key() {
     assert_eq!(d.route.provider.scoped.lock().unwrap().len(), before);
 }
 
-/// `verify.store` never pends: it is served with no ticket, with the caller, key, entry and ttl;
-/// an empty key is REFUSED before the cache is written (RED arm).
 #[test]
 fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
     let d = double();
@@ -803,8 +749,6 @@ fn verify_store_is_served_without_a_ticket_and_refuses_an_empty_key() {
     assert_eq!(error(&o), NO_VERIFY_KEY);
 }
 
-/// `content.scan` reaches the kernel with the unit the crossing serves and the content; called
-/// with no ticket it is REFUSED (it may pend) and never runs (RED arm).
 #[test]
 fn content_scan_scans_for_the_unit_the_crossing_serves() {
     let d = double();
@@ -861,8 +805,6 @@ fn hook_in(
     }
 }
 
-/// `hook.call` copies the caller's prompt view and runs the stage for the unit the crossing
-/// serves; the rewrite it answers is written into the caller's buffers.
 #[test]
 fn hook_call_runs_the_stage_over_the_copied_prompt() {
     use busbar_contract::abi::hook::{MessageView, PromptView};
@@ -898,9 +840,6 @@ fn hook_call_runs_the_stage_over_the_copied_prompt() {
     );
 }
 
-/// RED, one arm each: an unknown stage, a chain resumed past the cap, a resumed gate and a missing
-/// prompt are each REFUSED in their own words before any hook runs; a prompt view that breaks its
-/// own rules is FAULT.
 #[test]
 fn hook_call_refuses_each_malformed_in_before_any_hook_runs() {
     use busbar_contract::abi::hook::PromptView;
@@ -979,7 +918,6 @@ fn an_in_for_another_service_or_of_a_short_size_is_fault() {
     );
 }
 
-/// A verdict the kernel answers at once is READY on the first call, and never pends.
 #[test]
 fn dest_judge_answers_at_once_what_the_kernel_decides_at_once() {
     let d = double();
@@ -990,8 +928,6 @@ fn dest_judge_answers_at_once_what_the_kernel_decides_at_once() {
     assert!(d.route.wakes.lock().unwrap().is_empty());
 }
 
-/// A pended judgement: PENDING on the ticket; its answer wakes the ticket; the re-issued handle
-/// reads the stored verdict, and the kernel was asked once.
 #[test]
 fn dest_judge_pends_on_the_ticket_and_the_recall_reads_the_verdict() {
     let d = double();
@@ -1012,9 +948,6 @@ fn dest_judge_pends_on_the_ticket_and_the_recall_reads_the_verdict() {
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
 
-/// THE JUDGED ADDRESSES go into the caller's buffers under the short-buffer rule: no room is a
-/// FAILED short answer naming the full size, and the re-call with room reads the stored addresses
-/// (the kernel judged once).
 #[test]
 fn dest_judge_writes_the_judged_addresses_under_the_short_buffer_rule() {
     let d = double();
@@ -1040,9 +973,6 @@ fn dest_judge_writes_the_judged_addresses_under_the_short_buffer_rule() {
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
 
-/// THE SDK'S WRAPPER over this table: `dest.judge` pends on the op's ticket, the answer wakes it,
-/// and the op's re-entry re-issues the same handle and reads the stored verdict (the kernel judged
-/// once).
 #[test]
 fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
     let d = double();
@@ -1068,7 +998,6 @@ fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
 
-/// The SDK's services over this table, as `open` hands them to the double's instance.
 fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
     use busbar_contract::abi::mechanism::ticket::HostTables;
     let tables = HostTables {
@@ -1084,7 +1013,6 @@ fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
     unsafe { busbar_contract::abi::sdk::Services::from_raw(&tables) }.expect("the table is handed")
 }
 
-/// The handle of a ticketed op's `seq`th service call.
 const fn ticketed(seq: u32) -> CompletionHandle {
     CompletionHandle {
         ticket: TICKET,
@@ -1093,10 +1021,6 @@ const fn ticketed(seq: u32) -> CompletionHandle {
     }
 }
 
-/// THE SDK'S RECORDS WRAPPERS over this table (K-RECORDS): `records.get` reads the value the
-/// kernel answered for the caller; `records.list` its rows, and the next page after a key it
-/// answered (an `after` the plugin left absent reaches the kernel as none); `records.claim` the
-/// kernel's won or taken, and a claim with no time to live never leaves the plugin.
 #[test]
 fn the_sdk_records_wrappers_reach_the_kernel_as_their_caller() {
     use std::task::Poll;
@@ -1168,9 +1092,6 @@ fn the_sdk_records_wrappers_reach_the_kernel_as_their_caller() {
     );
 }
 
-// ── the mechanism, kind-neutral ──────────────────────────────────────────────────────────────
-
-/// A service body that answers eight bytes in one span and counts its runs.
 fn eight(runs: &AtomicUsize) -> impl FnOnce(Option<Completer>) -> Ran + '_ {
     move |_| {
         runs.fetch_add(1, Ordering::SeqCst);
@@ -1215,8 +1136,6 @@ const SPAN: ItemSpan = ItemSpan {
     value: Span { offset: 0, len: 0 },
 };
 
-/// The first short answer earns ONE re-call on the same handle; a second short answer on it
-/// is FAULT, and the service never ran twice.
 #[test]
 fn a_second_short_call_on_one_handle_is_fault() {
     let store = Arc::new(ServiceStore::default());
@@ -1237,8 +1156,6 @@ fn a_second_short_call_on_one_handle_is_fault() {
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 
-/// The re-call a short answer earns reads the STORED result: the service does not run again, and a
-/// re-issued handle after it reads the same result.
 #[test]
 fn a_recall_reads_the_stored_result_without_running_again() {
     let store = Arc::new(ServiceStore::default());
@@ -1291,8 +1208,6 @@ fn call_claim(d: &Double, i: &RecordsClaimIn) -> (RawOutcome, ServiceOut) {
     (ret, o)
 }
 
-/// A caller-scoped service called from an instance bind stated no caller for is REFUSED and never
-/// reaches the kernel.
 #[test]
 fn a_caller_scoped_service_with_no_caller_is_refused() {
     let d = double();
@@ -1309,7 +1224,6 @@ fn a_caller_scoped_service_with_no_caller_is_refused() {
     assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
 
-/// A claim with no time to live is refused before it reaches the kernel; there is no default.
 #[test]
 fn a_claim_with_no_time_to_live_is_refused_and_never_runs() {
     let d = double();
@@ -1323,8 +1237,6 @@ fn a_claim_with_no_time_to_live_is_refused_and_never_runs() {
     assert!(svc::check_records_claim(&claim_in(1), ret, &o).is_ok());
 }
 
-/// `records.get` hands the kernel the caller bind stated, the kind and the key, and delivers what
-/// it answered into the caller's buffers.
 #[test]
 fn records_get_reaches_the_kernel_as_its_caller_and_delivers_the_record() {
     let d = double();
@@ -1352,7 +1264,6 @@ fn records_get_reaches_the_kernel_as_its_caller_and_delivers_the_record() {
     );
 }
 
-/// The services that never pend reach the kernel from a ticketless op, as their caller.
 #[test]
 fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
     let d = double();
@@ -1396,8 +1307,6 @@ fn blob(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
     }
 }
 
-/// `trust.verify` reaches the kernel from a ticketless op as its caller, with the counterparty,
-/// payload and signatures it named; the kernel's bytes land in the caller's buffer.
 #[test]
 fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers_buffer() {
     let d = double();
@@ -1426,7 +1335,6 @@ fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers
     );
 }
 
-/// RED: a signatures blob that names a length with no bytes is FAULT, and never reaches the kernel.
 #[test]
 fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
     let d = double();
@@ -1474,13 +1382,12 @@ fn entitlement_check_reaches_the_kernel_with_the_unit_its_crossing_serves() {
         };
         (ret.outcome(), o.value)
     };
-    // Outside any crossing: no unit.
+
     assert_eq!(ask("item:one"), (Outcome::Ready, svc::ENTITLED));
     {
         let _outer = serving(Some(7));
         assert_eq!(ask("item:two").0, Outcome::Ready);
         {
-            // A nested crossing states its own unit, and its end restores the outer one.
             let _inner = serving(Some(8));
             ask("item:three");
         }
@@ -1536,7 +1443,7 @@ fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_k
     );
     let (checked, _, _) = fill(16, &mut b[..]);
     assert_eq!(checked, Ok(Filled::Written));
-    // Each fill lands in its own buffer.
+
     assert_eq!((a, b), ([1; 16], [2; 16]));
     assert_ne!(a, b, "two fills are never equal");
     for len in [0, svc::MAX_RANDOM_FILL + 1, u64::MAX] {
@@ -1610,13 +1517,12 @@ fn tickets_reach_the_kernel_with_the_unit_their_crossing_serves() {
         );
     }
     {
-        // A unit a key admitted: NONE, nothing written.
         let _unit = serving(Some(8));
         let (checked, outcome, o) = take(&mut buf[..]);
         assert_eq!((checked.is_ok(), outcome), (true, Outcome::Ready));
         assert_eq!((o.value, o.len), (svc::TICKET_NONE, 0));
     }
-    // Out of range: refused before the kernel, nothing written.
+
     let over = vec![b'x'; svc::MAX_TICKET_RECORD as usize + 1];
     for (ttl, record) in [(0, &b"{}"[..]), (600, &over[..])] {
         let mut out = [0u8; 16];
@@ -1645,12 +1551,6 @@ fn tickets_reach_the_kernel_with_the_unit_their_crossing_serves() {
     );
 }
 
-/// RED (loader-PL1 #5): a late completion from an op that is over never lands on the next op's
-/// handle on the same ticket (THE DESIGN §11.11 H2, §11.12). The first op's service pends and the
-/// op ends unredeemed (a deadline `cancel`, or it answered without redeeming); a new op starts on
-/// the ticket (the worker forgets the ticket's results at every new op's start) and its handle 0
-/// pends too. The first op's completer then answers: it wakes nothing and the new op does not read
-/// it; the new op's own completion lands and wakes it.
 #[test]
 fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
     let d = double();
@@ -1679,7 +1579,6 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
         .take()
         .expect("the first op's completer");
 
-    // The first op is over; a new op starts on the ticket, and its handle 0 pends.
     store.forget(TICKET);
     // SAFETY: as above.
     let second = unsafe { serve(&store, &route, &h, 0, Some(&into), pend()) };
@@ -1710,10 +1609,6 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
     );
 }
 
-/// A RECYCLE drops the stored service results of every `(ticket, n)` of its ticket, through the
-/// dispatcher's own recycle path: nothing an earlier request's services answered survives into the
-/// ticket's next life, and a replay of an old handle runs its service afresh rather than reading
-/// the stored result.
 #[test]
 fn a_recycled_ticket_drops_its_stored_service_results() {
     let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
@@ -1783,11 +1678,6 @@ fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
     (ret, o)
 }
 
-/// THE DECLARED NEED (ARCHITECT ruling B): `records.secret` serves an instance only the credential
-/// kinds its Statement declares. An undeclared kind, and a caller that declares none (any non-auth
-/// instance), are REFUSED before the kernel reads anything; a declared kind reaches the kernel and
-/// its secret lands in the caller's buffers; ticketless it is refused as any may-pend service is.
-/// RED: before the slot, `records.secret` was no slot at all.
 #[test]
 fn records_secret_serves_only_a_declared_kind() {
     let d = double();
@@ -1798,14 +1688,13 @@ fn records_secret_serves_only_a_declared_kind() {
             value: Span { offset: 0, len: 0 },
         }; 1],
     );
-    // A caller that declares no credential kind.
+
     let i = secret_in("signed", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(d.ctx, &i);
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNDECLARED_KIND);
     assert!(d.route.provider.secrets.lock().unwrap().is_empty());
 
-    // A caller that declares `signed`.
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
@@ -1839,8 +1728,6 @@ fn records_secret_serves_only_a_declared_kind() {
     );
 }
 
-/// The work family reaches the kernel as its caller, with the unit its crossing serves, and a
-/// record past its cap is refused before the kernel sees it.
 #[test]
 fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let d = double();
@@ -1942,8 +1829,6 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     );
 }
 
-/// `unit.nest` reaches the kernel as its caller with the unit its crossing serves, and delivers the
-/// child's whole reply into the caller's buffers.
 #[test]
 fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     let d = double();
@@ -1978,7 +1863,6 @@ fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
     );
 }
 
-/// A `disk.append` `in` naming `key`, appending `bytes`, its result into `result`.
 fn disk_in(
     key: &'static str,
     bytes: &'static [u8],
@@ -2017,19 +1901,11 @@ fn blank_written() -> svc::DiskWritten {
     }
 }
 
-/// THE DESTINATION RULE (THE DESIGN §11.12 `disk.append`): an instance appends only to the
-/// destinations its manifest declares (granted by the opener), at the path its settings bound; a key
-/// it was not granted, or one its settings leave unset, is never opened: FAILED at the
-/// `DISK_OPEN_FAILED` step in the host's words before the kernel sees anything, the step a sink
-/// reports as a file it could not open (1.5.5's BUSBAR-7074).
-/// A granted, bound key reaches the kernel's disk lane with the bound path and the bytes unchanged,
-/// and the lane's report lands in the caller's result slot (READY: the whole of the bytes; FAILED:
-/// the step in `value`, nothing written). RED: before the slot, `disk.append` was no slot at all.
 #[test]
 fn disk_append_writes_only_to_a_granted_bound_destination() {
     let d = double();
     let mut w = blank_written();
-    // The double's instance was granted no destination.
+
     let i = disk_in("path", b"line\n", 0, &mut w);
     let (ret, o) = call_disk(d.ctx, &i);
     assert_eq!(ret.outcome(), Outcome::Failed);
@@ -2041,13 +1917,12 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     );
     assert!(d.route.provider.appended.lock().unwrap().is_empty());
 
-    // An instance granted `path`, its settings binding it.
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
     assert!(wake.destinations.set(vec!["path".to_string()]).is_ok());
     let ctx = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
-    // Granted, not yet bound (its settings set no path): refused.
+
     let (ret, o) = call_disk(ctx, &disk_in("path", b"line\n", 0, &mut w));
     assert_eq!(ret.outcome(), Outcome::Failed);
     assert_eq!(o.value, svc::DISK_OPEN_FAILED);
@@ -2059,7 +1934,7 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
         rotate: busbar_contract::services::DiskRotate::Truncate,
     };
     wake.bound.write().unwrap().push(bound.clone());
-    // A key the instance was not granted, even with a path under it.
+
     let (ret, o) = call_disk(ctx, &disk_in("other", b"line\n", 0, &mut w));
     assert_eq!(ret.outcome(), Outcome::Failed);
     assert_eq!(o.value, svc::DISK_OPEN_FAILED);
@@ -2076,7 +1951,6 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
         &[(bound, b"line\n".to_vec())]
     );
 
-    // The lane's FAILED report: the step in `value`, nothing appended, the rotation reported.
     wake.bound.write().unwrap()[0].path = "/nowhere/requests.fail".into();
     let mut w = blank_written();
     let i = disk_in("path", b"line\n", 1, &mut w);
@@ -2088,9 +1962,6 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
 }
 
-/// `trust.sight` WITH `TRUST_UNREACHABLE` (ARCHITECT 2026-10-06): the plane could not reach the
-/// counterparty; the kernel answers its last verdict and nothing is sighted (the hash is unread,
-/// and may be empty). RED: an outcome the vocabulary does not hold is FAULT, and reaches nothing.
 #[test]
 fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fault() {
     let d = double();
@@ -2120,7 +1991,6 @@ fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fa
     );
 }
 
-/// The handle of an unticketed op's `seq`th service call.
 const fn unticketed(seq: u32) -> CompletionHandle {
     CompletionHandle {
         ticket: Ticket::NONE,
@@ -2129,9 +1999,6 @@ const fn unticketed(seq: u32) -> CompletionHandle {
     }
 }
 
-/// `trust.decide` OVER THE SDK (ARCHITECT 2026-10-06): the key, the expected fingerprint and the
-/// decision reach the kernel as the caller's, with no ticket; RED: a decision the vocabulary does
-/// not hold is FAULT and reaches nothing.
 #[test]
 fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
     let d = double();
@@ -2179,9 +2046,6 @@ fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
     );
 }
 
-/// `trust.state` OVER THE SDK: the counterparty's state and its items, read through the
-/// caller's buffers under the short-buffer rule (a short buffer is `Short`, the re-call on the same
-/// handle reads the stored answer), and the kernel was asked once.
 #[test]
 fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
     use busbar_contract::abi::sdk::{ServiceError, TrustItem};
@@ -2213,8 +2077,6 @@ fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
     );
 }
 
-/// `trust.state` WITH AN ALL-ZERO `in`: it names no room, so the item the kernel answers is a
-/// SHORT answer, FAILED with the full size named (the short-buffer rule), never READY.
 #[test]
 fn an_all_zero_trust_state_in_is_a_short_answer() {
     let d = double();
@@ -2231,8 +2093,6 @@ fn an_all_zero_trust_state_in_is_a_short_answer() {
     );
 }
 
-/// The families the double's `snapshot.read` answers: every shape the scrape layout carries (a
-/// labelled histogram's legs, a family with help and unit, one with neither, one with no samples).
 fn snapshot_families() -> Vec<busbar_contract::export_calls::Family> {
     use busbar_contract::abi::export::{
         SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_HISTOGRAM,
@@ -2280,10 +2140,6 @@ fn snapshot_families() -> Vec<busbar_contract::export_calls::Family> {
     ]
 }
 
-/// THE HOST SNAPSHOT SERVICE through the SDK, ticketless as an export `serve` calls it: a short
-/// buffer earns the bytes the layout needs; the re-call reads every family back exactly as the
-/// kernel answered it, the scope reaching the kernel as the caller's; NOT READY is `None`, never an
-/// empty snapshot.
 #[test]
 fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
     use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
@@ -2333,8 +2189,6 @@ fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
     );
 }
 
-/// RED: an unknown scope, or a buffer without the layout's alignment, is FAULT before the kernel
-/// is asked.
 #[test]
 fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
     use busbar_contract::abi::host::service::{SnapshotReadIn, SNAPSHOT_SCOPES};
@@ -2372,10 +2226,6 @@ fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
     );
 }
 
-/// #74, THE UNTRUSTED-ABI HALF: a context the host did not mint is refused before it names an
-/// instance. The service answers as it answers no context and the wake wakes nothing; the minted
-/// context does both (the control). It used to be an address the host read through, whatever the
-/// plugin handed back. (The counting is `handle_tests`', on a latch of its own.)
 #[test]
 fn a_forged_context_is_refused_before_it_names_an_instance() {
     let d = double();
@@ -2401,7 +2251,6 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
         HostCtx {
             handle: d.ctx.handle ^ 1,
         },
-        // The raw address of the very entry the handle names: the old shape of a context.
         HostCtx {
             handle: std::ptr::from_ref(crate::dispatch::handle::resolve(d.ctx).unwrap()) as usize
                 as u64,
@@ -2425,10 +2274,6 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
     assert_eq!(*d.route.wakes.lock().unwrap(), vec![woken]);
 }
 
-/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
-/// validated before it is formed"; audit PL1 #1): a service's `in` string or blob stated over the
-/// hard byte maximum (`u32::MAX`) is refused before any slice is formed or copied, as NULL with a
-/// length is. Run in a child: a copy past the caller's eight bytes kills the process.
 #[test]
 fn red_a_service_length_over_the_byte_cap_is_refused_before_any_copy() {
     crate::dispatch_tests::assert_child_passes(
@@ -2438,7 +2283,6 @@ fn red_a_service_length_over_the_byte_cap_is_refused_before_any_copy() {
     );
 }
 
-/// The child half of the test above, in a process of its own.
 fn oversize_service_lengths_child() {
     let b = [7_u8; 8];
     let past = u32::MAX as usize + 1;
@@ -2456,8 +2300,6 @@ fn oversize_service_lengths_child() {
     assert_eq!(bytes_of(over(&b), "test.bytes"), Some(b.to_vec()));
 }
 
-/// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
-/// a write past what the caller stated shows.
 #[repr(C, align(8))]
 struct LentOut([u8; 96]);
 
@@ -2472,17 +2314,11 @@ impl LentOut {
         self.0.as_mut_ptr().cast()
     }
 
-    /// Whether every byte from `from` on is still the caller's.
     fn untouched_from(&self, from: usize) -> bool {
         self.0[from..].iter().all(|b| *b == 0xAA)
     }
 }
 
-/// RED (Q128 kernel-scope MEDIUM, the host service frame): the host writes a caller's `out` only as far
-/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
-/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
-/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
-/// `ServiceOut` over whatever the caller lent.
 #[test]
 fn red_the_host_service_frame_writes_no_further_than_the_out_the_caller_stated() {
     use busbar_contract::abi::host::service::SERVICE_OUT_V1;
@@ -2505,8 +2341,6 @@ fn red_the_host_service_frame_writes_no_further_than_the_out_the_caller_stated()
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
 }
 
-// ── the host auth handle ──────────────────────────────────────────────────────────────────────
-
 use busbar_contract::abi::auth::{FieldSpan, POINT_HEAD};
 use busbar_contract::abi::host::service::{
     AuthAnswer, AuthCallIn, AuthRef, HeadView, RefusalAnswer, UnitHandInIn, UnitRef, UnitRefuseIn,
@@ -2518,7 +2352,6 @@ use crate::dispatch::auth_handle::{
     REF_NOT_MINTED,
 };
 
-/// The owner a double's refs are minted for: its instance identity.
 fn owner(d: &Double) -> u64 {
     crate::dispatch::handle::instance_id(d.ctx).0
 }
@@ -2581,8 +2414,6 @@ fn call_auth(ctx: HostCtx, i: &AuthCallIn) -> (RawOutcome, ServiceOut) {
     (ret, o)
 }
 
-/// RED (#65, #74): a ref minted for owner A, presented by owner B, is refused before anything
-/// else; the same ref presented by A passes the ref check (and reaches "not yet served").
 #[test]
 fn an_auth_ref_minted_for_another_owner_is_refused() {
     let (a, b) = (double(), double());
@@ -2606,7 +2437,6 @@ fn an_auth_ref_minted_for_another_owner_is_refused() {
     );
 }
 
-/// RED (#74): a ref of an older generation is refused against the current one.
 #[test]
 fn an_auth_ref_of_an_older_generation_is_refused() {
     let d = double();
@@ -2623,7 +2453,6 @@ fn an_auth_ref_of_an_older_generation_is_refused() {
     );
 }
 
-/// RED (#74): a ref with any one bit of its mac flipped is refused; the ref as minted passes.
 #[test]
 fn an_auth_ref_with_one_mac_bit_flipped_is_refused() {
     let d = double();
@@ -2648,7 +2477,7 @@ fn an_auth_ref_with_one_mac_bit_flipped_is_refused() {
     let (ret, o) = call_auth(d.ctx, &auth_call_in(forged, &mut slot));
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), REF_NOT_MINTED);
-    // Another id under the same mac is no better.
+
     let moved = AuthRef { id: 6, ..r };
     assert_eq!(
         verify_auth_ref(owner(&d), generation(), &moved),
@@ -2660,8 +2489,6 @@ fn an_auth_ref_with_one_mac_bit_flipped_is_refused() {
     );
 }
 
-/// RED (exact sizes): each auth-handle `in` presented one field short (or longer) is refused
-/// before any field of it is read; a ticketless `auth.call` is refused as a may-pend service.
 #[test]
 fn an_auth_handle_in_one_field_short_is_refused() {
     let d = double();
@@ -2738,14 +2565,14 @@ fn an_auth_handle_in_one_field_short_is_refused() {
     let mut o = blank();
     unsafe { f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o) };
     assert_eq!(error(&o), AUTH_HANDLE_NOT_SERVED, "the exact size passes");
-    // A unit the host cannot verify is refused, fail closed.
+
     refuse.cause = svc::REFUSE_STOPPED;
     refuse.line = 1;
     refuse.unit = UnitRef { id: 3, mac: 9 };
     let mut o = blank();
     unsafe { f(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o) };
     assert_eq!(error(&o), UNIT_UNVERIFIED);
-    // A malformed `in` of the exact size is refused after its refs.
+
     refuse.unit = UnitRef::NONE;
     refuse.cause = 0;
     let mut o = blank();
@@ -2753,8 +2580,6 @@ fn an_auth_handle_in_one_field_short_is_refused() {
     assert_eq!(error(&o), AUTH_IN_MALFORMED);
 }
 
-/// RED (#74): a unit verifies only for its own request's secret, generation, owner and line, with
-/// the mac as minted; a replayed (another request's secret) or cross-line unit is refused.
 #[test]
 fn a_unit_ref_verifies_only_for_its_own_request() {
     let (secret, other) = ([1, 2], [1, 3]);
@@ -2793,9 +2618,6 @@ fn a_unit_ref_verifies_only_for_its_own_request() {
     assert!(mint_auth_ref(40, 7, 0).is_none());
 }
 
-/// RED (the upstream's scheme, rule 1: a zero never grants): an `auth.call` whose request view
-/// declares no scheme (a zeroed view's code) is REFUSED with its declared refusal, before the
-/// auth would run, and never read as plain; the same call with the scheme declared passes.
 #[test]
 fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
     use busbar_contract::abi::host::service::{
@@ -2819,8 +2641,6 @@ fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
     );
 }
 
-/// Whether `d`'s instance is still served: a ticketless `clock.now` through its context. A
-/// quarantined instance's context names nothing, so the host answers it REFUSED.
 fn still_served(d: &Double) -> bool {
     let mut reading = ClockReading {
         size: 0,
@@ -2837,13 +2657,6 @@ fn still_served(d: &Double) -> bool {
         == Outcome::Ready
 }
 
-/// RED (status row 189, THE DESIGN §11.2: a host answer belongs to exactly one request): a handle
-/// on a ticket is bound to the service it was first used for. A fleet plugin reused handle 0 of
-/// one ticket for its record load and then for `entitlement.check`, and the host handed the check
-/// the stored answer of the first service. Here the first service is `records.claim`, whose
-/// CLAIM_WON is the same number as ENTITLED: the stale answer reads as "entitled". The reuse is a
-/// plugin fault: answered FAULT, the second service never reaches the kernel, never the first
-/// service's answer, and the instance is quarantined as a forged context is.
 #[test]
 fn a_handle_reused_for_another_service_is_fault_and_quarantines_never_the_stale_answer() {
     let d = double();
@@ -2886,8 +2699,6 @@ fn a_handle_reused_for_another_service_is_fault_and_quarantines_never_the_stale_
     );
 }
 
-/// RED (status row 189): a handle is bound to the REQUEST it was first used for, too. The same
-/// service on the same handle naming another key is a plugin fault, never the first key's record.
 #[test]
 fn a_handle_reused_for_another_request_of_one_service_is_fault_and_quarantines() {
     let d = double();
@@ -2929,10 +2740,6 @@ fn a_handle_reused_for_another_request_of_one_service_is_fault_and_quarantines()
     assert!(!still_served(&d), "the instance is quarantined");
 }
 
-/// GREEN on both sides of row 189: the legitimate re-poll of the SAME request on the same handle
-/// (PENDING, then READY once the kernel answers) is the one re-use a handle allows. The plugin may
-/// rebuild the request between polls (other buffers, the same bytes); the re-poll reads the stored
-/// answer, the kernel is asked once, and the instance is never quarantined for it.
 #[test]
 fn a_repoll_of_the_same_request_on_its_handle_reads_the_answer_and_is_never_a_fault() {
     let d = double();
@@ -2958,7 +2765,6 @@ fn a_repoll_of_the_same_request_on_its_handle_reads_the_answer_and_is_never_a_fa
     assert!(still_served(&d), "a re-poll is never a fault");
 }
 
-/// A second caller on `d`'s route (its dispatcher's store), with an identity of its own.
 fn beside(d: &Double, name: &str) -> HostCtx {
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
@@ -2974,12 +2780,6 @@ fn beside(d: &Double, name: &str) -> HostCtx {
     crate::dispatch::handle::mint(wake).expect("the host mints a handle")
 }
 
-/// RED (audit loader-src PL1#4; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.1602-1603: "A pure op
-/// (`arrive`, `refusal`, `project`) or any call made with no ticket that calls a may-pend service
-/// gets REFUSED, never PENDING"): a ticket-less crossing that stamps another op's live ticket on
-/// its handle is REFUSED and the service never runs; so is a ticketed crossing's call naming a
-/// ticket other than its own. RED: only the handle the plugin wrote was read, so the pure op ran
-/// the service as a pending call whose completion woke the other op.
 #[test]
 fn red_a_service_handle_naming_another_crossings_ticket_is_refused_and_never_runs() {
     let d = double();
@@ -3020,7 +2820,7 @@ fn red_a_service_handle_naming_another_crossings_ticket_is_refused_and_never_run
         "the service never ran"
     );
     assert!(d.route.wakes.lock().unwrap().is_empty());
-    // The GREEN twin: the crossing's own ticket pends.
+
     let _own = crossing(TICKET);
     let (ret, _) = call_judge(
         &d,
@@ -3029,12 +2829,6 @@ fn red_a_service_handle_naming_another_crossings_ticket_is_refused_and_never_run
     assert_eq!(ret.outcome(), Outcome::Pending);
 }
 
-/// RED (audit loader-src PL1#4; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.1611: "Every
-/// per-instance host registry keys by label"): two instances whose ops share one ticket each count
-/// their handles from 0, and each keeps its own result under its own handle 0: the second's call
-/// pends on its own request, is not judged a rebound of the first's, and neither reads the other's
-/// answer. RED: results were keyed by ticket and handle alone, so the second instance's handle 0
-/// named the first's result and the second was quarantined as a rebinder.
 #[test]
 fn red_two_instances_on_one_ticket_each_keep_their_own_results() {
     let d = double();
@@ -3054,8 +2848,6 @@ fn red_two_instances_on_one_ticket_each_keep_their_own_results() {
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 2);
 }
 
-/// ONE ALLOCATOR, TWO SPACES: a line's id never sets the top bit and is never `0`; a binding's
-/// always sets it; each id names its space. RED arm: no line id and binding id ever coincide.
 #[test]
 fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
     use crate::dispatch::auth_handle::{next_ref_id, space_of, RefSpace};
@@ -3070,8 +2862,6 @@ fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
         .all(|&i| space_of(i) == Some(RefSpace::Binding)));
     assert_eq!(space_of(0), None);
 }
-
-// ── the host auth handle, served: the three services delegate to the installed kernel side ──
 
 use crate::dispatch::auth_handle::{
     AuthCallAnswer, AuthCallAsk, AuthDone, AuthHandleHost, AuthRan, HandInAsk, RefusalBytes,
@@ -3179,7 +2969,6 @@ impl AuthHandleHost for KernelSide {
     }
 }
 
-/// A double with the kernel side installed on its route.
 fn served_double() -> (Double, Arc<KernelSide>) {
     let d = double();
     let side = Arc::new(KernelSide::default());
@@ -3210,9 +2999,6 @@ const NO_FIELD_SPAN: FieldSpan = FieldSpan {
     _reserved: 0,
 };
 
-/// RED (THE DESIGN §6 step 4; #74): with the kernel side installed, `auth.call` reaches it once,
-/// with the owner, the ref's id, the point and the request copied, and the transport receives ONLY
-/// the flow, the unit, and the NAMES to strip with their flags: no value, no verdict.
 #[test]
 fn red_auth_call_delegates_to_the_installed_kernel_side_and_answers_names_only() {
     let (d, side) = served_double();
@@ -3253,9 +3039,6 @@ fn red_auth_call_delegates_to_the_installed_kernel_side_and_answers_names_only()
     }
 }
 
-/// RED (the short-buffer rule for `auth.call`): a buffer too small answers FAILED with the full
-/// sizes and writes nothing; the one re-call on the same handle reads the stored answer, and the
-/// kernel side ran once.
 #[test]
 fn red_a_short_auth_call_buffer_earns_one_recall_and_the_kernel_runs_once() {
     let (d, side) = served_double();
@@ -3283,9 +3066,6 @@ fn red_a_short_auth_call_buffer_earns_one_recall_and_the_kernel_runs_once() {
     );
 }
 
-/// RED (THE DESIGN §6 step 7: a pending answer parks only its own stream): a kernel side that
-/// keeps the call answers PENDING; its answer stores and wakes the ticket; the re-issued handle
-/// reads it.
 #[test]
 fn red_a_pending_auth_call_parks_on_its_ticket_and_reads_the_stored_answer() {
     let (d, side) = served_double();
@@ -3310,9 +3090,6 @@ fn red_a_pending_auth_call_parks_on_its_ticket_and_reads_the_stored_answer() {
     assert_eq!(side.calls.lock().unwrap().len(), 1);
 }
 
-/// RED (#74): with the kernel side installed a presented unit is VERIFIED against the secret it
-/// was minted under: the unit as minted passes; a flipped mac, another owner's presentation and a
-/// unit the kernel holds no record of are refused before the kernel side is called.
 #[test]
 fn red_a_presented_unit_is_verified_against_the_kernel_sides_secret() {
     let (d, side) = served_double();
@@ -3357,9 +3134,6 @@ fn red_a_presented_unit_is_verified_against_the_kernel_sides_secret() {
     );
 }
 
-/// RED: `unit.hand_in` and `unit.refuse` delegate to the installed kernel side; the hand-in's flow
-/// and unit land in the answer slot, and the refusal's status, fields and body are lent to the
-/// transport, valid past the call.
 #[test]
 fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
     let (d, side) = served_double();
@@ -3433,12 +3207,10 @@ fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
     assert_eq!(name, b"content-type");
     assert_eq!(body, b"{\"error\":{}}");
     assert_eq!(side.refusals.lock().unwrap()[0].cause, REFUSE_NO_ROUTE);
-    // The request the refusal is for reaches the kernel, its path shaping the bytes (ruling 1).
+
     assert_eq!(side.refusals.lock().unwrap()[0].request.target, "/v1");
     assert_eq!(side.refusals.lock().unwrap()[0].request.method, "GET");
 }
-
-// ── the peer point, the op's deadline, and the refusal's lifetime ────────────────────────────
 
 fn peer_call_in(
     auth: AuthRef,
@@ -3473,9 +3245,6 @@ fn peer_call_in(
     i
 }
 
-/// RED (the Peer rule, the answer's side): a peer-point answer is continue or stop alone. A
-/// kernel answer naming lines or a unit there is REFUSED with nothing written; the flow alone is
-/// READY with no byte and no span.
 #[test]
 fn red_a_peer_answer_is_the_flow_alone() {
     let (d, side) = served_double();
@@ -3505,8 +3274,6 @@ fn red_a_peer_answer_is_the_flow_alone() {
     );
 }
 
-/// RED (deadline classes): an `auth.call` made inside a framer op's crossing hands the kernel what
-/// remains of that op's deadline; a write-behind op's, or none outside an op, hands none.
 #[test]
 fn red_an_auth_call_carries_its_ops_deadline() {
     let (d, side) = served_double();
@@ -3544,8 +3311,6 @@ fn red_an_auth_call_carries_its_ops_deadline() {
     assert_eq!(calls[2].deadline, None, "a deadline outside any op");
 }
 
-/// RED (per-call copy-out): the kernel's refusal is lent for the call alone and nothing is kept
-/// per connection: N refusals, over N connections and over one, leave at most the last lent.
 #[test]
 fn red_n_refusals_keep_nothing_per_connection() {
     let (d, _side) = served_double();
@@ -3573,7 +3338,6 @@ fn red_n_refusals_keep_nothing_per_connection() {
     }
 }
 
-/// A no-route `unit.refuse` `in` with no answer slot yet.
 fn refuse_in() -> UnitRefuseIn {
     UnitRefuseIn {
         head: head(op::UNIT_REFUSE, Ticket::NONE, 0, size_of::<UnitRefuseIn>()),
@@ -3587,9 +3351,6 @@ fn refuse_in() -> UnitRefuseIn {
     }
 }
 
-// ── the framing: the host's identity of a connection side ─────────────────────────────────────
-
-/// An auth call uses its host-owned framing identity independently of its operation ticket.
 #[test]
 fn an_auth_call_names_the_host_framing_instead_of_its_operation_ticket() {
     let (d, side) = served_double();
@@ -3611,7 +3372,6 @@ fn an_auth_call_names_the_host_framing_instead_of_its_operation_ticket() {
     assert_eq!(side.calls.lock().unwrap()[0].framing, framing.leg());
 }
 
-/// Operation tickets may be retired while sibling operations retain their connection's scope.
 #[test]
 fn retiring_operation_tickets_does_not_end_the_live_host_framing() {
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
@@ -3643,10 +3403,6 @@ fn retiring_operation_tickets_does_not_end_the_live_host_framing() {
     );
 }
 
-/// RED (R3, the data listener served through its framer's accept side): `unit.hand_in` on a line
-/// the host lent as `none` mints the request's unit and answers continue (no verdict is needed
-/// and nothing is named to strip); a minted ref the host never lent as `none` is still not served,
-/// and a `none` line lent to another owner does not verify for this one.
 #[test]
 fn a_hand_in_on_a_lent_none_line_mints_its_unit_and_continues() {
     let d = double();

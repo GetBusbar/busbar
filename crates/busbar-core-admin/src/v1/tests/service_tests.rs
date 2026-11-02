@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/admin/v1/service.rs`.
-
 use super::*;
 use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
@@ -31,9 +29,6 @@ pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     }
 }
 
-/// `build_with_hook` registers a GLOBAL tap into the registry + global wiring AND re-resolves it
-/// into the fired tap transports — so after the caller swaps the returned snapshot, the tap is live.
-/// Lanes/store are shared (unchanged), proving the store-constraint-free subset.
 #[test]
 fn build_with_hook_registers_and_wires_global_tap() {
     let env =
@@ -52,24 +47,19 @@ fn build_with_hook_registers_and_wires_global_tap() {
         1,
         "the global tap re-resolved into the fired tap transports (live after swap)"
     );
-    // Live state is shared, not rebuilt: the store Arc is the SAME instance.
+
     assert!(
         std::sync::Arc::ptr_eq(&app.store, &next.store),
         "the store (live breaker state) is preserved across the apply, not re-indexed"
     );
 }
 
-/// A PUT that REPLACES a `global: true` hook with `global: false` must
-/// DE-WIRE it from the global fan-out — remove it from `global_hooks` AND drop it from the fired
-/// transports — so the demotion actually takes effect. The prior code only ever APPENDED on
-/// `global: true` and never removed, so a demoted hook kept firing on every request and still
-/// reported `global: true`.
 #[test]
 fn build_with_hook_demotes_global_false_removes_wiring() {
     let env =
         busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
-    // Register a GLOBAL tap, then PUT the same name with global: false.
+
     let promoted =
         build_with_hook(&app, "logger", hook(HookKind::Tap, true)).expect("global tap registers");
     assert!(promoted.global_hooks.iter().any(|n| n == "logger"));
@@ -92,13 +82,10 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
     );
 }
 
-/// The `settings` map size cap enforced by PATCH must ALSO gate
-/// register/PUT (both funnel through `build_with_hook`) — else an unbounded map could be
-/// registered/replaced, bloating the durable state and the reconnect path the cap protects.
 #[test]
 fn build_with_hook_caps_oversized_settings() {
     let app = crate::new_test_app().build();
-    // Just over the key cap.
+
     let mut too_many = hook(HookKind::Tap, false);
     for i in 0..=MAX_SETTINGS_KEYS {
         too_many
@@ -113,7 +100,6 @@ fn build_with_hook_caps_oversized_settings() {
         "a settings map over the key cap must reject at register/PUT, not just PATCH"
     );
 
-    // Just over the byte cap (few keys, huge value).
     let mut too_big = hook(HookKind::Tap, false);
     too_big.settings.insert(
         "blob".to_string(),
@@ -124,16 +110,12 @@ fn build_with_hook_caps_oversized_settings() {
         Err(AdminError::Validation(_))
     ));
 
-    // A modest settings map still registers.
     let mut ok = hook(HookKind::Tap, false);
     ok.settings
         .insert("level".to_string(), serde_json::json!("info"));
     assert!(build_with_hook(&app, "fine", ok).is_ok());
 }
 
-/// The hook NAME (a registry key persisted to the config overlay + every
-/// audit row) must be length-capped, like the key id / settings map — else a `hooks-register`
-/// token could POST a megabyte-long name and bloat the durable overlay / audit / reconnect path.
 #[test]
 fn build_with_hook_caps_oversized_name() {
     let app = crate::new_test_app().build();
@@ -145,13 +127,11 @@ fn build_with_hook_caps_oversized_name() {
         ),
         "a name over the cap must reject"
     );
-    // A name AT the cap is fine.
+
     let at_cap = "n".repeat(MAX_HOOK_NAME_LEN);
     assert!(build_with_hook(&app, &at_cap, hook(HookKind::Tap, false)).is_ok());
 }
 
-/// Validation is fail-closed BEFORE any mutation: `prompt: rw` on a tap and a missing transport
-/// both reject with `invalid_request`.
 #[test]
 fn build_with_hook_rejects_invalid_definitions() {
     let app = crate::new_test_app().build();
@@ -176,16 +156,12 @@ fn build_with_hook_rejects_invalid_definitions() {
     ));
 }
 
-/// GRANT IMMUTABILITY: re-registering an existing hook with DIFFERENT kind/prompt/user is a
-/// `conflict`; re-registering with the SAME grants is allowed (idempotent). Closes the escalation
-/// path (register `prompt: no`, then widen to `rw`).
 #[test]
 fn build_with_hook_enforces_grant_immutability() {
     let app = crate::new_test_app().build();
-    // First registration: a gate with prompt: no.
+
     let after_first = build_with_hook(&app, "g", hook(HookKind::Gate, false)).unwrap();
 
-    // Re-register the SAME name with a WIDENED grant (prompt: rw) → conflict.
     let mut escalated = hook(HookKind::Gate, false);
     escalated.prompt = PromptAccess::Rw;
     assert!(
@@ -196,36 +172,19 @@ fn build_with_hook_enforces_grant_immutability() {
         "widening a grant in place must be a conflict"
     );
 
-    // Re-register with the SAME grants → allowed (idempotent).
     assert!(
         build_with_hook(&after_first, "g", hook(HookKind::Gate, false)).is_ok(),
         "re-registering with identical grants is allowed"
     );
 }
 
-// ── plugin admin surface (the admin crate's own mechanics) ──────────────────────────────────
-//
-// What a REAL tarball is judged — its structure, its signature, the trust posture, the floors, the
-// conflict with the installed set and the one-version rule — is the composition root's admission,
-// proven under the root's real admission in `crates/busbar/src/root/tests/admin_plugin_admission.rs`
-// (this crate names no loader). What stays here is the admin surface's OWN behaviour over whatever
-// admission the snapshot carries: the filename gate, the size cap, the schema bounds, the catalog
-// projection and its cache, gate and fallback, and the rollback's read and pin merge. They run over
-// [`DirAdmission`], a test-local admission whose "tarball" is a stated manifest and verdict in JSON.
-
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
 
-/// A unique temp plugins directory for one test (isolated so parallel tests never collide).
 fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    // pid + counter alone is NOT unique over time: these dirs are never cleaned up, and under
-    // process churn the OS reuses pids — observed as `plugins_dir_fingerprint_treats_a_missing_
-    // dir_as_ok_empty` finding a PREVIOUS run's leftover file inside its "really empty" dir and
-    // failing on two honest fingerprints of two different directories. A once-per-process clock
-    // token makes the name unique across pid reuse; the counter keeps it unique within the
-    // process (same idiom, same reasoning as `busbar_kernel::tests::tmp_plugin_dir`).
+
     static PROC_TOKEN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
     let token = PROC_TOKEN.get_or_init(|| {
         std::time::SystemTime::now()
@@ -241,29 +200,18 @@ fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
     d
 }
 
-/// The head every [`DirAdmission`] "tarball" carries ahead of its JSON.
 const FAKE_HEAD: &[u8] = b"busbar-admin-test-plugin\n";
 
-/// THE ADMIN TESTS' ADMISSION: a "tarball" is [`FAKE_HEAD`] then a JSON object stating the manifest
-/// (`name`, `alias`, `kind`, `version`, `publisher`, `abi_version`, `settings_schema`) and the
-/// verdict the policy reaches on it (`trust`: `trusted` / `allowed` / `rejected`). It judges nothing
-/// of its own and loads nothing; the directory inventory reads every tarball file in name order,
-/// and a directory that cannot be read is one `INVALID:` row, as the root's inventory answers it.
 pub(crate) struct DirAdmission;
 
-/// The process's one [`DirAdmission`].
 pub(crate) static DIR_ADMISSION: DirAdmission = DirAdmission;
 
-/// The cap [`DirAdmission`] holds a tarball to.
 const FAKE_MAX_TARBALL_BYTES: u64 = 64 * 1024;
 
-/// A [`DirAdmission`] tarball stating `name` (aliased `alias`, a `store` at `version` from `acme`)
-/// under the verdict `trust`.
 fn fake_tarball(name: &str, alias: &str, version: &str, trust: &str) -> Vec<u8> {
     fake_tarball_with(name, alias, version, trust, None)
 }
 
-/// [`fake_tarball`] stating `settings_schema`.
 fn fake_tarball_with(
     name: &str,
     alias: &str,
@@ -296,7 +244,7 @@ impl DirAdmission {
             .and_then(|json| serde_json::from_slice::<serde_json::Value>(json).ok())
             .is_some_and(|value| value["trust"].as_str() == Some("rollback-only"))
     }
-    /// What `bytes` state and the verdict on them.
+
     fn read(bytes: &[u8]) -> Result<(Stated, Judged), String> {
         let json = bytes
             .strip_prefix(FAKE_HEAD)
@@ -338,7 +286,6 @@ impl PluginAdmission for DirAdmission {
         FAKE_MAX_TARBALL_BYTES
     }
 
-    /// Every kind but `hook` restarts on a settings change (the double's table).
     fn restart_default(&self, kind: &str) -> bool {
         kind != "hook"
     }
@@ -472,7 +419,6 @@ impl PluginAdmission for DirAdmission {
     }
 }
 
-/// A test app over `dir` under `cfg`, judged by [`DIR_ADMISSION`].
 fn app_with(
     dir: std::path::PathBuf,
     cfg: busbar_kernel::config::PluginsCfg,
@@ -484,27 +430,20 @@ fn app_with(
         .build()
 }
 
-/// Build a service over an App whose plugins dir + `plugins.*` posture are the given ones.
 fn svc_with(dir: std::path::PathBuf, cfg: busbar_kernel::config::PluginsCfg) -> AdminService {
     AdminService::new(app_with(dir, cfg))
 }
 
-/// The STRICT default posture: no publishers, no opt-ins.
 fn strict_posture() -> busbar_kernel::config::PluginsCfg {
     busbar_kernel::config::PluginsCfg::default()
 }
 
-/// A permissive posture (allow_unsigned): an unsigned upload installs "unverified".
 fn unsigned_ok_posture() -> busbar_kernel::config::PluginsCfg {
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.trust.allow_unsigned = true;
     cfg
 }
 
-// ── POST /plugins/inspect ──────────────────────────────────────────────────────────────────
-
-/// A decoded tarball over the admission's cap is refused BEFORE the admission ever unpacks it — a
-/// hard cap on the raw upload, checked before touching the decoder.
 #[test]
 fn inspect_rejects_oversized_tarball_before_unpacking() {
     let dir = tmp_plugins_dir("inspect-oversized");
@@ -517,14 +456,10 @@ fn inspect_rejects_oversized_tarball_before_unpacking() {
     );
 }
 
-/// A manifest whose `settings_schema` nests far deeper than the depth cap is refused as a
-/// `schema_error` on the response (never a hard error, and never a parser stack-overflow risk —
-/// the depth guard runs BEFORE `serde_json::from_str` ever sees the text). A pathological
-/// SCHEMA document is a distinct attack from a pathological tarball.
 #[test]
 fn inspect_bounds_pathological_schema_nesting_depth() {
     let dir = tmp_plugins_dir("inspect-depth-bomb");
-    // A tiny document that nests far past the depth cap: `[[[[...]]]]`.
+
     let bomb = format!("{}{}", "[".repeat(500), "]".repeat(500));
     let tarball = fake_tarball_with(
         "acme-store-depthbomb",
@@ -543,9 +478,6 @@ fn inspect_bounds_pathological_schema_nesting_depth() {
     assert!(err.contains("nests deeper"), "got {err:?}");
 }
 
-/// THE ADMISSION'S VERDICT IN THE CATALOG'S VOCABULARY: inspect reports `trusted` / `unverified` /
-/// `rejected` as the admission judged the candidate, never refusing an untrusted one, and the
-/// kind's restart default is the admission's.
 #[test]
 fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
     let dir = tmp_plugins_dir("inspect-vocabulary");
@@ -570,8 +502,6 @@ fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
-/// Install rejects a filename that isn't a bare `.tar.gz` name (path traversal / wrong
-/// extension) BEFORE any bytes touch disk.
 #[test]
 fn install_rejects_bad_filenames() {
     let dir = tmp_plugins_dir("badname");
@@ -591,12 +521,10 @@ fn install_rejects_bad_filenames() {
             "filename `{bad}` must reject"
         );
     }
-    // Nothing was written for any rejected name.
+
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
-/// THE ADMISSION'S REFUSALS IN THE ADMIN SURFACE'S CLASSES: a malformed upload is a `Validation`
-/// and an untrusted one a `Conflict`, both in the admission's words, and nothing is written.
 #[test]
 fn install_answers_the_admissions_refusals_in_their_classes() {
     let dir = tmp_plugins_dir("refusal-classes");
@@ -612,9 +540,6 @@ fn install_answers_the_admissions_refusals_in_their_classes() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
-/// End-to-end install of an unsigned tarball under `allow_unsigned`: installs "unverified",
-/// the catalog reports it, reload reports only the dynamic set, and `remove` deletes it.
-/// (No dlopen anywhere — the lib bytes are junk on purpose.)
 #[test]
 fn install_catalog_remove_roundtrip() {
     let dir = tmp_plugins_dir("roundtrip");
@@ -628,7 +553,6 @@ fn install_catalog_remove_roundtrip() {
     assert_eq!(view.name, "acme-store-junk");
     assert!(dir.join("junk.tar.gz").exists(), "tarball published");
 
-    // Catalog: the memory head + our dynamic plugin.
     let cat = svc.store_plugin_catalog();
     assert_eq!(cat[0].name, migrated_store_module());
     let dyn_row = cat
@@ -640,12 +564,10 @@ fn install_catalog_remove_roundtrip() {
     assert_eq!(dyn_row.target.as_deref(), Some("junk.tar.gz"));
     assert_eq!(dyn_row.trust, Some("unverified"));
 
-    // Reload reports only the dynamic set (no memory head).
     let reload = svc.reload_store_plugins().unwrap();
     assert!(reload.plugins.iter().all(|p| p.loader == "dynamic-library"));
     assert_eq!(reload.plugins.len(), 1);
 
-    // Remove deletes it; a second remove is a 404.
     svc.remove_store_plugin("junk.tar.gz").expect("remove");
     assert!(!dir.join("junk.tar.gz").exists());
     assert!(matches!(
@@ -654,8 +576,6 @@ fn install_catalog_remove_roundtrip() {
     ));
 }
 
-/// Filesystem failures are server errors even when admission accepted the upload. A malformed
-/// upload still fails validation before the same obstructed directory is touched.
 #[test]
 fn install_filesystem_failures_are_internal_errors() {
     let dir = tmp_plugins_dir("install-io-errors");
@@ -695,8 +615,6 @@ fn install_filesystem_failures_are_internal_errors() {
     assert_eq!(missing.code(), "not_found");
 }
 
-/// A present plugin whose directory refuses unlink is a server failure. Privileged test runners
-/// can bypass Unix mode bits; report that explicitly rather than claiming removal-error coverage.
 #[cfg(unix)]
 #[test]
 fn remove_filesystem_failure_is_internal_error() {
@@ -735,8 +653,6 @@ fn remove_filesystem_failure_is_internal_error() {
     assert_eq!(std::fs::read(file).unwrap(), b"keep this plugin");
 }
 
-/// The shared inventory retains each recognized manifest kind. Store/db queries filter that
-/// inventory, while reload includes all kinds and keeps corrupt/unknown rows visible.
 #[tokio::test]
 async fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
     let dir = tmp_plugins_dir("catalog-kinds");
@@ -809,9 +725,6 @@ async fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
     }
 }
 
-/// THE CATALOG'S PROJECTION OF THE INVENTORY: a ready signed row reads `trusted` with its
-/// publisher, a ready unsigned one `unverified`, a skipped one `rejected` and not loadable with the
-/// skip reason surfaced, and a row whose manifest could not be read carries no trust word at all.
 #[test]
 fn catalog_projects_each_inventory_row_into_the_catalog_vocabulary() {
     let dir = tmp_plugins_dir("catalog-projection");
@@ -847,13 +760,6 @@ fn catalog_projects_each_inventory_row_into_the_catalog_vocabulary() {
     );
 }
 
-/// The amplification this test guards against: `store_plugin_catalog` (behind `GET
-/// /plugins?type=store`) used to fully re-read and re-unpack EVERY tarball in the plugins
-/// directory on EVERY call, and that GET is deliberately unmetered by the admin rate limiter
-/// (reads never reach `auth::classify_for_rate_limit`) — so nothing bounded how often a caller
-/// could pay that cost. Repeated GETs against an UNCHANGED directory must now reuse the cached
-/// scan (one `misses` increment total), while a real change (installing a new plugin) must
-/// still be picked up on the very next call with no explicit invalidation call anywhere.
 #[test]
 fn catalog_repeat_gets_reuse_the_cached_scan() {
     let dir = tmp_plugins_dir("cache-reuse");
@@ -862,7 +768,6 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     svc.install_store_plugin("cache.tar.gz", &tarball)
         .expect("install");
 
-    // Repeated GETs against an unchanged directory: only the FIRST one is a real scan.
     for _ in 0..5 {
         let cat = svc.store_plugin_catalog();
         assert!(cat.iter().any(|p| p.name == "acme-store-cache"));
@@ -873,8 +778,6 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
         "5 repeat GETs over an unchanged directory must cost exactly 1 real scan"
     );
 
-    // A real change (a second install) is picked up on the very next call, no explicit
-    // invalidation call required.
     let tarball2 = fake_tarball("acme-store-cache-2", "cachestore2", "1.0.0", "allowed");
     svc.install_store_plugin("cache2.tar.gz", &tarball2)
         .expect("install");
@@ -891,19 +794,6 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     );
 }
 
-/// `list_plugins("store")`'s catalog read — the fingerprint I/O AND, on a cold cache, the full
-/// tarball scan — must not park the single worker of a `worker_threads = 1` multi-thread
-/// runtime. Mirrors `audit_ring`'s `valve_write_through_does_not_park_the_reactor` proof
-/// shape, with one deliberate difference: that precedent proves its point with a DETERMINISTIC
-/// delay (`SlowAuditStore` sleeps a fixed 500ms), not real I/O volume — this test originally
-/// relied on 2000 real signed tarballs being "genuinely slow… on ordinary hardware", but
-/// inline-vs-offloaded changes only WHETHER the scan blocks other work, never how long the scan
-/// itself takes, so on fast-enough CI hardware the real scan could finish under the 300ms
-/// threshold even with the bug present (`spawn_blocking` removed), silently defeating the
-/// proof. `catalog_scan_test_hooks::set_delay` injects a fixed, hardware-independent minimum
-/// scan duration well above the threshold, so the distinction is observable regardless of how
-/// fast the machine is; the 2000 tarballs stay (smaller count would do for timing alone)
-/// purely to keep the `page.items.len() > 2000` correctness assertion meaningful.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn list_plugins_store_scan_does_not_park_the_reactor() {
     let dir = tmp_plugins_dir("no-park");
@@ -918,11 +808,6 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     }
     let svc = svc_with(dir.clone(), strict_posture());
 
-    // Deterministic floor, independent of hardware speed: if the scan ran inline on the
-    // reactor, the concurrently-spawned sleep below could not be polled until AT LEAST this
-    // long had passed, comfortably clearing the 300ms assertion threshold on any hardware.
-    // Scoped to `dir` (see `catalog_scan_test_hooks`), so it cannot slow down any other test's
-    // concurrently-running scan of a different directory.
     let _delay_guard =
         catalog_scan_test_hooks::set_delay(dir, std::time::Duration::from_millis(400));
 
@@ -943,21 +828,11 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     );
 }
 
-/// `store_plugin_catalog_async`'s `match` on
-/// `spawn_blocking`'s result has an `Err(join_err)` arm for when the CLOSURE ITSELF PANICS (not
-/// just returns an error) — it logs and falls back to the compiled-in `memory`-only row rather
-/// than propagating the panic to the caller. That arm was untested: nothing in the suite ever
-/// made the blocking closure actually panic. `catalog_scan_test_hooks::set_panic` injects a
-/// real, deliberate panic into the scan (a genuine unwind on the `spawn_blocking` thread,
-/// exactly the scenario the fallback exists for) rather than exploiting some unrelated
-/// malformed-input defect, so this proves the fallback ARM, not an accidental bug elsewhere.
 #[tokio::test]
 async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     let dir = tmp_plugins_dir("panic-fallback");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
-    // Scoped to `dir` (see `catalog_scan_test_hooks`) so no other concurrently-running test's
-    // scan of a different directory is affected by this panic.
     let _panic_guard = catalog_scan_test_hooks::set_panic(dir);
 
     let page = svc
@@ -974,20 +849,11 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     assert_eq!(page.items[0].loader, "compiled-in");
 }
 
-/// A caller that cannot even ACQUIRE
-/// `CATALOG_SCAN_GATE` within `CATALOG_SCAN_GATE_WAIT` (a scan holding the gate that never
-/// returns, e.g. a stale/hung `plugins_dir`
-/// mount) must be answered with a clear, retryable error rather than hang forever. Runs on
-/// PAUSED virtual time (`start_paused = true` + `tokio::time::advance`) so the test proves the
-/// bound without a real multi-second sleep.
 #[tokio::test(start_paused = true)]
 async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     let dir = tmp_plugins_dir("gate-timeout");
     let svc = svc_with(dir, unsigned_ok_posture());
 
-    // Hold the gate ourselves for the life of this test — standing in for a scan that started
-    // and never came back (the wedged-mount scenario), which is exactly what a caller queued
-    // behind `CATALOG_SCAN_GATE.lock().await` with no timeout would see forever.
     let _held = CATALOG_SCAN_GATE.lock().await;
 
     let call = tokio::spawn(async move { svc.list_plugins("store").await });
@@ -1000,12 +866,6 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     );
 }
 
-/// The single-flight bound: N concurrent
-/// `list_plugins("store")` callers that ALL miss the cache at the same instant (the very first
-/// reads against a freshly-built `App`, before any entry exists — e.g. right after boot or a
-/// config reload) must cost exactly ONE real inventory scan, not one per caller. Every
-/// caller still gets a correct, complete catalog — single-flighting must never mean 9 of the 10
-/// see a truncated or stale result.
 #[tokio::test]
 async fn list_plugins_store_single_flights_concurrent_misses() {
     let dir = tmp_plugins_dir("single-flight");
@@ -1039,14 +899,6 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
         );
 }
 
-/// `CATALOG_CACHE` has no eviction of its own beyond the
-/// fingerprint/trust `key` match, so an entry for a `plugins_dir` the process no longer serves
-/// would sit in the map forever. Mirrors how `admin/mod.rs` proves `idempotency_cache`'s own
-/// TTL+`retain()` bound (reaching into the cache directly — there is no public "age an entry"
-/// API, by design, same as the idempotency cache has none): age an entry past
-/// `CATALOG_CACHE_TTL_SECS` by rewriting its `inserted_at` stamp, then prove the NEXT cache
-/// access anywhere (not necessarily a read of the SAME directory — `retain()` runs on every
-/// call, exactly like `idempotency_cache`'s prune-before-check) sweeps it.
 #[test]
 fn catalog_cache_ttl_prunes_stale_entries() {
     let dir = tmp_plugins_dir("ttl");
@@ -1057,15 +909,12 @@ fn catalog_cache_ttl_prunes_stale_entries() {
         "the scan above must have seeded a cache entry"
     );
 
-    // Age the entry past the TTL directly.
     {
         let mut cache = catalog_cache().lock().unwrap();
         let entry = cache.get_mut(&dir).expect("entry present");
         entry.inserted_at = busbar_kernel::store::now().saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
     }
 
-    // A cache access against a DIFFERENT directory still prunes the aged entry — `retain()` runs
-    // unconditionally at the top of every `store_plugin_catalog` call, not scoped to `dir`.
     let other_dir = tmp_plugins_dir("ttl-other");
     let other_svc = svc_with(other_dir.clone(), unsigned_ok_posture());
     let _ = other_svc.store_plugin_catalog();
@@ -1076,12 +925,6 @@ fn catalog_cache_ttl_prunes_stale_entries() {
     );
 }
 
-/// A bare `now.saturating_sub(inserted_at)` avoids an
-/// underflow PANIC when `inserted_at` is in the future (a backward system-clock jump) but
-/// silently floors the computed age at 0 — the entry then looks brand-new and never ages out
-/// until real time catches back up to `inserted_at`, quietly defeating the TTL bound for that
-/// one entry. An `inserted_at` in the future means the entry's true age is UNKNOWN, and this
-/// treats unknown-age as stale (the safe default), not as ageless.
 #[test]
 fn catalog_cache_future_inserted_at_is_treated_as_stale() {
     let dir = tmp_plugins_dir("ttl-future-clock");
@@ -1092,14 +935,12 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
         "the scan above must have seeded a cache entry"
     );
 
-    // Simulate a backward clock jump: the entry's `inserted_at` is now AHEAD of `now()`.
     {
         let mut cache = catalog_cache().lock().unwrap();
         let entry = cache.get_mut(&dir).expect("entry present");
         entry.inserted_at = busbar_kernel::store::now() + CATALOG_CACHE_TTL_SECS + 1;
     }
 
-    // Any cache access prunes it — a future `inserted_at` must not make the entry immortal.
     let other_dir = tmp_plugins_dir("ttl-future-clock-other");
     let other_svc = svc_with(other_dir.clone(), unsigned_ok_posture());
     let _ = other_svc.store_plugin_catalog();
@@ -1111,24 +952,12 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
     );
 }
 
-/// The staleness scenario this guards against.
-/// FIRST, an empty-but-READABLE plugins dir caches fine (unchanged behavior — same as a MISSING
-/// dir, both legitimately mean "no plugins"). THEN the path becomes UNREADABLE as a directory —
-/// the exact case the old `unwrap_or_default()` collapsed to the SAME fingerprint as the empty dir,
-/// serving the stale cached `[]` forever instead of the real `INVALID` row. The fixed version must
-/// never serve that stale cache and must surface the real `INVALID: ...` row on every read while
-/// unreadable, not just the first.
-///
-/// The injection replaces the directory with a regular FILE at the same path: `read_dir` on it
-/// fails ("not a directory") whatever the privileges, so the test runs as root and non-root alike
-/// (a `chmod 000` is ignored by root, and once made this test skip on a root-run container).
 #[cfg(unix)]
 #[test]
 fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     let dir = tmp_plugins_dir("unreadable");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
-    // Empty + readable: caches fine, no dynamic-library rows — the unchanged half of the fix.
     let cat = svc.store_plugin_catalog();
     assert!(
         cat.iter().all(|p| p.loader != "dynamic-library"),
@@ -1139,8 +968,6 @@ fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         "an empty dir's (empty) scan is cached, exactly like a missing dir would be"
     );
 
-    // An RAII guard removes the injected file on drop — including on a panic unwinding through
-    // this scope — so no code path leaves a regular file squatting on the plugins-dir path.
     struct RemoveFileOnDrop<'a>(&'a std::path::Path);
     impl Drop for RemoveFileOnDrop<'_> {
         fn drop(&mut self) {
@@ -1152,16 +979,13 @@ fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     std::fs::write(&dir, b"not a directory").unwrap();
     let _remove = RemoveFileOnDrop(&dir);
 
-    // The precondition is checked, not assumed: a regular file is never readable as a directory,
-    // for root and non-root alike.
     assert!(
         std::fs::read_dir(&dir).is_err(),
         "a regular file at the plugins-dir path must fail read_dir for every user"
     );
 
     let cat_after = svc.store_plugin_catalog();
-    // And every SUBSEQUENT read while STILL unreadable surfaces the SAME real row again — the
-    // scan is never memoized while it's failing, so there is no stale state to fall back to.
+
     let cat_again = svc.store_plugin_catalog();
 
     let row = cat_after
@@ -1181,25 +1005,17 @@ fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     assert_eq!(row_again.error, row.error);
 }
 
-/// THE ROLLBACK'S OWN HALF (1.5.0): the admin surface reads the target off the plugins directory
-/// (an ABSENT one is a 404), hands it to the admission (which lowers the floor to the target's own
-/// version — proven under the root's real admission,
-/// `rollback_resolves_a_trusted_below_floor_target_and_merges_pins`), answers its refusal in its
-/// class, and merges the pin map: this plugin pinned to the target version, every prior pin for
-/// another plugin preserved. Nothing is pinned on a refusal.
 #[test]
 fn rollback_reads_the_target_and_merges_pins() {
     let dir = tmp_plugins_dir("rollback-merge");
     let svc = svc_with(dir.clone(), strict_posture());
     let empty = std::collections::BTreeMap::new();
 
-    // Absent file → NotFound.
     assert!(matches!(
         svc.resolve_plugin_rollback("nope.tar.gz", &empty),
         Err(AdminError::NotFound { .. })
     ));
 
-    // The PRIOR artifact at 1.4.0 (the rollback target) sits in the plugins dir.
     std::fs::write(
         dir.join("old.tar.gz"),
         fake_tarball("acme-store-x", "x", "1.4.0", "trusted"),
@@ -1223,7 +1039,6 @@ fn rollback_reads_the_target_and_merges_pins() {
         "a prior pin for another plugin is preserved"
     );
 
-    // An untrusted target is refused as a conflict (a rollback never launders trust).
     std::fs::write(
         dir.join("unsigned.tar.gz"),
         fake_tarball("acme-store-x", "x", "1.4.0", "rejected"),
@@ -1237,8 +1052,6 @@ fn rollback_reads_the_target_and_merges_pins() {
         "an untrusted rollback target is refused (a rollback never launders trust), got {err:?}"
     );
 }
-
-// ---- groups read surface ----
 
 use busbar_kernel::config::groups::{ChildDefault, LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
@@ -1256,8 +1069,6 @@ fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
     }
 }
 
-/// `list_groups` projects every `groups:` entry (name-sorted by the BTreeMap), faithfully
-/// carrying parent, enabled, the ordered limits, and the `child_default` budget template.
 #[tokio::test]
 async fn list_groups_projects_the_limit_tree() {
     let team = GroupCfg {
@@ -1282,7 +1093,7 @@ async fn list_groups_projects_the_limit_tree() {
         .list_groups(0, crate::v1::contract::LIST_LIMIT_DEFAULT)
         .await
         .expect("list ok");
-    // BTreeMap order: "team" < "user:bob".
+
     assert_eq!(page.items.len(), 2);
     let team = &page.items[0];
     assert_eq!(team.name, "team");
@@ -1292,7 +1103,7 @@ async fn list_groups_projects_the_limit_tree() {
     assert_eq!(team.limits[0].metric, "budget");
     assert_eq!(team.limits[0].amount, 20_000);
     assert_eq!(team.limits[0].per, Some("month"));
-    // The child_default template projects as an explicit limit list.
+
     let cd = team.child_default.as_ref().expect("child_default present");
     assert_eq!(cd.len(), 1);
     assert_eq!(cd[0].amount, 2_000);
@@ -1303,12 +1114,6 @@ async fn list_groups_projects_the_limit_tree() {
     assert!(bob.child_default.is_none());
 }
 
-/// `GET /groups` is a GROWABLE collection (unlike `/pools`/`/models`/`/hooks`, which are bounded
-/// by static config, `plan_mint_group` auto-provisions a leaf group per self-service key mint), so
-/// it must obey the SAME `?limit=`/`?cursor=` cursor envelope every other growable list
-/// (keys/audit/config-versions) does — never a single unbounded page. A `limit` below the total
-/// bounds the page and sets `next_cursor`; feeding that cursor back resumes exactly where the
-/// prior page ended; the final page carries `next_cursor: None`.
 #[tokio::test]
 async fn list_groups_is_cursor_paginated() {
     let mut builder = crate::new_test_app();
@@ -1355,7 +1160,6 @@ async fn list_groups_is_cursor_paginated() {
     );
 }
 
-/// `get_group` returns one entry by name; an unknown name is `not_found`.
 #[tokio::test]
 async fn get_group_by_name_and_not_found() {
     let app = crate::new_test_app()
@@ -1380,7 +1184,6 @@ async fn get_group_by_name_and_not_found() {
     );
 }
 
-/// A team ceiling with a per-user leaf beneath it — the base tree the mutation tests build on.
 fn team_app() -> Arc<App> {
     crate::new_test_app()
         .group(
@@ -1393,8 +1196,6 @@ fn team_app() -> Arc<App> {
         .build()
 }
 
-/// `build_with_group` creates a valid leaf, bumps the version, and rebuilds the cost model so the
-/// new group's limits are live in the enforcement projection (the "raise a user's budget" path).
 #[test]
 fn build_with_group_creates_leaf_and_rebuilds_cost() {
     let app = team_app();
@@ -1406,18 +1207,16 @@ fn build_with_group_creates_leaf_and_rebuilds_cost() {
     let next = build_with_group(&app, "user:bob", bob).expect("valid leaf");
     assert_eq!(next.config_version, app.config_version.wrapping_add(1));
     assert!(next.groups_registry.contains_key("user:bob"));
-    // The rebuilt cost model sees the new leaf AND its parent chain (parent index resolved).
+
     let leaf = next
         .cost
         .group_named("user:bob")
         .expect("leaf in cost model");
     assert!(leaf.parent.is_some(), "leaf's parent chain resolved");
-    // The parent's own ceiling is still present (cost rebuilt the WHOLE tree, not just the leaf).
+
     assert!(next.cost.group_named("team").is_some());
 }
 
-/// A group whose `parent` names a nonexistent group is rejected at the door (validate_groups),
-/// changing nothing — a 400 `invalid_request`.
 #[test]
 fn build_with_group_rejects_dangling_parent() {
     let app = team_app();
@@ -1446,10 +1245,8 @@ fn build_with_group_rejects_empty_name() {
     ));
 }
 
-/// Deleting a leaf removes it from the registry and the rebuilt cost model.
 #[test]
 fn build_without_group_removes_leaf() {
-    // Build a tree that already contains the leaf.
     let app = crate::new_test_app()
         .group(
             "team",
@@ -1473,7 +1270,6 @@ fn build_without_group_removes_leaf() {
     assert!(next.cost.group_named("team").is_some());
 }
 
-/// Deleting a group that still PARENTS another is a 409 conflict — never silently orphan the child.
 #[test]
 fn build_without_group_conflict_when_still_a_parent() {
     let app = crate::new_test_app()
@@ -1510,9 +1306,6 @@ fn build_without_group_not_found() {
     assert!(matches!(&err, AdminError::NotFound { what: m, .. } if m.contains("ghost")));
 }
 
-/// Deleting a group that virtual keys still charge through is a 409 conflict — an
-/// orphaned `key.group` would fail that key CLOSED at every admission, so the delete is blocked
-/// (re-bind or delete the keys first) rather than silently orphaning them.
 #[test]
 fn build_without_group_conflict_when_keys_still_bound() {
     use busbar_contract::records::RecordStore as _;
@@ -1546,9 +1339,7 @@ fn build_without_group_conflict_when_keys_still_bound() {
         )
         .governance(gov)
         .build();
-    // The COUNT is the caller's job now (it is a blocking store read; see `count_keys_bound_to`,
-    // executed on `spawn_blocking` inside the delete transaction). Drive the pure guard with the
-    // count that helper would have produced for this fixture.
+
     let bound = count_keys_bound_to(&app, "team").expect("count readable");
     assert_eq!(bound, 1, "one key is bound to `team`");
     let Err(err) = build_without_group(&app, "team", bound) else {
@@ -1560,15 +1351,10 @@ fn build_without_group_conflict_when_keys_still_bound() {
     );
 }
 
-// ---- group usage read ----
-
 use busbar_kernel::governance::{GovState, VirtualKey};
 
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-/// The fixture group: a group-wide requests cap (day), a group-wide budget (month), and a
-/// POOL-SCOPED budget on `frontier` (month) — three distinct `(window, pool?)` enforcement
-/// buckets from three limits.
 fn usage_group_cfg() -> GroupCfg {
     let limit = |metric, amount, per, pool: Option<&str>| LimitCfg {
         metric,
@@ -1595,8 +1381,6 @@ fn usage_group_cfg() -> GroupCfg {
     }
 }
 
-/// A cost model carrying `groups` and a rate card pricing model `m` at 10 micro-units per
-/// token (in and out) — 1 cent per 1_000 tokens, so the derived-spend assertions are round.
 fn usage_cost(
     groups: &std::collections::BTreeMap<String, GroupCfg>,
 ) -> busbar_kernel::cost::CostModel {
@@ -1638,11 +1422,6 @@ fn input_toks(n: u64) -> std::collections::BTreeMap<String, u64> {
     m
 }
 
-/// `get_group_usage` returns ONE row per `(window, pool?)` enforcement bucket. Usage is
-/// driven through the REAL admission/accrual seam (`try_admit` + `record_usage`, the same path
-/// the proxy charges), so the read proves: the pool-scoped bucket accounts ONLY its pool's
-/// traffic, the group-wide buckets account everything, caps are projected from the limits, and
-/// `budget_remaining_cents = cap − derived spend` (ledger × the current rate card).
 #[tokio::test]
 async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
@@ -1653,8 +1432,6 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
         .governance(gov.clone())
         .build();
 
-    // One request through `frontier` (100k tokens = 100 cents), one through `value` (50k =
-    // 50 cents). The frontier bucket must see only the first; the group-wide buckets both.
     let k = usage_key("acme");
     let now = busbar_kernel::store::now();
     gov.try_admit(&app.cost, &k, "frontier", now)
@@ -1682,8 +1459,6 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
             .unwrap_or_else(|| panic!("bucket ({window}, {pool:?}) missing: {:?}", view.buckets))
     };
 
-    // (day, group-wide) — the requests cap's bucket: both admissions land; no budget cap ⇒
-    // no remaining (never a fabricated 0).
     let day = find("day", None);
     assert_eq!(day.requests, 2);
     assert_eq!(day.tokens, 150_000);
@@ -1691,7 +1466,6 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     assert_eq!(day.budget_cap, None);
     assert_eq!(day.budget_remaining_cents, None);
 
-    // (month, group-wide) — EVERY pool's traffic accounts here.
     let month = find("month", None);
     assert_eq!(month.requests, 2);
     assert_eq!(month.tokens, 150_000);
@@ -1699,7 +1473,6 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     assert_eq!(month.budget_cap, Some(1_000));
     assert_eq!(month.budget_remaining_cents, Some(850));
 
-    // (month, frontier) — ONLY the frontier-dispatched request accounts here.
     let frontier = find("month", Some("frontier"));
     assert_eq!(frontier.requests, 1);
     assert_eq!(frontier.tokens, 100_000);
@@ -1708,8 +1481,6 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     assert_eq!(frontier.budget_remaining_cents, Some(400));
 }
 
-/// An unknown group is `not_found` — the usage read resolves against the enforcement
-/// projection (the cost model), the same truth `try_admit` walks.
 #[tokio::test]
 async fn get_group_usage_unknown_group_not_found() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
@@ -1725,9 +1496,6 @@ async fn get_group_usage_unknown_group_not_found() {
     );
 }
 
-/// A store whose FIRST `get_usage` waits (at most five seconds) for a sibling task's word, sent
-/// once the read has started: the sibling can run while the read is in progress only if the read
-/// is on a blocking thread. Everything else is the in-memory store's.
 struct WaitsForTheRuntime {
     inner: MemoryStore,
     started: Arc<tokio::sync::Notify>,
@@ -1800,11 +1568,6 @@ impl busbar_contract::records::RecordStore for WaitsForTheRuntime {
     }
 }
 
-/// RED (audit core-admin #6, "a read blocks an async worker"): `GET /groups/{name}/usage` reads
-/// the store off the async worker, as every other admin usage read does. On a one-thread runtime,
-/// a sibling task gives the store's first read its word once the read has started; it can run only
-/// if the read is on a blocking thread. RED while the reads ran inline: the sibling never ran and
-/// the read waited out its bound without hearing it.
 #[tokio::test(flavor = "current_thread")]
 async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let started = Arc::new(tokio::sync::Notify::new());
@@ -1841,11 +1604,6 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     );
 }
 
-/// ADMIN-API BACK-COMPAT (M1b): the public GET-usage JSON still emits the FLAT
-/// `tokens_input`/`tokens_output`/`tokens_cache_read`/`tokens_cache_creation` fields, BYTE-IDENTICAL
-/// to pre-M1b for a token workload — the reserved-four dissolution into the name-keyed ledger changed
-/// nothing on this wire (the `UsageBreakdown` contract is unchanged; the pricer adapter projects the
-/// same counts). A downstream FinOps consumer's parser keeps working across the upgrade.
 #[test]
 fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
     use crate::v1::contract::UsageBreakdown;
@@ -1866,16 +1624,13 @@ fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
     );
 }
 
-/// Governance OFF: the read still serves the full bucket projection — every bucket present
-/// with ZERO usage, caps projected, remaining = the whole cap. The definition exists even
-/// when nothing enforces (the doc contract on `get_group_usage`).
 #[tokio::test]
 async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     let app = crate::new_test_app()
         .group("acme", usage_group_cfg())
         .cost(usage_cost(&groups))
-        .build(); // no .governance(..)
+        .build();
     let svc = AdminService::new(app);
     let view = svc.get_group_usage("acme").await.expect("usage read");
     assert_eq!(
@@ -1893,15 +1648,13 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
             "nothing spent ⇒ the whole cap remains ({b:?})"
         );
     }
-    // The caps themselves survived the projection.
+
     assert!(view.buckets.iter().any(|b| b.requests_cap == Some(5)));
     assert!(view
         .buckets
         .iter()
         .any(|b| b.budget_cap == Some(500) && b.scope.as_deref() == Some("frontier")));
 }
-
-// ---- fleet-wide usage read: store-failure logging ----
 
 /// A `Store` decorator whose `list_metering` always fails, everything else delegating to a
 /// real `MemoryStore` — proves `get_usage`'s store-failure arm without needing a real broken
@@ -1955,10 +1708,6 @@ impl busbar_contract::records::RecordStore for FailingMeteringStore {
     }
 }
 
-/// A store failure inside `get_usage`'s `spawn_blocking` must reach an `error!` log while the
-/// wire contract stays unchanged (still `AdminError::Internal`). An earlier version destroyed
-/// the error with `map_err(|_| ())` under a comment claiming "details logged upstream in the
-/// store layer" — nothing logged them, so the cause of a 500 was unrecoverable.
 #[test]
 fn usage_read_store_failure_logs_the_real_error() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -1988,11 +1737,6 @@ fn usage_read_store_failure_logs_the_real_error() {
     );
 }
 
-// ── narrow-branch coverage ──────────────────────────────────────────────────────────────────
-
-/// A MISSING plugins directory is `Ok` with the empty-entries fingerprint (see the function's own
-/// doc comment) — not a propagated I/O error. A mutated guard (NotFound compared to `false`)
-/// would route the NotFound case into `Err(e) => return Err(e)` instead.
 #[test]
 fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
     let missing = tmp_plugins_dir("fingerprint-missing");
@@ -2003,10 +1747,6 @@ fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
     );
     let fp = plugins_dir_fingerprint(&missing).expect("a missing dir must not I/O-error");
 
-    // A REAL empty (but existing) directory must produce the IDENTICAL fingerprint — proving
-    // "empty" specifically, not just "any Ok(_) value" (which a mutant returning e.g. `Ok(0)`
-    // unconditionally would also satisfy against the weaker `.is_ok()`-only assertion this
-    // replaces).
     let empty = tmp_plugins_dir("fingerprint-really-empty");
     std::fs::create_dir_all(&empty).unwrap();
     let empty_fp =
@@ -2017,8 +1757,6 @@ fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
              other Ok value"
     );
 
-    // And a NON-empty directory must differ, so this isn't trivially "every case returns the
-    // same constant".
     std::fs::write(empty.join("something"), b"x").unwrap();
     let nonempty_fp = plugins_dir_fingerprint(&empty).expect("a populated dir must not error");
     assert_ne!(
@@ -2027,17 +1765,6 @@ fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
     );
 }
 
-/// Each of the three path-escape checks (`/`, `\`, `..`) independently rejects a filename.
-/// SUBTLETY: `../evil.tar.gz` and `sub/evil.tar.gz` are ALSO caught by the belt-and-braces
-/// single-normal-component check a few lines below regardless of `||` vs `&&` here —
-/// `Path::components()` on either shape never yields exactly one `Normal` component, so those
-/// two cases can't actually distinguish the mutant on their own. Only `sub\evil.tar.gz`
-/// (backslash) does: on Unix, `\` is not a path
-/// separator, so `Path::components()` treats the whole string as ONE normal component and the
-/// belt-and-braces check passes it through — making `contains('\\')` the ONLY thing standing
-/// between it and acceptance. (On Windows, `\` IS a separator, so the belt-and-braces check
-/// would catch it too, making this specific mutant equivalent there — this test's real
-/// discriminating power is platform-dependent, which is fine: CI runs on Linux.)
 #[test]
 fn validate_plugin_filename_rejects_each_escape_form_independently() {
     let app = app_with(tmp_plugins_dir("filename-escape"), strict_posture());
@@ -2059,9 +1786,6 @@ fn validate_plugin_filename_rejects_each_escape_form_independently() {
     );
 }
 
-/// The filename length boundary is exact: `MAX_PLUGIN_FILENAME_LEN` chars (with a valid
-/// `.tar.gz` suffix) is accepted; one char over is rejected. A mutated `>` → `>=` would reject
-/// the boundary length itself.
 #[test]
 fn validate_plugin_filename_length_boundary_is_exact() {
     let app = app_with(tmp_plugins_dir("filename-length"), strict_posture());
@@ -2079,25 +1803,18 @@ fn validate_plugin_filename_length_boundary_is_exact() {
     );
 }
 
-/// The settings byte cap is exactly 64 KiB, not some other magnitude a mutated `*` in its
-/// definition could silently produce.
 #[test]
 fn max_settings_bytes_is_exactly_64_kibibytes() {
     assert_eq!(MAX_SETTINGS_BYTES, 65_536);
     assert_eq!(MAX_SETTINGS_BYTES, 64 * 1024);
 }
 
-/// The inspect-schema JSON byte cap is exactly 256 KiB, same rationale.
 #[test]
 fn max_inspect_schema_json_bytes_is_exactly_256_kibibytes() {
     assert_eq!(MAX_INSPECT_SCHEMA_JSON_BYTES, 262_144);
     assert_eq!(MAX_INSPECT_SCHEMA_JSON_BYTES, 256 * 1024);
 }
 
-/// `probe_transport` returns THREE distinguishable outcomes (resolves as hook / resolves as a
-/// different kind / does not resolve at all), each with its own detail string — a mutant
-/// collapsing the non-hook-kind or unresolved arms to a fixed placeholder string would still
-/// return `Some(false)` and pass a loose "it's false" check, but the detail text would be wrong.
 #[tokio::test]
 async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
     let env = busbar_kernel_testkit::test_support::test_hook_env_with_wrong_kind_plugin(
@@ -2106,15 +1823,12 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
     );
     let hook_cfg = hook(HookKind::Tap, false);
 
-    // Resolves and IS a hook: (Some(true), None).
     let mut wired = hook_cfg.clone();
     wired.plugin = "test-hook".to_string();
     let (reachable, detail) = probe_transport(&wired, &env).await;
     assert_eq!(reachable, Some(true));
     assert_eq!(detail, None);
 
-    // Resolves, but to a DIFFERENT kind (secret, not hook): distinct detail text naming both
-    // kinds, distinguishing this arm from a mutant that collapses it to a fixed placeholder.
     let mut wrong_kind = hook_cfg.clone();
     wrong_kind.plugin = "test-wrong-kind".to_string();
     let (reachable, detail) = probe_transport(&wrong_kind, &env).await;
@@ -2128,7 +1842,6 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
         "wrong-kind resolution must name both the resolved kind and the expected kind: {detail:?}"
     );
 
-    // Does not resolve at all: distinct detail text naming "is not installed".
     let mut missing = hook_cfg.clone();
     missing.plugin = "totally-unregistered-plugin-name".to_string();
     let (reachable, detail) = probe_transport(&missing, &env).await;
@@ -2141,9 +1854,6 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
     );
 }
 
-/// Re-registering the SAME name as a global hook a second time must NOT push a duplicate entry
-/// into `global_hooks` — a mutated `n == name` (inside the `!...any(...)` idempotency guard)
-/// would defeat the guard and double-push on every re-register.
 #[test]
 fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
     let env =
@@ -2155,7 +1865,7 @@ fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
         once.global_hooks.iter().filter(|n| *n == "logger").count(),
         1
     );
-    // Re-PUT the SAME grants (idempotent) a second time.
+
     let twice = build_with_hook(&once, "logger", hook(HookKind::Tap, true))
         .expect("idempotent re-register with identical grants");
     assert_eq!(
@@ -2165,10 +1875,6 @@ fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
     );
 }
 
-/// Removing one global hook must leave OTHER global hooks untouched — a mutated `!=` → `==` in
-/// the `retain` predicate would invert which entries survive, wiping every OTHER hook instead of
-/// just the target (with only one hook present the two directions are indistinguishable, so this
-/// needs at least two).
 #[test]
 fn build_with_hook_demote_only_removes_the_target_hook() {
     let env = busbar_kernel_testkit::test_support::test_hook_env(
@@ -2195,8 +1901,6 @@ fn build_with_hook_demote_only_removes_the_target_hook() {
     );
 }
 
-/// `build_without_hook`'s DELETE cleanup: removing one hook must leave a different hook's global
-/// wiring untouched — same `!=`/`==` retain distinction as the demote case above.
 #[test]
 fn build_without_hook_only_removes_the_target_from_global_wiring() {
     let env = busbar_kernel_testkit::test_support::test_hook_env(
@@ -2222,8 +1926,6 @@ fn build_without_hook_only_removes_the_target_from_global_wiring() {
     );
 }
 
-/// The group name length boundary is exact: `MAX_GROUP_NAME_LEN` chars is accepted, one over is
-/// rejected. A mutated `>` → `>=` would reject the boundary length itself.
 #[test]
 fn build_with_group_name_length_boundary_is_exact() {
     let app = team_app();
@@ -2243,8 +1945,6 @@ fn build_with_group_name_length_boundary_is_exact() {
     );
 }
 
-/// `build_with_registry` rejects a snapshot with MORE THAN ONE `default: true` hook, but exactly
-/// one is fine — a mutated `> 1` boundary needs both sides tested to catch `==`/`>=` variants.
 #[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
     let env =
@@ -2268,9 +1968,6 @@ fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
     );
 }
 
-/// `build_with_registry` rejects a snapshot whose `global_hooks` names a hook that isn't actually
-/// in the registry — a deleted `!` on the `contains_key` check would invert this into rejecting
-/// every VALID global reference instead.
 #[test]
 fn build_with_registry_rejects_a_dangling_global_hook_reference() {
     let env =
@@ -2279,25 +1976,17 @@ fn build_with_registry_rejects_a_dangling_global_hook_reference() {
     let mut registry = HashMap::new();
     registry.insert("logger".to_string(), hook(HookKind::Tap, true));
 
-    // A valid reference (the named hook IS in the registry) must be accepted.
     assert!(
         build_with_registry(&app, registry.clone(), vec!["logger".to_string()]).is_ok(),
         "a global_hooks entry that IS in the registry must be accepted"
     );
-    // A dangling reference (named hook is NOT in the registry) must be rejected.
+
     assert!(
         build_with_registry(&app, registry, vec!["ghost".to_string()]).is_err(),
         "a global_hooks entry naming an unregistered hook must be rejected"
     );
 }
 
-/// `healthz` returns a real, non-default `Response` (a mutated body → `Default::default()` would
-/// still type-check but return a `200` with an EMPTY body/no status text, not either real health
-/// payload). `crate::new_test_app().build()` deterministically has NO lanes (nothing in this test adds
-/// one), so the readiness check always takes the unready branch — pinned to the SPECIFIC expected
-/// outcome (503 "no usable lanes"), not "either of the two real branches", so an inverted
-/// readiness condition (a mutant that flips which branch fires) is also caught, not just the
-/// Default::default() case.
 #[tokio::test]
 async fn healthz_returns_a_real_response_not_the_default() {
     let app = crate::new_test_app().build();
@@ -2319,11 +2008,6 @@ async fn healthz_returns_a_real_response_not_the_default() {
     );
 }
 
-/// THE IR COMPUTE GATE FOLLOWS THE REGISTRY IT IS DERIVED FROM. `any_content_hook` is resolved at
-/// config apply, and every snapshot builder that rewrites `hook_registry` must recompute it:
-/// registering a `prompt: ro` hook opens the gate for the very next request, and deleting the last
-/// granted hook closes it again. A builder that skipped the recompute would leave a live snapshot
-/// whose gate disagrees with its own hook registry.
 #[test]
 fn hook_snapshot_builders_recompute_the_content_gate() {
     let env =
@@ -2358,26 +2042,11 @@ fn hook_snapshot_builders_recompute_the_content_gate() {
     );
 }
 
-/// THE CLOSED-SET CHECK: after EVERY snapshot builder that rewrites `hook_registry`, every field
-/// DERIVED from that registry must equal what a fresh derivation from the installed registry would
-/// produce. This is deliberately written as an INVARIANT over the derived set rather than as a
-/// per-field assertion, because the defect it exists to catch is structural: `requested_signals`
-/// was added to `main.rs`'s `App` construction beside `any_content_hook` and never wired into the
-/// three builders, so a hook registered through `POST /api/v1/admin/hooks` declaring `signals:` got
-/// a `200 OK` and then a candidate payload that silently lacked the signal it declared — the same
-/// FAIL-OPEN shape as a register that leaves the gate chain empty.
-///
-/// WHEN A NEW DERIVED FIELD IS ADDED, EXTEND `assert_hook_derived` BELOW. `service::
-/// rebuild_hook_derived` is now the single place the builders compute the set, so there is exactly
-/// one production site to touch and this test is what fails if it is missed.
 #[test]
 fn hook_derived_fields_follow_the_registry() {
-    // Never a skip: the hook double behind the kernel's hook port is always there.
     let env =
         busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
 
-    /// Every `App` field that is a PURE FUNCTION of `hook_registry`, re-derived from the snapshot's
-    /// own registry and compared against what the builder installed.
     fn assert_hook_derived(app: &busbar_kernel::state::App, ctx: &str) {
         assert_eq!(
             app.any_content_hook,
@@ -2395,7 +2064,6 @@ fn hook_derived_fields_follow_the_registry() {
     let app = crate::new_test_app().hook_env(env).build();
     assert_hook_derived(&app, "boot fixture");
 
-    // A hook that exercises BOTH derived scalars at once: a content grant and a signal declaration.
     let mut declaring = hook(HookKind::Tap, true);
     declaring.prompt = PromptAccess::Ro;
     declaring.signals = vec![busbar_contract::signal::Signal::CandidateBreakerState];
@@ -2424,25 +2092,11 @@ fn hook_derived_fields_follow_the_registry() {
     assert_hook_derived(&rolled_back, "after build_with_registry (config rollback)");
 }
 
-/// SECURITY (R3-B): `POST /api/v1/admin/config/validate` must NOT scan a CALLER-SUPPLIED
-/// `plugins.dir`. The pre-flight does `fs::read_dir` + a read of every tarball it finds on that
-/// directory, so honoring the request's `plugins.dir` made the endpoint an arbitrary-path
-/// readability + directory-enumeration oracle for any token that can reach it (`plugins.dir:
-/// /root/.ssh` reports whether that path is readable and what tarballs it holds). The fix PINS the
-/// scanned directory to the RUNNING install's plugins dir.
-///
-/// The request's `plugins.dir` points at a directory holding a GARBAGE `.tar.gz`. Because the scan is
-/// pinned to the running (empty) dir, that caller-supplied directory is never read: the config
-/// validates `ok: true`. Were the request's dir honored instead, the scan would choke on the garbage
-/// tarball and return `ok: false` — the signal that the arbitrary directory had been probed.
 #[tokio::test]
 async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
-    // The RUNNING install's plugins dir — empty, so a reference-free config lints clean.
     let running_dir = tmp_plugins_dir("validate-running");
     let svc = svc_with(running_dir, unsigned_ok_posture());
 
-    // The CALLER's dir: a DIFFERENT directory holding a file any scan would reject. If the endpoint
-    // scanned it, validation would fail on this garbage tarball.
     let evil_dir = tmp_plugins_dir("validate-evil");
     std::fs::write(evil_dir.join("probe.tar.gz"), b"not a real tarball at all").unwrap();
 
@@ -2490,14 +2144,6 @@ plugins:
     );
 }
 
-/// FINDING 7: `POST /config/validate` does its plugin-directory scan (and the resolve and
-/// validate passes before it) OFF the async worker, behind the same bounded gate the catalog's own
-/// scan of that directory takes. Inline, a read-only token parked a Tokio worker per request on
-/// the scan, and on a hung plugins mount stalled the runtime the data plane shares.
-///
-/// With the gate held — a scan that has not come back — the call must still be WAITING after the
-/// runtime has had every chance to run it: work that ran inline on the reactor would already be
-/// done. Released, it completes with the very verdict it always gave.
 #[tokio::test]
 async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor() {
     let svc = svc_with(tmp_plugins_dir("validate-gated"), unsigned_ok_posture());
@@ -2544,16 +2190,6 @@ store:
     assert!(view.ok, "the verdict is unchanged: {:?}", view.errors);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// DECISION #79 — RATE CARDS ARE A DATED HISTORY
-//
-// A metering row prices against the card in force AT THE ROW'S OWN INSTANT, never the newest card
-// ever authored. The owner's worked example is the shape of the first proof: a customer signs PAYG
-// at 10, later month-to-month at 5, later a yearly prepaid at 1, and the early windows keep pricing
-// at 10 forever. The instant is `MeteringRow::priced_from_ms` — the `effective_from` of the entry
-// in force when the counts were accrued — which is also what splits a UTC day at a mid-day edit.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod dated_rate_card_history {
     use super::*;
@@ -2561,22 +2197,18 @@ mod dated_rate_card_history {
     use busbar_kernel::governance::GovState;
     use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-    /// The one priced lane. It is a metering row's `model` and a card entry's lane, spelled once.
     const LANE: &str = "m-priced-chat";
     const PROVIDER: &str = "priced-chat";
     const KEY: &str = "vk_payg";
-    /// One thousand input tokens per row, so a rate of N micro-units per token reads back as
-    /// exactly `N * 1_000` micro-units and the cards separate arithmetically.
+
     const TOKENS: u64 = 1_000;
     const DAY: u64 = busbar_kernel::governance::METERING_BUCKET_SECS;
 
-    /// A COMPLETE one-lane card at `micro_per_token` micro-units per input token, no flat fee.
     pub(super) fn card(micro_per_token: f64) -> RateCard {
         RateCard::from_config(
             Some([(
                 LANE,
                 TierRates {
-                    // The fixture's rates are whole micro-units, so the intake's nano-units are exact.
                     input: Some((micro_per_token * 1000.0).round() as u64),
                     ..Default::default()
                 },
@@ -2585,9 +2217,6 @@ mod dated_rate_card_history {
         )
     }
 
-    /// The CURRENT cost model — deliberately the NEWEST, cheapest card in every test below, so a
-    /// read that fell back to it would answer `1 * 1_000` for every row and the assertions separate
-    /// the lookup from the reprice arithmetically rather than by inspection.
     fn newest_cost() -> busbar_kernel::cost::CostModel {
         let rates = std::collections::BTreeMap::from([(
             LANE.to_string(),
@@ -2606,17 +2235,10 @@ mod dated_rate_card_history {
         )
     }
 
-    /// The test's dated history, held for `'static` so a test hands one source to several reads.
-    /// Leaked on purpose: the process's history is the kernel rate dater's, installed once, and a
-    /// test that raced that install could only ever run once.
     pub(super) fn source(history: History) -> &'static Arc<History> {
         Box::leak(Box::new(Arc::new(history)))
     }
 
-    /// Governance holding one metering row per `(bucket, priced_from_ms)` — the store's own key,
-    /// which is why a card edit inside a day is TWO rows rather than one. Written through the store
-    /// seam because `record_metering` can only ever bucket at the wall clock, and these windows are
-    /// in the past.
     pub(super) fn gov_with_rows(rows: &[(u64, u64)]) -> Arc<GovState> {
         gov_with_priced_rows(rows.iter().map(|(bucket, era)| (*bucket, *era, "")))
     }
@@ -2650,7 +2272,6 @@ mod dated_rate_card_history {
         Arc::new(GovState::new(store, None).expect("governance builds"))
     }
 
-    /// Read one bucket through the endpoint's own service method, resolving against `src`.
     async fn read(gov: Arc<GovState>, src: &'static Arc<History>, bucket: u64) -> UsageView {
         let app = crate::new_test_app()
             .governance(gov)
@@ -2663,8 +2284,6 @@ mod dated_rate_card_history {
             .expect("usage read")
     }
 
-    /// The same read, naming a rate-card history SNAPSHOT, and returning the `Result` so a
-    /// refusal is a value the caller asserts on rather than a panic.
     pub(super) async fn read_as_of(
         gov: Arc<GovState>,
         src: &'static Arc<History>,
@@ -2681,7 +2300,6 @@ mod dated_rate_card_history {
             .await
     }
 
-    /// A snapshot named against a service with NO dated-history source at all.
     pub(super) async fn read_no_source_as_of(
         gov: Arc<GovState>,
         bucket: u64,
@@ -2694,24 +2312,11 @@ mod dated_rate_card_history {
         AdminService::new(app).get_usage(Some(bucket), as_of).await
     }
 
-    /// **AN `adjust` MOVES THE SERVED USAGE FIGURE** (item 404, OWNER RULING Q9; MONEY-DESIGN §4,
-    /// PR-C). Key `vk_adjust_404` metered 1,000 input tokens three days ago at 2.5 micro-units
-    /// each: `GET /api/v1/admin/usage` serves 2,500 micro-units. A root adjust of -200 input on
-    /// that key, lane and era, made today, is a signed adjustment row beside THAT day's metering
-    /// rows (the unit's card epoch picks the day, Q128 arch u32 #18; dev's fixture day), and the
-    /// same read serves 800 tokens and 2,000 micro-units: the counts AS ADJUSTED, priced by the one
-    /// function.
-    /// The figure survives a restart (a new state over the same store), an adjustment past the
-    /// metered count is refused and moves nothing, and an adjustment of a key with no metered row
-    /// that day is refused.
-    ///
-    /// RED before the adjustment row: the read-time correction was deleted with the second ledger,
-    /// and the read served 1,000 / 2,500 after the adjust.
     #[tokio::test]
     async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         use busbar_kernel::governance::{AdjustRefused, Adjustment};
         const ADJUSTED_KEY: &str = "vk_adjust_404";
-        // THE UNIT'S DAY, three days back (dev's fixture), and its arrival instant in it.
+
         let (day, _, _) = windows();
         let served_at = day + 5;
         let store = Arc::new(MemoryStore::new());
@@ -2746,7 +2351,7 @@ mod dated_rate_card_history {
         .expect("the memory store accepts a metering delta");
         let cost = newest_cost();
         let gov = Arc::new(GovState::new(store.clone(), None).expect("governance builds"));
-        // The budget book holds the same counts, as the unit's accrual put them there.
+
         let units = std::collections::BTreeMap::from([(
             busbar_contract::records::UNIT_INPUT.to_string(),
             TOKENS,
@@ -2806,16 +2411,11 @@ mod dated_rate_card_history {
         );
     }
 
-    /// The three dated windows, day-aligned because a metering bucket is a UTC day. The owner's
-    /// example spans months; the arithmetic of "an earlier window keeps its own card" is the same
-    /// at any spacing, and a day apart keeps the fixture inside the memory store's retention.
     pub(super) fn windows() -> (u64, u64, u64) {
         let today = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
         (today - 3 * DAY, today - 2 * DAY, today - DAY)
     }
 
-    /// The 10 / 5 / 1 history: PAYG from instant zero, month-to-month from `monthly`, prepaid from
-    /// `prepaid`.
     fn payg_then_monthly_then_prepaid(monthly: u64, prepaid: u64) -> History {
         let mut history = History::opening(card(10.0), 0);
         history.append(CardEntryDraft {
@@ -2835,16 +2435,11 @@ mod dated_rate_card_history {
         history
     }
 
-    // ── PROOF 1: a row in each window prices at THAT window's rate ───────────────────────────
-
-    /// PAYG at 10, then month-to-month at 5, then a yearly prepaid at 1 — the owner's worked
-    /// example, end to end through `GET /api/v1/admin/usage`. The first window keeps pricing at 10
-    /// forever, and it does so while the CURRENT card is 1.
     #[tokio::test]
     async fn each_window_prices_at_the_card_in_force_when_it_was_earned() {
         let (payg, monthly, prepaid) = windows();
         let src = source(payg_then_monthly_then_prepaid(monthly, prepaid));
-        // Each day's row carries the instant its own era started — 0 for the opening entry.
+
         let gov = gov_with_rows(&[
             (payg, 0),
             (monthly, monthly * 1_000),
@@ -2868,9 +2463,6 @@ mod dated_rate_card_history {
         );
     }
 
-    /// A Store activation can remain unconfirmed across a UTC boundary while the serving App
-    /// continues stamping its old configuration era. Observing that activation later must not
-    /// reprice those old-served counts at the later bucket's newer configuration.
     #[tokio::test]
     async fn old_served_counts_keep_their_config_era_across_a_later_bucket_and_activation() {
         let (old, activated, later) = windows();
@@ -2908,8 +2500,6 @@ mod dated_rate_card_history {
         assert_eq!(both_read.total.spend_micros, 11_000);
     }
 
-    /// Era selection and correction time are separate: a later Config cannot steal an old row,
-    /// while a covering amendment still reaches that row at its own wall-clock bucket.
     #[tokio::test]
     async fn amendments_reach_old_served_eras_without_enabling_later_config_repricing() {
         let (old, activated, corrected_day) = windows();
@@ -2950,9 +2540,6 @@ mod dated_rate_card_history {
         assert_eq!(read(rows, src, activated).await.total.spend_micros, 10_000);
     }
 
-    /// Exact opening provenance distinguishes new counts served at era zero from historical
-    /// undated rows. Legacy free-text versions keep their temporal reading; a malformed or unknown
-    /// versioned identity refuses instead of quietly picking the current configuration.
     #[tokio::test]
     async fn exact_opening_provenance_survives_a_later_config_and_legacy_names_keep_their_reading()
     {
@@ -3007,14 +2594,6 @@ mod dated_rate_card_history {
         );
     }
 
-    // ── PROOF 1a: the response NAMES the card that priced it (#44, Q93) ──────────────────────
-
-    /// RED (Q93, ANSWERED 2026-09-27: "serve the rate-card version on the usage and audit
-    /// responses"; #44 "rate_card_version surfaced on usage+audit endpoints"): each window's
-    /// response names the history seq of the card that priced it, PAYG 0, month-to-month 1,
-    /// prepaid 2, while the CURRENT card is 2. Asking `?as_of=<that seq>` re-derives the same
-    /// figure, which is what makes the version an invoice's provenance. A node with no dated
-    /// history names none (`null`), never a zero: seq 0 is a real opening entry.
     #[tokio::test]
     async fn the_usage_response_names_the_rate_card_version_that_priced_it() {
         let (payg, monthly, prepaid) = windows();
@@ -3053,13 +2632,6 @@ mod dated_rate_card_history {
         );
     }
 
-    // ── PROOF 1b: a HOLE in the dated history REFUSES the read (#42, item 374) ───────────────
-
-    /// A history whose only entry starts at `monthly` leaves the PAYG window in a HOLE: no entry
-    /// covers the row's instant. That is `MoneyError::NoCardInForce`, a refusal like the other
-    /// three — the read fails rather than pricing the row at the CURRENT card (1 x 1_000 = 1_000,
-    /// the figure it served before), which is a card nobody put in force for that instant. The
-    /// covered window alongside it still prices, so the refusal is the hole's and not the fixture's.
     #[tokio::test]
     async fn a_hole_in_the_dated_history_refuses_rather_than_pricing_at_the_current_card() {
         let (payg, monthly, _prepaid) = windows();
@@ -3088,14 +2660,6 @@ mod dated_rate_card_history {
         );
     }
 
-    // ── PROOF 2: publishing a forward-dated card leaves the earlier window BYTE-IDENTICAL ────
-
-    /// The same window read before and after a card is published, compared as BYTES.
-    ///
-    /// `as_of` is the read instant and is the one field that legitimately moves between two reads,
-    /// so it is normalised away; every other byte of the response — the window, the currency, the
-    /// totals, every `by_model` and `by_key` row, the truncation flag and the `others` remainder —
-    /// is compared verbatim.
     #[tokio::test]
     async fn publishing_a_card_leaves_the_window_before_it_byte_identical() {
         let (payg, _, _) = windows();
@@ -3103,7 +2667,6 @@ mod dated_rate_card_history {
 
         let before = source(History::opening(card(10.0), 0));
 
-        // The publish: a card effective from NOW, long after the window being read.
         let mut published = History::opening(card(10.0), 0);
         let now_ms = busbar_kernel::store::now().saturating_mul(1_000);
         published.append(CardEntryDraft {
@@ -3132,17 +2695,10 @@ mod dated_rate_card_history {
         );
     }
 
-    // ── PROOF 3: a signed back-dated correction reprices EXACTLY its window ──────────────────
-
-    /// An `Author::Amend` entry over `[monthly, prepaid)`. The window it names moves; the window
-    /// before it and the window after it do not — both halves asserted, because "reprices its
-    /// window" and "reprices nothing else" are two claims and only one of them is the easy one.
     #[tokio::test]
     async fn a_back_dated_correction_reprices_its_window_and_nothing_outside_it() {
         let (payg, monthly, prepaid) = windows();
-        // One opening entry, so every row is accrued under it and carries instant zero. The
-        // correction lands LATER and still reaches them, which is the whole point of resolving by
-        // instant rather than by a stamped version.
+
         let gov = gov_with_rows(&[(payg, 0), (monthly, 0), (prepaid, 0)]);
 
         let before = source(History::opening(card(10.0), 0));
@@ -3154,7 +2710,6 @@ mod dated_rate_card_history {
             );
         }
 
-        // The correction: the ratecard was wrong for the middle window only.
         let mut corrected = History::opening(card(10.0), 0);
         corrected.append(CardEntryDraft {
             effective_from: monthly * 1_000,
@@ -3184,16 +2739,6 @@ mod dated_rate_card_history {
         );
     }
 
-    // ── PROOF 4: a card edit INSIDE one UTC day splits that day ──────────────────────────────
-
-    /// **THE DEFECT `priced_from_ms` CLOSES.** One bucket, one key, one model — and a card edit at
-    /// noon. Before the row carried an instant, the read had nothing between midnight and midnight
-    /// to resolve at, so the whole day priced at one card whichever card that was. Now the accrual
-    /// key carries the era, the day is TWO rows, and the bucket's total is the sum of two cards.
-    ///
-    /// The arithmetic separates all three hypotheses: 20,000 would be the whole day at the morning
-    /// card, 2,000 the whole day at the afternoon card, and 11,000 — asserted — each half at the
-    /// card it was actually earned under.
     #[tokio::test]
     async fn a_card_edit_inside_a_day_splits_the_day_and_each_half_keeps_its_own_card() {
         let (_, _, today) = windows();
@@ -3207,8 +2752,7 @@ mod dated_rate_card_history {
             author: Author::Config { policy_epoch: 1 },
         });
         let src = source(history);
-        // Two rows in ONE bucket: the morning's counts under the opening entry, the afternoon's
-        // under the noon entry.
+
         let gov = gov_with_rows(&[(today, 0), (today, noon)]);
 
         let view = read(gov, src, today).await;
@@ -3229,17 +2773,6 @@ mod dated_rate_card_history {
         );
     }
 
-    // ── PROOF 5: no pricing path reads `PostingStamp.rate_card_version` ──────────────────────
-
-    // ── THE BYTE-SAFETY PIN: no source installed ⇒ the previous release's arithmetic ─────────
-
-    /// The oracle cell `billing|rate-card|history-mid-window`'s exact shape (three responses of
-    /// 11 in / 7 out inside ONE bucket) read by a service with NO dated history source — a build
-    /// whose composition root installed none.
-    ///
-    /// It reads back 750,090,000: every row at the newest card. That is the published 1.5.5 figure
-    /// to the byte, which is the point of pinning it — the resolution is ADDITIVE and a build that
-    /// has wired no history answers exactly what it always did.
     #[tokio::test]
     async fn with_no_history_source_the_read_is_the_previous_release_to_the_byte() {
         let gov =
@@ -3284,18 +2817,6 @@ mod dated_rate_card_history {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE MONEY-READ REGISTER
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// `?as_of` — THE RATE-CARD HISTORY SNAPSHOT SELECTOR
-//
-// Honouring the recorded cell `ledger|rate-history|as-of`, which sends
-// `GET /api/v1/admin/usage?as_of=1`. A recorded behaviour is the contract; the design prose that
-// gave `?as_of` to the ledger endpoints ONLY was stale and has been corrected to match.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod usage_as_of {
     use super::dated_rate_card_history::{
@@ -3303,15 +2824,6 @@ mod usage_as_of {
     };
     use busbar_kernel::cost::{Author, CardEntryDraft, History};
 
-    /// An older snapshot prices at the older head, and the same URL asked twice answers the same
-    /// thing forever — which is the whole of what a snapshot is for.
-    ///
-    /// The fixture is the recorded cell's shape: a window earned under the opening card, then a
-    /// card published over it. At `as_of = 0` only the opening entry is visible, so the window
-    /// reads what it always read; at the head both entries are, and — because the row was earned
-    /// before the publish — it STILL reads the same. The second assertion is the one worth having:
-    /// a snapshot selector that changed a window the publish never touched would be selecting the
-    /// wrong thing.
     #[tokio::test]
     async fn an_older_snapshot_is_re_derivable_and_the_publish_moves_neither() {
         let (payg, _, _) = windows();
@@ -3347,8 +2859,6 @@ mod usage_as_of {
         );
     }
 
-    /// A BACK-DATED correction is what makes two snapshots of one window differ, and the
-    /// difference is exactly the correction.
     #[tokio::test]
     async fn a_snapshot_before_a_correction_still_answers_the_old_figure() {
         let (payg, _, _) = windows();
@@ -3394,7 +2904,6 @@ mod usage_as_of {
         );
     }
 
-    /// **A SEQ ABOVE THE HEAD IS REFUSED**, never clamped to the head and never an empty body.
     #[tokio::test]
     async fn a_snapshot_above_the_head_is_refused_rather_than_clamped() {
         let (payg, _, _) = windows();
@@ -3413,8 +2922,6 @@ mod usage_as_of {
         );
     }
 
-    /// A node with NO dated history refuses a snapshot rather than serving the live figure under a
-    /// snapshot's name.
     #[tokio::test]
     async fn a_snapshot_of_a_history_that_does_not_exist_is_refused() {
         let (payg, _, _) = windows();
@@ -3432,24 +2939,6 @@ mod usage_as_of {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE BANK AUDITOR'S ONE QUESTION — ONE RECORDED USAGE, DRIVEN THROUGH EVERY SURFACE THAT
-// REPORTS OR ENFORCES IT.
-//
-// "Show me that the number you billed is the number your own books say." A deployment that
-// answers that question five ways has not answered it. This module records ONE consumption and
-// asks every surface what it cost, in one unit, so the answers can be compared as integers
-// rather than as prose.
-//
-// The governing lines, each quoted where it is applied below:
-//   #79 `docs/design/BUSBAR-1.6.0.md:423` — rate cards are a DATED HISTORY; a posting prices at
-//        the card in force at its own `arrived_ms`.
-//   #42 `:367` — a card PRESENT and silent about a hit class is a REFUSAL; a silent zero is right
-//        ONLY when the card is ABSENT.
-//   #81 `:425` — counts are exact fixed-point decimals at scale 6; no `f32`/`f64` on any money path.
-//   #71 `:409` — pricing is read-time, in the kernel.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod one_recorded_usage_every_surface {
     use super::*;
@@ -3457,33 +2946,22 @@ mod one_recorded_usage_every_surface {
         self as ledger_cost, Author, CardEntryDraft, History, LedgerEntry, RateCard, TierRates,
     };
 
-    /// The one lane the recorded usage was served on — a metering row's `model`, a card entry's
-    /// lane, and a `LedgerEntry`'s `lane`, spelled once so no surface can be reading another name.
     const LANE: &str = "m-priced-chat";
     const PROVIDER: &str = "priced-chat";
     const KEY: &str = "vk_auditor";
-    /// One thousand input tokens per posting, so a rate of N micro-units per token reads back as
-    /// exactly `N * 1_000` micro-units and the two cards separate arithmetically.
+
     const TOKENS: u64 = 1_000;
     const DAY: u64 = busbar_kernel::governance::METERING_BUCKET_SECS;
 
-    /// THE CARD THE FIRST POSTING WAS EARNED UNDER — 27 micro-units per input token.
     const RATE_EARNED: f64 = 27.0;
-    /// THE CARD IN FORCE NOW — 12 micro-units per input token. Every flat surface prices the whole
-    /// window at this one, whatever the postings were actually earned under.
+
     const RATE_CURRENT: f64 = 12.0;
 
-    /// A COMPLETE one-lane card at `micro_per_token` micro-units per input token, no flat fee.
-    ///
-    /// No fee, deliberately: a flat fee is a second pricing dimension (#44) and this fixture is
-    /// about the FIRST one. A fee here would add the same constant to every surface and hide the
-    /// size of the disagreement rather than expose it.
     fn card(micro_per_token: f64) -> RateCard {
         RateCard::from_config(
             Some([(
                 LANE,
                 TierRates {
-                    // The fixture's rates are whole micro-units, so the intake's nano-units are exact.
                     input: Some((micro_per_token * 1000.0).round() as u64),
                     ..Default::default()
                 },
@@ -3492,9 +2970,6 @@ mod one_recorded_usage_every_surface {
         )
     }
 
-    /// The cost model every FLAT surface prices through: the card in force NOW, and only that one.
-    /// This is what the composition root hands `GET /groups/{g}/usage`, `GET /keys/{id}/usage` and
-    /// the budget gate.
     fn current_cost() -> busbar_kernel::cost::CostModel {
         let rates = std::collections::BTreeMap::from([(
             LANE.to_string(),
@@ -3513,7 +2988,6 @@ mod one_recorded_usage_every_surface {
         )
     }
 
-    /// The dated history: the earned card from instant zero, the current card from `edit_ms`.
     fn history(edit_ms: u64) -> History {
         let mut history = History::opening(card(RATE_EARNED), 0);
         history.append(CardEntryDraft {
@@ -3526,8 +3000,6 @@ mod one_recorded_usage_every_surface {
         history
     }
 
-    /// THE RECORDED USAGE, as the METERING book holds it: two rows in one UTC day, one per price
-    /// era, because a card edit inside a day opens a second row at the edit.
     fn metering(bucket: u64, edit_ms: u64) -> Arc<busbar_kernel::governance::GovState> {
         let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
         for priced_from_ms in [0, edit_ms] {
@@ -3555,9 +3027,6 @@ mod one_recorded_usage_every_surface {
         Arc::new(busbar_kernel::governance::GovState::new(store, None).expect("governance builds"))
     }
 
-    /// THE SAME RECORDED USAGE, as the ENFORCEMENT book holds it: one cell per (bucket, window),
-    /// carrying the summed counts and NO INSTANT AT ALL. That absence is the finding, not an
-    /// omission in this fixture — see the module note on `UsageLedger` below.
     fn enforcement(now: u64) -> Arc<busbar_kernel::governance::GovState> {
         let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
         busbar_contract::records::RecordStore::put_key(store.as_ref(), &enforcement_key())
@@ -3591,8 +3060,6 @@ mod one_recorded_usage_every_surface {
         }
     }
 
-    /// The recorded usage as the ONE FUNCTION's input: one [`LedgerEntry`] per posting, each
-    /// carrying the instant it arrived (#79's resolution key).
     fn one_function_slice(bucket: u64, edit_ms: u64) -> Vec<LedgerEntry> {
         [bucket.saturating_mul(1_000), edit_ms]
             .into_iter()
@@ -3603,33 +3070,26 @@ mod one_recorded_usage_every_surface {
             .collect()
     }
 
-    /// One cent is ten thousand micro-units. Stated once so a cents surface and a micro surface
-    /// can be compared as one integer rather than by eye.
     const MICROS_PER_CENT: i64 = 10_000;
 
     fn row(label: &str, figure: impl std::fmt::Display) {
         eprintln!("  {label:<56} {figure:>18}");
     }
 
-    /// **THE AUDITOR'S QUESTION, ASKED.** One recorded usage; every surface that reports or
-    /// enforces it; one unit.
     #[tokio::test]
     async fn one_recorded_usage_is_one_number_on_every_surface() {
         let now = busbar_kernel::store::now();
         let bucket = busbar_kernel::governance::metering_bucket(now) - DAY;
-        // The card edit lands INSIDE the recorded day, which is the case every flat surface gets
-        // wrong: half the day was earned under one card and half under another.
+
         let edit_ms = bucket.saturating_add(DAY / 2).saturating_mul(1_000);
 
         let hist = history(edit_ms);
         let cost = current_cost();
 
-        // ── SURFACE 5: THE ONE FUNCTION — money = f(ledger_slice, card_history) (#79).
         let one = ledger_cost::price_ledger(&one_function_slice(bucket, edit_ms), &hist)
             .expect("both postings are priced by the card in force at their own instant");
         let one_micros = i64::try_from(one.micros()).expect("the figure fits");
 
-        // ── SURFACE 1: GET /api/v1/admin/usage — the METERING book, through the real service.
         let admin = {
             let app = crate::new_test_app()
                 .governance(metering(bucket, edit_ms))
@@ -3644,16 +3104,15 @@ mod one_recorded_usage_every_surface {
                 .spend_micros
         };
 
-        // ── SURFACES 2/3/4: the ENFORCEMENT book. Each is the real call the handler makes.
         let gov = enforcement(now);
         gov.hydrate_budgets(&cost, now)
             .expect("the key ledger hydrates");
-        //    GET /api/v1/admin/groups/{name}/usage — service_operations.rs:371.
+
         let group_cents = gov
             .derived_bucket_usage(&cost, KEY, busbar_kernel::governance::WINDOW_DAY, true, now)
             .expect("the group bucket reads")
             .spend_cents;
-        //    GET /api/v1/admin/keys/{id}/usage — keys.rs:1783, via `usage_for` -> WINDOW_TOTAL.
+
         let key_cents = gov
             .derived_bucket_usage(
                 &cost,
@@ -3664,7 +3123,7 @@ mod one_recorded_usage_every_surface {
             )
             .expect("the key bucket reads")
             .spend_cents;
-        // The metrics reader uses the derived money view over the same raw bucket.
+
         let scrape_cents = gov
             .viewed_bucket_usage(
                 &cost,
@@ -3675,7 +3134,7 @@ mod one_recorded_usage_every_surface {
             )
             .expect("the metrics bucket reads")
             .spend_cents;
-        // The actual hook projection, after hydration, retains the finer micro-unit figure.
+
         let hook_micros = gov
             .budget_state(&cost, &enforcement_key(), now)
             .into_iter()
@@ -3714,13 +3173,6 @@ mod one_recorded_usage_every_surface {
         row("the metrics money view", scrape_cents * MICROS_PER_CENT);
         row("the hook seam", hook_micros);
 
-        // ── HALF ONE: THE DATED BOOK. PROVEN, AND PROVEN BY CONSTRUCTION ────────────────────
-        //
-        // `GET /admin/usage` prices through `busbar_kernel_ledger::cost::price_in_view` — it IS
-        // the one function, not a second implementation that happens to agree. Before that it
-        // carried its own call to the LEGACY projection `cost::derive_spend_micros`; the two
-        // agreed on every input either answered, and that agreement was the hazard rather than
-        // the reassurance (#71 `:409` — pricing is read-time and in the kernel; not in two).
         assert_eq!(
             i128::from(admin),
             one.micros(),
@@ -3735,24 +3187,6 @@ mod one_recorded_usage_every_surface {
             (RATE_CURRENT as i64) * (TOKENS as i64),
         );
 
-        // ── HALF TWO: THE ENFORCEMENT BOOK. PARKED, AND PINNED SO IT CANNOT DRIFT ───────────
-        //
-        // THE ROOT CAUSE IS NOT ARITHMETIC. `LedgerEntry.arrived_ms` is #79's resolution key and
-        // it is REQUIRED — the one function cannot price a row that does not carry the instant it
-        // arrived. `MeteringRow` carries it (`busbar-contract/src/records.rs:885`, field
-        // `priced_from_ms`), which is why half one above can adopt the one function at all.
-        // `UsageLedger`/`ModelTokens` (`records.rs:678`/`:645`) carry NO INSTANT AT ALL: a cell is
-        // keyed by (bucket, window) and holds `usage_units: BTreeMap<String, u64>` and nothing
-        // else. So every surface that reads THAT book prices the whole window at whatever card is
-        // configured at the moment of the read, and no amount of rewriting its arithmetic can
-        // change that — adopting #79 there needs an instant COLUMN, which is a persisted-format
-        // change and a money-byte change, and both are the owner's under #10 (`:328`) and #59
-        // (`:391`).
-        //
-        // These three figures are therefore pinned, not asserted-as-correct. They are what a
-        // 1.5.5 customer observes today and they are recorded in the shadow oracle
-        // (`billing|group-usage|*`, `billing|key-usage|*`, the pools plane's `*|over_budget*`
-        // cells). Moving one is moving a golden, which no agent may do.
         let flat_micros = (RATE_CURRENT as i64) * (TOKENS as i64) * 2;
         assert_eq!(
             hook_micros, flat_micros,
@@ -3773,11 +3207,6 @@ mod one_recorded_usage_every_surface {
             );
         }
 
-        // ── THE AUDITOR'S QUESTION, AS A NUMBER ────────────────────────────────────────────
-        //
-        // The gap between the book and the bill, pinned exactly. This is the figure the report
-        // carries to the owner: 19,000 of 39,000 micro-units — 48.7% of this slice's bill — is
-        // the distance between what the ledger says and what three of the five surfaces answer.
         let served = group_cents * MICROS_PER_CENT;
         assert_eq!(
             one_micros - served,
@@ -3787,18 +3216,6 @@ mod one_recorded_usage_every_surface {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// PER-PLANE FEES ON `GET /admin/usage` (#47, OWNER RULING Q32)
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// `GET /admin/usage` prices each metering row's requests at the fee of the plane the row belongs
-/// to — the pools plane's flat `per_request_fee:` for a pools row, a plane's own
-/// `fees.per_request` for that plane's row, and nothing for a plane that configured no fees — and so
-/// answers the budget book's figure for the same traffic.
-///
-/// Before: a plane's metering row is keyed by its unqualified subject with the plane only in the
-/// provider column, and the read priced its requests at the flat fee — 25 where the budget book
-/// said 19, and 20 where a fee-less plane's book said 0.
 mod plane_fees_on_admin_usage {
     use super::*;
     use busbar_contract::records::RecordStore as _;
@@ -3808,16 +3225,16 @@ mod plane_fees_on_admin_usage {
     use busbar_kernel_testkit::test_support::planes::TestRegistryIsolation;
 
     const KEY: &str = "vk_plane_fees";
-    /// The pools plane's model and provider, as the rows below name them.
+
     const POOLS_MODEL: &str = "m";
     const POOLS_PROVIDER: &str = "priced-chat";
-    /// The plane with `fees.per_request: 3`.
+
     const FEE_PLANE: &str = "tp";
-    /// A plane that configured no fees.
+
     const FREE_PLANE: &str = "np";
-    /// The pools plane (the fallback) — a row naming ITS key is a pools row.
+
     const POOLS_PLANE: &str = "pools-test";
-    /// One minor unit of fee, in the micro-units `spend_micros` is served in.
+
     const MICROS_PER_MINOR: i64 = 10_000;
 
     macro_rules! decl {
@@ -3876,8 +3293,6 @@ mod plane_fees_on_admin_usage {
     static FEE: PlaneDecl = decl!(FEE_PLANE, false, "tools");
     static FREE: PlaneDecl = decl!(FREE_PLANE, false, "streams");
 
-    /// Flat fee 5 (the pools plane's), `tools.fees.per_request: 3`, no card (billing off for
-    /// tokens) — the P2-fees before→after fixture.
     fn cost() -> busbar_kernel::cost::CostModel {
         let fees = busbar_kernel::config::PlaneFeesMap::from([(
             FEE_PLANE.to_string(),
@@ -3907,13 +3322,6 @@ mod plane_fees_on_admin_usage {
         Arc::new(GovState::new(store, None).unwrap())
     }
 
-    /// Serve `pool_calls` pools calls and `calls` calls on `plane` exactly as the host does: the admission
-    /// (the budget book — the pools pool unqualified, the plane's pool qualified by its key) and
-    /// the metering row (the plane's subject in `model`, its key in `provider`). Returns the budget
-    /// book's spend (minor units) and `/admin/usage`'s total spend (micro-units).
-    ///
-    /// The app is built BEFORE the plane registry is seeded: building it registers the neutral test
-    /// plane, which would re-lock the registry an isolation already holds on this thread.
     async fn serve(pool_calls: usize, plane: &str, calls: usize) -> (i64, i64) {
         let gov = gov();
         let cost = cost();
@@ -3972,9 +3380,6 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    /// THE DATED PATH (#79) prices a plane's row the same way: its requests on the plane's fee
-    /// lane at the plane's own fee, resolved through the history entry in force at the row's
-    /// instant — 3 tools calls at 3, 2 pools calls at the flat 5, 4 fee-less plane calls at 0.
     #[test]
     fn the_dated_read_prices_a_planes_row_at_its_own_fee() {
         use crate::v1::contract::UsageBreakdown;
@@ -4014,8 +3419,6 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    /// A pools row — its provider an upstream provider, or the pools plane's own key — keeps the
-    /// flat fee: byte-identical to the previous release.
     #[tokio::test]
     async fn a_pools_row_keeps_the_flat_fee() {
         let (book, admin) = serve(2, POOLS_PLANE, 0).await;
@@ -4036,17 +3439,6 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    // ── THE CLASSES THE BUDGET BOOK HOLDS AND A METERING ROW DID NOT (P2-usagegaps) ──────────────
-    //
-    // Every count a plane ledgers through the budget book's accrual (`GovState::record_usage`, the
-    // kernel side of `meter_ledger`) is a count `/admin/usage` must price too: a session opened (one
-    // PER_SESSION on the plane's fee lane, `SessionAccount::count_open`), a tool call (a tools
-    // plane's `tool_calls`), a rerank's search units. Each case drives the host's own calls and
-    // asserts `/admin/usage` equals the budget book.
-
-    /// A card pricing the fee plane's `srv.read` lane's `tool_calls` at `per_call_micros`, the fee
-    /// plane at `per_request` / `per_session`, the pools plane's flat fee 5 and its model `m`
-    /// priced per token (1 micro-unit per input token, 2 per output) and per search unit (3).
     fn carded_cost(
         per_call_micros: u64,
         per_request: i64,
@@ -4086,20 +3478,16 @@ mod plane_fees_on_admin_usage {
         .with_plane_fees(&fees)
     }
 
-    /// One served call as the host records it, in the budget book and on the metering series.
     enum Call {
-        /// A pools call on `m`: its admission, its tokens ledgered, its metering row.
         Tokens { input: u64, output: u64 },
-        /// A pools rerank on `m`: its admission, its search units ledgered, its metering row.
+
         Rerank { search_units: u64 },
-        /// A session opened on the fee plane (`SessionAccount::count_open`).
+
         Session,
-        /// A tool call on the fee plane (`charge_round` + `ledger_tool_call`).
+
         Tool,
     }
 
-    /// Serve `calls` through the host's own calls; the budget book's spend (minor units) and
-    /// `/admin/usage`'s total spend (micro-units).
     async fn serve_calls(
         cost: fn() -> busbar_kernel::cost::CostModel,
         calls: &[Call],
@@ -4108,7 +3496,6 @@ mod plane_fees_on_admin_usage {
         (book, view.total.spend_micros)
     }
 
-    /// [`serve_calls`], answering the whole `/admin/usage` view beside the budget book's figure.
     async fn serve_calls_view(
         cost: fn() -> busbar_kernel::cost::CostModel,
         calls: &[Call],
@@ -4195,8 +3582,6 @@ mod plane_fees_on_admin_usage {
         (book, view)
     }
 
-    /// (a) Two sessions at `fees.per_session: 40`: the budget book charges 80, and so does
-    /// `/admin/usage` (before: 0 — no metering row carried the session count).
     #[tokio::test]
     async fn two_sessions_price_their_session_fee_on_admin_usage() {
         let (book, admin) = serve_calls(
@@ -4212,9 +3597,6 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    /// (b) A tools card pricing `tool_calls` at 7 minor units, `tools.fees.per_request: 3`, three
-    /// tool calls: 3 × 3 + 3 × 7 = 30 on the budget book and on `/admin/usage` (before: 9 — the
-    /// fee alone; the `tool_calls` class never reached a metering row).
     #[tokio::test]
     async fn a_planes_ledgered_class_prices_on_admin_usage() {
         let calls = [Call::Tool, Call::Tool, Call::Tool];
@@ -4227,10 +3609,6 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    /// A PLANE'S CLASSES ON THE USAGE ROW (new in 1.6.0, PLANE-FLIP ruling): three tool calls at
-    /// `tool_calls` 7 and the plane's fee 3 — the row and the total each carry `classes.tool_calls`
-    /// with its count 3 and its cost 21, the share of the row's 30 the class is (the fee is the
-    /// rest), never a second pricing added on top.
     #[tokio::test]
     async fn a_planes_class_rides_its_usage_row_with_its_count_and_its_cost() {
         use crate::v1::contract::ClassUsage;
@@ -4263,8 +3641,6 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    /// THE RED ARM: a token-only pools row carries NO `classes` key — its tokens ride the token
-    /// columns, as on 1.5.5, whose usage rows had no such field.
     #[tokio::test]
     async fn a_token_only_row_carries_no_classes_key_as_on_1_5_5() {
         let t = Call::Tokens {
@@ -4283,9 +3659,6 @@ mod plane_fees_on_admin_usage {
         assert!(total.get("classes").is_none());
     }
 
-    /// A rerank's search units — the pools plane's own open class — price on `/admin/usage` as the
-    /// budget book prices them: 2 reranks of 1,000,000 units at 3 micro-units = 6,000,000 micro-units
-    /// plus 2 × the flat fee 5 (before: the fee alone).
     #[tokio::test]
     async fn a_pools_open_class_prices_on_admin_usage() {
         let calls = [
@@ -4305,11 +3678,6 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    /// A POOLS ROW'S OPEN CLASS IS PRICED, NEVER ITEMIZED: the rerank's `search_units` stay in
-    /// `spend_micros` (610 over the model rows and on the total, as above), and no model row, key row
-    /// or total carries a `classes` key — 1.5.5's usage shape, which the signed LEDGER-SIMPLE entry
-    /// pins byte for byte on `usage.gemini|stream-grounded|no-tool-use-count` (its open class there
-    /// is `unitemized_tokens`). Only a non-pools plane's row itemizes its declared classes.
     #[tokio::test]
     async fn a_pools_open_class_is_priced_but_never_itemized_on_the_usage_read() {
         let calls = [
@@ -4358,10 +3726,6 @@ mod plane_fees_on_admin_usage {
         }
     }
 
-    /// (c) Pools-only token traffic is unchanged: the tokens ride the row's token columns, the fee
-    /// the flat `per_request_fee:`, and nothing is counted twice — 2 calls of 1,000,000 input and
-    /// 500,000 output at 1 / 2 micro-units: 4,000,000 micro-units + 2 × 5 = 410 on both books, the
-    /// figure this read served before the change.
     #[tokio::test]
     async fn pools_only_token_traffic_is_unchanged() {
         let t = || Call::Tokens {
@@ -4373,9 +3737,6 @@ mod plane_fees_on_admin_usage {
         assert_eq!(admin, 410 * MICROS_PER_MINOR);
     }
 
-    /// The row total and each reported class use the same old served entry after a newer
-    /// activation becomes visible across a bucket boundary. Resolving the class by wall time a
-    /// second time would report a cost that disagrees with the very row containing it.
     #[tokio::test]
     async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
         use busbar_kernel::cost::{Author, CardEntryDraft, History};
@@ -4444,9 +3805,6 @@ mod plane_fees_on_admin_usage {
         assert_eq!(view.rate_card_version, Some(old_seq.get()));
     }
 
-    /// THE DATED PATH (#79) prices a row's ledgered classes as the fallback does: a plane's fee row
-    /// carrying 2 sessions at 40, a tool row carrying 3 requests at fee 3 and 3 `tool_calls` at 7, a
-    /// pools row carrying 1,000,000 search units at 3 micro-units and 1 request at the flat 5.
     #[test]
     fn the_dated_read_prices_a_rows_classes_as_the_fallback_does() {
         use crate::v1::contract::UsageBreakdown;
@@ -4483,7 +3841,6 @@ mod plane_fees_on_admin_usage {
         }
     }
 
-    /// Everything at once: every lane's counts on one `/admin/usage` total, equal to the budget book.
     #[tokio::test]
     async fn mixed_traffic_agrees_with_the_budget_book() {
         let calls = [
@@ -4504,12 +3861,6 @@ mod plane_fees_on_admin_usage {
     }
 }
 
-/// STORE-DEFAULT (admin) — THE STORE CATALOG'S COMPILED-IN ROWS ARE THE STORES THIS BUILD LINKS, read
-/// off the root's installed linked rows, in table order, ahead of every dropped-in row. Admin names no store instance; the row shape (`store`, `compiled-in`, no
-/// `active`) is 1.5.5's.
-///
-/// RED when the catalog stops reading the linked rows (a fixed name, or no head row): the head names
-/// differ from the linked table's.
 #[test]
 fn the_store_catalog_heads_with_the_linked_store_rows() {
     let svc = svc_with(tmp_plugins_dir("linked-head"), unsigned_ok_posture());
@@ -4529,8 +3880,6 @@ fn the_store_catalog_heads_with_the_linked_store_rows() {
     assert_eq!(head, want);
 }
 
-/// The admin surface's trust resolution (`admission`, which catalog, install, inspect and rollback
-/// reach) warns about a malformed anti-downgrade floor as boot does, before answering.
 #[test]
 fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     use busbar_kernel::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
@@ -4550,7 +3899,6 @@ fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     );
 }
 
-/// An admission whose trust policy never resolves, in the root's words.
 struct RefusingAdmission;
 
 impl busbar_kernel::admission::PluginAdmission for RefusingAdmission {
@@ -4611,9 +3959,6 @@ impl busbar_kernel::admission::PluginAdmission for RefusingAdmission {
     }
 }
 
-/// THE ADMIN SURFACE JUDGES UNDER THE SNAPSHOT'S ADMISSION AND NO OTHER: an App handed a root
-/// admission whose policy refuses is refused by every admin trust moment with that admission's
-/// words (the catalog lists the linked rows alone), and an App with no admission resolves nothing.
 #[test]
 fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     static REFUSING: RefusingAdmission = RefusingAdmission;
@@ -4650,13 +3995,10 @@ fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     let mut none = (*app).clone();
     none.plugin_admission = None;
     assert!(super::operations::admission(&none).is_err());
-    // With no admission no filename is a plugin tarball (fail-closed).
+
     assert!(validate_plugin_filename(&none, "plain.tar.gz").is_err());
 }
 
-/// A Store read parks at a barrier. A sibling on the one-worker runtime announces it ran;
-/// the watchdog releases the read after that announcement or a bounded timeout. The timeout
-/// still releases an incorrectly inline read, so the regression fails without hanging.
 async fn overlay_read_left_the_worker_free<F, Fut>(read: F) -> bool
 where
     F: FnOnce(Arc<App>) -> Fut,
@@ -4686,10 +4028,6 @@ where
     free
 }
 
-/// RED (a read blocks an async worker): `GET /<section>` lists the overlay's unparseable entries,
-/// which reads and parses the operator's Store overlay. That read runs off the async worker.
-/// RED while it ran inline: the worker parked in the Store, the sibling
-/// never ran, and only the watchdog could release the read.
 #[tokio::test(flavor = "current_thread")]
 async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let free = overlay_read_left_the_worker_free(|app| async move {
@@ -4707,8 +4045,6 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     );
 }
 
-/// RED, the single-entry twin: `GET /<section>/{name}` for a name the live config does not hold
-/// falls back to the overlay's unparseable entries — the same Store read, off the worker too.
 #[tokio::test(flavor = "current_thread")]
 async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let free = overlay_read_left_the_worker_free(|app| async move {
@@ -4725,9 +4061,6 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     );
 }
 
-/// GREEN twin: the overlay read still FLAGS what it finds. An entry the operator's overlay holds
-/// that this binary cannot parse is listed (and answered by name) as the flagged view, beside the
-/// live definitions — moving the read off the worker changed where it runs, not what it says.
 #[tokio::test(flavor = "current_thread")]
 async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
@@ -4755,7 +4088,6 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     );
 }
 
-/// A Store read failure is an error, never a fabricated empty list or missing definition.
 #[tokio::test]
 async fn named_defs_propagate_store_overlay_read_failures() {
     let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
@@ -4776,10 +4108,6 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     ));
 }
 
-/// SENSITIVE BY DEFAULT (owner ruling 2026-10-27): a settings bag in an admin view shows its keys,
-/// and the values of the keys its plugin's schema declares `x-busbar-public` alone. An undeclared
-/// setting's value never appears; a declared-public one is shown; a module that declares nothing
-/// shows keys alone, exactly as before.
 #[test]
 fn an_admin_view_shows_only_declared_public_setting_values() {
     let public = |module: &str| -> std::collections::BTreeSet<String> {

@@ -2,14 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The neutral `<n><unit>` duration parser shared by the plane config readers.
-//!
-//! Both plane config surfaces (a tool plane's `verify_ttl`, an agent plane's
-//! `reverify_ttl`/`backoff`) and core's admin/key-TTL paths express durations as `7d`/`24h`/`30s`.
-//! One parser, in the neutral substrate, so a plane crate names it without reaching into
-//! busbar-core; core re-exports it from `admin`.
 
 /// Parse a duration string (`<n><unit>`, unit in s|m|h|d) to seconds. Bounded so an absurd value
-/// cannot overflow the `exp` computation.
+
 pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
     let s = s.trim();
     let (num, unit) = s.split_at(

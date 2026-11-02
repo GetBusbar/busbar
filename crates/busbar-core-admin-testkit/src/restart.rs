@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Restart fixture orchestration, shared with the admin service's own unit-test binary.
-
-/// Force the real restart handler to see no supervisor on this thread while `f` runs.
-/// Restores the prior override when the future completes, panics, or is dropped. Like the
-/// underlying thread-local seam, this requires a current-thread executor.
 pub async fn with_forced_unsupervised<F, Fut, T>(f: F) -> T
 where
     F: FnOnce() -> Fut,

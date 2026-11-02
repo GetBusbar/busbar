@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! NO THREAD PER CONNECTION (`BUSBAR-1.6.0.md` THE DESIGN, §5 and §11.2): a worker opens 64 composed
-//! connections to a real far end on its own runtime, moves bytes on each and closes them, and the
-//! process runs no more threads than before; every framer crossing ran on the one worker thread.
-//! The RED arm proves the count this reads sees a thread per connection when there is one.
-//!
-//! A binary of its own, its two tests serialized, so no other test's threads move the count.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -95,7 +90,7 @@ fn a_thread_per_connection_is_seen_by_the_count() {
 }
 
 /// No thread per connection: 64 connections open, move bytes and close, and the process runs no
-/// more threads than before the first; every framer crossing ran on the one worker thread.
+
 #[test]
 fn no_thread_per_connection() {
     let _one = ONE_AT_A_TIME

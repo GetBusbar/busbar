@@ -1,8 +1,4 @@
 //! THE C HEADER GENERATOR, DRIVEN OVER SYNTHETIC SOURCES AND OVER THE REAL TREE.
-//!
-//! BUSBAR-1.6.0.md §11.5 (line 1322) and #84 (line 2237): a third party builds a plugin from the
-//! generated C header alone. These tests pin what the generator maps, how it names and orders what
-//! it maps, and that it FAILS, naming the item, on what it cannot map.
 
 mod render;
 
@@ -72,7 +68,7 @@ fn scalars_pointers_arrays_and_constants_map_to_c() {
 }
 
 /// A struct stated through `abi_struct!` renders exactly as the same struct written plainly, docs
-/// and order included; `abi_op!`/`abi_answers!` invocations are glue and render nothing.
+
 #[test]
 fn an_abi_struct_declaration_renders_as_the_plain_struct() {
     let plain = r#"
@@ -410,8 +406,7 @@ fn the_committed_header_is_what_the_sources_render() {
 }
 
 /// Audit contract-include #1: a struct the golden records by its module path
-/// (`tkind::route::RouteMatch`) or under its alias (`MechStr` for `AbiStr`) is pinned like any
-/// other, and the real tree's render fails, naming it, on a struct the golden does not record.
+
 #[test]
 fn every_struct_is_pinned_by_its_module_path_or_alias_and_an_unpinned_one_fails() {
     use render::render_sources_pinned;

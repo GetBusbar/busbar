@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the contract's status-class vocabulary.
-
 use busbar_contract::upstream::StatusClass;
 
 fn status_class_from_str(s: &str) -> Option<StatusClass> {
@@ -11,10 +9,6 @@ fn status_class_from_str(s: &str) -> Option<StatusClass> {
 
 #[test]
 fn status_class_from_str_maps_known_values_and_rejects_unknown() {
-    // Every recognised classification round-trips from its wire token; a token the operator's
-    // error_map lowered to something UNRECOGNISED yields `None`, which is how the classifier learns
-    // an error_map entry points at a class that no longer exists (it then leaves the signal unmapped
-    // rather than guessing). Nothing exercised this None arm before.
     assert!(matches!(
         status_class_from_str("rate_limit"),
         Some(StatusClass::RateLimit)
@@ -43,9 +37,6 @@ fn status_class_from_str_maps_known_values_and_rejects_unknown() {
     assert!(status_class_from_str("").is_none());
 }
 
-/// Every classification the operator's `error_map` may name parses to its class, `billing` and
-/// `client_error` included; an unknown word is `None` (no fallback arm). Rehomes
-/// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_status_class_from_str_exhaustive.
 #[test]
 fn every_error_map_class_word_parses_and_an_unknown_word_does_not() {
     for (word, class) in [

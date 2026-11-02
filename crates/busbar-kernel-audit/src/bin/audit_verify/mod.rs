@@ -66,9 +66,6 @@ fn envelope(value: &Value) -> Result<&str> {
     Ok(name)
 }
 
-// Read the versioned public field table, embedded in the tool so offline use needs no files
-// other than the captured API bodies. Primitive framing and signature checks remain in their
-// existing audited implementations; no producer enum decoding is needed for the published wire.
 fn fields(page: &str) -> Result<Vec<(&str, Kind)>> {
     let mut fields = Vec::new();
     for line in page.lines() {
@@ -269,8 +266,7 @@ pub(super) fn verify(keys: &Value, range: &Value, head: Option<&Value>) -> Resul
         signed(record, &keys)?;
         previous = Some(hash);
     }
-    // This is supplied by the source, not independently trusted. If its record is outside the
-    // window only its signature can be checked; seq/wall are not separately signed by a head.
+
     let anchor = range.get("anchor").ok_or("range anchor member is absent")?;
     if !anchor.is_null() {
         signed(anchor, &keys)?;

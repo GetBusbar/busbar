@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The auth kind's `Kind` adapter over crafted answers: for each checked op a legal answer, a
-//! broken rule, a reported count one above the host's cap over a dangling array (FAULT before any
-//! slice exists), and an `in` smaller than the op's struct; then the short-buffer reading.
-
 use std::mem::size_of;
 use std::ptr::NonNull;
 
@@ -33,7 +29,6 @@ const BUF_CAP: usize = 64;
 const GROUPS_CAP: u32 = 2;
 const FIELDS_CAP: u32 = 2;
 
-/// The answer of op `slot` over `input`/`out`, `in_size` bytes of `in`.
 fn answer<I, O>(
     slot: u32,
     outcome: Outcome,
@@ -107,7 +102,6 @@ fn verify_in_with(out_buf: IdentityBuf, strip: *mut StripName, strip_cap: u32) -
     }
 }
 
-/// A READY `verify` answer: `identified` with the decision every READY verify carries.
 fn verified(verdict: u32, groups_len: u32) -> IdentifyOut {
     IdentifyOut {
         decision: DECISION_CONTINUE,
@@ -129,7 +123,6 @@ fn complete_login_in(out_buf: IdentityBuf) -> CompleteLoginIn {
     }
 }
 
-/// An identity `verdict` with subject `0..5` and `groups_len` groups.
 fn identified(verdict: u32, groups_len: u32) -> IdentifyOut {
     IdentifyOut {
         head: out_head(),
@@ -245,8 +238,6 @@ fn the_kind_names_its_code_timeout_and_ops() {
     assert_eq!(Auth::op_name(0), "validate");
 }
 
-// ---- verify ----
-
 #[test]
 fn verify_green_identity_with_groups() {
     let mut bytes = [0u8; BUF_CAP];
@@ -329,8 +320,6 @@ fn verify_red_a_foreign_in() {
     assert_eq!(rule(Auth::check(&a)), Rule::Foreign);
 }
 
-/// THE STRIPS (THE DESIGN, "Auth points and guest lists", step 3): a READY verify's strip
-/// names are read from the host's array whatever the verdict, bounded by its capacity.
 #[test]
 fn verify_green_strips_with_any_verdict() {
     let mut bytes = [0u8; BUF_CAP];
@@ -354,8 +343,6 @@ fn verify_green_strips_with_any_verdict() {
     }
 }
 
-/// RED: a strip count over the host's capacity is FAULT before any slice is built; an unknown
-/// place and a missing decision are the kind's vocabulary faults.
 #[test]
 fn verify_red_strips_and_decision() {
     let mut bytes = [0u8; BUF_CAP];
@@ -396,7 +383,7 @@ fn verify_red_strips_and_decision() {
     )
     .unwrap_err();
     assert_eq!((f.rule, f.field), (Rule::UnknownCode, "verify.vocabulary"));
-    // A credential without an identity contradicts the verdict.
+
     let mut out = verified(VERDICT_PASS, 0);
     out.identity.credential = Span { offset: 0, len: 4 };
     let f = check(slot::VERIFY, Outcome::Ready, &input, &out).unwrap_err();
@@ -405,8 +392,6 @@ fn verify_red_strips_and_decision() {
         (Rule::Contradiction, "verify.unexpected")
     );
 }
-
-// ---- complete_login ----
 
 #[test]
 fn complete_login_green_identity_with_groups() {
@@ -465,8 +450,6 @@ fn complete_login_red_a_foreign_in() {
     );
     assert_eq!(rule(Auth::check(&a)), Rule::Foreign);
 }
-
-// ---- fields ----
 
 #[test]
 fn fields_green_one_field_and_none() {
@@ -540,8 +523,6 @@ fn fields_red_a_foreign_in() {
     assert_eq!(rule(Auth::check(&a)), Rule::Foreign);
 }
 
-// ---- begin_login (plugin-owned URL and form: no host cap, so no over-cap case) ----
-
 #[test]
 fn begin_login_green_an_authorize_url() {
     let out = begin_login_out(BEGIN_AUTHORIZE, "https://idp.example/authorize");
@@ -581,8 +562,6 @@ fn begin_login_red_a_foreign_in() {
     assert_eq!(rule(Auth::check(&a)), Rule::Foreign);
 }
 
-// ---- unchecked ops ----
-
 #[test]
 fn open_outbound_states_no_rule_of_its_own() {
     let input = OpenOutboundIn {
@@ -600,8 +579,6 @@ fn open_outbound_states_no_rule_of_its_own() {
         Ok(())
     );
 }
-
-// ---- short ----
 
 #[test]
 fn short_is_a_failed_answer_asking_for_more() {
@@ -626,7 +603,7 @@ fn short_is_a_failed_answer_asking_for_more() {
         &real,
     );
     assert!(!Auth::short(&a));
-    // A strip array too small is a short answer too.
+
     let strip_short = IdentifyOut {
         needed_strip: 1,
         ..identified(0, 0)
@@ -665,9 +642,6 @@ fn short_is_a_failed_answer_asking_for_more() {
     assert!(!Auth::short(&a));
 }
 
-/// THE TAIL'S LOGIN RULE: the login classification is `NONE` exactly when `CAP_LOGIN` is absent,
-/// and one the host knows; a tail where the two disagree refuses the load. The agreeing tails read
-/// back their login kind.
 #[test]
 fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
     use busbar_contract::abi::auth::{
@@ -728,10 +702,6 @@ fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
     assert!(bind(CAP_LOGIN, 9).is_err(), "an unknown kind");
 }
 
-/// THE TAIL'S POINT RULES (THE DESIGN, "Auth points and guest lists"): an inbound plugin states
-/// a valid, non-empty inbound point set and no other plugin states one; every style states known
-/// flags and a valid, non-empty point set. Each broken tail refuses the load; the agreeing tails read
-/// back their inbound points.
 #[test]
 fn a_tail_with_a_broken_point_set_refuses() {
     use busbar_contract::abi::auth::{
@@ -780,7 +750,7 @@ fn a_tail_with_a_broken_point_set_refuses() {
         bind(CAP_OUTBOUND, 0, style(STYLE_NEEDS_HEADERS, POINT_HEAD)),
         Ok(Some(AuthPoints::EMPTY))
     );
-    // RED: the inbound set.
+
     assert!(
         bind(CAP_INBOUND, 0, &[]).is_err(),
         "an inbound plugin with no point"
@@ -797,7 +767,7 @@ fn a_tail_with_a_broken_point_set_refuses() {
         bind(CAP_OUTBOUND, POINT_PEER, &[]).is_err(),
         "points without verify"
     );
-    // RED: a style's set and flags.
+
     assert!(
         bind(CAP_OUTBOUND, 0, style(0, 0)).is_err(),
         "a style with no point"
@@ -812,10 +782,6 @@ fn a_tail_with_a_broken_point_set_refuses() {
     );
 }
 
-/// THE CARRIERS ARE STATEMENT MARKS (the design's One Statement: an auth plugin's inbound carriers
-/// are its Statement's `MARK_WORD_CARRIER` word marks, never a tail fact): the kind reads them off
-/// the Statement at bind, lower-case and in order, and skips every other word class. More than the
-/// host's bound refuses the load.
 #[test]
 fn the_carriers_are_the_statements_carrier_marks() {
     use busbar_contract::abi::auth::{AuthTail, CAP_INBOUND, LOGIN_KIND_NONE, POINT_HEAD};
@@ -869,12 +835,6 @@ fn the_carriers_are_the_statements_carrier_marks() {
     );
 }
 
-/// THE OPERATOR FACT and THE KIND TAIL GROWTH RULE on the auth tail. `FACT_OPERATOR` needs
-/// `CAP_INBOUND` and a non-empty principal, and a principal needs the fact; each half alone refuses
-/// the load, and the agreeing tail reads its principal back. A tail of the FROZEN size (40 bytes,
-/// built before `operator_principal` was appended) still loads, its appended bytes never read: the
-/// principal reads absent even when the memory past its size holds one. A tail below the frozen
-/// size refuses. RED: the strict "smaller than this host's" rule refused the 40-byte tail.
 #[test]
 fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
     use busbar_contract::abi::auth::{
@@ -940,11 +900,6 @@ fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
     );
 }
 
-/// THE CREDENTIAL-READ FACT (ARCHITECT 2026-10-01, AUTH-DOOR Q2 ruling B): `FACT_READS_CREDENTIALS`
-/// needs `CAP_INBOUND` and a non-empty list of non-empty kinds, and a list needs the fact; each half
-/// alone refuses the load, and the agreeing tail reads its kinds back, onto the instance the host
-/// serves `records.secret` to. An OLDER tail (56 bytes, before the list was appended) reads none,
-/// even when the memory past its size holds a list. RED: before the fact, no tail named a kind.
 #[test]
 fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
     use busbar_contract::abi::auth::{
@@ -1010,10 +965,6 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
     );
 }
 
-/// THE ISSUED-CREDENTIAL SHAPE (row 159, K3#4): a row that reads host-held credentials states the
-/// shape of the credential the host issues for it in kind-neutral `MARK_WORD_ISSUED_*` word marks,
-/// read back whole; a malformed shape refuses the load, each way named below. RED before the loader
-/// reads the marks (no shape was ever read, and none refused).
 #[test]
 fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuses() {
     use busbar_contract::abi::auth::{
@@ -1161,5 +1112,4 @@ fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuse
     assert!(bind(reads, twice).is_err(), "a class stated twice");
 }
 
-/// One refused-marks case: what it shows, the marks the row states, and the class it reads.
 type RefusedMarks = (&'static str, Vec<(u32, &'static str)>, u32);

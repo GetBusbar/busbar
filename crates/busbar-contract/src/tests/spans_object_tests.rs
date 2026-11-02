@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The byte-level member splices: every byte the edit does not govern stays the caller's. The
-//! cases are plane-llm's (`codec/tests/json_splice_tests.rs`), moved with the code, and the member
-//! reading plane-streaming, plane-a2a and plane-mcp each do over their own frames.
 
 use super::*;
 
@@ -133,12 +131,8 @@ fn a_nested_object_is_located_for_its_own_edits() {
     );
 }
 
-// ══ THE MEMBER READING THE OTHER PLANES DO ═══════════════════════════════════════════════════════
-
 #[test]
 fn members_are_located_with_their_keys_unescaped_and_their_values_as_written() {
-    // plane-streaming `splice::members` over a realtime frame: each key, where the member starts,
-    // and the value's span; the index past the closing brace is `close + 1`.
     let frame =
         br#"{"type":"session.update", "session" : {"max_tokens":12,"x":"a}\"b"}, "n":1e400 }"#;
     let obj = members(frame, 0).expect("object");
@@ -156,7 +150,7 @@ fn members_are_located_with_their_keys_unescaped_and_their_values_as_written() {
         "a number past f64 keeps its spelling"
     );
     assert_eq!(obj.close + 1, frame.len());
-    // An escaped key reads unescaped, and `RawMember::is` matches it without allocating.
+
     let escaped = br#"{"res\u0075lt":{"a":1}}"#;
     assert_eq!(
         members(escaped, 0).expect("object").members[0].key,
@@ -170,20 +164,19 @@ fn members_are_located_with_their_keys_unescaped_and_their_values_as_written() {
     })
     .expect("object");
     assert_eq!(found, Some(Span::new(15, 22)));
-    // Leading whitespace before the brace is allowed; an empty object has no members.
+
     assert_eq!(members(b"  {  }", 0).expect("object").members, Vec::new());
 }
 
 #[test]
 fn a_value_ends_at_its_own_end() {
-    // A closer or a quote inside a string never ends a container.
     let b = br#"{"a":"}]","b":[1,{"c":"]"}]} tail"#;
     assert_eq!(value_end(b, 0), Some(b.len() - 5));
     assert_eq!(value_end(b"  true,", 0), Some(6));
     assert_eq!(value_end(b"-1.5e3}", 0), Some(6));
     assert_eq!(value_end(b"123", 0), Some(3), "a scalar may run to the end");
     assert_eq!(value_end(br#""a\"b""#, 0), Some(6));
-    // Unterminated, or nothing there.
+
     for b in [&b"{\"a\":1"[..], b"\"abc", b"[1,2", b"", b"  ", b","] {
         assert_eq!(value_end(b, 0), None, "{:?}", String::from_utf8_lossy(b));
     }

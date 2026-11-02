@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The connection table ACROSS ITS LOWERING: a plugin holding only the `#[repr(C)]` table and the
-//! context its host minted ([`HostConns`]) reaches a host's [`Conns`] exactly as a linked caller
-//! does, and is refused exactly as one is — a connection another instance owns, a closed one, and
-//! a need it never declared.
 
 use super::*;
 use crate::conn::ConnSlab;
@@ -42,7 +39,7 @@ impl Conns for Echo {
         text: bool,
     ) -> Result<usize, ConnError> {
         let (_, q) = self.0.get(caller, conn)?;
-        // A text write echoes marked, so the bit's crossing is visible to the reader.
+
         let marked = if text { b"text:".as_slice() } else { b"" };
         q.lock().unwrap().push([marked, bytes].concat());
         Ok(bytes.len())
@@ -57,13 +54,12 @@ impl Conns for Echo {
         let (_, q) = self.0.get(caller, conn)?;
         let mut q = q.lock().unwrap();
         if q.is_empty() {
-            // Interest registered under the caller's ticket; the host would wake it later.
             self.1.lock().unwrap().push(ticket);
             return Err(ConnError::Pending);
         }
         let next = q.remove(0);
         buf[..next.len()].copy_from_slice(&next);
-        // The first answer carries a reason phrase after its bytes, as a head's last piece does.
+
         let reason = (next == b"hellokv").then(|| {
             buf[next.len()..next.len() + 2].copy_from_slice(b"OK");
             next.len()..next.len() + 2
@@ -77,7 +73,7 @@ impl Conns for Echo {
             status_code: Some(200),
             status_namespace: Some("numbering".into()),
             retry_after_secs: None,
-            // The first answer states a declared body length, as a head may.
+
             declared_len: (next == b"hellokv").then_some(4096),
             fault: None,
             reason,
@@ -127,7 +123,7 @@ fn two() -> (Box<ConnHost>, Box<ConnHost>, HostConns, HostConns) {
 }
 
 /// Every operation crosses and comes back as itself: the open's fields and body, a write, the piece
-/// with its status and numbering, the wait, the facts, the close.
+
 #[test]
 fn every_operation_crosses_the_lowering() {
     let (_a, _b, pa, _) = two();
@@ -147,10 +143,10 @@ fn every_operation_crosses_the_lowering() {
     let mut buf = [0_u8; 64];
     let piece = pa.read(conn, 0, &mut buf).unwrap();
     assert_eq!(&buf[..piece.len], b"hellokv");
-    // The reason crosses the lowering as a range of the caller's buffer, and reads back.
+
     assert_eq!(piece.reason, Some(7..9));
     assert_eq!(&buf[7..9], b"OK");
-    // The declared body length crosses the lowering untouched.
+
     assert_eq!(piece.declared_len, Some(4096));
     assert_eq!(
         (
@@ -169,7 +165,7 @@ fn every_operation_crosses_the_lowering() {
     assert_eq!(pa.write(conn, b"again", true, false), Ok(5));
     let again = pa.read(conn, 0, &mut buf).unwrap();
     assert_eq!(&buf[..again.len], b"again");
-    // RED (C19-TAIL U5 write): the text bit crosses the lowering.
+
     assert_eq!(pa.write(conn, b"{}", true, true), Ok(2));
     let text = pa.read(conn, 0, &mut buf).unwrap();
     assert_eq!(&buf[..text.len], b"text:{}", "a text write crosses as text");
@@ -198,7 +194,7 @@ fn every_operation_crosses_the_lowering() {
 }
 
 /// RED ARM — CROSS-INSTANCE: a connection one instance opened is refused to another on every
-/// operation, across the lowering, and stays its owner's.
+
 #[test]
 fn another_instances_connection_is_refused_across_the_lowering() {
     let (_a, _b, pa, pb) = two();
@@ -258,7 +254,7 @@ fn an_undeclared_need_opens_nothing_across_the_lowering() {
 }
 
 /// Every outcome byte decodes, and only the twelve stated ones decode to themselves: an unknown byte
-/// is a fault, never a refusal it is not.
+
 #[test]
 fn every_outcome_byte_decodes_and_the_unknown_ones_are_faults() {
     for e in [
@@ -298,7 +294,7 @@ fn a_null_context_is_a_fault() {
 }
 
 /// A request whose credential is unavailable is refused by its own outcome byte and its own text,
-/// both ways across the ABI: never the generic refusal.
+
 #[test]
 fn an_unavailable_credential_is_refused_by_name() {
     assert_eq!(
@@ -320,8 +316,7 @@ fn an_unavailable_credential_is_refused_by_name() {
 }
 
 /// An auth's refusal and an auth call's failure each cross the ABI by their own outcome byte and
-/// their own text, and both read as auth outcomes, never the destination failing; no other cause
-/// does.
+
 #[test]
 fn an_auth_outcome_crosses_by_name_and_is_never_the_destinations() {
     assert_eq!(RawConnOutcome::of(Err(ConnError::AuthRefused)).0, 10);
@@ -343,7 +338,7 @@ fn an_auth_outcome_crosses_by_name_and_is_never_the_destinations() {
 }
 
 /// An instance its host handed no table answers [`ConnError::Unarmed`], by its own refusal text and
-/// its own outcome byte, both ways across the ABI.
+
 #[test]
 fn an_unarmed_instance_is_refused_by_name() {
     assert_eq!(RawConnOutcome::of(Err(ConnError::Unarmed)).0, 8);
@@ -355,7 +350,7 @@ fn an_unarmed_instance_is_refused_by_name() {
 }
 
 /// NOTHING BLOCKS: a read with nothing ready answers pending at once, and the caller's wake ticket
-/// crosses the lowering to the host, which registers interest under it.
+
 #[test]
 fn a_read_with_nothing_ready_is_pending_and_hands_the_host_its_ticket() {
     let echo = Arc::new(Echo::default());
@@ -384,7 +379,7 @@ fn a_read_with_nothing_ready_is_pending_and_hands_the_host_its_ticket() {
 }
 
 /// A host minted with its state behind it, then MOVED (returned by value, pushed into a vector)
-/// after the context was taken: the context points at the heap-stable state, not the moved value.
+
 fn minted() -> (ConnHost, ConnCtx) {
     let echo = Arc::new(Echo::default());
     echo.0.declare(InstanceId(1), NEED);
@@ -394,9 +389,7 @@ fn minted() -> (ConnHost, ConnCtx) {
 }
 
 /// RED: moving a `ConnHost` after minting its context leaves every call through that context
-/// sound. The host is returned from a helper and then moved into a vector before any call; the
-/// plugin's table still opens, writes and reads back its bytes. With the context pointing at the
-/// `ConnHost` value itself this reads freed stack memory.
+
 #[test]
 fn a_host_moved_after_minting_its_context_still_serves_the_table() {
     let (host, ctx) = minted();
@@ -423,7 +416,7 @@ fn a_host_moved_after_minting_its_context_still_serves_the_table() {
 }
 
 /// RED: the opening message's head words cross the lowering as the plugin stated them (appended
-/// to `WireOpenDesc`), and none are stated by a descriptor without them.
+
 #[test]
 fn the_head_words_cross_the_lowering() {
     let (_a, _b, pa, _) = two();
@@ -444,7 +437,7 @@ fn the_head_words_cross_the_lowering() {
 }
 
 /// RED: a descriptor whose size ends before the appended head words is read without them, never
-/// past its size; one shorter than that is a fault.
+
 #[test]
 fn a_descriptor_without_the_head_words_states_none() {
     let echo = Echo::default();
@@ -535,11 +528,7 @@ impl Conns for Panics {
 }
 
 /// RED (THE DESIGN, the signed kind-ABI design's finding M3, `BUSBAR-1.6.0.md` l.1515): every slot
-/// of the host's table is `extern "C"`, never `extern "C-unwind"` — the bindings below are typed
-/// `extern "C"`, and a `C-unwind` slot does not coerce to them, so this does not compile against
-/// one — and a host that panics in every operation answers [`ConnOutcome::Fault`] from each of the
-/// six slots. Nothing unwinds across the table: a panic escaping an `extern "C"` slot aborts the
-/// process, so this test reaching its end is the proof that each slot caught its own.
+
 #[test]
 fn a_panicking_slot_answers_fault_without_unwinding() {
     let slots = host_slots();

@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LINKED STORE DOOR, PROVEN WHERE IT IS LINKED (R-FIX3). The kernel's test build takes no store
-//! crate under any name (THE DESIGN Part 2 #2: the kernel reaches a store only through the store
-//! kind's door): it links the external testkit double (`busbar_kernel_testkit::test_support::store_double`), and
-//! its own tests run against that. These prove the double copies the real door the root links
-//! (`crate::LINKED.stores`): the same Statement, and the same answers to one verb script, both
-//! stores opened through their doors on the store axis exactly as boot opens the configured store.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -23,7 +16,6 @@ fn read(door: DoorFn) -> rendering::Read {
     rendering::read(&stated).expect("the rendering reads")
 }
 
-/// The root's linked store row the double stands in for: the one under the double's key.
 fn real_row() -> &'static busbar_kernel::preflight::LinkedStore {
     crate::LINKED
         .stores
@@ -32,19 +24,18 @@ fn real_row() -> &'static busbar_kernel::preflight::LinkedStore {
         .expect("the root links a store under the key the double answers")
 }
 
-/// `door`, opened through the store axis on a dispatcher of its own, as boot opens a store.
 fn open(door: DoorFn, label: &str) -> Arc<dyn RecordStore> {
     let axis = crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: {
             let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
                 crate::root::loader::dispatch::DispatchConfig::default(),
             ));
-            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+
             let _ = d.lend_seal(busbar_kernel::seal::lend());
             d
         },
         logs: crate::root::boot::plugin_logs().clone(),
-        // Neither store declares a need: each serves with no connection table.
+
         conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
         mint: busbar_kernel::door::op_id,
     };
@@ -65,9 +56,6 @@ fn plane(kind: &str, id: &str, parent: Option<&str>, seq: u64) -> PlaneRecord {
     }
 }
 
-/// One verb script, every answer written down: keys (the tombstone refusals), usage, the 1.5.5
-/// audit rows (read), plane records (upsert, appended chain, parent listing), the
-/// spent-token test-and-set, the live-token read and the denylist. No answer reads the wall clock.
 fn transcript(s: &dyn RecordStore) -> Vec<String> {
     let mut t = Vec::new();
     let key = VirtualKey {
@@ -96,8 +84,7 @@ fn transcript(s: &dyn RecordStore) -> Vec<String> {
         "delete_key unknown {:?}",
         s.delete_key("nope").map_err(|e| e.0)
     ));
-    // The tombstone: written (its instant is the wall clock's, so only its presence is read), and
-    // never cleared by a live-shaped write.
+
     t.push(format!(
         "delete_key {:?}",
         s.delete_key("k1").map_err(|e| e.0)
@@ -172,15 +159,6 @@ fn transcript(s: &dyn RecordStore) -> Vec<String> {
     t
 }
 
-/// R-FIX3: THE KERNEL'S STORE DOUBLE STATES WHAT THE LINKED STORE DOOR STATES, so the kernel's tests,
-/// which boot on the double and build every `GovState` over it, judge the store the binary ships.
-/// Both Statements rendered: the same kind and ABI, `max_inflight`, flag marks, word marks, needs and
-/// tail, and the same ephemeral flag on the linked row; the name is the double's own (the kernel names
-/// no plugin, C1). Both opened through their doors on the store axis: the same answer to every verb
-/// of one script, refusals byte for byte.
-///
-/// RED by flipping any copied rule in the double (e.g. `redeem_plane_token` answering `true` twice,
-/// or `put_key` clearing a tombstone), or by stating a different tail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_kernel_store_double_states_what_the_linked_store_door_states() {
     let row = real_row();

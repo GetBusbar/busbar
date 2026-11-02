@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ABI SINKS (settings, declared secrets, outbound and passthrough credentials): the kernel's own resolution and the loader's own dispatch, in
-//! process, over doors wrapped by the recording shim ([`crate::recorder`]).
-//!
-//! * a LINKED door: the compiled-in `busbar-auth-webhook-signature` and `busbar-auth-header` doors
-//!   the composition root links;
-//! * a DROPPED-IN door: the token-verifying OIDC plugin's cdylib (the pinned git dev-dependency the
-//!   other auth suites package as a tarball), `dlopen`ed here and its `busbar_plugin_door` wrapped.
-//!
-//! Each runs through the path the boot takes: `AuthMiddleware::new` resolves the chain entry's
-//! settings (`config::secret::resolve_settings`) and opens the plugin over the loader's auth axis
-//! (its settings, and the Statement's `secret_refs` as `OpenIn.secrets`); the loader's outbound
-//! rows bind a provider credential (`open_outbound`) and lend a caller's credential on a passthrough
-//! `fields`.
-
 use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
@@ -29,14 +15,12 @@ use busbar_plugin_loader::{LinkedPlugin, PluginRegistry};
 use crate::canary::{Canary, Sink};
 use crate::{common, recorder};
 
-/// The wrapped doors, made once per process: (registry name, recording door).
 struct Doors {
     webhook_signature: (String, DoorFn),
     header: (String, DoorFn),
     oidc: (String, DoorFn),
 }
 
-/// The name `door`'s Statement states.
 fn stated_name(door: DoorFn) -> String {
     let rendering =
         busbar_plugin_loader::dispatch::rendering_of(door).expect("the door renders its Statement");
@@ -61,8 +45,7 @@ fn doors() -> &'static Doors {
             "busbar-auth-header (linked)",
             busbar_auth_header::compiled_in::door::door,
         );
-        // THE DROPPED-IN DOOR: the cdylib a `plugins/` tarball carries, opened as the loader opens
-        // it and never unloaded (the wrapped door points into it for the process's life).
+
         let path = common::plugins::token_verifier_cdylib_path().unwrap_or_else(|| {
             common::plugins::missing(
                 "pinned token-verifying `kind: auth` plugin's",
@@ -88,7 +71,6 @@ fn doors() -> &'static Doors {
     })
 }
 
-/// The registry the root would build over these doors: each a linked auth row.
 fn registry() -> Arc<PluginRegistry> {
     let d = doors();
     let rows = [&d.webhook_signature, &d.header, &d.oidc]
@@ -102,7 +84,6 @@ fn registry() -> Arc<PluginRegistry> {
     )
 }
 
-/// The local issuer the OIDC plugin's settings name, its JWKS served over the stand-in conns.
 fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
     static ONE: OnceLock<busbar_test_kit::test_issuer::Issuer> = OnceLock::new();
     ONE.get_or_init(|| {
@@ -115,8 +96,6 @@ fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
     })
 }
 
-/// Everything the process's tracing writes (every level), captured from the first call on: the
-/// in-process log sink. The subscriber is this test binary's own global default.
 fn tracing_capture() -> &'static Arc<Mutex<Vec<u8>>> {
     static BUF: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
     BUF.get_or_init(|| {
@@ -131,7 +110,6 @@ fn tracing_capture() -> &'static Arc<Mutex<Vec<u8>>> {
     })
 }
 
-/// One write into the captured tracing buffer.
 struct Capture(Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for Capture {
@@ -148,19 +126,17 @@ impl std::io::Write for Capture {
     }
 }
 
-/// The canaries the ABI scenario plants.
 pub struct AbiCanaries {
-    /// DECLARED SECRETS: a Statement `secret_refs` value (`signing-secret`), planted as a FILE SecretRef.
     pub secret_ref_file: Canary,
-    /// SETTINGS: a dropped-in plugin's setting as an ENV SecretRef.
+
     pub settings_env_ref: Canary,
-    /// SETTINGS: a dropped-in plugin's setting as an `env-template` SecretRef.
+
     pub settings_template: Canary,
-    /// SETTINGS, INTERPOLATED: a dropped-in plugin's setting through `${VAR}` interpolation of the config text.
+
     pub settings_interp: Canary,
-    /// OUTBOUND: a provider credential bound through `open_outbound`.
+
     pub outbound_credential: Canary,
-    /// PASSTHROUGH: the caller's own credential on a passthrough binding.
+
     pub passthrough: Canary,
 }
 
@@ -177,7 +153,6 @@ impl AbiCanaries {
     }
 }
 
-/// One chain over `module` with `settings`, built as the boot builds it.
 fn chain(
     rows: &Arc<dyn PluginRows>,
     module: &str,
@@ -197,7 +172,6 @@ fn chain(
     .map(|_| ())
 }
 
-/// RUN the in-process scenarios and answer the sinks: every recorded crossing, every refusal text.
 pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     common::root_install::install();
     let tracing = tracing_capture();
@@ -220,13 +194,11 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         }
     };
     let pid = std::process::id();
-    // One run's variable names, never a canary's own bytes (a name is not a sink of its value).
+
     static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = crate::blackbox::scratch("abi");
 
-    // DECLARED SECRETS: the signing secret, a FILE reference the kernel resolves and the loader lends as
-    // `OpenIn.secrets`.
     let secret_file = dir.join("signing-secret");
     std::fs::write(&secret_file, &c.secret_ref_file.value).expect("the secret file");
     let mut s = serde_json::Map::new();
@@ -241,7 +213,6 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         chain(&rows, &d.webhook_signature.0, s),
     );
 
-    // SETTINGS, dropped-in: a setting as an ENV reference.
     let audience = "api://canary";
     let env_var = format!("BUSBAR_CANARY_AUD_{pid}_{run}");
     std::env::set_var(&env_var, &c.settings_env_ref.value);
@@ -252,7 +223,6 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     );
     outcome("oidc settings (env ref)", chain(&rows, &d.oidc.0, s));
 
-    // SETTINGS, dropped-in: a setting as an `env-template` reference.
     let tpl_var = format!("BUSBAR_CANARY_TPL_{pid}_{run}");
     std::env::set_var(&tpl_var, &c.settings_template.value);
     let mut s = issuer.settings(audience);
@@ -265,7 +235,6 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         chain(&rows, &d.oidc.0, s),
     );
 
-    // SETTINGS, dropped-in: `${VAR}` interpolated into the config text, then parsed.
     let interp_var = format!("BUSBAR_CANARY_INTERP_{pid}_{run}");
     std::env::set_var(&interp_var, &c.settings_interp.value);
     let text =
@@ -283,8 +252,6 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         std::env::remove_var(v);
     }
 
-    // OUTBOUND and PASSTHROUGH: the provider credential bound on the outbound rows, a request's fields asked for,
-    // then a passthrough binding lent the caller's credential.
     let dispatcher = busbar_plugin_loader::dispatch::Dispatcher::new(
         busbar_plugin_loader::dispatch::DispatchConfig::default(),
     );

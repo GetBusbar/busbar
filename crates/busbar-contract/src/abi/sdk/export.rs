@@ -2,20 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE EXPORT KIND'S SHARED SINK PIECES (`abi::export`): what every export sink answered alike,
-//! stated once. A sink keeps its own `Life`, its `deliver` and whatever it serves; the rest is here.
-//!
-//! * [`tail`] — the kind's Statement tail over a sink's streams and routes.
-//! * The ops a sink's Statement makes unreachable are optional: `scrape` on a sink that carries no
-//!   `metrics` stream, `serve` on one that declares no route, `deliver` on one that carries no
-//!   stream but `metrics`. A door leaves them unnamed in `plugin_door!` (NULL); the host never
-//!   calls them. [`NoScrape`], [`NoServe`] still answer them REFUSED, saying why
-//!   ([`NO_EXPOSITION`], [`NO_ROUTE`]), for a door that names every op.
-//! * [`Quiet`] — `status` with nothing to report: READY.
-//! * [`instance_names`] and [`one_instance_reason`] — the `one_instance` limits check: the sink
-//!   says only WHY it runs one instance; the host words the refusal of every instance after the
-//!   first, naming the first.
-//! * A kind op that reads the open instance is a [`HeldSlot`](crate::abi::sdk::life::HeldSlot)
-//!   named as `Safe<Opened<_>>`: the SDK answers a call with no open instance in its own words.
 
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -35,7 +21,7 @@ pub const NO_EXPOSITION: &str = "this sink carries no metrics stream, so it rend
 pub const NO_ROUTE: &str = "this sink declares no route, so it serves no request";
 
 /// The export kind's Statement tail: `streams` (as [`ExportStream`](crate::abi::export::ExportStream)
-/// bytes) and `routes`, an empty list stated NULL.
+
 #[must_use]
 pub const fn tail(streams: &'static [u8], routes: &'static [Route]) -> Tail {
     Tail {
@@ -112,9 +98,7 @@ pub fn instance_names(input: Lent<'_, CheckIn>) -> Vec<String> {
 }
 
 /// THE `one_instance` LIMITS CHECK: with more than one instance of the sink configured (`names`,
-/// in configuration order), the sink's one finding is `why` a second instance cannot run; none
-/// otherwise. The host words the refusal of each instance after the first around it, naming the
-/// first (`export.<name>: a second `module: <m>` instance (already defined as '<first>'). <why>`).
+
 #[must_use]
 pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
     if names.len() > 1 {
@@ -125,9 +109,7 @@ pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
 }
 
 /// THE `one_instance` LIMITS CHECK WORDED BY THE SINK (deprecated: the host words the refusal
-/// around [`one_instance_reason`]): one finding per instance after the first, naming the first and
-/// saying `why` a second cannot run. Kept so a sink built against it still compiles; the host keeps
-/// such whole lines verbatim, so what an operator reads is unchanged.
+
 #[must_use]
 pub fn second_instances(names: &[String], alias: &str, why: &str) -> Vec<String> {
     let Some((first, rest)) = names.split_first() else {

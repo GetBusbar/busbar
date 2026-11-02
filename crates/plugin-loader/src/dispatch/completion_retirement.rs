@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Explicit terminal-result consumption, bound to an existing driver and service epoch.
-
 use super::ticket::{InstanceWake, Waking};
 use busbar_contract::abi::mechanism::{
     call::{Blob, InHead, OutHead, Outcome, BLOB_OCTETS},

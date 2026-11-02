@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Generic host inspection through existing MAIN extension bytes. The host supplies authority;
-//! no principal, pointer, or completion handle in a plugin's request can establish it.
-
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::{
@@ -20,9 +17,6 @@ fn caller_key(wake: &'static InstanceWake) -> usize {
     std::ptr::from_ref(wake) as usize
 }
 
-/// A per-crossing input loan. Blob::from_raw_parts adopts AbiStr's call-only lifetime:
-/// plugins copy facts before returning. The epoch owns the receipt, not historical input blobs;
-/// RESUME, DRIVE and short recall each receive a fresh loan of that same receipt.
 pub(crate) struct Input {
     input: *mut InHead,
     original: Blob,
@@ -78,8 +72,7 @@ pub(crate) unsafe fn prepare(
     }
     // SAFETY: the host retains this original blob for the frame's lifetime.
     let prior = unsafe { super::validate::lent(original.ptr, original.len) }.ok_or(())?;
-    // Inspection is optional. Old callers keep their original format, truncated trailing
-    // unknown entries and full byte budget when no inspection feature is involved.
+
     let negotiated = feature_present(prior);
     if !prior.is_empty() && original.fmt != BLOB_OCTETS {
         return if negotiated || receipt.is_some() {
@@ -105,7 +98,7 @@ pub(crate) unsafe fn prepare(
     {
         return Err(());
     }
-    // Strict inspection-key validation does not change unrelated keys' first-entry semantics.
+
     let replies = extensions::entries(prior)
         .filter(|(key, _)| *key == inspection::EXT_REPLY.as_bytes())
         .count();
@@ -142,8 +135,7 @@ pub(crate) unsafe fn prepare(
             Ok(None)
         };
     };
-    // Allocate the complete size before copying any secret. No append helper or Arc<[u8]>
-    // conversion can leave an ordinary temporary or reallocated buffer containing the secret.
+
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(len));
     bytes.extend_from_slice(prior);
     #[cfg(test)]
@@ -166,8 +158,6 @@ pub(crate) unsafe fn prepare(
     }))
 }
 
-/// Detect an inspection key even when its value is cut short. Unknown malformed tails retain
-/// the ordinary extensions iterator's behavior; malformed inspection entries are fail-closed.
 fn feature_present(mut bytes: &[u8]) -> bool {
     while bytes.len() >= 2 {
         let key_len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));

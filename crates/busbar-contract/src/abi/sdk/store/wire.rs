@@ -2,30 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A STORE OP'S BODY AS A FUTURE OVER ITS ONE RAW CONNECTION (THE DESIGN, the plugin ABI: every
-//! call is Ready or Pending(wake), never a blocking thread; the connections section: the host's
-//! connector, no socket of the plugin's own). A store that speaks a wire protocol to a remote
-//! backend (a database, a key-value server) writes each op once, as straight-line `async` code
-//! over a [`Wire`] ([`Wire::connect`], [`Wire::write_all`], [`Wire::fill`],
-//! [`Wire::upgrade_secure`], [`Wire::reconnect`]), and [`drive`] runs it across the op's entries:
-//!
-//! * each entry polls the body until it asks the wire for something, then makes that connector
-//!   service on the op's ticket ([`Op::checkout`], [`Op::connector`]) and hands the answer back;
-//! * a service that answers PENDING parks the body (with its buffers) on the op's ticket and the
-//!   op answers PENDING on the connector's wake; the RESUME polls the same body on from where it
-//!   stopped, so no request is sent twice and nothing runs afresh;
-//! * the body's own failures are its own words: a connector failure reaches it as a
-//!   [`ConnFailure`] from the wire call, and the body maps it (`"error connecting to server: …"`).
-//!
-//! KEPT CONNECTIONS (ARCHITECT ruling 2026-10-03, STORE-KEEP: a store keeps its connections across
-//! ops, as 1.5.5's clients did). A store holds one [`Pool`], a bounded set of established
-//! connections sized by its 1.5.5 connection settings, and runs its ops through [`drive_kept`]:
-//! [`Wire::connect`] draws an idle connection of the same need and target from the set
-//! ([`Wire::reused`] says so, and the body skips its handshake; [`Wire::session`] hands back what
-//! the body kept with it), establishes a new one while the set is under its bound, and otherwise
-//! waits, PENDING, until a connection comes back. When the body answers, its connection goes back
-//! to the set, unless a wire call failed on it, the body called [`Wire::discard`], or the op ended
-//! any other way (cancelled, faulted): then it is closed, and the next op establishes a fresh one.
-//! Without a pool ([`drive`]) the op's connection is its own and closed when it answers.
 
 use std::any::Any;
 use std::future::Future;
@@ -43,12 +19,12 @@ use crate::abi::sdk::conn::{ConnFailure, Host, ProcessId};
 pub const READ_CHUNK: usize = 16 * 1024;
 
 /// THE REFUSAL OF AN UPGRADE OVER UNREAD INPUT: the far end sent bytes in the clear that the body
-/// has not consumed when it asked for connection security ([`Wire::upgrade_secure`]).
+
 pub const UPGRADE_OVER_UNREAD_INPUT: &str =
     "bytes the far end sent in the clear are still unread; the upgrade is refused";
 
 /// How long an op waiting for a kept connection, or re-offering a write the connector had no
-/// room for, waits at most before it looks again (a returned connection wakes it sooner).
+
 const RETRY_NS: u64 = 5_000_000;
 
 /// A store op's body, as [`drive`] runs it.
@@ -89,7 +65,6 @@ impl Output {
             .checked_add(bytes.len())
             .expect("wire output length");
         if len > self.bytes.capacity() {
-            // Vec's ordinary growth can free its previous allocation without wiping it.
             let mut next = Zeroizing::new(Vec::with_capacity(len));
             next.extend_from_slice(&self.bytes);
             self.bytes = next;
@@ -175,19 +150,13 @@ impl Wire {
     }
 
     /// The op's connection: declared need `need` to `target` (`None` = the need's own target), a
-    /// kept one when the op runs on a [`Pool`] and one is idle ([`Wire::reused`]).
-    ///
-    /// # Errors
-    /// The connector's failure (the far end, the egress rules or the need said no).
+
     pub async fn connect(&self, need: u32, target: Option<&str>) -> Result<(), ConnFailure> {
         self.connect_timed(need, target, 0).await
     }
 
     /// [`Wire::connect`], a new connection's dial bounded by `timeout_ms` (`0` = the need's own
-    /// timeout, else the host's default): an operator-set connect timeout.
-    ///
-    /// # Errors
-    /// The connector's failure; a dial past `timeout_ms` fails with its timeout.
+
     pub async fn connect_timed(
         &self,
         need: u32,
@@ -204,28 +173,19 @@ impl Wire {
     }
 
     /// Close the connection (it is not fit for reuse) and establish a FRESH one for the same need
-    /// and target, never a kept one: a store's retry on a new connection.
-    ///
-    /// # Errors
-    /// The connector's failure.
+
     pub async fn reconnect(&self) -> Result<(), ConnFailure> {
         self.ask(Ask::Reconnect).await.map(|_| ())
     }
 
     /// CLOSE the op's connection now: it is never kept, and its unread input and unsent output go.
-    /// The op keeps its claim on the kept set, so its next [`Wire::connect`] establishes a new
-    /// connection, to any target: a store tries its endpoint list in order, "open; on reject close
-    /// and try the next" (the design, the store plugin section on endpoint lists). No connection: nothing to close.
+
     pub async fn close(&self) {
         let _ = self.ask(Ask::Close).await;
     }
 
     /// THE OS USER the process runs as, off the host's IDENTITY service: what a store presents
-    /// when its configuration names no user (1.5.5's driver took the OS user). Needs no
-    /// connection. Empty = the host could not name one.
-    ///
-    /// # Errors
-    /// The connector's failure (no host tables, no ticket).
+
     pub async fn os_user(&self) -> Result<String, ConnFailure> {
         self.ask(Ask::Identity).await?;
         Ok(self
@@ -237,9 +197,7 @@ impl Wire {
     }
 
     /// BOUND every wire call from the next one on by `ms` milliseconds in all (`0` = unbound): once
-    /// they have passed on the host's clock, a call fails with the connection's timeout and the
-    /// connection is not kept. A store's connect timeout over its dial AND its handshake (1.5.5
-    /// bounded both); [`Wire::unbound`] after the handshake.
+
     pub fn bound(&self, ms: u32) {
         let mut st = self.state();
         st.bound_ms = ms;
@@ -258,7 +216,7 @@ impl Wire {
     }
 
     /// Never keep this connection: it is closed when the op answers (a protocol state the body
-    /// cannot vouch for, a transaction left open).
+
     pub fn discard(&self) {
         self.state().unfit = true;
     }
@@ -278,9 +236,7 @@ impl Wire {
     }
 
     /// Write all of `bytes`.
-    ///
-    /// # Errors
-    /// The connector's failure (the connection closed, its deadline passed).
+
     pub async fn write_all(&self, bytes: &[u8]) -> Result<(), ConnFailure> {
         if bytes.is_empty() {
             return Ok(());
@@ -290,12 +246,7 @@ impl Wire {
     }
 
     /// Write a whole credential message without exposing its bytes to the plugin. The host's
-    /// facts must confirm a secured stream before any byte of a seal requiring security leaves.
-    /// A refused stream stays refused until it is closed or replaced, and is never kept.
-    ///
-    /// # Errors
-    /// The connector's failure, or [`crate::abi::sdk::cred::NOT_SECURE`] when security cannot be
-    /// confirmed. Cancellation or failure wipes unsent bytes; it cannot undo bytes already sent.
+
     pub async fn write_sealed(&self, seal: crate::abi::sdk::cred::Seal) -> Result<(), ConnFailure> {
         {
             let mut st = self.state();
@@ -307,39 +258,25 @@ impl Wire {
     }
 
     /// Read more bytes onto the input ([`Wire::input`]): how many arrived; `0` = the far end
-    /// closed the connection.
-    ///
-    /// # Errors
-    /// The connector's failure.
+
     pub async fn fill(&self) -> Result<usize, ConnFailure> {
         self.ask(Ask::Read).await
     }
 
     /// Secure the connection from its next byte on (TLS from the first byte, or after the
-    /// protocol's own negotiation), offering `name` (`None` = the target's host).
-    ///
-    /// # Errors
-    /// The connector's failure (the handshake or the trust refused); REFUSED
-    /// ([`UPGRADE_OVER_UNREAD_INPUT`]) while the input holds bytes the body has not consumed.
+
     pub async fn upgrade_secure(&self, name: Option<&str>) -> Result<(), ConnFailure> {
         self.upgrade(name, false).await
     }
 
     /// [`Wire::upgrade_secure`] WITHOUT verifying the far end's certificate: the operator's
-    /// explicit opt-in from the store's settings (1.5.5's `rediss://…#insecure`; ARCHITECT ruling
-    /// 2026-10-03 on Q-L16-4), never a default. The host honours it for an operator-infrastructure
-    /// need only and logs a WARN naming the instance.
-    ///
-    /// # Errors
-    /// The connector's failure; REFUSED for a need of any other class.
+
     pub async fn upgrade_secure_unverified(&self, name: Option<&str>) -> Result<(), ConnFailure> {
         self.upgrade(name, true).await
     }
 
     /// The upgrade, asked of the connector only over an input the body consumed whole: bytes the
-    /// far end sent in the clear and the body has not consumed would be parsed after it as the
-    /// secured far end's (STARTTLS response injection), so the upgrade is refused and the
-    /// connection is never kept.
+
     async fn upgrade(&self, name: Option<&str>, verify_off: bool) -> Result<(), ConnFailure> {
         {
             let mut st = self.state();
@@ -357,7 +294,7 @@ impl Wire {
     }
 
     /// The bytes read and not yet consumed, to parse from and drain (a codec consumes a whole
-    /// message and leaves the rest).
+
     pub fn input<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
         f(&mut self.state().input)
     }
@@ -403,8 +340,6 @@ impl Drop for Asked<'_> {
         }
     }
 }
-
-// ── the kept set ──────────────────────────────────────────────────────────────────────────────
 
 /// One idle kept connection.
 struct Idle {
@@ -456,7 +391,7 @@ impl PoolState {
 }
 
 /// A STORE INSTANCE'S KEPT CONNECTIONS: at most `max` established at once (the store's 1.5.5
-/// connection settings), each held by one op at a time ([`drive_kept`]).
+
 pub struct Pool {
     max: usize,
     st: Mutex<PoolState>,
@@ -633,29 +568,19 @@ impl<T> Running<T> {
 
 impl<T> Drop for Running<T> {
     fn drop(&mut self) {
-        // A retained Wire clone must not retain a cancelled or unwound op's output.
         self.wire.state().out.clear();
         self.unwait();
     }
 }
 
 /// RUN `start`'s body over the op's own connection, across the op's entries: a fresh entry starts
-/// it (`start` is called once per op, never on a RESUME), a RESUME polls the parked body on. The
-/// op answers the body's output, or PENDING while a connector service is in flight; its connection
-/// is closed when it answers.
-///
-/// # Panics
-/// A RESUME with no body parked (the door answers FAULT: an op never runs afresh on its RESUME), or
-/// a body that awaits something other than its [`Wire`] (nothing would wake it).
+
 pub fn drive<T: 'static>(cx: &mut Op<'_>, start: impl FnOnce(Wire) -> Body<T>) -> Step<T> {
     run(cx, None, start)
 }
 
 /// [`drive`] on the store's kept set `pool`: the op's connection is drawn from it and goes back to
-/// it when the body answers (unless it is unfit).
-///
-/// # Panics
-/// As [`drive`].
+
 pub fn drive_kept<T: 'static>(
     cx: &mut Op<'_>,
     pool: &Arc<Pool>,
@@ -665,8 +590,7 @@ pub fn drive_kept<T: 'static>(
 }
 
 /// ONE STORE OP'S SESSION on a kept connection: what a wire store opens over the op's [`Wire`]
-/// (its handshake, skipped on a [`Wire::reused`] connection), and how it hands the connection
-/// back when the op's body has answered (closed, released or reset for the next op).
+
 pub trait Kept: Sized + Send + 'static {
     /// What a session opens from: the instance's shared state, moved into the op.
     type Shared: Send + 'static;
@@ -687,12 +611,7 @@ pub trait Kept: Sized + Send + 'static {
 pub type OnKept<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
 
 /// RUN ONE OP on a session of the store's kept set `pool` ([`drive_kept`]): open a [`Kept`]
-/// session `K` from `from` (a failure answers `fail` of its error), run `body` on it, then hand it
-/// back ([`Kept::done`]). Every argument the body names is moved into it (the body runs across the
-/// op's entries). The one kept-connection step every wire store's slots share.
-///
-/// # Panics
-/// As [`drive`].
+
 pub fn on_kept<K: Kept, T: Send + 'static>(
     cx: &mut Op<'_>,
     pool: &Arc<Pool>,
@@ -771,7 +690,6 @@ fn run<T: 'static>(
                 )))
             }
             _ => {
-                // Only a read reads into the buffer: it is taken on the op's first read.
                 let read = if matches!(ask, Ask::Read) {
                     buf.get_or_insert_with(|| {
                         cx.reads().map_or_else(ReadBufs::fresh, ReadBufs::take)
@@ -784,7 +702,6 @@ fn run<T: 'static>(
             }
         };
         let served = match (served, bound) {
-            // A pend under a bound comes back at the bound at the latest.
             (Served::Pending { wake_at_ns, replay }, Bound::Until(at))
                 if wake_at_ns == 0 || wake_at_ns > at =>
             {
@@ -939,7 +856,6 @@ fn connect<T>(
                 kept: false,
             });
         } else if st.live >= pool.max && !st.idle.is_empty() && st.live == st.idle.len() {
-            // Every connection is idle but none for this need and target: make room.
             let idle = st.idle.remove(0);
             running.unwait_in(&mut st);
             drop(st);
@@ -981,7 +897,6 @@ fn connect<T>(
             Served::Answer(Ok(0))
         }
         Poll::Ready(Err(e)) => {
-            // No connection: the claim on the set goes.
             running
                 .lease
                 .lock()
@@ -997,7 +912,7 @@ fn connect<T>(
 }
 
 /// Make the connector service `ask` names: its answer, or PENDING (the ask stays posted and is
-/// made again on the RESUME).
+
 fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) -> Served {
     let wire = &running.wire;
     match ask {
@@ -1026,7 +941,6 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                 )));
             };
             if had {
-                // The old connection closes now; a claim on the set carries over to the new one.
                 cx.close_checkout();
                 let mut w = wire.state();
                 w.input.clear();
@@ -1063,7 +977,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                         .take();
                     Served::Answer(Err(e))
                 }
-                // Not connected yet: the RESUME establishes again from the same ask.
+
                 Poll::Pending => Served::Pending {
                     wake_at_ns: 0,
                     replay: true,
@@ -1123,8 +1037,6 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                 )));
             }
             if wire.state().confirm_secure {
-                // This driver remembers completed facts across entries, so a replay that supplies
-                // no facts cannot establish security. No write precedes a real secure observation.
                 match crate::abi::sdk::cred::confirm_secure(&mut services, stream, false) {
                     Poll::Ready(Ok(())) => {
                         wire.state().confirm_secure = false;
@@ -1146,8 +1058,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                     }
                 }
             }
-            // Output's Zeroizing owner also covers a panic crossing into the host; no plain Vec
-            // escapes the state, and bytes are lent only for this synchronous service call.
+
             let mut out = std::mem::take(&mut wire.state().out);
             if out.remaining().is_empty() {
                 return Served::Answer(Ok(0));
@@ -1163,7 +1074,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                     }
                     if n == 0 {
                         drop(services);
-                        // No room: offer the rest again shortly (a pending write wakes nothing).
+
                         return Served::Pending {
                             wake_at_ns: later(cx, RETRY_NS / 5),
                             replay: false,

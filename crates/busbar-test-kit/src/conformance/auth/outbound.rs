@@ -125,9 +125,8 @@ use crate::dispatch::{
     load_linked, now_ns, Bind, ConnTable, Dispatcher, Frame, Lent, LinkedRow, Plugin, Reply,
 };
 
-/// The suite's tick clock at the first `tick` (any instant; the plugin's schedule is read back).
 const T0: u64 = 1_000_000_000_000;
-/// Nanoseconds in a second.
+
 const NS: u64 = 1_000_000_000;
 
 pub(super) struct Clock {
@@ -172,12 +171,10 @@ mod clock_tests;
 #[cfg(all(test, loader_self_tests))]
 #[path = "../../tests/conformance_auth_outbound_custody_tests.rs"]
 mod custody_tests;
-/// How long a submitted `tick` is awaited.
-const TICK_WAIT: Duration = Duration::from_secs(10);
-/// The failing endpoint's answer body.
-const FAILURE_BODY: &[u8] = b"conformance: the token endpoint is down";
 
-// ---- the inputs ----
+const TICK_WAIT: Duration = Duration::from_secs(10);
+
+const FAILURE_BODY: &[u8] = b"conformance: the token endpoint is down";
 
 /// The request one `fields` call signs.
 #[derive(Clone)]
@@ -194,7 +191,6 @@ struct Head {
 }
 
 impl Head {
-    /// This head with the extension `key` set to `value` (added when absent).
     fn with_extension(&self, key: &str, value: &str) -> Self {
         let mut h = self.clone();
         match h.extensions.iter_mut().find(|(k, _)| k == key) {
@@ -204,14 +200,12 @@ impl Head {
         h
     }
 
-    /// This head at another request instant.
     fn at(&self, timestamp: u64) -> Self {
         let mut h = self.clone();
         h.timestamp = timestamp;
         h
     }
 
-    /// The encoded extensions blob.
     fn extensions_blob(&self) -> Vec<u8> {
         if self.extensions.is_empty() {
             return Vec::new();
@@ -225,7 +219,6 @@ impl Head {
     }
 }
 
-/// What one token request must be.
 struct ExpectRequest {
     method: String,
     target: String,
@@ -234,37 +227,32 @@ struct ExpectRequest {
     body_prefix: Option<String>,
 }
 
-/// One scripted exchange: the request it expects and the answer it gives.
 struct Exchange {
     expect: ExpectRequest,
     status: u32,
     body: Vec<u8>,
 }
 
-/// A minting style's token endpoint script.
 struct Minting {
     exchanges: Vec<Exchange>,
     expires_in: u64,
-    /// Tick-driven: the refreshed token's fields. On demand: unused.
+
     refreshed: String,
     refusal: String,
-    /// `"mint": "on_demand"`: minted per call, one cell per scope.
+
     on_demand: Option<OnDemand>,
 }
 
-/// An on-demand style's second scope and the fields its later exchanges write.
 struct OnDemand {
     second_scope: String,
     second: String,
     expired: String,
 }
 
-/// One `auth.outbound` entry.
 struct Style {
     style: String,
     credential: Option<Vec<u8>>,
-    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: one `auth.outbound`
-    // entry's settings, handed to the plugin under test; never serialized and never served.
+
     settings: Vec<u8>,
     head: Head,
     expect: String,
@@ -295,7 +283,6 @@ fn pairs(v: &serde_json::Value, what: &str) -> Vec<(String, String)> {
     }
 }
 
-/// The transcript's ordered fields, with quoted byte strings preserving every boundary.
 fn listing<'a>(fields: impl Iterator<Item = (&'a [u8], &'a [u8], u32)>) -> String {
     fields
         .map(|(n, v, f)| {
@@ -374,7 +361,6 @@ mod field_transcript_tests {
     }
 }
 
-/// The answer a `fields` call writing exactly `v`'s fields reads as.
 fn expected(v: &serde_json::Value, what: &str) -> String {
     let a = v.as_array().unwrap_or_else(|| {
         panic!("conformance.json: {what} is an array of [name, value(, flags)]")
@@ -389,7 +375,6 @@ fn expected(v: &serde_json::Value, what: &str) -> String {
                 str_of(&p[0], what).as_bytes().to_vec(),
                 str_of(&p[1], what).as_bytes().to_vec(),
                 match p.get(2) {
-                    // No third element: the field carries no flag.
                     None => 0,
                     Some(f) => f
                         .as_u64()
@@ -401,9 +386,7 @@ fn expected(v: &serde_json::Value, what: &str) -> String {
             )
         })
         .collect();
-    // A style whose expectation is no field at all would pass a door that writes nothing: every
-    // outbound style presents something (a header, a query parameter), so an empty list is refused
-    // here rather than let the script compare nothing with nothing.
+
     assert!(
         !owned.is_empty(),
         "conformance.json: {what} is empty: an outbound style writes at least one field, and an \
@@ -541,8 +524,6 @@ impl Style {
     }
 }
 
-// ---- the token endpoint: the host's connection table, scripted ----
-
 /// One request the plugin sent over its need.
 #[derive(Debug, Clone)]
 struct Sent {
@@ -552,7 +533,6 @@ struct Sent {
     body: Vec<u8>,
 }
 
-/// Each open connection's reply, piece by piece, with its bytes.
 type Replies = HashMap<ConnId, VecDeque<(Piece, Vec<u8>)>>;
 
 /// A connection table whose needs are framed: each open is ONE token request, recorded, and
@@ -593,7 +573,6 @@ impl Endpoint {
         self.sent.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// Every exchange so far, each judged against its expected request.
     fn report(&self, script: &[Exchange]) -> String {
         let sent = self.sent.lock().unwrap_or_else(|e| e.into_inner());
         let judged: Vec<String> = sent
@@ -645,7 +624,6 @@ impl DeclaredConns for Endpoint {
         target: Option<&str>,
         _trust: Option<&str>,
     ) -> Result<(), ConnError> {
-        // A `target_from` that resolved to nothing is refused, as the connector refuses it.
         if !spec.target_from.is_empty() && target.is_none() {
             return Err(ConnError::Refused);
         }
@@ -716,7 +694,6 @@ impl Conns for Endpoint {
         let queue = replies.get_mut(&id).ok_or(ConnError::Closed)?;
         let (p, bytes) = queue.pop_front().ok_or(ConnError::Closed)?;
         if bytes.len() > buf.len() {
-            // The rest of a body larger than the reader's buffer is the next piece.
             let (now, later) = bytes.split_at(buf.len());
             buf.copy_from_slice(now);
             queue.push_front((piece(PieceKind::Body, later.len(), None), later.to_vec()));
@@ -744,8 +721,6 @@ impl Conns for Endpoint {
     }
 }
 
-// ---- the calls ----
-
 fn abi_str(b: &[u8]) -> AbiStr {
     AbiStr {
         ptr: b.as_ptr(),
@@ -758,7 +733,6 @@ const NO_STR: AbiStr = AbiStr {
     len: 0,
 };
 
-/// The leg's instance of `door`, through the ONE loader, on `conns` (a minting style's endpoint).
 fn load_leg(
     s: &Subject,
     leg: Leg,
@@ -767,8 +741,6 @@ fn load_leg(
     instance: &str,
     conns: Option<Arc<dyn DeclaredConns>>,
 ) -> Plugin<Auth> {
-    // A minting style serves its own need on the scripted endpoint; one that mints nothing is
-    // bound as the subject binds any door (its needs, if it declares any, on the subject's table).
     let b = match conns {
         Some(table) => Bind {
             conns: ConnTable::Host(table),
@@ -786,7 +758,6 @@ fn load_leg(
     .unwrap_or_else(|e| panic!("the auth door loads ({leg:?}): {e}"))
 }
 
-/// `open_outbound` of `x`: its answer and the handle.
 fn open_outbound(p: &Plugin<Auth>, x: &Style) -> (String, u64) {
     let mut f: Frame<OpenOutboundIn, OpenOutboundOut> = Frame::new(input(), output());
     f.input.style = abi_str(x.style.as_bytes());
@@ -796,7 +767,6 @@ fn open_outbound(p: &Plugin<Auth>, x: &Style) -> (String, u64) {
     (called(&c), f.out.handle)
 }
 
-/// `outbound_ready` of `handle`.
 fn ready_fact(p: &Plugin<Auth>, handle: u64) -> String {
     let mut f: Frame<OutboundReadyIn, OutboundReadyOut> = Frame::new(input(), output());
     f.input.handle = handle;
@@ -804,9 +774,6 @@ fn ready_fact(p: &Plugin<Auth>, handle: u64) -> String {
     format!("{} ready={}", called(&c), f.out.ready)
 }
 
-/// THE MEMORY ONE `fields` call lends the plugin: the host's field buffer and spans, the head's
-/// lines, its body and its extensions blob. Lent whole to a call on a ticket (the dispatcher keeps
-/// it alive until the op completes), so its pointers stay valid however the call ends.
 struct Lend {
     buf: Vec<u8>,
     spans: Vec<FieldSpan>,
@@ -833,8 +800,7 @@ impl Lend {
             flags: 0,
             _reserved: 0,
         };
-        // Match the production caller: binary custody capability first, followed by every
-        // original request extension. This owned allocation is lent with the whole call.
+
         let mut ext = extensions::encode(&[(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)]);
         ext.extend_from_slice(&h.extensions_blob());
         let mut l = Box::new(Self {
@@ -877,7 +843,6 @@ impl Lend {
         l
     }
 
-    /// The `fields` input over this memory, at the style's one point.
     fn input(&mut self, handle: u64, h: &Head, flags: u32, point: u32) -> FieldsIn {
         let mut i: FieldsIn = input();
         i.handle = handle;
@@ -921,7 +886,6 @@ impl Lend {
         i
     }
 
-    /// The transcript's line for an answer: on READY exactly what was written.
     fn answer(
         &self,
         outcome: Outcome,
@@ -946,8 +910,6 @@ impl Lend {
     }
 }
 
-/// ONE `fields` call ("sign"): ticket-less, at the style's one point, over `h`, the host's
-/// starting buffers. The answer, and on READY exactly what it wrote.
 fn sign(p: &Plugin<Auth>, handle: u64, h: &Head, flags: u32, point: u32) -> String {
     let mut lend = Lend::new(h);
     let mut f: Frame<FieldsIn, FieldsOut> =
@@ -956,16 +918,13 @@ fn sign(p: &Plugin<Auth>, handle: u64, h: &Head, flags: u32, point: u32) -> Stri
     lend.answer(c.outcome, c.error.as_deref(), c.recall.is_some(), &f.out)
 }
 
-/// ONE `fields` call ON A TICKET (as the host submits a call the plugin may make wait): minted on
-/// the dispatcher, its memory lent to the op. Its reply, and the memory to read the answer from.
 struct OnTicket {
     reply: Reply<FieldsIn, FieldsOut>,
     lend: Arc<Lend>,
-    /// The answer, when it came before the suite asked whether the call waits.
+
     early: Option<String>,
 }
 
-/// How long a ticket's `fields` may wait before its deadline (well past every wait here).
 const FIELDS_DEADLINE: Duration = Duration::from_secs(60);
 
 fn submit_fields(
@@ -999,7 +958,6 @@ fn submit_fields(
 }
 
 impl OnTicket {
-    /// Whether the call is still waiting (PENDING); an answer that already came is kept.
     fn waiting(&mut self) -> bool {
         match self.reply.wait(Duration::ZERO) {
             None => true,
@@ -1019,14 +977,12 @@ impl OnTicket {
         }
     }
 
-    /// The answer once the op completes (`no answer` past [`TICK_WAIT`]).
     fn answered(self) -> String {
         if let Some(a) = self.early {
             return a;
         }
         match self.reply.wait(TICK_WAIT) {
             None => {
-                // The op runs on; its memory stays with it.
                 self.reply.detach();
                 "no answer".to_string()
             }
@@ -1035,8 +991,6 @@ impl OnTicket {
     }
 }
 
-/// Wait until `counter` has advanced past `from` by `n` first-invocation crossings (or
-/// [`TICK_WAIT`] passed).
 fn crossed(counter: &Counts<'_>, from: u64, n: u64) {
     let until = std::time::Instant::now() + TICK_WAIT;
     while counter.read().0 < from + n && std::time::Instant::now() < until {
@@ -1044,13 +998,11 @@ fn crossed(counter: &Counts<'_>, from: u64, n: u64) {
     }
 }
 
-/// The bytes `sp` names in the host's field buffer.
 fn at(buf: &[u8], sp: Span) -> &[u8] {
     buf.get(sp.offset as usize..sp.offset as usize + sp.len as usize)
         .unwrap_or(&b"<out of the buffer>"[..])
 }
 
-/// `tick` at `now_ns` on the instance's driver ticket, awaited: its outcome and `next_tick_ns`.
 fn tick_driver(
     p: &Plugin<Auth>,
     d: &Dispatcher,
@@ -1067,9 +1019,6 @@ fn tick_driver(
     (format!("{:?}", done.outcome), next)
 }
 
-// ---- the script ----
-
-/// The style's one point, as the tail states it.
 fn point_of(st: &Stated, style: &str) -> (u32, u32) {
     let (_, flags, points) = st
         .styles
@@ -1086,7 +1035,6 @@ fn point_of(st: &Stated, style: &str) -> (u32, u32) {
     (*flags, *points)
 }
 
-/// THE OUTBOUND SCRIPT over `door` (the subject's, or a RED arm's restated one), reached by `leg`.
 pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold {
     let k = s.kind_inputs("auth");
     let styles: Vec<Style> = k["outbound"]
@@ -1147,7 +1095,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                 let driver = d
                     .driver(&p, 0)
                     .expect("the instance's driver ticket is minted");
-                // SINGLE-FLIGHT: two calls wait on S before anything drives the exchange.
+
                 let first = r.step(&label("fields on a ticket, before any exchange"), 1, || {
                     let from = counter.read().0;
                     let mut t = submit_fields(&p, &d, handle, &x.head, flags, point);
@@ -1258,11 +1206,10 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
             });
         }
         r.line(&label("close"), 1, || called(&close(&p)));
-        // 0: a closed instance answers without a crossing.
+
         r.line(&label("fields after close"), 0, signed);
         fold.extend(r.fold());
 
-        // THE FAILING ENDPOINT, on an instance of its own: every exchange answers 500.
         if x.minting.as_ref().is_some_and(|m| m.on_demand.is_some()) {
             let failing = Arc::new(Endpoint::new(vec![(500, FAILURE_BODY.to_vec())]));
             let (clock, d) = clock_dispatcher(x.head.timestamp);
@@ -1292,7 +1239,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
             rq.line(&label("failing endpoint: fields"), 2, || {
                 submit_fields(&q, &d, hq, &x.head, flags, point).answered()
             });
-            // NO RETRY: whatever the instance would do next on its own, it does not exchange again.
+
             rq.line(&label("failing endpoint: attempts"), 0, || {
                 std::thread::sleep(Duration::from_millis(200));
                 format!("exchanges={}", failing.count())
@@ -1339,7 +1286,6 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
     fold
 }
 
-/// THE OUTBOUND CONTRACT over the fold, so two equal folds of failures cannot pass.
 fn contract(fold: &Fold, styles: &[Style]) {
     let at = |label: &str| {
         fold.iter()
@@ -1350,8 +1296,7 @@ fn contract(fold: &Fold, styles: &[Style]) {
     for (i, x) in styles.iter().enumerate() {
         let l = |what: &str| format!("outbound {} #{i}: {what}", x.style);
         let od = x.minting.as_ref().and_then(|m| m.on_demand.as_ref());
-        // The exchange counts first: a door that fetched twice may also have written another
-        // token, and the count is the finding.
+
         if let (Some(m), Some(od)) = (&x.minting, od) {
             on_demand_contract(fold, i, x, m, od);
         } else if x.minting.is_some() {
@@ -1470,8 +1415,6 @@ fn explained_refusal(answer: &str) -> bool {
     })
 }
 
-/// THE ON-DEMAND CONTRACT (ARCHITECT ruling): single-flight, a cell per scope, no refresh ahead,
-/// a re-mint on demand once expired, no retry. The exchange counts first.
 fn on_demand_contract(fold: &Fold, i: usize, x: &Style, m: &Minting, od: &OnDemand) {
     let at = |label: &str| {
         fold.iter()
@@ -1570,9 +1513,6 @@ fn on_demand_contract(fold: &Fold, i: usize, x: &Style, m: &Minting, od: &OnDema
     );
 }
 
-// ---- the RED arms ----
-
-/// The real auth ops a plant forwards to.
 static REAL_OPS: Mutex<Option<auth::Ops>> = Mutex::new(None);
 static PLANT_BYTE: Restated = Restated::new();
 static PLANT_FETCH: Restated = Restated::new();
@@ -1592,7 +1532,6 @@ fn real_ops() -> Option<auth::Ops> {
     *REAL_OPS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// `fields`, then ONE byte of the first value written flipped.
 extern "C" fn fields_one_byte_off(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -1621,7 +1560,6 @@ extern "C" fn fields_one_byte_off(
     answered
 }
 
-/// `fields`, then the fields it wrote taken back: READY with none written.
 extern "C" fn fields_writing_nothing(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -1642,8 +1580,6 @@ extern "C" fn fields_writing_nothing(
     answered
 }
 
-/// `open_outbound`, then a SECOND binding over the same style and credential under settings one
-/// byte longer: a second token cell, so the plugin's mint fetches the token twice.
 extern "C" fn open_outbound_twice(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -1676,9 +1612,6 @@ extern "C" fn open_outbound_twice(
     answered
 }
 
-/// The second cell's scope, retaining every unrelated extension byte (including the host's
-/// sealed-field custody capability). Otherwise the RED could fail on custody instead of fetching
-/// a second cell. The input is the suite's own complete encoded extension entries.
 fn longer_scope(blob: &[u8]) -> Vec<u8> {
     let mut scope = extensions::get(blob, auth::EXT_SCOPE)
         .unwrap_or_default()
@@ -1696,8 +1629,6 @@ fn longer_scope(blob: &[u8]) -> Vec<u8> {
     other
 }
 
-/// `fields`, and when it WAITS (an on-demand cell armed) the same call again under the scope one
-/// byte longer: a second cell armed for the same waiting request, so the waiting calls fetch twice.
 extern "C" fn fields_arming_twice(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -1738,7 +1669,6 @@ extern "C" fn fields_arming_twice(
     answered
 }
 
-/// The subject's door restated with its auth ops `edit`ed, served by `slot`.
 fn plant(s: &Subject, slot: &Restated, edit: impl FnOnce(&mut auth::Ops)) {
     let real = real_door(s);
     // SAFETY: an auth door's ops table is an `auth::Ops` (`abi/auth/mod.rs`), `'static`.
@@ -1753,7 +1683,6 @@ fn plant(s: &Subject, slot: &Restated, edit: impl FnOnce(&mut auth::Ops)) {
     });
 }
 
-/// The panic text of a run, or `None` when it passed.
 fn failed(run: impl FnOnce()) -> Option<String> {
     catch_unwind(AssertUnwindSafe(run)).err().map(|e| {
         e.downcast_ref::<String>()
@@ -1763,7 +1692,6 @@ fn failed(run: impl FnOnce()) -> Option<String> {
     })
 }
 
-/// The subject's auth tail, when it declares the outbound family.
 fn outbound_subject(s: &Subject) -> Option<Stated> {
     if s.kind() != KindCode::Auth {
         return None;
@@ -1772,13 +1700,6 @@ fn outbound_subject(s: &Subject) -> Option<Stated> {
     (st.caps & auth::CAP_OUTBOUND != 0).then_some(st)
 }
 
-/// **RED: a door writing one wrong field byte fails the outbound script.** The real door restated
-/// with a `fields` that flips the last byte of the first value it writes is driven linked; the
-/// script must refuse it on the fields it wrote. A door with no outbound family has nothing to
-/// plant.
-///
-/// # Panics
-/// When the planted door passes the script, or fails it for another reason.
 pub fn red_outbound_wrong_byte(s: &Subject) {
     s.apply_env();
     let Some(st) = outbound_subject(s) else {
@@ -1796,14 +1717,6 @@ pub fn red_outbound_wrong_byte(s: &Subject) {
     );
 }
 
-/// **RED: a door stating the outbound family whose `fields` writes nothing fails the outbound
-/// script.** The real door restated with a `fields` that answers READY having written no field is
-/// driven linked; the script must refuse it on the fields it wrote (every style's expectation
-/// names at least one field: an empty one is refused when the inputs are read). A door with no
-/// outbound family has nothing to plant.
-///
-/// # Panics
-/// When the planted door passes the script, or fails it for another reason.
 pub fn red_outbound_writes_nothing(s: &Subject) {
     s.apply_env();
     let Some(st) = outbound_subject(s) else {
@@ -1826,14 +1739,6 @@ pub fn red_outbound_writes_nothing(s: &Subject) {
     );
 }
 
-/// **RED: a door that fetches the token twice fails the outbound script.** The real door restated
-/// with an `open_outbound` that binds a second token cell, and a `fields` that arms a second
-/// on-demand cell whenever it waits, is driven linked; its mint makes two token exchanges where the
-/// script allows exactly one. A door whose styles mint nothing has no
-/// token to fetch twice.
-///
-/// # Panics
-/// When the planted door passes the script, or fails it for another reason.
 pub fn red_outbound_double_fetch(s: &Subject) {
     s.apply_env();
     let Some(st) = outbound_subject(s) else {

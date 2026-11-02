@@ -1,7 +1,4 @@
 //! The plane kind: what bytes mean. A plane names a transport only as a claim, never holds a
-//! connection, names no unit or other plane except through a nested destination, and returns
-//! facts and locators only — never an amount, a decision, a credential, a price or a scheme
-//! outside its claim. Pure over its inputs; no default bodies (see `docs/design/BUSBAR-1.6.0.md` #38).
 
 use crate::bounded::{Facts, Ir, ScratchBytes};
 use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};
@@ -13,10 +10,7 @@ use crate::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor};
 use std::any::Any;
 
 /// Everything a plane declares about itself.
-///
-/// All of it is a constant, because all of it is read at registration and sealed into policy. A
-/// plane cannot vary its own declarations at run time; if it could, the claims a boot proved
-/// non-overlapping would stop being the claims that are in force.
+
 pub trait PlaneMeta {
     /// The plane's registry key.
     const KEY: &'static str;
@@ -43,12 +37,7 @@ pub trait PlaneMeta {
 }
 
 /// A plane's codec state for one connection.
-///
-/// One half per connection: the client half comes from opening the session, and one more half per
-/// dialed upstream. It is bounded per half with a ceiling on halves per session. It may own a drop
-/// implementation and foreign resources, it is cleared on upgrade, and it is poisoned and dropped
-/// on a panic. This is the *only* place cross-frame codec state may live; a plane that keeps state
-/// in its own fields is red under the interior-mutability scan.
+
 pub struct PlaneSessionState {
     inner: Box<dyn Any + Send>,
 }
@@ -184,14 +173,7 @@ pub enum Progress<'u> {
 }
 
 /// What bytes mean.
-///
-/// Seven codec methods, seven fact methods and two introspection methods. Every one of them is
-/// pure over its inputs, and none of them may perform input or output.
-///
-/// # Errors
-/// Every codec method returns [`Decode`] or [`Encode`] when the bytes, or the unit, cannot be
-/// expressed in this dialect's shape; the kernel then falls back to its own minimal rendering. A
-/// decode error is not itself a refusal — a refusal is rendered through the refusal encoder.
+
 pub trait Plane: Plugin + Send + Sync + 'static {
     /// Read inbound bytes.
     fn decode_ingress<'u>(
@@ -211,7 +193,7 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<EgressBody<'u>, Encode>;
 
     /// Write one inbound frame of an open unit onward to its destination. Returning nothing means
-    /// the frame is consumed and nothing goes out for it.
+
     fn encode_ingress_frame<'u>(
         &self,
         u: &Unit<'u>,
@@ -239,8 +221,7 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<ScratchBytes<'u>, Encode>;
 
     /// Write a refusal in this dialect's shape. The codec state is borrowed immutably on purpose:
-    /// a refusal must not advance codec state, or a sequence-numbered protocol that incremented
-    /// its counter on one would desynchronise against a client that never saw the numbered message.
+
     fn encode_refusal<'u>(
         &self,
         refusal: &Refusal,
@@ -259,17 +240,11 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> Result<Option<ScratchBytes<'u>>, Encode>;
 
     /// Say where the credential is, and narrow the claim's scheme if the dialect narrows it.
-    ///
-    /// A plane may only narrow within the alternatives its claim declares. Anything else is
-    /// refused at the authenticate step; the plane never sees the credential either way.
+
     fn authenticate<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> crate::kinds::CredentialLocator;
 
     /// Say where this unit wants to go.
     fn verify<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> crate::dest::DestinationFacts;
-
-    // NO `approve` AND NO `admit` (trust and admission are the kernel's
-    // Approve and Admit steps; a plane STATES facts and decides neither). A plane's trust facts
-    // ride its arrival (`abi::plane::ArriveOut`'s `trust_*`), judged by the kernel's Approve.
 
     /// Say which legs this unit needs.
     fn route<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> RoutePlan;
@@ -278,20 +253,11 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     fn meter<'u>(&self, u: &Unit<'u>, r: &Response<'u>, ctx: &Ctx<'u>) -> UsageLocators;
 
     /// Say what this unit was and how it ended.
-    ///
-    /// Called at the metering step's entry with the provisional ending. An operation class here
-    /// that differs from the draft's is a dispute; the draft's class is what priced the unit.
+
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, ctx: &Ctx<'u>) -> AuditFacts;
 
     /// Answer one of this plane's declared read-only introspection verbs. Errors when the verb
-    /// is not one this plane declares.
-    ///
-    /// The subject is the one bounded argument a projection may take: which registration, which
-    /// agent, which server. A verb that projects over everything is asked with no subject; a verb
-    /// that projects over one named thing is asked with its name. Without it a plane that answers
-    /// per-name projections has no way to declare them — a key per registration is not open to it,
-    /// because the verb key set is closed at registration — so it declares only the list verb and
-    /// leaves the rest unanswerable.
+
     fn plane_facts<'u>(
         &self,
         verb: AdminVerbId,
@@ -309,10 +275,7 @@ pub trait Plane: Plugin + Send + Sync + 'static {
 }
 
 /// A plane that can run over a session transport.
-///
-/// The registry requires this trait exactly when any transport the plane claims declares itself a
-/// session transport. The two methods are where the plane's per-connection codec state comes from:
-/// one half for the client connection, one per upstream the session dials.
+
 pub trait SessionPlane: Plane {
     /// Open the client half of this session's codec state.
     fn open_session<'u>(&self, ctx: &Ctx<'u>) -> PlaneSessionState;
@@ -471,8 +434,7 @@ pub struct ServedOpClass {
 }
 
 /// THE ONE-SERVER GUARD over a set of declarations' [`PlaneDeclaration::served_op_classes`]: `Ok(())`
-/// when no operation class is declared by two planes (or twice by one), else the first refusal.
-/// A class two planes serve would make the answer to a nested destination a matter of fold order.
+
 pub fn check_served_op_classes(decls: &[&PlaneDeclaration]) -> Result<(), String> {
     let mut seen: std::collections::BTreeMap<OpClassId, &str> = std::collections::BTreeMap::new();
     for decl in decls {
@@ -506,11 +468,11 @@ pub struct MetricFamily {
 pub const COUNTER: &str = "counter";
 
 /// The reserved first-party metric namespace. A plane's family in it is admitted only when the
-/// host lists it (see [`check_metric_families`]).
+
 pub const RESERVED_METRIC_PREFIX: &str = "busbar_";
 
 /// The most label keys one family may declare — the cap the host's metric validator holds every
-/// reported sample to.
+
 pub const MAX_FAMILY_LABELS: usize = 8;
 
 /// A series name or label key a scrape can carry: `^[a-z][a-z0-9_]{0,63}$`.
@@ -522,20 +484,7 @@ fn metric_ident(s: &str) -> bool {
 }
 
 /// THE METRIC-FAMILY GUARD over a set of declarations' [`PlaneDeclaration::metric_families`],
-/// judged against the reserved series the HOST lets a plane carry (`carried`, supplied by the
-/// caller as `(name, label keys)` rows — the host owns that list; a plane never supplies it).
-/// `Ok(())` when every family is admissible, else the FIRST refusal:
-///
-/// * a name or label key outside `^[a-z][a-z0-9_]{0,63}$`, a repeated key, or more than
-///   [`MAX_FAMILY_LABELS`] keys;
-/// * a kind other than [`COUNTER`];
-/// * a name in the reserved [`RESERVED_METRIC_PREFIX`] namespace that is not a `carried` row with
-///   exactly these label keys in this order — a plane cannot mint a first-party series, and a
-///   carried one renders byte-identically or not at all;
-/// * a family two planes (or one plane twice) declare — one series, one writer.
-///
-/// Pure: declarations and the host's rows in, a verdict out. The host runs it over its boot fold;
-/// a test drives it directly.
+
 pub fn check_metric_families(
     decls: &[&PlaneDeclaration],
     carried: &[(&str, &[&str])],
@@ -602,8 +551,7 @@ pub const PER_REQUEST: &str = "per_request";
 pub const PER_SESSION: &str = "per_session";
 
 /// THE CONDITION OF A REFUSED ADMIN ANSWER: the reply head field a door's `serve` names, beside a
-/// `400`, which of the admin taxonomy's validation conditions the refusal is, so the kernel frames
-/// it condition-tagged. Absent = untagged.
+
 pub const ADMIN_CONDITION_FIELD: &str = "busbar-admin-condition";
 
 /// [`ADMIN_CONDITION_FIELD`]: the request body did not parse as the verb's expected shape.
@@ -613,18 +561,11 @@ pub const ADMIN_CONDITION_MALFORMED_BODY: &str = "malformed-body";
 pub const ADMIN_CONDITION_INVALID_CONFIG: &str = "invalid-config";
 
 /// THE DUP-CLAIM GUARD over a set of declarations' [`PlaneDeclaration::owned_config_sections`],
-/// judged against the sections the host still declares concretely (`reserved`, supplied by the
-/// caller as plain section keys). `Ok(())` when every claim is disjoint and unique, else the FIRST
-/// refusal: two planes claiming one section (one plane's grammar would answer for another's), or a
-/// plane claiming a reserved section (the grammar would be declared twice).
-///
-/// Pure: a declaration list and a reserved-key list in, a verdict out. The host runs it over its
-/// boot fold; a test drives it directly.
+
 pub fn check_owned_config_claims(
     decls: &[&PlaneDeclaration],
     reserved: &[&'static str],
 ) -> Result<(), String> {
-    // section key → the plane key that first claimed it, so a second claimant names its rival.
     let mut claimed: std::collections::BTreeMap<&'static str, &'static str> =
         std::collections::BTreeMap::new();
     for decl in decls {

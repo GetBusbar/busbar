@@ -2,22 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A PROGRAM'S ENVIRONMENT, RESOLVED AT CONFIG TIME AND HELD FOR ITS SPAWNS.
-//!
-//! A program's environment entries written as SECRET REFERENCES (`Program::env_refs`) resolve
-//! when the need that names the program is DECLARED — a plane's load, a config apply — with the
-//! config-time proof, and again on the refresher's lease, off the request path. A spawn only LOADS
-//! what is held ([`HeldEnv::now`]): no resolution, no lock. A spawn is reached from a request (a
-//! member program's first lease, a respawn after its child ended, every open of a program need), and
-//! a secret resolution blocks its thread up to its deadline, so it is never made there. A reference
-//! that no longer resolves at a refresh EMPTIES what is held (fail closed): every spawn after it is
-//! refused, never handed a stale value; a running child keeps the environment it was spawned with.
-//!
-//! A ROTATED SECRET REACHES THE FIRST NEW CHILD AFTER THE NEXT REFRESH (at most one
-//! [`SPAWN_ENV_LEASE`] after the rotation, or at the next config apply). Program members are new in
-//! 1.6.0: there is no 1.5.5 timing to keep.
-//!
-//! The values live here, in the host's records, and in the child's environment: never in the table
-//! that holds the program, never in the destination the carrier is handed.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -27,22 +11,11 @@ use busbar_contract::redacted::Secret;
 use busbar_contract::secret_ref::SecretRef;
 
 /// How a program's environment REFERENCE turns into its value: a string secret resolved through
-/// the secret plugins the build links, at config time (it takes the proof). `Err` names the
-/// reference's source, never a byte of the secret.
-///
-/// The composition root hands it to the connector it builds (`Connector::resolving_spawn_secrets`),
-/// and the connector hands it to every environment it loads: no process-wide static holds it. A
-/// connector handed none resolves no reference, and a program that states one is not spawned
-/// (fail-closed). The value stays in its zeroizing holder until the environment is rendered.
+
 pub type SpawnSecretFn = fn(&SecretRef, &ConfigScope) -> Result<Secret<String>, String>;
 
 /// THE LINKED SPAWN RESOLVER: one member program's `env` reference, resolved at config time through
-/// the linked secret plugins, still in its zeroizing holder. OWED (row 7): an environment template
-/// is rendered as text, so the value leaves the holder when the template renders, into the
-/// [`Secret`] the spawn holds.
-///
-/// # Errors
-/// The reference does not resolve; the text names it, never a value.
+
 pub fn linked_spawn_secret(
     secret: &SecretRef,
     scope: &ConfigScope,
@@ -54,15 +27,12 @@ pub fn linked_spawn_secret(
 pub const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
 
 /// What a program's spawn hands its child now: every reference's value, name and value in the
-/// settings' order; or why the environment did not resolve (a refusal naming the variable and the
-/// reference's source, never a value).
+
 pub struct Resolved(Result<Vec<(String, Secret<String>)>, String>);
 
 impl Resolved {
     /// The values, or the refusal.
-    ///
-    /// # Errors
-    /// Why the environment did not resolve at its last load or refresh.
+
     pub fn env(&self) -> Result<&[(String, Secret<String>)], &str> {
         self.0.as_deref().map_err(String::as_str)
     }
@@ -92,7 +62,7 @@ impl PartialEq for HeldEnv {
 impl Eq for HeldEnv {}
 
 /// A held environment NAMES NO VALUE in a debug line: its references' sources and whether they
-/// resolved.
+
 impl std::fmt::Debug for HeldEnv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let refs: Vec<String> = self
@@ -158,8 +128,7 @@ impl HeldEnv {
     }
 
     /// `refs` RESOLVED NOW through `secrets` (the resolver the connector was handed; `None`
-    /// resolves nothing), at config time (`scope`: the need's declaration at a plane's load or a
-    /// config apply), and kept on the refresher's lease from here on, through the same resolver.
+
     #[must_use]
     pub fn load(
         refs: &[(String, SecretRef)],
@@ -180,7 +149,7 @@ impl HeldEnv {
     }
 
     /// RE-RESOLVE every reference, at config time, and swap what is held whole: a spawn sees the
-    /// old environment or the new one; one that no longer resolves empties it (fail closed).
+
     pub fn reload(&self, scope: &ConfigScope) {
         self.0.reload(scope);
     }
@@ -212,9 +181,7 @@ impl SpawnEnv {
 }
 
 /// THE HOST'S ENVIRONMENT REFRESHER, as the host's credential refresher keeps a served credential:
-///  one thread of its own (never a runtime worker) that re-resolves each live held
-/// environment once per [`SPAWN_ENV_LEASE`]. It keeps each WEAKLY, so one its need dropped (a
-/// re-declaration that changed the program, a plane that closed) is forgotten at its next due time.
+
 mod refresher {
     use super::{SpawnEnv, SPAWN_ENV_LEASE};
     use std::sync::{Arc, Condvar, Mutex, Once, PoisonError, Weak};
@@ -236,7 +203,7 @@ mod refresher {
     };
 
     /// The process's one book, its thread started the first time it is reached. A thread the
-    /// operating system will not give leaves every held environment as its load resolved it.
+
     fn book() -> &'static Book {
         static STARTED: Once = Once::new();
         STARTED.call_once(|| {
@@ -261,7 +228,7 @@ mod refresher {
     }
 
     /// The thread: refresh every held environment that is due, forget every one dropped, sleep to
-    /// the next due time (or a new one). The book's lock is never held across a refresh.
+
     fn run(book: &'static Book) {
         let mut kept = book.kept.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
@@ -299,7 +266,7 @@ mod refresher {
     }
 
     /// Refresh every live held environment NOW, on the calling thread (a cell that rotates a
-    /// secret, then asserts what the first new child after the refresh is handed).
+
     #[cfg(test)]
     pub(crate) fn refresh_all() {
         let live: Vec<Arc<SpawnEnv>> = book()
@@ -322,8 +289,7 @@ pub(crate) fn refresh_all() {
 }
 
 /// THE CELLS' RESOLVER: an `env` reference reads its variable (nothing else resolves), and every
-/// resolution is counted by variable, so a cell can tell a spawn resolved nothing. A cell hands it
-/// to the connector or the environment it builds.
+
 #[cfg(test)]
 pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<Secret<String>, String> {
     let var = r

@@ -30,23 +30,6 @@ use busbar_contract::records::{ScopeRef, VirtualKey};
 
 use crate::trust::validate::{Generations, Grant, Refusal};
 
-// ══ THE THIRD PLANE ══════════════════════════════════════════════════════════════════════════════
-//
-// An item type that exists ONLY in this file, for a plane busbar does not have. It is deliberately
-// unlike BOTH real ones, so that "a third plane costs an item type" is demonstrated rather than
-// assumed from a copy of an existing one:
-//
-//   * MCP requires TWO grants, A2A requires ONE (two when delegating) — this requires THREE, and one
-//     of them is on a value that is not the item's own name.
-//   * MCP's fitness test is vacuous, A2A's reads a cached document — this one reads a NUMBER, and
-//     answers with a value (the chosen edition) rather than a unit.
-//   * Its refusal enum shares no arm with either plane's.
-//   * Its wire form BORROWS from the item, which MCP's (an owned `serde_json::Value`) does not.
-//
-// EVERYTHING BELOW IS THE WHOLE COST. There is no catalogue module, no `*_for` filter, no walk, no
-// ordering rule and no fail-closed floor written for it. If a future plane needs any of those, the
-// seam failed.
-
 /// A throwaway third-plane item: a leaflet in a kiosk, published by a `bureau`, in a `district`,
 /// classified up to a `clearance`.
 #[derive(Debug)]
@@ -74,7 +57,6 @@ enum Unavailable {
     OutOfPrint,
 }
 
-/// The third plane's query: a reader's clearance and the edition they want.
 struct Reader {
     clearance: u8,
     edition: Option<String>,
@@ -90,12 +72,10 @@ struct Handout<'a> {
 impl CatalogueItem for Leaflet {
     type Excluded = Unavailable;
     type Query = Reader;
-    /// The edition served, which the fitness test CHOOSES — so this seam carries a value out of the
-    /// filter and not merely a yes.
+
     type Fit = String;
     type Wire<'a> = Handout<'a>;
 
-    /// THREE grants, conjunctively, and one of them names something that is not this item.
     fn required_grants<'g>(&'g self, _reader: &'g Reader, out: &mut Vec<Grant<'g>>) {
         out.push(Grant::Scope {
             kind: "kiosk_bureau",
@@ -111,9 +91,6 @@ impl CatalogueItem for Leaflet {
         });
     }
 
-    /// THIS PLANE ASKS IDENTITY AND GRANT, like MCP's catalogue and unlike A2A's — a kiosk lists
-    /// what it holds, and whether a leaflet is worth reading is not a question about the reader.
-    /// It is one line, and it is the whole of what the plane says about entitlement.
     fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), Unavailable> {
         crate::trust::validate::validate_visibility(caller.key, caller.now, grants).map_err(|r| {
             match r {
@@ -169,9 +146,6 @@ fn leaflet(bureau: &str, district: &str, id: &str, clearance: u8) -> Leaflet {
     }
 }
 
-/// A REAL `VirtualKey`, scoped to an explicit list. Not a stub predicate: the grant step this walk
-/// reaches is `VirtualKey::scope_allowed`'s, so a fixture that answered grants some other way would
-/// be testing a function the production path does not call.
 fn key_scoped(scopes: &[(&str, &str)]) -> VirtualKey {
     VirtualKey {
         id: "k1".to_string(),
@@ -205,7 +179,6 @@ fn caller(key: &VirtualKey) -> Caller<'_> {
     }
 }
 
-/// The three grants a reader needs for one leaflet in one district.
 fn ticket(district: &str, id: &str) -> Vec<(&'static str, String)> {
     vec![
         ("kiosk_bureau", "works".to_string()),
@@ -234,16 +207,10 @@ fn cleared() -> Reader {
     }
 }
 
-// ══ THE SEAM ═════════════════════════════════════════════════════════════════════════════════════
-
-/// THE ACCEPTANCE TEST FOR THE WHOLE DESIGN: a plane that did not exist five minutes ago is
-/// ENUMERATED, FILTERED BY GRANTS and RENDERED, and the only thing written for it was the item type
-/// above — no catalogue module, no filter, no walk, no ordering rule, no error type.
 #[test]
 fn a_third_plane_costs_an_item_type_and_nothing_else() {
     let inventory = an_inventory();
 
-    // ENUMERATED. A reader holding every ticket sees every leaflet its clearance reaches.
     let mut all = ticket("north", "leaflet-a");
     all.extend(ticket("south", "leaflet-b"));
     all.extend(ticket("north", "leaflet-secret"));
@@ -254,14 +221,12 @@ fn a_third_plane_costs_an_item_type_and_nothing_else() {
         vec!["leaflet-a", "leaflet-b", "leaflet-secret"],
         "every entitled item is enumerated, in the inventory's own order"
     );
-    // And the FIT VALUE the plane's own test chose comes back out, rather than being recomputed by
-    // whoever asked.
+
     assert!(
         seen.iter().all(|e| e.fit == "first"),
         "the fitness test's chosen edition is carried out of the filter"
     );
 
-    // FILTERED BY GRANTS. A reader holding one ticket sees one leaflet, and it is that one.
     let one = key_holding(&ticket("north", "leaflet-a"));
     assert_eq!(
         visible(&inventory, &caller(&one), &cleared())
@@ -272,7 +237,6 @@ fn a_third_plane_costs_an_item_type_and_nothing_else() {
         "a ticket for one leaflet reaches exactly that leaflet"
     );
 
-    // RENDERED, into the plane's own borrowed wire type, and only for what survived the filter.
     assert_eq!(
         rendered(&inventory, &caller(&one), &cleared()),
         vec![Handout {
@@ -281,7 +245,6 @@ fn a_third_plane_costs_an_item_type_and_nothing_else() {
         }],
     );
 
-    // And the plane's FITNESS still bites through the shared walk: full tickets, no clearance.
     let uncleared = Reader {
         clearance: 1,
         edition: None,
@@ -301,11 +264,6 @@ fn a_third_plane_costs_an_item_type_and_nothing_else() {
     );
 }
 
-/// THE THIRD PLANE INHERITS THE IDENTITY STEP TOO, and it wrote no line for it.
-///
-/// A key that has been deleted, disabled or has expired sees NOTHING, and the plane's own word for
-/// it comes back. This is the step a grant closure had nowhere to carry: a catalogue that enumerated
-/// for a deleted key was answering a principal that no longer exists.
 #[test]
 fn a_third_plane_inherits_the_identity_step_it_wrote_no_line_for() {
     let inventory = an_inventory();
@@ -313,7 +271,6 @@ fn a_third_plane_inherits_the_identity_step_it_wrote_no_line_for() {
     all.extend(ticket("south", "leaflet-b"));
     let live = key_holding(&all);
 
-    // The control: while the key is live, it sees its two.
     assert_eq!(visible(&inventory, &caller(&live), &cleared()).len(), 2);
 
     for (what, mutate) in [
@@ -343,16 +300,6 @@ fn a_third_plane_inherits_the_identity_step_it_wrote_no_line_for() {
     }
 }
 
-// ══ THE RULES THE MECHANISM OWNS ═════════════════════════════════════════════════════════════════
-
-/// THE FAIL-CLOSED FLOOR. An item that declares NO grant requirement is INVISIBLE, not public.
-///
-/// This is the single most important assertion in this file, and it is the one rule the walk adds
-/// rather than inherits. `trust::validate` documents an empty grant list as "a request that needs no
-/// grant, which is a statement the call site is making out loud" — honest for an ask addressed to
-/// something that needs none, and never honest for an item sitting in an inventory. A third plane
-/// whose author forgets `required_grants` must get an empty catalogue, which is a bug report, not a
-/// full one, which is a breach.
 #[test]
 fn an_item_that_declares_no_grant_is_invisible_not_public() {
     /// A leaflet whose author forgot to write a requirement. Nothing else about it differs.
@@ -379,8 +326,7 @@ fn an_item_that_declares_no_grant_is_invisible_not_public() {
     }
 
     let inventory = vec![Ungated(leaflet("works", "north", "leaflet-a", 0))];
-    // A caller whose key names EVERY scope there is — `allowed_scopes: None` is the tree's "all
-    // scopes" — still sees nothing, because the item asked for none.
+
     let mut open = key_scoped(&[]);
     open.allowed_scopes = None;
     assert!(
@@ -399,19 +345,11 @@ fn an_item_that_declares_no_grant_is_invisible_not_public() {
     );
 }
 
-/// THE CONJUNCTION REACHES THE GATE INTACT: every grant the item declared is one the caller must
-/// hold. Hold two of three and see nothing.
-///
-/// The AND is `trust::validate`'s rule, not a second one here — which is exactly why this test
-/// matters. It proves the walk hands over ALL of what an item declared: a walk that dropped one on
-/// the floor would be a narrower grant silently conferring a wider reach, and nothing in the
-/// validator's own battery could see it.
 #[test]
 fn every_required_grant_reaches_the_gate_and_a_missing_one_hides_the_item() {
     let inventory = vec![leaflet("works", "north", "leaflet-a", 0)];
     let full = ticket("north", "leaflet-a");
 
-    // The control: all three held. Without it the rows below prove nothing.
     let holds_all = key_holding(&full);
     assert_eq!(
         visible(&inventory, &caller(&holds_all), &cleared()).len(),
@@ -434,17 +372,10 @@ fn every_required_grant_reaches_the_gate_and_a_missing_one_hides_the_item() {
     }
 }
 
-/// ENTITLEMENT BEFORE FITNESS, and the proof is that fitness is never CALLED — not merely that the
-/// answer agrees.
-///
-/// Running fitness on an item the caller may not see would make the REASON a caller is refused
-/// depend on what is inside something it was never entitled to know exists, which is how a filter
-/// becomes an oracle. It is the same argument `trust::validate` makes for putting grant before
-/// artifact, applied one layer out.
 #[test]
 fn an_item_the_caller_may_not_see_is_never_fitness_tested() {
     let inventory = [leaflet("works", "north", "leaflet-secret", 5)];
-    // A reader who fails BOTH tests: no ticket, and no clearance either.
+
     let broke = Reader {
         clearance: 0,
         edition: None,
@@ -461,7 +392,6 @@ fn an_item_the_caller_may_not_see_is_never_fitness_tested() {
         "fitness was not merely ignored, it was never asked"
     );
 
-    // With the ticket, the SAME item now reaches fitness and is refused on the plane's own axis.
     let holds = key_holding(&ticket("north", "leaflet-secret"));
     assert_eq!(
         judge(&inventory[0], &caller(&holds), &broke).unwrap_err(),
@@ -470,8 +400,6 @@ fn an_item_the_caller_may_not_see_is_never_fitness_tested() {
     assert_eq!(inventory[0].fitted.get(), 1);
 }
 
-/// CROSS-TENANT ISOLATION, on the mechanism itself. Two principals, and neither can see a single
-/// item of the other's — through the one walk both real planes now use.
 #[test]
 fn one_principal_never_sees_another_principals_inventory() {
     let inventory = vec![
@@ -492,22 +420,17 @@ fn one_principal_never_sees_another_principals_inventory() {
 
     assert_eq!(alice_sees, vec!["leaflet-a"]);
     assert_eq!(bob_sees, vec!["leaflet-b"]);
-    // Asserted as DISJOINTNESS and not as counts: a count is satisfied by the wrong members, and
-    // "each saw one" is exactly what a swapped filter would also report.
+
     assert!(
         alice_sees.iter().all(|a| !bob_sees.contains(a)),
         "no item of one principal's catalogue appears in the other's"
     );
-    // And neither is empty, so the disjointness above is not the trivial kind.
+
     assert!(!alice_sees.is_empty() && !bob_sees.is_empty());
 }
 
-/// ORDER IS THE INVENTORY'S. Core does not re-sort, because both planes hand it an ordered inventory
-/// precisely so an operator-facing listing is deterministic rather than hash-ordered.
 #[test]
 fn the_entitled_subset_keeps_the_inventorys_own_order() {
-    // Deliberately NOT in sorted order: a mechanism that re-sorted would be indistinguishable from
-    // one that preserved order if the fixture were already sorted.
     let inventory = vec![
         leaflet("works", "north", "zulu", 0),
         leaflet("works", "north", "alpha", 0),
@@ -526,8 +449,6 @@ fn the_entitled_subset_keeps_the_inventorys_own_order() {
     );
 }
 
-/// RENDERING HAPPENS AFTER THE FILTER, never before. There is no path through this module that
-/// renders an item and then decides whether the caller may have it.
 #[test]
 fn nothing_is_rendered_that_was_not_first_entitled() {
     let inventory = an_inventory();
@@ -540,15 +461,12 @@ fn nothing_is_rendered_that_was_not_first_entitled() {
         }],
         "only the entitled item is rendered"
     );
-    // The unentitled items were not merely dropped after rendering — they were never fitted, which
-    // is the step that precedes rendering.
+
     assert_eq!(inventory[0].fitted.get(), 0);
     assert_eq!(inventory[2].fitted.get(), 0);
     assert_eq!(inventory[1].fitted.get(), 1);
 }
 
-/// The plane's FIT VALUE is carried out of the filter rather than recomputed, and it is the plane's
-/// own answer — here, the specific edition the reader asked for.
 #[test]
 fn the_fitness_answer_is_carried_out_of_the_filter() {
     let inventory = vec![leaflet("works", "north", "leaflet-a", 0)];

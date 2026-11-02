@@ -194,7 +194,6 @@ pub use datagram::{
 };
 
 /// THE AUTH POINTS a transport offers and calls its bound auth at (THE DESIGN, "Auth points
-/// and guest lists", step 1): defined once in `abi::auth`, referred to here, never redefined.
 pub use super::auth::{
     AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER,
 };
@@ -208,15 +207,11 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 1;
 
 /// The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
-/// the transport table. A door states it as built
-/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
-/// `tests/layout_fingerprint.rs` holds it to its fold.
+
 pub const LAYOUT_FINGERPRINT: u64 = 0x715dbad81f3872c0;
 
 /// The transport kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-/// crossing its table, each with every field. A struct `abi/transport/` gains is listed here (gate
-/// `abi-location`).
+
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
         head, listen, accept, dial, read, write, flush, shut, arrival, locate, begin, ingest, emit,
@@ -318,16 +313,14 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
 ];
 
 /// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]
-/// itself, defined here and nowhere else, so a bump of the kind's version moves it and there is no
-/// second number to fall behind (THE DESIGN, the ABI folders: an ABI version constant lives under `abi/`).
+
 pub const TRANSPORT_ABI: crate::transport::AbiVersion =
     crate::transport::AbiVersion(ABI_VERSION as u16);
 
-// The Rust face is a `u16`: a kind version that outgrew it would truncate, so it refuses to build.
 const _: () = assert!(ABI_VERSION <= u16::MAX as u32);
 
 /// [`crate::abi::mechanism::call::InHead::op`] of each transport op, in table order: kind op `k` is
-/// [`LIFECYCLE_SLOTS`]` + k`.
+
 pub mod slot {
     use super::LIFECYCLE_SLOTS;
 
@@ -420,10 +413,8 @@ pub struct Ops {
     pub timer: Option<Op>,
 }
 
-// ── the op contracts ─────────────────────────────────────────────────────────────────────────────
-
 /// The largest address `listen` or `accept` may write: the host's `addr_cap`/`peer_cap` is at
-/// least this (those ops have no short path).
+
 pub const MAX_ADDR: u64 = 256;
 
 /// Every kind op's contract, in slot order. Carrier I/O pends on its side's ticket (read or write)
@@ -456,18 +447,14 @@ pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
     contract!(TIMER, true, false, FramingIn, FramerOut, Stream),
 ];
 
-// ── the cancel vocabulary ────────────────────────────────────────────────────────────────────────
-
 /// [`crate::abi::mechanism::lifecycle::CancelOut::disposition`]: the cancelled carrier op had not
-/// started; nothing moved.
+
 pub const CANCEL_NOTHING_MOVED: u32 = 1;
 /// The cancelled carrier op moved some bytes; the connection is no longer usable and the host shuts
-/// it with [`CLOSE_TRANSPORT_FAILED`].
+
 pub const CANCEL_PARTIAL: u32 = 2;
 /// The cancelled op had completed before the cancel landed; its result stands.
 pub const CANCEL_COMPLETED: u32 = 3;
-
-// ── the vocabulary codes ─────────────────────────────────────────────────────────────────────────
 
 /// [`TransportTail::role`]: a carrier.
 pub const ROLE_CARRIER: u32 = 1;
@@ -480,11 +467,10 @@ pub const FRAMING_STREAM: u32 = 0;
 pub const FRAMING_DATAGRAM: u32 = 1;
 
 /// [`TransportTail::facts`]: the framer decodes the payload. (Bit 1 is retired: nothing is added to
-/// the head after the auth has run is a rule every transport keeps, proven by a RED in its own
-/// suite, not a fact one states.)
+
 pub const FACT_DECODES_PAYLOAD: u32 = 2;
 /// [`TransportTail::facts`]: the transport accepts: its framer begins on the accepting side.
-/// A zero declares nothing: a tail that states no op bit declares no op.
+
 pub const FACT_ACCEPTS: u32 = 4;
 /// [`TransportTail::facts`]: the transport dials: its framer begins on the dialling side.
 pub const FACT_DIALS: u32 = 8;
@@ -494,25 +480,11 @@ pub const FACT_DETACHES: u32 = 16;
 pub const FACT_ADOPTS: u32 = 32;
 
 /// THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states
-/// the auth points it offers (THE DESIGN, "Auth points and guest lists"; the blob's bytes are
-/// [`crate::abi::mechanism::extensions`]'s keyed entries, so no layout changes). The value is four
-/// bytes, a little-endian [`AuthPoints`] set of [`POINT_PEER`] | [`POINT_HEAD`] |
-/// [`POINT_HEAD_BODY`]; another length or bit refuses the load ([`check::check_offered_points`]).
-/// A transport that states no record offers `{Head, HeadBody}`, the request points 1.5.5's chain
-/// was called at. Boot refuses a line whose auth needs a point its transport does not offer.
+
 pub const EXT_OFFERED_POINTS: &str = "offered-points";
 
 /// THE SEALED-VALUES RECORD (TSEAL): the key under which a FRAMER's Statement `extensions` states
-/// that it renders sealed values (an empty value; any other refuses the load,
-/// [`check::check_sealed_values`]). Such a framer promises that every field value it is handed
-/// (`BeginIn::fields`, `EncodeIn::fields`, and the bytes of an opening it is emitted) it renders
-/// VERBATIM, contiguously, exactly once: on a wire with HPACK/QPACK, as a literal never-indexed
-/// string without Huffman coding. The host then hands it FILLER of exactly a credential value's
-/// length in place of the value (random bytes in `A-Za-z0-9`), never the credential, and splices
-/// the real bytes over the filler in the framer's wire output where the host secures the
-/// connection; an opening whose filler is not rendered exactly once is refused before its bytes
-/// leave, and a sealed value is never written to a connection the host does not secure (its open is
-/// refused). A framer that states no record is handed the credential bytes, as before.
+
 pub const EXT_SEALED_VALUES: &str = "sealed-values";
 
 /// `side`: the accepting end.
@@ -520,20 +492,7 @@ pub const SIDE_ACCEPT: u32 = 0;
 /// `side`: the dialing end.
 pub const SIDE_DIAL: u32 = 1;
 /// `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries
-/// (ARCHITECT 4l, 2026-10-05: one listener port carries every claim's streams, so a claim's framer
-/// frames the stream, not the connection). Its one stream is stream `1`. `begin` takes the stream's
-/// target and its head fields ([`BeginIn::fields`]) and yields its initial response field block in
-/// `wire` (ordinary valid field names and values, [`fields`] rendering). The host retains that
-/// block and adds it to the unit's response head. The stream framer declares every possible
-/// closing field there when its carrier requires an early declaration; the host invents no
-/// protocol names. A pending Begin owns this block until its empty resumes/drains complete.
-/// `ingest` takes the stream's body bytes and
-/// yields each message as a piece that ends its frame (no piece ends the stream: the host's framer
-/// knows where its body ended); `emit` takes one message's bytes (`end_of_frame` = it ends) and yields the
-/// stream's body bytes in `wire`; `refuse` and `finish` yield the stream's CLOSING FIELD BLOCK in
-/// `wire`, as field lines (`name: value` CRLF each), which the host sends verbatim: after a head as
-/// its trailers, before one as the fields of an answer that is nothing else. `finish` states the
-/// stream's final status ([`FinishIn::final_status`]).
+
 pub const SIDE_ACCEPT_STREAM: u32 = 2;
 
 /// Close reason: normal.
@@ -565,22 +524,18 @@ pub const STATUS_FAR_END_FAULT: u8 = 3;
 pub const STATUS_OTHER: u8 = 4;
 
 /// Fault reading: none stated — no reading, the status table decides. On a frame piece that table
-/// is the framer's own fault table, and an answer it covers with no reading is read as the
-/// caller's (nothing is recorded against the destination): a framer that states no fault table
-/// never trips anything. On a plane's `OnPieceOut::fault` it is the transport's reading of the
-/// same answer that stands.
+
 pub const FAULT_NONE: u8 = 0;
 /// Fault reading: the caller's own fault. The destination is healthy and nothing is recorded.
 pub const FAULT_CALLER: u8 = 1;
 /// Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the
-/// piece's `retry_after_secs`, where stated, floors the cooldown.
+
 pub const FAULT_TRANSIENT: u8 = 2;
 /// Fault reading: the destination itself is down for every caller (its credential or its account
-/// was refused), so every pool's cell for it trips at once.
+
 pub const FAULT_HARD: u8 = 3;
 /// Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against
-/// it whatever the answer's status (a well-formed protocol error from a reachable destination, as
-/// 1.5.5 counted it: "the backend was reachable and answered"). The answer is relayed as it came.
+
 pub const FAULT_HEALTHY: u8 = 4;
 
 /// [`Claim::status_at`]: no status.
@@ -617,13 +572,7 @@ pub const DEST_AUTHORITY: u32 = 0;
 /// [`Destination::kind`]: a program the carrier runs.
 pub const DEST_PROGRAM: u32 = 1;
 /// [`Destination::kind`]: NOTHING TO OPEN, the KEY-RETIRED SIGNAL (T5). The member whose
-/// [`DialIn::supervision_key`] the dial carries is retired (its registration gone, or its program
-/// changed by a re-declaration) and is never dialled again: a carrier that supervises what it runs
-/// forgets that key's supervision and answers READY (`conn` `0`, no connection); any other carrier
-/// may refuse it, and the host reads nothing from the answer. The host admits nothing for it, so
-/// no `io.*` call it makes reaches anything. The host sends it once per retired member, after the
-/// member's last program connection was shut, and never under a host lock. The rest of the
-/// destination is empty.
+
 pub const DEST_RETIRED: u32 = 2;
 
 /// [`FramePiece::flags`]: the piece completes its frame.
@@ -633,93 +582,71 @@ pub const PIECE_HAS_CODE: u16 = 2;
 /// [`FramePiece::flags`]: `retry_after_secs` is present.
 pub const PIECE_HAS_RETRY_AFTER: u16 = 4;
 /// [`FramePiece::flags`]: the stream FAILED; the piece's bytes are the reason. Always with
-/// [`PIECE_END_OF_FRAME`]: it is the stream's last piece.
+
 pub const PIECE_STREAM_FAILED: u16 = 8;
 
 /// [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers),
-/// never payload. Never with [`PIECE_STREAM_FAILED`].
+
 pub const PIECE_FIELDS: u16 = 16;
 
 /// [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier
-/// piece of the block began (a sink too small for the block split it mid-line). A fields piece
-/// without it starts a line.
+
 pub const PIECE_CONTINUED: u16 = 32;
 
 /// [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire
-/// whose messages are one or the other (ws's TEXT and BINARY opcodes). Absent means binary, the
-/// meaning every framer that never sets it keeps. On every piece of a text message, an EMPTY text
-/// message's one piece too; never on a field block, a failed stream's reason or a stream's
-/// [`PIECE_END`]. The host reads it into `FrameMeta::text`, the bit's one home above the ABI.
+
 pub const PIECE_TEXT: u16 = 64;
 
 /// [`FramePiece::flags`]: the stream ENDS whole here; no piece of it follows. The ONLY way a
-/// stream ends whole (an empty piece without it is an empty frame, never the end). Always with
-/// [`PIECE_END_OF_FRAME`] and on an EMPTY piece (`len == 0`): an end that carried bytes would make
-/// them a message the end swallows. Never with [`PIECE_STREAM_FAILED`] (a failed stream's piece
-/// ends it failed), [`PIECE_FIELDS`] (an empty fields piece is an empty head) or [`PIECE_TEXT`].
+
 pub const PIECE_END: u16 = 128;
 
 /// [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with
-/// [`YIELD_STREAM_FULL`] drained below the framer's low-water mark, and the host may emit on the
-/// stream again. Always an EMPTY piece, with no other flag: it ends no frame and no stream.
+
 pub const PIECE_WRITABLE: u16 = 256;
 
 /// [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the
-/// message's head declared on the wire. Never on any other piece.
+
 pub const PIECE_HAS_DECLARED_LEN: u16 = 512;
 
 /// [`FramePiece::flags`], with [`PIECE_FIELDS`] and [`PIECE_HAS_CODE`]: the field block is an
-/// INTERIM head (a status-line `1xx` other than the switch an upgrade takes): informational, never
-/// the answer's head; the final head follows on the same stream. On every piece of the block; never
-/// with [`PIECE_END`] or [`PIECE_HAS_DECLARED_LEN`]. The host never reads it as the final head.
+
 pub const PIECE_INTERIM: u16 = 1024;
 
 /// [`FramePiece::flags`], with [`PIECE_HAS_CODE`]: `code` (and the `status_class` and `fault` read
-/// from it) is in the numbering of the HANDSHAKE the connection opened with, the status-line one
-/// (`http`), not the claim's own: an upgrade's handshake answer, e.g. a refused upgrade's `403`.
-/// The host reads the code in that numbering.
+
 pub const PIECE_CODE_HANDOFF: u16 = 2048;
 
 /// The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`].
-/// [`TransportTail::frame_piece_size`] states it, so a framer built against another piece layout
-/// is refused at load, never read wrong.
+
 pub const FRAME_PIECE_SIZE: u32 = 48;
 
 /// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
-/// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
-/// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
+
 pub const EMIT_TEXT: u32 = 1;
 
 /// [`EmitIn::flags`]: the bytes are the accepted answer's final field block, after its head and
-/// body, rendered by the transport as trailers. Requires `end_of_frame = 1`, no status or opening
-/// body length, and no [`EMIT_TEXT`]. Unsupported transports refuse it before consuming bytes.
-/// Only the fresh crossing carries it: a pending operation owns its fields and kind until its
-/// resume and every empty `YIELD_MORE` drain complete.
+
 pub const EMIT_TRAILERS: u32 = 2;
 
 /// [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that
-/// delimits frames itself (a carrier carried as itself, with no framer above it). A carrier that
-/// carries an undelimited byte stream ignores it.
+
 pub const WRITE_END_OF_FRAME: u32 = 1;
 
 /// [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier
-/// whose wire is an undelimited byte stream sets it on every read: each read is a frame, the
-/// degenerate case. A frame longer than the host's buffer comes in several reads, the last one
-/// carrying it.
+
 pub const READ_END_OF_FRAME: u32 = 1;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
 /// [`FramerYield::flags`]: a buffer filled; call the same op again once drained. Never on `encode`
-/// (it answers whole; the host FAULTs it).
+
 pub const YIELD_MORE: u32 = 2;
 /// [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then.
 pub const YIELD_HAS_DEADLINE: u32 = 4;
 /// [`FramerYield::flags`], on `emit` only: the bytes were taken and the stream's queue is at its
-/// high-water mark; emit nothing more on it until a [`PIECE_WRITABLE`] piece or its last piece.
-pub const YIELD_STREAM_FULL: u32 = 8;
 
-// ── the Statement tail ───────────────────────────────────────────────────────────────────────────
+pub const YIELD_STREAM_FULL: u32 = 8;
 
 /// One claim's ROW: the per-scheme facts of the scheme the Statement's `claims` names at the same
 /// index (the name itself is stated only there). The first claim is the entry's own. Two entries
@@ -751,8 +678,7 @@ pub struct Claim {
 
 impl Claim {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Claim { …, ..Claim::ZERO }` so a field appended later reads as not
-    /// declared.
+
     pub const ZERO: Self = Self {
         selector_forms: AbiStr::ZERO,
         egress_selector_forms: AbiStr::ZERO,
@@ -768,7 +694,7 @@ impl Claim {
 }
 
 /// HOW THE TRANSPORT CLAIM ROW IS MADE: from [`Claim::EMPTY`], its plain fields
-/// set directly and each list by its setter, to items that live for the program.
+
 impl Claim {
     /// Nothing stated: every string absent, every list empty, every number zero.
     pub const EMPTY: Claim = Claim {
@@ -806,8 +732,7 @@ pub struct StatusRow {
 
 impl StatusRow {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `StatusRow { …, ..StatusRow::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         claim: 0,
         lo: 0,
@@ -838,8 +763,7 @@ pub struct FaultRow {
 
 impl FaultRow {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `FaultRow { …, ..FaultRow::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         claim: 0,
         lo: 0,
@@ -865,8 +789,7 @@ pub struct SettingDecl {
 
 impl SettingDecl {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `SettingDecl { …, ..SettingDecl::ZERO }` so a field appended later reads
-    /// as not declared.
+
     pub const ZERO: Self = Self {
         path: AbiStr::ZERO,
         kind: 0,
@@ -933,8 +856,7 @@ pub struct TransportTail {
 
 impl TransportTail {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `TransportTail { …, ..TransportTail::ZERO }` so a field appended later
-    /// reads as not declared.
+
     pub const ZERO: Self = Self {
         head: KindTailHead::ZERO,
         role: 0,
@@ -963,10 +885,10 @@ impl TransportTail {
 }
 
 /// HOW THE TRANSPORT KIND TAIL IS MADE: from [`TransportTail::EMPTY`], its plain
-/// fields set directly and each list by its setter, to items that live for the program.
+
 impl TransportTail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-    /// sized to the whole tail.
+
     pub const EMPTY: TransportTail = TransportTail {
         head: KindTailHead {
             size: core::mem::size_of::<TransportTail>() as u32,
@@ -1009,8 +931,6 @@ impl TransportTail {
             => fault_rows_ptr, with_fault_rows, with_raw_fault_rows;
     }
 }
-
-// ── shared shapes ────────────────────────────────────────────────────────────────────────────────
 
 /// A carrier's destination, borrowed for the call.
 #[repr(C)]
@@ -1063,8 +983,7 @@ pub struct ConnFacts {
 
 impl ConnFacts {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `ConnFacts { …, ..ConnFacts::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         size: 0,
         _reserved: 0,
@@ -1109,8 +1028,7 @@ pub struct FramePiece {
 
 impl FramePiece {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `FramePiece { …, ..FramePiece::ZERO }` so a field appended later reads
-    /// as not declared.
+
     pub const ZERO: Self = Self {
         stream: 0,
         offset: 0,
@@ -1137,14 +1055,10 @@ pub struct FrameSpan {
 
 impl FrameSpan {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `FrameSpan { …, ..FrameSpan::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self { offset: 0, len: 0 };
 }
 
-// The piece's size and its flags' place are fixed: a framer built against another layout is refused
-// at compile time, never read wrong at run time; one built against another contract states another
-// `frame_piece_size` and is refused at load.
 const _: () = assert!(core::mem::size_of::<FramePiece>() == FRAME_PIECE_SIZE as usize);
 const _: () = assert!(core::mem::offset_of!(FramePiece, fault) == 29);
 const _: () = assert!(core::mem::offset_of!(FramePiece, flags) == 30);
@@ -1230,12 +1144,9 @@ pub struct FramerYield {
     pub agreed: u32,
 }
 
-// The carve keeps the layout: size, alignment and the field's offset are the padding's.
 const _: () = assert!(core::mem::size_of::<FramerYield>() == 40);
 const _: () = assert!(core::mem::align_of::<FramerYield>() == 8);
 const _: () = assert!(core::mem::offset_of!(FramerYield, agreed) == 36);
-
-// ── carrier ins and outs ─────────────────────────────────────────────────────────────────────────
 
 /// `listen`'s `in`.
 #[repr(C)]
@@ -1419,8 +1330,6 @@ pub struct ArrivalOut {
     /// Alignment padding.
     pub _reserved: u32,
 }
-
-// ── framer ins and outs ──────────────────────────────────────────────────────────────────────────
 
 /// `locate`'s `in`.
 #[repr(C)]

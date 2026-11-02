@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The remaining small top-level config SECTION shapes: `tls:`, `security:`, `store:`,
-//! `secrets:`, `advanced:` (with its `response_headers:`), `config:` (management policy and the
-//! overlay backend), the `rate_card:` entry and the `export:` definition entry, plus the two
-//! listen-address defaults. Plain serde data with their `Default`s. The `export:` LOWERING into
-//! typed per-module settings stays in busbar-core (those settings carry a core-owned projection);
-//! busbar-core re-exports every item here at its historical `config::` path.
-
 use serde::{Deserialize, Serialize};
 
 use busbar_contract::secret_ref::SecretRef;
@@ -21,9 +14,7 @@ use super::limits::{DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS
 /// All three values are SECRET REFERENCES (`{ file: … }` / `{ env: … }` / a secret module)
 /// resolving to PEM bytes; they are resolved once at startup and any resolve/parse error is fatal
 /// (`die`). Key bytes are never logged.
-// deny_unknown_fields: a typo under `tls:` - e.g. `client_c:` for `client_ca:` - would
-// otherwise be SILENTLY IGNORED, leaving mTLS DISABLED while the operator believes it is on
-// (a security downgrade with no diagnostic). Reject any unknown key here so the typo fails boot.
+
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct TlsCfg {
@@ -37,14 +28,8 @@ pub struct TlsCfg {
     pub client_ca: Option<SecretRef>,
 }
 
-/// Default listen address for the inbound HTTP server.
 pub const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8080";
 
-/// Default admin-plane listen address. The admin API (`/api/v1/admin/…`) ALWAYS runs on its own
-/// listener, never sharing the data port — the management plane is privileged and stays isolated by
-/// default. The default binds LOOPBACK so a zero-config deployment boots (an exposed default would
-/// trip the mTLS boot-guard); to manage Busbar off-host, set an exposed `admin_listen` with
-/// `admin_tls.client_ca_file` (mTLS) or an explicit `admin_require_mtls: false` waiver.
 pub const DEFAULT_ADMIN_LISTEN_ADDR: &str = "127.0.0.1:8081";
 
 /// Operator-owned security controls (config.yaml `security:` block).
@@ -89,28 +74,14 @@ pub struct StoreCfg {
     pub module: String,
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    // `settings:` the operator WROTE. Every admin read of it serves
-    // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The store a 1.5.x config with no `store:` block ran on (v1.5.5:crates/busbar/src/config/mod.rs:3026,
-/// `GOVERNANCE_STORE_MEMORY`, read by its `default_governance_store`). 1.6.0 holds no default:
-/// `busbar --migrate-config` writes this module into a config that has none, which is exactly 1.5.5's
-/// implicit behaviour made explicit, and [`store_required`] names it (Q-STORE = (B)). Read off the
-/// root migration table's `store_1_5_default` row (frozen 1.5.5 text the composition root hands in), so
-/// the kernel spells no store instance (BUSBAR-1.6.0.md l.4205-4211).
 #[must_use]
 pub fn migrated_store_module() -> &'static str {
     crate::config::migration_table::text("store_1_5_default")
 }
 
-/// THE REFUSAL of a config with no `store:` block (Q-STORE = (B)): one `--validate` / boot error line
-/// in the 1.5.5 shape — the empty-`store.module` refusal's words for the choice
-/// (v1.5.5:crates/busbar/src/config_validate/mod.rs:1655) and the 1.x-config refusal's command
-/// (v1.5.5:crates/busbar/src/config/migrate.rs:44).
 pub fn store_required() -> String {
     format!(
         "store is required; add a `store:` block, e.g. `store: {{module: {m}}}` (the compiled-in \
@@ -157,10 +128,6 @@ pub struct SecretModuleCfg {
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    // `settings:` the operator WROTE. Every admin read of it serves
-    // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -224,10 +191,8 @@ pub struct AdvancedCfg {
     pub allow_destinations: Vec<String>,
 }
 
-/// `advanced.block_private_addresses`'s default (owner-signed: on).
 pub const DEFAULT_BLOCK_PRIVATE_ADDRESSES: bool = true;
 
-/// Serde's default for [`AdvancedCfg::block_private_addresses`].
 pub fn default_block_private_addresses() -> bool {
     DEFAULT_BLOCK_PRIVATE_ADDRESSES
 }
@@ -256,7 +221,6 @@ pub struct Destinations {
 }
 
 impl super::RootCfg {
-    /// The destination guard's inputs ([`Destinations`]).
     #[must_use]
     pub fn destinations(&self) -> Destinations {
         let mut providers: Vec<_> = self.providers.iter().collect();
@@ -265,8 +229,6 @@ impl super::RootCfg {
             .into_iter()
             .filter(|(_, p)| !p.allow_metadata_hosts.is_empty())
             .flat_map(|(_, p)| {
-                // Each URL as the served flow dials it: its userinfo stripped (row 74, F25), so the
-                // carve-out matches the host the dial names rather than reading nothing.
                 std::iter::once(&p.base_url)
                     .chain(&p.token_url)
                     .map(|url| busbar_kernel_egress::trust::net::strip_userinfo(url).into_owned())
@@ -341,14 +303,11 @@ impl Default for ResponseHeadersCfg {
     }
 }
 
-/// `Server-Timing: busbar` header is SUPPRESSED by default (indistinguishability); operators opt IN.
 pub const DEFAULT_RESPONSE_HEADERS_SERVER_TIMING: bool = false;
 pub fn default_response_headers_server_timing() -> bool {
     DEFAULT_RESPONSE_HEADERS_SERVER_TIMING
 }
 
-/// `x-busbar-route-policy` / `x-busbar-route-target` are SUPPRESSED by default (same fingerprinting
-/// concern as `server_timing`); operators opt IN.
 pub const DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY: bool = false;
 pub fn default_response_headers_route_policy() -> bool {
     DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY
@@ -421,12 +380,6 @@ pub struct RateEntryCfg {
 }
 
 impl RateEntryCfg {
-    /// **THE MONEY INTAKE**: this entry's four rates, converted ONCE and exactly into the integer
-    /// nano-units per token every later hop carries ([`busbar_contract::billing::RawTierRates`]), by the
-    /// ledger's one conversion (`representable_nano_rate`: exact, on the decimal's own digits, #81).
-    /// `None` is a configured rate the card cannot hold — not a whole number of nano-units, or out of
-    /// range (item 22, OWNER rule 21: refused, never rounded) — which boot validation refuses and the
-    /// card records unpriced. No float leaves this function.
     pub fn raw_tier_rates(&self) -> busbar_contract::billing::RawTierRates {
         let nanos = busbar_kernel_ledger::cost::representable_nano_rate;
         busbar_contract::billing::RawTierRates {
@@ -438,14 +391,6 @@ impl RateEntryCfg {
     }
 }
 
-/// The routing-scalar projection of a rate entry (abstract units per million tokens), fed to the
-/// `cheapest` policy and the hook `Candidate.cost_per_mtok` signal: the blended
-/// (input + output) / 2 (1 micro-unit/token == 1 unit/mtok, so no further scaling).
-///
-/// A ROUTING ORDER, NOT MONEY: no ledger, cap or bill reads it, and it is a float because the
-/// `cheapest` ranking and the hook signal it feeds are, exactly as 1.5.5's
-/// (`crates/busbar/src/config/mod.rs:2137` at v1.5.5) — so it reads the configured figures here and
-/// never the exact money view, whose integers would re-order a tie 1.5.5 ranked on these doubles.
 pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
     (r.input_utok + r.output_utok) / 2.0
 }
@@ -463,7 +408,7 @@ pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
 /// Traces. `otlp` ABSORBS the DELETED `observability:` block's only remaining field (`otlp_url`), so
 /// `export:` is now the single telemetry-egress surface.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently disable telemetry.
+#[serde(deny_unknown_fields)]
 pub struct ExportDefCfg {
     /// The built-in exporter module backing this instance: `prometheus` | `request-log-webhook` |
     /// `request-log-file` | `otlp` (see [`EXPORT_MODULES`]). An unknown module is a boot error.
@@ -502,13 +447,7 @@ pub struct ExportDefCfg {
     /// The module's own settings bag. OPAQUE at this layer exactly like `hooks.<name>.settings` —
     /// typed per module by busbar-core's `resolve_export`, so a typo inside it still fails boot loudly.
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    // `settings:` the operator WROTE. Every admin read of it serves
-    // `service::settings_keys(&…settings)`, or passes the tree through
-    // `service::redact_settings_bags` first.
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The top-level `export:` NAMED-DEFINITION map: instance name → [`ExportDefCfg`]. Insertion-ordered
-/// so the resolved sink order (and therefore delivery order) is deterministic.
 pub type ExportDefs = indexmap::IndexMap<String, ExportDefCfg>;

@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The inbound auth handle's kernel side (`BUSBAR-1.6.0.md` THE DESIGN §6, "Auth points and guest
-//! lists", step 4, l.938-962; Part 2 #65, #74), over kind-neutral doubles: scripted auths, a
-//! counting unit mint, a test MAC, and the generation's app as the test kit builds it.
-
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -22,8 +18,6 @@ mod inbound_peer_points;
 #[path = "inbound_reader_deadline.rs"]
 mod inbound_reader_deadline;
 
-/// One auth's double: answers every `verify` with `answer`, counting the calls and keeping the
-/// field-line names it was lent.
 struct Script {
     points: AuthPoints,
     answer: VerifyAnswer,
@@ -433,7 +427,6 @@ fn a_ticket_never_overrides_a_refused_connection() {
     );
 }
 
-/// A `verify` answered before anything crossed.
 struct Answered(Option<VerifyAnswer>);
 
 impl Future for Answered {
@@ -482,7 +475,6 @@ impl AuthCalls for Script {
     }
 }
 
-/// The test MAC: a keyed mix of every field the real one covers.
 fn test_mac(t: &UnitTag) -> Option<u64> {
     let mut h: u64 = 0x9e37_79b9_7f4a_7c15;
     for v in [
@@ -498,7 +490,6 @@ fn test_mac(t: &UnitTag) -> Option<u64> {
     Some(h)
 }
 
-/// The kit: the kernel side, its refusals as the sink saw them, and the generation's app.
 struct Kit {
     inbound: Arc<Inbound>,
     refused: Arc<Mutex<Vec<RefusedUnit>>>,
@@ -528,8 +519,6 @@ fn line(path: &str, methods: u32, auth: LineAuth) -> Line {
     }
 }
 
-/// A kit whose data listener holds `MESSAGES` and `OTHER` (POST, the chain `auths` in order, at
-/// the union of their points) and `HEALTHZ` (GET, `none`), for `OWNER` at `GEN`.
 fn kit(auths: &[(&str, Arc<Script>)]) -> Kit {
     let names: Vec<String> = auths.iter().map(|(n, _)| (*n).to_string()).collect();
     let points = AuthPoints(auths.iter().fold(0, |p, (_, s)| p | s.points.bits()));
@@ -541,7 +530,6 @@ fn kit(auths: &[(&str, Arc<Script>)]) -> Kit {
     )
 }
 
-/// [`kit`] over `app`, its lines' chain `names` at `points`, the opened `auths` among them.
 fn kit_over(
     app: Arc<App>,
     names: Vec<String>,
@@ -551,12 +539,10 @@ fn kit_over(
     kit_signed(app, names, points, auths, kin_unsigned())
 }
 
-/// No path is answered by a dialect that signs.
 fn kin_unsigned() -> SignedIngress {
     Arc::new(|_: &App, _: &str| false)
 }
 
-/// [`kit_over`], its paths' signing answered by `signed`.
 fn kit_signed(
     app: Arc<App>,
     names: Vec<String>,
@@ -598,7 +584,7 @@ fn kit_signed(
         scope: None,
     };
     inbound.install(OWNER, GEN, listener()).expect("installed");
-    // The same list under another owner: a unit minted for one is not the other's.
+
     inbound
         .install(OWNER + 1, GEN, listener())
         .expect("installed");
@@ -609,14 +595,11 @@ fn kit_signed(
     }
 }
 
-/// `n` line ids as the root mints them: the line half of the ref-id space, not counting from `1`
-/// so a line's id is never its index.
 fn line_ids(n: u64) -> Vec<u64> {
     (0..n).map(|i| 7_000 + 13 * i).collect()
 }
 
 impl Kit {
-    /// The handle id of the line at `path`.
     fn id(&self, path: &str) -> u64 {
         self.inbound.specs(OWNER, GEN).expect("installed")[self.line(path) as usize].auth
     }
@@ -674,7 +657,6 @@ impl Kit {
             .expect("answered at once")
     }
 
-    /// `auth.call` on connection `conn`, with the op's `deadline`.
     fn call_on(
         &self,
         conn: u64,
@@ -706,7 +688,6 @@ impl Kit {
             .expect("answered at once")
     }
 
-    /// `unit.hand_in` on connection `conn`.
     fn hand_in_on(&self, conn: u64, path: &str, unit: UnitRef, head: Head) -> (u32, UnitRef) {
         self.inbound
             .hand_in(HandIn {
@@ -1290,10 +1271,6 @@ fn names() -> Vec<Strip> {
     vec![Strip::field("authorization"), Strip::query("key")]
 }
 
-/// RED (l.949-950; #74): the request's FIRST `auth.call` mints its unit (MAC'd over the request's
-/// own secret, the generation, the owner, the line and the unit); a subsequent call presents it and is
-/// verified. A replayed (forged) unit, the same unit presented by another owner, and the unit
-/// presented on another line are each refused.
 #[test]
 fn red_the_first_auth_call_mints_the_unit_and_a_subsequent_call_must_present_it() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "sk-1"), names());
@@ -1362,9 +1339,6 @@ fn red_the_first_auth_call_mints_the_unit_and_a_subsequent_call_must_present_it(
     assert_ne!(other.unit.id, first.unit.id, "two requests share a unit");
 }
 
-/// RED (l.942-948): the verdict and the credential go to the kernel FIRST-HAND, held on the unit
-/// (the credential a redacted secret, gone when the unit exits); the transport is answered only the
-/// flow and the NAMES its auths named.
 #[test]
 fn red_the_verdict_is_first_hand_and_never_in_the_transports_answer() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "sk-live-123"), names());
@@ -1418,13 +1392,10 @@ fn red_the_verdict_is_first_hand_and_never_in_the_transports_answer() {
     assert!(k.inbound.admitted(answer.unit.id).is_none());
 }
 
-/// RED (l.921-926, 1.5.5's chain rule): the first identity admits, a pass tries the next, a reject
-/// (or a verify that answered no verdict) stops before the next is called, all-pass stops, an
-/// overloaded verifier stops and is refused with the 503.
 #[test]
 fn red_the_chain_rule_holds_in_list_order() {
     let head = || post(MESSAGES, &[], None);
-    // pass, then identity: the second admits.
+
     let (a, b) = (
         Script::new(AuthPoints::HEAD, Verified::Pass, Vec::new()),
         Script::new(AuthPoints::HEAD, identity("bob", "k"), Vec::new()),
@@ -1434,7 +1405,7 @@ fn red_the_chain_rule_holds_in_list_order() {
     assert_eq!(ans.flow, FLOW_CONTINUE);
     assert_eq!(k.inbound.admitted(ans.unit.id).unwrap().provider, "b");
     assert_eq!((a.calls(), b.calls()), (1, 1));
-    // reject, then identity: stopped, and the second is never called.
+
     let (a, b) = (
         Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new()),
         Script::new(AuthPoints::HEAD, identity("bob", "k"), Vec::new()),
@@ -1444,7 +1415,7 @@ fn red_the_chain_rule_holds_in_list_order() {
     assert_eq!(ans.flow, FLOW_STOP);
     assert_eq!(b.calls(), 0, "a reject did not stop the chain");
     assert!(k.inbound.admitted(ans.unit.id).is_none());
-    // no verdict (a failed verify) stops, fail closed.
+
     let a = Script::new(AuthPoints::HEAD, Verified::Failed, Vec::new());
     let k = kit(&[("a", a)]);
     assert_eq!(
@@ -1453,7 +1424,7 @@ fn red_the_chain_rule_holds_in_list_order() {
             .flow,
         FLOW_STOP
     );
-    // all pass on a non-empty list stops.
+
     let (a, b) = (
         Script::new(AuthPoints::HEAD, Verified::Pass, Vec::new()),
         Script::new(AuthPoints::HEAD, Verified::Pass, Vec::new()),
@@ -1465,7 +1436,7 @@ fn red_the_chain_rule_holds_in_list_order() {
             .flow,
         FLOW_STOP
     );
-    // an overloaded verifier stops; its refusal is the at-capacity 503, byte for byte.
+
     let a = Script::new(AuthPoints::HEAD, Verified::Overloaded, Vec::new());
     let k = kit(&[("a", a)]);
     let ans = k.call(MESSAGES, UnitRef::NONE, POINT_HEAD, head()).unwrap();
@@ -1478,9 +1449,6 @@ fn red_the_chain_rule_holds_in_list_order() {
     assert_eq!(refusal.status, 503);
 }
 
-/// RED (l.924-926): at each point only the undecided auths that need it are called, and the
-/// verdict is fixed in LIST order: a following auth's identity at `Head` does not admit while an
-/// earlier auth that needs `HeadBody` is undecided; that auth's pass at `HeadBody` lets it stand.
 #[test]
 fn red_the_verdict_is_fixed_in_list_order_across_points() {
     let (a, b) = (
@@ -1515,8 +1483,6 @@ fn red_the_verdict_is_fixed_in_list_order_across_points() {
     assert_eq!(k.inbound.admitted(at_head.unit.id).unwrap().provider, "b");
 }
 
-/// RED (l.953-958 (a)): a hand-in whose handle is not the line's own, or whose line is not the
-/// list's own match for the request, stops.
 #[test]
 fn red_hand_in_stops_a_line_that_is_not_the_lists_match() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
@@ -1535,26 +1501,24 @@ fn red_hand_in_stops_a_line_that_is_not_the_lists_match() {
         FLOW_CONTINUE,
         "the matched line, admitted, was stopped"
     );
-    // The handle of another line.
+
     assert_eq!(
         k.hand_in(OTHER, MESSAGES, ans.unit, post(MESSAGES, &[], None))
             .0,
         FLOW_STOP
     );
-    // The request is not the line's: the list matches it to another line.
+
     assert_eq!(
         k.hand_in(MESSAGES, MESSAGES, ans.unit, post(OTHER, &[], None))
             .0,
         FLOW_STOP
     );
-    // The method the line does not admit.
+
     let mut get = post(MESSAGES, &[], None);
     get.method = "GET".to_string();
     assert_eq!(k.hand_in(MESSAGES, MESSAGES, ans.unit, get).0, FLOW_STOP);
 }
 
-/// RED (l.955-957 (b)): a line with auth and no first-hand identity for the unit stops: a request
-/// handed in with no auth call (its unit minted here) and a unit whose auth rejected.
 #[test]
 fn red_hand_in_stops_an_auth_line_with_no_verdict() {
     let a = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
@@ -1576,8 +1540,6 @@ fn red_hand_in_stops_an_auth_line_with_no_verdict() {
     );
 }
 
-/// RED (l.957-958 (c)): a name the auth named still present stops: a field line matched
-/// case-insensitively, a query key case-sensitively.
 #[test]
 fn red_hand_in_stops_while_a_named_line_is_still_present() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), names());
@@ -1598,8 +1560,6 @@ fn red_hand_in_stops_while_a_named_line_is_still_present() {
     }
 }
 
-/// RED (l.949-950): a `none` line's request is handed in with no unit, and the kernel mints it
-/// there; it admits anonymously.
 #[test]
 fn red_a_none_line_mints_its_unit_at_hand_in() {
     let a = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
@@ -1620,10 +1580,6 @@ fn red_a_none_line_mints_its_unit_at_hand_in() {
     );
 }
 
-/// RED (l.950-952, l.962-964): the kernel owns every refusal, each byte-identical to the builder
-/// the data router answers with today: no route (the listener's 404, no unit), a method miss
-/// (405), an over-gate body (413, before any verdict) and a stop (the 401 the auth gate answers on
-/// the path). A refused unit leaves the table and is reported; a request with no line has no unit.
 #[test]
 fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
     use axum::http::StatusCode;
@@ -1708,7 +1664,7 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
     );
     let last = *k.refused.lock().unwrap().last().unwrap();
     assert_eq!((last.unit, last.status), (Some(ans.unit.id), 401));
-    // The unit is gone: presenting it again is refused.
+
     assert_eq!(
         k.inbound
             .refuse(Refuse {
@@ -1727,10 +1683,6 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
     );
 }
 
-/// RED (one type both ways, #74): a line's handle id comes from the line half of the ref-id space
-/// the outbound bindings share: never `0` and never the binding bit. A table whose ids break that
-/// (or repeat, or do not cover every line) is refused, and every id a transport is lent keeps the
-/// top bit clear.
 #[test]
 fn red_a_line_id_never_carries_the_binding_bit() {
     let a = Script::new(AuthPoints::HEAD, Verified::Pass, Vec::new());
@@ -1781,11 +1733,6 @@ fn red_a_line_id_never_carries_the_binding_bit() {
     );
 }
 
-// ── the peer point, the op's deadline, and the `keys` arm ────────────────────────────────────
-
-/// RED (l.973-978, the Peer rule): a peer-point call answers ONLY continue or stop, with no unit
-/// and no name, even when the auth named lines; its verdict is the connection's, applied to the
-/// unit handed in on that connection, and to no unit on another connection.
 #[test]
 fn red_the_peer_point_answers_flow_alone_and_its_verdict_is_the_connections() {
     let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), names());
@@ -1819,7 +1766,7 @@ fn red_the_peer_point_answers_flow_alone_and_its_verdict_is_the_connections() {
         "another connection's unit took this connection's verdict"
     );
     assert_eq!(a.calls(), 1);
-    // A peer refusal stops, and still names nothing.
+
     let r = Script::new(AuthPoints::PEER, Verified::Reject, names());
     let k = kit(&[("r", r)]);
     let ans = k
@@ -1838,8 +1785,6 @@ fn red_the_peer_point_answers_flow_alone_and_its_verdict_is_the_connections() {
     );
 }
 
-/// RED (the Peer rule, the call's side): a peer-point call that presents any byte of a request, or
-/// a unit, is refused before any auth runs.
 #[test]
 fn red_a_peer_call_presenting_bytes_is_refused() {
     let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), Vec::new());
@@ -1869,8 +1814,6 @@ fn red_a_peer_call_presenting_bytes_is_refused() {
     assert_eq!(a.calls(), 0);
 }
 
-/// RED (deadline classes: the ticket the call pends on was minted for the framer op with its
-/// class): past the op's deadline no verify runs, and the call answers stop.
 #[test]
 fn red_a_call_past_its_ops_deadline_runs_no_verify_and_stops() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
@@ -1905,7 +1848,6 @@ fn red_a_call_past_its_ops_deadline_runs_no_verify_and_stops() {
     assert_eq!(a.calls(), 1);
 }
 
-/// A governance with a signer, as the `keys` arm verifies against.
 fn signing_gov() -> Arc<crate::governance::GovState> {
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -1925,7 +1867,6 @@ fn signing_gov() -> Arc<crate::governance::GovState> {
     gov
 }
 
-/// A signed key minted on `gov` at `now`, standing until `exp`: (its id, its token).
 fn minted(gov: &crate::governance::GovState, exp: u64, now: u64) -> (String, String) {
     let (key, secret) = gov
         .mint_signed(
@@ -1941,7 +1882,6 @@ fn minted(gov: &crate::governance::GovState, exp: u64, now: u64) -> (String, Str
     (key.id.clone(), secret.expose(&crate::seal::lend()).clone())
 }
 
-/// A kit whose chain is the `keys` arm alone, over `gov`.
 fn keys_kit(gov: &Arc<crate::governance::GovState>) -> Kit {
     kit_over(
         crate::test_support::TestApp::new()
@@ -1962,7 +1902,6 @@ fn bearer(token: &str) -> Head {
     )
 }
 
-/// The kernel's `keys` arm through the inbound handle over `head`: (flow, unit).
 fn spend(k: &Kit, head: Head) -> (u32, UnitRef) {
     let ans = k
         .call(MESSAGES, UnitRef::NONE, POINT_HEAD, head)
@@ -1970,9 +1909,6 @@ fn spend(k: &Kit, head: Head) -> (u32, UnitRef) {
     (ans.flow, ans.unit)
 }
 
-/// RED (oracle `auth.lifecycle__key-revoke`): a live signed key is admitted first-hand with the
-/// governance key it resolves; once revoked, the same token is a stop, refused with the 401 the
-/// auth gate answers on the path. The answer names the carriers, never the token.
 #[test]
 fn red_keys_a_revoked_key_is_refused() {
     let gov = signing_gov();
@@ -2006,8 +1942,6 @@ fn red_keys_a_revoked_key_is_refused() {
     );
 }
 
-/// RED (oracle `auth.lifecycle__key-rotate`): after a rotation the old token is a stop and the
-/// rotated one is admitted.
 #[test]
 fn red_keys_a_rotated_keys_old_token_is_refused() {
     let gov = signing_gov();
@@ -2032,7 +1966,6 @@ fn red_keys_a_rotated_keys_old_token_is_refused() {
     );
 }
 
-/// RED (oracle `auth.lifecycle__key-expiry`): a key past its expiry is a stop.
 #[test]
 fn red_keys_an_expired_key_is_refused() {
     let gov = signing_gov();
@@ -2042,8 +1975,6 @@ fn red_keys_an_expired_key_is_refused() {
     assert_eq!(spend(&k, bearer(&token)).0, FLOW_STOP);
 }
 
-/// RED (oracle `http.crosscut__x-api-key-only__bad`): a bad credential on the second carrier
-/// alone is a stop, refused with the gate's 401; no credential at all is a stop too.
 #[test]
 fn red_keys_a_bad_x_api_key_alone_is_refused() {
     let gov = signing_gov();
@@ -2055,9 +1986,6 @@ fn red_keys_a_bad_x_api_key_alone_is_refused() {
     assert_eq!(spend(&k, post(MESSAGES, &[], None)).0, FLOW_STOP);
 }
 
-/// RED (oracle `http.crosscut__bearer-and-x-api-key`): with both carriers presented the carriers'
-/// order decides, as 1.5.5's gate read them: a valid bearer admits beside a stray `x-api-key`,
-/// and both carriers are named to strip.
 #[test]
 fn red_keys_the_bearer_decides_beside_an_x_api_key() {
     let gov = signing_gov();
@@ -2082,7 +2010,7 @@ fn red_keys_the_bearer_decides_beside_an_x_api_key() {
     assert_eq!(ans.flow, FLOW_CONTINUE);
     assert!(ans.strips.contains(&Strip::field("authorization")));
     assert!(ans.strips.contains(&Strip::field("x-api-key")));
-    // Handed in with the carriers still on it: stopped (c); stripped: admitted.
+
     assert_eq!(
         k.hand_in(
             MESSAGES,
@@ -2100,18 +2028,8 @@ fn red_keys_the_bearer_decides_beside_an_x_api_key() {
     );
 }
 
-// ── the host-held credentials' verifier ahead of the `keys` arm (1.5.5's signed-ingress step) ──
-//
-// The 1.5.5 oracle exercises it in the signed-ingress dialect's request cells (`llm__<signing
-// dialect>__*__request__*`, admitted, unauthenticated) and, over the size gate, in
-// `http.crosscut__413__*`. The dialect is the registry's declared fact, so these cells answer it
-// through the listener's `signed_ingress`.
-
-/// The carrier a test verifier's credential sits on.
 const SIGNED_LINE: &str = "x-signed-credential";
 
-/// A kit whose chain is `keys` with `reader` as its host-held credentials' verifier reading the
-/// issued kind, over `gov`; every path is answered by a dialect that signs when `signs`.
 fn reader_kit<R: AuthCalls + 'static>(
     gov: &Arc<crate::governance::GovState>,
     reader: Arc<R>,
@@ -2141,7 +2059,6 @@ fn reader_kit<R: AuthCalls + 'static>(
     )
 }
 
-/// A key minted with the issued credential: (its id, the credential's public id).
 fn minted_with_credential(gov: &crate::governance::GovState) -> (String, String) {
     let (kind, shape) = crate::test_support::issued::double();
     let now = crate::store::now();
@@ -2175,7 +2092,6 @@ fn declared_signed_ticket_kit(
     reader: Arc<Script>,
     earlier: Arc<Script>,
 ) -> Kit {
-    // Use the actual door declaration; the legacy dialect callback deliberately says false.
     let k = reader_kit(gov, reader, false);
     let mut listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
     listener.auths.insert("earlier".into(), earlier);
@@ -2429,8 +2345,6 @@ async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_sta
     assert!(gov.admit_ticket("tk_", &ticket, now).is_some());
 }
 
-/// RED (signed ingress, admitted): a verifier's identity is the governance key holding that
-/// credential, held first-hand; the verifier's named lines and the carriers are named to strip.
 #[test]
 fn red_signed_a_verified_signature_is_its_credentials_key() {
     let gov = signing_gov();
@@ -2455,8 +2369,6 @@ fn red_signed_a_verified_signature_is_its_credentials_key() {
     assert!(ans.strips.contains(&Strip::field(SIGNED_LINE)));
 }
 
-/// RED (signed ingress, unauthenticated): a signature the verifier rejects is a stop, refused with
-/// the gate's 401; so is a verified credential whose key was revoked.
 #[test]
 fn red_signed_a_rejected_or_revoked_signature_is_refused() {
     let gov = signing_gov();
@@ -2483,8 +2395,6 @@ fn red_signed_a_rejected_or_revoked_signature_is_refused() {
     assert_eq!(signed_call(&k, signed_head()).flow, FLOW_STOP);
 }
 
-/// RED (1.5.5's order): a verifier that passes leaves the token path to decide: a valid bearer
-/// admits, none stops; on a dialect that does not sign the verifier is never asked.
 #[test]
 fn red_signed_a_pass_falls_to_the_token_path_and_an_unsigned_dialect_asks_no_verifier() {
     let gov = signing_gov();
@@ -2513,8 +2423,6 @@ fn red_signed_a_pass_falls_to_the_token_path_and_an_unsigned_dialect_asks_no_ver
     );
 }
 
-/// RED (`http.crosscut__413__*`): a signed body past the line's size gate is refused before any
-/// verdict, with the 413 the data router answers on the path.
 #[test]
 fn red_signed_a_body_over_the_gate_is_the_413_before_any_verdict() {
     let gov = signing_gov();
@@ -2542,11 +2450,6 @@ fn red_signed_a_body_over_the_gate_is_the_413_before_any_verdict() {
     assert_eq!(refusal.status, 413);
 }
 
-// ── the connection's end ─────────────────────────────────────────────────────────────────────
-
-/// RED (the host's end notification, keyed by the host's framing): N framings that each end leave
-/// no peer verdict held, and a live framing's verdict survives any number of others ending (and
-/// still admits).
 #[test]
 fn red_ended_connections_leave_no_peer_verdict_and_a_live_one_survives() {
     let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), Vec::new());
@@ -2599,8 +2502,6 @@ fn red_ended_connections_leave_no_peer_verdict_and_a_live_one_survives() {
     assert_eq!(flow, FLOW_STOP);
 }
 
-/// RED (the bound, LOUD): at [`PEER_CONNECTIONS_MAX`] held verdicts a NEW connection's peer call
-/// is refused by name, and no held verdict is evicted for it.
 #[test]
 fn red_a_full_peer_table_refuses_a_new_connection_by_name_and_evicts_none() {
     let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), Vec::new());
@@ -2632,8 +2533,6 @@ fn red_a_full_peer_table_refuses_a_new_connection_by_name_and_evicts_none() {
     assert_eq!(flow, FLOW_CONTINUE, "a held verdict was evicted");
 }
 
-/// RED (the framing is the host's, the connection the transport's word): a call naming another
-/// connection than its framing's earlier calls named is refused, at the call and at the hand-in.
 #[test]
 fn red_a_call_whose_conn_disagrees_with_its_framing_is_refused() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
@@ -2678,7 +2577,7 @@ fn red_a_call_whose_conn_disagrees_with_its_framing_is_refused() {
         }),
         Err(CONN_MISMATCH)
     );
-    // Once the framing ends, its connection is no longer held.
+
     k.inbound.framing_ended(40);
     assert!(call(40, 6).is_ok());
 }
@@ -2836,10 +2735,6 @@ fn a_unit_cannot_cross_streams_or_framings_at_any_inbound_operation() {
     }
 }
 
-/// RED (ruling 1: `UnitRefuseIn::request`): a refusal with no unit is shaped by the REQUEST's
-/// path, as 1.5.5's router shaped it, not by the line's or the listener's root: a no-route, a
-/// method miss and an over-gate body on a path under the native API's root answer its envelope,
-/// and on any other path the data plane's.
 #[test]
 fn red_a_unitless_refusal_is_shaped_by_the_requests_path() {
     use axum::http::StatusCode;
@@ -3171,9 +3066,6 @@ async fn a_host_receipt_forwards_only_the_verifiers_credential_through_the_opaqu
     }
 }
 
-/// Transport framing cannot delete a field after authentication or hand-in, even when that
-/// field described the original HTTP framing or was named by Connection. Accepted request blocks
-/// must preserve these bytes rather than borrowing the dialled-response header filter.
 #[test]
 fn authenticated_framing_fields_cannot_disappear_before_hand_in_or_claim() {
     let script = Script::new(

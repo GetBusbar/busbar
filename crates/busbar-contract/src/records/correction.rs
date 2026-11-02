@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Exact atomic raw-usage correction. All comparisons observe one pre-state; replacements and
-//! the applied receipt commit together under the same authority as ordinary ledger writers.
-//! Receipt lookup precedes predicates. A condition conflict writes neither rows nor receipt.
 
 use super::{MeteringRow, UsageLedger};
 use crate::abi::store::OpId;
@@ -73,10 +71,7 @@ pub enum Decision {
 
 impl Request {
     /// Check immutable selectors and exact canonical rows before backend effects.
-    ///
-    /// # Errors
-    /// Unknown version, missing key/rows, duplicate or unordered addresses/models/identities,
-    /// or a metering row outside the selected key.
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.version != VERSION {
             return Err("unsupported usage correction version");
@@ -107,9 +102,7 @@ impl Request {
     }
 
     /// Encode the complete immutable request within the existing ABI byte bound.
-    ///
-    /// # Errors
-    /// Invalid request or encoding exceeding the existing ABI bound.
+
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         self.validate()?;
         let bytes = serde_json::to_vec(self).map_err(|_| "invalid usage correction encoding")?;
@@ -122,9 +115,7 @@ impl Request {
     }
 
     /// Decode one complete bounded request; integer counters remain exact `u64` values.
-    ///
-    /// # Errors
-    /// Invalid wire bytes, request semantics or byte bound.
+
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() as u64 > crate::abi::mechanism::check::HARD_MAX_BYTES {
             return Err("usage correction exceeds ABI byte bound");
@@ -145,9 +136,7 @@ impl Request {
 }
 
 /// Canonicalize one complete raw ledger, rejecting duplicate model identities.
-///
-/// # Errors
-/// Duplicate model identities, whose fold could otherwise lose exact counts.
+
 pub fn canonical_ledger(row: &mut UsageLedger) -> Result<(), &'static str> {
     row.models.sort_by(|a, b| a.model.cmp(&b.model));
     if row

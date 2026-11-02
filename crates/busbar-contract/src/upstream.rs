@@ -2,30 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! What an upstream's answer MEANS, in one table: the status class a dialect reads off the
-//! upstream's bytes, and the disposition that class carries.
-//!
-//! Two sides meet here and may name nothing but this crate. A plane's dialect reads a vendor's
-//! error shape and reduces it to one of nine classes, then renders a class back to its own client
-//! in its own words; the egress side of the loop reads the class as a disposition — relay it, fail
-//! over, mark the destination down, or fail over without a mark — and records the failure under a
-//! label a dashboard reads. The class is the seam, and it was being spelled three times over
-//! because nothing both sides could name had written it down.
-//!
-//! ## Why a table and not two enums
-//!
-//! The rows ARE the vocabulary: a class's wire token (what an operator writes in an `error_map`),
-//! its disposition, and a disposition's metric label. Written as data, one row adds a class
-//! everywhere at once — every exhaustive match outside this file fails to compile until it has an
-//! arm for the new row, which is the whole value of writing the vocabulary down once. Written as
-//! matches, the same class was a row in one crate, an arm in a second and a string in a third,
-//! and the three agreed only by hand.
-//!
-//! ## What is not here
-//!
-//! The reading of vendor bytes INTO a class is a dialect's own; the reading of a class into a
-//! cooldown is the egress side's own; neither belongs on the plugin-visible surface. The
-//! per-attempt deadline label (`attempt_timeout`) is not a disposition — it is recorded before the
-//! upstream has answered — and is deliberately not a row.
 
 macro_rules! dispositions {
     ($($(#[$doc:meta])* $name:ident => $label:literal,)*) => {
@@ -132,14 +108,6 @@ status_classes! {
     ContextLength => "context_length", ContextLength,
 }
 
-// ── THE TWO SIGNAL SHAPES a dialect hands the classifier (DECISIONS #83: contract = shapes) ─────────
-//
-// Relocated, module-path-only, from `busbar-substrate-values::breaker`, which re-exports both under
-// their historical paths (SD-1 of the #83a split). What a dialect RETURNS from its error reader is
-// the raw error; what the classifier returns is the canonical signal; both sides of the seam must
-// agree on the fields. The classifier itself — the operator `error_map` and the status defaults —
-// is semantics, and stays on the egress side.
-
 /// Raw upstream error extracted from HTTP response (Stage 1a output).
 #[derive(Debug, Clone)]
 pub struct RawUpstreamError {
@@ -159,9 +127,7 @@ pub struct RawUpstreamError {
 
 impl RawUpstreamError {
     /// THE STATUS ALONE, claiming no provider vocabulary — what one outbound attempt reports when
-    /// nothing on the path could read its upstream's error shape. It is the most restrictive USEFUL
-    /// answer rather than the most restrictive possible one: `classify` still places the failure
-    /// from the status, which is strictly better than a non-2xx the breaker never hears about.
+
     pub fn from_status(status: u16) -> Self {
         Self {
             http_status: status,

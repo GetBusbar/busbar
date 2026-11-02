@@ -6,8 +6,6 @@ use busbar_contract::abi::mechanism::call::Outcome;
 
 use super::*;
 
-/// A kernel stand-in whose `dest.judge` answers READY, so an installed service is told apart from
-/// the late refusal.
 struct Judges;
 
 impl HostServices for Judges {
@@ -158,7 +156,6 @@ fn the_installed_services_answer_and_a_second_install_is_refused() {
     assert!(late.is_installed());
 }
 
-/// Every caller-scoped service's answer, in the order [`Judges`] numbers them.
 fn every_service(late: &LateServices) -> Vec<Stored> {
     let s = late.served();
     let caller = Caller {
@@ -190,8 +187,6 @@ fn every_service(late: &LateServices) -> Vec<Stored> {
     ]
 }
 
-/// The late services are the installed services for every service the host table serves, not
-/// `clock.now` and `dest.judge` alone; before the install each answers REFUSED.
 #[test]
 fn every_service_is_the_installed_services_answer() {
     let late = LateServices::new();
@@ -221,10 +216,6 @@ fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
     }
 }
 
-/// `dest.judge` asks the deployment's one destination guard: the metadata denylist with the
-/// operator's additions and override, private addresses refused by default, plaintext to a public
-/// host judged by its host (the default class takes its target's scheme); a class the guard does
-/// not know is refused.
 #[test]
 fn dest_judge_asks_the_deployments_one_guard() {
     let late = LateServices::new();
@@ -248,9 +239,7 @@ fn dest_judge_asks_the_deployments_one_guard() {
         svc::DEST_NO_HOST,
         "a class the guard does not know dials nothing"
     );
-    // `allow_all_metadata` is 1.5.5's nuclear override: for a provider dial the metadata guard is
-    // fully disabled, the operator's additions and the metadata address alike; every other class
-    // still refuses; with it off the address stays refused.
+
     let open = kernel(&["metadata.corp.example"], true);
     let provider = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
     let admitted = |dest| verdict(&open, dest, provider).value;
@@ -286,9 +275,6 @@ fn dest_judge_asks_the_deployments_one_guard() {
     );
 }
 
-// ── the caller side over today's ingress (TRANSITIONAL) ──────────────────────────────────────────
-
-/// The head becomes the response's status and fields; the writes become its body, in order.
 #[tokio::test]
 async fn the_ingress_caller_answers_with_the_units_head_and_bytes() {
     let (caller, reply) = IngressCaller::new();
@@ -310,10 +296,6 @@ async fn the_ingress_caller_answers_with_the_units_head_and_bytes() {
     assert_eq!(&body[..], b"hello world");
 }
 
-/// A WHOLE ANSWER STATES ITS LENGTH (1.5.5 parity: a buffered answer went out under
-/// `content-length`, never chunked): a head that states its length (one the plane rendered in full)
-/// is collected to its end and sent under the length of what was written; an event stream, and an
-/// answer that states no length, go out piece by piece. RED before: every answer streamed.
 #[tokio::test]
 async fn a_whole_answer_is_sent_under_its_length_and_a_stream_piece_by_piece() {
     use http_body::Body as _;
@@ -361,7 +343,6 @@ async fn a_whole_answer_is_sent_under_its_length_and_a_stream_piece_by_piece() {
     }
 }
 
-/// A write resolves only once the body has taken the piece before it: one piece in flight.
 #[tokio::test]
 async fn an_ingress_write_waits_for_the_body_to_take_the_piece_before_it() {
     use http_body_util::BodyExt;
@@ -382,12 +363,6 @@ async fn an_ingress_write_waits_for_the_body_to_take_the_piece_before_it() {
     assert!(second.await, "taken: the second write resolves");
 }
 
-/// AFTER ITS HEAD THE UNIT RUNS ON ITS OWN TASK: a
-/// caller that stops reading a streamed answer with its socket open leaves the body unpolled, and
-/// the unit still runs, so its own deadline can fire. Here the unit's second write waits on the
-/// unread body under a timer of the unit's own, which fires and lets the unit end. RED: the unit was
-/// driven only from inside the body's poll, so with the body unread nothing drove its timer and it
-/// never ended.
 #[tokio::test]
 async fn after_its_head_the_unit_runs_whether_or_not_its_body_is_read() {
     let (caller, reply) = IngressCaller::new();
@@ -418,9 +393,6 @@ async fn after_its_head_the_unit_runs_whether_or_not_its_body_is_read() {
     drop(response);
 }
 
-/// DROPPING THE BODY TELLS THE UNIT ITS CALLER IS GONE: a unit still running on its own task when
-/// the reply's body is dropped is dropped too (the driver's client-drop path), and a streamed body
-/// read to its end still carries every piece, in order, then ends with the unit.
 #[tokio::test]
 async fn dropping_the_body_drops_the_unit_and_a_read_body_carries_every_piece() {
     struct Gone(Option<tokio::sync::oneshot::Sender<()>>);
@@ -462,8 +434,6 @@ async fn dropping_the_body_drops_the_unit_and_a_read_body_carries_every_piece() 
     assert_eq!(&body[..], b"abd");
 }
 
-/// A caller that went away: every write answers `false` (the driver's ClientGone), and a head
-/// after it, or a unit that ends without one, panics nowhere.
 #[tokio::test]
 async fn an_ingress_caller_whose_handler_went_away_answers_false() {
     let (caller, reply) = IngressCaller::new();
@@ -475,8 +445,6 @@ async fn an_ingress_caller_whose_handler_went_away_answers_false() {
     assert!(reply.response().await.is_none(), "no head, no response");
 }
 
-/// A status the wire cannot carry is answered as the driver answers a plane fault; a field the
-/// wire cannot carry is not sent.
 #[tokio::test]
 async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
     let (caller, reply) = IngressCaller::new();
@@ -490,9 +458,6 @@ async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
     assert!(response.headers().is_empty());
 }
 
-// ── the late attach ─────────────────────────────────────
-
-/// The composed kernel services are kept whole for the plane driver, installed once.
 #[test]
 fn the_composed_kernel_services_are_kept_for_the_driver() {
     let late = LateServices::new();
@@ -508,7 +473,6 @@ fn the_composed_kernel_services_are_kept_for_the_driver() {
     );
 }
 
-/// A signer that signs every domain: the key id `kid`, the bytes back as the signature.
 struct Signs;
 
 impl SignKey for Signs {
@@ -540,7 +504,6 @@ fn plane(section: &'static str, record_kinds: &'static [&'static str]) -> PlaneD
     }
 }
 
-/// The unprefixed demotion rows belong to the ONE plane declaring the demotion record kind.
 #[test]
 fn the_demotion_owner_is_the_one_plane_declaring_the_demotion_kind() {
     let (owner, other) = (plane("owner", &[KIND_DEMOTION]), plane("other", &["call"]));
@@ -550,9 +513,6 @@ fn the_demotion_owner_is_the_one_plane_declaring_the_demotion_kind() {
     assert_eq!(demotion_owner(&[&owner, &twin]), None, "two owners: none");
 }
 
-/// Before the attach an admitted instance's `sign` is REFUSED and its trust state changes are not
-/// written down; after it, `sign` is READY under the instance's prefix and a cleared quarantine
-/// is written through the pool before it answers. A second attach changes nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     use busbar_kernel::host_services::{InstanceFacts, Signing};
@@ -562,7 +522,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     let k = Arc::new(kernel(&[], false));
     late.install_kernel(Arc::clone(&k), k).expect("the install");
     let k = late.kernel().expect("kept");
-    // A declared pin: a first sighting pins nothing.
+
     let entry = TrustEntry {
         pin: Some(busbar_kernel::trust::section::DeclaredPin {
             mechanism: "fingerprint".into(),
@@ -612,8 +572,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
         late.served().sign(&caller, b"data").outcome,
         Outcome::Refused
     );
-    // A declared fingerprint is pending until the operator approves it (coordinator 2026-10-07,
-    // #555): nothing drifts before the approval.
+
     assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
     k.trust_rule("owner/peer", busbar_kernel::trust::book::Ruling::Approve)
         .expect("approved");
@@ -643,10 +602,6 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     );
 }
 
-/// THE RECORD STORE: the late attach binds the configured governance
-/// store — opened through its door on the store axis, as boot opens it — as the kernel's record
-/// store, its typed records served over its store v3 slots ([`busbar_kernel::host_records::StoreRows`]).
-/// A governance store with no door binds nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     use busbar_contract::kinds::RecordBytes;
@@ -657,19 +612,17 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
             let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
                 crate::root::loader::dispatch::DispatchConfig::default(),
             ));
-            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+
             let _ = d.lend_seal(busbar_kernel::seal::lend());
             d
         },
         logs: crate::root::boot::plugin_logs().clone(),
-        // The build's ephemeral store declares no need: it serves with no connection table.
+
         conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
         mint: busbar_kernel::door::op_id,
     };
     let opened = axis
         .open(
-            // The build's ephemeral linked store, picked by its flag (the row's `(name, ephemeral,
-            // door)`), as boot opens it.
             StoreDoor::Linked(
                 crate::LINKED
                     .stores
@@ -684,7 +637,6 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         .expect("the default store opens through its door");
     let calls = opened.calls.expect("a door-opened store has its v3 slots");
 
-    // The adapter reads back what it wrote, through the store's own record slots.
     let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
     let schema = busbar_contract::ids::RecordSchemaId::new("attach-probe");
     let value = RecordBytes::new(b"v".to_vec()).expect("a small record");
@@ -696,8 +648,6 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     .expect("the blocking call ran");
     assert_eq!(written.map(|v| v.as_slice().to_vec()), Some(b"v".to_vec()));
 
-    // A claim is redeemed through the same slots, under the kind it names: the first redemption of
-    // a token wins, a second loses, and the same token under another kind is its own claim.
     let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
     let claims = tokio::task::spawn_blocking(move || {
         let now = 1_000;
@@ -711,7 +661,6 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     .expect("the blocking call ran");
     assert_eq!(claims, [Ok(true), Ok(false), Ok(true)]);
 
-    // With the governance store's slots kept, the attach binds it; a second bind is refused.
     let gov = busbar_kernel::governance::GovState::new(Arc::clone(&opened.records), None)
         .expect("governance");
     assert!(gov.attach_store_calls(calls));
@@ -733,7 +682,6 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         "the governance store is already the record store"
     );
 
-    // No door, no slots: nothing is bound.
     let bare = busbar_kernel::governance::GovState::new(
         Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
         None,
@@ -758,9 +706,6 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     );
 }
 
-/// A FRAMED CLAIM'S CALLER LEG READS THE MESSAGES, NOT THE FRAMING (audit root-R1 L15): the unit
-/// arrives with the messages its claim's framer read out of the request body, and a unit that reads
-/// its caller leg (a session) is handed the same messages, never the bytes the host strips.
 #[tokio::test]
 async fn a_framed_claims_caller_reads_the_deframed_messages() {
     use busbar_kernel::plane_driver::SessionCaller as _;
@@ -785,9 +730,6 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
     );
 }
 
-/// A CONFIG APPLY BUILDS A DOOR PLANE'S SECTION AS BOOT DOES (audit root-R1 leftover C1): the
-/// section as written gains the generation's unified pools at its reserved `pools` key, so the
-/// door's pools survive the apply, and the plane is handed it with the core-owned `work:` struck.
 #[test]
 fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
@@ -816,7 +758,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
         Some(vec!["fs".to_string()]),
         "the apply dropped the door's pools"
     );
-    // The kernel still reads its `work:` bounds off the section; the plane is never handed them.
+
     assert!(applied.get("work").is_some());
     let handed: serde_json::Value =
         serde_json::from_slice(&handed_settings(&[key], &applied).expect("settings"))
@@ -828,9 +770,6 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     assert!(handed.get("fs").is_some(), "the plane's own entry is kept");
 }
 
-/// AN OPEN CLAIM'S LINE TAKES NO AUTH, WHATEVER THE CHAIN: a plane's
-/// discovery documents answer a caller who holds no credential yet, with the operator's data chain
-/// configured exactly as without one.
 #[cfg(linked_section_pools)]
 #[test]
 fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
@@ -846,8 +785,6 @@ fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
     );
 }
 
-/// THE RED ARM: a claim that is NOT open owes the operator's chain, configured or empty — the open
-/// exception never widens to a line a credential is owed on.
 #[cfg(linked_section_pools)]
 #[test]
 fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
@@ -865,9 +802,6 @@ fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
     );
 }
 
-/// Every declared stream type goes out piece by piece, byte for byte as written, even when the
-/// answer states its length: the event stream the contract names, and the stream `Content-Type`
-/// each loaded plane states on its memory-ABI tail.
 #[tokio::test]
 async fn every_declared_stream_type_goes_piece_by_piece() {
     use http_body::Body as _;
@@ -901,11 +835,6 @@ async fn every_declared_stream_type_goes_piece_by_piece() {
     }
 }
 
-/// THE CLAIM DOORS' BINDS: a served plane's INBOUND need whose `target_from` block in its
-/// section states a `listen` is bound there, under the need's transport and its own index, and the
-/// setting is named as the operator spells it. An outbound need, a need with no `target_from`, a
-/// block that states no `listen` and a plane whose section is absent bind nothing; an address that
-/// is not `ip:port` refuses the composition, naming the setting.
 #[test]
 fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
     use crate::root::loader::boot::BindOwner;

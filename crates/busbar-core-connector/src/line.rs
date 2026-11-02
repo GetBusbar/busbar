@@ -2,33 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A LINE: one composed connection as the exchanges riding it hold it.
-//!
-//! A dialled connection carries one exchange at a time, or, where it multiplexes (an `h2`
-//! connection: [`Connection::multiplexes`]), many at once, one stream each (concurrent requests to
-//! one origin share an h2 connection, as 1.5.5's pooled client shared them). Every holder reads ITS
-//! stream: the pieces the framer answers are routed by stream, a piece for another holder parked
-//! until that holder reads, and a piece for a stream nobody holds any more dropped.
-//!
-//! THE WAKE FANS OUT. A socket registered on the reactor keeps ONE waker per direction, so two
-//! holders polling one socket with their own wakers would each unseat the other's, and the one left
-//! unseated would never be woken. Every drive of the connection therefore polls it with the line's
-//! own waker, which wakes every holder still waiting; a holder that is woken for nothing polls,
-//! finds nothing, and waits again.
-//!
-//! THE CONNECTION HAS ONE OWNER AT A TIME, AND IS DRIVEN UNDER NO LOCK (`BUSBAR-1.6.0.md` §11, M1
-//! DISPATCH RULINGS: "No plugin code runs under a host lock"). Driving a connection crosses into
-//! its plugins (the carrier's reads and writes, the framer's ingest and emit), so the holder that
-//! drives it first TAKES it out of the line, lets the line's lock go, drives it as its sole owner,
-//! and brings it back. The lock only ever guards that hand-off and the parked pieces. A holder that
-//! finds the connection out does not wait for it: a poll answers `Pending` and is woken when it is
-//! back; a write takes nothing now (the caller re-offers it after its next read or wait); an
-//! exchange opened meanwhile is handed to the owner, who opens it on the way back. A CLOSE never
-//! waits either: a connection at home is taken and closed on the closer's thread with nothing held,
-//! and one that is out is closed by the owner that has it, as it brings it back. So a crossing
-//! that hangs (the dispatcher's watchdog reports it; nothing can preempt it) holds up only the one
-//! task inside it, never a holder, a closer, or a worker dropping the line.
-//!
-//! An ACCEPTED connection is a line with one holder that reads every stream.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -53,7 +26,6 @@ struct FanOut {
 
 impl FanOut {
     fn wait(&self, stream: u64, waker: &Waker) {
-        // Waker cloning and destruction can run caller code. The map only owns the handoff.
         let incoming = Arc::new(waker.clone());
         let displaced = {
             let mut w = self.waiting.lock().expect("waiters");
@@ -139,18 +111,14 @@ impl Seen {
 
 struct State {
     /// The connection while it is at home: `None` while a holder has it out (and `closing` is not
-    /// raised), and once it is closed.
     conn: Option<Connection>,
     /// The line is closed: a connection at home was taken and closed, and one that is out is
-    /// closed by the holder that has it, as it brings it back.
     closing: bool,
     /// What the connection said of itself when it was last at home.
     seen: Seen,
     /// Exchanges opened while the connection was out, in order: its owner opens them on the way
-    /// back, before anyone else can take it.
     opening: VecDeque<(u64, HeldOpening)>,
     /// An exchange whose open was handed to the owner and failed: its holder's next read answers
-    /// why.
     refused: HashMap<u64, Failure>,
     /// The holders that found the connection out, woken when it is back.
     missed: Vec<Arc<Waker>>,
@@ -213,11 +181,7 @@ enum Turn<R> {
 }
 
 /// A connection a holder has out of its line. Only an unwind out of a drive drops it still holding
-/// the connection: the line is then closed with the connection put back, to be closed (its
-/// plugins' ends crossed) by whoever lets the line go. Nothing else drives a closed line, so the
-/// holders that found the connection out are woken, and the exchanges handed to its owner are
-/// abandoned, exactly as [`Line::bring_back`] does on a line closed meanwhile; both run with the
-/// lock let go, and the connection is not closed here (no plugin crossing in a drop on an unwind).
+
 struct Taken<'l> {
     line: &'l Line,
     conn: Option<Connection>,
@@ -249,7 +213,6 @@ pub(crate) struct Line {
     /// The connection was dialled (its holders read their own streams), not accepted.
     dialled: bool,
     /// How many exchanges hold the line (a pool counts a lent line as held from the moment it
-    /// lends it).
     users: AtomicUsize,
     /// An exchange left it before its answer was whole: it is not lent again once idle.
     tainted: AtomicBool,
@@ -265,7 +228,7 @@ impl std::fmt::Debug for Line {
 
 impl Line {
     /// A line over `conn`, held by its first exchange (a dialled connection's
-    /// [`EXCHANGE_STREAM`], or an accepted connection's every stream).
+
     pub(crate) fn new(conn: Connection) -> Arc<Self> {
         let dialled = conn.dialled();
         let first = if dialled { EXCHANGE_STREAM } else { EVERY };
@@ -299,9 +262,7 @@ impl Line {
     }
 
     /// THE HAND-OFF. Take the connection out of the line (`s` is the line's lock, let go here),
-    /// `drive` it as its sole owner with no lock held, and bring it back: `settle` runs under the
-    /// lock that puts it back, so what the drive read is parked before anyone else can drive it.
-    /// `missed` (where given) is woken once the connection is back, when another holder has it out.
+
     fn turn<R>(
         &self,
         mut s: MutexGuard<'_, State>,
@@ -330,12 +291,8 @@ impl Line {
     }
 
     /// Bring the connection `taken` back to the line: what was handed to its owner meanwhile is
-    /// done first (each exchange opened, with no lock held), then it is put back (or, the line
-    /// closed meanwhile, closed here, with no lock held), and the holders that found it out are
-    /// woken.
+
     fn bring_back(&self, taken: &mut Taken<'_>, settle: impl FnOnce(&mut State)) {
-        // Declared before the guard so it is dropped after it, whichever way this returns: a
-        // failure whose exchange is no longer held is retired with the lock let go.
         let mut discarded: Vec<Failure> = Vec::new();
         let mut s = self.state();
         settle(&mut s);
@@ -362,9 +319,7 @@ impl Line {
                 wake(missed);
                 return;
             }
-            // Select just one opening under the same lock that a leaving holder uses to
-            // cancel it. Later openings stay queued, cancellable while this one crosses. Once
-            // selected, an open is in flight: cancellation cannot unsend it.
+
             let (stream, held) = s.opening.pop_front().expect("an opening waits");
             drop(s);
             let waker = self.fan_waker();
@@ -375,9 +330,7 @@ impl Line {
                     .err()
             });
             s = self.state();
-            // The open ran with no lock held, so a holder may have left meanwhile
-            // ([`Self::leave`] forgot its stream): nobody reads that failure, and kept it would
-            // be an entry nothing ever removes. A holder still on the line is told why.
+
             if let Some(failure) = failure {
                 if s.held.contains(&stream) {
                     s.refused.insert(stream, failure);
@@ -399,7 +352,7 @@ impl Line {
     }
 
     /// What the connection answers of itself (`home`), or, while a holder has it out, what it last
-    /// said (`out`); `None` once the line is closed.
+
     fn fact<R>(
         &self,
         home: impl FnOnce(&Connection) -> R,
@@ -427,8 +380,7 @@ impl Line {
     }
 
     /// An idle line, read for what the far end sent while it sat: whether it can carry the next
-    /// exchange (live, framed, nothing unread, never left mid-answer). A line a holder has out is
-    /// not idle: not fresh.
+
     pub(crate) fn fresh(&self) -> bool {
         if self.tainted.load(Ordering::Acquire) {
             return false;
@@ -450,7 +402,7 @@ impl Line {
     }
 
     /// Whether an idle line may go back to the pool: never left mid-answer, and its connection can
-    /// carry another exchange.
+
     pub(crate) fn reusable(&self) -> bool {
         if self.tainted.load(Ordering::Acquire) {
             return false;
@@ -463,13 +415,7 @@ impl Line {
     }
 
     /// Open a new exchange on the line (the pool lent it, so its holder is already counted): its
-    /// first message on the next stream. Answers the stream. While another holder has the
-    /// connection out, the open is handed to it, and a failure is the stream's first read.
-    ///
-    /// # Errors
-    ///
-    /// The connection ended or failed, or the entry refused the message: the stream it would have
-    /// ridden (its holder leaves with it) and why.
+
     pub(crate) fn attach(
         &self,
         opening: Option<Opening>,
@@ -511,19 +457,14 @@ impl Line {
     }
 
     /// Read what the connection answered into the parked pieces, waking each holder a piece came
-    /// for, until [`RECEIVE_BUFFER_BYTES`] are parked: past it the connection is not read until a
-    /// holder takes some ([`Self::poll_piece`] wakes the others then). `Ran(Some)` = the connection
-    /// ended (`Ok`) or failed. `missed` is woken once the connection is back, when another holder
-    /// has it out.
+
     fn park_pieces(
         &self,
         s: MutexGuard<'_, State>,
         missed: &Arc<Waker>,
     ) -> Turn<Option<Result<(), Failure>>> {
         let every = !self.dialled;
-        // A connection that does not multiplex has one holder at a time, who reads every piece (a
-        // wire with one stream numbers its pieces `0`); only a multiplexing one is read by stream,
-        // and only the streams held now are counted against the cap.
+
         let multiplexes = s.conn.as_ref().is_some_and(Connection::multiplexes);
         let sole = (!every && !multiplexes)
             .then(|| s.held.iter().next().copied())
@@ -567,9 +508,6 @@ impl Line {
                     return (end, read);
                 }
             },
-            // Parked under the lock that brings the connection back, in the order read: no other
-            // drive can read a later piece first. A piece for a stream its holder left meanwhile
-            // is dropped, and the others woken, as what a leaving holder left parked is.
             |s, (_, read)| {
                 for got in read.drain(..) {
                     let key = key(&got);
@@ -582,8 +520,7 @@ impl Line {
                 }
             },
         );
-        // Publication stays ordered under State; caller code runs after the holder put the
-        // connection back and released that guard, including arbitrary Waker callbacks.
+
         for key in waiting {
             self.fan.wake_one(key);
         }
@@ -598,7 +535,7 @@ impl Line {
     }
 
     /// The next piece for `stream`: `Ready(Ok(Some))` a piece, `Ready(Ok(None))` the connection
-    /// ended, `Pending` with `cx`'s waker among the line's waiting holders.
+
     pub(crate) fn poll_piece(
         &self,
         stream: u64,
@@ -615,7 +552,6 @@ impl Line {
         if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
             drop(s);
             if full && !got.bytes.is_empty() {
-                // Under the cap again: the connection is read again, for whoever waits on it.
                 self.fan.wake_by_ref();
             }
             return Poll::Ready(Ok(Some(got)));
@@ -657,7 +593,7 @@ impl Line {
     }
 
     /// Whether the line's dial has landed (see [`Connection::poll_landed`]): `Pending` with `cx`'s
-    /// waker among `stream`'s waiting holders while it connects.
+
     pub(crate) fn poll_landed(
         &self,
         stream: u64,
@@ -680,12 +616,7 @@ impl Line {
     }
 
     /// Offer `bytes` on `stream` (`end` = its message is complete); answers how many were taken:
-    /// Pending while another holder has the connection out (the caller re-offers them after its next
-    /// read or wait, as it does a full buffer).
-    ///
-    /// # Errors
-    ///
-    /// The connection is closed or failed, or the framer refused the bytes.
+
     pub(crate) fn emit(
         &self,
         stream: u64,
@@ -740,11 +671,7 @@ impl Line {
     }
 
     /// Upgrade this line's connection to connection security (a secure upgrade on an open dialled
-    /// line), offering `name` (see [`Connection::upgrade_secure`]). `unread_above` = the holder
-    /// still keeps clear bytes it took off the line. Those, and a piece parked here unread, would
-    /// be read after the upgrade as the verified far end's, so the upgrade is refused and the
-    /// connection fails ([`crate::compose::UPGRADE_OVER_CLEAR_BYTES`]); what was parked is never
-    /// read, the failure is.
+
     pub(crate) fn upgrade_secure(
         &self,
         config: &Arc<rustls::ClientConfig>,
@@ -778,14 +705,14 @@ impl Line {
     }
 
     /// The far end's certificate hash (the channel-binding input), once a handshake completed (see
-    /// [`Connection::peer_cert_hash`]).
+
     pub(crate) fn peer_cert_hash(&self) -> Option<String> {
         self.fact(Connection::peer_cert_hash, |s| s.peer_cert_hash.clone())
             .flatten()
     }
 
     /// `stream`'s holder leaves (`whole` = its answer was read to its end); answers how many
-    /// holders are left.
+
     pub(crate) fn leave(&self, stream: u64, whole: bool) -> usize {
         let retired = {
             let mut s = self.state();
@@ -798,13 +725,10 @@ impl Line {
             (opening, s.refused.remove(&stream), s.parked.remove(&stream))
         };
         let unparked = retired.2.as_ref().is_some_and(|q| !q.is_empty());
-        // A cancelled opening still owns its fields, target and body. Wiping it and releasing
-        // payload owners (including parked pieces) may run caller code, with the lock let go.
+
         drop(retired);
         self.fan.forget(stream);
         if unparked {
-            // What it left parked is dropped: under the cap, the connection is read again for
-            // whoever waits on it.
             self.fan.wake_by_ref();
         }
         if !whole {
@@ -814,8 +738,7 @@ impl Line {
     }
 
     /// Close the connection (the last holder left and the line is not kept). Never waits: a
-    /// connection at home is taken and closed here with no lock held; one a holder has out is
-    /// closed by that holder as it brings it back.
+
     pub(crate) fn close(&self) {
         let (conn, abandoned) = {
             let mut s = self.state();

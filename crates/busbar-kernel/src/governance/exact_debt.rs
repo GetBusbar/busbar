@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Raw write-behind debt stays exact even when one legacy signed batch cannot carry it.
 use super::*;
 use std::collections::BTreeMap;
 
@@ -17,8 +16,6 @@ pub(super) struct ExactUsageDelta {
     pub(super) models: Vec<ExactModelDelta>,
 }
 impl ExactUsageDelta {
-    /// The next wire-representable part of every counter. No policy limit is imposed: successive
-    /// chunks cover the entire exact debt using the existing signed integer domain.
     fn chunk(&self) -> UsageDelta {
         let part = |count: i128| count.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
         UsageDelta {
@@ -204,8 +201,6 @@ struct FlightDebt {
     finished: bool,
 }
 
-/// A window's exact outbound debt. Cell baselines are capture watermarks while this owner exists;
-/// only receipt-confirmed chunks leave this debt. This is raw write custody, never another book.
 pub(super) struct BudgetFlushFlight {
     bucket: String,
     window: u64,
@@ -241,8 +236,6 @@ impl BudgetFlushRunner {
                     return Ok(BudgetFlushRun(self));
                 }
                 Some(active) if final_flush && active != current => {
-                    // WriteBehind has no I/O deadline. The authoritative final caller must join
-                    // an existing owner before reconciling its result and capturing later debt.
                     owner = self.released.wait(owner).unwrap_or_else(|p| p.into_inner());
                 }
                 Some(active) => {
@@ -293,9 +286,6 @@ impl GovState {
             .contains(bucket)
     }
 
-    /// Called with this bucket's shard held. Capable stores give every nonzero outbound delta
-    /// retained custody. Legacy stores retain their ordinary path for representable debt;
-    /// oversized debt still requires the existing exact batch primitive.
     pub(super) fn capture_budget_flushes(
         &self,
         bucket: &str,
@@ -361,8 +351,6 @@ impl GovState {
                 cell.rolled.retain(|(at, _)| *at != window);
                 cell.rolled_eras.retain(|(at, _)| *at != window);
                 if cell.window_start == window {
-                    // Ownership transfers to the flight, not to a durable acknowledgement. New
-                    // semantic mutations stay beyond these exact capture watermarks.
                     cell.flushed_requests = cell.requests;
                     cell.flushed_billable_requests = cell.billable_requests;
                     cell.flushed_fee_eras = cell.fee_eras.clone();
@@ -464,8 +452,7 @@ impl GovState {
             if !chunk.dated.is_zero() {
                 cells.push((era_bucket.as_str(), flight.window, chunk.dated.clone()));
             }
-            // The immutable chunk is already owned before entering the store. No budget or flight
-            // mutex spans a call that may pend, fail after commit, time out, or unwind.
+
             if let Err(error) = self.store.add_usage_batch_deduped(chunk.op, &cells) {
                 return (confirmed, Some(error));
             }

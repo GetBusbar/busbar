@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EGRESS WALK'S PRODUCTION PORTS: the clock, the
-//! members' concurrency permits and the walk's counters, as the composition root binds them for a
-//! plane served through its door (`busbar_kernel::plane_driver::Egress`). Each is node-local runtime
-//! state that outlives a request; none moves money. (The write-ahead dispatch record, the walk's
-//! fourth port, writes onto the money book's journal, so it is composed with the money steps.)
-//!
-//! A destination here is a member as the generation's seal numbered it: one number per member
-//! across every pool of the plane, so a permit and a label key on it alone.
-
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -21,8 +12,6 @@ use busbar_kernel_egress::ports::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-// ── the clock ────────────────────────────────────────────────────────────────────────────────────
-
 /// THE NODE'S CLOCK, as the walk reads it: the wall clock's whole seconds for every deadline, a
 /// monotonic millisecond reading from the clock's own start for the waits, and the runtime's timer
 /// for its one sleep.
@@ -32,7 +21,6 @@ pub struct NodeClock {
 }
 
 impl NodeClock {
-    /// A clock whose monotonic reading starts now.
     #[must_use]
     pub fn new() -> Self {
         NodeClock {
@@ -67,8 +55,6 @@ impl Clock for NodeClock {
     }
 }
 
-// ── the permits ──────────────────────────────────────────────────────────────────────────────────
-
 /// THE MEMBERS' CONCURRENCY PERMITS: a member with a `max_concurrent` holds that many slots, handed
 /// out first come, first served (a freed slot goes to the longest waiter, once); a member with none
 /// is never at capacity.
@@ -92,8 +78,6 @@ impl PermitHandle for Slot {
 }
 
 impl MemberPermits {
-    /// The permits of members whose `max_concurrent` is stated, `(member, slots)`; every other
-    /// member is unlimited.
     #[must_use]
     pub fn new(limits: impl IntoIterator<Item = (DestinationId, usize)>) -> Self {
         MemberPermits {
@@ -104,7 +88,6 @@ impl MemberPermits {
         }
     }
 
-    /// The free slots of `destination`; `None` for a member with no limit.
     #[must_use]
     pub fn available(&self, destination: DestinationId) -> Option<usize> {
         self.limits.get(&destination).map(|s| s.available_permits())
@@ -157,7 +140,7 @@ impl Capacity for MemberPermits {
                         let d = waits[i].0;
                         return Poll::Ready(Some((d, Self::slot(d, Some(held)))));
                     }
-                    // A closed queue frees nothing, ever: it leaves the race.
+
                     Poll::Ready(Err(_)) => {
                         drop(waits.swap_remove(i));
                     }
@@ -172,8 +155,6 @@ impl Capacity for MemberPermits {
         }))
     }
 }
-
-// ── the counters ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE WALK'S COUNTERS, on the node's metric families: every attempt, classified failure and fresh
 /// trip under its pool and its member's configured name (the lane label), every failover under its
@@ -197,7 +178,6 @@ pub struct LabelBound {
 }
 
 impl LabelBound {
-    /// A bound over `vocabulary`, the plane's declared lane words, and no walk pool yet.
     #[must_use]
     pub fn new(vocabulary: impl IntoIterator<Item = String>) -> Self {
         LabelBound {
@@ -206,8 +186,6 @@ impl LabelBound {
         }
     }
 
-    /// What the walk over the pool named `walked` can reach: `pool_words` its `pool` label may
-    /// state, `entries` its `lane` label may state (and its `pool` label too).
     #[must_use]
     pub fn reaching(
         mut self,
@@ -224,9 +202,6 @@ impl LabelBound {
         self
     }
 
-    /// The `(pool, lane)` labels of one emission over the walk pool `walked` whose own labels are
-    /// `own`: each label the plane `stated` within the bound, its own otherwise; `true` when the
-    /// plane stated a word outside it.
     #[must_use]
     pub fn labels(
         &self,
@@ -264,7 +239,6 @@ impl LabelBound {
 }
 
 impl WalkTelemetry {
-    /// Counters labelling each member by its configured name, `(member, name)`.
     #[must_use]
     pub fn new(names: impl IntoIterator<Item = (DestinationId, String)>) -> Self {
         WalkTelemetry {
@@ -274,16 +248,12 @@ impl WalkTelemetry {
         }
     }
 
-    /// The same counters, taking the labels a plane states within `bound`.
     #[must_use]
     pub fn bounded(mut self, bound: LabelBound) -> Self {
         self.bound = bound;
         self
     }
 
-    /// The `(pool, lane)` labels one emission over the walk pool `pool` for `destination` carries:
-    /// the plane's `stated` labels within the bound, the walk's own otherwise; a stated word outside
-    /// it is counted refused (`busbar_plugin_label_refused_total`).
     #[must_use]
     pub fn labels(
         &self,
@@ -300,13 +270,11 @@ impl WalkTelemetry {
         (pool, lane)
     }
 
-    /// A member's lane label: its configured name; empty for a member the seal did not name.
     #[must_use]
     pub fn lane(&self, destination: DestinationId) -> &str {
         self.names.get(&destination).map_or("", String::as_str)
     }
 
-    /// The wait-terminal depth of `pool`, as the gauge last reads it.
     #[must_use]
     pub fn depth(&self, pool: &str) -> i64 {
         self.depths

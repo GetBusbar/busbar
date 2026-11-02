@@ -2,45 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE AUTH KIND'S ABI (v3; design B.3): its version, its table, its Statement tail, its cancel
-//! dispositions and the `in`/`out` of each of its operations. ONE kind with two operation families:
-//! INBOUND (`verify`, and the `begin_login`/`complete_login` pair) and OUTBOUND (`open_outbound`,
-//! `outbound_ready`, `fields`). There is no separate egress kind.
-//!
-//! THE CACHE LIVES IN THE PLUGIN (owner ruling Q-INCACHE). The kernel makes one call per request
-//! and keeps no verdict cache. The plugin caches internally: Identify TTL clamped to 3600 s
-//! (default 300), Reject never cached, Pass never cached (Pass buffering, if any, is the
-//! kernel's), 4096 entries. FLUSH THROUGH REFRESH: an auth plugin DROPS
-//! its inbound cache on every `refresh`. `POST /admin/auth/cache/flush` (unchanged) is a `refresh`
-//! with a NEW generation number and unchanged settings, so generations stay monotonic and memory
-//! class (ii) holds. Only the INBOUND cache is dropped: the outbound token cache is keyed by
-//! (style, credential, settings), never by handle, and survives `refresh` and re-opening, so a
-//! reload never answers a fields call without a credential that 1.5.5 would have had.
-//!
-//! SERVICE CREDENTIALS (an LDAP bind password, an IdP client secret) are named by
-//! [`Statement::secret_refs`](super::mechanism::door::Statement) (the settings keys holding a
-//! secret-ref). The kernel resolves them into
-//! [`OpenIn::secrets`](super::mechanism::lifecycle::OpenIn) in the same order, and again into
-//! [`RefreshIn`](super::mechanism::lifecycle::RefreshIn). The auth tail carries nothing for them.
-//!
-//! VERDICTS ARE ALWAYS `READY`. `FAILED` on `verify` is a module failure: the chain's error path,
-//! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is a module failure too, and the host
-//! declines the login fail-closed, as 1.5.5 refused a login plugin that failed: an identity
-//! provider that could not answer is a READY [`LOGIN_OUTAGE`], never a `FAILED`. Both exclude the
-//! short-buffer answer ([`IdentifyOut`]).
-//!
-//! `verify` ON THE SPOT. The host may call `verify` TICKET-LESS (`Ticket::NONE`, on its own
-//! thread, which cannot wait): a plugin that can judge the credential without waiting answers as it
-//! would on a ticket; one whose `verify` must wait on I/O answers `REFUSED` there, never `PENDING`
-//! (a ticket-less `PENDING` is FAULT), and the host submits the same `verify` on a ticket.
-//!
-//! DEADLINES ARE HOST-OWNED. No op carries a timeout of its own: the host stamps
-//! `InHead.deadline_ns`, bounds every read on a need's connection, and calls `cancel` at expiry.
-//!
-//! A slot for a capability the tail does not declare is never called. The plugin still fills it
-//! (a NULL slot refuses the load) and answers `REFUSED`.
-//!
-//! The host side is `busbar_contract::auth_calls`: the kernel's identity chain calls `verify` through
-//! it, the loader dispatching it through the one dispatcher.
 
 use super::mechanism::call::{AbiStr, Op};
 use super::mechanism::door::KindTailHead;
@@ -70,15 +31,11 @@ pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY
 pub const ABI_VERSION: u32 = 3;
 
 /// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
-/// the auth table. A door states it as built
-/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
-/// `tests/layout_fingerprint.rs` holds it to its fold.
+
 pub const LAYOUT_FINGERPRINT: u64 = 0x00c89280c6692621;
 
 /// The auth kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-/// crossing its table, each with every field. A struct `abi/auth/` gains is listed here (gate
-/// `abi-location`).
+
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
         head, verify, begin_login, complete_login, open_outbound, outbound_ready, fields, target
@@ -245,37 +202,26 @@ pub const CAP_LOGIN: u32 = 2;
 pub const CAP_OUTBOUND: u32 = 4;
 
 /// [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators):
-/// the plugin caches them itself, and the kernel keeps no verdict cache.
+
 pub const FACT_CACHEABLE: u32 = 1;
 /// [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as
-/// [`VerifyIn::body`] when the tail's points hold [`POINT_HEAD_BODY`].
+
 pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
 /// [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's
-/// [`MARK_WORD_CARRIER`](crate::abi::mechanism::door::MARK_WORD_CARRIER) word marks); the
-/// host passes them all in [`VerifyIn::lines`]. An inbound signature check needs it: the set of
-/// signed headers varies per request.
+
 pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
 /// [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin
-/// credential that is full by definition; [`AuthTail::operator_principal`] names the principal id
-/// it identifies. Needs [`CAP_INBOUND`] and a non-empty principal; a tail stating it otherwise
-/// refuses the load.
+
 pub const FACT_OPERATOR: u32 = 8;
 /// [`AuthTail::facts`]: this plugin's `verify` reads host-held credentials of the kinds
-/// [`AuthTail::credential_kinds`] names, through the host's `records.secret` service; the host serves
-/// that read for those kinds only. Needs [`CAP_INBOUND`] and a non-empty list; a tail stating it
-/// otherwise refuses the load.
+
 pub const FACT_READS_CREDENTIALS: u32 = 16;
 /// [`AuthTail::facts`]: this plugin's carrier marks are the host's default inbound style: where a
-/// caller's credential sits on every line the operator's config leaves without a style, in the
-/// Statement's order (THE DESIGN, "Auth points and guest lists": the line's style names its
-/// credential lines, and core's `keys` verifies what that style yields and names no line). Needs
-/// at least one carrier mark; at most one loaded auth row states it, or boot is refused.
+
 pub const FACT_DEFAULT_INBOUND_STYLE: u32 = 32;
 
 /// THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a
-/// counter family of this name (no labels) in its Statement, and on `refresh` adds to it the number
-/// of inbound cache entries it dropped. The host sums it across auth plugins into the admin cache
-/// flush's `{"flushed": N}` (1.5.5's count). A plugin that caches nothing declares nothing.
+
 pub const METRIC_CACHE_FLUSHED: &str = "busbar_auth_cache_flushed_total";
 
 /// [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared).
@@ -288,39 +234,18 @@ pub const LOGIN_KIND_CREDENTIAL: u32 = 2;
 /// [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style.
 pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the
-/// per-request call may present the CALLER's verified credential, not only the plugin's own bound
-/// one (ARCHITECT ruling 2026-09-29: caller-credential is not a mechanism, it is a credential
-/// source a mechanism applies; a mechanism plugin declares this flag on a style instead of a
-/// second plugin declaring a `caller-credential` style). The kernel maps a provider's
-/// `caller-credential {as: X}` / `upstream_credentials: passthrough` config to style `X` in
-/// [`MODE_PASSTHROUGH`] (KERNEL<>PLUGINS step 21 seam; not built here).
+
 pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 /// [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint.
-///
-/// The binding's settings carry it as `token_url`, which the HOST judges as a destination before
-/// any binding is opened (its scheme and the cloud-metadata denylist, in the previous release's
-/// words; ARCHITECT ruling 2026-09-28 Q2 (a): a need's target is the kernel's to judge), with the
-/// entry's `scope` it is exchanged under. The credential is the `client_id:client_secret` pair the
-/// exchange mints FROM, so an entry declaring none is refused. A style that does not state it has
-/// any `token_url` left unjudged and unread, as the previous release ignored one on such a style.
+
 pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
 /// [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself.
-///
-/// The credential is a document that names the endpoint (`token_uri`), inline or in the key file
-/// the credential names, and the HOST reads it out and judges it as a destination before the
-/// binding is opened (ARCHITECT ruling 2026-09-28 Q2 (a)), handing the plugin its judged copy as
-/// the `token_uri` setting. The style signs its assertion WITH the credential, so an entry
-/// declaring none is refused. A style takes its endpoint from one place: it never states this
-/// beside [`STYLE_ENDPOINT_TOKEN_URL`].
+
 pub const STYLE_ENDPOINT_FROM_CREDENTIAL: u32 = 64;
 /// [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]).
 pub const STYLE_RANK_SHIFT: u32 = 16;
 /// [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked).
-///
-/// Where the style stands when the host lists the outbound styles a provider's `auth:` may name
-/// (the refusal of an unknown one renders the list): ranked styles first, by rank, then the
-/// unranked ones in plugin registration order. A rank orders a list and grants nothing; two
-/// styles of one rank keep registration order. [`ranked`] spells one; [`style_rank`] reads it.
+
 pub const STYLE_RANK_MASK: u32 = 0x00ff_0000;
 
 /// The [`StyleDecl::flags`] bits stating list rank `rank` ([`STYLE_RANK_MASK`]).
@@ -352,8 +277,7 @@ pub struct StyleDecl {
 
 impl StyleDecl {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `StyleDecl { …, ..StyleDecl::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         name: AbiStr::ZERO,
         flags: 0,
@@ -399,8 +323,7 @@ pub struct AuthTail {
 
 impl AuthTail {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `AuthTail { …, ..AuthTail::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         head: KindTailHead::ZERO,
         caps: 0,
@@ -416,10 +339,10 @@ impl AuthTail {
 }
 
 /// HOW THE AUTH KIND TAIL IS MADE: from [`AuthTail::EMPTY`], its plain fields set
-/// directly and each list by its setter, to items that live for the program.
+
 impl AuthTail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
-    /// sized to the whole tail.
+
     pub const EMPTY: AuthTail = AuthTail {
         head: KindTailHead {
             size: core::mem::size_of::<AuthTail>() as u32,
@@ -444,30 +367,29 @@ impl AuthTail {
 }
 
 /// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the
-/// smallest auth tail a host reads (THE KIND TAIL GROWTH RULE, `mechanism::door::tail_read_len`).
+
 pub const TAIL_FROZEN: usize = 40;
 
 /// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned,
-/// nothing kept.
+
 pub const CANCEL_ABANDONED: u32 = 1;
 /// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: the call is
-/// dropped, but the work it started (a mint, a key-set fetch) completes in the background and fills
-/// the plugin's cache. The ticket is never woken.
+
 pub const CANCEL_CONTINUES: u32 = 2;
 
 /// [`IdentifyOut::verdict`] for `verify`: identified; [`IdentifyOut::identity`] holds who.
 pub const VERDICT_IDENTITY: u32 = 1;
 /// [`IdentifyOut::verdict`] for `verify`: a credential was presented and is invalid. Fail-closed;
-/// stops the chain.
+
 pub const VERDICT_REJECT: u32 = 2;
 /// [`IdentifyOut::verdict`] for `verify`: not this plugin's credential; try the next.
 pub const VERDICT_PASS: u32 = 3;
 
 /// [`IdentifyOut::decision`] for `verify`: the transport goes on with the request (the next
-/// point, or hands it in). The SDK's default for [`VERDICT_IDENTITY`] and [`VERDICT_PASS`].
+
 pub const DECISION_CONTINUE: u32 = 1;
 /// [`IdentifyOut::decision`] for `verify`: the transport stops the request. The SDK's default
-/// for [`VERDICT_REJECT`].
+
 pub const DECISION_STOP: u32 = 2;
 
 /// [`StripName::place`]: a field line of the request head, matched ASCII case-insensitively.
@@ -478,15 +400,13 @@ pub const STRIP_QUERY: u32 = 2;
 /// [`IdentifyOut::verdict`] for `complete_login`: identified.
 pub const LOGIN_IDENTITY: u32 = 1;
 /// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP answered, and the credential
-/// is wrong.
+
 pub const LOGIN_BAD_CREDENTIAL: u32 = 2;
 /// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP could not answer (connect,
-/// TLS, timeout, malformed reply). Distinct from a bad credential.
+
 pub const LOGIN_OUTAGE: u32 = 3;
 /// [`IdentifyOut::verdict`] for `complete_login`: the IdP answered, and its answer failed the
-/// login's security check (an identity token whose `nonce` is not the one `begin_login` was
-/// handed). No identity is trusted. Distinct from a declined credential: 1.5.5 rendered it as its
-/// own page ("Sign-in couldn't be verified"). Appended.
+
 pub const LOGIN_SECURITY_CHECK_FAILED: u32 = 4;
 
 /// The identity buffer the host hands `verify`/`complete_login` to start: bytes.
@@ -496,7 +416,7 @@ pub const IDENTITY_GROUPS: u32 = 256;
 /// The field buffer the host hands `fields` to start: bytes.
 pub const FIELDS_BUF_BYTES: usize = 16 * 1024;
 /// The field buffer the host hands `fields` to start: fields. Also the strip array the host
-/// hands `verify` to start ([`VerifyIn::strip_cap`]); [`FIELDS_HARD_MAX`] bounds both.
+
 pub const FIELDS_MAX: u32 = 16;
 
 /// [`FieldsIn::mode`]: the plugin's own bound credential.
@@ -505,28 +425,15 @@ pub const MODE_OWN: u32 = 1;
 pub const MODE_PASSTHROUGH: u32 = 2;
 
 /// `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
-/// `FieldsIn::head.extensions`): the per-call scope the binding's credential is asked for, its
-/// value the space-delimited scope text (ARCHITECT round 5 Q-L3B-EXCHANGE (B): the caller's
-/// down-scope, which a token-exchange style requests as RFC 8693 `scope`). Absent = the call states
-/// none; a style that asks no per-call scope never reads it.
+
 pub const EXT_SCOPE: &str = "scope";
 
 /// `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`.
-/// Its value is the delay in whole seconds, ASCII decimal (owner-signed 2026-10-30, OWNER-QUEUE.md
-/// item "IdP errors": a 5xx, 429 or timeout from the IdP's token or userinfo endpoint answers 503
-/// and carries the IdP's `Retry-After`). It rides `IdentifyOut::head.extensions`, and the blob
-/// points INTO THE HOST'S IDENTITY BUFFER ([`CompleteLoginIn::out_buf`]): the one memory the host
-/// still holds once the call returns, so an entry anywhere else is not read. The host sends it as
-/// `Retry-After` clamped to [1, 3600]; absent, unreadable or on any other verdict it is not used,
-/// and the host's own delay stands. A plugin reads the IdP's header with [`retry_after_secs`]; the
-/// SDK writes the answer with `abi::sdk::auth_kit::login_outage`.
+
 pub const EXT_RETRY_AFTER: &str = "retry_after";
 
 /// The delay an IdP's `Retry-After` header value asks for, in whole seconds from `now_unix` (Unix
-/// seconds): delta-seconds as written (past `u64`, `u64::MAX`), or an HTTP-date, in any of the
-/// three forms RFC 9110 §5.6.7 has a recipient accept, as the seconds from `now_unix` to it (`0`
-/// when already past) (RFC 9110 §10.2.3). Surrounding ASCII whitespace is passed over; anything
-/// else is `None`.
+
 #[must_use]
 pub fn retry_after_secs(header_value: &[u8], now_unix: u64) -> Option<u64> {
     let v = header_value.trim_ascii();
@@ -563,7 +470,7 @@ fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    // Exactly `n` ASCII digits.
+
     let digits = |s: &str, n: usize| -> Option<u32> {
         if s.len() == n && s.bytes().all(|b| b.is_ascii_digit()) {
             s.parse().ok()
@@ -588,14 +495,13 @@ fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
     };
     let tokens: Vec<&str> = v.split_ascii_whitespace().collect();
     let (year, mon, day, (h, m, s)) = match *tokens.as_slice() {
-        // IMF-fixdate: `Sun, 06 Nov 1994 08:49:37 GMT`.
         [wd, d, mo, y, t, "GMT"] if DAYS.iter().any(|n| wd.strip_suffix(',') == Some(*n)) => (
             i128::from(digits(y, 4)?),
             month(mo)?,
             digits(d, 2)?,
             time(t)?,
         ),
-        // RFC 850: `Sunday, 06-Nov-94 08:49:37 GMT`.
+
         [wd, date, t, "GMT"] if LONG_DAYS.iter().any(|n| wd.strip_suffix(',') == Some(*n)) => {
             let mut p = date.split('-');
             let (d, mo, y) = (p.next()?, p.next()?, p.next()?);
@@ -604,8 +510,7 @@ fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
             }
             let y = i128::from(digits(y, 2)?);
             let (mon, day, (h, m, s)) = (month(mo)?, digits(d, 2)?, time(t)?);
-            // H. Hinnant's `civil_from_days`, inverse of the conversion below. Using i128
-            // keeps both conversions in range even when now_unix is u64::MAX.
+
             let z = i128::from(now_unix / SECONDS_PER_DAY) + CIVIL_UNIX_EPOCH_DAYS;
             let era = z / DAYS_PER_ERA;
             let doe = z - era * DAYS_PER_ERA;
@@ -618,9 +523,7 @@ fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
             let last_future_year = now_year + RFC850_FUTURE_YEARS;
             let mut year = last_future_year - (last_future_year - y).rem_euclid(YEARS_PER_CENTURY);
             let seconds = u64::from(h) * 3600 + u64::from(m) * 60 + u64::from(s);
-            // RFC 9110 §5.6.7: only a timestamp MORE than 50 calendar years ahead moves
-            // to the most recent matching past year. Compare month, day and time too,
-            // before validating leap days in the resolved century.
+
             if (year, i128::from(mon), i128::from(day), seconds)
                 > (
                     last_future_year,
@@ -633,7 +536,7 @@ fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
             }
             (year, mon, day, (h, m, s))
         }
-        // asctime: `Sun Nov  6 08:49:37 1994`.
+
         [wd, mo, d, t, y] if DAYS.contains(&wd) => (
             i128::from(digits(y, 4)?),
             month(mo)?,
@@ -652,7 +555,7 @@ fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
     if !(1..=month_days).contains(&day) || h > 23 || m > 59 || s > 60 {
         return None;
     }
-    // Days from the civil date (H. Hinnant's `days_from_civil`), March-based years.
+
     let y = if mon <= 2 { year - 1 } else { year };
     let era = y.div_euclid(YEARS_PER_ERA);
     let yoe = y - era * YEARS_PER_ERA;
@@ -675,7 +578,7 @@ pub fn retry_after_extensions(secs: u64) -> Vec<u8> {
 }
 
 /// The delay reply `extensions` state under [`EXT_RETRY_AFTER`]: plain ASCII digits that fit a
-/// `u64`; `None` when absent or anything else. Unclamped: the host bounds it.
+
 #[must_use]
 pub fn retry_after_of(extensions: &[u8]) -> Option<u64> {
     let v = crate::abi::mechanism::extensions::get(extensions, EXT_RETRY_AFTER)?;
@@ -686,37 +589,29 @@ pub fn retry_after_of(extensions: &[u8]) -> Option<u64> {
 }
 
 /// THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name
-/// in a request bound for the far end (a plane's attempt answer, a request it writes on its own
-/// need) is the host's, never the far end's. The host takes it out of the request before anything is
-/// encoded and carries its value into the member's auth call under [`EXT_SCOPE`]; no wire ever
-/// carries it.
+
 pub const SCOPE_REQUEST_FIELD: &str = "busbar-auth-scope";
 
 /// Whether the request field `name` is [`SCOPE_REQUEST_FIELD`] (a field name compares
-/// case-insensitively).
+
 #[must_use]
 pub fn is_scope_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(SCOPE_REQUEST_FIELD.as_bytes())
 }
 
 /// THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this
-/// name in a request bound for the far end (a plane's attempt answer, a request it writes on its own
-/// need) is the host's, never the far end's, exactly as [`SCOPE_REQUEST_FIELD`] is. The host takes
-/// it out of the request before anything is encoded, and a request that carried it is opened with
-/// NO member auth: the member's binding is not called and none of its fields are sent. Its value is
-/// not read. A plugin can only waive a binding through it, never add or choose one, so it widens
-/// nothing; no wire ever carries it.
+
 pub const NO_MEMBER_AUTH_FIELD: &str = "busbar-no-member-auth";
 
 /// Whether the request field `name` is [`NO_MEMBER_AUTH_FIELD`] (a field name compares
-/// case-insensitively).
+
 #[must_use]
 pub fn is_no_member_auth_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(NO_MEMBER_AUTH_FIELD.as_bytes())
 }
 
 /// The extensions blob a request's stated `scope` is lent to its auth call in: one [`EXT_SCOPE`]
-/// entry; empty (absent) when the request stated none.
+
 #[must_use]
 pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
     scope.map_or_else(Vec::new, |s| {
@@ -725,32 +620,21 @@ pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
 }
 
 /// [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. Every credential
-/// field sets it (owner-signed 2026-10-30, `SIGN-auth-kind.md`), including Authorization, API-key
-/// headers, session tokens and query keys. Set or not, the field is treated as sensitive
-/// everywhere else: the whole field buffer is never logged, no
-/// value is printed, and it is zeroised after encode (an undeclared sensitivity is sensitive, owner
-/// ruling 2026-10-27).
+
 pub const FIELD_SENSITIVE: u32 = 1;
 
 /// An auth instance's carrier selection in successful OPEN and REFRESH reply extensions: a JSON
-/// list of field names, drawn from its Statement's carrier marks. An absent key uses the
-/// Statement's carriers at OPEN and keeps the current selection at REFRESH; an instance may
-/// narrow that union for its configured variant. The host copies the selection before releasing
-/// the reply; changing it does not rewrite the input already owned by an in-flight verify.
+
 pub const EXT_CARRIERS: &str = "auth.carriers";
 
 /// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
-/// it to the request target (`name=value`, each percent-encoded outside RFC 3986's unreserved set,
-/// after any query the target already has, in the order written) and never sends it as a header.
-/// The plane never sees it, and every target the host logs, reports in an error or labels a metric
-/// with has its value redacted. Optional: a style that presents
-/// only headers never sets it. For an upstream that takes its key as a query parameter (`?key=`).
+
 pub const FIELD_QUERY: u32 = 2;
 
 /// [`LoginField::kind`]: plain text.
 pub const FORM_TEXT: u32 = 1;
 /// [`LoginField::kind`]: a password; its submitted value arrives as a secret
-/// [`Blob`](super::mechanism::call::Blob).
+
 pub const FORM_PASSWORD: u32 = 2;
 
 /// [`BeginLoginOut::shape`]: redirect to [`BeginLoginOut::authorize_url`].

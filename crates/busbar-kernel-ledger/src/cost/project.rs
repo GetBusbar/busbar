@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The read-time derivation the legacy usage endpoint still performs.
-//!
-//! The pinning projections that used to live here — `minor_of`, `cents_of`, `micros_of` — answered
-//! `i64::MAX` for a figure past the served range: a bill nobody posted (item 28). They are deleted.
-//! A nano-unit total projects through the one money type, [`crate::cost::Money::of_nanos`] and its
-//! checked narrowings, which REFUSE instead. What is left reprices a token ledger against a card at
-//! read time — the card the history says was in force, rather than whatever is configured at the
-//! moment of the read.
 
 use std::collections::BTreeMap;
 
@@ -19,14 +12,7 @@ use crate::cost::{
 };
 
 /// ONE METERING ROW, AS ITS READER HOLDS IT: the lane it was metered on, its counts by class, its
-/// request count and its ledgered classes. The reader names its own columns and does nothing else.
-/// Which lane a count prices on, whether the requests are the flat card's fee or a plane's
-/// own fee units, and where a plane's session count goes is decided HERE, in the cost unit, next
-/// to the price: a reader that projected the row
-/// itself and handed the slice in would be choosing the price's inputs beside the one function.
-///
-/// The two reads below price the same projection two ways: in the dated history at the row's own
-/// instant (#79), and at one card when no history is installed (the previous release's reading).
+
 pub struct MeteredRow<'r> {
     lane: &'r str,
     counts: BTreeMap<String, u64>,
@@ -36,8 +22,7 @@ pub struct MeteredRow<'r> {
 
 impl<'r> MeteredRow<'r> {
     /// `lane` is the row's configured lane name after alias resolution, or a plane's
-    /// `"<plane>\u{1f}<subject>"` lane. `counts` is the row's token split under the reserved class
-    /// spellings, a zero left off. `classes` are its other ledgered counts.
+
     pub fn new(
         lane: &'r str,
         counts: BTreeMap<String, u64>,
@@ -53,13 +38,7 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// The row as the lanes the one function prices, with no arithmetic: each lane with its counts
-    /// per class, and the flat fee count when the requests are the flat card's (`None` for a
-    /// plane's row, whose requests are its own fee units).
-    ///
-    /// A PLANE'S ROW prices its requests the way the budget book does (#47): one PER_REQUEST each
-    /// on that plane's FEE LANE, at the plane's own `fees.per_request` (0 when it configured none),
-    /// never at the flat card's fee. Its other counts price on its plane-qualified lane, and
-    /// the plane's FEE LANE row (`("", <plane>)`) carries its session count on the fee lane itself.
+
     #[allow(clippy::type_complexity)]
     fn lanes(&self) -> (Vec<(String, BTreeMap<String, u64>)>, Option<u64>) {
         let mut counts = self.counts.clone();
@@ -85,8 +64,7 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// What the row cost, in micro-units, against the card in force at `arrived_ms` (#79): the row
-    /// as a ledger slice, priced by the one function, [`price_in_view`]. A refusal is the answer
-    /// (#42): an unnamed lane or class, no card in force, or a total past the range is an `Err`.
+
     pub fn spend_micros_in_view(
         &self,
         arrived_ms: u64,
@@ -96,7 +74,7 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// [`MeteredRow::spend_micros_in_view`] with the final projection WITHHELD: the exact figure
-    /// ([`price_exact`]), so a reader that sums many rows truncates once, over the sum.
+
     pub fn exact_in_view(
         &self,
         arrived_ms: u64,
@@ -124,14 +102,13 @@ impl<'r> MeteredRow<'r> {
     }
 
     /// What the row cost, in micro-units, at one `card`: the reading when no dated history is
-    /// installed. [`Tally`] at that card, one row per lane at the standard tier (a metering row
-    /// carries no tier), then the flat card's fee row.
+
     pub fn spend_micros_at_card(&self, card: &RateCard) -> Result<i64, MoneyError> {
         self.spend_micros_at_card_seq(HistorySeq::OPENING, card)
     }
 
     /// The row at an already resolved card and its snapshot sequence. A reader resolving exact
-    /// entry provenance uses this method without a second, temporal history lookup.
+
     pub fn spend_micros_at_card_seq(
         &self,
         seq: HistorySeq,

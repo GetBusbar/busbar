@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The plane lifecycle through the real trampoline: one plane door built with
-//! `lifecycle: plane_life(P)`. `open` publishes the first generation's snapshot and holds the state,
-//! `refresh` publishes the next with its value, `retire` drops one generation, a refused
-//! `validate`/`open`/`refresh` answers the plane's text, `tick`/`drive` answer their defaults,
-//! `cancel` is the plane's own, and `release`/`close` answer READY.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -69,7 +65,7 @@ impl PlaneLife for Echo {
     }
 
     /// THE APPLIED OWNED SECTIONS (`EXT_OWNED`): a refresh whose document writes an owned section
-    /// the echo plane cannot read is refused, as `open` refuses it; otherwise the settings path.
+
     fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Vec<u8>>, Refusal> {
         let owned = crate::abi::mechanism::extensions::get(
             input.head().extensions().bytes(),
@@ -135,8 +131,7 @@ mod migrating {
 }
 
 /// `lifecycle: plane_life(P)` takes `migrate:` as the other lifecycle forms do: the door states it
-/// on its tail, and the host's call answers the plane's own migration. A door naming none states
-/// none.
+
 #[test]
 fn a_plane_life_door_states_migrate_when_it_names_one() {
     use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS};
@@ -247,7 +242,7 @@ fn text(s: AbiStr) -> String {
 }
 
 /// `open` with `settings` at generation `1`: the outcome, the instance, the published snapshot's
-/// generation (`0` = none), and the error text.
+
 fn open(settings: &[u8]) -> (Outcome, *mut c_void, u64, String) {
     let mut input: PlaneOpenIn = zeroed();
     input.open.head = in_head::<PlaneOpenIn>(slot::OPEN);
@@ -326,7 +321,7 @@ fn refresh_publishes_its_generation_or_answers_its_text_and_retire_drops_one() {
     let (o, published, why) = refresh(inst, b"fail", 3);
     assert_eq!((o, published), (Outcome::Failed, 0));
     assert_eq!(why, "refresh failed: 7");
-    // retire: the plane's hook runs after the snapshot is dropped
+
     let mut gi: GenIn = zeroed();
     gi.head = in_head::<GenIn>(slot::RETIRE);
     gi.generation = 5;
@@ -338,7 +333,7 @@ fn refresh_publishes_its_generation_or_answers_its_text_and_retire_drops_one() {
     );
     assert_eq!(RETIRED.load(Ordering::SeqCst) - before, 5);
     assert_eq!(close(inst), Outcome::Ready);
-    // RED: a refresh with no instance is FAILED, never a publish
+
     let (o, published, _) = refresh(ptr::null_mut(), b"{}", 4);
     assert_eq!((o, published), (Outcome::Failed, 0));
 }
@@ -392,9 +387,7 @@ fn validate_tick_drive_cancel_and_release_answer_the_defaults_and_the_planes_can
 }
 
 /// RED (a2a's PlaneLife adoption, ruled 2026-10-29): a PlaneLife plane sees the applied owned
-/// sections (`EXT_OWNED`) at `refresh`, so a malformed `agent_push:` an apply carries is still
-/// refused there, as `open` refuses it; an apply that writes none takes the settings path. RED
-/// before: `refresh` got the settings and the generation only, so the apply was accepted.
+
 #[test]
 fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_refused() {
     let (_, inst, _, _) = open(b"{}");
@@ -427,8 +420,6 @@ fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_
     );
     assert_eq!(close(inst), Outcome::Ready);
 }
-
-// ── export_plugin!'s plane arm ──────────────────────────────────────────────────────────────────
 
 /// A kind op answering `$outcome` over `$in`/`$out`.
 macro_rules! answers {

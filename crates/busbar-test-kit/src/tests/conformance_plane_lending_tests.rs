@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The actual serve frame points into its retained owner after watchdog abandonment.
 use super::*;
 use crate::conformance::{test_door, test_op, TestDoor, TestOp};
 use crate::dispatch::{Budgets, DispatchConfig};
@@ -13,7 +12,7 @@ use std::time::Instant;
 
 #[derive(Default)]
 struct Gate {
-    state: Mutex<(bool, bool, bool)>, // released, finished, live input observed
+    state: Mutex<(bool, bool, bool)>,
     changed: Condvar,
     owner: Mutex<Weak<ServeLend>>,
 }
@@ -34,8 +33,7 @@ impl TestOp for LateServe {
             .unwrap();
         let released = state.0;
         drop(state);
-        // Acquire the actual owner before any nested pointer read. Weak adds no ownership while
-        // the crossing waits past its watchdog budget; failure is observed without probing freed memory.
+
         let observed = released
             && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let owner = gate
@@ -148,7 +146,7 @@ fn an_abandoned_serve_keeps_its_actual_inputs_until_its_crossing_returns() {
     drop(request);
     let (called, frame) = on_ticket_frame(&p, &d, slot::SERVE, frame, DeadlineClass::Call, 0, lend);
     let alive = held.upgrade().is_some();
-    // Release before asserting so a failure cannot leave a blocked worker.
+
     gate.state.lock().unwrap().0 = true;
     gate.changed.notify_all();
     assert_eq!(called.outcome, Outcome::Fault);
@@ -266,7 +264,7 @@ fn fault_arrival_and_projection_leave_their_borrowed_outputs_unread() {
         );
         assert!(!line.contains("unjudged"));
     }
-    // Positive counterpart over the unchanged real plane uses the same actual caller/buffers.
+
     let honest = Subject::new(crate::plane_door_plugin::door, "unused", "{}");
     let p = load::<Plane>(&honest, Leg::Linked, honest.bind(&d, "judged-plane")).unwrap();
     assert!(open(&p, b"{}", None).starts_with("Ready"));

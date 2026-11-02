@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLUGIN-ADMISSION SEAM the operator surface drives (upload, inspect, rollback, inventory):
-//! what the composition root's loader answers about a plugin tarball, in words the kernel owns
-//! (BUSBAR-1.6.0.md THE DESIGN l.322: the kernel never names the loader). The root implements
-//! [`PluginAdmission`] over its one trust builder — the one boot admits plugins under — and
-//! installs it ([`crate::preflight::RootInstall::admission`]); every snapshot carries it
-//! ([`crate::state::App::plugin_admission`]), so the admin surface judges a plugin exactly as boot
-//! does and names no loader type. Every judgement is MANIFEST-ONLY: nothing here loads a plugin.
-
 /// What a plugin's signed manifest states, as the operator surface reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stated {
@@ -80,12 +72,7 @@ pub struct Admitted {
     pub linked_serves: bool,
 }
 
-/// THE ADMISSION THE ROOT INSTALLS: the loader's tarball, signature and inventory machinery,
-/// answered in the kernel's words. `cfg` is the running `plugins:` block; the policy every call
-/// judges under is the root's one trust builder over it.
 pub trait PluginAdmission: Send + Sync {
-    /// Whether this candidate must load before Store recovery: a selected transport or an early
-    /// dropped-plane grammar probe. This is manifest-only and opens nothing.
     fn bootstrap_probe_selected(
         &self,
         _tarball: &[u8],
@@ -97,38 +84,20 @@ pub trait PluginAdmission: Send + Sync {
         ))
     }
 
-    /// Whether `file` names a plugin tarball (`.tar.gz` / `.tgz`).
     fn is_tarball(&self, file: &str) -> bool;
 
-    /// The ceiling on a plugin tarball's size, in bytes.
     fn max_tarball_bytes(&self) -> u64;
 
-    /// The binding lifecycle default: whether a settings change of a `kind` plugin needs a process
-    /// restart.
     fn restart_default(&self, kind: &str) -> bool;
 
-    /// Whether `cfg`'s trust resolves.
-    ///
-    /// # Errors
-    /// The policy's refusal.
     fn policy_resolves(&self, cfg: &crate::config::PluginsCfg) -> Result<(), String>;
 
-    /// The manifest-only inventory of `dir` under `cfg`'s trust.
-    ///
-    /// # Errors
-    /// `cfg`'s trust does not resolve.
     fn inventory(
         &self,
         dir: &std::path::Path,
         cfg: &crate::config::PluginsCfg,
     ) -> Result<Vec<Inventoried>, String>;
 
-    /// An UPLOAD of `tarball` as `file` into `dir`: structure, trust against the running posture,
-    /// conflict with the installed set, and the one-version rule against the linked rows. Nothing
-    /// is written.
-    ///
-    /// # Errors
-    /// The refusal, classed.
     fn admit_upload(
         &self,
         dir: &std::path::Path,
@@ -137,21 +106,12 @@ pub trait PluginAdmission: Send + Sync {
         cfg: &crate::config::PluginsCfg,
     ) -> Result<Admitted, Refusal>;
 
-    /// An INSPECT of `tarball`: its structure checked and its trust REPORTED, never refused.
-    ///
-    /// # Errors
-    /// The policy or the structure refuses.
     fn inspect(
         &self,
         tarball: &[u8],
         cfg: &crate::config::PluginsCfg,
     ) -> Result<(Stated, Judged), Refusal>;
 
-    /// A ROLLBACK target: `bytes` (the tarball `file` holds), its structure checked and its trust
-    /// judged with this plugin's floor LOWERED to the target's own version.
-    ///
-    /// # Errors
-    /// The structure refuses (`Validation`), or the target is not loadable even so (`Conflict`).
     fn rollback_target(
         &self,
         file: &str,

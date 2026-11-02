@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Unit tests for the 1.5.3 named-DEFINITION map SECTION TABLE — the data description every
-//! generic surface (router, OpenAPI, taxonomy, overlay) is parameterized by.
-
 use super::*;
 use crate::config::tests::base_deploy;
 
-/// The path grammar is derived from ONE key per section, so the config key and the admin path
-/// segment can never drift apart (`export:` ⇄ `/export`) — and every section's five routes parse
-/// back to `(section, shape)` without a hand-written path list anywhere.
 #[test]
 fn every_section_round_trips_its_three_route_shapes() {
     for section in NamedMapSection::sections() {
@@ -31,27 +25,17 @@ fn every_section_round_trips_its_three_route_shapes() {
             NamedMapSection::parse_rel(&format!("{root}/{{name}}/settings")),
             Some((section, NamedMapShape::Settings))
         );
-        // A path that merely SHARES the prefix is not a named-map route.
+
         assert_eq!(
             NamedMapSection::parse_rel(&format!("{root}/{{name}}/health")),
             None
         );
     }
-    // Sections the generic CRUD deliberately does NOT serve.
+
     assert_eq!(NamedMapSection::parse_rel("/hooks"), None);
     assert_eq!(NamedMapSection::parse_rel("/groups/{name}"), None);
 }
 
-// `sections_holds_the_frozen_named_map_order_under_the_default_feature_set` MOVED to
-// `crates/busbar/tests/named_map_cross_plane.rs`: it pins `sections()`'s fold over the REAL registered roster
-// (`"tools"`/`"agents"` are the real `busbar_mcp` and agent-engine config sections) — naming that real
-// vocabulary here (even via a synthetic `#[cfg(test)]` decl) is exactly what `cargo xtask gate
-// construction`'s `neutral-no-dialect` rule (ceiling 0) forbids. See that file for the relocated
-// test.
-
-/// A definition is parsed into its typed, `deny_unknown_fields` config struct at the insert seam —
-/// so an unknown key is rejected by the API exactly as `config.yaml` would reject it, and the
-/// overlay can never hold a definition a reload would refuse.
 #[test]
 fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
     let mut deploy = base_deploy();
@@ -83,9 +67,6 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
     );
 }
 
-/// The dangling-reference guard: `referents` names every OTHER config site that still references a
-/// definition by bare name, which is what makes a delete-that-would-dangle a precise, actionable
-/// terminal conflict rather than a late `resolve` failure.
 #[test]
 fn referents_finds_every_bare_name_reference_site() {
     let mut deploy = base_deploy();
@@ -117,24 +98,18 @@ fn referents_finds_every_bare_name_reference_site() {
             .is_empty(),
         "an unreferenced definition dangles nothing"
     );
-    // An exporter is a LEAF in 1.5.3 — nothing references it by name, so nothing can dangle.
+
     assert!(NamedMapSection::Export
         .referents(&deploy, "metrics")
         .is_empty());
 }
 
-/// Only `identity-providers:` carries a TRUST CEILING. The predicate — not a `match` at the call
-/// site — is what keeps the admin handler generic while still enforcing the ceiling rule.
 #[test]
 fn only_identity_providers_carry_a_trust_ceiling() {
     assert!(NamedMapSection::IdentityProviders.has_trust_ceiling());
     assert!(!NamedMapSection::Export.has_trust_ceiling());
 }
 
-/// RED (ARCHITECT S11b (c) Option A, BUSBAR-1.6.0.md l.3977; Q67 revert to 1.5.5): a definition
-/// for a plane section no registered plane declares is refused in serde's own unknown-field words,
-/// exactly as the config parse refuses the key and as 1.5.5 refused every key it did not know,
-/// never in a bespoke "compiled without the plane" sentence that names a plane the build lacks.
 #[test]
 fn a_section_no_registered_plane_declares_is_an_unknown_field() {
     let _isolation = crate::test_support::planes::TestRegistryIsolation::empty();

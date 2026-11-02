@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The secret kind's shared source pieces through a real door: a source built from them refuses
-//! instance settings in the sources' words, reads a reference's settings as an object, and answers
-//! a failed resolve FAILED with the error's code and text.
 
 use super::*;
 use crate::abi::mechanism::call::{Outcome, BLOB_JSON};
@@ -60,7 +58,6 @@ impl SafeSlot for Resolve {
                 .ok_or_else(|| SecretModuleError::not_found("probe: no key"))
         });
         match answered {
-            // Into the host's buffer, never leased (the credential chip, row 6).
             Ok(material) => crate::abi::sdk::cred::resolved(
                 input,
                 &mut out,
@@ -115,7 +112,7 @@ fn a_references_settings_are_an_object() {
 }
 
 /// A source that takes no settings opens on empty bytes or `{}`, and refuses a setting naming it,
-/// or bytes that are not an object, in the sources' words.
+
 #[test]
 fn a_source_that_takes_no_settings_refuses_one_naming_it() {
     assert_eq!(takes_no_settings(b"", "env", NAMES), Ok(()));
@@ -135,7 +132,7 @@ fn a_source_that_takes_no_settings_refuses_one_naming_it() {
 }
 
 /// Through the door: instance settings refused FAILED in the words above; a resolve that fails is
-/// FAILED with its code and text and no material; one that succeeds is READY with it.
+
 #[test]
 fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     let view = DoorView::of(plugin::MACRO_DOOR);
@@ -158,7 +155,6 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     assert_eq!(c.outcome, Outcome::Ready);
     let instance = c.take_instance().expect("an instance");
 
-    // The host lends the buffer a READY value is written into (row 6); the reply copies it out.
     struct Resolved {
         outcome: Outcome,
         out: ResolveOut,
@@ -176,7 +172,7 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
                 .buffer(|i| &i.secret_buf, |i| &i.secret_cap, &mut secret),
             zeroed::<ResolveOut>(),
         );
-        // Only copied reply fields leave the input borrow; no instance is opened by RESOLVE.
+
         Resolved {
             outcome: answer.outcome,
             out: answer.out,
@@ -199,15 +195,12 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
     assert_eq!(c.out.error_kind, ERROR_KIND_UNSET);
     assert_eq!(c.owned.material(), b"value");
 
-    // A value that resolved to nothing is FAILED, INVALID, in words (S3): never READY empty.
     let c = resolve_with(br#"{"key":""}"#);
     assert_eq!(c.outcome, Outcome::Failed);
     assert_eq!(c.out.error_kind, ERROR_KIND_INVALID);
     assert_eq!(c.error.as_deref(), Some(crate::abi::sdk::cred::EMPTY_VALUE));
     assert!(c.owned.material().is_empty());
 
-    // A value over the secret cap is FAILED, INVALID, in words (S5): never a short answer asking
-    // the host for a buffer that large.
     let big = format!(
         r#"{{"key":"{}"}}"#,
         "x".repeat(crate::abi::secret::MAX_SECRET_BYTES + 1)

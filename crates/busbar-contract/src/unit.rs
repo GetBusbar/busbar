@@ -1,8 +1,4 @@
 //! The unit as a plugin sees it: the steps, the ends, the refusal codes and the context.
-//!
-//! A unit is one governed transaction — one authorization and one settlement, whatever the frame
-//! count. The plane delimits units from frames; the kernel constructs them and is the sole writer
-//! of their identity. Everything below is read-only from a plugin's side.
 
 use crate::bounded::{
     BoundedVec, Facts, Ir, Labels, ScratchBytes, MAX_RESPONSE_PTRS, MAX_USAGE_LINES,
@@ -289,24 +285,7 @@ pub enum FinishClass {
 }
 
 /// THE ONE MAPPING from how a unit ended to the finish class its audit record carries.
-///
-/// The audit record is fixed, required and identical for every plane, and the finish class is one of
-/// the two ids a plane contributes to it. A mapping transcribed once per plane is a mapping that
-/// disagrees per plane, which makes the same ending read differently depending on which door the
-/// request came in by -- and the whole point of a fixed record is that it does not.
-///
-/// `completed` is the only genuine per-plane choice, and it is a question about the SHAPE of the
-/// exchange rather than about the ending: a request/response plane answers `Complete`, a duplex turn
-/// answers `TurnComplete`, and a plane that is both hands in whichever the unit was. Every other
-/// ending means the same thing everywhere:
-///
-/// - a refusal and a failure are `Error`; something said no, and the answer is not coming.
-/// - a stall is `Partial`; what arrived, arrived.
-/// - an abort is `Partial`, BY EITHER PARTY. `Error` is the class for an upstream that reported an
-///   error, and a kernel abort is not that: it is this node ending a unit it was serving, for a
-///   reason of its own, over an upstream that had said nothing wrong. The record does not lose who
-///   did it -- the audit row carries the `UnitEnd` itself and its step -- so classing it as an error
-///   would only put a second, disagreeing answer beside the true one.
+
 pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass {
     match end {
         UnitEnd::Completed => completed,
@@ -398,20 +377,18 @@ pub struct AdmitFacts {
 
 impl AdmitFacts {
     /// The first declared response-ceiling pointer that resolves in a body.
-    ///
-    /// Declaration order is precedence order: a plane that names an older spelling first and a
-    /// newer one second is saying which one wins when a request carries both.
+
     #[must_use]
     pub fn max_response_bytes<'u>(&self, body: &Ir<'u>) -> Option<&'u [u8]> {
-        self.max_response_ptrs.as_slice().iter().find_map(|loc| {
-            match loc {
+        self.max_response_ptrs
+            .as_slice()
+            .iter()
+            .find_map(|loc| match loc {
                 Location::Arrival(crate::grammar::ArrivalLocation::FirstFrameJsonPointer(ptr))
                 | Location::UnitJsonPointer(ptr) => body.pointer(ptr),
-                // Every other form is resolved against the arrival record rather than the body,
-                // and a response ceiling is a body value in all six reference dialects.
+
                 _ => None,
-            }
-        })
+            })
     }
 }
 
@@ -428,9 +405,7 @@ pub struct Clock {
 }
 
 /// The configuration a plugin declared a schema for, as a read-only view.
-///
-/// A plugin reads its own block and nothing else. There is no way from here to another plugin's
-/// configuration, to policy, or to a secret.
+
 pub trait ConfigView: Send + Sync {
     /// A string value from this plugin's own configuration block.
     fn get_str(&self, key: &str) -> Option<&str>;
@@ -443,10 +418,7 @@ pub trait ConfigView: Send + Sync {
 }
 
 /// The session's kernel-owned fact maps, as a read-only view.
-///
-/// Both maps are pre-allocated at session open from the declared key sets, and both are
-/// last-write-wins. A plane writes session facts through its own answers; a transport writes
-/// transport facts at accept, dial, upgrade and handoff. Neither can write the other's.
+
 pub trait SessionView: Send + Sync {
     /// Which session this is.
     fn id(&self) -> SessionId;
@@ -477,12 +449,7 @@ pub trait TransportView: Send + Sync {
 }
 
 /// Everything a plugin call is given besides its own arguments.
-///
-/// The context carries exactly one resource — the arena — and the rest are borrowed views. There
-/// is no handle here that reaches the kernel, no way to mount a route, and no way to open a
-/// connection. The host's codec services (its entropy and wall clock) arrive here as a borrowed
-/// [`CodecHost`](crate::codec::CodecHost): a plane holds no random source of its own, so a codec it
-/// drives mints from the host the context hands it, and a context cannot be built without one.
+
 pub struct Ctx<'u> {
     clock: Clock,
     config: &'u dyn ConfigView,
@@ -685,11 +652,7 @@ impl<'u> Unit<'u> {
     }
 
     /// The facts the draft carried, sealed by the kernel at construction.
-    ///
-    /// Decode is the step that reads the bytes, and what it determined there is evidence every
-    /// later step is entitled to. Without this a plane's only way to answer at `verify`, `approve`,
-    /// `audit` or `content_facts` a question decode already answered is to re-derive it from the
-    /// same bytes — or, where it cannot, to stash state of its own beside the loop.
+
     #[must_use]
     pub fn draft_facts(&self) -> &Facts<'u> {
         &self.facts
@@ -720,10 +683,7 @@ impl<'u> Unit<'u> {
     }
 
     /// Record a leg's reply. Kernel-only.
-    ///
-    /// # Errors
-    /// Returns the reply back, boxed, when the unit already holds its bounded number of leg
-    /// replies. Boxed because a reply carries a fact map pre-sized to its key ceiling.
+
     pub fn push_leg_result(
         &mut self,
         _seal: &dyn KernelSeal,

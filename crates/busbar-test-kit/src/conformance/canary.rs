@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CANARY (CHIP-DESIGN v4.1 §12, change 9): no credential the plugin was configured with ever
-//! crosses back, through either door. The plugin's `conformance.json` names the credentials its
-//! settings carry (`"credentials": ["<value>", ...]`; the test fixture configures its far end with
-//! the same unique value). Every op of the kind's script runs, refusals and errors included, and
-//! every step's answer and every log record the instance raised is searched for each credential in
-//! every spelling a careless path produces: as written, percent-encoded, base64 and hex.
-
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
@@ -38,10 +31,6 @@ impl Heard {
         }
     }
 
-    /// Every observed envelope string, or a refusal when any envelope could not be observed.
-    ///
-    /// # Errors
-    /// Capture was capped, the host dropped an envelope, or the capture mutex was poisoned.
     pub fn captured(&self) -> Result<Vec<Vec<u8>>, &'static str> {
         let capture = self.0.lock().map_err(|_| "capture mutex poisoned")?;
         if capture.incomplete {
@@ -74,14 +63,12 @@ thread_local! {
     static FOLD_HEARD: RefCell<Vec<Arc<Heard>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A sink for one bind, registered with the fold running on this thread.
 pub(super) fn heard() -> Arc<Heard> {
     let h = Arc::new(Heard::default());
     FOLD_HEARD.with(|f| f.borrow_mut().push(Arc::clone(&h)));
     h
 }
 
-/// Everything the fold's instances emitted since the last call; incomplete capture fails closed.
 pub(super) fn take_heard() -> Vec<Vec<u8>> {
     FOLD_HEARD
         .with(|f| std::mem::take(&mut *f.borrow_mut()))
@@ -93,7 +80,6 @@ pub(super) fn take_heard() -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The credentials `inputs` names.
 #[must_use]
 pub fn credentials(inputs: &serde_json::Value) -> Vec<Vec<u8>> {
     match inputs.get("credentials") {
@@ -129,7 +115,6 @@ fn percent(b: &[u8], uppercase: bool) -> Vec<u8> {
     out
 }
 
-/// Every spelling of `secret` the search looks for.
 #[must_use]
 pub fn spellings(secret: &[u8]) -> Vec<Vec<u8>> {
     let mut out = vec![
@@ -152,8 +137,6 @@ pub fn spellings(secret: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
-/// The first place in `emitted` (`(where, bytes)`) a spelling of any of `secrets` appears: its
-/// `where`, never the value.
 #[must_use]
 pub fn find(secrets: &[Vec<u8>], emitted: &[(String, Vec<u8>)]) -> Option<String> {
     let needles: Vec<Vec<u8>> = secrets.iter().flat_map(|s| spellings(s)).collect();

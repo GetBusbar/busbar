@@ -391,7 +391,7 @@ fn unknown_commit_replays_exact_body_and_identity_without_optimistic_visibility(
     queue.flush(&pending, &rows, &crate::host_chains::ChainBook::default());
     assert!(answers.lock().unwrap().is_empty());
     assert!(!queue.idle());
-    // Later unrelated changes cannot make the host guess whether the original request applied.
+
     rows.record_put(
         STATE,
         &record_key(INSTANCE, b"task"),
@@ -679,7 +679,7 @@ fn submitted_request_survives_caller_unit_retirement() {
     let host = services(Arc::clone(&rows), true);
     host.units()
         .admitted(71, crate::host_units::UnitRecord::default());
-    // The unit can end without changing the host's retained candidate.
+
     let receiver_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let callback_alive = Arc::clone(&receiver_alive);
     host.record_transaction(
@@ -857,7 +857,7 @@ fn read_bound_life_rejects_drop_recreate_before_first_submission() {
     let rows = AtomicRows::default();
     let seed = prepared(&rows, Expected::Absent, b"same", Some(b"same"));
     assert_eq!(rows.record_transaction(&seed), Ok(Decision::Applied));
-    // The caller observes life BEFORE reading the exact state used for its mutation.
+
     let original_life =
         crate::host_chains::observe_life(&rows, INSTANCE, EVENTS, "principal/task").unwrap();
     let original_task = rows
@@ -873,7 +873,7 @@ fn read_bound_life_rejects_drop_recreate_before_first_submission() {
         Some(b"same"),
     );
     assert_eq!(rows.record_transaction(&recreated), Ok(Decision::Applied));
-    // Preparation now sees the new incarnation's tail, but MUST retain the original life.
+
     let mut stale = request(Expected::Bytes(original_task.as_slice().to_vec()), b"stale");
     let mut append = operation(Some(b"stale"));
     append.life = original_life;
@@ -1005,7 +1005,7 @@ fn selected_schema_alias_cannot_admit_a_plain_writer_into_chain_storage() {
         .is_err());
     assert!(rows.0.lock().unwrap().rows.is_empty());
     assert!(rows.0.lock().unwrap().calls.is_empty());
-    // Legacy-only duplicate declarations retain their existing admission behavior.
+
     assert!(host
         .admit(
             INSTANCE,

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The hook kind's adapter: every kind op runs its `check_<op>` with the caps its `in` carries,
-//! a legal answer passes, a broken rule is FAULT naming its rule and field, a zeroed PENDING or
-//! REFUSED `out` passes, a foreign (too small) `in` is `Rule::Foreign`,
-//! and a FAILED `decide`/`transform` naming a `*_needed` is short.
-
 use std::mem::{size_of, MaybeUninit};
 
 use busbar_contract::abi::hook::{
@@ -20,7 +15,6 @@ use crate::dispatch::{in_head, out_head, Answer, InFrame, Kind, OutFrame};
 
 static BYTE: u8 = 0;
 
-/// An `in` of `T`, every field zero but its head.
 fn input<T: InFrame>() -> T {
     // SAFETY: every hook `in` is plain integers, floats, raw pointers and unions of those, for
     // which the all-zero pattern is valid; `T` leads with an `InHead`, written below.
@@ -30,7 +24,6 @@ fn input<T: InFrame>() -> T {
     v
 }
 
-/// An `out` of `T` answering `outcome`, every field zero but its head.
 fn output<T: OutFrame>(outcome: Outcome) -> T {
     // SAFETY: as `input`, with an `OutHead` first.
     let mut v: T = unsafe { MaybeUninit::zeroed().assume_init() };
@@ -41,7 +34,6 @@ fn output<T: OutFrame>(outcome: Outcome) -> T {
     v
 }
 
-/// The answer of `op` over `i` (as `in_size` bytes) and `o`, run through the hook's check.
 fn check<I: InFrame, O: OutFrame>(op: u32, i: &I, in_size: usize, o: &O) -> Result<(), Fault> {
     Hook::check(&answer(op, i, in_size, o))
 }
@@ -64,7 +56,6 @@ fn answer<I: InFrame, O: OutFrame>(op: u32, i: &I, in_size: usize, o: &O) -> Ans
     }
 }
 
-/// A broken rule is FAULT, naming exactly `rule` and `field`.
 fn fails(r: Result<(), Fault>, rule: Rule, field: &'static str) {
     assert_eq!(r, Err(Fault { rule, field }));
 }
@@ -109,7 +100,6 @@ fn decide_green_red_foreign() {
     o.order_written = 4;
     assert_eq!(check(slot::DECIDE, &i, size_of::<DecideIn>(), &o), Ok(()));
 
-    // The order cap comes from the `in`: one slot past it is FAULT.
     let mut over = o;
     over.order_written = 5;
     fails(
@@ -117,7 +107,7 @@ fn decide_green_red_foreign() {
         Rule::OverCap,
         "decide.order",
     );
-    // Two verbs on READY.
+
     let mut two = o;
     two.verbs = VERB_PREFER | VERB_REJECT;
     fails(
@@ -165,7 +155,6 @@ fn decide_short_answer() {
         &o
     )));
 
-    // A needed that fits its cap wastes the re-call.
     let mut fits = o;
     fits.order_needed = 4;
     fails(
@@ -174,7 +163,6 @@ fn decide_short_answer() {
         "decide",
     );
 
-    // A FAILED answer naming nothing needed is not short.
     let plain: DecideOut = output(Outcome::Failed);
     assert!(!Hook::short(&answer(
         slot::DECIDE,
@@ -182,7 +170,7 @@ fn decide_short_answer() {
         size_of::<DecideIn>(),
         &plain
     )));
-    // A READY answer is never short.
+
     let mut ready: DecideOut = output(Outcome::Ready);
     ready.verbs = VERB_ABSTAIN;
     assert!(!Hook::short(&answer(
@@ -238,7 +226,6 @@ fn transform_short_answer() {
         &o
     )));
 
-    // A short answer writes nothing.
     let mut wrote = o;
     wrote.reject_message_written = 1;
     fails(
@@ -286,7 +273,6 @@ fn configure_green_red_foreign() {
         Ok(())
     );
 
-    // The pushed version comes from the `in`.
     let mut pushed = i;
     pushed.version = 8;
     fails(
@@ -369,8 +355,6 @@ fn lifecycle_slots_state_no_hook_rule() {
     )));
 }
 
-/// A zeroed `out` on PENDING and on REFUSED passes every op's check: those outcomes carry no
-/// verb, no buffer, no lease and no ack.
 #[test]
 fn zeroed_pending_and_refused_pass_every_op() {
     let d = decide_in();
@@ -422,10 +406,6 @@ fn zeroed_pending_and_refused_pass_every_op() {
     }
 }
 
-/// THE KIND TAIL GROWTH RULE on the hook tail (H8): the hook facts are read through the loader's one
-/// tail reader, like a plane's, store's or transport's. A tail of the host's size loads; one that
-/// states MORE (a later plugin's appended field) loads, read only to the host's size; one below the
-/// frozen size is refused, naming it.
 #[test]
 fn the_hook_tail_follows_the_growth_rule() {
     use crate::dispatch::kinds::hook::HookContext;
@@ -434,7 +414,7 @@ fn the_hook_tail_follows_the_growth_rule() {
     let bind = |size: usize| {
         let mut tail = Tail::EMPTY.with_access(CLASS_TAP, PROMPT_NO, USER_NO);
         tail.head.size = size as u32;
-        // Room past the host's tail for a later plugin's appended bytes.
+
         let leaked: &'static mut [Tail; 2] = Box::leak(Box::new([tail, tail]));
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind_tail: std::ptr::from_ref(&leaked[0]).cast(),
@@ -457,7 +437,6 @@ fn the_hook_tail_follows_the_growth_rule() {
     );
 }
 
-/// Hook routes state their method and auth bar; malformed routes and requested signals are refused.
 #[test]
 fn a_hook_tail_admits_valid_routes_and_refuses_malformed_routes_or_requested_signals() {
     use busbar_contract::abi::hook::{Route, Tail, CLASS_GATE, PROMPT_NO, USER_NO};

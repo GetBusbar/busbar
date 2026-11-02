@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BOOT HYDRATION attaches the kernel's durable trust record to the configured store (THE
-//! DESIGN §11.12: "the demotion record is durable"), whatever planes are linked: no plane hook
-//! has to remember it.
-
 use std::sync::Arc;
 
 use crate::test_support::durable_store::{durable_cfg, open_durable};
@@ -35,7 +31,6 @@ fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
     app.demotion_record
         .record("inst\u{1f}upstream", "quarantined", 1);
 
-    // A RESTART: a fresh record over the same store reads back what the booted process kept.
     let restarted = DemotionRecord::default();
     restarted.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
         open_durable(&cfg),

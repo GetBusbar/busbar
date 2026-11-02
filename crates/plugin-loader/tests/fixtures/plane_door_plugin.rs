@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE DOOR'S TEST PLUGIN — a minimal plane built with `plugin_door!`, one source compiled
-//! into the test build (the LINKED door, its `door` function) and built as the `plane_door_plugin`
-//! example `cdylib` (the DROPPED door, through `export_door!`).
-//!
-//! It answers every plane op through the SDK's trampolines: `open` and `refresh` publish a
-//! generation snapshot (valid until `retire` of that generation; opened under a public URL, every
-//! generation also claims the session door `GET /upgrade`), `arrive`, `on_piece`, `refusal`,
-//! `serve` and `project` write only into the host's buffers (an arrival on the session door, claim
-//! 1, states `ROUTE_SESSION`), `drive` names the session with unsolicited output, `cancel` answers a
-//! disposition (one naming the ticket the session's caller piece crossed on ends the session) and
-//! `tick` its next tick. Opened on a host that serves them, an ATTEMPT is sent only when the
-//! kernel entitles the unit to `door:echo` and approves the member's `echo`; the far end's answer names
-//! the ledger lane `lane` beside its record write; and `project` writes one `user` turn of the
-//! body into a turns buffer the host lends. The request-path ops never allocate and never block:
-//! the only shared state they touch is two atomics.
-//!
-//! It is written on the SDK's SAFE surface (`abi::sdk::safe`, `abi::sdk::lent`): every slot is a
-//! `SafeSlot`, the instance is the SDK's typed `Instance<Plane>`, host-lent bytes and host buffers
-//! go through `Lent` and `HostBuf`. This file holds no `unsafe`.
-
 #![forbid(unsafe_code)]
 
 use std::mem::size_of;
@@ -53,7 +33,6 @@ use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec
 use busbar_contract::abi::sdk::services::Services;
 use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot, SignalScalar};
 
-/// An absent string.
 const NONE: AbiStr = AbiStr::ZERO;
 
 const SECTIONS: &[Section] = &[Section {
@@ -72,8 +51,6 @@ const CLASSES: &[BillableClass] = &[BillableClass {
 }];
 const RECORD_KINDS: &[AbiStr] = &[abi_str("last")];
 
-/// The Statement tail: one of each list the per-call indices name. Its sections are the
-/// Statement's own ([`SECTIONS`]).
 const TAIL: &PlaneTail = &PlaneTail {
     head: KindTailHead {
         size: size_of::<PlaneTail>() as u32,
@@ -81,7 +58,7 @@ const TAIL: &PlaneTail = &PlaneTail {
     },
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_PIECEWISE,
-    // The layout this plane writes its answers in: the contract's it was built against.
+
     answer_layout: ANSWER_LAYOUT,
     scope: abi_str("door"),
     label: abi_str("Door"),
@@ -107,7 +84,6 @@ const TAIL: &PlaneTail = &PlaneTail {
     ..PlaneTail::ZERO
 };
 
-/// Every generation's claims: the request door, and with a public URL the session door.
 fn claims(public: bool) -> Vec<ClaimSpec> {
     let mut claims = vec![ClaimSpec::new("POST", "/echo", "door", 0)];
     if public {
@@ -115,15 +91,13 @@ fn claims(public: bool) -> Vec<ClaimSpec> {
     }
     claims
 }
-/// The admin route a REFRESHED generation adds.
+
 fn routes() -> Vec<AdminRouteSpec> {
     vec![AdminRouteSpec::new("GET", "/door/status", 0)]
 }
 
-/// The one name every generation lists.
 pub const LISTED: &str = "door-listed";
 
-/// The settings `validate` refuses.
 pub const BAD_SETTINGS: &[u8] = b"bad";
 
 pub const PENDING_DRIVE: &[u8] = b"pending-drive";
@@ -194,25 +168,18 @@ impl DriveProbe {
     }
 }
 
-/// One instance: the live generations' snapshots (control lane only), the session with
-/// unsolicited output, `0` = none, and the ticket its caller piece crossed on, packed, `0` = none
-/// (the two things the request path touches).
 struct Plane {
     snapshots: Generations<PlaneSnapshot>,
     ready: AtomicU64,
     session_ticket: AtomicU64,
-    /// Opened under a public URL.
+
     public: bool,
-    /// The host's services, when the host offers them: an ATTEMPT is then sent only when the
-    /// kernel entitles the unit to `door:echo` and approves the member's `echo` (a service the
-    /// host does not serve gates nothing).
+
     services: Option<Services>,
     drive_probe: Option<DriveProbe>,
 }
 
 impl Plane {
-    /// The snapshot of a generation, held by the SDK until its `retire`; a refreshed one adds the
-    /// admin route.
     fn spec(&self, refreshed: bool) -> SnapshotSpec {
         SnapshotSpec {
             claims: claims(self.public),
@@ -435,12 +402,10 @@ slot!(
     }
 );
 
-/// A ticket as one word, `0` = none.
 fn packed(t: Ticket) -> u64 {
     (u64::from(t.slot) << 32) | u64::from(t.generation)
 }
 
-// `cancel`: one naming the ticket the session's caller piece crossed on ends the session.
 slot!(
     Cancel,
     PlaneCancelIn,
@@ -497,7 +462,6 @@ slot!(Release, ReleaseIn, OutHead, |instance, input, _out| {
     Outcome::Ready
 });
 
-// `close` answering READY: the SDK drops the instance's `Plane`.
 slot!(Close, InHead, OutHead, |_, _, _out| { Outcome::Ready });
 
 slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
@@ -664,8 +628,6 @@ slot!(Hydrate, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
 slot!(Start, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
-// `project`: the body, its length as a signal and, when the host lends a turns buffer, one `user`
-// turn of the body.
 pub const PROJECT_ENTITLEMENT_TARGET: &[u8] = b"/__project_entitlement";
 
 slot!(Project, ProjectIn, ProjectOut, |instance, input, out| {
@@ -736,7 +698,5 @@ busbar_contract::plugin_door! {
     },
 }
 
-// The dropped door's one symbol. The test build links this source as a module beside the
-// dispatcher's test plugin, which exports the same symbol, so only the `cdylib` emits it.
 #[cfg(not(test))]
 busbar_contract::export_door!(door);

@@ -1,27 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DIAGNOSTICS CATALOGUE THIS BINARY SERVES, held to its two invariants: no code and no slug is
-//! listed twice across the host registry and every catalogue the composition root installs, and the
-//! published host page (`docs/diagnostics.{md,json}`) is a fresh render of codes defined in code.
-//!
-//! Both live HERE because this binary is the only place every half exists at once: the host
-//! registry (`busbar_kernel::diagnostics::REGISTRY`), each linked plane's own catalogue — a plane
-//! that took a code out of the host registry together with the code that emits it (#83a O4) keeps
-//! publishing it on the host page under its frozen number — and the codes the linked first-party
-//! plugins declare (K9a S3). Regenerate the page after a registry change with:
-//!   `UPDATE_DIAGNOSTICS=1 cargo test -p busbar catalogue_tests`
-
 use super::*;
 use busbar_contract::diagnostic::Diagnostic;
 
-/// The runtime catalogue — the host registry and every linked plane's own — as the composition root
-/// folds and lends it.
 fn installed() -> Vec<&'static Diagnostic> {
     register_diagnostics().all()
 }
 
-/// The linked declarations, read through the same source and validator as runtime registration.
 #[cfg(linked_axis_export_doors)]
 fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
     use crate::root::linked::{declared_diagnostics, linked_declared_diagnostics, linked_exports};
@@ -36,21 +22,8 @@ fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
     out
 }
 
-/// EVERY DIAGNOSTIC CODE IS UNIQUE ACROSS THE WHOLE CATALOG — the host registry in `busbar-kernel`
-/// AND every plane catalogue the composition root installs.
-///
-/// Each half is internally consistent on its own, and neither crate can see the other: a plane
-/// numbers its codes without the host registry in scope, and the host registry is compiled
-/// long before any plane is linked. THIS binary is the only place both halves exist at once, which
-/// is why the check lives here. A collision is not cosmetic — `by_code` resolves a code to the FIRST
-/// match, so a duplicate makes one diagnostic permanently unreachable and makes `busbar explain
-/// <code>` and a rendered catalog describe the wrong failure.
-///
-/// `slug` is checked too, for the same reason: it is the other stable handle a catalog is keyed by.
 #[test]
 fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
-    // The composition root's own registration, so `all()` returns the real runtime union rather
-    // than the host half alone.
     let all = installed();
     assert!(
         !all.is_empty(),
@@ -77,11 +50,6 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
     );
 }
 
-/// A declared code never collides with the catalogue (the root refuses that at boot; the page would
-/// document two meanings for one banner) — and the linked plugins do declare codes, so the page's
-/// declared half is not vacuously empty.
-// "The linked plugins declare codes" reads the linked export rows' declared codes; a build that
-// links no plugin (`--no-default-features`) declares none, so this cell gates on the exports axis.
 #[cfg(linked_axis_export_doors)]
 #[test]
 fn declared_codes_do_not_collide_with_the_registry() {
@@ -97,24 +65,15 @@ fn declared_codes_do_not_collide_with_the_registry() {
     }
 }
 
-// ── DOCS-IN-SYNC ────────────────────────────────────────────────────────────────────────────
-//
-// THE PUBLISHED PAGE DOCUMENTS THE SHIPPED CATALOGUE: the host registry, every plane's catalogue and
-// the linked export sinks' declared codes. A feature-set build that links fewer rows (a single-plane
-// row, `--no-default-features`) installs fewer catalogues, so its render is a DIFFERENT page, not a
-// stale one; the pair below is compiled only where every plane and the export axis are linked. The
-// uniqueness checks above run in every build.
 #[cfg(all(linked_every_plane_door, linked_axis_export_doors))]
 mod page {
     use super::*;
     use busbar_kernel::diagnostics::{render_json_for, render_markdown_for, REGISTRY};
 
-    /// The committed operator page, relative to this crate's manifest dir.
     const COMMITTED_MD: &str = concat!(env!("BUSBAR_CORE_DIR"), "/../../docs/diagnostics.md");
-    /// The committed machine-readable page.
+
     const COMMITTED_JSON: &str = concat!(env!("BUSBAR_CORE_DIR"), "/../../docs/diagnostics.json");
 
-    /// The numbers the committed JSON page publishes.
     fn published_numbers() -> std::collections::BTreeSet<u64> {
         let text = std::fs::read_to_string(COMMITTED_JSON)
             .unwrap_or_else(|e| panic!("read {COMMITTED_JSON}: {e}"));
@@ -126,10 +85,6 @@ mod page {
             .collect()
     }
 
-    /// THE HOST PAGE'S ENTRIES, each rendered from its defining constant: every code the host registry
-    /// defines, every code a linked first-party plugin declares, and every linked plane's code the page
-    /// publishes. A plane code the page does not publish belongs to that plane's own page
-    /// (`docs/diagnostics-<plane>.md`) — one code, one page.
     fn host_page() -> Vec<&'static Diagnostic> {
         let published = published_numbers();
         let in_registry = |d: &Diagnostic| REGISTRY.iter().any(|r| r.code == d.code);
@@ -144,7 +99,6 @@ mod page {
         page
     }
 
-    /// Compare `fresh` with the committed file at `path`, or write it under `UPDATE_DIAGNOSTICS=1`.
     fn committed_matches(path: &str, fresh: &str) {
         if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
             std::fs::write(path, fresh).unwrap_or_else(|e| panic!("write {path}: {e}"));
@@ -157,8 +111,6 @@ mod page {
             "{path} is stale — regenerate with `UPDATE_DIAGNOSTICS=1 cargo test -p busbar catalogue_tests`"
         );
     }
-
-    // The committed docs/diagnostics.{md,json} MUST equal a fresh render of the host page.
 
     #[test]
     fn committed_markdown_matches_registry() {

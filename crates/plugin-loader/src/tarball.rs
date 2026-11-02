@@ -1,46 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The one-file-per-plugin **signed tarball** format: a `.tar.gz` containing EXACTLY
-//!
-//! - `manifest.json` - the signed [`crate::sign::Manifest`];
-//! - one library file - the cdylib the manifest's `sha256` pins.
-//!
-//! [`unpack`] extracts FULLY IN MEMORY on every platform (the manifest never touches disk; the
-//! library bytes only ever reach disk as loader staging output, never as trusted input), with hard
-//! bounds on member count and decompressed sizes so a hostile archive (zip-bomb, entry flood,
-//! path-traversal names) is refused before it can cost anything. [`package`] is the inverse, used
-//! by the release pipeline, the packaging CLI, and tests.
-//!
-//! A member's NAME may carry a relative directory prefix (`pkg/manifest.json`, `pkg/lib/x.so`):
-//! the member is keyed on its basename, exactly as 1.5.5 unpacked it (v1.5.5
-//! `crates/plugin-loader/src/tarball.rs`, `unpack`), so a tarball a 1.5.5 operator built that way
-//! still loads (ARCHITECT ruling on X-2017, 2026-10-14). A directory ENTRY, a link, an absolute
-//! name or a parent reference is refused.
-
 use crate::sign::Manifest;
 use std::io::Read as _;
 
-/// The manifest member name inside every plugin tarball.
 pub const MANIFEST_FILE: &str = "manifest.json";
 
-/// Hard cap on the DECOMPRESSED library member - matches the loader's own response cap scale; far
-/// beyond any real cdylib (the shipped store plugins are single-digit MiB).
 const MAX_LIB_BYTES: u64 = 256 * 1024 * 1024;
-/// Hard cap on the DECOMPRESSED manifest member - a manifest is well under 4 KiB.
+
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
-/// Hard cap on the COMPRESSED tarball FILE, checked via `fs::metadata` before it is ever read into
-/// memory (see `registry::examine`). [`unpack`] already bounds the two DECOMPRESSED members it will
-/// extract (`MAX_LIB_BYTES` + `MAX_MANIFEST_BYTES`); this is that same ceiling applied to the file on
-/// disk, one layer earlier. Gzip cannot meaningfully inflate a file's size (worst case is a few bytes
-/// of overhead per block, nowhere near doubling it), so a genuine tarball containing only a
-/// manifest + a library under the existing per-member caps is always comfortably under this sum -
-/// anything larger is rejected before the read, not after.
-// `pub`, not `pub(crate)`: `POST /plugins/inspect` needs this SAME ceiling to size its own
-// request-body cap on the base64-encoded upload,
-// checked BEFORE the decoder ever runs — one source of truth for "how big can a plugin tarball
-// legitimately be", not a second guessed constant that could silently drift from this one.
 pub const MAX_TARBALL_FILE_BYTES: u64 = MAX_LIB_BYTES + MAX_MANIFEST_BYTES;
 
 /// A plugin tarball unpacked in memory: the parsed signed manifest plus the exact library bytes.
@@ -52,15 +21,10 @@ pub struct UnpackedPlugin {
     pub lib_bytes: Vec<u8>,
 }
 
-/// Is this filename a plugin tarball (`.tar.gz` / `.tgz`)?
 pub fn is_plugin_tarball(file: &str) -> bool {
     file.ends_with(".tar.gz") || file.ends_with(".tgz")
 }
 
-/// Build a plugin tarball: gzip'd tar with `manifest.json` (serialized from `manifest`) and the
-/// library under `lib_name`. Deterministic enough for tests; the release pipeline signs the
-/// manifest BEFORE packaging (the tarball itself carries no outer signature - the manifest inside
-/// is the signed unit and it pins the library by sha256).
 pub fn package(manifest: &Manifest, lib_name: &str, lib_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let manifest_json = serde_json::to_vec_pretty(manifest)
         .map_err(|e| format!("manifest serialize failed: {e}"))?;
@@ -84,19 +48,8 @@ pub fn package(manifest: &Manifest, lib_name: &str, lib_bytes: &[u8]) -> Result<
         .map_err(|e| format!("gzip finalize failed: {e}"))
 }
 
-/// Ceiling on the up-front allocation reserved for a member read, independent of the member's
-/// declared size. Mirrors `proxy::wire::read_capped`'s `READ_CAPPED_RESERVE_CEILING`: the DECLARED
-/// size in a tar header is unverified input at this point (this runs before any signature/trust
-/// check), so trusting it for an eager `Vec::with_capacity` reservation lets a malformed/truncated
-/// header force a large allocation before a single real byte is validated. The `size > cap`
-/// rejection below is a DIFFERENT, unrelated check that stays exactly as-is: refusing a
-/// declared-oversize member before reading is a cheap, fail-closed refusal and is fine to keep
-/// keying off the declared size — the bug this constant fixes is trusting declared size for
-/// ALLOCATION, not for rejection. The two checks stay separate.
 const MEMBER_RESERVE_CEILING: u64 = 64 * 1024;
 
-/// Read one tar entry fully, bounded at `cap` decompressed bytes. An entry whose DECLARED size
-/// exceeds the cap is refused before any read.
 fn read_entry_bounded<R: std::io::Read>(
     entry: &mut tar::Entry<'_, R>,
     cap: u64,
@@ -108,12 +61,9 @@ fn read_entry_bounded<R: std::io::Read>(
             "{what} member is {size} bytes, exceeding the {cap}-byte cap"
         ));
     }
-    // Reserve only up to `MEMBER_RESERVE_CEILING` up front, regardless of `size` — `size` is the
-    // header's self-declared, as-yet-unverified value. Real reads beyond the ceiling grow the
-    // buffer amortized (alloc+copy+dealloc) via `read_to_end`, same as any other trusted-input
-    // buffer; a lying/truncated header now costs at most one bounded reservation, not up to `cap`.
+
     let mut buf = Vec::with_capacity(size.min(MEMBER_RESERVE_CEILING) as usize);
-    // `take(cap + 1)`: even a lying header cannot stream more than the cap into memory.
+
     entry
         .take(cap + 1)
         .read_to_end(&mut buf)
@@ -124,16 +74,6 @@ fn read_entry_bounded<R: std::io::Read>(
     Ok(buf)
 }
 
-/// The gzip reader, with a stream that ENDS EARLY reported by its kind alone.
-///
-/// A truncated archive refuses boot naming the member it cut (`cannot read manifest member: <why>`),
-/// and `<why>` is the `io::Error`'s text. flate2 1.1.10 raises a deflate stream cut short as
-/// `UnexpectedEof` with its own message, "incomplete deflate stream"; the 1.1.9 of the published
-/// 1.5.5 lock raised the same condition, one layer later, as the bare kind — "unexpected end of
-/// file" (oracle cell `boot.refusal|BOOT-135|boot`). The condition and its kind are unchanged; only
-/// a dependency's prose moved, so the kind is what this surface prints. Every other error, and
-/// every successful read, passes through untouched — the refusal is exactly as fail-closed as it
-/// was.
 struct EofAsKind<R>(R);
 
 impl<R: std::io::Read> std::io::Read for EofAsKind<R> {
@@ -145,15 +85,6 @@ impl<R: std::io::Read> std::io::Read for EofAsKind<R> {
     }
 }
 
-/// Unpack a plugin tarball FULLY IN MEMORY, fail-closed: the archive must contain EXACTLY one
-/// `manifest.json` and EXACTLY one other regular file (the library), nothing else - no
-/// directory entries, links, absolute paths, or parent references. A member name with a relative
-/// directory prefix is keyed on its basename (`pkg/manifest.json` is the manifest, `pkg/lib/x.so`
-/// is the library `x.so`), as in 1.5.5. Returns the parsed manifest + the exact library bytes;
-/// every failure names the specific violation.
-///
-/// NOTE: this performs NO signature/trust/structure checks - it is pure decoding. The caller runs
-/// phase 1 (structural) and phase 2 (trust) over the returned parts.
 pub fn unpack(bytes: &[u8]) -> Result<UnpackedPlugin, String> {
     let gz = EofAsKind(flate2::read::GzDecoder::new(bytes));
     let mut archive = tar::Archive::new(gz);
@@ -175,7 +106,7 @@ pub fn unpack(bytes: &[u8]) -> Result<UnpackedPlugin, String> {
         let path = entry
             .path()
             .map_err(|e| format!("archive entry has an unreadable path: {e}"))?;
-        // Reject traversal/absolute names outright; then key on the flattened basename.
+
         if path.components().any(|c| {
             !matches!(
                 c,

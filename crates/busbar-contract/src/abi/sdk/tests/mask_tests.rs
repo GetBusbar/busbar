@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The one URL masker: the userinfo cut to the last `@`, secret-looking query and fragment values
-//! masked, the rest as given; never a credential in the line.
 
 use super::*;
 
@@ -64,7 +63,7 @@ fn secret_looking_query_and_fragment_values_are_masked() {
 }
 
 /// An `@` in the query is over-cut, and what follows it is still read as pairs, so no value that
-/// followed it leaks.
+
 #[test]
 fn an_at_in_the_query_is_over_cut_never_a_leak() {
     let masked = mask_url("https://h/p?email=a@b.c&token=T");

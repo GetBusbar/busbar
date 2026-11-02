@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The registry view: which entry serves which scheme and as which claim; two entries claiming one
-//! scheme, an entry with no claim and a layer nobody serves are refused.
 
 use std::sync::Arc;
 
@@ -71,9 +70,7 @@ fn door(d: TestDoor) -> Entry {
 }
 
 /// THE ADDRESS CARRIER IS THE DECLARATION'S: the first CARRIER, in
-/// the order the entries are declared, whose claim serves a port. Never a framer (even one whose
-/// claim reads a port), never a carrier that serves no port, never the one that happened to load
-/// first: the same entries declared in the other order answer the other carrier.
+
 #[test]
 fn the_address_carrier_is_the_first_declared_carrier_serving_a_port() {
     use busbar_contract::abi::transport::ROLE_FRAMER;
@@ -95,7 +92,7 @@ fn the_address_carrier_is_the_first_declared_carrier_serving_a_port() {
             .map(|e| e.door.facts().name.clone()),
         Some("b".to_owned())
     );
-    // RED: a framer that states a port, and a carrier serving none, are never the address carrier.
+
     let ported_framer = TestDoor::identity("framed")
         .with_role(ROLE_FRAMER)
         .with_port();

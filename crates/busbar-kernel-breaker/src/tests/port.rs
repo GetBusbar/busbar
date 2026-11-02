@@ -1,6 +1,4 @@
 //! Tests for `port.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
 
 use super::*;
 use crate::classify::WireFault;
@@ -53,8 +51,7 @@ fn answered(fault: Option<WireFault>, retry_after: Option<u64>) -> Classified {
 }
 
 /// Each fault reading lands on 1.5.5's disposition for the answers its framer reads that way: a
-/// refused credential takes the destination down everywhere, a transient fault counts toward a
-/// trip with the stated wait as its floor, and the caller's own fault records nothing.
+
 #[test]
 fn every_fault_reading_carries_its_disposition() {
     let hard = answered(Some(WireFault::Hard), Some(9));
@@ -85,8 +82,7 @@ fn every_fault_reading_carries_its_disposition() {
 }
 
 /// THE RED ARM'S RUNTIME HALF: an answer whose framer stated no fault reading (a framer with no
-/// fault table) is the caller's, never an outage. Reading an unread answer as a failure of the
-/// destination would trip a live member on every error it relayed.
+
 #[test]
 fn an_answer_with_no_fault_reading_is_the_callers() {
     let got = answered(None, Some(30));
@@ -95,8 +91,7 @@ fn an_answer_with_no_fault_reading_is_the_callers() {
 }
 
 /// No answer at all is the kernel's own fact, and a failure OF the destination: transient, so it
-/// trips the cell (1.5.5's relay hop classifier read its transport-failure arm as a network
-/// failure). Treating it as the caller's let a destination failing this way keep taking traffic.
+
 #[test]
 fn no_answer_is_a_transient_failure_that_trips() {
     let got = classify_upstream(UpstreamStatus {
@@ -108,7 +103,7 @@ fn no_answer_is_a_transient_failure_that_trips() {
 }
 
 /// The stated wait rides through only where the disposition reads it: a hard-down's cooldown is
-/// the configured one, and a caller's fault records nothing to floor.
+
 #[test]
 fn the_stated_wait_floors_only_a_transient_fault() {
     assert_eq!(
@@ -126,7 +121,7 @@ fn the_stated_wait_floors_only_a_transient_fault() {
 }
 
 /// HEALTHY: the destination answered, whatever the status. Relayed as a
-/// caller's answer is, and recorded as a SUCCESS, never as nothing.
+
 #[test]
 fn a_healthy_reading_is_a_relayed_success() {
     let healthy = answered(Some(WireFault::Healthy), Some(30));

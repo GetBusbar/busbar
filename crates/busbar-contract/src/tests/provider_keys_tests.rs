@@ -60,8 +60,7 @@ fn every_shape() -> ProviderKeys {
 }
 
 /// THE DESCRIPTOR ROUND-TRIPS: what is encoded decodes to the same descriptor, every shape, every
-/// flag and every key order kept; and a descriptor written by hand decodes to what its encoding
-/// decodes to.
+
 #[test]
 fn a_descriptor_round_trips_through_its_encoding() {
     let keys = every_shape();
@@ -93,7 +92,7 @@ fn a_descriptor_round_trips_through_its_encoding() {
 }
 
 /// A STATEMENT'S EXTENSIONS carry the descriptor under the one key, beside keys the reader passes
-/// over; extensions that state no descriptor state none.
+
 #[test]
 fn the_descriptor_is_read_off_the_one_extensions_key() {
     let keys = every_shape();
@@ -107,7 +106,7 @@ fn the_descriptor_is_read_off_the_one_extensions_key() {
 }
 
 /// RED: A DESCRIPTOR NAMING A SHAPE OUTSIDE THE NEUTRAL VOCABULARY IS REFUSED, as a word and as a
-/// shape object alike, at any depth, and the refusal names the word and the vocabulary.
+
 #[test]
 fn a_non_neutral_shape_word_is_refused() {
     let with_shape = |shape: &str| {
@@ -141,14 +140,14 @@ fn a_non_neutral_shape_word_is_refused() {
             "{err}"
         );
     }
-    // Each neutral word is accepted where the same position refused the others.
+
     for shape in [r#""str""#, r#""int""#, r#""bool""#, r#""str-map""#] {
         assert!(decode(with_shape(shape).as_bytes()).is_ok(), "{shape}");
     }
 }
 
 /// THE ENCODING IS CLOSED: an unstated member, a missing member, a key named twice in one table and
-/// an empty or repeated `one-of` are each refused.
+
 #[test]
 fn the_encoding_states_exactly_its_members() {
     let tables = |catalog: &str| {

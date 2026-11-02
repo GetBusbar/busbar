@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! An IdP's `Retry-After` on a LOGIN_OUTAGE (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP
-//! errors"): the plugin's parse of the header (delta-seconds, or an HTTP-date as seconds from now,
-//! RFC 9110 §10.2.3) and the reply-extensions entry it rides to the host, whole seconds as ASCII
-//! decimal. Junk reads as no delay at all, never as a guess.
 
 use super::{retry_after_extensions, retry_after_of, retry_after_secs, EXT_RETRY_AFTER};
 use crate::abi::mechanism::extensions;
@@ -18,7 +15,7 @@ fn the_key_is_retry_after() {
 }
 
 /// delta-seconds read as written, around optional whitespace; a value past `u64` is a very long
-/// time (the host clamps it), not junk.
+
 #[test]
 fn delta_seconds_read_as_written() {
     for (v, n) in [
@@ -39,7 +36,7 @@ fn delta_seconds_read_as_written() {
 }
 
 /// An HTTP-date, in each of the three forms RFC 9110 §5.6.7 has a recipient accept, is the seconds
-/// from `now` to it; a date already past asks for no wait.
+
 #[test]
 fn an_http_date_is_seconds_from_now() {
     for v in [
@@ -58,7 +55,7 @@ fn an_http_date_is_seconds_from_now() {
         retry_after_secs(b"Thu, 01 Jan 1970 00:00:00 GMT", NOW),
         Some(0)
     );
-    // A leap day, a year boundary, and a far date.
+
     assert_eq!(
         retry_after_secs(b"Thu, 29 Feb 2024 00:00:00 GMT", 1_709_164_800 - 60),
         Some(60)
@@ -75,19 +72,17 @@ fn an_http_date_is_seconds_from_now() {
 
 #[test]
 fn rfc850_years_follow_the_supplied_clock() {
-    // 2026-01-01 and 2070-01-01 UTC, independently stated Unix witnesses. The latter
-    // must stay in the future rather than being read as 1970 by a fixed year pivot.
     const JAN_2026: u64 = 1_767_225_600;
     const JAN_2070: u64 = 3_155_760_000;
     assert_eq!(
         retry_after_secs(b"Wednesday, 01-Jan-70 00:00:00 GMT", JAN_2026),
         Some(JAN_2070 - JAN_2026)
     );
-    // The same two-digit year follows century rollover, even several centuries later.
+
     for (now, date) in [
-        (4_070_908_800, &b"Friday, 01-Jan-00 00:00:00 GMT"[..]), // 2099-01-01 UTC
-        (13_537_929_600, &b"Saturday, 01-Jan-00 00:00:00 GMT"[..]), // 2399-01-01 UTC
-        (253_370_764_800, &b"Saturday, 01-Jan-00 00:00:00 GMT"[..]), // 9999-01-01 UTC
+        (4_070_908_800, &b"Friday, 01-Jan-00 00:00:00 GMT"[..]),
+        (13_537_929_600, &b"Saturday, 01-Jan-00 00:00:00 GMT"[..]),
+        (253_370_764_800, &b"Saturday, 01-Jan-00 00:00:00 GMT"[..]),
     ] {
         assert_eq!(retry_after_secs(date, now), Some(31_536_000));
     }
@@ -95,8 +90,6 @@ fn rfc850_years_follow_the_supplied_clock() {
 
 #[test]
 fn rfc850_fifty_year_boundary_includes_month_day_and_time() {
-    // 2026-11-01 12:34:56 and 2076-11-01 12:34:56 UTC. This span includes
-    // thirteen leap days; a fixed number of 365-day years is not the boundary.
     const NOV_2026: u64 = 1_793_536_496;
     const NOV_2076: u64 = 3_371_459_696;
     assert_eq!(
@@ -114,10 +107,7 @@ fn rfc850_fifty_year_boundary_includes_month_day_and_time() {
 
 #[test]
 fn rfc850_leap_days_are_validated_in_the_resolved_century() {
-    for now in [
-        951_696_000,    // 2000-02-28 UTC
-        13_574_476_800, // 2400-02-28 UTC
-    ] {
+    for now in [951_696_000, 13_574_476_800] {
         assert_eq!(
             retry_after_secs(b"Tuesday, 29-Feb-00 00:00:00 GMT", now),
             Some(86_400)
@@ -127,8 +117,7 @@ fn rfc850_leap_days_are_validated_in_the_resolved_century() {
         retry_after_secs(b"Monday, 29-Feb-00 00:00:00 GMT", 4_070_908_800),
         None, // 2099-01-01 resolves the year to 2100, which has no leap day.
     );
-    // The full 50-year boundary selects 2000 before date validation on February 28,
-    // but selects the invalid February 29, 2100 after the clock moves to March 1.
+
     assert_eq!(
         retry_after_secs(b"Tuesday, 29-Feb-00 00:00:00 GMT", 2_529_619_200),
         Some(0), // 2050-02-28 UTC
@@ -141,9 +130,6 @@ fn rfc850_leap_days_are_validated_in_the_resolved_century() {
 
 #[test]
 fn retry_after_handles_the_largest_supplied_clock() {
-    // u64::MAX is 584554051223-11-09 07:00:15 UTC. January 1 in year ...200 is
-    // past; January 1 in year ...250 is 9550 days minus 07:00:15 ahead. That future
-    // date's absolute Unix timestamp exceeds u64, but its requested delay fits.
     assert_eq!(
         retry_after_secs(b"Saturday, 01-Jan-00 00:00:00 GMT", u64::MAX),
         Some(0)
@@ -205,8 +191,7 @@ fn junk_is_none() {
 }
 
 /// The reply-extensions entry: whole seconds as ASCII decimal under `retry_after`, read back
-/// strictly. Another key beside it is passed over; anything but plain digits that fit `u64` reads
-/// as absent.
+
 #[test]
 fn the_extension_carries_whole_seconds_as_ascii_decimal() {
     let blob = retry_after_extensions(120);

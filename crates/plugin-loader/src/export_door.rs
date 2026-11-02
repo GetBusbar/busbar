@@ -1,30 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT KIND ON THE ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN §11; KERNEL<>PLUGINS steps
-//! 26/27): [`ExportInstance`], one opened export instance, called through its table
-//! (`abi::export`) and nothing else, whichever door it came in by. It implements the contract's
-//! [`ExportCalls`], so the kernel feeds and scrapes it without naming this crate.
-//!
-//! * **deliver** — OFF the request path. A line joins the instance's BOUNDED queue
-//!   ([`MAX_QUEUED_LINES`]; past it the line is shed, never queued) and the instance's flusher
-//!   coalesces queued lines of one stream into ONE `deliver` batch (JSON LINES, at most
-//!   [`MAX_BATCH_LINES`] lines and [`MAX_BATCH_BYTES`] bytes), each with its own host-minted
-//!   `op_id` (THE DESIGN §11.11 H4). The batch crosses on a ticket in the write-behind deadline
-//!   class, so a reload drain never waits on it (H5), and rides with the job as lent memory; a
-//!   FAILED batch is retried with the SAME `op_id`, at most [`DELIVER_ATTEMPTS`] times. Up to the
-//!   instance's `max_inflight` deliveries run at once (ARCHITECT ruling MAX-INFLIGHT 2026-10-03:
-//!   1.5.5's `max_inflight_deliveries`, within the plugin's declared ceiling), each on a ticket of
-//!   its own and none holding a thread while it pends; while fewer lines are queued than deliveries
-//!   may start, each line travels alone, as each 1.5.5 delivery did. Every batch of one instance is
-//!   started on the same worker, in queue order. Dropping the instance waits at most
-//!   [`STOP_GRACE`] for the deliveries in flight; past it they are abandoned on the dispatcher's
-//!   client-drop path (a host thread never waits on plugin code, THE DESIGN §11.13 M1).
-//! * **scrape** / **serve** / **status** / **check** — ticket-less, on the caller's thread (the
-//!   watchdog can fault such a crossing but never abandon it, so the buffers lent need no owner);
-//!   the host-owned exposition buffer grows ONCE on a short answer (the short-buffer rule); a
-//!   leased answer is copied, then its lease released.
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -52,22 +28,20 @@ use crate::dispatch::lifecycle::{
 };
 use crate::dispatch::{in_head, out_head, Dispatcher, Frame, Plugin, NO_BLOB};
 
-/// The most lines one instance may hold queued; past it a line is shed.
 pub const MAX_QUEUED_LINES: usize = 4096;
-/// The most lines one `deliver` batch carries.
+
 pub const MAX_BATCH_LINES: usize = 256;
-/// The most bytes one `deliver` batch carries (a single larger line still travels alone).
+
 pub const MAX_BATCH_BYTES: usize = 1024 * 1024;
-/// How many times one batch is offered (the first attempt included) before it is dropped.
+
 pub const DELIVER_ATTEMPTS: u32 = 3;
-/// The longest dropping an instance waits for its deliveries in flight; past it they are abandoned.
+
 pub const STOP_GRACE: Duration = Duration::from_secs(2);
-/// The exposition buffer a scrape starts with; a short answer grows it once.
+
 const SCRAPE_BUF: usize = 64 * 1024;
-/// The most request headers a `serve` lends (64 name/value pairs).
+
 const MAX_SERVE_HEADERS: usize = 64;
 
-/// A list the host lends; empty is NULL.
 fn lend_list<T>(l: &[T]) -> *const T {
     if l.is_empty() {
         std::ptr::null()
@@ -76,23 +50,16 @@ fn lend_list<T>(l: &[T]) -> *const T {
     }
 }
 
-/// Bytes the host lends for a call, as a blob of `fmt`.
 fn blob(b: &[u8], fmt: u32) -> Blob {
     lifecycle::blob(b, fmt, 0)
 }
 
-/// A plugin-owned string, copied.
 fn copy_str(s: AbiStr) -> String {
     crate::dispatch::plugin::str_bytes(s)
         .map(|b| String::from_utf8_lossy(b).into_owned())
         .unwrap_or_default()
 }
 
-/// `validate` the instance's `settings` (ticket-less): `Ok` when READY, else the plugin's words —
-/// a refusal the host renders line by line (`abi::mechanism::lifecycle::refusal_lines`).
-///
-/// # Errors
-/// The plugin's refusal, verbatim.
 pub fn validate(plugin: &Plugin<Export>, settings: &[u8]) -> Result<(), String> {
     let called = validate_call(plugin, blob(settings, BLOB_JSON));
     let _lease = AnswerLease::new(plugin, called.lease);
@@ -102,11 +69,6 @@ pub fn validate(plugin: &Plugin<Export>, settings: &[u8]) -> Result<(), String> 
     }
 }
 
-/// `check` across `instances` at `phase` (ticket-less, on an OPEN instance): the plugin's findings,
-/// one line each, in its order (a JSON list of strings, `BLOB_JSON`).
-///
-/// # Errors
-/// The plugin failed to answer, or answered findings that are not a list of strings.
 pub fn check(
     plugin: &Plugin<Export>,
     phase: u32,
@@ -145,25 +107,23 @@ pub fn check(
         .map_err(|e| format!("export plugin check findings are not a JSON list of strings: {e}"))
 }
 
-/// One queued line.
 struct Line {
     stream: u8,
     bytes: zeroize::Zeroizing<Vec<u8>>,
     _hold: Box<dyn Send>,
 }
 
-/// What the instance's flusher shares with its callers.
 struct Shared {
     plugin: Plugin<Export>,
     dispatcher: Arc<Dispatcher>,
     facts: ExportFacts,
     queue: Mutex<VecDeque<Line>>,
-    /// The flusher's waker, taken by whoever gives it something to do (a line, the stop).
+
     flusher: Mutex<Option<Waker>>,
     stop: AtomicBool,
-    /// The stop's grace ran out: the deliveries still in flight are abandoned.
+
     abandon: AtomicBool,
-    /// This process's `op_id` node half; the counter half is [`Shared::minted`].
+
     node: [u8; 8],
     minted: AtomicU64,
 }
@@ -173,7 +133,6 @@ impl Shared {
         self.queue.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// A fresh `op_id`: this process's node, then a counter (little-endian), never reused.
     fn op_id(&self) -> [u8; 16] {
         let n = self.minted.fetch_add(1, Ordering::Relaxed);
         let mut id = [0u8; 16];
@@ -182,7 +141,6 @@ impl Shared {
         id
     }
 
-    /// Wake the flusher: it has a line to take, or is to stop or abandon.
     fn notify(&self) {
         let waker = self
             .flusher
@@ -194,10 +152,6 @@ impl Shared {
         }
     }
 
-    /// Take the next batch without waiting: queued lines of the first line's stream, in order,
-    /// within the bounds — and no more than an even share of the queue across the `room`
-    /// deliveries that may still start, so while fewer lines are queued than that, each travels
-    /// alone. `None` with nothing queued.
     fn take(&self, room: usize) -> Option<(u8, Vec<Line>)> {
         let mut q = self.lock();
         let stream = q.front()?.stream;
@@ -215,13 +169,6 @@ impl Shared {
         Some((stream, lines))
     }
 
-    /// Offer one batch on a ticket of its own, minted on `worker` and recycled once it answered,
-    /// so the host-service results and connections one delivery made (stored under `(ticket, n)`,
-    /// its handles counting from 0) are never redeemed by another; a FAILED answer is retried with
-    /// the same `op_id`. The batch rides with the job: a crossing the watchdog answered still owns
-    /// it until it returns. Awaited, never waited on: a pending delivery holds no thread. Dropped
-    /// unanswered (the flusher abandoned it), its reply's drop is a client drop: the WriteBehind op
-    /// runs on with nobody waiting, still owning the batch, and its ticket is recycled once it ends.
     async fn deliver(self: Arc<Self>, worker: u32, stream: u8, lines: Vec<Line>) {
         let workers = self.dispatcher.workers().max(1);
         let call =
@@ -250,8 +197,7 @@ impl Shared {
                 _reserved: [0; 7],
                 batch: blob(&batch, BLOB_JSONL),
             };
-            // Submitted with no deadline, the op is answered by the plugin, or ended by the
-            // watchdog; a delivery the flusher abandons drops this call (a client drop).
+
             call.submit(
                 &self.plugin,
                 slot::DELIVER,
@@ -276,15 +222,10 @@ impl Shared {
                 }
             }
         }
-        // The lines' holds are released here: the batch has answered. The ticket is recycled as
-        // `call` drops.
+
         drop(lines);
     }
 
-    /// THE FLUSHER: up to the instance's `max_inflight` deliveries at once, every batch started on
-    /// one worker in queue order; on stop, what is still queued is shed and the deliveries in
-    /// flight answer, until the stop's grace runs out ([`Shared::abandon`]): then the flusher
-    /// returns, and the deliveries still in flight are dropped, each abandoned to the dispatcher.
     fn flush(self: Arc<Self>) {
         static NEXT_WORKER: AtomicU32 = AtomicU32::new(0);
         let worker = NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % self.dispatcher.workers().max(1);
@@ -294,8 +235,6 @@ impl Shared {
             while let Poll::Ready(Some(())) = inflight.poll_next_unpin(cx) {}
             *self.flusher.lock().unwrap_or_else(|p| p.into_inner()) = Some(cx.waker().clone());
             if self.stop.load(Ordering::Acquire) {
-                // Closing: accepted but undelivered lines are shed. Their holds may run host
-                // cleanup, so neither observability nor their destruction runs under the queue lock.
                 let shed = { std::mem::take(&mut *self.lock()) };
                 if !shed.is_empty() {
                     tracing::warn!(
@@ -334,7 +273,6 @@ impl Shared {
     }
 }
 
-/// This process's `op_id` node half: the process id and the boot instant, mixed.
 fn node_id() -> [u8; 8] {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -342,13 +280,11 @@ fn node_id() -> [u8; 8] {
     (t ^ (u64::from(std::process::id()) << 40)).to_le_bytes()
 }
 
-/// ONE OPENED EXPORT INSTANCE, on the one dispatcher.
 pub struct ExportInstance {
     shared: Arc<Shared>,
-    /// The flusher thread, and what it sends once [`Shared::flush`] returned.
+
     flusher: Mutex<Option<(std::thread::JoinHandle<()>, Receiver<()>)>>,
-    /// The first-party grant of its declared series, held for the instance's life: dropped after
-    /// [`ExportInstance`]'s own drop has stopped its flusher.
+
     _grant: Option<crate::observe::SeriesGrant>,
 }
 
@@ -361,11 +297,6 @@ impl std::fmt::Debug for ExportInstance {
     }
 }
 
-/// Dropping the instance stops its flusher: the rest of the queue is shed, and the deliveries in
-/// flight are given [`STOP_GRACE`] to answer; past it they are abandoned, so the dropping thread
-/// never waits on plugin code longer than that (THE DESIGN §11.13 M1). Then the instance is
-/// closed. A `close` the dispatcher refuses because an abandoned delivery is still in flight leaves
-/// it open.
 impl Drop for ExportInstance {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
@@ -380,7 +311,7 @@ impl Drop for ExportInstance {
                 self.shared.abandon.store(true, Ordering::Release);
                 self.shared.notify();
             }
-            // The flusher returns at once now: abandoning a delivery waits on nothing.
+
             let _ = f.join();
         }
         let mut f = Frame::new(in_head(), out_head());
@@ -389,12 +320,6 @@ impl Drop for ExportInstance {
 }
 
 impl ExportInstance {
-    /// OPEN `plugin` (bound to `dispatcher`) with `settings`, after `validate`: the instance, its
-    /// flusher started.
-    ///
-    /// # Errors
-    /// The plugin refused its settings (its words), or would not open (1.5.5's
-    /// `plugin '<name>' open failed: <reason>`).
     pub fn open(
         plugin: Plugin<Export>,
         dispatcher: Arc<Dispatcher>,
@@ -436,34 +361,27 @@ impl ExportInstance {
         })
     }
 
-    /// The instance, holding `grant` (its first-party series) for its life.
     #[must_use]
     pub fn holding(mut self, grant: crate::observe::SeriesGrant) -> Self {
         self._grant = Some(grant);
         self
     }
 
-    /// The plugin handle.
     pub fn plugin(&self) -> &Plugin<Export> {
         &self.shared.plugin
     }
 
-    /// Lines queued now (a witness).
     pub fn queued(&self) -> usize {
         self.shared.lock().len()
     }
 }
 
-/// The host snapshot, lowered to the `scrape` op's C layout. Every pointer names storage held
-/// here, so the lowered families live exactly as long as this does.
 struct Lowered {
     _labels: Vec<Vec<ScrapeLabel>>,
     _samples: Vec<Vec<ScrapeSample>>,
     families: Vec<ScrapeFamily>,
 }
 
-/// One `scrape` call over `families`, with `flags` (a kind bit such as
-/// [`SCRAPE_FLAG_HOOK_FAMILIES`]) on its head; a short answer earns its one re-call.
 fn scrape_with(
     plugin: &Plugin<Export>,
     families: &[Family],
@@ -488,7 +406,6 @@ fn scrape_with(
     let mut called = plugin.call(slot::SCRAPE, &mut f);
     let mut _lease = AnswerLease::new(plugin, called.lease);
     if let Some(token) = called.recall.take() {
-        // The one re-call a short answer earns, into a buffer of the size it named.
         buf = vec![0u8; f.out.needed];
         f.input.buf = buf.as_mut_ptr();
         f.input.cap = buf.len();
@@ -608,7 +525,6 @@ impl ExportCalls for ExportInstance {
     }
 
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered {
-        // Own the payload before every refusal path, including a full queue or faulted instance.
         let line = zeroize::Zeroizing::new(line);
         let sh = &self.shared;
         if sh.plugin.is_faulted() || !sh.plugin.is_open() {
@@ -718,30 +634,21 @@ impl ExportCalls for ExportInstance {
         Ok(served)
     }
 
-    /// DISCOVERY AT BOOT: the door's `ready`, awaited on the instance's dispatcher (`Ok` at once
-    /// for a door without one).
     fn start(&self) -> Result<(), String> {
         let sh = &self.shared;
         sh.plugin
             .ready(&sh.dispatcher, crate::dispatch::ready::READY_DEADLINE)
     }
 
-    /// The host SHED one line for this instance (past its bound): count it on each counter the
-    /// instance was GRANTED as its shed counter at open (a first-party manifest declaration marked
-    /// `shed`), folded under its name through the one observability path (ARCHITECT ruling
-    /// 2026-09-30, Q2).
     fn shed(&self) {
         fold_shed(self.shared.dispatcher.observing(), self.plugin().name());
     }
 }
 
-/// Count one SHED line for the export instance `name` on each counter it was GRANTED as its shed
-/// counter at open, folded under its name through the ONE observability path every envelope takes.
 fn fold_shed(observing: &crate::observe::Observing, name: &str) {
     fold_shed_lines(observing, name, 1);
 }
 
-/// Report an already counted group of shed lines through the same granted counter as one line.
 fn fold_shed_lines(observing: &crate::observe::Observing, name: &str, lines: usize) {
     let metrics = crate::observe::shed_series(name)
         .into_iter()

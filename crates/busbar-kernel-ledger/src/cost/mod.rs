@@ -79,7 +79,6 @@ mod unit_rate;
 mod view;
 
 /// The exact count type the one function prices — re-exported so a caller driving a
-/// [`Tally`] names it through the crate that prices it.
 pub use busbar_contract::count::Count;
 pub use history::{
     Author, CardEntry, CardEntryDraft, EntryId, EntryKey, History, HistorySeq, HistoryView,
@@ -104,23 +103,14 @@ pub use view::{
 };
 
 /// **THE ONE SCALE.** Nano-units in one minor unit: ten million.
-///
-/// This is the ONLY divisor on the money path (#66). There is no currency
-/// type to ask for a second one, no table of minor-unit exponents to look one up in, and no request
-/// body, config key or label that can move it — a scale nothing can name is a scale nothing can
-/// change. It is the number every 1.5.5 cent projection divided by, so every figure that release
-/// produced comes out of this tree bit-identical.
-///
-/// The name is historical ("cent") and the quantity is not: money here is unitless abstract cost,
-/// and a minor unit is a hundredth of one abstract unit because that is the granularity 1.5.5
-/// billed at. Denomination and symbol are the dashboard's (`docs/configuration.md`, `rate_card`).
+
 pub const NANOS_PER_CENT: u128 = 10_000_000;
 
 /// Nano-units in one micro-unit, for the finer of the two read projections.
 pub const NANOS_PER_MICRO: u128 = 1_000;
 
 /// Micro-units in one minor unit — [`NANOS_PER_CENT`] over [`NANOS_PER_MICRO`] — the factor the
-/// flat fee is lifted by in the micro projection. A test says the three agree.
+
 pub const MICROS_PER_CENT: i64 = 10_000;
 
 #[cfg(test)]

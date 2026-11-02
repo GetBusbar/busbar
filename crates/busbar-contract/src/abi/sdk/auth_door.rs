@@ -2,38 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE AUTH KIND'S VERIFY DOOR, FOR A SAFE PLUGIN (`abi::auth`, THE DESIGN, sections 11.4 and 11.6): the auth
-//! kind's bits over the SDK's safe layer ([`SafeSlot`], [`Lent`], [`HostBuf`]). An auth plugin that
-//! judges an inbound credential on the spot implements [`VerifyPlugin`], and
-//! [`auth_verify_door!`](crate::auth_verify_door) builds its whole door over the auth table: the
-//! lifecycle, `verify`, and every other auth op answering REFUSED (the plugin states only
-//! [`CAP_INBOUND`](crate::abi::auth::CAP_INBOUND)). The plugin crate holds no `unsafe`.
-//!
-//! * The lifecycle is the SDK's shared one (`abi::sdk::life`), over [`Verifier`], the kind's
-//!   [`Life`]: `open` builds the plugin from its settings blob and secrets
-//!   ([`VerifyPlugin::open`]); `close` answering READY drops it (the SDK owns the state).
-//! * `verify` hands [`VerifyPlugin::verify`] a [`VerifyView`] of the request at one auth point and
-//!   writes its [`Answer`]: the [`Verdict`] (an identity goes into the host's
-//!   [`IdentityBuf`](crate::abi::auth::IdentityBuf)), the [`Decision`] and the credential lines to
-//!   strip ([`Strip`], named whatever the verdict; THE DESIGN, "Auth points and guest lists").
-//!   One that does not fit is the short answer (FAILED, every `needed_*` at its full size); the
-//!   host re-calls once using the SDK's leased answer. The callback judges once; a recall only
-//!   copies that verdict into the larger buffers. The host returns the lease on recall or abandon.
-//! * `refresh` calls [`VerifyPlugin::refresh`] and reports the inbound cache entries it dropped
-//!   under [`METRIC_CACHE_FLUSHED`](crate::abi::auth::METRIC_CACHE_FLUSHED), when the plugin states
-//!   that family ([`VerifyPlugin::CACHE_FAMILY`]).
-//!
-//! * A `verify` that WAITS on a host service (a credential's secret through `records.secret`)
-//!   implements [`VerifyPlugin::verify_ticketed`] instead of [`VerifyPlugin::verify`]: it is
-//!   handed a [`VerifyOp`], the call's ticket and the host services, and answers
-//!   [`Poll::Pending`] while a service it made pends. The op answers PENDING, the host wakes the
-//!   ticket when the service completes, and re-enters `verify` (`FLAG_RESUME`) on the SAME ticket:
-//!   the body runs again from the top, making the same services in the same order, and each
-//!   re-issued handle reads its stored answer (nothing runs twice). A TICKET-LESS `verify` (the
-//!   host's on-the-spot try) cannot pend: it answers REFUSED there, and the host submits the same
-//!   `verify` on a ticket. The verify slot's own Ready|Pending: no ABI shape changes.
-//!
-//! A `verify` that waits on its own I/O (a key-set fetch, a directory read over a need) writes its
-//! own slots over [`crate::plugin_door!`].
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -245,7 +213,7 @@ pub struct Answer {
 
 impl From<Verdict> for Answer {
     /// The verdict with no strips and its default decision: [`Decision::Continue`] for an
-    /// identity or a pass, [`Decision::Stop`] for a reject.
+
     fn from(verdict: Verdict) -> Self {
         let decision = match verdict {
             Verdict::Identity(_) | Verdict::Pass => Decision::Continue,
@@ -261,7 +229,7 @@ impl From<Verdict> for Answer {
 }
 
 /// The field line `name` to strip, as a `const` ([`Strip::field`] for a name known only at run
-/// time), for [`Answer::fixed_strips`]: `const STRIPS: &[Strip] = &[strip_field("authorization")];`.
+
 #[must_use]
 pub const fn strip_field(name: &'static str) -> Strip {
     Strip {
@@ -271,9 +239,7 @@ pub const fn strip_field(name: &'static str) -> Strip {
 }
 
 /// `VerifyOp` over the host services supplied by the instance's `open`; a plugin can use this alias where it names the operation type.
-///
-///
-///
+
 pub type StaticVerifyOp = VerifyOp;
 
 /// ONE `verify`'S HOST CALLS, on its ticket: what [`VerifyPlugin::verify_ticketed`] is handed. Each
@@ -291,8 +257,7 @@ pub struct VerifyOp {
 
 impl VerifyOp {
     /// The op on `ticket` over `services` (`None`: the host offers none, and every service is
-    /// [`ServiceError::Unserved`](crate::abi::sdk::services::ServiceError::Unserved)). The kit
-    /// builds it for every `verify`; a plugin's own unit tests build one over a hand-built table.
+
     #[must_use]
     pub const fn new(services: Option<Services>, ticket: Ticket) -> Self {
         Self {
@@ -304,9 +269,7 @@ impl VerifyOp {
     }
 
     /// Report the declared diagnostic `id_idx` (its index in the Statement's `diag_ids`) at
-    /// `severity` (`SEVERITY_*`, `abi::mechanism::call`), saying `text`, in this call's reply
-    /// envelope, whatever the call answers: the host writes it to the instance's own log (and, at
-    /// warn or error, the host log). Operator text: never secret material.
+
     pub fn diag(&self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) {
         self.diags.borrow_mut().push(id_idx, severity, text);
     }
@@ -323,7 +286,7 @@ impl VerifyOp {
     }
 
     /// The host services the instance was opened with, for a service this op has no call of its
-    /// own for; issue each one [`VerifyOp::handle`]. `None` when the host offers none.
+
     #[must_use]
     pub const fn services(&self) -> Option<&Services> {
         self.services.as_ref()
@@ -342,11 +305,7 @@ impl VerifyOp {
     }
 
     /// [`Services::records_secret`] of credential `id` of `kind` on the call's next handle: the
-    /// secret in a zeroizing holder the plugin owns, and whether it is live (an unknown id answers
-    /// the host's dummy, not live, on the same path). [`Poll::Pending`] while the host reads it;
-    /// answer it as the verdict's `Pending`, and the RESUME reads the stored answer. On no ticket
-    /// it is [`Poll::Pending`] at once, without a crossing (the service may pend, so the host would
-    /// refuse it): the kit answers that `verify` REFUSED and the host submits it on a ticket.
+
     pub fn records_secret(&self, kind: &str, id: &str) -> Pend<CredentialSecret> {
         if self.ticket.is_none() {
             return Poll::Pending;
@@ -360,92 +319,60 @@ impl VerifyOp {
 }
 
 /// AN AUTH PLUGIN THAT VERIFIES ON THE SPOT, or on its ticket over the host's services, in safe
-/// Rust. A plugin implements exactly one of [`VerifyPlugin::verify`] (it judges with what the
-/// request carries) and [`VerifyPlugin::verify_ticketed`] (it waits on a host service).
+
 pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// The index, in the plugin's Statement `families`, of its
-    /// [`METRIC_CACHE_FLUSHED`](crate::abi::auth::METRIC_CACHE_FLUSHED) counter; `None` when it
-    /// caches nothing.
+
     const CACHE_FAMILY: Option<u32> = None;
 
     /// The carrier fields this configured instance reads, selected from its Statement's carrier
-    /// marks. `None` uses all those marks. The SDK advertises a selection only after successful
-    /// OPEN or REFRESH; a host rejects a name outside the declared union.
+
     fn carriers(&self) -> Option<Vec<String>> {
         None
     }
 
     /// `validate`: whether `settings` (one JSON document) are this plugin's, refused in the words
-    /// and with the outcome boot's `open` would refuse them with, so `busbar --validate` refuses
-    /// what boot refuses (boot runs it before every `open`, too). It is handed NO secrets, so it
-    /// judges the settings alone: a plugin whose `open` needs no secret answers
-    /// [`validate_by_opening`]`::<Self>(settings)`; one whose `open` refuses a missing secret parses
-    /// its settings as `open` does and stops there. The default accepts any settings (a plugin
-    /// built against the earlier kit, whose `open` judges them at boot): it cannot open without the
-    /// secrets, and boot validates before every `open`.
-    ///
-    /// # Errors
-    /// The settings are not this plugin's.
+
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         let _ = settings;
         Ok(())
     }
 
     /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
-    /// per Statement `secret_refs` key, in order), refusing in the plugin's own words and outcome.
-    /// The kit opens through this. The default is [`VerifyPlugin::open`], its text answered FAILED.
-    ///
-    /// # Errors
-    /// The settings or the secrets are not this plugin's.
+
     fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
         Self::open(settings, secrets).map_err(Refusal::failed)
     }
 
     /// [`VerifyPlugin::open_refusing`] with a fixed text, answered FAILED: the earlier kit's form,
-    /// kept so a plugin built against it still compiles. A plugin implements one of the two; the
-    /// default refuses, saying so.
-    ///
-    /// # Errors
-    /// The settings are not this plugin's.
+
     fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str> {
         let _ = (settings, secrets);
         Err(OPENS_NOTHING)
     }
 
     /// Judge the request at one point: the verdict, the decision and the lines to strip (a bare
-    /// [`Verdict`] converts, with no strips and its default decision). A plugin that implements
-    /// [`VerifyPlugin::verify_ticketed`] instead leaves this alone: the kit never calls it then, and
-    /// its default fails closed (a reject, saying so).
+
     fn verify(&self, request: &VerifyView<'_>) -> Answer {
         let _ = request;
         Verdict::reject("the plugin implements no on-the-spot verify").into()
     }
 
     /// Judge the request at one point, over `op`: the call's ticket and the host services, so the
-    /// judgement may wait on a service ([`VerifyOp::records_secret`]). [`Poll::Pending`] while a
-    /// service it made pends (answer it whenever one answers `Pending`): the kit answers PENDING,
-    /// and the host re-enters this from the top on the same ticket when the service completes,
-    /// where each re-issued service reads its stored answer. Ticket-less, a `Pending` answers
-    /// REFUSED and the host submits the call on a ticket. The default is [`VerifyPlugin::verify`],
-    /// READY on the spot.
+
     fn verify_ticketed(&self, request: &VerifyView<'_>, op: &VerifyOp) -> Poll<Answer> {
         let _ = op;
         Poll::Ready(self.verify(request))
     }
 
     /// A reload (the admin cache flush is one with unchanged settings): drop the inbound cache and
-    /// answer how many entries it held, or refuse the reload in the plugin's own words and outcome
-    /// (the instance keeps serving as it was). The kit reloads through this. The default is
-    /// [`VerifyPlugin::refresh`], which cannot refuse.
-    ///
-    /// # Errors
-    /// The new settings or secrets are not this plugin's.
+
     fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal> {
         Ok(self.refresh(settings, secrets))
     }
 
     /// [`VerifyPlugin::reload`] that cannot refuse: the earlier kit's form, kept so a plugin built
-    /// against it still compiles. Drop the inbound cache and answer how many entries it held.
+
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]]) -> u64 {
         let _ = (settings, secrets);
         0
@@ -453,10 +380,7 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
 }
 
 /// [`VerifyPlugin::validate`] for a plugin whose `open` needs no secret: open over `settings` with
-/// none, and drop the instance.
-///
-/// # Errors
-/// [`VerifyPlugin::open`] refuses the settings.
+
 pub fn validate_by_opening<T: VerifyPlugin>(settings: &[u8]) -> Result<(), Refusal> {
     T::open_refusing(settings, &[]).map(drop)
 }
@@ -473,18 +397,7 @@ pub const OPENS_NOTHING: &str =
     "the auth plugin implements neither `open` nor `open_refusing`: it cannot open";
 
 /// THE AUTH KIND'S [`Life`] over a [`VerifyPlugin`] `T`: the instance state the shared lifecycle
-/// slots (`abi::sdk::life`) serve, a [`Held`] of it. Each per-kind value is stated here:
-///
-/// * `validate`, `open` and `refresh` are [`VerifyPlugin::validate`],
-///   [`VerifyPlugin::open_refusing`] and [`VerifyPlugin::reload`] (`--validate` refuses what boot
-///   refuses); the entries
-///   `refresh` dropped are reported under [`VerifyPlugin::CACHE_FAMILY`], when the plugin states
-///   it;
-/// * `drive` answers REFUSED (the plugin holds no driver ticket), and `cancel` answers
-///   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED): a pending `verify` parks nothing
-///   (its pending service is the host's, dropped with the ticket), so nothing of the plugin's is
-///   in flight;
-/// * `retire` and `tick` hold nothing: nothing is generation data, and no tick is asked for.
+
 pub struct Verifier<T>(T);
 
 impl<T> std::fmt::Debug for Verifier<T> {
@@ -563,9 +476,7 @@ pub(crate) fn verify_op<T: Send + Sync + 'static>(
 }
 
 /// `verify` over `plugin` on `op`: [`VerifyPlugin::verify_ticketed`], its identity written into
-/// the host's buffer; PENDING while it pends on a ticket, REFUSED when it would pend on none (a
-/// ticket-less PENDING is FAULT). THE ONE COPY: the verify door and the combined
-/// verify-and-outbound door (`abi::sdk::auth_outbound::Both`) answer `verify` through it.
+
 pub(crate) fn verify_answer<T: VerifyPlugin>(
     plugin: &T,
     op: &VerifyOp,
@@ -590,13 +501,13 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
     op.take_diags().write(&mut out);
     let answer = match judged {
         Poll::Ready(answer) => answer,
-        // On the spot the call cannot pend: REFUSED there, and the host submits it on a ticket.
+
         Poll::Pending if op.ticket().is_none() => {
             return out.fail(Refusal::refused(
                 "verify waits on a host service: it is answered on a ticket, not on the spot",
             ))
         }
-        // Nothing written: a PENDING `verify` names no `needed_*` and no verdict.
+
         Poll::Pending => return Outcome::Pending,
     };
     let outcome = write_answer(&answer, input, &mut out);
@@ -625,7 +536,7 @@ struct RetainedVerify {
 }
 
 /// The SDK/host reference to an immutable SHORT verdict, carried by the existing extensions
-/// blob. The host owns the named lease; this is not a pointer or a plugin-defined cache key.
+
 pub mod short_reply {
     use crate::abi::mechanism::extensions;
     const KEY: &str = "busbar.sdk.short-reply";
@@ -638,9 +549,7 @@ pub mod short_reply {
     }
 
     /// Read a reference without interpreting any other extension.
-    ///
-    /// # Errors
-    /// A present reference with an unsupported version, invalid width, or zero lease.
+
     pub fn decode(bytes: &[u8]) -> Result<Option<u64>, &'static str> {
         const INVALID: &str = "invalid verify recall";
         let Some(value) = extensions::get(bytes, KEY) else {
@@ -691,10 +600,7 @@ fn write_answer(
 }
 
 /// Write `id` into the host's identity buffer under `verdict` (`VERDICT_IDENTITY` for `verify`,
-/// `LOGIN_IDENTITY` for `complete_login`) and answer READY; or, when it does not fit, answer the
-/// SHORT FAILED: every `needed_*` at its full size and nothing written into the host's buffers
-/// (the host re-calls once with buffers that large). THE ONE COPY: the verify door and a login
-/// door both write an identity through it.
+
 pub fn write_identity(
     id: &VerifiedIdentity,
     buf: Lent<'_, IdentityBuf>,
@@ -708,7 +614,7 @@ pub fn write_identity(
 type Strips<'a> = [&'a [Strip]; 2];
 
 /// Write the identity `id` (if any) and, for `verify`, the strip names into the host's strip array
-/// and the decision, under `verdict`; or the SHORT FAILED when any of them does not fit.
+
 fn write(
     id: Option<&VerifiedIdentity>,
     strip: Option<(Strips<'_>, HostBuf<'_, StripName>, u32)>,
@@ -723,7 +629,7 @@ fn write(
         None => ([&[][..]; 2], None, 0),
     };
     let strip_count = strips[0].len() + strips[1].len();
-    // The FULL sizes first: a short answer writes nothing into the host's buffers.
+
     let texts = id.map_or([None; 8], |id| {
         [
             Some(id.subject.as_str()),
@@ -733,8 +639,6 @@ fn write(
             id.provider.as_deref(),
             id.name.as_deref(),
             id.replay.as_ref().map(|r| r.key.as_str()),
-            // The plugin's own credential, written back as it supplied it: this crate reads its own
-            // `Secret`'s field (a plugin holds no seal to `expose` with).
             id.credential.as_ref().map(|c| c.0.as_str()),
         ]
     });
@@ -885,8 +789,7 @@ macro_rules! auth_verify_door {
 }
 
 /// An [`AuthTail`] for a verify-only plugin, with `facts` (`FACT_*`), called at the inbound `points`
-/// (a valid, non-empty set: the loader refuses any other). The carriers it reads are its
-/// Statement's [`carrier`] word marks, not a tail fact.
+
 #[must_use]
 pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
     AuthTail {
@@ -904,7 +807,7 @@ pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
 }
 
 /// `tail` as THE OPERATOR CREDENTIAL's: it states [`FACT_OPERATOR`](crate::abi::auth::FACT_OPERATOR)
-/// and `principal`, the principal id its `verify` identifies.
+
 #[must_use]
 pub const fn with_operator(tail: AuthTail, principal: &'static str) -> AuthTail {
     AuthTail {
@@ -915,7 +818,7 @@ pub const fn with_operator(tail: AuthTail, principal: &'static str) -> AuthTail 
 }
 
 /// `tail` as a verifier that reads host-held credentials of `kinds` through `records.secret`: it
-/// states [`FACT_READS_CREDENTIALS`](crate::abi::auth::FACT_READS_CREDENTIALS) and the kinds.
+
 #[must_use]
 pub const fn with_credential_kinds(tail: AuthTail, kinds: &'static [AbiStr]) -> AuthTail {
     AuthTail {
@@ -927,7 +830,7 @@ pub const fn with_credential_kinds(tail: AuthTail, kinds: &'static [AbiStr]) -> 
 }
 
 /// One inbound carrier `verify` reads (a field line's name), as the Statement states it: a
-/// [`MARK_WORD_CARRIER`] word mark in [`Statement::mark_words`].
+
 #[must_use]
 pub const fn carrier(name: &'static str) -> MarkWord {
     MarkWord {

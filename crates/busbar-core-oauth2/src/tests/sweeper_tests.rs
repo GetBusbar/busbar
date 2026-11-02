@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A RELOAD LEAVES ONE SWEEPER. Every config generation builds its own server through the seam and
-//! spawns that server's sweeper; letting the old generation go must stop the old sweeper and free
-//! the old server. Before the fix the sweep task held its server STRONGLY and forever, so every
-//! reload leaked a server and left one more sweeper running.
-
 use std::sync::Arc;
 
 use crate::config::OauthAsCfg;
@@ -25,7 +20,6 @@ fn block() -> serde_yaml::Value {
     .expect("the block serializes")
 }
 
-/// One generation, as the kernel's build holds it.
 fn generation() -> Arc<dyn std::any::Any + Send + Sync> {
     seam_build::<crate::NoConnections>(&block(), Vec::new(), Vec::new(), None, None)
         .expect("builds")
@@ -46,11 +40,9 @@ async fn a_reload_leaves_exactly_one_sweeper() {
         "the first generation sweeps"
     );
 
-    // THE RELOAD: a new generation is built, and the old one is let go.
     let new = generation();
     drop(old);
 
-    // The abort lands when the runtime next polls the old task.
     for _ in 0..100 {
         if old_sweeper.upgrade().is_none() {
             break;
@@ -71,8 +63,6 @@ async fn a_reload_leaves_exactly_one_sweeper() {
     assert!(live.upgrade().is_some(), "exactly one sweeper: the new one");
 }
 
-/// THE SWEEP RUNS ON THE KERNEL'S CLOCK (THE DESIGN §1, "one clock, which also drives every plugin's
-/// tick"). RED: building a generation spawned its sweeper's interval task.
 #[tokio::test]
 async fn a_generation_starts_no_task_of_its_own() {
     let tasks = || {

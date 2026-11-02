@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DESTINATION GUARD'S CONFIG: `advanced.block_private_addresses`
-//! (default on), `advanced.allow_destinations`, and the 1.5.5 keys folded into the same inputs.
-
 use std::collections::HashMap;
 
 use super::tests::base_deploy;
 use super::*;
 
-/// RED: the two keys are `advanced` keys (an unknown field before the guard existed).
 #[test]
 fn the_destination_keys_parse_under_advanced() {
     let a: AdvancedCfg = serde_yaml::from_str(
@@ -20,7 +16,6 @@ fn the_destination_keys_parse_under_advanced() {
     assert_eq!(a.allow_destinations, ["10.0.0.0/8", "*.corp.example"]);
 }
 
-/// RED: the guard is on by default, with nothing allowed.
 #[test]
 fn private_addresses_are_blocked_by_default() {
     assert!(AdvancedCfg::default().block_private_addresses);
@@ -33,9 +28,6 @@ fn private_addresses_are_blocked_by_default() {
     assert!(d.url_allow.is_empty());
 }
 
-/// RED: a resolved config carries the allowlist as written, and the 1.5.5 `security` keys still
-/// load into the same inputs: the carve-outs as legacy allow entries, the extra blocked hosts as
-/// extra refusals, the nuclear override as itself.
 #[test]
 fn the_1_5_5_security_keys_feed_the_one_guard() {
     let mut deploy = base_deploy();

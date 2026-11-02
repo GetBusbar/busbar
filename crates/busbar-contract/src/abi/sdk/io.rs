@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOST'S I/O, PLUGIN SIDE (`abi::host::io`, `io.*`): safe calls into the [`IoSlots`] table
-//! the host handed an instance at `open`, for ONE entry of one op on one ticket. What a carrier
-//! moves bytes with: it never holds a descriptor, only the host's opaque handles. The `unsafe` of a
-//! call through the table stays here, so a carrier crate stays `#![forbid(unsafe_code)]`.
-//!
-//! A slot that MAY PEND answers [`Poll::Pending`] when nothing moved: the host wakes the ticket
-//! once the handle may make progress, and the op, re-entered, simply calls again. Nothing here
-//! allocates except [`Io::spawn`], which lays out its borrowed arguments and environment for the
-//! ABI call: every result is a scalar or a count of the caller's own buffer.
 
 use std::task::Poll;
 
@@ -182,17 +174,13 @@ impl<'h> Io<'h> {
     ) -> IoAnswer<ServiceOut> {
         match self.call(op, pick, input) {
             Poll::Ready(r) => r,
-            // A slot that may not pend answered PENDING: the host broke the table's rule.
+
             Poll::Pending => Err(IoFailure::Fault),
         }
     }
 
     /// `io.open`: begin reaching `addr` (`ip:port`, or `unix:` and an absolute path); its handle,
-    /// the connect in flight (it settles under [`Io::ready`] for [`DIR_WRITE`]).
-    ///
-    /// # Errors
-    ///
-    /// The host did not admit `addr` for this dial, or the system refused at once.
+
     pub fn open(&mut self, addr: &str) -> IoAnswer<u64> {
         let i = OpenIn {
             head: head(),
@@ -202,11 +190,7 @@ impl<'h> Io<'h> {
     }
 
     /// `io.listen`: bind `bind` (`ip:port`); the listener's handle and how many bytes of `addr`
-    /// (at least [`MAX_ADDR`]) the address bound took.
-    ///
-    /// # Errors
-    ///
-    /// The host did not admit the bind, or the system could not bind it.
+
     pub fn listen(&mut self, bind: &str, addr: &mut [u8]) -> IoAnswer<(u64, usize)> {
         let i = ListenIn {
             head: head(),
@@ -219,7 +203,7 @@ impl<'h> Io<'h> {
     }
 
     /// `io.accept`: the next connection off `listener` — its handle and how many bytes of `peer`
-    /// (at least [`MAX_ADDR`]) its far end's address took; `Pending` when none is waiting.
+
     pub fn accept(&mut self, listener: u64, peer: &mut [u8]) -> Poll<IoAnswer<(u64, usize)>> {
         let i = AddrIn {
             head: head(),
@@ -246,8 +230,7 @@ impl<'h> Io<'h> {
     }
 
     /// `io.read` STRAIGHT INTO THE HOST'S BUFFER (a carrier's `read` answering the host's own
-    /// `buf`): the bytes land at `buf`'s next free place and are counted there; how many (`0` =
-    /// the clean end, or no room left). `Pending` when none is ready.
+
     pub fn read_host(&mut self, handle: u64, buf: &mut HostBuf<'_, u8>) -> Poll<IoAnswer<usize>> {
         let (ptr, cap) = buf.room();
         let i = ReadIn {
@@ -266,7 +249,7 @@ impl<'h> Io<'h> {
     }
 
     /// The address-writing slots, into a HOST buffer (a carrier's `listen`/`accept`/`arrival`
-    /// answering the host's own address buffer): the address lands at `addr`'s next free place.
+
     fn addr_in(handle: u64, addr: &mut HostBuf<'_, u8>) -> (AddrIn, usize) {
         let (ptr, cap) = addr.room();
         (
@@ -281,10 +264,7 @@ impl<'h> Io<'h> {
     }
 
     /// [`Io::listen`], the address bound written into the host's buffer `addr`; the handle.
-    ///
-    /// # Errors
-    ///
-    /// As [`Io::listen`].
+
     pub fn listen_host(&mut self, bind: &str, addr: &mut HostBuf<'_, u8>) -> IoAnswer<u64> {
         let (ptr, cap) = addr.room();
         let i = ListenIn {
@@ -329,7 +309,7 @@ impl<'h> Io<'h> {
     }
 
     /// `io.ready`: `Ready` once `handle` may make progress in `dir` ([`DIR_READ`] | [`DIR_WRITE`];
-    /// for a stream still connecting, [`DIR_WRITE`] is its connect settling).
+
     pub fn ready(&mut self, handle: u64, dir: u32) -> Poll<IoAnswer<()>> {
         let i = ReadyIn {
             head: head(),
@@ -341,10 +321,7 @@ impl<'h> Io<'h> {
     }
 
     /// `io.shut`: shut `how` ([`DIR_READ`] | [`DIR_WRITE`] | [`DIR_BOTH`]) of `handle` down.
-    ///
-    /// # Errors
-    ///
-    /// Not the caller's handle, or the system refused.
+
     pub fn shut(&mut self, handle: u64, how: u32) -> IoAnswer<()> {
         let i = ShutIn {
             head: head(),
@@ -356,10 +333,7 @@ impl<'h> Io<'h> {
     }
 
     /// `io.close`: release `handle` (a spawned program is killed with it).
-    ///
-    /// # Errors
-    ///
-    /// Not the caller's handle.
+
     pub fn close(&mut self, handle: u64) -> IoAnswer<()> {
         let i = HandleIn {
             head: head(),
@@ -417,11 +391,7 @@ impl<'h> Io<'h> {
     }
 
     /// [`Io::spawn`] of the program a carrier's `dial` was lent (`abi::transport::Destination`,
-    /// `DEST_PROGRAM`), passed through as the host lent it: its path, arguments and environment.
-    ///
-    /// # Errors
-    ///
-    /// As [`Io::spawn`].
+
     pub fn spawn_dest(
         &mut self,
         dest: crate::abi::sdk::Lent<'_, crate::abi::transport::Destination>,
@@ -439,11 +409,7 @@ impl<'h> Io<'h> {
     }
 
     /// `io.ends`: `handle`'s local port and how many bytes of `peer` (at least [`MAX_ADDR`]) its
-    /// far end's address took (`0` = it has none).
-    ///
-    /// # Errors
-    ///
-    /// Not the caller's handle.
+
     pub fn ends(&mut self, handle: u64, peer: &mut [u8]) -> IoAnswer<(u32, usize)> {
         let i = AddrIn {
             head: head(),
@@ -458,13 +424,7 @@ impl<'h> Io<'h> {
     }
 
     /// `io.ends` on a spawned program's handle: its exit code once the program ITSELF has exited,
-    /// `None` while it runs (and for any other handle, and on a host that predates `exited`, which
-    /// always wrote that byte as zero). A descendant still holding the program's output keeps the
-    /// pipe open, so a carrier reads the program's end here, not from the pipe.
-    ///
-    /// # Errors
-    ///
-    /// Not the caller's handle.
+
     pub fn program_exit(&mut self, handle: u64) -> IoAnswer<Option<u32>> {
         let mut peer = [0_u8; MAX_ADDR];
         let i = AddrIn {

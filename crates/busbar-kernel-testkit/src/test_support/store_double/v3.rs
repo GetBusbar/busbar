@@ -1,17 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The store v3 slots this backend answers beyond the 1.5.5 op set ([`SyncStore`]): the
-//! `op_id`-carrying count batches, plane records and the kernel-held records.
-//!
-//! DEDUPE (`abi::store` S1-S4): every `op_id` this store APPLIED is remembered, with the op's value
-//! fields and its answer, for [`OP_ID_RETENTION_SECS`]. A replay with the same value fields applies
-//! nothing and answers the original; different value fields are a conflict. The dedupe log lives
-//! under ONE lock, and an op's dedupe check, its effect and its record happen under it, so two
-//! racing calls with one `op_id` apply once. This store is EPHEMERAL (its Statement tail says so):
-//! the log is lost on restart together with everything it guards, so a replay after a restart
-//! re-applies onto an empty store, which is the state the restart left.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
@@ -27,7 +16,6 @@ use busbar_contract::records::{
 
 use super::{now, MemoryStore, NAME};
 
-/// [`super::SECRET_REF_PATHS`], as the door's Statement states them.
 const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
     &[busbar_contract::abi::sdk::door::abi_str(
         super::SECRET_REF_PATHS[0],
@@ -54,7 +42,6 @@ enum Answer {
     Done,
 }
 
-/// One remembered op: its value fields and its answer.
 struct Recorded {
     body: Body,
     answer: Answer,
@@ -81,7 +68,6 @@ pub(crate) struct State {
     inner: Mutex<Inner>,
 }
 
-/// Whether an op is new, a replay, or a conflict.
 enum Seen {
     New,
     Replay(Answer),
@@ -97,7 +83,6 @@ impl Inner {
         }
     }
 
-    /// Remember an APPLIED op, and forget every op past its retention.
     fn record(&mut self, now: u64, op: OpId, body: Body, answer: Answer) {
         while let Some(&(at, old)) = self.aged.front() {
             if at.saturating_add(OP_ID_RETENTION_SECS) > now {
@@ -174,8 +159,6 @@ impl MemoryStore {
         Ok(Decision::Applied)
     }
 
-    /// Run one `op_id`-carrying write under the v3 lock: a replay answers the original, a
-    /// conflict applies nothing, and a new op runs `apply` and is remembered only if it applied.
     fn deduped(
         &self,
         op: OpId,
@@ -196,8 +179,6 @@ impl MemoryStore {
     }
 }
 
-/// The store v3 slots' own bodies: each op's ONE body, which the table's slot answers inline (the
-/// memory store never pends).
 impl MemoryStore {
     pub(crate) fn v3_apply_usage_correction(
         &self,
@@ -208,15 +189,13 @@ impl MemoryStore {
             .map_err(|reason| OpRefused::Refused(reason.into()))?;
         let body = Body::UsageCorrection(request.fingerprint());
         let mut inner = self.v3.lock();
-        // The receipt answers before predicates: after an unknown outcome, the accepted rows
-        // may already differ from the original expected state, or the key may be revoked.
+
         match inner.seen(request.op_id, &body) {
             Seen::Replay(_) => return Ok(correction::Decision::Applied),
             Seen::Conflict => return Err(OpRefused::Conflict),
             Seen::New => {}
         }
-        // Match delete_key's keys → usage order. Holding every guard through the receipt makes
-        // direct writes and count batches share this acceptance authority.
+
         let keys = self.keys_read();
         let mut usage = self.usage();
         let metering = self.metering_read();
@@ -279,7 +258,6 @@ impl MemoryStore {
         key: &[u8],
         value: &[u8],
     ) -> Result<(), String> {
-        // The store keeps the record, so it copies it here (the door lends the host's bytes).
         let value = RecordBytes::new(value.to_vec())
             .map_err(|n| format!("a record of {n} bytes is over the ceiling"))?;
         self.record_put_at(schema, key, &value);
@@ -310,7 +288,6 @@ impl MemoryStore {
     ) -> OpResult<()> {
         let body = format!("add_usage_batch:{cells:?}");
         self.deduped(op, body, |s, _| {
-            // Reject the whole body before any ordinary cell is written.
             if cells
                 .iter()
                 .any(|(bucket, _, _)| correction::reserved_bucket(bucket))
@@ -339,8 +316,6 @@ impl MemoryStore {
     }
 }
 
-/// Served whole by the SDK ([`SyncStore`]): the 1.5.5 op set is the double's
-/// [`RecordStore`](busbar_contract::records::RecordStore) impl, and every slot answers at once.
 impl SyncStore for MemoryStore {
     const RECORD_TRANSACTION: bool = true;
     const USAGE_CORRECTION: bool = true;

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-loader/src/registry.rs`.
-
 use super::*;
 use crate::sign::{sign, SigningKey};
 
@@ -77,12 +75,6 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// ONE VERSION PER KIND (THE DESIGN §11.2, §11.8; A.9): each kind's window is exactly
-/// `abi::<kind>::ABI_VERSION` — no ranges, no JSON-lane versions, no 1.5.5 floors (ruling
-/// C21/ABI-o1) — at the shipped numbers.
-///
-/// RED before the P2 switch-over: store, secret and auth answered their JSON-lane versions (4, 1, 3),
-/// plane the range `[1, ABI_MINOR]` and transport `[TRANSPORT_DECL_MINOR, ABI_MINOR]`.
 #[test]
 fn supported_abi_is_one_version_per_kind() {
     use busbar_contract::abi;
@@ -102,11 +94,6 @@ fn supported_abi_is_one_version_per_kind() {
     assert!(supported_abi("nonsense").is_empty());
 }
 
-/// C21 (ABI-o1, THE DESIGN §11.8): a signed, otherwise-valid artifact stating its kind's 1.5.5
-/// payload version — what every published 1.5.5 JSON-contract plugin ships (store 2, auth 2, hook 1,
-/// export 2) — is a HARD structural refusal at boot that names the file, the kind, the version and
-/// the rebuild against the 1.6.0 SDK. The signatures are valid on purpose: the refusal is the
-/// version, not trust.
 #[test]
 fn a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild() {
     let release = key(1);
@@ -142,7 +129,6 @@ fn a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild() {
     }
 }
 
-/// A store artifact built for a NEWER schema than the host speaks is refused the same way.
 #[test]
 fn a_store_newer_than_the_host_is_refused() {
     let release = key(1);
@@ -205,11 +191,6 @@ fn policy(first_party: &SigningKey) -> TrustPolicy {
 }
 
 fn tmpdir(tag: &str) -> PathBuf {
-    // `pid + tag` is already unique across today's 13 call sites (each passes a distinct
-    // literal tag), but a clock read is not a monotonic ticket — two threads on two cores can
-    // observe the same `SystemTime::now()` value, and routinely do on a coarse-clock platform.
-    // `crate::stage::next_seq()` is the in-tree fix for exactly this shape (already applied to
-    // `stage.rs`'s own staging-file naming); reuse it here instead of a second, weaker idiom.
     let d = std::env::temp_dir().join(format!(
         "busbar-registry-{}-{tag}-{}",
         std::process::id(),
@@ -265,8 +246,6 @@ fn only_the_exact_verified_release_seal_contributes_a_registry_keys_version() {
     assert_eq!(image.release_keys_version(), Some(23));
     assert_eq!(image.lib_bytes.as_slice(), lib);
 
-    // The same well-formed document has no authority when its root is not trusted, even if the
-    // operator permits the unverified artifact. Parsing its claimed version must never raise a floor.
     p.first_party_keys.clear();
     p.allow_unsigned = true;
     let allowed = scan_and_validate(&dir, &p).unwrap();
@@ -277,8 +256,6 @@ fn only_the_exact_verified_release_seal_contributes_a_registry_keys_version() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The full happy path: two signed first-party plugins scan into a registry addressable by
-/// name AND alias, with identity from the MANIFEST (the filenames are deliberately wrong).
 #[test]
 fn scan_registers_by_name_and_alias_from_manifest_not_filename() {
     let release = key(1);
@@ -293,7 +270,7 @@ fn scan_registers_by_name_and_alias_from_manifest_not_filename() {
         manifest("busbar-store-alpha", "alpha", "busbar"),
         b"pg lib",
     );
-    // Filenames lie on purpose - identity must come from the signed manifest.
+
     write_tarball(&dir, "totally-not-gamma.tar.gz", &gamma, b"gamma lib");
     write_tarball(&dir, "misc.tgz", &pg, b"pg lib");
 
@@ -351,8 +328,6 @@ fn an_archive_digest_stays_bound_to_the_verified_image_after_its_path_is_replace
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// FAIL-CLOSED: one invalid tarball in the dir fails the WHOLE scan with a named reason -
-/// never a partial registry.
 #[test]
 fn one_invalid_tarball_fails_the_whole_scan() {
     let release = key(1);
@@ -376,12 +351,6 @@ fn one_invalid_tarball_fails_the_whole_scan() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A file over `tarball::MAX_TARBALL_FILE_BYTES` is rejected by its SIZE, before `fs::read`
-/// ever runs - not by a later gzip/tar decode failure. We prove this by making the oversize
-/// file a SPARSE all-zeros file (cheap to create, costs no real disk or memory): `fs::read`
-/// would happily succeed on it (it is valid, if enormous, input), so if the rejection reason
-/// names the byte cap rather than some gzip/tar decode error, the size check - not the
-/// decoder - is what caught it, and it caught it before the whole file was read into memory.
 #[test]
 fn oversize_tarball_file_is_rejected_by_size_before_being_read() {
     let release = key(1);
@@ -406,7 +375,6 @@ fn oversize_tarball_file_is_rejected_by_size_before_being_read() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A structurally-broken manifest (bad kind) fails the scan even though it is validly signed.
 #[test]
 fn signed_but_malformed_manifest_is_invalid() {
     let release = key(1);
@@ -420,8 +388,6 @@ fn signed_but_malformed_manifest_is_invalid() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Phase 2: an untrusted (third-party, no opt-in) plugin is SKIPPED - the scan succeeds, the
-/// plugin is not loadable, and referencing it fails with the skip reason.
 #[test]
 fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
     let release = key(1);
@@ -447,8 +413,6 @@ fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Phase 3: two loadable plugins claiming the same ALIAS is a hard error naming both - the
-/// "can't use gamma and a third-party gamma" case (third-party allowed via opt-in).
 #[test]
 fn alias_conflict_is_a_hard_error_naming_both() {
     let release = key(1);
@@ -468,7 +432,7 @@ fn alias_conflict_is_a_hard_error_naming_both() {
     write_tarball(&dir, "third.tar.gz", &third, b"lib2");
 
     let mut pol = policy(&release);
-    pol.allow_third_party = true; // both become loadable -> the conflict must fire
+    pol.allow_third_party = true;
     let errs = scan_and_validate(&dir, &pol).unwrap_err();
     assert_eq!(errs.len(), 1, "got {errs:?}");
     assert!(errs[0].contains("alias conflict"), "got {}", errs[0]);
@@ -485,7 +449,6 @@ fn alias_conflict_is_a_hard_error_naming_both() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Phase 3: duplicate NAME, and an alias colliding with another plugin's NAME, both hard-error.
 #[test]
 fn name_and_alias_vs_name_conflicts_are_hard_errors() {
     let release = key(1);
@@ -507,7 +470,7 @@ fn name_and_alias_vs_name_conflicts_are_hard_errors() {
         errs.iter().any(|e| e.contains("name conflict")),
         "got {errs:?}"
     );
-    // The refusal reads byte for byte as 1.5.5's (the golden text is fixture data).
+
     let golden = include_str!("../../tests/fixtures/conflict_messages.txt")
         .lines()
         .find(|l| l.starts_with("plugin name conflict: "))
@@ -519,7 +482,6 @@ fn name_and_alias_vs_name_conflicts_are_hard_errors() {
     assert!(errs.contains(&want), "want {want:?}, got {errs:?}");
     let _ = std::fs::remove_dir_all(&dir);
 
-    // Alias colliding with another plugin's canonical name.
     let dir = tmpdir("aliasvsname");
     let a = sign(
         &release,
@@ -541,7 +503,6 @@ fn name_and_alias_vs_name_conflicts_are_hard_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A missing plugins dir is an EMPTY registry (drop-is-inert), not an error.
 #[test]
 fn missing_dir_is_empty_registry() {
     let reg = scan_and_validate(Path::new("/no/such/busbar/plugins/dir"), &policy(&key(1)))
@@ -549,15 +510,13 @@ fn missing_dir_is_empty_registry() {
     assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
 }
 
-/// Kind gating: a non-store plugin resolves but cannot back the governance store.
 #[test]
 fn open_store_refuses_non_store_kind() {
     let release = key(1);
     let dir = tmpdir("kind");
     let mut m = manifest("busbar-hook-ranker", "ranker", "busbar");
     m.kind = "hook".into();
-    // Stamp the hook-supported ABI version so the scan admits it and the KIND gate (not the
-    // ABI gate) is what rejects.
+
     m.abi_version = busbar_contract::abi::hook::ABI_VERSION;
     let m = sign(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
@@ -567,21 +526,17 @@ fn open_store_refuses_non_store_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Kind gating for SECRETS: a `kind: secret` plugin passes the SAME scan/trust pipeline
-/// as a store plugin (a plugin is a plugin), and the kind gate is symmetric - a store plugin
-/// cannot resolve config secrets, and a secret plugin cannot back the store. FAIL-CLOSED both
-/// ways.
 #[test]
 fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let release = key(1);
     let dir = tmpdir("secretkind");
-    // A trusted secret plugin (abi_version stamped to the secret ABI so the scan admits it).
+
     let mut m = manifest("busbar-secret-delta", "delta", "busbar");
     m.kind = "secret".into();
     m.abi_version = busbar_contract::abi::secret::ABI_VERSION;
     let m = sign(&release, m, b"secret lib");
     write_tarball(&dir, "delta.tar.gz", &m, b"secret lib");
-    // And a trusted store plugin beside it.
+
     let st = sign(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
@@ -590,17 +545,16 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     write_tarball(&dir, "gamma.tar.gz", &st, b"store lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan admits both kinds");
     assert_eq!(reg.loadable().len(), 2, "one secret + one store validated");
-    // The kind gates: a store referenced as a secret module fails naming the kind...
+
     let err = reg.secret_refusal("gamma");
     assert!(err.contains("kind 'store'"), "got {err}");
-    // ...and a secret plugin cannot back the store.
+
     let err = reg.store_door("delta").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'secret'"), "got {err}");
-    // An unknown secret module name is fail-closed with the loadable set named.
+
     let err = reg.secret_refusal("nope");
     assert!(err.contains("no plugin named or aliased"), "got {err}");
-    // A secret plugin that states no door (a 1.5.5 JSON-contract plugin) is refused naming the
-    // rebuild: no JSON secret lane remains (THE DESIGN §11.8).
+
     let err = reg.secret_refusal("delta");
     assert!(
         err.contains(crate::registry::JSON_SECRET_REFUSED),
@@ -609,10 +563,6 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Kind gating: a non-auth plugin resolves but cannot serve as an auth module. Mirrors
-/// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 (its default
-/// `kind`/`abi_version` from `manifest()` are already store-admissible) and is then resolved as an
-/// auth row, which must reject on the KIND gate before ever attempting to load it.
 #[test]
 fn open_auth_refuses_non_auth_kind() {
     let release = key(1);
@@ -632,11 +582,6 @@ fn open_auth_refuses_non_auth_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE AUTH REFUSAL, in the one kind-neutral mechanism ([`PluginRegistry::kind_refusal`]): a name
-/// no auth row resolves to keeps the loader's resolution words (the ones the cold lane's
-/// resolution gave), and a name that resolves to an auth row the auth axis still does not answer
-/// (a row stating no auth door) is refused naming the rebuild. No 1.5.5 golden covers the second
-/// case (1.5.5 loaded every resolved auth row), so its text is pinned here, byte for byte.
 #[test]
 fn the_auth_refusal_keeps_the_resolution_words_and_names_the_rebuild() {
     let release = key(1);
@@ -669,7 +614,7 @@ fn the_auth_refusal_keeps_the_resolution_words_and_names_the_rebuild() {
         "plugin 'busbar-auth-idp-plugin': it speaks the 1.5.5 JSON auth contract, which this host \
          does not load — rebuild the plugin against the 1.6.0 SDK"
     );
-    // The secret kind's words through the same mechanism are the ones it always gave.
+
     assert_eq!(
         reg.kind_refusal("secret", "resolve config secrets", "idp"),
         "plugin 'busbar-auth-idp-plugin' has kind 'auth', not 'secret' - it cannot resolve config \
@@ -678,10 +623,6 @@ fn the_auth_refusal_keeps_the_resolution_words_and_names_the_rebuild() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Kind gating: a non-hook plugin resolves but cannot serve as a hook. Mirrors
-/// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3, and the hook axis
-/// over the registry holds no row for it, so opening it as a hook is refused naming the module,
-/// before anything is loaded.
 #[test]
 fn the_hook_axis_refuses_a_non_hook_kind() {
     use busbar_contract::hook_calls::HookAxis;
@@ -715,21 +656,16 @@ fn the_hook_axis_refuses_a_non_hook_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The inventory marks the rows a conflict is ABOUT, and only those. The conflict message spells
-/// plugin-author-controlled identifiers into prose, so a row is joined to it by the tarball the
-/// conflict names — not by finding the row's own quoted identifier somewhere inside the sentence,
-/// which a third plugin can arrange to be true of a conflict it has nothing to do with.
 #[test]
 fn a_conflict_marks_only_the_rows_it_names() {
     let release = key(1);
     let dir = tmpdir("conflictjoin");
     let a = sign(&release, manifest("dup", "alias-a", "busbar"), b"a");
     let b = sign(&release, manifest("dup", "alias-b", "busbar"), b"b");
-    // A bystander that claims no identifier either conflicting plugin claims, so it is `ready`.
+
     let c = sign(&release, manifest("innocent", "vk", "busbar"), b"c");
     write_tarball(&dir, "a.tar.gz", &a, b"a");
-    // The message spells the tarball's own name, and a tarball's name is whoever shipped it to
-    // choose — so the prose can be made to contain any quoted identifier at all.
+
     write_tarball(&dir, "spells-'vk'-in-its-name.tar.gz", &b, b"b");
     write_tarball(&dir, "c.tar.gz", &c, b"c");
 
@@ -755,8 +691,6 @@ fn a_conflict_marks_only_the_rows_it_names() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The inventory is MANIFEST-ONLY and covers every row class: ready, skipped (unknown
-/// publisher), and invalid - with the exact reason.
 #[test]
 fn inventory_reports_every_row_class_without_loading() {
     let release = key(1);
@@ -784,10 +718,6 @@ fn inventory_reports_every_row_class_without_loading() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// First-party anti-downgrade in the pipeline is PER-NAME (floors-only — no automatic
-/// binary-version floor, since first-party plugins version on independent 1.0.x/2.x lines):
-/// a below-pin first-party plugin is REJECTED with the anti-downgrade reason (inventory shows
-/// it; scan skips it), while the same artifact without a pin loads.
 #[test]
 fn first_party_downgrade_is_rejected_in_pipeline() {
     let release = key(1);
@@ -797,14 +727,12 @@ fn first_party_downgrade_is_rejected_in_pipeline() {
     let m = sign(&release, m, b"old lib");
     write_tarball(&dir, "old.tar.gz", &m, b"old lib");
 
-    // Unpinned: its 1.0.0 line is its own business — it loads.
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
     assert!(
         reg.resolve("gamma").is_some(),
         "an unpinned first-party plugin loads regardless of the binary version"
     );
 
-    // Pinned above its version: rejected with the anti-downgrade reason, end to end.
     let mut pinned = policy(&release);
     pinned
         .first_party_floors
@@ -821,10 +749,6 @@ fn first_party_downgrade_is_rejected_in_pipeline() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A malformed `min_versions` floor SKIPS just the one floored plugin — the boot is NOT killed —
-/// and the graduated escalation ladder ("a rejection here is a SKIP, unless referenced")
-/// surfaces it: `skipped()` names the reason, and `--list-plugins`/the admin catalog show a
-/// `REJECTED:` row. All four asserted in one test because the graduated escalation IS the design.
 #[test]
 fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
     let release = key(1);
@@ -861,9 +785,6 @@ fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The escalation's top rung — a REFERENCED plugin (e.g. `store.module`) with a malformed floor
-/// fails the boot LOUDLY, with the reason attached, via `unresolved_reason` (the same string
-/// `main.rs`'s hard boot error interpolates for a referenced module).
 #[test]
 fn a_referenced_plugin_with_a_malformed_floor_fails_the_boot_loudly() {
     let release = key(1);
@@ -894,18 +815,12 @@ fn a_referenced_plugin_with_a_malformed_floor_fails_the_boot_loudly() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// REGRESSION GUARD: the `--list-plugins` signature label is derived from the STRUCTURED
-/// reject verdict (`SkippedPlugin.kind`), NOT a substring of the plugin-controlled reason. A
-/// third-party plugin whose author crafts `publisher: "anti-downgrade-bypass"` (so the rejection
-/// reason text contains "anti-downgrade") must still be labeled `unknown-publisher`, never
-/// mislabeled `trusted (below floor)`. Load decisions never used this text; the fix is the label.
 #[test]
 fn crafted_publisher_cannot_forge_signature_label() {
     let release = key(1);
     let attacker = key(9);
     let dir = tmpdir("label-forge");
-    // Validly signed by the attacker, but the publisher is NOT allowlisted → unknown-publisher.
-    // The crafted publisher name is chosen so the reason string contains "anti-downgrade".
+
     let m = sign(
         &attacker,
         manifest("acme-store-x", "acme", "anti-downgrade-bypass"),
@@ -913,7 +828,6 @@ fn crafted_publisher_cannot_forge_signature_label() {
     );
     write_tarball(&dir, "acme.tar.gz", &m, b"lib");
 
-    // Default posture (no allow_third_party) → skipped as unknown-publisher.
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
     assert!(reg.resolve("acme").is_none());
     assert_eq!(
@@ -933,12 +847,6 @@ fn crafted_publisher_cannot_forge_signature_label() {
         rows[0].status
     );
 
-    // And the SAME untrusted artifact but with a configured `min_versions`
-    // floor on its name must NEVER be labeled `trusted (below floor)`. The floor is trust-relative:
-    // `AntiDowngrade` is reserved for artifacts that proved trust. An untrusted+floored artifact is
-    // categorized as `UntrustedFloored` and labeled `untrusted (below floor)` — a hard SKIP, never
-    // a "trusted" surface. (Regression: the floor check fired BEFORE trust resolution and returned
-    // `AntiDowngrade` for this case, mislabeling it "trusted (below floor)".)
     let mut floored = policy(&release);
     floored
         .min_versions
@@ -965,19 +873,11 @@ fn crafted_publisher_cannot_forge_signature_label() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── The FIRST-PARTY replay, end to end over the real scan ──────────────────────────────────────
-
-/// `docs/plugins.md` security-model item 3, proven through the actual pipeline: a deployment loads
-/// 1.2.0 of a first-party plugin, the high-water mark records it, and the GENUINE busbar-signed
-/// 1.0.0 an attacker with write access to `plugins.dir` swaps in is then REFUSED — even though its
-/// signature verifies against the embedded release key. Before the mark existed this scan admitted
-/// the replay silently, with a `first-party` catalog label and no warning.
 #[test]
 fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
     let release = key(1);
     let dir = tmpdir("replay");
 
-    // 1. The deployment loads 1.2.0.
     let mut current = manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     current.version = "1.2.0".into();
     let current = sign(&release, current, b"1.2.0 lib");
@@ -989,20 +889,17 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
     let reg = scan_and_validate(&dir, &pol).expect("the current release loads");
     assert_eq!(reg.loadable().len(), 1);
 
-    // 2. The mark records what was actually loaded.
     assert!(marks.record_registry(&reg), "the mark rises on a load");
     assert_eq!(
         marks.marks().get("busbar-store-gamma-plugin").unwrap(),
         "1.2.0"
     );
 
-    // 3. The attacker swaps in the GENUINE, busbar-signed 1.0.0 with a known fixed defect.
     let mut old = manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     old.version = "1.0.0".into();
     let old = sign(&release, old, b"1.0.0 lib");
     write_tarball(&dir, "store.tar.gz", &old, b"1.0.0 lib");
 
-    // 4. It is REFUSED as a downgrade — skipped, never loaded, with the floor named.
     let mut pol = policy(&release);
     pol.first_party_high_water = marks.marks();
     let reg = scan_and_validate(&dir, &pol).expect("a refusal is a skip, not a scan failure");
@@ -1023,14 +920,12 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
         skipped[0].reason
     );
 
-    // 5. The mark does NOT fall to the refused artifact's version.
     assert!(!marks.record_registry(&reg));
     assert_eq!(
         marks.marks().get("busbar-store-gamma-plugin").unwrap(),
         "1.2.0"
     );
 
-    // 6. The documented override: an explicit, audited rollback pin admits that exact version.
     pol.first_party_floors
         .insert("busbar-store-gamma-plugin".into(), "1.0.0".into());
     let reg = scan_and_validate(&dir, &pol).expect("scan");
@@ -1042,27 +937,19 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// TOCTOU-close: `read_file_capped` bounds the STREAM at `cap`, not `metadata().len()`. `examine`
-/// used to size-check via `fs::metadata` then `fs::read` the file unbounded, so a file swapped for a
-/// larger one AFTER the stat was read in full — the cap was bypassable. This proves the read itself is
-/// bounded: a file one byte over the cap is a hard reject, `cap` bytes exactly reads, and a small file
-/// reads back byte-for-byte. Exercised with a tiny cap so the test never allocates the real ceiling.
 #[test]
 fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
     let dir = tmpdir("capread");
 
-    // Over the cap: 20 bytes against an 8-byte cap → refused (never a silent unbounded read).
     let big = dir.join("big.bin");
     std::fs::write(&big, vec![0u8; 20]).unwrap();
     let err = read_file_capped(&big, 8).expect_err("a file over the cap must be refused");
     assert!(err.contains("cap"), "the refusal names the cap: {err}");
 
-    // Exactly at the cap boundary is allowed (cap bytes read; cap + 1 is the reject threshold).
     let exact = dir.join("exact.bin");
     std::fs::write(&exact, vec![7u8; 8]).unwrap();
     assert_eq!(read_file_capped(&exact, 8).unwrap(), vec![7u8; 8]);
 
-    // A within-cap file reads back byte-for-byte.
     let small = dir.join("small.bin");
     std::fs::write(&small, b"hello").unwrap();
     assert_eq!(read_file_capped(&small, 8).unwrap(), b"hello");
@@ -1070,14 +957,10 @@ fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load UNCHANGED) ─────────────────────────────
-
-/// A door a registry row carries but these tests never open.
 extern "C" fn unopened_door() -> *const busbar_contract::abi::mechanism::door::Door {
     std::ptr::null()
 }
 
-/// The 1.6.0 manifest of a renamed plugin: `name` aliased `alias`, of `kind`, answering `former`.
 fn renamed(kind: &str, name: &str, alias: &str, former: &[&str]) -> Manifest {
     let mut m = manifest(name, alias, "busbar");
     m.kind = kind.into();
@@ -1086,7 +969,6 @@ fn renamed(kind: &str, name: &str, alias: &str, former: &[&str]) -> Manifest {
     m
 }
 
-/// The registry over `m` DROPPED IN (signed first-party into a fresh plugins dir and scanned).
 fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
     let release = key(1);
     let dir = tmpdir(tag);
@@ -1102,21 +984,12 @@ fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
     reg
 }
 
-/// The registry over `m` LINKED (the build's own row, no artifact).
 fn linked_in(m: Manifest) -> PluginRegistry {
     PluginRegistry::empty()
         .link(vec![LinkedPlugin::door_raw(m, unopened_door)])
         .expect("the linked door admits the row")
 }
 
-/// THE RULING'S CASE: a 1.5.5-shaped config names a hook and a store by the manifest names their
-/// 1.5.5-era releases carried (`busbar-webrequest`; a store's `busbar-store-<name>-plugin`, here a
-/// neutral one — the fleet's real names are swept from plugins.yaml by
-/// [`every_former_name_plugins_yaml_declares_resolves_both_ways`]); each resolves to the 1.6.0 plugin
-/// of the kind the reference needs, DROPPED IN and LINKED alike — the resolution preflight's `require_plugin`, the
-/// store door and the auth and export axes all read. RED ARM, in the same test: the same plugins
-/// without their former names leave both references unresolved, which is the boot refusal 52 oracle
-/// cells hit ("no plugin matching the hook reference 'busbar-webrequest'").
 #[test]
 fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
     let cases = [
@@ -1146,7 +1019,7 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
             assert!(reg.answers(old, kind), "{way}: '{old}' answers as a {kind}");
             assert!(reg.resolve(alias).is_some() && reg.resolve(name).is_some());
         }
-        // RED ARM: no former name, no resolution.
+
         let without = || renamed(kind, name, alias, &[]);
         for (way, reg) in [
             (
@@ -1161,7 +1034,7 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
             );
         }
     }
-    // The store door opens through the same resolution (the store axis's lookup by config name).
+
     let reg = linked_in(renamed(
         "store",
         "busbar-store-alpha",
@@ -1177,8 +1050,6 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
     );
 }
 
-/// PHASE 3: two dropped-in plugins claiming ONE former name, or a former name that is another
-/// plugin's name or alias, are a hard error naming both plugins and the contested name.
 #[test]
 fn two_plugins_claiming_one_former_name_are_refused() {
     let release = key(1);
@@ -1236,10 +1107,6 @@ fn two_plugins_claiming_one_former_name_are_refused() {
     }
 }
 
-/// THE ONE-OWNER RULE ACROSS THE DOORS (ARCHITECT Q-P4-12, BUSBAR-1.6.0.md:106): a linked row and
-/// any DIFFERENT plugin claiming one name, alias or former name refuse the boot, naming both and the
-/// word; neither door outranks the other. The SAME plugin linked and dropped in is not a claim
-/// conflict (the one-version-per-kind rule governs it).
 #[test]
 fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     let webrequest = || {
@@ -1250,8 +1117,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
             &["busbar-webrequest"],
         )
     };
-    // RED: the 1.5.5 tarball (manifest name `busbar-webrequest`) dropped in beside a linked 1.6.0
-    // webrequest that answers that name.
+
     let old = renamed("hook", "busbar-webrequest", "webrequest-1-5-5", &[]);
     let refused = dropped_in("cross-old", old)
         .link(vec![LinkedPlugin::door_raw(webrequest(), unopened_door)])
@@ -1262,7 +1128,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
             && refused.contains("claim conflict"),
         "{refused}"
     );
-    // RED: two linked rows claiming one alias.
+
     let refused = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::door_raw(webrequest(), unopened_door),
@@ -1276,12 +1142,12 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
         refused.contains("'busbar-webrequest'") && refused.contains("acme-hook-x"),
         "{refused}"
     );
-    // GREEN: the linked row and its own dropped-in copy; the linked row answers.
+
     let reg = dropped_in("cross-same", stating(webrequest(), None))
         .link(vec![LinkedPlugin::door(webrequest(), versioned_door)])
         .expect("the same plugin linked and dropped in is not a conflict");
     assert!(reg.resolve("busbar-webrequest").expect("resolves").linked());
-    // RED (Q-P4-12): a different dropped-in plugin spelling the linked row's ALIAS, or its NAME.
+
     for (tag, other) in [
         (
             "cross-alias",
@@ -1302,12 +1168,10 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     }
 }
 
-/// A linked door whose Statement states a version: the store both-ways fixture's.
 #[allow(non_upper_case_globals)]
 const versioned_door: busbar_contract::abi::mechanism::door::DoorFn =
     crate::both_ways::store_fixture::door;
 
-/// The version [`versioned_door`]'s Statement states.
 fn door_version() -> String {
     let stated = crate::dispatch::rendering_of(versioned_door).expect("the door states itself");
     busbar_contract::abi::mechanism::rendering::read(&stated)
@@ -1315,8 +1179,6 @@ fn door_version() -> String {
         .version
 }
 
-/// `rendering` with its Statement's version restated as `version` (the rendering's head is the
-/// magic, four `u32`s, then the name and the version, each a `u32` length and its bytes).
 fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
     let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
     let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
@@ -1328,8 +1190,6 @@ fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
     out
 }
 
-/// `m` stating [`versioned_door`]'s Statement in its manifest, its version restated as `version`
-/// (`None`: the door's own).
 fn stating(m: Manifest, version: Option<&str>) -> Manifest {
     let stated = crate::dispatch::rendering_of(versioned_door).expect("the door states itself");
     let stated = version.map_or(stated.clone(), |v| restated(&stated, v));
@@ -1339,7 +1199,6 @@ fn stating(m: Manifest, version: Option<&str>) -> Manifest {
     }
 }
 
-/// `webrequest`'s 1.6.0 manifest at `version`.
 fn webrequest_at(version: &str) -> Manifest {
     let mut m = renamed(
         "hook",
@@ -1351,11 +1210,6 @@ fn webrequest_at(version: &str) -> Manifest {
     m
 }
 
-/// THE ONE-VERSION RULE, SAME VERSION (ARCHITECT C'): one plugin linked and dropped in at ONE
-/// version — the version each door's Statement states — is ONE plugin, admitted once: the linked
-/// row serves every name, the dropped-in copy is no row of its own, and it is recorded for boot's
-/// one INFO line naming both doors and the version. The manifests' own `version`s differ on
-/// purpose: they are never compared. RED before: the copy stayed a second loadable row.
 #[test]
 fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
     let version = door_version();
@@ -1389,9 +1243,6 @@ fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
     );
 }
 
-/// THE ONE-VERSION RULE, TWO VERSIONS: the same plugin linked and dropped in, its Statements stating
-/// two versions, refuses the boot, naming the plugin, both doors and both versions. RED before: the
-/// pair was skipped and the linked row silently won.
 #[test]
 fn one_plugin_by_both_doors_at_two_versions_refuses_the_boot() {
     let refused = dropped_in("copy-other", stating(webrequest_at("1.5.0"), Some("1.6.1")))
@@ -1410,9 +1261,6 @@ fn one_plugin_by_both_doors_at_two_versions_refuses_the_boot() {
     );
 }
 
-/// TRUST BEFORE IDENTITY: an UNSIGNED copy of a linked plugin at another version is SKIPPED by the
-/// trust phase before the one-version rule ever compares it — the boot is not refused for a
-/// tarball that was never admitted, and the skip names it.
 #[test]
 fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
     let release = key(1);
@@ -1432,12 +1280,6 @@ fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
     assert!(reg.linked_copies().is_empty() && reg.loadable().is_empty());
 }
 
-/// THE VERSION COMPARED IS THE STATEMENT'S, AND ONLY THE STATEMENT'S (ARCHITECT C', 2026-10-07): a
-/// plugin that reaches the one-version compare stating no version in a Statement is REFUSED, naming
-/// it — a dropped-in copy whose manifest states no Statement (its manifest `version` is never read
-/// in its place, even when it equals the linked plugin's), one stating an empty version, and a
-/// linked row whose door states none. The build's store under its canonical name and a copy
-/// stating the store door's own Statement are one plugin at one version.
 #[test]
 fn the_one_version_rule_compares_statement_versions_only() {
     let door = crate::both_ways::store_fixture::door;
@@ -1479,11 +1321,6 @@ fn the_one_version_rule_compares_statement_versions_only() {
     assert_eq!(refused, refusal);
 }
 
-/// THE LINKED BUILT-IN UNDER ITS CANONICAL NAME (ARCHITECT C'): a store or auth row the root names
-/// canonically answers to that name AND to its key, and every surface that printed the key before
-/// still prints it ([`LoadablePlugin::key`]): the claim conflict, a row of the wrong kind
-/// (`resolve_kind`'s words, which `appbuild` and the axes print), a store with no door. A
-/// dropped-in row prints its manifest name.
 #[test]
 fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
     let door = crate::both_ways::store_fixture::door;
@@ -1503,7 +1340,7 @@ fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
         assert_eq!(p.key(), key, "{word}");
     }
     assert!(reg.store_door("busbar-store-mem").is_ok() && reg.store_door("mem").is_ok());
-    // A row of another kind: the key, as before (`store.module` naming the auth row).
+
     assert_eq!(
         reg.store_door("busbar-auth-tok").err().as_deref(),
         Some("plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store")
@@ -1512,7 +1349,7 @@ fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
         reg.secret_refusal("tok"),
         "plugin 'tok' has kind 'auth', not 'secret' - it cannot resolve config secrets"
     );
-    // The claim conflict: a different dropped-in plugin spelling the store's key.
+
     let refused = dropped_in("key-claim", manifest("busbar-store-other", "mem", "busbar"))
         .link(vec![LinkedPlugin::store_named(
             "busbar-store-mem",
@@ -1526,15 +1363,13 @@ fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
         "plugin claim conflict: 'mem' is claimed by both (linked) (mem) and plugin.tar.gz \
          (busbar-store-other) - a name, alias or former name must resolve to one plugin; remove one"
     );
-    // A row the root does not name canonically prints its name, as before.
+
     let plain = PluginRegistry::empty()
         .link(vec![LinkedPlugin::store("plain", door, true)])
         .expect("registers");
     assert_eq!(plain.resolve("plain").expect("resolves").key(), "plain");
 }
 
-/// The fleet's plugins.yaml entries, as `(repo, kind, alias, former_names)`: the four fields this
-/// sweep reads, off the registry's own flat shape (`  - repo:` opens an entry).
 fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {
     let mut out: Vec<(String, String, String, Vec<String>)> = Vec::new();
     for line in yaml.lines() {
@@ -1564,11 +1399,6 @@ fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {
     out
 }
 
-/// EVERY former name the committed plugins.yaml declares (the measured 1.5.5 manifest names of the
-/// renamed fleet plugins) resolves to its 1.6.0 plugin, of its kind, dropped in and linked: the
-/// ruling's case over the real data a 1.5.5 config names (`busbar-webrequest` under hooks, a store's
-/// `busbar-store-<name>-plugin` under `store.module`). A kind the linked door does not serve is
-/// checked dropped in only.
 #[test]
 fn every_former_name_plugins_yaml_declares_resolves_both_ways() {
     let entries = fleet_entries(include_str!("../../../../plugins.yaml"));
@@ -1593,14 +1423,6 @@ fn every_former_name_plugins_yaml_declares_resolves_both_ways() {
     }
 }
 
-/// **AN OLD BUILD BESIDE ITS SUCCESSOR WARNS, IT DOES NOT REFUSE THE BOOT** (owner ruling
-/// 2026-10-27, the 1.5.5 upgrade). A 1.5.5-era build of a plugin (its kind's earlier contract) left
-/// in the plugins directory beside the newer build of the same plugin (whose manifest names the old
-/// one's name as a former name, at a later version) is skipped with a reason naming the newer build,
-/// and the old name resolves to the newer build. Read off the manifests: no name list.
-///
-/// RED ARMS, in the same test: the old build alone still refuses the scan naming the rebuild, and a
-/// newer plugin that does not answer the old name supersedes nothing.
 #[test]
 fn an_old_build_beside_its_successor_is_skipped_with_a_warning_not_refused() {
     let release = key(1);
@@ -1662,7 +1484,6 @@ fn an_old_build_beside_its_successor_is_skipped_with_a_warning_not_refused() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 
-    // RED ARM: a newer plugin that does not answer the old name supersedes nothing.
     let dir = tmpdir("supersede-unrelated");
     write_tarball(
         &dir,

@@ -1,28 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE 1.5.5 -> 1.6.0 STEPS OVER CORE'S OWN KEYS (`busbar --migrate-config`).
-//!
-//! Each step rewrites a key core owns so that a configuration 1.5.5 ran keeps running, the same
-//! way, on 1.6.0, and each rewrite is reported as one change line naming what changed and why.
-//! Nothing here reads or writes inside a plugin's settings: a plugin migrates its own section
-//! through its own `migrate` entry. What a step needs to know about a plane (the billable classes a
-//! rate card must price) it reads off the plane registry, never out of a list written here.
-
 use serde_yaml::{Mapping, Value};
 
-/// 1.5.5 charged nothing for open billable units absent from its card. The migration writes
-/// that same configured rate; it is not a persisted usage or dollar amount.
 const LEGACY_UNPRICED_BILLABLE_UNIT_RATE: i32 = 0;
 
-/// Run every 1.5.5 -> 1.6.0 step over core's keys, in order.
 pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
     drop_hostless_metadata_entries(root, changes);
     price_open_units(root, changes);
     bind_ungoverned_principals(root, changes, warnings);
 }
 
-/// The mapping at `key` of `m`, when it is one.
 fn mapping_mut<'a>(m: &'a mut Mapping, key: &str) -> Option<&'a mut Mapping> {
     match m.get_mut(Value::from(key)) {
         Some(Value::Mapping(inner)) => Some(inner),
@@ -30,8 +18,6 @@ fn mapping_mut<'a>(m: &'a mut Mapping, key: &str) -> Option<&'a mut Mapping> {
     }
 }
 
-/// Remove, from the list at `list_key` of `m`, every entry that names no usable host, reporting
-/// each under `path`.
 fn drop_hostless(m: &mut Mapping, list_key: &str, path: &str, changes: &mut Vec<String>) {
     let Some(Value::Sequence(entries)) = m.get_mut(Value::from(list_key)) else {
         return;
@@ -54,9 +40,6 @@ fn drop_hostless(m: &mut Mapping, list_key: &str, path: &str, changes: &mut Vec<
     });
 }
 
-/// 1.6.0 refuses a metadata host-list entry that names no host the destination guard can judge
-/// (`db.1`, `1.2.3.4.5`, a `%` escape). On 1.5.5 such an entry matched nothing, so removing it
-/// keeps exactly what 1.5.5 blocked and allowed. A `/` entry is left alone: 1.5.5 refused it too.
 fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>) {
     if let Some(security) = mapping_mut(root, "security") {
         for key in ["blocked_metadata_hosts", "allow_metadata_hosts"] {
@@ -74,10 +57,6 @@ fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>)
     }
 }
 
-/// A top-level `rate_card:` must, on 1.6.0, configure every billable unit the fallback plane
-/// declares beyond the four reserved token tiers. 1.5.5 billed those units at nothing, so each
-/// entry gains `units:` naming every such unit it does not already price, at `0`: exactly what
-/// 1.5.5 charged. The unit names are the plane's own declaration, read off the plane registry.
 fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
     let open: Vec<&'static str> = crate::plane_driver::registry::plane_decls()
         .iter()
@@ -98,7 +77,7 @@ fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
     };
     for (lane, entry) in card.iter_mut() {
         let Some(lane) = lane.as_str() else { continue };
-        // A plane-qualified key is another plane's card, which 1.5.5 never had.
+
         if lane.contains(crate::governance::PLANE_LANE_SEP) {
             continue;
         }
@@ -132,19 +111,10 @@ fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
     }
 }
 
-/// The role a `role_bindings.<provider>` table binds a principal 1.5.5 admitted with no grant by
-/// ([`crate::config::auth::UNGOVERNED_ROLE`]).
 fn ungoverned_role() -> Value {
     Value::from(crate::config::auth::UNGOVERNED_ROLE)
 }
 
-/// 1.5.5 admitted a principal that a data-plane provider identified but no role binding granted
-/// (a principal asserting no roles, or any principal of a provider with no `role_bindings` table),
-/// with no pool limit and no budget. 1.6.0 refuses every such principal (401). For each data-plane
-/// provider whose principals 1.5.5 admitted that way, this writes the explicit binding that admits
-/// exactly them again, on every pool, with no group (no budget), and a WARNING naming it: it keeps
-/// 1.5.5's access and should be tightened. The built-in signed-key verifier issues its own keys and
-/// needs none.
 fn bind_ungoverned_principals(
     root: &mut Mapping,
     changes: &mut Vec<String>,

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE STORE KIND'S v3 TABLE, AS STATED: the slot numbering, the per-slot contract and the zero
-//! readings. Layout is pinned once, by the golden (`layout_golden.rs`).
 
 use std::mem::{offset_of, size_of};
 
@@ -17,7 +16,7 @@ fn every_kind_slot_is_lifecycle_slots_plus_k_contiguous() {
     for (k, c) in OPS.iter().enumerate() {
         assert_eq!(c.slot, LIFECYCLE_SLOTS + k as u32, "{}", NAMES[k]);
     }
-    // The table: the head, then one pointer per slot, the first right after the head.
+
     assert_eq!(offset_of!(Ops, put_key), size_of::<OpsHead>());
     assert_eq!(
         offset_of!(Ops, add_metering_batch),
@@ -35,14 +34,12 @@ fn every_kind_slot_is_lifecycle_slots_plus_k_contiguous() {
 
 #[test]
 fn the_design_names_every_slot() {
-    // The kernel-held records and the two count batches.
     for name in [
         "record_put",
         "record_get",
         "record_scan",
         "add_usage_batch",
         "add_metering_batch",
-        // plane records (records.rs:1481-1597)
         "upsert_plane_record",
         "get_plane_record",
         "append_plane_record",
@@ -55,7 +52,7 @@ fn the_design_names_every_slot() {
     ] {
         assert!(NAMES.contains(&name), "{name}");
     }
-    // The kept 1.5.5 op set comes first in the table.
+
     assert_eq!(slot::LIST_AUDIT_TAIL - slot::PUT_KEY + 1, 17);
 }
 
@@ -66,7 +63,7 @@ fn every_slot_states_its_contract() {
         assert!(c.max_in >= size_of::<InHead>(), "{name}");
     }
     let of = |name: &str| OPS[NAMES.iter().position(|n| *n == name).unwrap()];
-    // Every additive or appending write is write_behind.
+
     for name in [
         "append_plane_record",
         "add_usage_batch",
@@ -82,7 +79,6 @@ fn every_slot_states_its_contract() {
 
 #[test]
 fn every_op_id_slot_carries_it_right_after_the_head() {
-    // The dedupe key sits at one offset on every slot that carries one.
     let at = size_of::<InHead>();
     assert_eq!(offset_of!(store::AddUsageBatchIn, op_id), at);
     assert_eq!(offset_of!(store::OpBlobsIn, op_id), at);
@@ -101,7 +97,6 @@ fn an_op_id_is_node_then_counter() {
 
 #[test]
 fn the_zero_readings_are_the_safe_ones() {
-    // An unwritten out never reads as a record, a YES or a settled cancel.
     assert_eq!(store::ABSENT, 0);
     assert_eq!(store::VERDICT_NO, 0);
     assert_eq!(store::CANCEL_UNKNOWN, 0);

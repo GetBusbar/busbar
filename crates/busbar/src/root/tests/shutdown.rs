@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE SHUTDOWN TAIL (audit busbar-src #1; ruling H2 U10; BUSBAR-1.6.0.md THE DESIGN, §7): it
-//! returns only once the journal records queued for the configured store have reached it, and both
-//! of the process's tails — the listener path's and the line-serve mode's — are this one function.
-
 use busbar_contract::caps::{DurableWrite, StepName};
 use busbar_contract::records::{
     MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
@@ -19,23 +15,16 @@ use super::*;
 use crate::root::durability::{build_on_store, read_chain, DurabilityConfig, JournalLane};
 use crate::root::store_double::RecordSlots;
 
-/// The node the test book is built as.
 const NODE: u64 = 31;
 
-/// How long the store refuses before it recovers: long enough that a tail which does not wait has
-/// returned well before, short enough to sit far inside [`RECORD_DRAIN`].
 const OUTAGE: std::time::Duration = std::time::Duration::from_millis(300);
 
-/// How long a test waits on the lane outside the tail.
 const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// A book over `slots` with no data directory (the production boot's shape for a child process
-/// with no disk), and a handle on the same lane its journal ships through.
 fn store_book(slots: &RecordSlots) -> (Arc<Mutex<Durability>>, JournalLane) {
     store_book_bounded(slots, busbar_kernel_wal::MEMORY_BUFFER_RECORDS)
 }
 
-/// [`store_book`], its lane to the store bounded at `capacity` records.
 fn store_book_bounded(
     slots: &RecordSlots,
     capacity: usize,
@@ -52,14 +41,6 @@ fn store_book_bounded(
     (Arc::new(Mutex::new(durability)), lane)
 }
 
-/// **THE SHUTDOWN TAIL DRAINS THE JOURNAL'S LANE BEFORE IT RETURNS.** Journal records wait in the
-/// lane while the store refuses; the store recovers a moment into the tail. The tail returns only
-/// once the store took every one of them, so the process that exits right after it (the line-serve
-/// mode's `std::process::exit`) leaves nothing queued.
-///
-/// RED before the fix: there was no shared tail (`root::shutdown` did not exist), and the line-serve
-/// mode's own tail flushed the budget and metering write-behind and exited, never touching the
-/// lane: the records it held at stdin EOF were lost with the process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn the_shutdown_tail_drains_the_journal_lane_before_it_returns() {
     let slots = RecordSlots::new();
@@ -96,15 +77,6 @@ async fn the_shutdown_tail_drains_the_journal_lane_before_it_returns() {
     recovers.join().expect("the recovery thread");
 }
 
-/// **THE SHUTDOWN TAIL HANDS THE STORE WHAT THE JOURNAL HELD BACK, TOO** (audit root r4 B-6;
-/// BUSBAR-1.6.0.md THE DESIGN §7, l.991-998: the kernel writes exactly what it is told, one sealed
-/// line per unit; `root::shutdown`'s docs: what the caller was answered for has to reach the store
-/// before the process is gone). The lane is full while the store refuses, so the journal's last
-/// records were turned away and are retained by the journal, outside the lane. The store recovers a
-/// moment into the tail. The tail returns only once those records reached the store as well.
-///
-/// RED before the fix: the tail drained only the lane's queue and never re-offered the journal's
-/// retained batch, so the process exited with settled records the store never saw.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn the_shutdown_tail_hands_the_store_what_the_journal_held_back() {
     let slots = RecordSlots::new();
@@ -114,7 +86,7 @@ async fn the_shutdown_tail_hands_the_store_what_the_journal_held_back() {
     let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     let written = {
         let mut durability = book.lock().expect("the book");
-        // Past the lane's bound: the lane holds four, the journal retains the rest.
+
         for _ in 0..6 {
             let _ = durability.journal.append(
                 &token,
@@ -203,8 +175,6 @@ enum FlushOutcome {
     PanicBudget,
 }
 
-/// The real governance store seam, delegating persistence/readback to the shared memory double.
-/// It keeps legacy-store behavior, so these controls also cover stores without deduped batches.
 struct FlushStore {
     inner: MemoryStore,
     budget: Option<Arc<FlushGate>>,

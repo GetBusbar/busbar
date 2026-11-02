@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR'S FAR END HANDS THE PLANE'S FAULT READING ON (`FarEnd::judged`; ARCHITECT 2026-10-05,
-//! plane first, then transport; row 68's FAULT_HEALTHY): a door unit's far end is the root's
-//! `DoorFar` over the kernel's `EgressFarEnd`, and the plane's reading of an answer it was handed
-//! (its `OnPieceOut::fault`, which the route pump passes to `FarEnd::judged`) must reach the walk's
-//! breaker through it. Proven over a routed door unit whose one member answers a relayed `502` (an
-//! operation performed at most once, so the answer reaches the plane as it came): the plane reads
-//! it as the destination answering (`FAULT_HEALTHY`), and the breaker records that reading, never
-//! the transport's transient. RED: `DoorFar` left `judged` to the trait's default, which drops the
-//! reading, so the transport's transient was recorded when the unit dropped.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
@@ -38,8 +28,6 @@ use busbar_kernel_testkit::test_support::tokens::{grant, pass};
 
 use super::DoorFar;
 use crate::root::door_steps::{door_facts, egress_pool, DoorCaller, DoorPools, DoorSteps};
-
-// ── the doubles ─────────────────────────────────────────────────────────────────────────────────
 
 /// A far end answering every open with a `502` (the transport's fault reading: transient) and a
 /// body, then completing.
@@ -265,13 +253,8 @@ impl Telemetry for Quiet {
     fn queued(&self, _: &str, _: i64) {}
 }
 
-// ── the cell ────────────────────────────────────────────────────────────────────────────────────
-
-/// THE PLANE'S HEALTHY READING OF A RELAYED 502 REACHES THE BREAKER THROUGH THE DOOR'S FAR END:
-/// recorded as the destination answering (a success), never as the transport's transient.
 #[tokio::test]
 async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end() {
-    // A routed unit of plane `p`: its one entry `e`, named directly, performed at most once.
     let facts = door_facts("p", &[], &[], &[], "a", Vec::new());
     let section: serde_yaml::Value = serde_yaml::from_str("e: {}").expect("yaml");
     let pools = DoorPools::of(&section, busbar_contract::section::TOOL_CALL_SECTION_KEY)
@@ -307,7 +290,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     let _ = steps.verify(&grant::<Dial>(), &ctx, &PrincipalId::new("vk_one"));
     let routed = steps.routed().expect("the unit is routed to `e`");
     assert!(steps.once(), "performed at most once");
-    // The egress over that route: one member, its far end answering 502.
+
     let pool_name = egress_pool("p", &routed);
     let destination = DestinationId::new(1);
     let book = Arc::new(Book::default());
@@ -378,7 +361,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         "an operation performed at most once is relayed"
     );
     assert_eq!(first.status.map(|(code, _)| code), Some(502));
-    // The plane reads the answer as the destination answering.
+
     far.judged(&t, FAULT_HEALTHY);
     while let Some(p) = far.next(&t).await {
         if p.last {

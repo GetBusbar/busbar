@@ -1,30 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TICKETS (row 132, the ARCHITECT ticket ruling): short-lived, single-use credentials the host
-//! mints for the principal of a unit, through the same token stamp as every busbar key, and admits
-//! once on a route that takes a ticket.
-//!
-//! A ticket is the minting plane's declared issued-id prefix followed by a signed token body whose
-//! claims name the principal's key (`sub`, its binding's current generation), the ticket audience
-//! ([`super::signing::TICKET_AUDIENCE`]) and the ticket's id (`t`). The prefix is the plane's word; the host never
-//! spells one of its own. Beside the ticket the host stores the record the plane handed it, keyed
-//! by the ticket id, until the ticket's expiry.
-//!
-//! ADMISSION is all-or-nothing and fail-closed: the prefix strips, the body verifies under the
-//! ticket audience and names a ticket id, the subject still stands as a key would (not revoked,
-//! enabled, the current generation), the ticket id is redeemed for the first time, and its record
-//! is there. Any other answer refuses, and a store that cannot say whether the ticket was spent
-//! refuses too. A ticket is never a key: its body carries no key prefix, and its audience is refused
-//! everywhere the gate does not expect a ticket.
-
 use super::*;
 use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, Retention};
 
-/// The record kind a ticket's record is stored under, keyed by the ticket id.
 pub const TICKET_RECORD_KIND: &str = "ticket";
 
-/// The record kind a ticket's single-use admission is spent under.
 pub const TICKET_SPENT_KIND: &str = "ticket-spent";
 
 /// Why a ticket was not minted. Each answer is the refusal's reason, never secret material.
@@ -43,7 +24,6 @@ pub enum TicketRefusal {
 }
 
 impl TicketRefusal {
-    /// The refusal's reason.
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
@@ -56,7 +36,6 @@ impl TicketRefusal {
     }
 }
 
-/// A fresh ticket id: 128 bits from the OS CSPRNG, hex.
 fn ticket_id() -> Result<String, TicketRefusal> {
     let mut raw = [0u8; 16];
     getrandom::fill(&mut raw).map_err(|_| TicketRefusal::NoRandomness)?;
@@ -64,13 +43,6 @@ fn ticket_id() -> Result<String, TicketRefusal> {
 }
 
 impl GovState {
-    /// MINT A TICKET for the key `key_id`, prefixed with `prefix`, living `ttl_secs` from `now`
-    /// (Unix seconds) clamped to `ceiling_secs` (the deployment's mint ceiling) and never past the
-    /// key's own expiry, and store `record` beside it. Answers the ticket and its expiry.
-    ///
-    /// # Errors
-    ///
-    /// The [`TicketRefusal`] that stopped the mint; nothing is stored then.
     pub fn mint_ticket(
         &self,
         key_id: &str,
@@ -96,9 +68,7 @@ impl GovState {
         }
         let id = ticket_id()?;
         let store = self.store();
-        // Lapsed tickets go as each new one is minted: a record lives no longer than its ticket. The
-        // record's `ts` is its ticket's expiry, so the kind is purged by age, on the purge that
-        // carries its rule as every purge of a kind does.
+
         let _purged = store.purge_plane_records(TICKET_RECORD_KIND, now, Retention::Age);
         store
             .upsert_plane_record(PlaneRecordRef {
@@ -118,10 +88,6 @@ impl GovState {
         Ok((format!("{prefix}{body}"), exp))
     }
 
-    /// ADMIT A TICKET presented as `credential` on a route that takes tickets prefixed `prefix`, at
-    /// `now` (Unix seconds): the key it was minted for and the record stored beside it, once. `None`
-    /// for anything that is not a standing, unspent ticket of this deployment, or when the store
-    /// cannot answer; the ticket is spent by the call that answers `Some`.
     pub fn admit_ticket(
         &self,
         prefix: &str,
@@ -145,9 +111,6 @@ impl GovState {
         Some((key, record))
     }
 
-    /// Check a ticket for inbound preflight without redeeming it or exposing its record. The
-    /// The store checks expiry without consuming the ticket. The final request gate must still
-    /// call `admit_ticket`: another request may spend it meanwhile.
     pub(crate) fn peek_ticket(
         &self,
         prefix: &str,
@@ -162,8 +125,6 @@ impl GovState {
             .map(|_| key)
     }
 
-    // Signature, audience and key standing are shared. The store owns ticket deadline checks.
-    // Both callers use the same ticket-verifier policy.
     fn checked_ticket(
         &self,
         prefix: &str,

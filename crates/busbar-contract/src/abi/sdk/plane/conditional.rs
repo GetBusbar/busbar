@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Logical conditional record publication. The guest names no physical key or operation id.
-//! Publish intent only with PENDING and no other output. Retain the candidate until its exact
-//! receipt arrives on RESUME/DRIVE. ConditionConflict permits replanning that operation;
-//! Applied permits the next independent publication. Refused and Indeterminate permit neither.
 
 use crate::abi::mechanism::{extensions, ticket::Ticket};
 use crate::abi::sdk::secret_bytes::SecretBytes;
@@ -441,8 +438,7 @@ pub fn read_capability(bytes: &[u8]) -> Result<Option<Capability>, &'static str>
     Ok(Some(c))
 }
 /// Encode one immutable pending candidate, bound to this crossing's capability.
-/// The returned allocation belongs to the caller; retain it under a wiping owner when its
-/// record bytes contain credentials. Private SDK uses keep that owner throughout encoding.
+
 pub fn encode_request(request: &Request) -> Result<Vec<u8>, &'static str> {
     let mut bytes = encode_request_held(request)?;
     Ok(std::mem::take(&mut *bytes))
@@ -516,8 +512,7 @@ pub(crate) fn encode_request_held(request: &Request) -> Result<Zeroizing<Vec<u8>
     if out.len() > crate::abi::mechanism::check::HARD_MAX_BYTES as usize {
         return Err(INVALID);
     }
-    // Both the body and its envelope remain wiping owners. The final allocation is sized once;
-    // extension encoding through an ordinary growing Vec would retire unwiped body prefixes.
+
     let mut encoded = SecretBytes::with_capacity(extensions::entry_len(INTENT, &out));
     encoded.extend_from_slice(&(INTENT.len() as u16).to_le_bytes());
     encoded.extend_from_slice(INTENT.as_bytes());
@@ -559,8 +554,6 @@ impl Drop for HeldExpected {
     }
 }
 
-// Only the decoder owns this guard. The public wire carriers retain their existing move/Drop
-// behavior; success transfers the complete Request to its caller without making another copy.
 struct Decoding(Request);
 impl Decoding {
     fn take(mut self) -> Request {
@@ -582,7 +575,7 @@ impl Drop for Decoding {
     }
 }
 /// Decode and own every candidate byte before returning the plugin's answer lease.
-/// A failed decode wipes all partial copies. Success transfers raw record custody to the caller.
+
 pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
     if bytes.len() > crate::abi::mechanism::check::HARD_MAX_BYTES as usize {
         return Err(INVALID);
@@ -609,7 +602,7 @@ pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
         let kind = r.u32()?;
         let mut key = held_bytes(r.bytes()?);
         let mut expected = HeldExpected::new(r.expected()?);
-        // Reserve before releasing the field guards: no fallible work remains during handoff.
+
         decoded.0.candidate.predicates.reserve(1);
         decoded.0.candidate.predicates.push(RecordPredicate {
             kind,
@@ -805,9 +798,7 @@ pub fn read_settlement(bytes: &[u8]) -> Result<Option<Settlement>, &'static str>
 }
 
 /// Acknowledge only an exact receipt consumed by outcome-only settlement. This is not a request.
-/// Emit this alone on a pending DRIVE/TICK. Keep the matched request and ACK marker until a
-/// subsequent valid same-instance driver input has no matching settlement. The host lends one
-/// sticky receipt until successful ACK consumption; failed/SHORT answers do not consume it.
+
 pub fn encode_settlement_ack(settlement: &Settlement) -> Vec<u8> {
     let mut body = Vec::new();
     authority(&mut body, settlement.capability);
@@ -1355,8 +1346,7 @@ mod tests {
                     "observe the original secret blob and the final composed copy"
                 );
             }
-            // Encoder growth and repeated/rejected candidate temporaries are registered too;
-            // every one of them must satisfy the same wipe-before-free proof below.
+
             for record in &observations.payloads {
                 assert!(record.freed, "secret allocation was not freed: {record:?}");
                 #[cfg(target_os = "linux")]

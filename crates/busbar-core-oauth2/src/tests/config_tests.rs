@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BOOT REFUSALS, and the one path everybody gets backwards.
-
 use crate::config::{AsCfgError, AsIdentity, OauthAsCfg, StaticClientCfg};
 
 fn cfg(issuer: &str) -> OauthAsCfg {
@@ -18,10 +16,6 @@ fn cfg(issuer: &str) -> OauthAsCfg {
     }
 }
 
-/// RFC 8414 §3.1 PUTS THE WELL-KNOWN SEGMENT FIRST, and RFC 9728 §3.1 puts it last. The two
-/// documents this deployment serves therefore have their paths built in OPPOSITE orders, a few lines
-/// apart, and getting either backwards means every conforming client's discovery 404s while the
-/// server looks healthy.
 #[test]
 fn the_authorization_server_metadata_path_inserts_the_issuer_path_after_the_well_known_segment() {
     let id = AsIdentity::from_cfg(&cfg("https://gw.example.com/tenant1")).expect("valid");
@@ -35,7 +29,6 @@ fn the_authorization_server_metadata_path_inserts_the_issuer_path_after_the_well
     assert_eq!(id.jwks_uri(), "https://gw.example.com/tenant1/jwks");
 }
 
-/// An issuer at an origin root has no path to insert, and the well-known path is the bare one.
 #[test]
 fn an_issuer_with_no_path_serves_the_bare_well_known_document() {
     let id = AsIdentity::from_cfg(&cfg("https://gw.example.com")).expect("valid");
@@ -47,10 +40,6 @@ fn an_issuer_with_no_path_serves_the_bare_well_known_document() {
     assert_eq!(id.consent_url(), "https://gw.example.com/consent");
 }
 
-/// A TRAILING SLASH IS A DIFFERENT SERVER. Every endpoint is `{issuer}/name`, so `https://host/`
-/// derives `https://host//token`; and RFC 9207's `iss` comparison is byte-for-byte, so a client that
-/// discovered one spelling will refuse the other. Refused at boot rather than normalised away,
-/// because normalising hands back a string that no longer equals what the operator wrote.
 #[test]
 fn an_issuer_with_a_trailing_slash_is_refused_at_boot() {
     assert!(matches!(
@@ -71,7 +60,6 @@ fn an_issuer_that_is_not_an_absolute_url_is_refused_at_boot() {
     ));
 }
 
-/// RFC 8414 §2 defines the issuer as a URL with no query and no fragment.
 #[test]
 fn an_issuer_with_a_query_or_fragment_is_refused_at_boot() {
     for bad in ["https://gw.example.com?x=1", "https://gw.example.com#f"] {
@@ -85,10 +73,6 @@ fn an_issuer_with_a_query_or_fragment_is_refused_at_boot() {
     }
 }
 
-/// A `default_grant` entry that is not an RFC 6749 §3.3 scope token is refused AT BOOT, naming the
-/// value. It has to be: `policy::default_grant_scopes` builds the registration ceiling from this
-/// list and `expect`s it, so an unvalidated entry would be a panic on the first registration rather
-/// than a message an operator can act on.
 #[test]
 fn a_default_grant_entry_that_is_not_a_scope_token_is_refused_at_boot() {
     let mut c = cfg("https://gw.example.com");
@@ -99,10 +83,6 @@ fn a_default_grant_entry_that_is_not_a_scope_token_is_refused_at_boot() {
     ));
 }
 
-/// THE REGISTRATION PATH IS ALWAYS DERIVED. Every validated identity carries a registration path,
-/// under the issuer's own prefix, with nothing to switch. Mirrors the metadata document, which is
-/// what `oauth-as` routes from; the two must agree or busbar mounts a path the service does not
-/// answer.
 #[test]
 fn the_registration_path_is_always_derived() {
     assert_eq!(
@@ -120,10 +100,6 @@ fn the_registration_path_is_always_derived() {
     );
 }
 
-/// THE FAPI 2.0 POSTURE IS OFF UNLESS THE OPERATOR WRITES IT. An `oauth_as:` block that does not
-/// name `fapi2` is the plain OAuth 2.1 server: no PAR endpoint, no mandatory DPoP, no profile
-/// narrowing. Proven from the operator's own spelling (the block as written), not from the struct
-/// default, because `#[serde(default)]` is the line that makes it true.
 #[test]
 fn the_fapi2_posture_is_off_unless_the_block_names_it() {
     let written: OauthAsCfg =
@@ -137,7 +113,6 @@ fn the_fapi2_posture_is_off_unless_the_block_names_it() {
     );
 }
 
-/// `fapi2: true` is the one line that turns the FAPI 2.0 Security Profile posture on.
 #[test]
 fn fapi2_true_turns_the_posture_on() {
     let written: OauthAsCfg = serde_json::from_value(serde_json::json!({
@@ -148,9 +123,6 @@ fn fapi2_true_turns_the_posture_on() {
     assert!(AsIdentity::from_cfg(&written).expect("valid").fapi2());
 }
 
-/// RFC 9126 s5: the pushed authorization request endpoint is derived under the issuer exactly as
-/// every other endpoint is, so a tenant-prefixed issuer keeps it under the prefix, and the absolute
-/// URL the metadata advertises is the path the router mounts.
 #[test]
 fn the_par_endpoint_is_derived_under_the_issuer() {
     let id = AsIdentity::from_cfg(&cfg("https://gw.example.com/tenant1")).expect("valid");
@@ -160,7 +132,6 @@ fn the_par_endpoint_is_derived_under_the_issuer() {
     assert_eq!(root.par_path(), "/par");
 }
 
-/// A public ES256 JWK as an operator pastes it: the RFC 7517 members, plus `use`/`alg` hints.
 fn public_jwk() -> serde_json::Value {
     serde_json::json!({
         "kty": "EC", "crv": "P-256", "kid": "k1", "use": "sig", "alg": "ES256",
@@ -186,7 +157,6 @@ fn client(jwk: serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// STATIC CLIENTS ARE OFF UNLESS CONFIGURED: a block that names no `clients` declares none.
 #[test]
 fn no_static_client_is_declared_unless_the_block_lists_one() {
     let written: OauthAsCfg =
@@ -199,8 +169,6 @@ fn no_static_client_is_declared_unless_the_block_lists_one() {
         .is_empty());
 }
 
-/// A confidential `private_key_jwt` client the operator provisions out of band: its id, its exact
-/// redirect URIs, and the PUBLIC half of its ES256 key, as RFC 7591 s2 `jwks` spells it.
 #[test]
 fn a_static_private_key_jwt_client_with_a_public_jwk_validates() {
     let id = with_client(client(public_jwk())).expect("a well-formed static client validates");
@@ -213,9 +181,6 @@ fn a_static_private_key_jwt_client_with_a_public_jwk_validates() {
     );
 }
 
-/// THE REFUSALS, each at boot and each naming the client: a private key (`d`), a key that is not
-/// EC P-256, an algorithm other than ES256, a coordinate that is not 32 bytes, no key at all, no
-/// redirect URI, a relative or fragment-carrying redirect URI, an empty id, and a duplicate id.
 #[test]
 fn a_malformed_static_client_is_refused_at_boot() {
     let refused = |c: serde_json::Value, why: &str| match with_client(c) {
@@ -264,8 +229,6 @@ fn a_malformed_static_client_is_refused_at_boot() {
     );
 }
 
-/// A 2048-bit RSA modulus as base64url: 256 bytes with the top bit set. Validation reads its length
-/// and nothing else, so a synthetic one is the honest fixture here.
 fn modulus(bytes: usize) -> String {
     base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -277,8 +240,6 @@ fn rsa_jwk() -> serde_json::Value {
     serde_json::json!({ "kty": "RSA", "kid": "r1", "use": "sig", "alg": "PS256", "n": modulus(256), "e": "AQAB" })
 }
 
-/// FAPI 2.0 s5.4.1 admits PS256 alongside ES256: a client may be provisioned with the public half
-/// of an RSA key (RFC 7518 s6.3.1 `n`, `e`), at least 2048 bits.
 #[test]
 fn a_static_ps256_client_with_an_rsa_public_jwk_validates() {
     let id = with_client(client(rsa_jwk())).expect("a 2048-bit RSA public JWK for PS256 validates");
@@ -288,9 +249,6 @@ fn a_static_ps256_client_with_an_rsa_public_jwk_validates() {
     with_client(client(no_alg)).expect("an RSA key with no `alg` is PS256");
 }
 
-/// The RSA refusals: a private key (`d`), a modulus under 2048 bits, an algorithm other than PS256
-/// (RS256 is what FAPI 2.0 forbids), a missing `e`, and a client whose keys are not one algorithm
-/// (a registration carries ONE assertion algorithm).
 #[test]
 fn a_malformed_rsa_static_client_is_refused_at_boot() {
     let refused = |c: serde_json::Value, why: &str| match with_client(c) {
@@ -314,11 +272,6 @@ fn a_malformed_rsa_static_client_is_refused_at_boot() {
     refused(mixed, "one client, one algorithm");
 }
 
-// THE KERNEL HANDS THE BLOCK TO ITS OWNER. The kernel carries `oauth_as:` as an opaque value and
-// `config::resolve` asks this crate (through the seam) to refuse it, so these run `resolve` itself:
-// a refusal that only held when the kernel named `AsIdentity` would pass the tests above and fail
-// here.
-
 fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::RootCfg, Vec<String>> {
     crate::testkit::install_test_seam();
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
@@ -330,7 +283,6 @@ fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::Root
     busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
 }
 
-/// An invalid `oauth_as:` block is refused by `resolve` with the owner's text, word for word.
 #[test]
 fn an_invalid_block_is_refused_at_resolve_with_this_crates_text() {
     let refused = resolve_block(serde_json::json!({ "issuer": "https://gw.example.com/" }))
@@ -343,7 +295,6 @@ fn an_invalid_block_is_refused_at_resolve_with_this_crates_text() {
     assert_eq!(refused, vec![AsCfgError::MissingIssuer.to_string()]);
 }
 
-/// A block the owner cannot even parse (an unknown key) is refused at resolve and names the block.
 #[test]
 fn an_unknown_key_in_the_block_is_refused_at_resolve() {
     let refused = resolve_block(serde_json::json!({
@@ -358,8 +309,6 @@ fn an_unknown_key_in_the_block_is_refused_at_resolve() {
     );
 }
 
-/// `--validate` and boot resolve the signing key, so the owner must list it at its config path, and
-/// a block without one lists nothing.
 #[test]
 fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
     let resolved = resolve_block(serde_json::json!({
@@ -380,10 +329,6 @@ fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
     assert!(resolved.oauth_as.expect("accepted").secret_refs.is_empty());
 }
 
-/// RED (audit core-oauth2#6): a refresh chain ends. Absent, it ends after thirty days; written, it
-/// ends when the operator says, and the built server holds it to that (before the fix the server
-/// was built with no refresh lifetime at all: a refresh token taken once was a credential
-/// forever, and the key did not exist).
 #[test]
 fn a_refresh_chain_has_a_bounded_lifetime() {
     let plain: crate::config::OauthAsCfg =
@@ -420,8 +365,6 @@ fn a_refresh_chain_has_a_bounded_lifetime() {
     );
 }
 
-/// RED (audit core-oauth2#6): a lifetime of zero, or past its ceiling (a day for an access token,
-/// a year for a refresh chain), is refused at boot.
 #[test]
 fn a_token_lifetime_out_of_range_is_refused() {
     for (key, secs) in [
@@ -444,12 +387,6 @@ fn a_token_lifetime_out_of_range_is_refused() {
     }
 }
 
-/// AN ABSOLUTE URL IS READ WHERE THE DIALLING STACK READS IT. A browser and every HTTP client end a
-/// web URL's authority at a `\` as at a `/`: `https://as.example\@evil.example` is the server
-/// `as.example` with the path `/@evil.example`, not the server the text after the `@` names. An
-/// issuer or a redirect URI is compared byte for byte, so one whose authority two readers split
-/// differently is refused at boot. RED before the one authority split: the authority ran to the
-/// first `/`, and both were accepted.
 #[test]
 fn an_absolute_url_split_differently_by_the_dialling_stack_is_refused_at_boot() {
     for bad in [

@@ -1,70 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! BUSBAR AS AN OAUTH 2.1 AUTHORIZATION SERVER (`oauth_as:`), off unless configured.
-//!
-//! ## 1.6.0: this crate is the plane half of the `oauth_as` split
-//!
-//! The kernel's `oauth_as` module used to hold this whole plane. 1.6.0 moved all of it out to this
-//! crate, which depends on `busbar-kernel` ONE-WAY (Cargo hard-refuses the reverse edge, so this is
-//! enforced by the compiler, not by convention); the kernel keeps only the seam
-//! (`busbar_kernel::oauth_as::seam`) and carries the config block opaque:
-//!
-//! * [`plane`] — `AsPlane`, the built runtime object for one config generation.
-//! * [`routes`] — the mount: which paths this plane serves, at what admission bar.
-//! * [`consent`] — the consent screen's session state and `oauth-as`'s subject/approval resolvers.
-//! * [`cimd`] — Client ID Metadata Document fetch-and-validate (the CIMD registration mechanism).
-//! * [`shared`] — what the server holds, kept in the deployment's store so every node on it serves
-//!   one server.
-//! * [`policy`] — the DCR registration ceiling and the impersonation refusal.
-//! * [`signer`] — the plane's own ES256 key (distinct from `busbar_kernel::governance::signing`'s
-//!   token signer; this plane never touches busbar's own resource-server signing material).
-//! * [`testkit`] — the `TestAppOauthExt` extension trait, the plane's `busbar_kernel_testkit::test_support`
-//!   fixture builder, kept here so the kernel names no plane type in its own fixtures.
-//!
-//! * [`config`] — the `oauth_as:` block (`OauthAsCfg`/`AsIdentity`), its boot refusals and its
-//!   secret-reference walk. The kernel carries the block as an OPAQUE value (`DeployCfg::oauth_as`)
-//!   and hands it to this crate through the seam's `check` (parse, validate, list secret
-//!   references) and `build`; it never names these types.
-//!
-//! ## The seam
-//!
-//! The kernel's type-erased `App::oauth_as` slot (read through `App::oauth_as_any`),
-//! `router::base_data_router`'s mount call and `appbuild`'s construction all go through
-//! `busbar_kernel::oauth_as::seam::AsPlaneSeam` — a small fn-pointer
-//! set (`check`/`build`/`mount`/`verify_dpop`) for a SINGLETON server: no named-definition map, no
-//! scope-kind grants, no admin CRUD verbs. [`install`] registers this crate's implementation of
-//! that seam; the composition root (`crates/busbar`'s `main`) calls it once, unconditionally —
-//! `oauth_as` carries no feature flag, because `oauth-as` (the underlying crate) is a normal
-//! dependency and costs nothing until configured.
-//!
-//! ## The connection table
-//!
-//! The one outbound fetch this crate makes (a Client ID Metadata Document, [`cimd`]) rides the
-//! deployment's ONE root Connector (THE DESIGN §5), whose destination guard is the only check on
-//! where it goes. The composition root names that table through [`Connections`], a type it hands
-//! [`install`] as a parameter: the seam's `build` is instantiated over it, so the table reaches
-//! every built server without a process-wide slot of this crate's own.
-
 pub mod cimd;
 pub mod config;
 pub mod consent;
-/// The hosted browser login flow (`GET /auth/token`; THE DESIGN §8), moved from the kernel
-/// and reached through the kernel's login seam.
+
 mod hosted_login;
 pub mod plane;
 pub mod policy;
 pub mod routes;
 pub mod shared;
 pub mod signer;
-// `testkit`: this crate's own tests' `oauth_as:`-configured `TestApp` builder.
+
 #[cfg(test)]
 pub mod testkit;
 
-// A module whose tests are its own wires them from inside itself (`#[path = "tests/…"] mod …;`):
-// `cimd`, `consent`, `plane`, `policy`, `routes`, `shared` and `signer`. The tests below span more
-// than one module (the config lowering, the reload, the route table, the whole mount + consent +
-// callback flow), so they are wired here, at the crate root.
 #[cfg(test)]
 #[path = "tests/config_tests.rs"]
 mod config_tests;
@@ -84,12 +34,7 @@ mod mount_tests;
 #[path = "tests/reload_tests.rs"]
 mod reload_tests;
 
-/// THE CONNECTION TABLE THE COMPOSITION ROOT HANDS THIS CRATE: the root Connector's table, read
-/// as the connection-table traits the contract defines, and the instance identity this crate's
-/// needs are declared under on it. `None` = no table (a build with no connector): every outbound
-/// fetch then fails closed.
 pub trait Connections: 'static {
-    /// The table, read at the moment a fetch needs it.
     fn table() -> Option<Table>;
 }
 
@@ -104,7 +49,6 @@ pub struct Table {
     pub conns: std::sync::Arc<dyn busbar_contract::conn::PollConns>,
 }
 
-/// The table of a build with no connector: none, so every outbound fetch fails closed.
 pub struct NoConnections;
 
 impl Connections for NoConnections {
@@ -113,17 +57,7 @@ impl Connections for NoConnections {
     }
 }
 
-/// Register this crate's implementation of the authorization-server seam
-/// (`busbar_kernel::oauth_as::seam::AsPlaneSeam`) into the kernel's process-wide registration slot,
-/// every server it builds fetching over `C`'s connection table.
-///
-/// Called EXACTLY ONCE, by the composition root (`crates/busbar`'s `main`), unconditionally and
-/// before any config loads — mirroring `busbar_kernel::plane_driver::registry::install_planes`'s discipline
-/// for the same reason. `oauth_as:` carries no feature flag (it is a normal dependency, like the
-/// underlying `oauth-as` crate always was), so every real build calls this.
 pub fn install<C: Connections>() {
-    // The hosted login flow: the kernel mounts `GET /auth/token` and routes a credential-form
-    // `POST /auth/token` through this seam.
     busbar_kernel::auth::login::seam::install(hosted_login::SEAM);
     busbar_kernel::oauth_as::seam::install_as_plane_seam(
         busbar_kernel::oauth_as::seam::AsPlaneSeam {

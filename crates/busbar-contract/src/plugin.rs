@@ -1,8 +1,4 @@
 //! The one base trait every plugin implements, and the closed set of kinds.
-//!
-//! The core-to-plugin section of the design states the shape: one base trait, one registry type,
-//! and registration as the only way in. Every plugin is passive — the kernel registers it, calls
-//! it, and consumes what it returns. Nothing here lets a plugin call back into the kernel.
 
 use core::fmt;
 
@@ -11,12 +7,7 @@ pub(crate) mod sealed {
     pub trait KindSeal {}
 
     /// The private supertrait that closes [`KernelSeal`](super::KernelSeal) (#65).
-    ///
-    /// This module is `pub(crate)`, so no crate outside this one can NAME this trait, and a trait
-    /// that cannot be named cannot be implemented. That makes `KernelSeal` implementable by
-    /// exactly the types this crate implements it for — the capability tokens in
-    /// [`crate::caps::token`] — and turns "only the kernel builds a kernel-built view" from a
-    /// source scan into a thing the type checker enforces.
+
     pub trait KernelSealed {}
 }
 
@@ -53,20 +44,8 @@ impl Kind {
         K::KIND
     }
 
-    // The PURE kinds — plane, hook, and the auth plugins that do no I/O of their own — are the ones
-    // the core-to-plugin section scopes its source denylist to; the input/output kinds (store,
-    // secret, export, and the network-backed auth plugins) own their input and output by definition
-    // and are bounded by their signature, a deadline and an access journal entry instead. That
-    // partition was also spelled here as a predicate no caller in the workspace ever asked, and the
-    // rule it stated is enforced by `source-denylist:*` in the construction gate, over the crates
-    // rather than over this enum. One statement of it, in the place that acts on it.
-
     /// THE KIND → VERB LIST: the config root key each kind is configured under. The one place a
-    /// kind's root key is spelled — every config reader, `--validate`, `busbar migrate` and the
-    /// selection step read it from here.
-    ///
-    /// A plane's verb is [`Verb::Declared`]: plane verbs are instance knowledge the kernel does not
-    /// hold, so each plane plugin states its own in its declaration.
+
     #[must_use]
     pub const fn verb(self) -> Verb {
         match self {
@@ -90,10 +69,7 @@ impl Kind {
     }
 
     /// The root key of a non-plane kind — how kernel and plugin code name it.
-    ///
-    /// # Panics
-    /// For [`Kind::Plane`] (at compile time where const-evaluated): a plane's verbs are declared by
-    /// each plane, never named by the kernel.
+
     #[must_use]
     pub const fn root(self) -> &'static str {
         match self.root_key() {
@@ -140,10 +116,7 @@ impl fmt::Display for Kind {
 }
 
 /// A compile-time stand-in for one kind.
-///
-/// The trait is sealed by a private supertrait, so the marker set cannot be extended outside this
-/// crate. That is the whole of the sealed-kind pattern: a kind trait below is implementable by any
-/// plugin, but the *set* of kinds is not.
+
 pub trait KindMarker: sealed::KindSeal {
     /// Which kind this marker stands for.
     const KIND: Kind;
@@ -189,17 +162,10 @@ pub mod markers {
 }
 
 /// The native plugin interface generation a plugin was built against.
-///
-/// Declared one crate down, beside the transport kind's own generation, so that the two constants
-/// a registry compares are the same type rather than two newtypes that happen to wrap the same
-/// number and compare equal to nothing.
 pub use crate::transport::AbiVersion;
 
 /// The base trait every plugin implements.
-///
-/// It is deliberately tiny. Everything a plugin *does* is on its kind trait; everything a plugin
-/// *is* is here, and all three answers are constants in practice. The trait is object-safe because
-/// the registry holds plugins behind a pointer.
+
 pub trait Plugin: Send + Sync + 'static {
     /// The plugin's registry key. This is the open-vocabulary name the kernel dispatches on.
     fn key(&self) -> &'static str;
@@ -304,8 +270,7 @@ pub trait KernelSeal: sealed::KernelSealed {
 pub struct TestKernelSeal;
 
 /// Is `v` a well-formed semver core (`MAJOR.MINOR.PATCH`, each a decimal integer, with an optional
-/// `-pre`/`+meta` suffix)? A plugin version and an anti-downgrade floor are both judged by it: the
-/// strict three-component core is what the anti-downgrade ordering depends on.
+
 #[must_use]
 pub fn valid_semver(v: &str) -> bool {
     let core = v.split(['-', '+']).next().unwrap_or("");

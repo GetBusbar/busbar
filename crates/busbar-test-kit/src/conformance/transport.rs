@@ -117,12 +117,6 @@ pub(super) enum Script {
     Carrier,
 }
 
-/// Which script a transport's declared `role` runs, and for a framer, which framing its tail
-/// states (`datagram`). Any other role is not a transport this suite knows, and fails.
-///
-/// # Errors
-///
-/// The role is no known role.
 pub(super) fn script_for(role: u32, datagram: bool) -> Result<Script, String> {
     match role {
         ROLE_FRAMER if datagram => Ok(Script::Datagram),
@@ -136,19 +130,14 @@ pub(super) fn script_for(role: u32, datagram: bool) -> Result<Script, String> {
 use crate::dispatch::kinds::transport::{Transport, TransportFacts};
 use crate::dispatch::{Called, Frame, InFrame, OutFrame, Plugin};
 
-/// The tight sink's wire bytes.
 pub const TIGHT_WIRE: usize = 4;
-/// The tight sink's frame bytes.
+
 pub const TIGHT_FRAME: usize = 3;
-/// The ample sink's bytes (each buffer): room for any script input.
+
 const AMPLE: usize = 4096;
-/// A re-drive that has not ended after this many calls is a framer that never drains.
+
 const MAX_REDRIVE: usize = 4096;
 
-// ---- the inputs ----
-
-/// One byte-string input: a JSON string's UTF-8 bytes, or `{ "hex": "<bytes>" }` for bytes a JSON
-/// string cannot hold (a binary frame's header, say).
 pub(super) fn text(v: &serde_json::Value, what: &str) -> Vec<u8> {
     match v {
         serde_json::Value::String(s) => s.as_bytes().to_vec(),
@@ -161,7 +150,6 @@ pub(super) fn text(v: &serde_json::Value, what: &str) -> Vec<u8> {
     }
 }
 
-/// `hex`'s bytes (two digits a byte, either case); `None` for anything else.
 fn unhex(hex: &str) -> Option<Vec<u8>> {
     let digits = hex.as_bytes();
     if !digits.len().is_multiple_of(2) {
@@ -173,7 +161,6 @@ fn unhex(hex: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// An optional input: absent is empty.
 fn opt_text(v: &serde_json::Value, what: &str) -> Vec<u8> {
     if v.is_null() {
         Vec::new()
@@ -190,8 +177,6 @@ fn texts(v: &serde_json::Value, what: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Injective transcript bytes. Ordinary text keeps its existing spelling. Invalid UTF-8 and
-/// text starting with the reserved marker use that marker followed by the exact hex bytes.
 pub(super) fn lossy(b: &[u8]) -> String {
     match std::str::from_utf8(b) {
         Ok(text) if !text.starts_with('\u{e000}') => text.to_owned(),
@@ -199,12 +184,10 @@ pub(super) fn lossy(b: &[u8]) -> String {
     }
 }
 
-/// `ceil(len / cap)`, at least 1: the crossings a re-driven op makes to carry `len` bytes.
 fn sinkfuls(len: usize, cap: usize) -> u64 {
     len.div_ceil(cap).max(1) as u64
 }
 
-/// The crossings a re-driven op makes to answer `frames` one piece at a time.
 fn frame_sinkfuls(frames: &[Vec<u8>]) -> u64 {
     frames
         .iter()
@@ -213,9 +196,6 @@ fn frame_sinkfuls(frames: &[Vec<u8>]) -> u64 {
         .max(1)
 }
 
-// ---- the host's sink ----
-
-/// The host's buffers for framer ops.
 pub(super) struct Sink {
     pub(super) wire: Vec<u8>,
     pub(super) frame: Vec<u8>,
@@ -242,7 +222,6 @@ impl Sink {
         }
     }
 
-    /// The tight sink: every op that owes more than it holds answers `YIELD_MORE`.
     fn tight() -> Self {
         Self::new(TIGHT_WIRE, TIGHT_FRAME, 1)
     }
@@ -296,7 +275,7 @@ impl Yielded {
         if c.outcome != Outcome::Ready {
             return;
         }
-        // The dispatcher's kind check held every length within its buffer before this reads it.
+
         let wire_len = (o.yielded.wire_len as usize).min(sink.wire.len());
         self.wire.extend_from_slice(&sink.wire[..wire_len]);
         let frame_len = (o.yielded.frame_len as usize).min(sink.frame.len());
@@ -321,7 +300,6 @@ impl Yielded {
         self.outcome == Some(Outcome::Ready)
     }
 
-    /// The transcript line: deterministic (no framing token, only whether one was minted).
     fn line(&self) -> String {
         let frames: Vec<String> = self.frames.iter().map(|f| lossy(f)).collect();
         format!(
@@ -335,8 +313,6 @@ impl Yielded {
         )
     }
 }
-
-// ---- the framer ops ----
 
 /// One framer op, by what it carries.
 #[derive(Clone, Copy)]
@@ -353,12 +329,10 @@ enum Op<'a> {
 }
 
 impl Op<'_> {
-    /// The re-call a `YIELD_MORE` asks for: the same op with no new bytes. An `adopt` minted its
-    /// framing on its first call, so what it still owes is answered by a `timer` on it.
     fn again(self) -> Self {
         match self {
             Op::Ingest(_, end) => Op::Ingest(&[], end),
-            // The host's re-call carries no bytes and completes no frame (as the connector's does).
+
             Op::Emit(..) => Op::Emit(&[], false),
             Op::Refuse(_) => Op::Refuse(&[]),
             Op::Adopt(_) | Op::Begin(..) => Op::Timer,
@@ -373,14 +347,13 @@ pub(super) fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: I) -
     (c, f.out)
 }
 
-/// One crossing of `op` on `framing` into `sink`.
 fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (Called, FramerOut) {
     let raw = sink.raw();
     match op {
         Op::Begin(side, target) => {
             let mut i: BeginIn = input();
             (i.side, i.sink, i.target) = (side, raw, abi_bytes(target));
-            // The suite runs no connection security: its connections ride in the clear.
+
             i.scheme = busbar_contract::abi::host::service::SCHEME_PLAIN;
             go(p, slot::BEGIN, i)
         }
@@ -431,7 +404,6 @@ fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (C
     }
 }
 
-/// `op` once, gathered.
 fn once(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> Yielded {
     let mut y = Yielded::default();
     let (c, o) = cross(p, framing, op, sink);
@@ -439,8 +411,6 @@ fn once(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> Yie
     y
 }
 
-/// `op`, then its re-call for as long as the sink was too small (`YIELD_MORE`): the host's own
-/// re-drive.
 fn pump(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> Yielded {
     let mut y = Yielded::default();
     let (c, o) = cross(p, framing, op, sink);
@@ -456,9 +426,6 @@ fn pump(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> Yie
     y
 }
 
-/// The ops of the role a framer does not play, in slot order: each is the SDK's REFUSED stub
-/// (abi/transport: "a transport fills the slots of the role it does not play with a stub that
-/// answers REFUSED"). One crossing each.
 const CARRIER_OPS: [&str; 8] = [
     "listen", "accept", "dial", "read", "write", "flush", "shut", "arrival",
 ];
@@ -493,14 +460,8 @@ pub(super) fn carrier_line(outcomes: &[Outcome; 8]) -> String {
         .join(" ")
 }
 
-/// One head line, its name and its value.
 type HeadLine = (Vec<u8>, Vec<u8>);
 
-/// THE FRAMER'S OWN HEAD LINES at `target` (`LocateIn::defaults_buf`), read as the connector reads
-/// them: its line, and the lines, `name: value` each, in the framer's order. A dial that states its
-/// request as fields and a body has them merged into the request's head before it is encoded, as
-/// the host's walk adds each one its request does not carry before the auth signs the head (THE
-/// DESIGN section 6, step 5).
 fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, (Vec<HeadLine>, bool)) {
     let (mut authority, mut name, mut alpn, mut defaults) = (
         vec![0_u8; AMPLE],
@@ -541,8 +502,6 @@ fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, (Vec<HeadL
     (line, (lines, states_length))
 }
 
-/// One `locate` of `target` with an authority buffer of `cap` bytes: its line, and its SHORT
-/// answer's re-call token with the size it named.
 pub(super) fn locate(
     p: &Plugin<Transport>,
     target: &[u8],
@@ -551,8 +510,6 @@ pub(super) fn locate(
     locate_on(p, target, cap, None)
 }
 
-/// [`locate`], or with `recall` THE ONE RE-CALL of a SHORT `locate` (its authority buffer of the
-/// size it named).
 fn locate_on(
     p: &Plugin<Transport>,
     target: &[u8],
@@ -566,8 +523,7 @@ fn locate_on(
     (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
     (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
     (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
-    // The framer's own head lines, lent AMPLE as the host lends them: a framer that states lines
-    // answers SHORT on a buffer that cannot hold them, and this probe pins the authority alone.
+
     let mut defaults = vec![0_u8; AMPLE];
     (i.defaults_buf, i.defaults_cap) = (defaults.as_mut_ptr(), defaults.len());
     let mut f: Frame<LocateIn, LocateOut> = Frame::new(i, output());
@@ -601,7 +557,6 @@ fn ready_locate(authority: &[u8], secure: bool, has_name: bool) -> String {
     )
 }
 
-/// The transport door, loaded on `leg` over `b`, and the tail it states.
 pub(super) fn loaded(s: &Subject, leg: Leg, b: Bind) -> (Plugin<Transport>, TransportFacts) {
     let p = load::<Transport>(s, leg, b).expect("the transport door loads");
     let facts = p
@@ -611,7 +566,6 @@ pub(super) fn loaded(s: &Subject, leg: Leg, b: Bind) -> (Plugin<Transport>, Tran
     (p, facts)
 }
 
-/// A transport script's `facts` line: the host's record and the tail the door states.
 pub(super) fn facts_line(p: &Plugin<Transport>, f: &TransportFacts) -> String {
     format!(
         "{} role={} claims={:?} composes_over={:?}",
@@ -622,9 +576,6 @@ pub(super) fn facts_line(p: &Plugin<Transport>, f: &TransportFacts) -> String {
     )
 }
 
-/// THE FRAMER SCRIPTS' HEAD (stream and datagram): `facts`, `begin` (by `begin`) refused before
-/// `open` without a crossing, the lifecycle's head ([`opened`]), and the eight carrier ops of the
-/// role it does not play, REFUSED, one crossing each.
 pub(super) fn framer_opened(
     sc: &mut super::Script<'_>,
     (s, p, d): (&Subject, &Plugin<Transport>, &Dispatcher),
@@ -633,7 +584,7 @@ pub(super) fn framer_opened(
     begin: &dyn Fn() -> String,
 ) {
     sc.line("facts", 0, || facts);
-    // 0: the dispatcher refuses an op on an instance that is not open, without a crossing.
+
     sc.judged("begin unopened", 0, Want::Starts("Refused "), begin);
     opened(sc, (s, p, d), settings, &asis);
     sc.judged(
@@ -644,8 +595,6 @@ pub(super) fn framer_opened(
     );
 }
 
-/// THE FRAMER SCRIPTS' TAIL: `tick`, `refresh`, `close`, then `begin` (by `begin`) on the closed
-/// instance answered FAULT without a crossing.
 pub(super) fn framer_closed(
     sc: &mut super::Script<'_>,
     p: &Plugin<Transport>,
@@ -654,11 +603,10 @@ pub(super) fn framer_closed(
 ) {
     refreshed(sc, p, None, settings, &asis);
     closed(sc, p, &asis);
-    // 0: a closed instance answers FAULT without a crossing.
+
     sc.judged("begin after close", 0, Want::Starts("Fault "), begin);
 }
 
-/// What a READY framer op's line is, given what it yielded.
 fn yielded_line(wire: &[u8], frames: &[Vec<u8>], raw: &[u8], flags: u32, framing: bool) -> String {
     let frames: Vec<String> = frames.iter().map(|f| lossy(f)).collect();
     format!(
@@ -690,7 +638,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let mut sc = super::Script::new(crossings(&p));
     let begin = || once(&p, 0, Op::Begin(SIDE_DIAL, b""), &mut Sink::ample()).line();
 
-    // ── the Statement, an op before `open`, the lifecycle, `ready`, the role it does not play ──
     framer_opened(
         &mut sc,
         (s, &p, &d),
@@ -699,7 +646,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         &begin,
     );
 
-    // ── locate: the targets it reads, the ONE short re-call, the targets it refuses ──
     match &k["locate"] {
         Value::String(v) if v == "refused" => {
             sc.judged("locate", 1, Want::Starts("Refused "), || {
@@ -734,7 +680,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 authority.len(),
                 ready_locate(&authority, secure, has_name)
             ));
-            // 2: the one-byte authority buffer answers SHORT; the ONE re-call is +1.
+
             sc.judged("locate short", 2, want, || {
                 let (first, token) = locate(&p, &target, 1);
                 let Some((token, needed)) = token else {
@@ -754,7 +700,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }
     }
 
-    // ── a dialled framing: out through a tight wire, in through a tight frame, the far end ──
     let dial = &k["dial"];
     let wire = text(&dial["wire"], "dial.wire");
     let (ingest, frames) = (
@@ -764,9 +709,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let target = opt_text(&dial["target"], "dial.target");
     let opening = opt_text(&dial["opening"], "dial.opening");
     let mut tight = Sink::tight();
-    // A wire whose dialled framing holds a deadline (a request-response wire: the attempt's one
-    // clock; a call-per-path wire: the call's) states which answers carry YIELD_HAS_DEADLINE:
-    // `"deadline": ["begin", "emit", "ingest"]` (any of them), or `true` for the emit's alone.
+
     let armed = |step: &str| -> u32 {
         let on = match &dial["deadline"] {
             Value::Bool(b) => *b && step == "emit",
@@ -779,16 +722,14 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             0
         }
     };
-    // A wire that opens with bytes of its own writes them at begin, re-driven by `timer`.
+
     let want = begin_dial_want(dial, armed("begin"));
     let pinned = sinkfuls(opening.len(), TIGHT_WIRE);
     let token = sc.step_judged("begin dial", pinned, want, || {
         let y = pump(&p, 0, Op::Begin(SIDE_DIAL, &target), &mut tight);
         (y.line(), y.framing)
     });
-    // The far side's opening answer, read before the first frame: it writes nothing, and yields
-    // exactly the frames `answer_frames` states (a wire that hands its answer's head up, HEAD-FIELDS:
-    // ws's switching response), none where it states none.
+
     if !dial["answer"].is_null() {
         let answer = text(&dial["answer"], "dial.answer");
         let heard = if dial["answer_frames"].is_null() {
@@ -801,11 +742,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             pump(&p, token, Op::Ingest(&answer, false), &mut tight).line()
         });
     }
-    // THE REQUEST THE DIAL SENDS: `dial.emit` as the message bytes, or `dial.request` (`fields` and
-    // `body`) encoded by the framer itself with its own head lines merged in, as the host's walk
-    // merges them: the request's fields, then each line the framer states whose name the request
-    // does not carry, then the body's length where the framer states it (THE DESIGN section 6,
-    // step 5).
+
     let emit = if dial["request"].is_null() {
         text(&dial["emit"], "dial.emit")
     } else {
@@ -831,8 +768,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 named.push((name, value));
             }
         }
-        // Where the framer states its body's length, the body's `content-length` LAST, for a
-        // non-empty body whose head carries none, as the host's walk adds it.
+
         if states_length
             && !body.is_empty()
             && !named
@@ -860,11 +796,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     sc.judged("emit", sinkfuls(wire.len(), TIGHT_WIRE), want, || {
         pump(&p, token, Op::Emit(&emit, true), &mut tight).line()
     });
-    // What reading them writes back (a ws close answered), absent = nothing.
+
     let answered = opt_text(&dial["ingest_wire"], "dial.ingest_wire");
     let ingest_calls = sinkfuls(answered.len(), TIGHT_WIRE).max(frame_sinkfuls(&frames));
-    // What reading them writes ends the connection (a ws close answered) unless the wire states
-    // `"ingest_ends": false` (h2: the settings acknowledged, the connection carries on).
+
     let ends = !dial["ingest_wire"].is_null() && dial["ingest_ends"].as_bool().unwrap_or(true);
     let ingest_flags = armed("ingest") | if ends { YIELD_ENDED } else { 0 };
     let want = Want::Is(yielded_line(&answered, &frames, &[], ingest_flags, false));
@@ -884,7 +819,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         once(&p, token, Op::Finish, &mut tight).line()
     });
 
-    // ── encode: one rendering per case, in a sink with room for it ──
     let cases = k["encode"]
         .as_array()
         .expect("conformance.json: transport.encode must be an array");
@@ -919,19 +853,15 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         });
     }
 
-    // A framer that frames dialled connections only states `"refuse": "refused"`: its accept
-    // side answers REFUSED, and it has no accepted framing to refuse on or to upgrade.
     if refused(&k["refuse"]) {
         dial_only(&mut sc, &p, k);
     } else {
-        // ── a refusal's bytes are the wire; a timer owes nothing more ──
         let refuse = &k["refuse"];
         let (bytes, wire) = (
             text(&refuse["bytes"], "refuse.bytes"),
             text(&refuse["wire"], "refuse.wire"),
         );
-        // A wire whose accepted framing opens with bytes of its own (h2: the server's settings)
-        // states them as `refuse.begin`; begin is re-driven by `timer` while they do not fit.
+
         let accept_opening = opt_text(&refuse["begin"], "refuse.begin");
         let want = Want::Is(yielded_line(&accept_opening, &[], &[], 0, true));
         let pinned = sinkfuls(accept_opening.len(), TIGHT_WIRE);
@@ -939,8 +869,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             let y = pump(&p, 0, Op::Begin(SIDE_ACCEPT, b""), &mut tight);
             (y.line(), y.framing)
         });
-        // A wire whose accepted framing must be opened before it can carry a refusal (ws: the upgrade
-        // request, answered with the switch) reads its opening first.
+
         if !refuse["opening"].is_null() {
             let opening = text(&refuse["opening"], "refuse.opening");
             let answer = opt_text(&refuse["answer"], "refuse.answer");
@@ -952,10 +881,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 || pump(&p, token, Op::Ingest(&opening, false), &mut tight).line(),
             );
         }
-        // A wire that refuses a call but never a connection (a call-per-path wire) states
-        // `"refused": true`: the refuse op answers REFUSED and writes nothing. A wire whose refusal
-        // closes its connection (ws: the refusal message, then its close) states `"ends": true`;
-        // its connection is over, and a timer on it fails.
+
         let refuses_none = refuse["refused"].as_bool().unwrap_or(false);
         let ends = refuse["ends"].as_bool().unwrap_or(false);
         let ended = if ends { YIELD_ENDED } else { 0 };
@@ -978,7 +904,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         sc.judged("finish refused", 1, Want::Starts("Ready "), || {
             once(&p, token, Op::Finish, &mut tight).line()
         });
-        // ── the upgrade: what was ingested and not answered is handed back, and adopted ──
+
         let token = sc.step_judged("begin upgrade", 1, Want::Starts("Ready "), || {
             let y = once(&p, 0, Op::Begin(SIDE_ACCEPT, b""), &mut tight);
             (y.line(), y.framing)
@@ -989,20 +915,14 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         once(&p, u64::MAX, Op::Ingest(b"x", false), &mut tight).line()
     });
 
-    // ── the rest of the lifecycle; a closed instance serves nothing ──
     framer_closed(&mut sc, &p, &settings, &begin);
     sc.fold()
 }
 
-/// Whether an input states `"refused"`.
 fn refused(v: &Value) -> bool {
     matches!(v, Value::String(s) if s == "refused")
 }
 
-/// THE UPGRADE, as ONE capability (`handoff`: what was ingested and not answered is handed back,
-/// and adopted; or both refused) or as TWO (`detach`, `adopt`: a wire may give up a stream it
-/// framed, take one another stack gave up, both, or neither; ws takes an upgrade and never gives
-/// one up).
 fn upgrade(sc: &mut super::Script<'_>, p: &Plugin<Transport>, k: &Value, token: u64) {
     let mut tight = Sink::tight();
     let whole = &k["handoff"];
@@ -1017,7 +937,7 @@ fn upgrade(sc: &mut super::Script<'_>, p: &Plugin<Transport>, k: &Value, token: 
         });
         return;
     }
-    // The two halves' inputs: `handoff`'s own, or `detach`'s and `adopt`'s.
+
     let (detach, of, adopt, adopt_of, leftover) = if whole.is_null() {
         (&k["detach"], "detach", &k["adopt"], "adopt", "leftover")
     } else {
@@ -1030,7 +950,7 @@ fn upgrade(sc: &mut super::Script<'_>, p: &Plugin<Transport>, k: &Value, token: 
     } else {
         let ingest = text(&detach["ingest"], &format!("{of}.ingest"));
         let detached = text(&detach["detached"], &format!("{of}.detached"));
-        // 1: ingested once; the host stops re-driving it, it is upgrading.
+
         sc.judged("ingest before upgrade", 1, Want::Starts("Ready "), || {
             once(p, token, Op::Ingest(&ingest, false), &mut tight).line()
         });
@@ -1042,7 +962,7 @@ fn upgrade(sc: &mut super::Script<'_>, p: &Plugin<Transport>, k: &Value, token: 
             || pump(p, token, Op::Detach, &mut tight).line(),
         );
     }
-    // The halves finish the upgraded framing before another stack's leftover is adopted.
+
     if whole.is_null() {
         sc.judged("finish upgrade", 1, Want::Starts("Ready "), || {
             once(p, token, Op::Finish, &mut tight).line()
@@ -1054,7 +974,7 @@ fn upgrade(sc: &mut super::Script<'_>, p: &Plugin<Transport>, k: &Value, token: 
     }
     let left = text(&adopt[leftover], &format!("{adopt_of}.{leftover}"));
     let frames = texts(&adopt["frames"], &format!("{adopt_of}.frames"));
-    // What adopting writes: the halves' `adopt.wire`; a whole handoff's adopt writes nothing.
+
     let wire = if whole.is_null() {
         opt_text(&adopt["wire"], "adopt.wire")
     } else {
@@ -1071,9 +991,6 @@ fn upgrade(sc: &mut super::Script<'_>, p: &Plugin<Transport>, k: &Value, token: 
     });
 }
 
-/// A framer that frames DIALLED connections only (`"refuse": "refused"`): `begin` on the accept
-/// side answers REFUSED, and so do `detach` and `adopt`, which must be stated "refused" (an upgrade
-/// needs an accepted framing to give up or take).
 fn dial_only(sc: &mut super::Script<'_>, p: &Plugin<Transport>, k: &Value) {
     assert!(
         k["handoff"].is_null() && refused(&k["detach"]) && refused(&k["adopt"]),
@@ -1092,9 +1009,6 @@ fn dial_only(sc: &mut super::Script<'_>, p: &Plugin<Transport>, k: &Value) {
     });
 }
 
-/// THE DIAL'S OPENING: a door that speaks first on dial writes exactly the bytes its inputs
-/// declare in `dial.opening` at `begin`, and a door whose inputs declare none writes nothing. Bytes
-/// the inputs do not declare fail the step: an undeclared opening is refused, never waved through.
 fn begin_dial_want(dial: &Value, flags: u32) -> Want {
     let opening = opt_text(&dial["opening"], "dial.opening");
     Want::Is(yielded_line(&opening, &[], &[], flags, true))

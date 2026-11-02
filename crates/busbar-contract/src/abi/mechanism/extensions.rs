@@ -2,19 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE EXTENSIONS BLOB'S BYTES (THE DESIGN, the shared mechanism: "every operation carries the
-//! `extensions` blob"; its extensions rule: absent unless a field is pending, unknown keys ignored;
-//! its data-struct evolution rule: a new field lives here first).
-//!
-//! [`InHead::extensions`](super::call::InHead) and [`OutHead::extensions`](super::call::OutHead)
-//! are a [`BLOB_OCTETS`](super::call::BLOB_OCTETS) blob of keyed entries, each
-//! `key length (u16, little-endian) | key (UTF-8) | value length (u32, little-endian) | value`, in
-//! order. A reader takes the keys it knows and passes over the rest; a key named twice answers its
-//! first entry; an entry cut short ends the blob (what came before it still reads). No layout
-//! changes: an op that grows a field states it under a key here, and an op that never reads the key
-//! is unchanged.
 
 /// The entries `entries` encode to, in order. An entry whose key or value is past its length
-/// field's range is left out (no key or value the host states comes near either bound).
+
 #[must_use]
 pub fn encode(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -37,12 +27,7 @@ pub const fn entry_len(key: &str, value: &[u8]) -> usize {
 }
 
 /// ONE ENTRY, built at compile time: the bytes [`encode`] writes for `[(key, value)]`, as an array a
-/// `'static` Statement can point at (a door's `Statement::extensions` is `const` data).
-///
-/// # Panics
-///
-/// `N` is not [`entry_len`] of `key` and `value`, or either is past its length field's range; in a
-/// `const`, that is a compile error.
+
 #[must_use]
 pub const fn entry<const N: usize>(key: &str, value: &[u8]) -> [u8; N] {
     assert!(N == entry_len(key, value), "N is not entry_len(key, value)");
@@ -97,33 +82,15 @@ pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
 }
 
 /// The `declares` document's key in a door's `Statement::extensions`.
-/// It carries metric series, complete diagnostics, and structured
-/// answers; diagnostic ids index this same document.
-/// The whole document travels here as a
-/// JSON payload (catalog entries, metric families with `shed`, the disk need of the host's bounded disk lane (the Q-DISK ruling),
-/// `breaker`), read ONCE at load and never per request ("JSON only as a payload"). It rides the
-/// shared mechanism's extensions blob, not a `repr(C)` field: a field would change the Statement's
-/// layout and its ABI version. `contract_abi` is not part of it: the Statement's own `kind_abi`
-/// states the version. A linked row and a dropped-in copy are read by the same code off the same
-/// Statement bytes (Part 2 #2 rule (1)).
+
 pub const EXT_DECLARES: &str = "declares";
 
 /// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS' KEY in a door's `Statement::extensions` (lead
-/// ruling item 7a). Its value is a JSON list of `.`-separated settings paths (`*` = any key or index,
-/// as in [`crate::secret_fields`]): at such a path a secret reference (`{env:}`, `{file:}`,
-/// `{module:}`) is resolved IN PLACE to its string, and a literal passes as written. The value is
-/// never a secret: it is never lent, and no literal is refused there. A path the Statement's
-/// `secret_refs` also names is a contradiction, refused at load. It rides the extensions blob, not
-/// a `repr(C)` field, so the Statement's layout and its ABI version are unchanged; it is rendered
-/// and signed with the rest of the blob.
+
 pub const EXT_REFERENCE_FIELDS: &str = "reference_fields";
 
 /// The reference-capable paths a Statement's extensions state under [`EXT_REFERENCE_FIELDS`];
-/// empty when they state none.
-///
-/// # Errors
-///
-/// The value is not a JSON list of non-empty strings.
+
 pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
     let Some(value) = get(extensions, EXT_REFERENCE_FIELDS) else {
         return Ok(Vec::new());
@@ -140,19 +107,13 @@ pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
 }
 
 /// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions`. Its
-/// value is the JSON `true` when the door takes each `traces` line's full span record as its
-/// reserved `span` member (everything the previous release's exporter sent for a span: attributes,
-/// events, status), whatever `fields:` selected; `false`, or no entry, takes none. It rides the
-/// extensions blob, not a `repr(C)` field, so the Statement's layout and its ABI version are
-/// unchanged; it is rendered and signed with the rest of the blob.
+
 pub const EXT_SPAN_RECORDS: &str = "span_records";
 
 pub use crate::export_calls::{EXT_PERSISTENT_ROUTES, EXT_PUBLIC_ROUTES};
 
 /// Read a route-path list from Statement extensions. An absent entry declares none.
-///
-/// # Errors
-/// The entry is not a JSON array of distinct absolute paths without query or fragment.
+
 pub fn route_paths(extensions: &[u8], key: &str) -> Result<Vec<String>, String> {
     let Some(value) = get(extensions, key) else {
         return Ok(Vec::new());
@@ -170,11 +131,7 @@ pub fn route_paths(extensions: &[u8], key: &str) -> Result<Vec<String>, String> 
 }
 
 /// Whether a Statement's extensions state the door takes full span records
-/// ([`EXT_SPAN_RECORDS`]); `false` when they state nothing.
-///
-/// # Errors
-///
-/// The value is not a JSON boolean.
+
 pub fn span_records(extensions: &[u8]) -> Result<bool, String> {
     get(extensions, EXT_SPAN_RECORDS).map_or(Ok(false), |value| {
         serde_json::from_slice(value)
@@ -195,15 +152,7 @@ pub const fn entries_len(entries: &[(&str, &[u8])]) -> usize {
 }
 
 /// EVERY ENTRY, built at compile time: the bytes [`encode`] writes for `entries`, in order, as an
-/// array a `'static` Statement can point at. [`crate::statement_extensions!`] is the one call that
-/// sizes and builds it.
-///
-/// # Panics
-///
-/// `N` is not [`entries_len`] of `entries`, two entries name one key (a reader would answer the
-/// first and never see the second, so a Statement that states a key twice is refused where it is
-/// written), or a key or value is past its length field's range; in a `const`, each is a compile
-/// error.
+
 #[must_use]
 pub const fn concat<const N: usize>(entries: &[(&str, &[u8])]) -> [u8; N] {
     assert!(N == entries_len(entries), "N is not entries_len(entries)");
@@ -283,7 +232,7 @@ pub const fn statement_blob(bytes: &'static [u8]) -> super::call::Blob {
 }
 
 /// The `declares` document a Statement's extensions state under [`EXT_DECLARES`]; `None` when they
-/// state none.
+
 #[must_use]
 pub fn declares(extensions: &[u8]) -> Option<&[u8]> {
     get(extensions, EXT_DECLARES)

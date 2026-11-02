@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The harness every test in this module drives the walk through.
-//!
-//! It is a node in miniature over the PRODUCTION far end: a scripted connection table, a breaker
-//! with a settable state per cell, a permit store with a settable ceiling per member, a clock on
-//! the harness's own paused runtime, and counters that record what was called. Nothing here talks
-//! to a network or a wall clock, which is why every route — its timeouts, its one bounded wait and
-//! a far end that drips its answer — answers the same way every time.
-//!
-//! The clock deserves its own sentence. It reads the paused runtime's time plus whatever a test
-//! moved it by, so the walk's deadline, the far end's caps and a scripted far end's pace are all
-//! one timeline: a far end that says nothing is cut exactly when its cap says, and a test that
-//! spends the walk's budget by hand spends it without waiting.
-
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
@@ -35,8 +22,6 @@ use busbar_kernel_egress::ports::{
     Unavailable, UpstreamStatus,
 };
 
-// ── the clock ───────────────────────────────────────────────────────────────────────────────────
-
 /// A clock on the harness's paused runtime, which a test can also move by hand.
 #[derive(Debug)]
 pub struct TestClock {
@@ -51,7 +36,6 @@ pub struct TestClock {
 }
 
 impl TestClock {
-    /// A clock reading `secs` now, on `handle`'s runtime.
     pub fn at(handle: tokio::runtime::Handle, secs: u64) -> Self {
         let epoch = {
             let _in = handle.enter();
@@ -65,7 +49,6 @@ impl TestClock {
         }
     }
 
-    /// Move time forward by hand.
     pub fn advance_secs(&self, by: u64) {
         self.offset_millis.fetch_add(by * 1000, Ordering::Relaxed);
     }
@@ -99,8 +82,6 @@ impl Clock for TestClock {
         Box::pin(tokio::time::sleep(Duration::from_millis(ms)))
     }
 }
-
-// ── the breaker ─────────────────────────────────────────────────────────────────────────────────
 
 /// One member's health, as a test states it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -183,7 +164,6 @@ impl TestBreaker {
             .push(entry);
     }
 
-    /// Every outcome recorded against one cell.
     pub fn outcomes(&self, pool: &str, destination: DestinationId) -> Vec<Outcome> {
         self.log
             .lock()
@@ -196,7 +176,6 @@ impl TestBreaker {
             .collect()
     }
 
-    /// The order members were admitted in.
     pub fn pick_order(&self) -> Vec<DestinationId> {
         self.admitted
             .lock()
@@ -206,7 +185,6 @@ impl TestBreaker {
             .collect()
     }
 
-    /// How many times a unit of budget was spent, minus how many were given back.
     pub fn budget_net(&self, destination: DestinationId) -> i64 {
         self.log
             .lock()
@@ -220,7 +198,6 @@ impl TestBreaker {
             .sum()
     }
 
-    /// Every probe release, as `(pool, destination, epoch)`.
     pub fn probe_releases(&self) -> Vec<(String, DestinationId, u64)> {
         self.log
             .lock()
@@ -261,9 +238,7 @@ impl Breaker for TestBreaker {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((pool.to_string(), destination));
-        // Winning the single-flight probe marks it in flight on the cell, exactly as the real one
-        // does — which is what makes a probe that is never given back exclude the member from
-        // every later pick.
+
         if health.offers_probe.is_some() {
             self.health
                 .lock()
@@ -335,7 +310,7 @@ impl Breaker for TestBreaker {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(status);
-        // A test states a verdict per fault reading.
+
         if let Some(v) = self
             .verdicts
             .lock()
@@ -344,8 +319,7 @@ impl Breaker for TestBreaker {
         {
             return *v;
         }
-        // No verdict was stated: the reading decides, exactly as the real adapter reads it — never
-        // the class, which is the fee leg. Neither a class nor a reading is no answer at all.
+
         let transient = Classified {
             disposition: Disposition::TransientUpstream,
             outcome: Outcome::Transient {
@@ -405,8 +379,7 @@ impl Breaker for TestBreaker {
             destination,
             epoch,
         ));
-        // Owner-checked, as the real cell is: a release naming an epoch the cell no longer offers
-        // is a late guard and must not clear a peer's live probe.
+
         let mut health = self.health.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(h) = health.get_mut(&destination) {
             if h.offers_probe == Some(epoch) {
@@ -428,8 +401,6 @@ impl Breaker for TestBreaker {
         self.record(Recorded::Refunded(destination));
     }
 }
-
-// ── the permit store ────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 struct TestPermit {
@@ -473,7 +444,6 @@ impl TestCapacity {
         Self::default()
     }
 
-    /// Set how many concurrent requests a member accepts. A member with no ceiling is unbounded.
     pub fn set_ceiling(&self, destination: DestinationId, ceiling: usize) {
         self.ceilings
             .lock()
@@ -481,14 +451,11 @@ impl TestCapacity {
             .insert(destination, ceiling);
     }
 
-    /// Take a slot and keep it, so the member is at capacity for the rest of the test.
     pub fn saturate(&self, destination: DestinationId) -> Permit {
         self.try_acquire(destination)
             .expect("the member had a free slot to saturate")
     }
 
-    /// Take a slot now and give it back the first time a waiter asks for one — the member is at
-    /// capacity at the pick and free by the time the wait terminal reaches the store.
     pub fn saturate_until_waited(&self, destination: DestinationId) {
         let permit = self.saturate(destination);
         self.free_on_wait
@@ -526,8 +493,6 @@ impl Capacity for TestCapacity {
         destinations: &'a [DestinationId],
     ) -> BoxFut<'a, Option<(DestinationId, Permit)>> {
         Box::pin(async move {
-            // A waiter has reached the store: anything held only until the wait began is released
-            // here, at the first poll, which is strictly after the park.
             let released: Vec<Permit> =
                 std::mem::take(&mut *self.free_on_wait.lock().unwrap_or_else(|e| e.into_inner()));
             drop(released);
@@ -536,14 +501,11 @@ impl Capacity for TestCapacity {
                     return Some((*destination, permit));
                 }
             }
-            // Nothing free right now. The waiter is racing this against its bound, so staying
-            // pending is what makes the bound the thing that ends the wait.
+
             std::future::pending::<Option<(DestinationId, Permit)>>().await
         })
     }
 }
-
-// ── the journal and the counters ───────────────────────────────────────────────────────────────
 
 /// A journal that records every dispatch and can be told to fail.
 #[derive(Debug, Default)]
@@ -634,8 +596,6 @@ impl Telemetry for TestTelemetry {
     }
 }
 
-// ── the far end ─────────────────────────────────────────────────────────────────────────────────
-
 /// One answering piece a scripted far end sends: the status class, the exact number and the wait
 /// it asked for, on the answer's first piece; its body bytes.
 #[derive(Clone, Debug)]
@@ -668,8 +628,6 @@ pub enum Script {
     },
 }
 
-/// An answering piece with the far end's status class on it, and the fault reading a framer whose
-/// table follows its class would state (a far-end fault transient, a caller fault the caller's).
 pub fn frame(status: Option<WireStatusClass>, body: &'static str) -> Reply {
     let fault = match status {
         Some(WireStatusClass::FarEndFault) => Some(WireFault::Transient),
@@ -679,8 +637,6 @@ pub fn frame(status: Option<WireStatusClass>, body: &'static str) -> Reply {
     frame_with_upstream(status, None, fault, None, body)
 }
 
-/// An answering piece carrying the whole status leg a connector reads off an answer: the coarse
-/// class, the exact number the far end put on it (in its numbering), and the wait it asked for.
 pub fn frame_with_upstream(
     status: Option<WireStatusClass>,
     code: Option<WireStatus>,
@@ -697,7 +653,6 @@ pub fn frame_with_upstream(
     }
 }
 
-/// A two-piece success.
 pub fn ok_frames() -> Vec<Reply> {
     vec![
         frame(Some(WireStatusClass::Success), "head"),
@@ -714,12 +669,10 @@ enum Tail {
     Reset,
 }
 
-/// One open connection's script, as it plays out.
 struct Answer {
-    /// The pieces, their bytes and when each may be read (`None`: at once).
     pieces: VecDeque<(Piece, Vec<u8>, Option<tokio::time::Instant>)>,
     tail: Tail,
-    /// The timer a read that came early is waiting on, and what it waits for.
+
     timer: Option<(tokio::time::Instant, Pin<Box<tokio::time::Sleep>>)>,
 }
 
@@ -780,7 +733,6 @@ impl TestConns {
         Self::default()
     }
 
-    /// What the member on this lane does when it is opened.
     pub fn script(&self, lane: &str, script: Script) {
         self.scripts
             .lock()
@@ -788,7 +740,6 @@ impl TestConns {
             .insert(lane.to_string(), script);
     }
 
-    /// The lanes opened, in order.
     pub fn dialled(&self) -> Vec<String> {
         self.opened
             .lock()
@@ -919,7 +870,6 @@ impl PollConns for TestConns {
         };
         let Some(due) = answer.pieces.front().map(|p| p.2) else {
             return match answer.tail {
-                // A silent far end never answers (and never wakes).
                 Tail::Silent => Poll::Pending,
                 Tail::Reset => Poll::Ready(Err(ConnError::Closed)),
             };

@@ -68,7 +68,7 @@ pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};
 
 /// Zeroizing material with no way out of this crate: no getter, no `Debug`, no `Display`, no
-/// `Serialize`. Equality is constant-time.
+
 #[allow(missing_debug_implementations)]
 pub struct Held<T: Zeroize>(T);
 
@@ -122,11 +122,11 @@ pub struct Cred {
 }
 
 /// The URL schemes whose connection is secured from the first byte: a credential the operator
-/// wrote with one of them never goes out on a connection that is not.
+
 const SECURE_SCHEMES: &[&str] = &["https", "wss", "rediss", "ldaps", "grpcs", "mqtts", "amqps"];
 
 /// Whether a framed request's `target` is secured by its scheme ([`SECURE_SCHEMES`]); a target
-/// with no scheme is the need's own and answers `true`.
+
 pub(crate) fn secure_target(target: &str) -> bool {
     !target.contains("://") || secure_scheme(target)
 }
@@ -142,7 +142,7 @@ pub(crate) fn secure_scheme(url: &str) -> bool {
 
 impl Cred {
     /// A credential this plugin captured itself (a token from a reply it decoded), taken by value so
-    /// no copy stays behind.
+
     pub fn captured(bytes: Zeroizing<Vec<u8>>) -> Self {
         Self {
             held: std::sync::Arc::new(Held::new(bytes)),
@@ -152,16 +152,14 @@ impl Cred {
     }
 
     /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): this credential goes out only on a connection
-    /// the host connector reports secured. Set from the operator's URL, never relaxed: a
-    /// [`CredUrl`] or [`UserinfoUrl`] whose scheme or parameters ask for a secure connection sets
-    /// it itself; a credential configured beside its URL takes it with [`Cred::secure_for`].
+
     #[must_use]
     pub fn secure_required(&self) -> bool {
         self.secure
     }
 
     /// This credential, required to go out secured when the operator's `url` names a secure
-    /// scheme (`https`, `wss`, `rediss`, `ldaps`, …). A requirement already set stays.
+
     #[must_use]
     pub fn secure_for(mut self, url: &str) -> Self {
         self.secure |= secure_scheme(url);
@@ -169,8 +167,7 @@ impl Cred {
     }
 
     /// THE AUTH FLOOR (rulings S4, S5): the auth methods weaker than a protocol's best that the
-    /// operator's connection string allows this credential, which the chip's recipes check. Set
-    /// only when a [`CredUrl`] is split from the operator's text; nothing relaxes it.
+
     #[must_use]
     pub fn floor(&self) -> AuthFloor {
         self.floor
@@ -197,7 +194,7 @@ impl Cred {
     }
 
     /// Take a credential setting out of a parsed settings document, wiping the string where it
-    /// was. `None`: `v` is not a string (left as it was).
+
     pub fn take(v: &mut serde_json::Value) -> Option<Self> {
         let serde_json::Value::String(s) = v else {
             return None;
@@ -236,7 +233,7 @@ impl Cred {
     }
 
     /// Whether it may stand as a header field value: tab, space, visible ASCII and non-ASCII bytes,
-    /// no other control byte and no DEL (RFC 9110).
+
     pub fn is_field_value(&self) -> bool {
         self.wire()
             .iter()
@@ -245,7 +242,7 @@ impl Cred {
 }
 
 /// Equality is constant-time over the bytes and answers only whether they match: a reload compares
-/// its settings with it.
+
 impl PartialEq for Cred {
     fn eq(&self, other: &Self) -> bool {
         *self.held == *other.held
@@ -282,7 +279,7 @@ impl Seal {
     }
 
     /// This seal, required to go out secured (a recipe whose output the operator did not allow in
-    /// the open).
+
     pub(crate) fn require_secure(mut self) -> Self {
         self.secure = true;
         self

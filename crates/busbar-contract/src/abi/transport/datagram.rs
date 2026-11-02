@@ -2,44 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DATAGRAM LANE: how a framer whose tail states [`super::FRAMING_DATAGRAM`] reads and answers
-//! the host's datagram port, and the KEYING-MATERIAL ITEM through which it receives what the host's
-//! secure layer exported (`BUSBAR-1.6.0.md` THE DESIGN, the connections section: "One secure layer,
-//! sibling engines" and "Datagram media").
-//!
-//! THE PORT AND THE SECURE LAYER ARE THE HOST'S. One host port carries every association on it; the
-//! host demultiplexes each datagram by its first byte, keeps the secure layer's records to itself,
-//! and hands the framer only two kinds of bytes, each named by its [`DatagramLane::lane`]:
-//!
-//! * [`LANE_CLEAR`] — a datagram exactly as it arrived (a connectivity check, or protected media
-//!   the framer itself unprotects with the exported keying material);
-//! * [`LANE_SECURED`] — plaintext the secure layer opened.
-//!
-//! A third lane, [`LANE_RENDEZVOUS`], carries the far end's session description (the offer on the
-//! accepting side, the answer on the dialling side), which reaches the framer through the
-//! signalling unit, never through the port. The framer answers a rendezvous with its own
-//! description as a frame piece and the [`RendezvousTerms`] the host's secure layer runs under.
-//!
-//! PATHS ARE HOST NUMBERS. Every far-end address the port heard from is a nonzero `u32` path the
-//! host assigned; the framer names paths only by those numbers. A framer asks the host to bind a
-//! path, or to move the association from the bound path to another ([`DatagramYield::request`]);
-//! the host applies the request only once it has proven the path by its own round trip, and says
-//! which path is bound on every later call ([`DatagramLane::bound`]). The framer never chooses
-//! where the host sends: a [`LANE_CLEAR`] route to a path the host may not answer is dropped, and a
-//! [`LANE_SECURED`] route always goes to the bound path, sealed by the host.
-//!
-//! THE KEYING MATERIAL is the one secret this lane carries (the who-sees-what table's framer row):
-//! the exporter output of the host's secure layer, presented once, in host memory valid for the
-//! call. The framer copies it into storage it zeroes on drop and never answers it back. No key of
-//! the secure layer itself, no certificate key and no handshake state ever crosses.
-//!
-//! VERIFIED FIRST. [`DatagramLane::verified`] is `1` once the secure layer has matched the far end's
-//! certificate to the fingerprint its description carried. Until then the framer yields no
-//! application data to the layer above, whatever arrives.
-//!
-//! TAIL ADDITIONS (v1, pre-tag, R9 as clarified 2026-09-28): the lane is a pointer appended to the
-//! `in` of `begin`, `ingest`, `emit`, `finish` and `timer`/`detach`, NULL for a stream framer;
-//! [`DatagramYield`] is appended to [`super::FramerOut`]. A framer built before them reads and
-//! writes neither, and the host reads a zeroed yield from it.
 
 use super::FrameSpan;
 use crate::abi::mechanism::call::AbiStr;
@@ -49,7 +11,7 @@ pub const LANE_CLEAR: u32 = 1;
 /// [`DatagramLane::lane`] / [`DatagramRoute::lane`]: plaintext of the host's secure layer.
 pub const LANE_SECURED: u32 = 2;
 /// [`DatagramLane::lane`]: the far end's session description, from the signalling unit. Never a
-/// route's lane.
+
 pub const LANE_RENDEZVOUS: u32 = 3;
 
 /// [`DatagramYield::request`]: no path request.
@@ -57,7 +19,7 @@ pub const PATH_REQUEST_NONE: u32 = 0;
 /// [`DatagramYield::request`]: bind `request_to` (nothing is bound yet).
 pub const PATH_REQUEST_BIND: u32 = 1;
 /// [`DatagramYield::request`]: move the association from the bound `request_from` to
-/// `request_to`.
+
 pub const PATH_REQUEST_REBIND: u32 = 2;
 
 /// [`RendezvousTerms::role`]: this answer carries no terms.
@@ -70,7 +32,7 @@ pub const HANDSHAKE_ANSWERS: u32 = 2;
 /// The most datagram routes one framer answer may produce.
 pub const MAX_ROUTES: u64 = 4096;
 /// The most keying-material bytes the host presents (two keys and two salts of the widest
-/// protection profile fit with room).
+
 pub const MAX_KEYING_BYTES: u64 = 256;
 /// The length of [`RendezvousTerms::peer_fingerprint`]: a SHA-256 digest.
 pub const FINGERPRINT_BYTES: u64 = 32;
@@ -107,8 +69,7 @@ pub struct DatagramRoute {
 
 impl DatagramRoute {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `DatagramRoute { …, ..DatagramRoute::ZERO }` so a field appended later
-    /// reads as not declared.
+
     pub const ZERO: Self = Self {
         offset: 0,
         len: 0,
@@ -192,8 +153,7 @@ pub struct RendezvousTerms {
 
 impl RendezvousTerms {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `RendezvousTerms { …, ..RendezvousTerms::ZERO }` so a field appended
-    /// later reads as not declared.
+
     pub const ZERO: Self = Self {
         role: 0,
         _reserved: 0,

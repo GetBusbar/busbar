@@ -2,67 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE LIFECYCLE: the slot set every kind's table leads with ([`OpsHead`]), and the `in`/`out` of
-//! each slot. Every slot is an [`Op`]; a NULL slot refuses the load (there is no "unsupported").
-//! There is no poll slot: after a wake the host re-invokes the same op with
-//! [`super::call::FLAG_RESUME`], the same ticket and the same `in`/`out`.
-//!
-//! CONCURRENCY. An instance is shared across workers. Ops on DISTINCT tickets may run concurrently;
-//! ops on ONE ticket are serialized by the host and never overlap. The lifecycle slots `open`,
-//! `refresh`, `retire` and `close` never run concurrently with each other on one instance; `tick`
-//! and `drive` may run concurrently with request ops. Serialization does not apply to a
-//! [`Ticket::NONE`] call, and PENDING answered on one is FAULT.
-//!
-//! SLOT LAYOUT. A kind's table is [`OpsHead`] followed by contiguous `Option<Op>` fields: kind op `k`
-//! is at slot index [`LIFECYCLE_SLOTS`]` + k`. [`OpsHead::slots`] and [`OpsHead::size`] must EQUAL
-//! the host's values for that kind's ABI version, or the load is refused.
-//!
-//! WHICH KINDS THE HOST REFRESHES. The host calls `refresh` on an `auth` and a `plane` instance,
-//! on a configuration apply. A `store`, `secret`, `hook` or `transport` instance is never
-//! refreshed: a changed configuration reaches it through a fresh instance (a reload that replaces
-//! it, or a restart), opened over the new settings. An `export` instance is opened at boot;
-//! committed settings changes refresh that same instance after the configuration transaction
-//! releases its guard. New deliveries wait for the refresh verdict. Pending deliveries retain
-//! their prior connector and disk bindings, and a refused refresh retains the current bindings.
-//! A pending refresh keeps its staged bindings and admission barrier through every resume until
-//! its terminal verdict or cancellation; existing pending deliveries can still finish meanwhile.
-//! The host states this ticket custody in DELIVER's `busbar.export.ticket-bindings` extension,
-//! value `1`. Export instance membership, streams and field projections remain boot-time choices.
-//! Every kind's `refresh` slot must still be present (every slot is), and
-//! the SDK's default (`abi::sdk::life::Life::refresh`) answers it REFUSED; nothing a plugin of
-//! the kinds that are replaced rather than refreshed does in `refresh` reaches an operator.
-//! The store SDK refuses refresh with a reason naming the restart that applies a changed store
-//! section, so no store claims settings applied that were not.
-//!
-//! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
-//! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's
-//! table and no kind op's index moves. A plugin that must reach the network before it serves (a
-//! discovery exchange through its declared need) states it; the host calls it after `open` answered
-//! READY, on a REAL ticket (it may pend, and is resumed after the wake like any op), with the host
-//! tables in [`ReadyIn::host`], before any listener binds, and boot awaits it. READY = the
-//! instance serves; FAILED or REFUSED refuses the boot with the plugin's `OutHead.error` text. A
-//! door without it (NULL, or a door whose `size` ends before it) is opened exactly as before.
-//! `ready` is a lifecycle op: it never overlaps `open`, `refresh`, `retire` or `close`.
-//!
-//! MIGRATE, THE SECOND OPTIONAL LIFECYCLE OP (owner ruling 2026-10-27: each plugin migrates its own
-//! settings; core migrates only core's own configuration). Kind-neutral, it rides the door's
-//! append-only tail ([`super::door::Door::migrate`]) after `ready`, so no table and no op index
-//! moves and a door without it loads exactly as before. `busbar --migrate-config` calls it with no
-//! instance (NULL) and [`super::ticket::Ticket::NONE`] (it may not pend), on [`ValidateIn`]:
-//! `settings` is the plugin's settings section as the operator wrote it (JSON), `head.extensions`
-//! the busbar version the configuration came from (UTF-8, [`super::call::BLOB_OCTETS`]), and
-//! `err_buf`/`err_cap` the host's buffer for the answer. On READY the plugin has written its answer
-//! into `err_buf` and names those bytes in `head.error`: one JSON object,
-//! `{"settings": <the new section>, "report": ["<what changed and why>", ...], "needs": [...]}`,
-//! where each need asks core to change a key core owns (`{"allow_destination": "<host>"}`: add the
-//! host to `advanced.allow_destinations`). FAILED or REFUSED name their reason the same way; the
-//! host then leaves the section as written and reports the reason. Plain key renames are the
-//! plugin's own too: nothing in core knows any plugin's keys.
 
 use super::call::{Blob, InHead, Op, OutHead};
 use super::ticket::{HostTables, Ticket};
 
 /// [`InHead::op`] of each lifecycle slot, in table order. A kind's own ops number on from
-/// [`LIFECYCLE_SLOTS`].
+
 pub mod slot {
     /// `validate`.
     pub const VALIDATE: u32 = 0;
@@ -83,10 +28,10 @@ pub mod slot {
     /// `close`.
     pub const CLOSE: u32 = 8;
     /// `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table
-    /// slot; [`InHead::op`] carries this number on its call.
+
     pub const READY: u32 = u32::MAX;
     /// `migrate`: the door's optional tail op ([`super::super::door::Door::migrate`]), NOT a table
-    /// slot; [`InHead::op`] carries this number on its call.
+
     pub const MIGRATE: u32 = u32::MAX - 1;
 }
 
@@ -293,11 +238,7 @@ fn first_segment(line: &str) -> &str {
 }
 
 /// A FAILED `validate`'s error text, as the rule on [`ValidateIn`] states it: not empty, no empty
-/// line, no leading or trailing `\n`.
-///
-/// # Errors
-///
-/// [`Rule::Missing`](super::check::Rule::Missing) naming the arm.
+
 pub fn check_validate_refusal(text: &[u8]) -> Result<(), super::check::Fault> {
     use super::check::{fault, Rule};
     if text.is_empty() {

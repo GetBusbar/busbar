@@ -2,24 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE STORE DOOR ALLOCATES NOTHING ON THE REQUEST PATH (a counting-allocator witness is 0
-//! for each request-path op, on the READY path).
-//!
-//! Its own test binary, because the witness is a counting `#[global_allocator]`. The count is
-//! PER THREAD and ARMED only around one door call, so another test thread never lands in it. The
-//! store behind the door builds its answers with the witness disarmed: what is measured is the
-//! door's own work (the trampoline, the slot body, the host buffers, the error text ring), not
-//! the backend's.
-//!
-//! The slots measured are every request-path slot of the store table (`OPS` `request_path`). The
-//! store traits take borrowed views
-//! (`PlaneRecordRef`, the record's `&[u8]`, `PlaneSelector::Parent` over the host's string), so the
-//! door hands the store the host's ABI memory as it is (ARCHITECT R7 2026-10-01); a store that
-//! keeps a record copies it itself.
-//!
-//! RED: before the door went allocation-free, the list slots collected their runs into `Vec`s,
-//! every refusal or failure text was formatted and copied into a boxed ring entry, and the writes
-//! copied the host's row into an owned `PlaneRecord` / `RecordBytes` / `String`, so every case
-//! below but the plain reads counted at least one allocation.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -45,8 +27,6 @@ use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
     PlaneSelector, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
-
-// ── the witness ──────────────────────────────────────────────────────────────────────────────
 
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
@@ -117,8 +97,6 @@ fn unwitnessed<T>(f: impl FnOnce() -> T) -> T {
     ARMED.with(|a| a.set(was));
     r
 }
-
-// ── a store with canned answers ──────────────────────────────────────────────────────────────
 
 /// The kind (or schema) a store answers FAILED for.
 const DOWN: &str = "down";
@@ -248,12 +226,9 @@ impl<const CONDITIONAL: bool> StoreSlots for Canned<CONDITIONAL> {
         unreachable!("not a request-path slot")
     }
     fn get_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<Option<VirtualKey>>> {
-        // Off the request path; answered so the release test below holds a real lease.
         Step::Ready(Ok(Some(VirtualKey::default())))
     }
     fn list_keys(&self, cx: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
-        // Off the request path; a wire op that asks one read, so the read-buffer test below has
-        // an op that reaches the wire driver's read.
         busbar_contract::abi::sdk::store::wire::drive(cx, |w| {
             Box::pin(async move {
                 let _ = w.fill().await;
@@ -431,8 +406,6 @@ mod canned {
     busbar_contract::store_door!(super::Canned, "canned", "0", 8);
 }
 
-// ── driving the door as the host does ────────────────────────────────────────────────────────
-
 fn ops() -> &'static Ops {
     // SAFETY: the macro's door is `'static`, and a store door's table is the store `Ops`.
     unsafe { &*canned::door().ops().cast::<Ops>() }
@@ -533,7 +506,7 @@ struct Measured {
 }
 
 /// Call once to warm this thread (the door's per-thread capture is made on first use), then
-/// once under the witness.
+
 fn measure<I: Copy, O: Copy>(
     case: &'static str,
     op: Option<Op>,
@@ -555,8 +528,6 @@ fn measure<I: Copy, O: Copy>(
     }
 }
 
-// ── the witness itself ───────────────────────────────────────────────────────────────────────
-
 #[test]
 fn the_witness_counts_an_allocation_and_a_disarmed_one_not() {
     assert_eq!(
@@ -570,8 +541,6 @@ fn the_witness_counts_an_allocation_and_a_disarmed_one_not() {
         "the store's own allocation is not the door's"
     );
 }
-
-// ── the request path ─────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn the_store_doors_request_path_slots_allocate_nothing() {
@@ -602,7 +571,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
     };
     let head_out = out_head::<OutHead>;
 
-    // The host's buffers, as the `in`s name them: raw pointers, taken once.
     let body_buf = bytes_buf(&mut body);
     let list_buf = bytes_buf(&mut list_bytes);
     let entry_buf = bytes_buf(&mut entry_bytes);
@@ -863,7 +831,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         ),
     ];
 
-    // The answers are the door's, unchanged: outcome and every error text byte for byte.
     let want: [(Outcome, &str); 20] = [
         (Outcome::Ready, ""),
         (Outcome::Failed, ""),
@@ -901,7 +868,7 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
             m.case
         );
     }
-    // The rows landed where they say, in the host's buffers.
+
     assert_eq!(&body[..b"a value".len()], b"a value");
     assert_eq!(&list_bytes[..b"onetwothree".len()], b"onetwothree");
     assert_eq!(&entry_bytes[..b"k1vk2v".len()], b"k1vk2v");
@@ -918,8 +885,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
     );
 }
 
-// ── the wire driver's read buffer ────────────────────────────────────────────────────────────
-
 fn list_keys(instance: *mut c_void) -> Outcome {
     let input = in_head::<InHead>(slot::LIST_KEYS);
     let mut out: LeasedListOut = zeroed();
@@ -928,8 +893,7 @@ fn list_keys(instance: *mut c_void) -> Outcome {
 }
 
 /// A STORE OP'S READ BUFFER IS REUSED, NOT MADE PER OP (THE DESIGN, the plugin ABI: "no
-/// allocation and no blocking on the hot path"). The first wire op that reads makes the buffer;
-/// the next op on the instance reads into the same one, so it allocates no read-sized block.
+
 #[test]
 fn two_consecutive_wire_ops_allocate_one_read_buffer() {
     let instance = open();
@@ -942,8 +906,6 @@ fn two_consecutive_wire_ops_allocate_one_read_buffer() {
     assert_eq!(second, 0, "the second op made a read buffer of its own");
 }
 
-// ── release: the one lease rule ─────────────────────────────────────────────────────────────
-
 fn release(instance: *mut c_void, lease: u64) -> Outcome {
     let input = ReleaseIn {
         head: in_head::<ReleaseIn>(life::RELEASE),
@@ -954,9 +916,7 @@ fn release(instance: *mut c_void, lease: u64) -> Outcome {
 }
 
 /// RELEASING AN UNKNOWN LEASE IS REFUSED (THE DESIGN §11, KIND-SHARE: "releasing an unknown lease
-/// is REFUSED"). The store door answers the host's release of a lease it holds READY, and a
-/// release of one it never handed out, or one already released, REFUSED: a host double or wrong
-/// release is a host bug the door names rather than accepts.
+
 #[test]
 fn the_store_door_refuses_a_release_of_a_lease_it_does_not_hold() {
     let instance = open();

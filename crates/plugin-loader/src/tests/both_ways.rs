@@ -1,31 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE BOTH-WAYS HARNESS** (DECISIONS #2 rule (1): a plugin is compiled in OR dropped in — same
-//! contract, same loading path).
-//!
-//! One plugin is registered TWICE: LINKED (its door, through [`PluginRegistry::link`]) and DROPPED
-//! IN (its `cdylib`, signed first-party into a fresh `plugins/` directory and found by
-//! [`crate::scan_and_validate`]). Each kind's conformance test then asks both registries for the row
-//! the plugin's name resolves to, opens it, runs one script against each opened instance, and
-//! requires the two rows and the two transcripts to be byte-identical.
-//!
-//! Each kind's fixture comes from the tables `build.rs` generates out of `Cargo.toml`'s
-//! `[package.metadata.busbar.both-ways]` ([`door_fixture`], [`fixture`], [`fixture_cdylib`]): the
-//! tests reach a fixture by its ROW, and no test source names a plugin instance.
-//!
-//! What is compared is the plugin's STATEMENT (its manifest, every field but the two that describe
-//! a tarball — `sha256` and `signature`) and its BEHAVIOUR. What is not compared is provenance —
-//! the tarball's `file` and the trust `verdict` — which belongs to the door, exactly as the export
-//! conformance test leaves out the host-assigned display name.
-
 use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
 use crate::PluginRegistry;
 use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));
 
-/// The memory-ABI both-ways fixture of `row`: its `cdylib`'s crate name and its linked door.
 pub(crate) fn door_fixture(
     row: &str,
 ) -> (&'static str, busbar_contract::abi::mechanism::door::DoorFn) {
@@ -38,8 +19,6 @@ pub(crate) fn door_fixture(
         })
 }
 
-/// The packaged both-ways fixture of `row`: its logic crate's name (the linked door, and the
-/// target its log records carry) and its `-plugin` crate's `cdylib` name (the dropped-in door).
 pub(crate) fn fixture(row: &str) -> (&'static str, &'static str) {
     FIXTURES
         .iter()
@@ -50,13 +29,10 @@ pub(crate) fn fixture(row: &str) -> (&'static str, &'static str) {
         })
 }
 
-/// The built `cdylib` of `row`'s packaged fixture, by the table's cdylib crate name.
 pub(crate) fn fixture_cdylib(row: &str) -> PathBuf {
     cdylib(fixture(row).1)
 }
 
-/// The manifest both doors state for the plugin: a first-party `name`/`alias` of `kind` at payload
-/// schema `abi_version`, with no artifact.
 pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -> Manifest {
     Manifest {
         name: name.into(),
@@ -80,20 +56,14 @@ pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -
     }
 }
 
-/// The command that builds every example `cdylib` of this crate.
 pub(crate) const BUILD_EXAMPLES: &str = "cargo build -p busbar-plugin-loader --examples";
 
-/// The command that builds every pinned plugin's `cdylib` under `deps/` (the dev-dependency edge).
 pub(crate) const BUILD_DEPS: &str = "cargo test -p busbar-plugin-loader --no-run";
 
-/// A both-ways proof whose `name` cdylib is absent: a hard failure naming the `command` that builds
-/// it, in every run (BUSBAR-1.6.0.md: between a false RED and a false GREEN, a gate takes the RED).
 pub(crate) fn missing(name: &str, command: &str) -> ! {
     panic!("the {name} cdylib is not built: run `{command}` first (a both-ways proof never skips)")
 }
 
-/// The example `cdylib` `name` in this target dir; absent, the test fails naming the command that
-/// builds it — this is a both-ways proof, and it never skips.
 pub(crate) fn example_cdylib(name: &str) -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary's path");
     let path = exe
@@ -108,10 +78,6 @@ pub(crate) fn example_cdylib(name: &str) -> PathBuf {
     path
 }
 
-/// The `cdylib` of `crate_snake` in this target dir, newest wins: uplifted, under `deps` by its
-/// exact name, or under `deps` WITH a metadata hash (`lib<snake>-<hex>.<ext>`) — the only place a
-/// fixture pulled from its own repo as a git dependency is ever built. Absent, the test fails
-/// naming the command that builds it — this is a both-ways proof, and it never skips.
 pub(crate) fn cdylib(crate_snake: &str) -> PathBuf {
     let found = (|| {
         let exe = std::env::current_exe().ok()?;
@@ -143,28 +109,20 @@ pub(crate) fn cdylib(crate_snake: &str) -> PathBuf {
     found.unwrap_or_else(|| missing(crate_snake, BUILD_DEPS))
 }
 
-/// THE DROPPED-IN DOOR: `lib` signed first-party under `manifest` into a fresh `plugins/` directory,
-/// and that directory scanned under the default posture that holds the release key.
 pub(crate) fn dropped(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegistry {
     dropped_signed(tag, manifest, lib, &SigningKey::from_bytes(&[11u8; 32]))
 }
 
-/// THE DROPPED-IN DOOR for a THIRD party: `manifest`'s publisher allowlisted under its own key,
-/// which signs it — trusted, and not first-party. The RED arm of every grant a first-party plugin
-/// earns (K9a).
 pub(crate) fn dropped_third_party(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegistry {
     dropped_signed(tag, manifest, lib, &SigningKey::from_bytes(&[22u8; 32]))
 }
 
-/// The dropped-in door with `signer` signing: the release key (`[11; 32]`) is the policy's
-/// first-party key, and any other signer is allowlisted as the manifest's own publisher.
 fn dropped_signed(
     tag: &str,
     manifest: Manifest,
     lib: &[u8],
     signer: &SigningKey,
 ) -> PluginRegistry {
-    // One directory per call: two tests of one plugin run in parallel in this binary.
     static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
@@ -197,8 +155,6 @@ fn dropped_signed(
     registry
 }
 
-/// THE ROW `registry` resolves `name` to, as JSON: the plugin's statement (its manifest without the
-/// artifact's `sha256`/`signature`), and the row its ALIAS resolves to, which must be the same one.
 pub(crate) fn row(registry: &PluginRegistry, name: &str) -> String {
     let Some(p) = registry.resolve(name) else {
         return format!("no row for '{name}'");

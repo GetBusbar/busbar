@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **AN EXPORT SINK'S SETTINGS REFUSAL IS RENDERED UNDER ITS INSTANCE, AS 1.5.5 PRINTED IT**
-//! (WIRE-EXPORT, operator text parity). A sink on the export kind's memory ABI is handed its
-//! `settings:` section alone, so it cannot name its instance: it answers `settings: <words>`, and
-//! the HOST renders the line under the instance (`abi::mechanism::lifecycle::refusal_lines`) —
-//! `export.<instance>.settings: …`, the shape 1.5.5 printed.
-//!
-//! Driven through the shipped binary's `--validate`, over every sink this build serves (the modules
-//! its unknown-exporter refusal offers), each handed a settings key no sink declares. RED before the
-//! host's rendering: the door sinks' lines read `settings: …`, with no instance. 1.5.5's own lines,
-//! sink by sink, are DATA in the oracle corpus
-//! (`testing/shadow-oracle/fixtures/law0/export-settings-refusals-1.5.5.json`, verbatim from the
-//! 1.5.5 binary), each held byte for byte on every build that serves its sink; this source names no sink.
-
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
 
@@ -22,10 +9,8 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
-/// A settings key no sink declares.
 const PLANTED_KEY: &str = "planted_key_no_sink_declares";
 
-/// The unknown-exporter refusal's head; the modules this build serves follow, ` | `-separated.
 const REFUSAL_HEAD: &str =
     "export.x.module: unknown exporter 'nosuch'; the built-in export modules are ";
 
@@ -48,7 +33,6 @@ fn write_configs(dir: &Path, export: &str) {
     .unwrap();
 }
 
-/// `--validate` over `export`: its exit status and what it printed.
 fn validate(dir: &Path, export: &str) -> (bool, String) {
     write_configs(dir, export);
     let out = Command::new(common::boot::exe())
@@ -66,7 +50,6 @@ fn validate(dir: &Path, export: &str) -> (bool, String) {
     (out.status.success(), text)
 }
 
-/// The modules this build serves, as its unknown-exporter refusal offers them.
 fn served(dir: &Path) -> Vec<String> {
     let (_, text) = validate(dir, "  x: { module: nosuch }\n");
     let line = text
@@ -117,14 +100,10 @@ fn a_sinks_settings_refusal_is_rendered_under_its_instance_as_1_5_5_printed_it()
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 1.5.5's settings refusals, sink by sink, as DATA (verbatim from the 1.5.5 binary).
 const REFUSALS_1_5_5: &str = include_str!(
     "../../../testing/shadow-oracle/fixtures/law0/export-settings-refusals-1.5.5.json"
 );
 
-/// EVERY 1.5.5 SETTINGS REFUSAL READS AS 1.5.5 PRINTED IT on a build that serves its sink: the line
-/// itself, or the sentence it opens (a whole sentence 1.5.5 printed unprefixed), and a refusal
-/// 1.5.5 printed once is printed once.
 #[test]
 fn every_1_5_5_settings_refusal_reads_as_1_5_5_printed_it() {
     let doc: serde_json::Value = serde_json::from_str(REFUSALS_1_5_5).expect("the fixture is JSON");
@@ -137,7 +116,6 @@ fn every_1_5_5_settings_refusal_reads_as_1_5_5_printed_it() {
         let once = case["once"].as_bool().unwrap_or(false);
         let (ok, text) = validate(&dir, export);
         if text.contains(&format!("unknown exporter '{module}'")) {
-            // A build that does not serve this sink has no refusal of it to render.
             continue;
         }
         assert!(!ok, "{module}: the case validated clean:\n{text}");

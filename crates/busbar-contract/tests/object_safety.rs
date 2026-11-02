@@ -1,13 +1,4 @@
 //! One object-safety fixture per kind trait, and a working implementation of the plane.
-//!
-//! The honesty table of the design lists object safety as a compile-time property proven by a
-//! fixture per kind. That is what the assertions below are: each one only compiles if the trait
-//! can be used behind a pointer, which is how the registry holds every plugin.
-//!
-//! Some of the kinds get a full implementation as well. That proves something the assertions cannot
-//! — that the signatures are actually implementable, lifetimes and all — and it proves the
-//! no-default-bodies rule the same way a reviewer would: the fixture below names every method,
-//! because leaving one out does not compile.
 
 use busbar_contract::bounded::{
     Facts, Ir, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, Span,
@@ -31,7 +22,7 @@ use busbar_contract::unit::{
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor};
 
 /// The codec host every context this fixture builds hands its plane: a fixed, non-zero entropy fill
-/// and no clock of its own (the context carries the clock). A context cannot be built without one.
+
 pub struct FixtureCodecHost;
 
 impl busbar_contract::codec::CodecHost for FixtureCodecHost {
@@ -48,8 +39,6 @@ impl busbar_contract::codec::CodecHost for FixtureCodecHost {
 /// The handle every context here is built with.
 pub const CODEC_HOST: &dyn busbar_contract::codec::CodecHost = &FixtureCodecHost;
 
-// ── the fixture per kind: each of these only compiles if the trait is object-safe ─────────────
-
 const _PLANE: Option<&dyn Plane> = None;
 const _SESSION_PLANE: Option<&dyn SessionPlane> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
@@ -57,8 +46,6 @@ const _PLANE_ALLOC: Option<&dyn PlaneAlloc> = None;
 const _CONFIG: Option<&dyn ConfigView> = None;
 const _SESSION_VIEW: Option<&dyn SessionView> = None;
 const _TRANSPORT_VIEW: Option<&dyn TransportView> = None;
-
-// ── the borrowed views a call needs, in their smallest honest form ────────────────────────────
 
 /// An allocator that never has room. Enough to build a context; nothing here allocates.
 struct NoPlaneAlloc;
@@ -122,8 +109,6 @@ impl TransportView for OneShotStack {
         None
     }
 }
-
-// ── a plane, implemented in full ──────────────────────────────────────────────────────────────
 
 /// The smallest plane that answers every question the loop asks.
 struct FixturePlane;
@@ -295,10 +280,8 @@ impl SessionPlane for FixturePlane {
     }
 }
 
-// ── a transport's declarations ────────────────────────────────────────────────────────────────
-
 /// A transport's declarations. A transport is a memory-ABI framer door, not a trait object (step
-/// 36), so what a fixture can state of one is its kind and its declared facts.
+
 struct FixtureTransport;
 
 impl Plugin for FixtureTransport {
@@ -312,8 +295,6 @@ impl Plugin for FixtureTransport {
         AbiVersion(1)
     }
 }
-
-// ── the tests ─────────────────────────────────────────────────────────────────────────────────
 
 /// Every kind can be held behind a pointer, which is how the registry holds one.
 #[test]

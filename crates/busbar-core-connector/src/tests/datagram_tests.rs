@@ -2,23 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DATAGRAM DRIVER, end to end over a real handshake: a scripted datagram framer behind the
-//! [`FramerDoor`] seam (an ICE-lite agent: it answers checks, asks to bind the path a check came
-//! from, and hands secured plaintext up on stream `1`), driven by [`DatagramFraming`] over the
-//! host's dtls engine, against a far end that is a second dtls engine plus the test acting as its
-//! full ICE agent.
-//!
-//! What is proven, each with its RED arm:
-//! * the keying-material item reaches the framer exactly ONCE, on a call whose lane says the far end
-//!   is verified, and its bytes are what the far end's own exporter produced;
-//! * a datagram from a source that sent no verified check never reaches the framer, and no path
-//!   number is told for it;
-//! * a rebind to a path that never answered core's probe is not applied, and a clear route to a
-//!   heard but unbound path that is not a check's answer is dropped and counted;
-//! * a framer answer that breaks the datagram lane's rules is a FAULT before any byte is used;
-//! * DIALLING: every advertised candidate meets the destination judge before any byte goes there;
-//!   a refused one is never told to the framer and never sent a byte, and an admitted one binds
-//!   only once core's probe is answered from it (RED arms: unanswered, or answered from another
-//!   source, it never binds).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -63,7 +46,7 @@ fn creds(ufrag: &str, pwd: &str) -> IceCredentials {
 }
 
 /// A Binding request to the owner of `to`: USERNAME "to.ufrag:from_ufrag", MESSAGE-INTEGRITY under
-/// `key` (the receiver's password when honest).
+
 fn check(to_ufrag: &str, from_ufrag: &str, key: &str, txid: u8) -> Vec<u8> {
     let username = format!("{to_ufrag}:{from_ufrag}").into_bytes();
     let padded = username.len().div_ceil(4) * 4;
@@ -79,7 +62,7 @@ fn check(to_ufrag: &str, from_ufrag: &str, key: &str, txid: u8) -> Vec<u8> {
 }
 
 /// The success response to the request `req`: same transaction id, MESSAGE-INTEGRITY under `pwd`
-/// (the answering agent's own password).
+
 fn answer(req: &[u8], pwd: &str) -> Vec<u8> {
     let mut m = vec![0x01, 0x01, 0, 0, 0x21, 0x12, 0xa4, 0x42];
     m.extend_from_slice(&req[8..20]);
@@ -307,8 +290,7 @@ fn write_answer(st: &mut St, sink: &FramerSink, lane: Option<&DatagramLane>, o: 
                 stream,
                 offset: s.offset,
                 len: s.len,
-                // The automatic rendezvous description is payload, even when the
-                // scripted nonzero streams in this batch are field blocks.
+
                 flags: PIECE_END_OF_FRAME | if stream == 0 { 0 } else { st.piece_flags },
                 ..std::mem::zeroed()
             });
@@ -330,7 +312,7 @@ fn unhex(s: &str) -> Vec<u8> {
 
 impl Scripted {
     /// Dialling: a check to every path this call told, and a bind request for the first while
-    /// nothing is bound.
+
     fn check_told(&self, st: &mut St, lane: &DatagramLane) {
         if !self.knobs.dial {
             return;
@@ -393,7 +375,6 @@ impl FramerDoor for Scripted {
                 }
                 match lane.lane {
                     LANE_RENDEZVOUS => {
-                        // "ufrag pwd fingerprint-hex": the far end's terms.
                         let text = String::from_utf8(bytes).unwrap();
                         let mut w = text.split(' ');
                         let (u, pw, fp) = (w.next().unwrap(), w.next().unwrap(), w.next().unwrap());
@@ -481,7 +462,7 @@ struct Rig {
 const METADATA: &str = "169.254.169.254:3478";
 
 /// The destination judge: the link-local metadata range refused, any other literal admitted as
-/// itself.
+
 fn judge(asked: Arc<Mutex<Vec<String>>>) -> Arc<dyn DialJudge> {
     Arc::new(move |dest: &str, _class: u32, _done: Judged| {
         asked.lock().unwrap().push(dest.to_owned());
@@ -597,7 +578,6 @@ impl Rig {
                 if v == Verdict::Raw && is_request(&d) && !self.answers {
                     self.unanswered.push(d);
                 } else if v == Verdict::Raw && is_request(&d) {
-                    // The far end's ICE agent answers the host's probe under its own password.
                     let a = answer(&d, FAR_PWD);
                     let from = self.far.addr;
                     self.deliver(from, &a);
@@ -652,7 +632,7 @@ fn the_keying_material_item_is_presented_once_verified_and_equal_to_the_far_ends
 
     let seen = r.seen();
     let keyed: Vec<&Seen> = seen.iter().filter(|s| s.keying.is_some()).collect();
-    // RED arm: a host that presents the item on every call, or never, fails here.
+
     assert_eq!(keyed.len(), 1, "the item crosses exactly once: {seen:?}");
     let (profile, bytes) = keyed[0].keying.clone().unwrap();
     assert!(
@@ -671,11 +651,10 @@ fn the_keying_material_item_is_presented_once_verified_and_equal_to_the_far_ends
         far.material(),
         "the item is the exporter's output, both ends"
     );
-    // No call before the far end was verified saw the verified bit.
+
     let first_verified = seen.iter().position(|s| s.verified).expect("verified once");
     assert!(seen[..first_verified].iter().all(|s| s.keying.is_none()));
 
-    // Plaintext both ways over the bound path, sealed and opened by the host's secure layer.
     r.far.a.seal(b"ping").unwrap();
     r.pump(5);
     assert!(r.got.contains(&(1, b"ping".to_vec())), "{:?}", r.got);
@@ -695,7 +674,7 @@ fn a_source_that_sent_no_verified_check_never_reaches_the_framer() {
     let mut r = rig(Knobs::default());
     let spoof = p("192.0.2.66:4444");
     let before = r.seen().len();
-    // A check under the wrong password, and media, from a source the far end never was.
+
     r.deliver(
         spoof,
         &check(HOST_UFRAG, FAR_UFRAG, "wrong-password-012345", 2),
@@ -706,14 +685,14 @@ fn a_source_that_sent_no_verified_check_never_reaches_the_framer() {
     assert!(seen
         .iter()
         .all(|s| s.told.iter().all(|(_, a)| a != &spoof.to_string())));
-    // RED arm: the honest check does cross, with its path told.
+
     r.first_check();
     let seen = r.seen();
     assert!(seen.len() > before);
     assert!(seen
         .iter()
         .any(|s| s.told.contains(&(1, r.far.addr.to_string()))));
-    // The check itself crossed on the clear lane, carrying the path number it was told under.
+
     assert!(seen.iter().any(|s| s.lane == LANE_CLEAR && s.path == 1));
 }
 
@@ -726,8 +705,7 @@ fn a_rebind_to_a_path_that_never_answered_the_probe_is_not_applied() {
     r.first_check();
     r.pump(200);
     assert_eq!(r.host.bound(), Some(r.far.addr));
-    // A verified check from a new source that never answers core's probe (the password leaked; the
-    // address is not the far end's).
+
     let spoof = p("192.0.2.77:5555");
     r.deliver(spoof, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 3));
     r.pump(100);
@@ -738,15 +716,14 @@ fn a_rebind_to_a_path_that_never_answered_the_probe_is_not_applied() {
     );
     let last = r.seen().last().cloned().unwrap();
     assert_eq!(last.bound, 1, "the framer is still told the first path");
-    // Core probed the new source (the round trip that would prove it), sent it the check's answer,
-    // and nothing else: the clear datagram that was no answer was dropped and counted.
+
     assert!(r
         .elsewhere
         .iter()
         .all(|(to, d)| *to == spoof && d.len() >= 20 && (d[0..2] == [0, 1] || d[0..2] == [1, 1])));
     assert!(r.elsewhere.iter().any(|(_, d)| d[0..2] == [1, 1]));
     assert_eq!(r.host.refused_routes(), 1);
-    // RED arm: once the new path answers the probe, the move applies.
+
     let probe = r
         .elsewhere
         .iter()
@@ -790,7 +767,7 @@ fn nothing_on_the_port_is_the_associations_before_the_rendezvous() {
         .unwrap();
     assert!(y.pieces.is_empty());
     assert_eq!(door.st.lock().unwrap().seen.len(), before);
-    // The begin told the framer the host port, and no secret.
+
     let seen = door.st.lock().unwrap().seen.clone();
     assert!(seen.iter().all(|s| s.keying.is_none() && !s.verified));
 }
@@ -806,7 +783,7 @@ fn dialling() -> Knobs {
 fn dialling_every_candidate_meets_the_judge_and_a_refused_one_is_never_sent_a_byte() {
     let mut r = rig(dialling());
     r.pump(200);
-    // Every advertised literal was asked about; the unparsable one never reached the judge.
+
     let judged = r.judged.lock().unwrap().clone();
     assert!(judged.contains(&r.far.addr.to_string()), "{judged:?}");
     assert!(judged.contains(&METADATA.to_owned()), "{judged:?}");
@@ -815,7 +792,7 @@ fn dialling_every_candidate_meets_the_judge_and_a_refused_one_is_never_sent_a_by
         2,
         "the metadata address and the non-address"
     );
-    // RED: the refused candidate got no byte and was never told to the framer.
+
     assert!(
         r.elsewhere.is_empty(),
         "nothing left for any other address: {:?}",
@@ -825,7 +802,7 @@ fn dialling_every_candidate_meets_the_judge_and_a_refused_one_is_never_sent_a_by
         .seen()
         .iter()
         .all(|s| s.told.iter().all(|(_, a)| a != METADATA)));
-    // The admitted one binds once proven, the handshake runs and the item crosses once, verified.
+
     assert_eq!(r.host.bound(), Some(r.far.addr));
     assert!(r.host.presented());
     let keyed: Vec<Seen> = r
@@ -853,17 +830,17 @@ fn dialling_an_admitted_candidate_never_binds_unverified() {
     let mut r = rig(dialling());
     r.answers = false;
     r.pump(200);
-    // The framer asked to bind it and the far end saw core's probes, but none was answered.
+
     assert!(!r.unanswered.is_empty(), "core probed the candidate");
     assert_eq!(r.host.bound(), None, "an unproven candidate is not bound");
     assert!(!r.host.presented());
-    // Answers to every request it was sent, from ANOTHER source, prove nothing.
+
     let unanswered = std::mem::take(&mut r.unanswered);
     for d in &unanswered {
         r.deliver(p("192.0.2.88:6666"), &answer(d, FAR_PWD));
     }
     assert_eq!(r.host.bound(), None, "an answer from elsewhere is no proof");
-    // RED arm: answered from the candidate itself, the bind applies.
+
     let from = r.far.addr;
     for d in &unanswered {
         r.deliver(from, &answer(d, FAR_PWD));
@@ -885,7 +862,6 @@ fn probes_to(r: &Rig, to: SocketAddr) -> Vec<Vec<u8>> {
 
 #[test]
 fn dialling_a_check_from_a_path_the_judge_refuses_is_never_probed_handed_up_or_bound() {
-    // The framer asks to move to any path a check comes from that is not the bound one.
     let mut r = rig(Knobs {
         dial: true,
         rebind_new: true,
@@ -895,8 +871,6 @@ fn dialling_a_check_from_a_path_the_judge_refuses_is_never_probed_handed_up_or_b
     assert_eq!(r.host.bound(), Some(r.far.addr));
     assert!(r.elsewhere.is_empty(), "{:?}", r.elsewhere);
 
-    // A verified check (the far end knows the host's password) from an address the destination
-    // judge refuses, never advertised as a candidate.
     let refused = p("169.254.10.20:4000");
     r.deliver(refused, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 0x21));
     r.pump(20);
@@ -904,7 +878,7 @@ fn dialling_a_check_from_a_path_the_judge_refuses_is_never_probed_handed_up_or_b
         r.judged.lock().unwrap().contains(&refused.to_string()),
         "the heard path met the judge"
     );
-    // Were core to have probed it, the far end answering from there would prove and bind it.
+
     for probe in probes_to(&r, refused) {
         r.deliver(refused, &answer(&probe, FAR_PWD));
     }
@@ -930,7 +904,6 @@ fn dialling_a_check_from_a_path_the_judge_refuses_is_never_probed_handed_up_or_b
         "a refused path is never numbered or told to the framer"
     );
 
-    // RED arm: a check from an address the judge admits is probed, told, and binds once proven.
     let admitted = p("192.0.2.50:7000");
     r.deliver(admitted, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 0x22));
     r.pump(1);
@@ -995,7 +968,6 @@ fn one_port_finds_each_datagram_its_association_by_user_name_then_by_path() {
     let now = Instant::now();
     let (before_a, before_b) = (lanes(&da).len(), lanes(&db).len());
 
-    // Each check finds the association its user name names.
     let (id, y) = port
         .datagram(pa, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1), now)
         .unwrap();
@@ -1017,15 +989,14 @@ fn one_port_finds_each_datagram_its_association_by_user_name_then_by_path() {
         "b saw its own check only"
     );
 
-    // Anything else finds the association by the path a verified check claimed.
     let (id, _) = port.datagram(pb, &[0x80, 0x6f, 0, 1], now).unwrap();
     assert_eq!(id, b);
-    // RED: a user name nobody holds, and a path nobody claimed, reach no association.
+
     assert!(port
         .datagram(stranger, &check("nobody", FAR_UFRAG, HOST_PWD, 3), now)
         .is_none());
     assert!(port.datagram(stranger, &[0x80, 0x6f, 0, 2], now).is_none());
-    // A check that names a but fails its integrity claims no path for a.
+
     let (id, _) = port
         .datagram(
             stranger,
@@ -1036,7 +1007,6 @@ fn one_port_finds_each_datagram_its_association_by_user_name_then_by_path() {
     assert_eq!(id, a);
     assert!(port.datagram(stranger, &[0x80, 0x6f, 0, 3], now).is_none());
 
-    // A user name is one association's; one with no terms is refused.
     assert_eq!(
         port.add(settled(scripted(Knobs::default()))),
         Err(super::NotAdded::UserTaken)
@@ -1049,7 +1019,7 @@ fn one_port_finds_each_datagram_its_association_by_user_name_then_by_path() {
     .unwrap()
     .0;
     assert_eq!(port.add(unsettled), Err(super::NotAdded::NoTerms));
-    // Removed, its user name and paths go with it.
+
     assert!(port.remove(b).is_some());
     assert!(port.datagram(pb, &[0x80, 0x6f, 0, 4], now).is_none());
     assert_eq!(port.len(), 1);
@@ -1064,12 +1034,12 @@ fn a_dialled_association_is_found_by_its_admitted_candidates_before_they_speak()
         settled(scripted_as(Knobs::default(), (B_UFRAG, B_PWD))),
     );
     let id = port.add(host).unwrap();
-    // The candidate's first datagram is an answer, not a check: found by its path.
+
     let (got, _) = port
         .datagram(r.far.addr, &[0x80, 0x6f, 0, 1], r.now)
         .unwrap();
     assert_eq!(got, id);
-    // RED: the refused candidate's address finds nothing.
+
     assert!(port
         .datagram(p(METADATA), &[0x80, 0x6f, 0, 1], r.now)
         .is_none());
@@ -1078,7 +1048,7 @@ fn a_dialled_association_is_found_by_its_admitted_candidates_before_they_speak()
 #[test]
 fn only_a_datagram_framer_is_driven_over_the_port() {
     let stream_framer = scripted(Knobs::default());
-    // RED: a framer whose tail states no datagram framing is refused before any call crosses.
+
     let not = Arc::new(Scripted {
         facts: DoorFacts {
             datagram: false,
@@ -1146,14 +1116,14 @@ fn the_bridge_carries_line_frames_unread_line_for_line_and_hands_channels_to_the
             got(1 << 32, b"frame-before-upstream", false),
         ],
     );
-    // A line frame before the upstream leg named its lines is dropped, never queued.
+
     assert!(across.is_empty());
     assert_eq!(
         session.iter().map(|g| g.stream).collect::<Vec<_>>(),
         vec![0, 1],
         "the description and the channel's head are the session's"
     );
-    // The upstream dial mirrors the caller's lines, then names the session's channels.
+
     assert_eq!(
         b.opening(&["events"]),
         vec![
@@ -1178,7 +1148,7 @@ fn the_bridge_carries_line_frames_unread_line_for_line_and_hands_channels_to_the
     assert_eq!(session.len(), 1, "the channel's message is the session's");
     let (_, back) = b.sort(Leg::Upstream, vec![got(7 << 32, b"\x03", false)]);
     assert_eq!(back[0].stream, 1 << 32);
-    // RED: after the session's close nothing crosses, either way.
+
     b.stop();
     let (_, a) = b.sort(Leg::Caller, vec![got(1 << 32, b"\x04", false)]);
     let (_, z) = b.sort(Leg::Upstream, vec![got(7 << 32, b"\x05", false)]);
@@ -1198,7 +1168,7 @@ fn legs_that_do_not_mirror_never_half_bridge() {
     );
     let _ = b.sort(Leg::Upstream, vec![got(20, b"kind: audio\r\n", true)]);
     assert!(b.mirrored().is_err(), "two lines against one");
-    // RED: line 0 exists on both legs, yet nothing crosses while the whole set does not mirror.
+
     assert_eq!(b.across(Leg::Caller, 10), None);
     let (_, a) = b.sort(Leg::Caller, vec![got(10, b"\x01", false)]);
     assert!(a.is_empty());
@@ -1230,7 +1200,7 @@ fn closes(s: &Sink) -> u32 {
 }
 
 /// A connector serving the scripted dialling framer under `dg` and the identity framer under
-/// `bytes`, its need 0 declared over `dg`.
+
 fn book() -> crate::Connector {
     let dg = Arc::new(Scripted {
         facts: DoorFacts {
@@ -1288,9 +1258,7 @@ fn open_unit(
 }
 
 /// RED arms of the session book: an open over a datagram framer's need serving no unit, or a unit
-/// no session registered, is refused before anything is bound or sent; a unit is registered once;
-/// a closed session's unit is forgotten (its pairing closed once), so the key given again never
-/// finds the stale leg.
+
 #[test]
 fn the_session_book_refuses_no_unit_and_an_unregistered_unit_and_forgets_a_closed_one() {
     use busbar_contract::conn::ConnError;
@@ -1322,7 +1290,7 @@ fn the_session_book_refuses_no_unit_and_an_unregistered_unit_and_forgets_a_close
 }
 
 /// Two sessions' pairings never cross: a frame sorted on one reaches only its own other leg; and a
-/// close stops the bridge and closes both legs exactly once (RED: nothing crosses after it).
+
 #[test]
 fn two_sessions_never_cross_and_a_close_closes_both_legs_once() {
     use super::{Leg, Pairing};
@@ -1403,8 +1371,7 @@ fn leg(pairing: &Arc<super::Pairing>) -> crate::dialled::Dialled {
 }
 
 /// A far end that refuses the exchange is relayed whole (its head, its body, its end) and nothing
-/// is attached: the pairing closes, the caller's leg with it (RED: no partial bridge survives).
-/// A success answer's body is the host's: it settles the leg, which runs once attached.
+
 #[test]
 fn a_refused_exchange_is_relayed_whole_and_leaves_no_bridge_and_an_answered_one_runs() {
     use busbar_contract::conn::PieceKind;
@@ -1427,7 +1394,6 @@ fn a_refused_exchange_is_relayed_whole_and_leaves_no_bridge_and_an_answered_one_
         assert!(pairing.closed(), "nothing half-bridges");
         assert_eq!(closes(&sink), 1);
 
-        // RED arm: a success answer's body is the far end's description, never the reader's.
         let sink = Arc::new(Sink::default());
         let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
         let d = leg(&pairing);
@@ -1454,7 +1420,7 @@ fn a_refused_exchange_is_relayed_whole_and_leaves_no_bridge_and_an_answered_one_
 }
 
 /// Lines that do not mirror refuse the open: the description settles nothing attached, and the
-/// pairing closes (RED: one caller line against none upstream never half-bridges).
+
 #[test]
 fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
     use busbar_contract::conn::{ConnError, PieceKind};
@@ -1483,10 +1449,7 @@ fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
 }
 
 /// RED (THE DESIGN §5, datagram media: "ICE path migration rebinds only on a verified round-trip
-/// check (a spoof is a RED)"): a path one accepted association already holds on a shared port stays
-/// its own when ANOTHER association hears a check from it. A check proves only that its sender
-/// knows that other association's password, never that it owns the source address, so a caller
-/// sending its own valid checks from a spoofed source took over another caller's media.
+
 #[test]
 fn a_path_one_association_holds_is_never_taken_by_a_check_another_hears_from_it() {
     let (da, db) = (
@@ -1505,7 +1468,7 @@ fn a_path_one_association_holds_is_never_taken_by_a_check_another_hears_from_it(
     y.unwrap();
     let (id, _) = port.datagram(pa, &[0x80, 0x6f, 0, 1], now).unwrap();
     assert_eq!(id, a, "control: a's path finds a");
-    // b's own valid check, from a's address.
+
     let (id, y) = port
         .datagram(pa, &check(B_UFRAG, FAR_UFRAG, B_PWD, 2), now)
         .unwrap();
@@ -1516,8 +1479,7 @@ fn a_path_one_association_holds_is_never_taken_by_a_check_another_hears_from_it(
 }
 
 /// RED (resource bounds): the paths a port routes to one association are only those it still
-/// owns. An association holds at most a bounded set of heard paths; the port kept every address it
-/// ever routed for the association, so valid checks from ever-new sources grew it without limit.
+
 #[test]
 fn a_port_keeps_no_path_for_an_association_that_no_longer_owns_it() {
     let da = scripted(Knobs::default());
@@ -1541,7 +1503,7 @@ fn a_port_keeps_no_path_for_an_association_that_no_longer_owns_it() {
 }
 
 /// RED (resource bounds): the far end's description is bounded. Buffered whole until the
-/// exchange's end with no cap, a far end that answered without end grew host memory without limit.
+
 #[test]
 fn a_far_end_description_past_its_bound_fails_the_open() {
     use busbar_contract::conn::{ConnError, PieceKind};
@@ -1569,8 +1531,7 @@ fn a_far_end_description_past_its_bound_fails_the_open() {
 }
 
 /// RED (resource bounds; THE DESIGN §5 "Writes are back-pressured"): a message a plugin writes in
-/// parts on the upstream leg is bounded. Gathered until its end with no cap, a write that never
-/// ended grew host memory without limit.
+
 #[test]
 fn a_message_written_in_parts_past_its_bound_is_refused() {
     use busbar_contract::conn::{ConnError, PieceKind};
@@ -1921,8 +1882,7 @@ fn a_woken_writer_can_accept_bytes_as_soon_as_the_association_comes_home() {
             drop(unpark);
             ready
         });
-        // The inspector exists before joining, so even an unexpectedly synchronous crossing
-        // is released. Source acceptance returns before this runtime polls the actor.
+
         let wrote = first.join().unwrap();
         let blocked = d.write(b"unaccepted", false, false);
         let publication = tokio::time::timeout(Duration::from_secs(10), pairing.published()).await;
@@ -2091,7 +2051,7 @@ fn a_read_cannot_overtake_the_older_channel_message_a_wait_is_publishing() {
         let inspecting = d.clone();
         let scripted = door.clone();
         let read_waker = waker.clone();
-        // Keep the same peer address, but send without needing to poll the blocked runtime.
+
         let peer = peer.into_std().unwrap();
         let inspector = std::thread::spawn(move || {
             let _rt = handle.enter();
@@ -2120,8 +2080,7 @@ fn a_read_cannot_overtake_the_older_channel_message_a_wait_is_publishing() {
             drop(unpark);
             (observed, peer)
         });
-        // The older CHANNEL is already queued when ready returns. The actor's independent
-        // LINE callback can block only after the current-thread runtime gets to poll it.
+
         let waited = wait.join();
         let publication = tokio::time::timeout(Duration::from_secs(10), pairing.published()).await;
         let (observed, _peer) = inspector.join().unwrap();
@@ -2200,10 +2159,7 @@ fn park(
 }
 
 /// §11.13 M1: no plugin code runs under the port's lock. While `parked` holds association a's
-/// framer (or a refused framing's) in a `call` crossing on its own thread, every other caller of
-/// the port completes within a bounded wait: another association's emit, an admission, a datagram
-/// to another association, and a teardown. The park is released before anything is asserted, so a
-/// failure never hangs.
+
 fn others_complete_while_parked(
     call: Parks,
     arm: impl FnOnce(&Arc<Scripted>) -> Arc<Scripted>,
@@ -2306,9 +2262,7 @@ fn a_refused_framing_parked_in_finish_holds_no_other_caller_of_its_port() {
 }
 
 /// What a caller owes an association out on another caller's crossing does not wait for it: it is
-/// queued, and the holder runs it, in order, before putting the association back (one crossing
-/// per association at a time). Removed while out, the holder finishes it on the way back and runs
-/// nothing more on it.
+
 #[test]
 fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
     let da = scripted(Knobs::default());

@@ -2,18 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A URL AS A LOG LINE MAY NAME IT: [`mask_url`], the one masker the export sinks (and any plugin
-//! that names a configured URL in a line, a refusal or a `Debug`) write a URL through.
-//!
-//! Read as text, not parsed, so a string no URL parser accepts is masked the same way:
-//!
-//! * the userinfo — everything between `://` and the LAST `@` — becomes `***`. A credential may hold
-//!   an unescaped `/`, `?` or `#`, so no delimiter bounds it; an `@` later in the path or query is
-//!   over-cut, which is accepted: a shortened line is better than a leaked secret;
-//! * in the query and fragment, the value of every pair whose key looks like a secret (`token`,
-//!   `key`, `secret`, `pass`, `pwd`, `auth`, `sig`, `credential`, `session`, `code`, in any case,
-//!   anywhere in the key) becomes `***`.
-//!
-//! Everything else is written as given. A string with no `://` is returned unchanged.
 
 /// What a masked part reads as.
 const MASK: &str = "***";
@@ -33,15 +21,13 @@ const SECRET_WORDS: &[&str] = &[
 ];
 
 /// `url` with its userinfo and every secret-looking query or fragment value masked (the module
-/// docs).
+
 #[must_use]
 pub fn mask_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return url.to_string();
     };
     match rest.rfind('@') {
-        // When the cut reached into what may have been a query or fragment, everything after the
-        // `@` is read as pairs.
         Some(at) => format!(
             "{scheme}://{MASK}@{}",
             mask_pairs(&rest[at + 1..], rest[..at].contains(['?', '#']))
@@ -51,7 +37,7 @@ pub fn mask_url(url: &str) -> String {
 }
 
 /// `s` with the secret-looking pair values masked: from its first `?` or `#`, or from its start
-/// when `open`.
+
 fn mask_pairs(s: &str, open: bool) -> String {
     let start = if open {
         0

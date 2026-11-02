@@ -10,8 +10,7 @@ fn payload() -> serde_json::Value {
 }
 
 /// A `Data` item renders its payload EVERY time it is asked for its screenable text — that is the
-/// cost the memo exists to pay once. Pinned so the memo test below is measuring something real
-/// rather than a counter that never moves.
+
 #[test]
 fn asking_a_data_item_for_its_text_renders_the_payload_every_time() {
     let value = payload();
@@ -33,9 +32,7 @@ fn asking_a_data_item_for_its_text_renders_the_payload_every_time() {
 }
 
 /// THE MEMO. A screening pass reads each item's text many times — the size sum, the cleared-set
-/// digest, and the prompt projection, all of that again for every attached gate. Through
-/// `ScreenedContent` the payload is serialized ONCE for the whole pass, however many readers and
-/// however many gates there are.
+
 #[test]
 fn a_screening_pass_renders_each_data_payload_exactly_once() {
     let value = payload();
@@ -55,8 +52,7 @@ fn a_screening_pass_renders_each_data_payload_exactly_once() {
 
     let _ = take_data_renders();
     let screened = ScreenedContent::over(&items);
-    // Five gates, each doing what one gate does: filter to the not-yet-cleared pieces, sum the size
-    // signals, digest what it screened, and flatten the text for the prompt projection.
+
     for _ in 0..5 {
         let unscreened = screened.select(|_, _| true);
         let _ = unscreened.counts();
@@ -75,7 +71,7 @@ fn a_screening_pass_renders_each_data_payload_exactly_once() {
 }
 
 /// The memo is a COST fix, not a behaviour fix: what it hands out is byte-identical to asking the
-/// item directly, digests included.
+
 #[test]
 fn the_memo_answers_exactly_what_the_item_answers() {
     let value = payload();
@@ -121,7 +117,7 @@ fn the_memo_answers_exactly_what_the_item_answers() {
 }
 
 /// A filtered subset (the incremental scan's not-yet-cleared pieces) keeps its rendered text: the
-/// filter must not send the pass back to the items to re-render what it already had.
+
 #[test]
 fn selecting_a_subset_carries_the_rendered_text_across() {
     let value = payload();
@@ -146,7 +142,7 @@ fn selecting_a_subset_carries_the_rendered_text_across() {
         only_data.iter().next().map(|(_, t)| t.to_string()),
         Some(items[0].screenable_text().into_owned())
     );
-    // One render: the `screenable_text()` in the assertion above. The select itself did none.
+
     assert_eq!(
         take_data_renders(),
         1,

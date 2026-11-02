@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The shared host-services double (`services_double.rs`): every service the trait declares
-//! answers as an unserved host's on a double that overrides nothing, and an override answers in
-//! its place while the rest still refuse.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -24,7 +20,6 @@ fn caller() -> Caller {
     }
 }
 
-/// A [`Later`] that counts its calls: an unserved service answers at once and never calls it.
 fn later(calls: &Arc<AtomicUsize>) -> Later {
     let calls = Arc::clone(calls);
     Box::new(move |_| {
@@ -32,7 +27,6 @@ fn later(calls: &Arc<AtomicUsize>) -> Later {
     })
 }
 
-/// A finished answer; a pend is a finding.
 fn now(name: &str, ran: Ran) -> Stored {
     match ran {
         Ran::Now(stored) => stored,
@@ -40,9 +34,6 @@ fn now(name: &str, ran: Ran) -> Stored {
     }
 }
 
-/// One row per [`HostServices`] method: its name as the trait spells it, and a call of it through
-/// the trait object. `now` is the clock, which has no refusal; its row answers the zero reading as
-/// READY `0` and is checked on its own below.
 type Row = (
     &'static str,
     fn(&dyn HostServices, &Arc<AtomicUsize>) -> Stored,
@@ -201,9 +192,6 @@ const ROWS: &[Row] = &[
     }),
 ];
 
-/// THE REFUSAL: on the double that overrides nothing, every service answers REFUSED `UNSERVED`
-/// at once, and the clock the zero reading. RED: a service whose default serves, pends, or
-/// refuses in other words than an unserved host's.
 #[test]
 fn every_service_of_the_bare_double_answers_as_unserved() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -244,8 +232,6 @@ impl ServicesDouble for Judging {
     }
 }
 
-/// THE OVERRIDE: an overridden service answers the double's own answer, through the trait object,
-/// and every other service still answers as unserved.
 #[test]
 fn an_override_answers_and_the_rest_still_refuse() {
     let double = Arc::new(Double(Judging::default()));

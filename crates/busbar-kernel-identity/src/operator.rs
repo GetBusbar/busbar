@@ -2,17 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The operator credential.
-//!
-//! The single operator admin token a deployment is born with: the one credential that is full by
-//! definition, and the one presented on two carriers — `Authorization: Bearer` and
-//! `X-Admin-Token`. Which module judges it is the auth axis's business: the kernel opens whatever
-//! row answers the provider key, over the token's digest, and hands the result here.
-//!
-//! The provider key and the principal id are frozen configuration text naming a module no crate in
-//! the kernel declares. They sit in the composition root's migration table, and the root hands them
-//! in with its linked auth rows as [`OperatorWords`] (BUSBAR-1.6.0.md:173, "sit in the root
-//! migration table"). The kernel hands the provider on as `op`, so neither this module nor the
-//! kernel names an instance.
 
 use std::sync::Arc;
 
@@ -22,9 +11,7 @@ use busbar_contract::auth_calls::{
 };
 
 /// A linked auth row: the key configuration names it by (and the auth catalog, `/info` and every
-/// refusal print), its CANONICAL name (the manifest name its release tarball carries, which config may name it by too), and its door
-/// on the auth kind's memory ABI — the same door its dropped-in build exports (THE DESIGN:
-/// compiled-in = dropped-in).
+
 pub type LinkedAuth = (&'static str, &'static str, AuthDoor);
 /// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
 pub type AuthDoor = busbar_contract::abi::mechanism::door::DoorFn;
@@ -42,8 +29,7 @@ pub struct OperatorWords {
 }
 
 /// The auth rows this build LINKS (the composition root's, or a test binary's) and the operator
-/// credential's words the root hands in beside them, installed once before the first resolution;
-/// the first install stands.
+
 static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords)> = std::sync::OnceLock::new();
 
 /// Install this build's linked auth rows and the operator credential's words.
@@ -51,13 +37,11 @@ pub fn install_linked(rows: &'static [LinkedAuth], words: OperatorWords) {
     let _ = LINKED.set((rows, words));
 }
 
-// Metadata supplied by a test's composition root is separate from its linked auth rows: knowing
-// the operator vocabulary does not mean a verifier for it was installed.
 #[cfg(any(test, feature = "test-support"))]
 static TEST_WORDS: std::sync::OnceLock<OperatorWords> = std::sync::OnceLock::new();
 
 /// Supply operator metadata without linking any auth row. The first metadata hand-in stands;
-/// an actual [`install_linked`] hand-in always takes precedence. Fixture values remain caller-owned.
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn install_test_words(words: OperatorWords) {
     let _ = TEST_WORDS.set(words);
@@ -69,7 +53,7 @@ pub fn linked() -> &'static [LinkedAuth] {
 }
 
 /// The operator credential's provider key, as configuration spells it: the root's word once handed
-/// in; before any hand-in, empty.
+
 pub fn provider() -> &'static str {
     words().provider
 }
@@ -80,7 +64,7 @@ pub fn principal_id() -> &'static str {
 }
 
 /// The operator credential's words: a linked root's hand-in takes precedence over explicit test
-/// metadata. Without either hand-in, the words are empty.
+
 pub fn words() -> OperatorWords {
     if let Some((_, words)) = LINKED.get() {
         return *words;
@@ -105,8 +89,7 @@ pub fn answered(op: &str) -> bool {
 }
 
 /// Whether `module` names the plugin of the linked auth row keyed `op` by its identity, not its
-/// spelling: the key itself or the row's canonical name (one plugin, one identity, whichever name
-/// config gives it). The kernel adds the names its migration table gives the key.
+
 pub fn names(op: &str, module: &str) -> bool {
     module == op
         || linked()
@@ -115,8 +98,7 @@ pub fn names(op: &str, module: &str) -> bool {
 }
 
 /// A TEST REGISTRY ROW: link `door` (the door of the auth plugin a test binary links for the
-/// operator credential), under the provider key of `words`, as the composition root links its row.
-/// The first install stands.
+
 pub fn install_row(words: OperatorWords, door: AuthDoor) {
     static ROW: std::sync::OnceLock<[LinkedAuth; 1]> = std::sync::OnceLock::new();
     install_linked(
@@ -126,7 +108,7 @@ pub fn install_row(words: OperatorWords, door: AuthDoor) {
 }
 
 /// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
-/// data table: a configured token no linked row answers.
+
 pub fn unanswered_token(op: &str) -> String {
     format!(
         "an {op} token is configured but this binary was built WITHOUT the `auth-{op}` feature — \
@@ -226,7 +208,7 @@ impl Judgement {
     }
 
     /// A refusal for a verifier that answered NO VERDICT ([`Self::no_verdict`]), keeping the lines
-    /// it named.
+
     #[must_use]
     pub fn without_verdict(strips: Vec<Strip>) -> Self {
         Self {
@@ -237,9 +219,7 @@ impl Judgement {
     }
 
     /// A `verify` answer as a chain reads it: the verdict, the identity's replay claim, and the
-    /// lines the plugin named for the transport. A verifier that is overloaded or answered no
-    /// verdict is a `Reject` (fail-closed); one that answered no verdict (FAILED) is marked
-    /// [`Self::no_verdict`], answered 503 rather than 1.5.5's 401 (SIGN-auth-kind 2026-10-30).
+
     #[must_use]
     pub fn answered(answer: VerifyAnswer) -> Self {
         if matches!(answer.verified, Verified::Failed) {
@@ -273,7 +253,6 @@ pub enum OperatorCredential {
     /// No auth row answers the operator credential's provider.
     Unanswered,
     /// A row answers it and no operator token is configured: nothing to judge, so it passes (and a
-    /// chain that only passes denies — the admin surface is closed without a token).
     Unset,
     /// The opened instance, over the configured token's digest, on the auth kind's memory ABI.
     Module(Arc<dyn AuthCalls>),
@@ -281,11 +260,7 @@ pub enum OperatorCredential {
 
 impl OperatorCredential {
     /// The operator credential over the token digest `digest`: `answered` says whether a row answers
-    /// the [`provider`] key, and `open` opens that row over a digest through the auth axis.
-    /// FAIL-CLOSED: a row that answers but cannot open is an error, never a module silently dropped.
-    ///
-    /// # Errors
-    /// The answering row would not open.
+
     pub fn open(
         answered: bool,
         digest: Option<&str>,
@@ -299,9 +274,7 @@ impl OperatorCredential {
     }
 
     /// Judge `request` — the request's field lines at `Head`, handed through as presented: the
-    /// plugin reads the carriers its Statement names (both admin carriers, folded), so the kernel
-    /// names none. AWAITS a pending verify (the admin door is async: pending I/O is waited
-    /// for, never refused). `None` when no row answers: the caller says so, and passes.
+
     pub async fn judge(&self, request: VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
@@ -312,10 +285,7 @@ impl OperatorCredential {
     }
 
     /// The SYNCHRONOUS PROBE of the same judgement: one ticketless, watchdog-bounded crossing on
-    /// the caller's thread (`verify_now`), for a caller that cannot await (the dry run, the root's
-    /// admin door). A plugin that must wait answers no verdict here, which is a
-    /// refusal with `no_verdict` retained — the probe fails closed, while an HTTP caller can
-    /// distinguish verifier unavailability from an invalid credential.
+
     pub fn probe(&self, request: &VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
@@ -330,22 +300,17 @@ impl OperatorCredential {
 }
 
 /// The operator credential on an admin chain: the credential the auth axis answered, and the
-/// provider names it answers for. A provider is the operator credential BY ITS MODULE, never by its
-/// name: `ops: { module: <operator provider> }` answers here, and a provider that carries the
-/// operator provider's own name but is backed by another module does not, so it is that module.
-/// It judges as its credential does (it dereferences to the [`OperatorCredential`] the auth axis
-/// answered), and adds only which providers it answers for.
+
 pub struct Operator {
     cred: OperatorCredential,
     names: Vec<String>,
     /// The carriers the operator credential's row states (its Statement's carrier marks, in order):
-    /// where the admin credential sits, in the style's own words. None until the axis answers.
     carriers: Vec<String>,
 }
 
 impl Operator {
     /// The operator credential of the operator provider `op`, answering for `op` referenced bare,
-    /// with nothing opened yet.
+
     pub fn new(op: &str) -> Self {
         Self {
             cred: OperatorCredential::Unanswered,
@@ -355,10 +320,7 @@ impl Operator {
     }
 
     /// THE ONE JUDGEMENT: whether the provider `name`, whose `identity-providers:` definition names
-    /// `module` (`None`: it has no definition), is the operator credential of the operator provider
-    /// `op`. By its module — by the plugin `module` RESOLVES to, which `is_op` answers (every name the
-    /// operator plugin answers to: its key, its canonical name, a former name) — and its name counts
-    /// only when it is `op` referenced bare.
+
     pub fn backed(
         op: &str,
         name: &str,
@@ -369,9 +331,7 @@ impl Operator {
     }
 
     /// The operator credential of `op`, opened as [`OperatorCredential::open`] opens it, answering for
-    /// every provider [`Self::backed`] names (by `is_op`) among the effective definitions `defs`
-    /// (each provider's name and module) and for `op` referenced bare unless a definition under that
-    /// name backs it with another module.
+
     pub fn open<'a>(
         op: &str,
         defs: impl Iterator<Item = (&'a str, &'a str)>,
@@ -396,7 +356,7 @@ impl Operator {
     }
 
     /// This operator credential, its row stating `carriers` (its Statement's carrier marks, in
-    /// order), read through the auth axis whether or not a token opened it.
+
     #[must_use]
     pub fn with_carriers(mut self, carriers: Vec<String>) -> Self {
         self.carriers = carriers;
@@ -404,7 +364,7 @@ impl Operator {
     }
 
     /// The carriers the operator credential's row states, in its Statement's order: the admin
-    /// lines the host strips and the admin chain's candidate is read from. Opaque words.
+
     #[must_use]
     pub fn carriers(&self) -> &[String] {
         &self.carriers
@@ -416,7 +376,7 @@ impl Operator {
     }
 
     /// Whether a principal `id` that the admin-chain provider `name` identified is the operator: the
-    /// provider is the operator credential and `id` is the principal id it mints (`principal_id`).
+
     pub fn mints(&self, name: Option<&str>, id: &str, principal_id: &str) -> bool {
         name.is_some_and(|n| self.is(n)) && id == principal_id
     }

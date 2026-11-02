@@ -2,22 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Tests for the uniform observability envelope (#85).
-//!
-//! The load-bearing ones are the WIRE pins. This module's types are a published contract a plugin
-//! author in any language matches against, so a serde attribute added or removed here is a
-//! wire-breaking change, not a cosmetic one — the same discipline
-//! `hook_reply_json_encoding_is_pinned` applies one module over.
 
 use super::*;
 use serde_json::json;
 
 /// THE FIXED POINT. `PluginMetric` is the hook kind's frozen metric shape generalized, and the hook
-/// kind's BEHAVIOUR may not move in 1.6.0. So every JSON form a hook's `status.metrics` entry has
-/// ever taken must deserialize here to the same values it deserialized to before — field names,
-/// the `type`/`kind` rename, and the `#[serde(default)]` on every optional member included.
-///
-/// The fixture is the richest entry the shape admits, so a member dropped or renamed fails here
-/// rather than in a downstream exposition nobody diffed.
+
 #[test]
 fn plugin_metric_reads_the_hook_metric_wire_form_unchanged() {
     let raw = json!({
@@ -38,7 +28,7 @@ fn plugin_metric_reads_the_hook_metric_wire_form_unchanged() {
     });
     let m: PluginMetric = serde_json::from_value(raw).expect("the hook wire form still decodes");
     assert_eq!(m.name, "tokens_saved_total");
-    // `type` on the wire, `kind` in Rust — the rename is part of the frozen shape.
+
     assert_eq!(m.kind, "counter");
     assert_eq!(m.value, 42.0);
     assert_eq!(m.labels.as_ref().expect("labels").len(), 2);
@@ -54,7 +44,7 @@ fn plugin_metric_reads_the_hook_metric_wire_form_unchanged() {
 }
 
 /// The MINIMAL entry — `{name, type}` — is what the simplest plugin sends, and `value` defaults to
-/// zero rather than failing the decode. A hook has always been able to send this.
+
 #[test]
 fn plugin_metric_accepts_the_minimal_entry() {
     let m: PluginMetric =
@@ -64,8 +54,7 @@ fn plugin_metric_accepts_the_minimal_entry() {
 }
 
 /// A plugin may send members this build does not know — a newer plugin against an older host — and
-/// the entry must still decode. Unknown members are IGNORED, never an error: there is no
-/// `deny_unknown_fields` here and adding one would be a wire break.
+
 #[test]
 fn plugin_metric_ignores_unknown_members() {
     let m: PluginMetric = serde_json::from_value(
@@ -76,8 +65,7 @@ fn plugin_metric_ignores_unknown_members() {
 }
 
 /// The SERIALIZED form omits every unset optional, so the common `{name, type, value}` sample costs
-/// three keys on the wire rather than fourteen. An author reading this crate's JSON should see the
-/// same shape a hook sends, not a wall of nulls.
+
 #[test]
 fn plugin_metric_serializes_without_unset_optionals() {
     let s = serde_json::to_string(&PluginMetric::counter("x_total", 1.0)).expect("serialize");
@@ -100,7 +88,7 @@ fn plugin_metric_builders_produce_the_declared_sample() {
 }
 
 /// The envelope's WIRE FORM, pinned. A plugin author in C/Go/Zig matches these three keys literally,
-/// so their spelling is a contract. `result` holds the kind's own response bytes verbatim.
+
 #[test]
 fn envelope_wire_form_is_pinned() {
     let e = Envelope {
@@ -115,8 +103,7 @@ fn envelope_wire_form_is_pinned() {
 }
 
 /// THE COMMON CASE COSTS NOTHING. A plugin with nothing to report emits only `result` — the two
-/// arrays are skipped when empty — so the envelope is not a per-call tax on every kind that has no
-/// back-channel to use.
+
 #[test]
 fn a_bare_envelope_carries_only_the_result() {
     let e = Envelope::bare(json!({"Delivered": null}));
@@ -128,7 +115,7 @@ fn a_bare_envelope_carries_only_the_result() {
 }
 
 /// And it decodes back: an absent `metrics`/`diagnostics` is an EMPTY one, never a decode failure.
-/// That is what lets a plugin that never learned about the back-channel keep answering.
+
 #[test]
 fn an_absent_back_channel_decodes_as_empty() {
     let e: Envelope<serde_json::Value> =
@@ -138,7 +125,7 @@ fn an_absent_back_channel_decodes_as_empty() {
 }
 
 /// A DIAGNOSTIC's minimal entry is its code alone, read at `warn` — the level the catalogue mostly
-/// sits at. Anything more is opt-in.
+
 #[test]
 fn plugin_diagnostic_defaults_to_warn() {
     let d: PluginDiagnostic = serde_json::from_value(json!({"code": "BUSBAR-1234"})).expect("min");
@@ -172,8 +159,7 @@ fn diag_level_tokens_match_serde() {
 }
 
 /// K9c: a diagnostic's fields attached OUT of key order carry that order (`order`), which a host
-/// rendering a first-party plugin's line as its own writes them in; attached in key order they
-/// carry nothing more (the pinned wire above is unchanged).
+
 #[test]
 fn a_diagnostics_attach_order_rides_the_wire_only_when_it_is_not_key_order() {
     let d = PluginDiagnostic::warn("BUSBAR-1", "m")

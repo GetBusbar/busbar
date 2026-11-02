@@ -80,7 +80,7 @@ use crate::abi::sdk::life::{Leases, Refusal};
 use crate::abi::sdk::publish::{Generations, Publish};
 
 /// The former FIFO size, retained as a source-compatible constant. Answers are now retained by
-/// ticket; this number never permits another ticket to evict returned memory.
+
 pub const KEPT_RING: usize = 4096;
 
 /// A reply's full identity. Unticketed replies belong to the actual crossing thread, not a
@@ -114,9 +114,7 @@ impl ReplyKey {
 }
 
 /// Storage indexed by host slot, retaining its full ticket identity. A host cannot
-/// recycle a slot until its previous operation and reply consumption ended; seeing a new
-/// generation therefore also retires that slot's old reply. The number of entries follows the
-/// peak host ticket slots and unticketed crossing threads, never the number of completed calls.
+
 pub(crate) struct Replies<T>(Mutex<HashMap<ReplySlot, (ReplyKey, T)>>);
 
 impl<T> Default for Replies<T> {
@@ -146,7 +144,7 @@ impl<T> Replies<T> {
 }
 
 /// A failure's owned text with no instance to keep it and no reason buffer lent by the host: the
-/// only case the SDK answers a fixed text for.
+
 pub const NO_REASON_BUFFER: &str =
     "the plugin's reason was not kept: the host lent no reason buffer";
 
@@ -178,7 +176,7 @@ impl Report {
 }
 
 /// What a call's body reported, held by the call until it returns: the SDK then hands it to the
-/// instance's [`Kept`].
+
 pub(crate) type Reporting = Cell<Option<Box<Report>>>;
 
 /// WHAT ONE INSTANCE'S ANSWERS NAME, kept by the instance (the SDK's instance box,
@@ -196,8 +194,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Kept {
     /// Start the next crossing on this ticket (or this actual unticketed thread). Retired owners
-    /// are detached under the lock, then cleared or dropped after unlocking. Reuse the preceding
-    /// envelope's capacity without invalidating any other ticket's answer.
+
     pub(crate) fn begin(&self, key: ReplyKey) -> Option<Box<Report>> {
         self.replies.take(key).map(|mut report| {
             report.clear();
@@ -229,12 +226,11 @@ impl Kept {
 }
 
 /// How many distinct route entry names one instance keeps for its lifetime. A plane names the
-/// entries of its own section, a set its config bounds; a name past these belongs to its reply.
+
 pub(crate) const KEPT_ROUTES: usize = 64;
 
 /// THE ROUTE NAMES AN INSTANCE HAS ANSWERED, each kept once for the instance's lifetime: a slot is
-/// claimed once (compare-and-swap from NULL) and only read after, so naming a kept entry again is
-/// a scan of loads — no lock, no heap, no write to memory another worker reads.
+
 pub(crate) struct Routes {
     slots: [AtomicPtr<Box<str>>; KEPT_ROUTES],
 }
@@ -249,7 +245,7 @@ impl Default for Routes {
 
 impl Routes {
     /// The kept copy of `entry`, keeping it in a free slot if no slot holds it; `None` when every
-    /// slot holds another name.
+
     fn name(&self, entry: &str) -> Option<AbiStr> {
         for slot in &self.slots {
             let mut at = slot.load(Ordering::Acquire);
@@ -326,7 +322,7 @@ impl Alive {
 }
 
 /// What one call's writers leased or published from (their [`Alive`] tokens), checked when its
-/// body returns.
+
 pub(crate) type Holders = RefCell<Vec<Weak<()>>>;
 
 /// Whether every table the call's answer names memory from outlived its body.
@@ -335,7 +331,7 @@ pub(crate) fn holders_live(holders: &Holders) -> bool {
 }
 
 /// How many pointer-bearing fields one `out` records exactly; past that, the last mark widens to
-/// cover the rest (refusing more, never less).
+
 const MARKS: usize = 16;
 
 /// A value with no pointer in it, anywhere: a safe body may set it into an `out` directly.
@@ -371,7 +367,7 @@ unsafe impl Scalar for crate::abi::transport::RendezvousTerms {}
 unsafe impl Scalar for crate::abi::transport::DatagramYield {}
 
 /// A slot's `out`, as a safe body is handed it: read anything, set scalars, and hand pointers to
-/// the SDK's writers. Only the SDK makes one; it lives for the call.
+
 pub struct Out<'a, T> {
     out: &'a mut T,
     /// The answering instance's memory; `None` with no instance yet.
@@ -383,7 +379,6 @@ pub struct Out<'a, T> {
     /// The tables this call's answer leased or published from; `None` in the unit tests.
     holders: Option<&'a Holders>,
     /// The byte ranges of the `out` an SDK writer set to name memory (a pointer and the length
-    /// paired with it): [`Out::set`] never overwrites them.
     marks: [(usize, usize); MARKS],
     marked: usize,
 }
@@ -399,10 +394,7 @@ impl<T> std::fmt::Debug for Out<'_, T> {
 
 impl Out<'_, crate::abi::plane::ArriveOut> {
     /// THE ROUTE a READY arrival names: `class`
-    /// ([`crate::abi::plane::ROUTE_POOL`] or [`crate::abi::plane::ROUTE_DIRECT`]) and the `entry`
-    /// inside the plane's own section it names, the name kept in the instance's memory for the
-    /// answer. An answer with no instance keeps no name, so it names none. An entry the instance
-    /// has named before is named from its kept copy, with no heap and no lock.
+
     pub fn route(&mut self, class: u8, entry: &str) {
         self.set(|o| &o.route, class);
         if let Some(kept) = self.kept {
@@ -415,41 +407,41 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     }
 
     /// The unit is the plane's own to answer ([`crate::abi::plane::ROUTE_LOCAL`]): it names
-    /// no entry, and the kernel admits it with no route walk.
+
     pub fn local(&mut self) {
         self.set(|o| &o.route, crate::abi::plane::ROUTE_LOCAL);
     }
 
     /// THE PLANE'S OWN ANSWER IS AN ADMITTED CALL ([`crate::abi::plane::ROUTE_COUNTED`], on a
-    /// [`Self::local`] unit): the kernel counts its request against the caller's caps.
+
     pub fn counted(&mut self) {
         let flags = self.get().route_flags | crate::abi::plane::ROUTE_COUNTED;
         self.set(|o| &o.route_flags, flags);
     }
 
     /// THE UNIT'S OPERATION IS PERFORMED AT MOST ONCE ([`crate::abi::plane::ROUTE_ONCE`]): a member
-    /// that answered with a failure is not retried on another.
+
     pub fn once(&mut self) {
         let flags = self.get().route_flags | crate::abi::plane::ROUTE_ONCE;
         self.set(|o| &o.route_flags, flags);
     }
 
     /// THE UNIT IS SERVED AS A DUPLEX SESSION ([`crate::abi::plane::ROUTE_SESSION`]): its pieces
-    /// name its stream, and its unsolicited output is named on the instance's driver ticket.
+
     pub fn session(&mut self) {
         let flags = self.get().route_flags | crate::abi::plane::ROUTE_SESSION;
         self.set(|o| &o.route_flags, flags);
     }
 
     /// THE CALLER ASKED FOR ITS ANSWER STREAMED ([`crate::abi::plane::ROUTE_STREAM`]): the kernel
-    /// bounds the send by the stream ceiling, and a cut after the first byte is not a refund.
+
     pub fn stream(&mut self) {
         let flags = self.get().route_flags | crate::abi::plane::ROUTE_STREAM;
         self.set(|o| &o.route_flags, flags);
     }
 
     /// THE UNIT'S STICKY-ROUTING KEY ([`crate::abi::plane::ArriveOut::affinity`]), opaque to the
-    /// kernel and kept until the instance's next call. An empty key states none.
+
     pub fn affinity(&mut self, key: &str) {
         if key.is_empty() {
             return;
@@ -461,9 +453,7 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     }
 
     /// THE UNIT'S TRUST FACTS ([`crate::abi::plane::ArriveOut::trust_counterparty`], and the item
-    /// there and the digest it is offered at), kept until the instance's next call; the kernel's
-    /// Approve judges them. An empty counterparty states none; an empty item or digest states no
-    /// item or no digest.
+
     pub fn trust(&mut self, counterparty: &str, item: Option<&str>, digest: Option<&str>) {
         if counterparty.is_empty() {
             return;
@@ -485,9 +475,7 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
 
 impl Out<'_, crate::abi::plane::ServeOut> {
     /// A `serve` ANSWER, written whole into the host buffers `input` lends: `body`, the head
-    /// `fields` (name, value) in order, the status and the `AUDIT_*` row the kernel audits it with.
-    /// A short buffer answers FAILED with what each buffer needs, nothing else set: the host grows
-    /// them and calls once more.
+
     pub fn answer(
         &mut self,
         input: &crate::abi::sdk::Lent<'_, crate::abi::plane::ServeIn>,
@@ -601,13 +589,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Read the pointer-free field `pick` names (a [`Scalar`]), as written so far. `pick` is
-    /// handed a zeroed `T`, never the output itself: it learns where the field is
-    /// and reads nothing the call wrote, so a string or payload an SDK writer named is never copied
-    /// out. #1471 keeps this name beside its own `get(pick)`; `out.pick(|o| &o.f)` compiles before
-    /// and after.
-    ///
-    /// # Panics
-    /// When `pick` answers a reference that is not a field of the `out` (the door answers FAULT).
+
     #[must_use]
     pub fn pick<F: Scalar>(&self, pick: impl FnOnce(&T) -> &F) -> F {
         // SAFETY: `T: AbiOut`, whose contract is that every initialized bit pattern, all-zero
@@ -638,8 +620,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
             at >= base && at.saturating_add(size_of::<F>()) <= base + size_of::<T>(),
             "Out: the picked reference is not a field of the out"
         );
-        // The same allocation as `self.out`, derived from the `&mut` so writing through it is
-        // allowed.
+
         ptr::from_mut::<T>(self.out)
             .cast::<u8>()
             .wrapping_add(at - base)
@@ -647,7 +628,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Write `value` into the field `pick` names (any field, however nested): an SDK writer's
-    /// pointer or the length paired with one, so the range is marked against [`Out::set`].
+
     fn put<F>(&mut self, pick: impl FnOnce(&T) -> &F, value: F) {
         let p = self.at(pick);
         let at = p as usize - ptr::from_ref::<T>(self.out) as usize;
@@ -659,16 +640,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Set the pointer-free field `pick` names to `value`: a field of the kind's own, after the
-    /// head. The [`OutHead`] is written only by the SDK's writers ([`Out::wake_at`], [`Out::fail`],
-    /// [`Out::error`], [`Out::metric`], [`Out::diag`], [`Out::lease`], [`Out::keep`]): its lengths
-    /// and its lease name memory the host reads after the call, so a body never sets them by hand.
-    ///
-    /// Nor does it overwrite a field an SDK writer already set in this call (a blob's or a list's
-    /// length beside the pointer the writer named): the host would read past the memory named.
-    ///
-    /// # Panics
-    /// When `pick` answers a reference that is not a field of the `out`, one inside its head, or
-    /// one an SDK writer set (the door answers FAULT).
+
     pub fn set<F: Scalar>(&mut self, pick: impl FnOnce(&T) -> &F, value: F) {
         let p = self.at(pick);
         let offset = p as usize - ptr::from_ref::<T>(self.out) as usize;
@@ -694,8 +666,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Append one negotiated inspection request to the existing main reply extensions, holding
-    /// every copied byte under this answer's lease. A second different query returns Busy and
-    /// preserves the first request and all unrelated extension bytes.
+
     pub fn inspection_request(
         &mut self,
         leases: &Leases,
@@ -762,7 +733,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Acknowledge explicitly consumed terminal service results on this driver. The bytes are
-    /// leased until host validation; the guest waits for the next capability before reusing IDs.
+
     pub fn completion_ack(
         &mut self,
         leases: &Leases,
@@ -802,14 +773,13 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// For a PENDING answer: resume this op no later than `mono_ns` on the host's monotonic clock
-    /// (`clock.now`'s `mono_ns`) even if nothing wakes it — the host's timer, never earlier than
-    /// `mono_ns` (a wake may still resume it sooner: see `abi::sdk::conn::not_before`).
+
     pub fn wake_at(&mut self, mono_ns: u64) {
         self.head().wake_at_ns = mono_ns;
     }
 
     /// Lease an immutable logical publication intent. Return PENDING with no ordinary output;
-    /// read its exact result on RESUME/DRIVE before publishing any effects.
+
     pub fn conditional_request(
         &mut self,
         leases: &Leases,
@@ -820,7 +790,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Lease a read-only original-incarnation observation. Return PENDING, then issue fresh
-    /// planning reads only after the exact observation arrives on RESUME/DRIVE.
+
     pub fn conditional_observation(
         &mut self,
         leases: &Leases,
@@ -835,8 +805,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Lease an exact outcome-only settlement acknowledgement. Return PENDING from DRIVE/TICK
-    /// with no ordinary output. Retain the original journal and ACK marker until the next valid
-    /// same-instance driver input no longer carries this sticky settlement; SHORT does not ACK.
+
     pub fn conditional_settlement_ack(
         &mut self,
         leases: &Leases,
@@ -905,8 +874,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         bytes.extend_from_slice(prior);
         bytes.extend_from_slice(&encoded);
         self.held_by(&leases.alive);
-        // An intent can carry raw record credentials even when there was no prior secret
-        // extension. Its final lease must wipe just like its private encoder and compose scratch.
+
         let flags = ext.flags | if key == wire::INTENT { BLOB_SECRET } else { 0 };
         let mut blob = if flags & BLOB_SECRET != 0 {
             leases.secret_blob(self.head(), bytes.into_vec(), BLOB_OCTETS)
@@ -919,10 +887,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Answer `refusal`: its outcome, the head's error naming its text. A `'static` text is named
-    /// where it lives. An owned text belongs to this ticket's reply until its next crossing;
-    /// with no instance yet it is written into the host's lent reason buffer (cut on a
-    /// char boundary to its capacity; an `open` states its length in `err_len`), and only when the
-    /// host lent none is it answered as [`NO_REASON_BUFFER`].
+
     pub fn fail(&mut self, refusal: Refusal) -> Outcome {
         let (outcome, text) = refusal.into_parts();
         let error = match text {
@@ -941,10 +906,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Name WHY a READY answer declined, in the head's error text, for the host's log of the
-    /// instance and never the client: an auth `verify` REJECT, or a `complete_login` that is not
-    /// an identity (`abi::auth`, [`IdentifyOut`](crate::abi::auth::IdentifyOut)). Kept as
-    /// [`Out::fail`] keeps a failure's text; the outcome is the caller's to answer. Never secret
-    /// material.
+
     pub fn reason(&mut self, text: impl Into<Cow<'static, str>>) {
         let error = match text.into() {
             Cow::Borrowed(s) => AbiStr {
@@ -957,7 +919,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Where an owned failure text lives: the instance, else the host's lent reason buffer, else
-    /// nowhere (the fixed text).
+
     fn owned_text(&mut self, text: String) -> AbiStr {
         if self.kept.is_some() {
             let mut report = self.report().expect("an instance has reply storage");
@@ -996,14 +958,14 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// This call's envelope for a writer to fill (the call's own, or a fresh one from the
-    /// instance); `None` with no instance.
+
     fn report(&self) -> Option<Box<Report>> {
         let (kept, reporting) = (self.kept?, self.reporting?);
         Some(reporting.take().unwrap_or_else(|| kept.report()))
     }
 
     /// Name `text`, which lives for the program, as the answer's error text; the outcome is the
-    /// caller's to answer.
+
     pub fn error(&mut self, text: &'static str) {
         self.head().error = AbiStr {
             ptr: text.as_ptr(),
@@ -1012,9 +974,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// REPORT one metric in the reply's envelope: `value` for the family at `family_idx` in the
-    /// Statement's `families`, as `kind` (`METRIC_ADD` | `METRIC_SET` | `METRIC_OBSERVE`), unlabelled.
-    /// `false` when the envelope is full ([`MAX_ENVELOPE_ENTRIES`]), or when the call has no
-    /// instance to keep it (`validate`, `open`): the entry is not reported.
+
     pub fn metric(&mut self, family_idx: u32, kind: u8, value: f64) -> bool {
         let Some(mut r) = self.report() else {
             return false;
@@ -1038,8 +998,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// REPORT one declared diagnostic in the reply's envelope: the id at `id_idx` in the
-    /// Statement's `diag_ids`, its `severity` and `text`. The call capture's log records join after
-    /// it. `false` when the envelope is full: the entry is not reported.
+
     pub fn diag(&mut self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) -> bool {
         let Some(mut r) = self.report() else {
             return false;
@@ -1051,7 +1010,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
                 ptr: text.as_ptr(),
                 len: text.len(),
             };
-            // The `Box<str>`'s bytes stay put while the vector of them grows.
+
             r.texts.push(text);
             r.diags.push(Diag {
                 id_idx,
@@ -1075,10 +1034,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Set the string field `pick` names to `s`, which lives at least until the instance's next
-    /// refresh generation: the op's generation borrow `gen` ([`Instance::generation`]) proves it,
-    /// so the borrow checker refuses a local or a string the host lent the call (status row 194).
-    ///
-    /// [`Instance::generation`]: crate::abi::sdk::Instance::generation
+
     pub fn lent_str<'g>(&mut self, pick: impl FnOnce(&T) -> &AbiStr, s: &'g str, gen: &Gen<'g>) {
         self.put(pick, AbiStr::lent(s, gen));
     }
@@ -1095,13 +1051,13 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Name `text`, which lives at least until the instance's next refresh generation
-    /// ([`Out::lent_str`]), as the answer's error text; the outcome is the caller's to answer.
+
     pub fn error_lent<'g>(&mut self, text: &'g str, gen: &Gen<'g>) {
         self.head().error = AbiStr::lent(text, gen);
     }
 
     /// Hold `bytes` in `leases` under a new lease (named in the head) and set the blob `pick`
-    /// names over them, of format `fmt`.
+
     pub fn lease(
         &mut self,
         pick: impl FnOnce(&T) -> &Blob,
@@ -1133,7 +1089,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// As [`Out::lease`], for a string: set the string field `pick` names to `text`, held by
-    /// `leases` under `head.lease` until the host's `release` of it, across refresh generations.
+
     pub fn lease_str(&mut self, pick: impl FnOnce(&T) -> &AbiStr, leases: &Leases, text: String) {
         self.held_by(&leases.alive);
         let s = leases.str(self.head(), text);
@@ -1152,8 +1108,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Hold `owned` under this answer's lease (named in `head.lease`) until the host's `release`
-    /// of it. An answer whose only material is program memory ([`Out::list`], [`Out::text`]) still
-    /// names a lease where its kind's check requires one of every answer that names material.
+
     pub fn keep<O: Send + Sync + 'static>(&mut self, leases: &Leases, owned: O) {
         self.held_by(&leases.alive);
         leases.keep(self.head(), owned);
@@ -1176,7 +1131,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Publish `spec` as `generation` in `gens` and set the field `pick` names to the published
-    /// value, which the SDK holds until that generation's `retire`.
+
     pub fn publish<P: Publish>(
         &mut self,
         pick: impl FnOnce(&T) -> &*const P,
@@ -1190,7 +1145,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// [`Out::publish`] with the plugin's `payload` for that generation, held beside it
-    /// ([`Generations::publish_with`]).
+
     pub fn publish_with<P: Publish, D>(
         &mut self,
         pick: impl FnOnce(&T) -> &*const P,
@@ -1205,7 +1160,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Set the string field `pick` names to the bytes `span` names in the host buffer `buf`,
-    /// which the host lent for this call and reads when it returns.
+
     pub fn host_str(
         &mut self,
         pick: impl FnOnce(&T) -> &AbiStr,
@@ -1217,8 +1172,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Set the blob field `pick` names to the first `len` bytes of `buf`, the host's secret buffer
-    /// lent for this call, flagged secret (the credential chip, row 6: host-owned secret bytes): the SDK's writer for a resolved
-    /// value the host owns ([`crate::abi::sdk::cred::resolved`]). `len` is at most what was written.
+
     pub(crate) fn host_secret(
         &mut self,
         pick: impl FnOnce(&T) -> &crate::abi::mechanism::call::Blob,
@@ -1245,15 +1199,14 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Point the field `pick` names at the rows of `buf`, a host buffer lent for this call; the
-    /// count is a field of its own, set beside it (a prompt view's `message_count`).
+
     pub fn host_rows<E: Copy>(&mut self, pick: impl FnOnce(&T) -> &*const E, buf: &HostBuf<'_, E>) {
         let p = buf.as_ptr().cast_const();
         self.put(pick, p);
     }
 
     /// Set the blob field `pick` names to the opaque octets
-    /// ([`BLOB_OCTETS`](crate::abi::mechanism::call::BLOB_OCTETS)) `span` names in the host
-    /// buffer `buf`, which the host lent for this call and reads when it returns.
+
     pub fn host_octets(
         &mut self,
         pick: impl FnOnce(&T) -> &crate::abi::mechanism::call::Blob,

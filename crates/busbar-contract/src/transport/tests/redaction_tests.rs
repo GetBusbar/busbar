@@ -1,8 +1,7 @@
 use super::{ClientIdentity, EgressTrust};
 
 /// A byte value that appears NOWHERE in the redacted `Debug` shells (`ClientIdentity { … }`,
-/// `EgressTrust { … }`, `[]`, `<redacted>`), so its decimal spelling in the output can only mean
-/// the key material leaked. `0xEF` = 239.
+
 const KEY_BYTE: u8 = 0xEF;
 
 #[test]
@@ -44,8 +43,7 @@ fn egress_trust_debug_redacts_client_private_key() {
 }
 
 /// THE 1.5.5 TEXT, PINNED: `ClientIdentity`'s `Debug` is customer-visible log text, so it prints
-/// exactly what it printed before the key became a `Secret` — the chain as itself, the key as
-/// `"<redacted>"` — and not `Secret`'s own `[REDACTED]`.
+
 #[test]
 fn client_identity_debug_text_is_the_1_5_5_text() {
     let id = ClientIdentity {

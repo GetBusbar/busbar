@@ -1,40 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CREDENTIAL POSITIONS `${VAR}` FILLED, and the settings a plane is handed over them (THE
-//! DESIGN §6: a plane never receives secret bytes; BUSBAR-1.6.0 §4: a plane's settings reach it
-//! "reserved keys and secrets stripped").
-//!
-//! `${VAR}` is spliced into the raw config text before it is parsed
-//! ([`super::interpolate_env_with`]), so the parsed tree cannot tell an interpolated secret from a
-//! literal. The interpolation's own structural check already parses the document twice — once
-//! with the real values, once with an inert per-occurrence placeholder — and walks the two trees in
-//! step. That walk is where the kernel learns which scalar each `${VAR}` filled. It records each
-//! such position here: the document path, the variables, whether `${VAR}` filled the whole value,
-//! the value as written (`"Bearer ${TOKEN}"`, config text, no secret byte) and a keyed digest of the
-//! value (never the value itself).
-//!
-//! SECURITY ruling (2026-10-07): the reference replaces a value only at a CREDENTIAL position
-//! ([`is_credential`]): a value under a credential key (`api_key`, `token`, `client_secret`, …),
-//! an entry of a program's `env` map, or anything inside the kernel-owned `upstream_credentials`
-//! block. Every other position — `url`, `command`, `args`, `cwd`, `token_url` among them — keeps the
-//! load-time interpolation, exactly as 1.5.5 handed it on: nothing 1.5.5 accepted is narrowed.
-//!
-//! Every blob a plane is handed — its `validate`, `open` and `refresh` settings, its owned
-//! sections, the facing probe — is built through [`plane_bound`]. At a credential position whose
-//! value still has the recorded digest, the plane gets the secret REFERENCE the operator could have
-//! written there: `{ env: VAR }` (the `env` module's sugar of
-//! [`busbar_contract::secret_ref::SecretRef`]) where `${VAR}` filled the whole value, and a TEMPLATE
-//! reference (`busbar_contract::secret_ref::SECRET_MODULE_TEMPLATE`, its text the value as written)
-//! where it filled only part of it. Never the bytes. The host resolves the reference where it reads
-//! the value itself: a member program's environment at the spawn. The kernel's own reads keep the
-//! plaintext tree; only what crosses to a plane changes.
-//!
-//! The ledger is process-wide and only grows. A position is recorded once per (path, digest), so
-//! a reload that interpolates the same values adds nothing. Because a match needs the path AND the
-//! digest, a stale entry can only turn into a reference a scalar that the same variable once
-//! filled at the same position.
-
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::BuildHasher;
@@ -61,7 +27,6 @@ struct Fill {
 }
 
 struct Ledger {
-    /// The per-process digest key: the ledger holds no value and no unkeyed hash of one.
     keys: RandomState,
     at: HashMap<Vec<Seg>, Vec<Fill>>,
 }
@@ -73,10 +38,8 @@ static LEDGER: LazyLock<RwLock<Ledger>> = LazyLock::new(|| {
     })
 });
 
-/// How deep a walk goes before it stops (the structural check's own bound).
 const MAX_DEPTH: usize = 128;
 
-/// The scalar's value as the plane's JSON would carry it (`None` for a non-scalar).
 fn scalar_text(v: &serde_json::Value) -> Option<String> {
     match v {
         serde_json::Value::String(s) => Some(s.clone()),
@@ -96,8 +59,6 @@ fn key_of(k: &serde_yaml::Value) -> Option<String> {
     }
 }
 
-/// The occurrence indices a placeholder scalar carries, in order, and whether it is exactly one
-/// placeholder.
 fn placeholders_in(s: &str, placeholder_of: &dyn Fn(usize) -> String, count: usize) -> Vec<usize> {
     let mut found: Vec<(usize, usize)> = (0..count)
         .filter_map(|i| s.find(&placeholder_of(i)).map(|at| (at, i)))
@@ -106,9 +67,6 @@ fn placeholders_in(s: &str, placeholder_of: &dyn Fn(usize) -> String, count: usi
     found.into_iter().map(|(_, i)| i).collect()
 }
 
-/// RECORD the positions one interpolation filled: `real` is the document parsed with the real
-/// values, `shape` the same document parsed with the placeholders (the two already matched in
-/// shape), `vars[i]` occurrence `i`'s variable and `placeholder_of(i)` its placeholder token.
 pub(super) fn record(
     real: &serde_yaml::Value,
     shape: &serde_yaml::Value,
@@ -172,8 +130,6 @@ fn walk_record(
     match (real, shape) {
         (Value::Mapping(r), Value::Mapping(s)) => {
             for (k, sv) in s {
-                // A key is matched by its real spelling; a key `${VAR}` filled is not a position
-                // (a plane's settings carry no secret as a key).
                 let (Some(rv), Some(name)) = (r.get(k), key_of(k)) else {
                     continue;
                 };
@@ -197,9 +153,6 @@ fn walk_record(
     }
 }
 
-/// The keys whose value is a credential wherever they appear in a plane's settings (SECURITY
-/// ruling 2026-10-07: a secret reference only at a credential field). Compared ASCII
-/// case-insensitively.
 const CREDENTIAL_KEYS: &[&str] = &[
     "api_key",
     "token",
@@ -216,16 +169,10 @@ const CREDENTIAL_KEYS: &[&str] = &[
     "bearer",
 ];
 
-/// The map whose every entry is a credential: a program's environment (a member's `env`, resolved
-/// at its spawn), named by the contract's program keys (`command`, `args`, `env`).
 const CREDENTIAL_MAPS: &[&str] = &[busbar_contract::conn::PROGRAM_KEYS[2]];
 
-/// The block whose whole subtree is credential material: the kernel-owned upstream credential.
 const CREDENTIAL_BLOCK: &str = "upstream_credentials";
 
-/// Whether the document position `path` is a CREDENTIAL position ([`CREDENTIAL_KEYS`],
-/// [`CREDENTIAL_MAPS`], [`CREDENTIAL_BLOCK`]). `url`, `command`, `args`, `cwd` and `token_url` are
-/// never one: they keep the load-time interpolation.
 fn is_credential(path: &[Seg]) -> bool {
     fn key(s: &Seg) -> Option<&str> {
         match s {
@@ -250,8 +197,6 @@ fn is_credential(path: &[Seg]) -> bool {
             .is_some_and(|m| CREDENTIAL_MAPS.iter().any(|c| m.eq_ignore_ascii_case(c)))
 }
 
-/// The secret reference a plane is handed at a credential position `${VAR}` filled: `{ env: VAR }`
-/// for the whole value, a template reference over the value as written for a part of it.
 fn reference_to(fill: &Fill) -> serde_json::Value {
     let reference = if fill.whole {
         busbar_contract::secret_ref::SecretRef::env(&fill.vars[0])
@@ -259,7 +204,6 @@ fn reference_to(fill: &Fill) -> serde_json::Value {
         busbar_contract::secret_ref::SecretRef::template(&fill.written)
     };
     if let Some(var) = reference.env_var() {
-        // The operator's own sugar spelling, as a plane reads one written by hand.
         let mut m = serde_json::Map::new();
         m.insert(
             busbar_contract::secret_ref::SECRET_MODULE_ENV.to_string(),
@@ -270,9 +214,6 @@ fn reference_to(fill: &Fill) -> serde_json::Value {
     serde_json::to_value(&reference).unwrap_or(serde_json::Value::Null)
 }
 
-/// THE SETTINGS A PLANE IS HANDED: `value` (rooted at the document path `prefix`, e.g. the plane's
-/// section key; empty for an object keyed by top-level section names) with every CREDENTIAL scalar
-/// that `${VAR}` filled replaced by its reference ([`reference_to`]); every other scalar as written.
 #[must_use]
 pub fn plane_bound(prefix: &[&str], value: serde_json::Value) -> serde_json::Value {
     let ledger = LEDGER
@@ -287,13 +228,6 @@ pub fn plane_bound(prefix: &[&str], value: serde_json::Value) -> serde_json::Val
     value
 }
 
-/// [`plane_bound`] over a YAML section, as the JSON bytes the plane is handed (`Vec::new()` for an
-/// absent section).
-///
-/// # Errors
-///
-/// A section JSON cannot carry (`the section is not representable as JSON: …`, the words the
-/// door's `validate` path has always used).
 pub fn plane_bound_bytes(prefix: &[&str], value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
     if value.is_null() {
         return Ok(Vec::new());

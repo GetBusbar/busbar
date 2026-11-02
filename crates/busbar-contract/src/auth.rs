@@ -2,14 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The AUTH contract: one module, one verdict.
-//!
-//! Moved here, module-path-only, from `busbar-api` (DECISIONS #83: contract = shapes; #84: nothing
-//! on the plugin path may link a crate holding semantics; the per-kind capability trait is the
-//! contract's, #35(a)). One name changed on the move and only to de-collide it (#35): the verdict is
-//! [`AuthVerdict`] here because [`crate::kinds::AuthOutcome`] is a different type. `busbar-api`
-//! re-exports it under its original spelling. `sha256_hex` followed later, beside the constant-time
-//! compare it feeds ([`crate::redacted::sha256_hex`]), once the owner ruled the
-//! `sha2 -> cpufeatures -> libc` edge tree-wide (2026-09-22).
 
 use zeroize::Zeroize;
 
@@ -57,7 +49,7 @@ pub struct AuthPrincipal(pub Option<Principal>);
 
 impl AuthPrincipal {
     /// The attribution handle for audit records: the principal id, or `anonymous` for the
-    /// explicit open-front-door postures.
+
     pub fn actor_id(&self) -> &str {
         self.0
             .as_ref()
@@ -76,11 +68,6 @@ impl AuthPrincipal {
 #[derive(Clone, Default)]
 pub struct CallerToken(pub Option<String>);
 
-// MANUAL Debug that NEVER prints the token contents. `CallerToken` wraps a caller credential and is
-// threaded into request extensions, so it can be reached by any future code that debug-formats the
-// extension map (or a struct that holds it). A derived `Debug` would print the plaintext token — a
-// latent credential leak the moment anything debug-logs it. Redact to presence only ("present" /
-// "absent"); never the length and never the value, since even the length is a (small) oracle.
 impl std::fmt::Debug for CallerToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("CallerToken")
@@ -106,31 +93,18 @@ pub enum AuthVerdict {
 }
 
 /// One authentication module — a swappable implementation of the fixed `auth` engine stage. The
-/// built-in `tokens` module implements it (the `auth/tokens/` crate); SAML/AD/OIDC modules
-/// implement the same trait. Extraction of the credential carriers (Bearer /
-/// x-api-key / x-goog-api-key) stays in the engine's middleware, so a module never re-parses
-/// headers — it receives the already-extracted candidate and returns a verdict.
+
 pub trait AuthModule: Send + Sync {
     /// Stable module name for config references, metrics, and audit (e.g. `"tokens"`).
     fn name(&self) -> &'static str;
     /// Judge the presented candidate credential. Constant-time and side-effect-free.
     fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict;
     /// Whether the engine may CACHE this module's verdicts (the credential cache). Default
-    /// `false`: an in-process module is microseconds and caching its verdicts would only widen
-    /// the revocation window. A module that does real I/O per call (a directory lookup over a
-    /// socket) overrides to `true`.
+
     fn cacheable(&self) -> bool {
         false
     }
 }
-
-// ── Browser-login primitives (auth ABI v2, 1.5.2 token-exchange) ────────────────────────────────
-//
-// These are the ENGINE-side (api-level) mirrors of the plugin-abi login wire types (the same
-// Identity↔Principal split: the wire types are serde-serializable, these carry no serde and stay in
-// the engine vocabulary). A verify-only auth module needs none of this. A login-capable module (an OIDC IdP)
-// serves `begin_login` and `complete_login`; the CORE, never the module, holds the confidential-client
-// secret.
 
 /// `begin_login` input — everything is CORE-generated or public; there is NO secret
 /// field, structurally keeping the confidential-client secret off the begin path.
@@ -275,13 +249,6 @@ impl std::fmt::Debug for LoginHttpResponse {
             .finish()
     }
 }
-
-// THE LOGIN HOP AND ITS RESPONSE WIPE ON DROP (open160 A2): a hop's form and header values (a
-// bearer token, a client credential) and a token response's body (the tokens) are overwritten with
-// zeroes when the value is dropped, wherever it was built. The fields stay `String` so a plugin
-// built against the earlier contract still compiles; `CompleteLogin`'s code and PKCE verifier stay
-// as they are for the same reason (a plugin builds it with `..Default::default()`, which a `Drop`
-// type refuses), and its token response wipes through this.
 
 impl Drop for LoginHop {
     fn drop(&mut self) {

@@ -2,18 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! SEALED CREDENTIAL VALUES (TSEAL; the "plane never sees credential bytes" family): the bound
-//! auth's field values never cross to a framer that states it renders sealed values
-//! (`abi::transport::EXT_SEALED_VALUES`). The opener names the fields whose values are credential
-//! bytes ([`busbar_contract::conn::SEALED_FIELDS_FIELD`], the host's own field, taken out here and
-//! never sent); each value is swapped, before the framer is handed anything, for FILLER of exactly
-//! its length (random, in the field-value-safe alphabet `A-Za-z0-9`), and the real bytes are held
-//! here, wiped when dropped. The framer renders the filler verbatim, exactly once, so every length
-//! it writes is already right; the host SPLICES the real bytes over it in the framer's wire output
-//! at the one place it is written into connection security, and wipes the spliced output once
-//! written. A sealed value is never written in the clear: an open whose connection is not secured
-//! by the host is refused before anything is framed ([`SEALED_IN_CLEAR`]), and an opening whose
-//! filler the framer did not render exactly once is refused before its bytes leave
-//! ([`SEAL_BROKEN`]).
 
 use ring::rand::{SecureRandom as _, SystemRandom};
 use zeroize::Zeroizing;
@@ -21,7 +9,7 @@ use zeroize::Zeroizing;
 use crate::compose::Opening;
 
 /// The refusal of an open whose sealed values would cross a connection the host does not secure:
-/// spliced there, the real bytes would reach the carrier plugin in the clear.
+
 pub const SEALED_IN_CLEAR: &str = "a sealed credential is never written in the clear: the open's \
      connection is not secured by the host, so its carrier would read the credential";
 
@@ -50,7 +38,7 @@ impl std::fmt::Debug for Seals {
 }
 
 /// The names the opener's [`busbar_contract::conn::SEALED_FIELDS_FIELD`] states, taken out of
-/// `fields` (every occurrence; the field is the host's and never sent).
+
 pub(crate) fn take_sealed_names(fields: &mut Vec<(String, Vec<u8>)>) -> Vec<String> {
     let mut names = Vec::new();
     fields.retain(|(n, v)| {
@@ -103,7 +91,7 @@ impl Seals {
         if pairs.is_empty() {
             return Ok(false);
         }
-        // Validate before changing the target. Only the host's RFC3986 pair encoding is accepted.
+
         for pair in &pairs {
             let Some(at) = pair.iter().position(|b| *b == b'=') else {
                 return Err(SEAL_BROKEN);
@@ -131,7 +119,7 @@ impl Seals {
                 return Err(SEALED_IN_CLEAR);
             }
         }
-        // Reserve before any credential is appended, so growth cannot free a prior secret copy.
+
         target.reserve(pairs.iter().map(|pair| pair.len().saturating_add(1)).sum());
         let fragment = target
             .iter()
@@ -165,13 +153,7 @@ impl Seals {
     }
 
     /// SEAL `opening`: the sealed-fields field is taken out; when `sealing` (the framer renders
-    /// sealed values), each named field's value becomes filler and its real bytes are held here.
-    /// `secured` = the host secures the connection the opening rides.
-    ///
-    /// # Errors
-    ///
-    /// [`SEALED_IN_CLEAR`] for a sealed value on a connection the host does not secure; a failed
-    /// random source.
+
     #[cfg(test)]
     pub(crate) fn seal(
         &mut self,
@@ -244,11 +226,7 @@ impl Seals {
     }
 
     /// SPLICE every pending seal whose filler `wire` holds: the real bytes over the filler, in
-    /// place. A seal found is done.
-    ///
-    /// # Errors
-    ///
-    /// [`SEAL_BROKEN`] when a filler appears more than once.
+
     pub(crate) fn splice(&mut self, wire: &mut [u8]) -> Result<(), &'static str> {
         let mut positions = Vec::with_capacity(self.0.len());
         for s in &self.0 {

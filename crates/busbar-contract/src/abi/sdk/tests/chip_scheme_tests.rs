@@ -38,7 +38,7 @@ fn bearer_is_the_bearer_scheme_for_a_credential() {
 }
 
 /// A `scheme` seal placed through `request_sealed` frames the very head the plain request with the
-/// same `authorization` value framed: the field order, the separator, every byte.
+
 #[test]
 fn a_sealed_authorization_frames_the_head_the_plain_one_framed() {
     use crate::abi::sdk::exchange::{Exchange, Request};

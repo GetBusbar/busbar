@@ -1,25 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! OWNER RULING Q14 — DATE EVERYTHING (#79): after a rate-card edit in the middle of a budget
-//! window, every money read of the ENFORCEMENT ledger and the budget gate itself price each part of
-//! the window at the card in force when it was earned, and agree with the dated metering read.
-//!
-//! The reads, and where each lands in this crate:
-//!
-//! - `GET /keys/{id}/usage` — `GovState::usage_for` (busbar-core-admin `keys.rs`);
-//! - `GET /groups/{name}/usage` — `GovState::derived_bucket_usage` (`service_operations.rs`);
-//! - the `/metrics` spend gauges — both of the above (`snapshot/money.rs`);
-//! - the hook seam's `budget_state`;
-//! - the budget gate — `GovState::try_admit`.
-//!
-//! `GET /admin/usage` prices metering rows through `busbar_kernel_ledger::cost::price_in_view` at
-//! each row's own instant; this test asks that function for the same consumption at the same
-//! instants and holds every read above to its answer.
-//!
-//! A test BINARY of its own, because the dated history is reached through the process-wide
-//! rate-epoch holder, which this file installs once and every test here re-opens under one lock.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -33,7 +14,6 @@ use busbar_kernel_ledger::cost::{
 use busbar_kernel_testkit::test_support::rate_holders::install_rate_epoch;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-/// The deployment's dated history, as the composition root holds it.
 struct Holder(Mutex<Arc<History>>, std::sync::atomic::AtomicBool);
 
 impl RateEpoch for Holder {
@@ -61,14 +41,11 @@ impl RateEpoch for Holder {
     }
 }
 
-/// Runs this binary's tests one at a time: the holder is process-wide, and each test opens its own
-/// history in it.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 #[path = "dated_budget/raw_provenance.rs"]
 mod raw_provenance;
 
-/// The installed holder, re-opened at `card`, and the lock the calling test holds while it runs.
 fn holder_opening(card: RateCard) -> (&'static Holder, std::sync::MutexGuard<'static, ()>) {
     static HOLDER: std::sync::OnceLock<&'static Holder> = std::sync::OnceLock::new();
     let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
@@ -86,13 +63,10 @@ fn holder_opening(card: RateCard) -> (&'static Holder, std::sync::MutexGuard<'st
     (holder, serial)
 }
 
-/// The card the history holds for `input_utok` micro-units a token on lane `m`, built the way the
-/// configuration builds it.
 fn history_card(input_utok: f64) -> RateCard {
     RateCard::from_micro_rates([(LaneClass::new("m", "input"), input_utok)], 0)
 }
 
-/// The engine's cost model for the same figures, with one group `team` capped at `cap` cents a day.
 fn cost(input_utok: f64, cap: u64) -> CostModel {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     let card = BTreeMap::from([(
@@ -126,9 +100,6 @@ fn input(n: u64) -> BTreeMap<String, u64> {
     BTreeMap::from([("input".to_string(), n)])
 }
 
-/// **THE WORKED EXAMPLE.** 300,000 tokens at 20 micro-units, then the card is edited to 10 and
-/// 900,000 more are served. Dated: 600 + 900 = 1,500. Priced at the current card alone: 1,200.
-/// Every read answers 1,500, and a gate capped at 1,300 REFUSES — on the undated figure it admitted.
 #[test]
 fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_force() {
     let (holder, _serial) = holder_opening(history_card(20.0));
@@ -146,13 +117,11 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
     let gov = GovState::new(store.clone(), None).unwrap();
     let now = busbar_kernel::store::now();
 
-    // Before the edit: admitted and served at 20.
     let before = cost(20.0, 1_300);
     gov.try_admit(&before, &key, "", now)
         .expect("under the cap");
     gov.record_usage(&before, &key, "", "m", &input(300_000), now);
 
-    // THE EDIT: the configuration now prices at 10, from this instant.
     let edit_ms = busbar_kernel::store::now_ms();
     {
         let mut history = holder.0.lock().unwrap();
@@ -172,7 +141,6 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
         .expect("600 spent, under the cap");
     gov.record_usage(&after, &key, "", "m", &input(900_000), now);
 
-    // What `GET /admin/usage` answers for the same consumption: each part at its own instant.
     let reference = {
         let history = holder.0.lock().unwrap().clone();
         price_in_view(
@@ -222,8 +190,6 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
         "the hook seam's budget_state: {hook:?}"
     );
 
-    // THE GATE, ON THE DATED FIGURE: 1,500 is over a 1,300 cap. The current card alone reads 1,200
-    // and would have admitted.
     match gov.try_admit(&after, &key, "", now) {
         Err(LimitBlocked::Limit { metric, group, .. }) => {
             assert_eq!((metric, group.as_str()), ("budget", "team"));
@@ -231,8 +197,6 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
         other => panic!("the gate must refuse on the dated 1,500: {other:?}"),
     }
 
-    // The durable write-behind row is per model and carries no era: the two eras flush as ONE
-    // model's counts, the wire a store has always been sent.
     gov.flush_budgets();
     let window = busbar_kernel::governance::budget_window(team.window, now);
     let row = store.get_usage(&team.bucket_id, window).unwrap();
@@ -240,7 +204,6 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
     assert_eq!(row.models[0].usage_units.get("input"), Some(&1_200_000));
 }
 
-/// Append `card` to the installed history, in force from now.
 fn edit_card(holder: &Holder, card: RateCard) {
     let at = busbar_kernel::store::now_ms();
     let mut history = holder.0.lock().unwrap();
@@ -257,11 +220,6 @@ fn edit_card(holder: &Holder, card: RateCard) {
     std::thread::sleep(std::time::Duration::from_millis(2));
 }
 
-/// **THE WORKED EXAMPLE ACROSS A CLEAN RESTART** (owner 2026-10-27, #79, Q14): 300,000 tokens at
-/// 20, the card edited to 10, 900,000 more; the node flushes and stops. A fresh node over the same
-/// store answers the same 1,500 on every read and the same cap headroom, from the store before it
-/// hydrates and from its cells after. From the era-less durable row alone it read 2,400: every
-/// count at the card in force when the window opened.
 #[test]
 fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
     let (holder, _serial) = holder_opening(history_card(20.0));
@@ -303,7 +261,6 @@ fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
     assert_eq!(reads(&gov, &after), seen, "read from the hydrated cells");
 }
 
-/// A stored window row: one request and `tokens` input tokens on `m`.
 fn row(tokens: u64) -> busbar_contract::records::UsageLedger {
     busbar_contract::records::UsageLedger {
         requests: 1,
@@ -315,14 +272,6 @@ fn row(tokens: u64) -> busbar_contract::records::UsageLedger {
     }
 }
 
-/// THE SAME RULING OVER THE DURABLE ROW. A read of a bucket this node holds no cell for prices the
-/// stored row exactly as the cell hydrated from that row prices it: era zero, the card in force when
-/// the window opened. Pricing the row at the CURRENT card instead answered one figure before the node
-/// hydrated the bucket and another after, with no consumption in between.
-///
-/// 300,000 tokens sit in the store at 20 micro-units a token (600), then the card is edited to 10.
-/// Every read answers 600 whether it reaches the store or the hydrated cell; the current card alone
-/// would read 300.
 #[test]
 fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
     let (holder, _serial) = holder_opening(history_card(20.0));
@@ -347,7 +296,6 @@ fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
         .put_usage(&team.bucket_id, team_window, &row(300_000))
         .unwrap();
 
-    // THE EDIT: the configuration prices at 10 from this instant, after the stored consumption.
     let edit_ms = busbar_kernel::store::now_ms();
     {
         let mut history = holder.0.lock().unwrap();
@@ -392,8 +340,6 @@ fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
     );
 }
 
-/// The engine's cost model charging a flat fee of `fee_cents` a request, `m` priced, with the same
-/// `team` group (a cap no test here reaches).
 fn fee_cost(fee_cents: i64) -> CostModel {
     let card = BTreeMap::from([(
         "m".to_string(),
@@ -412,16 +358,10 @@ fn fee_cost(fee_cents: i64) -> CostModel {
     CostModel::resolve_parts(Some(&card), fee_cents, &groups)
 }
 
-/// The history's card for the same figures.
 fn fee_card(fee_cents: i64) -> RateCard {
     RateCard::from_micro_rates([(LaneClass::new("m", "input"), 1.0)], fee_cents)
 }
 
-/// MONEY-AUDIT D-3/F-5: A FEE REFUND RETURNS THE FEE OF THE ERA ITS REQUEST WAS CHARGED IN.
-///
-/// The fee is 5 when A is admitted; the card is edited to 10 and B is admitted; then A fails. A's
-/// fee is the one that comes back, so the key owes B's 10. The refund used to take the NEWEST era's
-/// request — B's, at 10 — and leave A's 5 billed: 5 where 10 is owed.
 #[test]
 fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
     let (holder, _serial) = holder_opening(fee_card(5));
@@ -442,7 +382,6 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
     let before = fee_cost(5);
     let a = (gov.try_admit(&before, &key, "", now)).expect("A admits at fee 5");
 
-    // THE EDIT: the configuration charges 10 a request from this instant.
     let edit_ms = busbar_kernel::store::now_ms();
     {
         let mut history = holder.0.lock().unwrap();
@@ -468,10 +407,9 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
     };
     assert_eq!(spend(&gov), 15, "A's 5 and B's 10");
 
-    gov.refund_charge(a.charge()); // A failed upstream
+    gov.refund_charge(a.charge());
     assert_eq!(spend(&gov), 10, "A's fee came back; B's 10 is owed");
 
-    // A clean restart keeps each fee at its own era: never 5 (B's fee at the opening card).
     gov.flush_budgets();
     drop(gov);
     let gov = GovState::new(store.clone(), None).unwrap();
@@ -480,11 +418,6 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
     assert_eq!(spend(&gov), 10, "read from the hydrated cell");
 }
 
-/// THE PLANE FEE'S CARD EPOCH (#47, #79; /status row 122, the rigs' `h2-card-epoch`): a plane's own
-/// fee (`<section>.fees.per_request`), not the flat one, edited between two admissions. The key's
-/// read (`GET /keys/<id>/usage`, `usage_for`) prices each request at the plane fee in force when it
-/// was admitted: 1 + 7 = 8. Never 2 (every request at the opening card, forever) and never 14
-/// (every request repriced off the newest card).
 #[test]
 fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
     use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
@@ -528,7 +461,6 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
     };
     assert_eq!(spend(&gov, &before), 1, "A at the opening card's plane fee");
 
-    // THE EDIT: the plane's own fee is 7 from this instant.
     let edit_ms = busbar_kernel::store::now_ms();
     {
         let mut history = holder.0.lock().unwrap();
@@ -559,9 +491,6 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
     );
 }
 
-/// The metered view's row of `n` input tokens for `key_id` on `m`, on the UTC day holding `at`
-/// (unix seconds), dated `era`: what the metering flush lands for a unit served then. An adjustment
-/// is refused unless the metered view carries the counts it moves.
 fn metered(store: &dyn RecordStore, key_id: &str, at: u64, n: u64, era: u64) {
     store
         .add_metering(&busbar_contract::records::MeteringDelta {
@@ -583,7 +512,6 @@ fn metered(store: &dyn RecordStore, key_id: &str, at: u64, n: u64, era: u64) {
         .unwrap();
 }
 
-/// A key `id` in the `team` group, persisted in `store`.
 fn team_key(store: &dyn RecordStore, id: &str) -> VirtualKey {
     let key = VirtualKey {
         id: id.to_string(),
@@ -597,20 +525,6 @@ fn team_key(store: &dyn RecordStore, id: &str) -> VirtualKey {
     key
 }
 
-/// **A CORRECTION LANDS IN ITS UNIT'S OWN WINDOW AND CARD ENTRY** (Q128 arch u32 #18, on the one
-/// ledger): money is the ledger's counts x the card in effect at the ledgered unit's time, so a
-/// correction made after a card edit moves the counts of the unit it names, where that unit was
-/// ledgered, and is priced at that unit's card — never at the card or the window current when the
-/// correction is made.
-///
-/// Yesterday 300,000 tokens were served under card A (20 micro-units a token). Today card B (10) is
-/// in force and 100,000 more are served. Today the operator corrects yesterday's unit by -100,000:
-/// yesterday's team window reads 200,000 at A (400), today's keeps its 100,000 at B (100), and the
-/// key reads 200,000 at A plus 100,000 at B (500, never 600 — the correction taken off B's
-/// segment). The metered view carries the correction on yesterday's day, beside the row it corrects.
-///
-/// RED on the current-window adjust: it looked for the unit on TODAY's metering day and in today's
-/// windows, so it refused a correction of yesterday's unit, or moved today's counts.
 #[test]
 fn a_correction_lands_in_its_units_own_window_and_card_entry() {
     use busbar_kernel::governance::{metering_bucket, Adjustment, UsageAdjustment};
@@ -622,13 +536,11 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
     let today = busbar_kernel::store::now();
     let yesterday = today - 86_400;
 
-    // THE UNIT: yesterday, under card A (the opening entry, effective from zero).
     let card_a = cost(20.0, 1_000_000);
     gov.record_usage(&card_a, &key, "", "m", &input(300_000), yesterday);
     metered(store.as_ref(), &key.id, yesterday, 300_000, 0);
     gov.flush_budgets();
 
-    // THE EDIT: card B prices at 10 from this instant; today's traffic is served under it.
     let edit_ms = busbar_kernel::store::now_ms();
     {
         let mut history = holder.0.lock().unwrap();
@@ -647,7 +559,6 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
     gov.record_usage(&card_b, &key, "", "m", &input(100_000), today);
     metered(store.as_ref(), &key.id, today, 100_000, edit_ms);
 
-    // THE CORRECTION, made today under card B, of yesterday's unit.
     let delta = BTreeMap::from([("input".to_string(), -100_000i64)]);
     let correction = Adjustment {
         key_id: &key.id,
@@ -708,14 +619,6 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
     );
 }
 
-/// **A CORRECTION WITH NOWHERE TO LAND IS REFUSED, AND MOVES NOTHING** (Q128 arch u32 #18: a
-/// correction that cannot be placed fails closed). The metered view still shows yesterday's unit,
-/// but the team window holding its epoch holds none of its counts any more. Placing the correction
-/// in today's window instead would take today's unit's counts for yesterday's: it is refused, the
-/// refusal says why, and no count, window or metered row moves.
-///
-/// RED on the current-window adjust: today's window held enough counts of the same lane and card
-/// entry, so it took the correction there.
 #[test]
 fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_nothing() {
     use busbar_kernel::governance::{metering_bucket, Adjustment};
@@ -728,9 +631,8 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
     let yesterday = today - 86_400;
     let card = cost(20.0, 1_000_000);
 
-    // Yesterday's unit is on the metered view; its team window holds nothing of it.
     metered(store.as_ref(), &key.id, yesterday, 1_000, 0);
-    // Today's unit, same lane, same card entry.
+
     gov.record_usage(&card, &key, "", "m", &input(1_000), today);
     metered(store.as_ref(), &key.id, today, 1_000, 0);
 

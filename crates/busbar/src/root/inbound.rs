@@ -1,28 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE INBOUND AUTH HANDLE, GLUED (`BUSBAR-1.6.0.md` THE DESIGN §6, "Auth points and guest lists",
-//! step 4, l.938-962; Part 2 #65, #74): the kernel's inbound side ([`busbar_kernel::inbound`])
-//! served to the plugin loader's auth-handle slots (`auth.call`, `unit.hand_in`, `unit.refuse`)
-//! through the loader's [`AuthHandleHost`]. The kernel names no loader and the loader names no
-//! kernel; this file is where the two meet, and it injects what the kernel side is minted with:
-//!
-//! * the unit mint: the process node's one mint ([`crate::root::plane_node::Node::mint`]), so an
-//!   inbound unit's key is a key of the node that drives it;
-//! * the unit MAC: the loader's keyed MAC under its boot key
-//!   ([`auth_handle::mint_unit_ref`]), the one primitive every instance handle and ticket uses;
-//! * the spawner a pended `auth.call` finishes on, and the sink every refusal is reported to.
-//!
-//! THE LISTENER TABLES. The data listener's guest list is sealed where its door routes are built
-//! ([`crate::root::serve::door_mounts`], which stages it here with the door routes' unit-less
-//! refusals); [`publish`] installs it with the generation's opened auths, the size gate's limit
-//! and the generation's app, and publishes the generation the loader verifies refs against. A
-//! listener's table is keyed by the identity of the instance that serves it: today the data
-//! listener is served by the root's own data door (identity `0`, which no plugin presents), so its
-//! table is installed under `0`; each accepting transport registration receives the selected
-//! physical listener's policy over that same App. The registration and admitted request retain
-//! their selected generation while later configuration candidates are checked before publication.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
@@ -36,11 +14,8 @@ use crate::root::loader::dispatch::auth_handle::{
     RefusalBytes, RefuseAsk, StreamPolicy, UnitSecret,
 };
 
-/// The identity the root's own data door serves the data listener under: the composition root's
-/// identity on the instance table, never a plugin's.
 pub const ROOT_OWNER: u64 = 0;
 
-/// THE PROCESS'S INBOUND SIDE, built once.
 pub fn host() -> &'static Arc<Inbound> {
     static ONE: OnceLock<Arc<Inbound>> = OnceLock::new();
     ONE.get_or_init(|| {
@@ -54,7 +29,7 @@ pub fn host() -> &'static Arc<Inbound> {
             },
             Arc::new(|f| match tokio::runtime::Handle::try_current() {
                 Ok(rt) => drop(rt.spawn(f)),
-                // Off any runtime: a thread of its own drives the call to its end.
+
                 Err(_) => drop(std::thread::spawn(move || {
                     tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -67,10 +42,6 @@ pub fn host() -> &'static Arc<Inbound> {
     })
 }
 
-/// A refusal the kernel answered (THE DESIGN §6 step 4, l.950-951: a 401 is a refused unit,
-/// audited, billing nothing, drawing no lease). As a door unit the kernel refuses at admission
-/// (`door_steps`, `Admission::Refused` -> `Unauthenticated`, `audit_refused`), nothing is charged
-/// and no hold opens; the refusal is recorded here and the unit left the kernel's table.
 fn refused(r: &kin::RefusedUnit) {
     tracing::debug!(
         unit = ?r.unit,
@@ -82,10 +53,8 @@ fn refused(r: &kin::RefusedUnit) {
     );
 }
 
-/// The kernel side, as the loader's auth-handle slots call it.
 struct LoaderSide(Arc<Inbound>);
 
-/// A head the loader copied, as the kernel reads it.
 fn head_of(h: HeadCopy) -> kin::Head {
     kin::Head {
         method: h.method,
@@ -96,8 +65,6 @@ fn head_of(h: HeadCopy) -> kin::Head {
     }
 }
 
-/// The kernel's answer as the transport receives it: the flow, the unit and each NAME with its
-/// flag, `FIELD_SENSITIVE` for a field line and `FIELD_QUERY` for a query key (l.942-945).
 fn answer_of(a: kin::Answer) -> AuthCallAnswer {
     AuthCallAnswer {
         flow: a.flow,
@@ -272,13 +239,10 @@ impl AuthHandleHost for LoaderSide {
     }
 }
 
-/// Serve the kernel's inbound side on `dispatcher`'s auth-handle slots; the first install stands.
 pub fn install(dispatcher: &crate::root::loader::dispatch::Dispatcher) -> bool {
     dispatcher.install_auth_handle(Arc::new(LoaderSide(Arc::clone(host()))))
 }
 
-/// The data listener's sealed guest list and its door routes' unit-less refusals, staged where
-/// they are built, for [`publish`].
 type Staged = (
     busbar_kernel::guest::GuestList,
     Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
@@ -289,7 +253,6 @@ fn staged() -> std::sync::MutexGuard<'static, Option<Staged>> {
     STAGED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Stage the data listener's sealed guest list and its door refusals ([`publish`] installs them).
 pub fn stage(
     guests: busbar_kernel::guest::GuestList,
     refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
@@ -307,13 +270,9 @@ fn published() -> &'static arc_swap::ArcSwapOption<Published> {
     ONE.get_or_init(arc_swap::ArcSwapOption::empty)
 }
 
-/// Select one listener's routes from an immutable published generation. The selection must be
-/// deterministic for that generation and keep its application snapshot. It runs outside locks.
 pub type ListenerPolicy =
     Arc<dyn Fn(&kin::Listener) -> Result<kin::Listener, String> + Send + Sync>;
 
-/// A listener registration shared by its accept loop and live connections.
-/// The cache owns only route rows; policy Apps stay with the published snapshot and units.
 pub(in crate::root) struct ListenerRegistration {
     owner: u64,
     id: u64,
@@ -522,14 +481,8 @@ impl Drop for ListenerRegistration {
     }
 }
 
-/// The last generation published.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// PUBLISH A GENERATION (THE DESIGN §6 step 8, l.979-985): the staged data listener's list
-/// installed under [`ROOT_OWNER`] at a new generation over `app` (its opened auths, its mount
-/// table, its governance), the size gate's limit, and the generation published to the loader, so
-/// every ref is verified against it. At boot and at each configuration apply. Answers the
-/// generation; `None` when no list was staged (a build that serves no door plane).
 pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
     let (guests, door_refusals) = staged().clone()?;
     let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
@@ -547,7 +500,7 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         busbar_kernel::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES,
         |l| l.request_body_max_bytes,
     ) as u64;
-    // Each line's handle id from the line half of the shared ref-id space: never a binding's.
+
     let ids = guests
         .lines()
         .iter()
@@ -560,8 +513,7 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         app: Arc::clone(app),
         door_refusals,
         ids,
-        // Signed paths come from the plane door's CLAIM_SIGNED_INGRESS rows. The
-        // former codec-registry fallback called plugin Rust predicates outside the ABI.
+
         signed_ingress: Arc::new(|_, _| false),
         scope: None,
     };

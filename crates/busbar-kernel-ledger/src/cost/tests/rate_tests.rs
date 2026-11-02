@@ -2,18 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Clause one and clause four: the single conversion from a configured decimal to an integer rate,
-//! and the pin that makes a posting immune to a later card edit.
 
 use super::*;
 use crate::cost::{nano_rate, History, LaneClass, RateCard, STANDARD_TIER_BP};
 
 /// $ RED (OWNER rule 21, #81): THE CONVERSION NEVER ROUNDS. The card holds integer nano-units, so
-/// a configured rate is either a whole number of them — at most three decimal places of
-/// micro-units — or a rate the card cannot hold. Fifteen ten-thousandths of a micro-unit is one and
-/// a half nano-units: not 2, not 1, REFUSED. `0.5005` (500.5) likewise — the case a float round took
-/// DOWN to 500 and a half-away rule would take UP to 501; neither is the configured rate. And the
-/// double `0.1 + 0.2` is `0.30000000000000004`, not `0.3`: it is refused rather than passed off as
-/// 300. Every whole-nano rate converts to exactly the integer it always did.
+
 #[test]
 fn nano_rate_refuses_a_rate_that_is_not_a_whole_number_of_nano_units() {
     for refused in [0.0015, 0.0014, 0.0005, 0.5005, 0.5015, 0.1 + 0.2, 1.0001] {
@@ -45,9 +39,7 @@ fn nano_rate_refuses_a_rate_that_is_not_a_whole_number_of_nano_units() {
 }
 
 /// The clamp is "finite AND positive", not "finite OR positive". An infinite rate — reachable from
-/// a huge configured value times a thousand — is not finite but IS positive, and casting it to an
-/// integer would saturate at the largest integer there is: a garbage billing rate, not the
-/// defence. Not-a-number cannot tell the two spellings apart, so infinity is the case that does.
+
 #[test]
 fn nano_rate_clamps_a_non_finite_positive_rate_to_zero_not_the_maximum() {
     assert_eq!(nano_rate(f64::INFINITY), 0);
@@ -56,28 +48,16 @@ fn nano_rate_clamps_a_non_finite_positive_rate_to_zero_not_the_maximum() {
 }
 
 /// A finite value can still be too large for a `u64` to hold — a config typo with too many zeros,
-/// not an infinity. The bare cast saturates just as it would for an infinite input: a garbage
-/// billing rate at the top of the range rather than the zero the doc promises for a value nobody
-/// can price. Finite-but-overflowing must clamp to zero exactly like the non-finite case, not slip
-/// through because `is_finite()` alone said yes.
+
 #[test]
 fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
-    // 1e18 micro-units per unit, times a thousand, is 1e21 — finite, and far past `u64::MAX`
-    // (~1.8e19).
     assert_eq!(nano_rate(1e18), 0);
-    // Comfortably inside range still converts normally: the clamp must not swallow legitimate
-    // large-but-representable rates.
+
     assert_eq!(nano_rate(1e12), 1_000_000_000_000_000);
 }
 
 /// **THE CEILING IS THE INTEGER'S, CHECKED — NOT A FLOAT CAST'S.**
-///
-/// The conversion used to be `(v * 1000.0).round()` cast to `u64`, and its guard had to be spelled
-/// against `2^64` because `u64::MAX as f64` rounds UP to it and a cast past the top SATURATES to
-/// `u64::MAX` — an astronomical overcharge. The conversion is now integer arithmetic on the
-/// configured decimal's digits (#81), so the ceiling is a checked multiply: the last configured
-/// rate whose nano-units fit converts EXACTLY (the float product of the same rate was
-/// `…547_520`, 480 nano-units short), and the first past it prices at nothing.
+
 #[test]
 fn nano_rate_ceiling_is_a_checked_integer_multiply() {
     assert_eq!(
@@ -114,8 +94,7 @@ fn card_carries_integer_rates_per_class() {
 }
 
 /// The three outcomes of a rate lookup, which are the whole pricing posture: no card is a
-/// zero-rate view over every lane; a card that names the lane prices it; a card that does not name
-/// the lane yields nothing at all, so the caller fails closed rather than serving for free.
+
 #[test]
 fn lane_lookup_has_exactly_three_outcomes() {
     let none = RateCard::absent(3);
@@ -135,8 +114,7 @@ fn lane_lookup_has_exactly_three_outcomes() {
 }
 
 /// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,
-/// which is what makes summing it in before the single truncation give the same cents as adding it
-/// afterwards.
+
 #[test]
 fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
     let c = RateCard::absent(3);
@@ -145,15 +123,10 @@ fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
 }
 
 /// ITEM 22: A RATE THE CARD CANNOT HOLD IS NOT A RATE OF ZERO.
-///
-/// `0.0004` micro-units a unit is not a whole number of nano-units; `$0.10/GB` priced per byte is
-/// `0.00009313`. `nano_rate` maps both to `0` (it has no error channel), and the card used to record
-/// that `0` as a PRICED cell — so the class billed as nothing while the card claimed to price it, and
-/// #42's refusal could never fire. The card now records it UNPRICED: the lane is named, the class is
-/// silent, the one function REFUSES a hit on it, and the cell is listed for boot validation.
+
 #[test]
 fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero() {
-    let per_byte = 0.10 * 1_000_000.0 / 1_073_741_824.0; // $0.10/GB in micro-units a byte
+    let per_byte = 0.10 * 1_000_000.0 / 1_073_741_824.0;
     let card = RateCard::from_micro_rates(
         [
             (LaneClass::new("m", "bytes"), per_byte),
@@ -179,7 +152,6 @@ fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero()
         &[LaneClass::new("m", "bytes"), LaneClass::new("m", "tiny")]
     );
 
-    // The one function refuses a hit on the unrepresentable class instead of pricing it at zero.
     let history = History::opening(card, 0);
     let one = crate::cost::price_ledger(
         &[crate::cost::LedgerEntry::new("m", 0)
@@ -192,8 +164,6 @@ fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero()
         "#42: a hit class the card cannot price REFUSES; got {one:?}"
     );
 
-    // A rate that is a whole number of nano-units is held exactly; one that is not is refused,
-    // never rounded (OWNER rule 21).
     assert_eq!(crate::cost::representable_nano_rate(0.001), Some(1));
     assert_eq!(crate::cost::representable_nano_rate(0.002), Some(2));
     assert_eq!(crate::cost::representable_nano_rate(0.0005), None);
@@ -204,12 +174,7 @@ fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero()
 }
 
 /// A LANE'S RATES PRICE NO USAGE REPORT: a report is a spend, and every spend is `Tally`'s.
-///
-/// The lane's own report-sizing fold is gone. It summed a report at the lane's rates saturating,
-/// and sized a class the lane's card is silent about at NOTHING — right for a reservation size,
-/// wrong for a bill. What replaces it for every reader of a report's worth is the one spend fold:
-/// the priced classes come to `count × rate`, and a class the present card is silent about
-/// REFUSES rather than reading as a free line (#42).
+
 #[test]
 fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
     let card = RateCard::from_micro_rates([(LaneClass::new("m", "input"), 2.5)], 0);
@@ -246,8 +211,7 @@ fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
 }
 
 /// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (#79): every other lane,
-/// class and plane card and the unnamed fee stay; a named fee replaces the fee; a cell on a plane
-/// with no present card, or naming no lane, has nowhere to land.
+
 #[test]
 fn a_corrected_card_keeps_everything_it_does_not_name() {
     use crate::cost::TierRates;
@@ -329,13 +293,11 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
 }
 
 /// **A CORRECTED CELL IS NO LONGER A REFUSED ONE** (#79, #42). A card that could not represent
-/// its configured `lane-g`/`input` leaves that cell UNPRICED and lists it in `refused_cells`; a
-/// signed correction that prices the cell takes it off the list, on the flat card and on a plane's
-/// own card alike, and leaves every refused cell it did not name on it.
+
 #[test]
 fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
     use crate::cost::TierRates;
-    // `0.0001` micro-units, as the intake converts it: a rate the card cannot hold.
+
     let unrepresentable = crate::cost::representable_nano_rate(0.0001);
     let card = RateCard::from_config(
         Some([

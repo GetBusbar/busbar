@@ -1,24 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CROSS-PLANE `/stats` and `/v1/models` TESTS, relocated here from `src/tests/endpoints_tests.rs`
-//! (the "fix the 85" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in this file
-//! builds a `TestApp` with real lanes/pools and reads the topology back through `App::engine_tables_view`,
-//! which projects the FALLBACK plane's own runtime slot through that plane decl's `viewer` fn-pointer
-//! (`state.rs::App::engine_tables_view`'s doc). Only the REAL the retired engine crate plane sets `viewer`/
-//! `build_runtime` to something that actually returns lane/pool tables — a neutral fake plane (all
-//! hooks `None`/no-op) would leave every one of these reading the empty `EMPTY_VIEW` projection, which
-//! is a different, false-negative failure than what these tests exist to pin. That only type-checks
-//! with ONE `busbar_kernel` in the graph, which is exactly what an integration-test target gives. See
-//! `crates/busbar/tests/plane_integration.rs`'s header for the same rationale, first written there.
-//!
-//! `endpoints::stats` was widened from `pub(crate)` to `pub` for exactly this move; the `/v1/models`
-//! cells read the kernel's names for a caller (`endpoints::catalog_names`), which the claiming plane
-//! renders unit-less.
-//!
-//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation: core names zero plane types, its tests included): every cell reads lane/pool topology through the fallback plane's runtime view, which
-//! only a real plane builds, and the composition root is where a plane may be linked.
-
 mod linked;
 
 use axum::extract::Extension;
@@ -35,8 +17,6 @@ fn register_planes() {
     linked::install();
 }
 
-/// A virtual key restricted to `allowed_pools`. Mapping for the test helper: an EMPTY
-/// slice models the OMITTED grant (all pools, None); a non-empty slice is the explicit list.
 fn vkey(allowed_pools: &[&str]) -> Arc<VirtualKey> {
     Arc::new(VirtualKey {
         id: "k-test".to_string(),
@@ -55,13 +35,10 @@ fn vkey(allowed_pools: &[&str]) -> Arc<VirtualKey> {
     })
 }
 
-/// Two pools, three lanes: `pool-a` -> lanes {0,1}, `pool-b` -> lane {2}. Lane 2's model is
-/// private to `pool-b` so a `pool-a`-only key must never see it.
 fn topology_app() -> Arc<App> {
     topology().build()
 }
 
-/// The builder [`topology_app`] builds.
 fn topology() -> TestApp {
     register_planes();
     TestApp::new()
@@ -92,9 +69,6 @@ async fn stats_json(app: Arc<App>, gov: GovCtx) -> Value {
     serde_json::from_slice(&bytes).expect("/stats body is JSON")
 }
 
-/// A vkey restricted to `pool-a` must see ONLY
-/// `pool-a` in the reported topology and ONLY the lanes that pool routes to — never `pool-b`
-/// or its private lane `model-b`.
 #[tokio::test]
 async fn test_stats_restricted_key_sees_only_its_pools_and_lanes() {
     let app = topology_app();
@@ -126,8 +100,6 @@ async fn test_stats_restricted_key_sees_only_its_pools_and_lanes() {
     );
 }
 
-/// An OMITTED `allowed_pools` grant (operator/admin default; None) preserves the behavior: the FULL
-/// topology — every pool and every lane — is reported.
 #[tokio::test]
 async fn test_stats_empty_allowed_pools_sees_full_topology() {
     let app = topology_app();
@@ -143,7 +115,6 @@ async fn test_stats_empty_allowed_pools_sees_full_topology() {
     assert_eq!(lanes.len(), 3, "an unrestricted key sees every lane");
 }
 
-/// No key at all (governance disabled) is equivalent to unrestricted: full topology.
 #[tokio::test]
 async fn test_stats_no_key_sees_full_topology() {
     let app = topology_app();
@@ -154,9 +125,6 @@ async fn test_stats_no_key_sees_full_topology() {
     assert_eq!(body["lanes"].as_array().expect("lanes array").len(), 3);
 }
 
-/// Bug 1 capacity signal: `/stats` must externally distinguish a saturated (at-capacity) lane
-/// from an idle one. A bounded lane's `available`/`at_capacity` flip when its last permit is
-/// held; an unbounded lane reports `available: "unbounded"` and is never at capacity.
 #[tokio::test]
 async fn test_stats_reports_at_capacity_when_lane_saturated() {
     register_planes();
@@ -182,7 +150,6 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
         .pool("p", &[(0, 1), (1, 1)])
         .build();
 
-    // Idle: the bounded lane has its one permit free; the unbounded lane reports "unbounded".
     let body = stats_json(app.clone(), GovCtx::default()).await;
     let lane = |b: &Value, model: &str| -> Value {
         b["lanes"]
@@ -200,8 +167,7 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
         "idle bounded lane: 1 permit free"
     );
     assert_eq!(bounded["at_capacity"], json!(false));
-    // The unified availability signal is rendered from `classify` — an idle, healthy
-    // bounded lane reads "available" with a null recovery hint and a closed breaker.
+
     assert_eq!(bounded["availability"], json!("available"));
     assert_eq!(bounded["recovery_hint_ms"], Value::Null);
     assert_eq!(bounded["breaker_state"], json!("closed"));
@@ -210,7 +176,6 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
     assert_eq!(unbounded["at_capacity"], json!(false));
     assert_eq!(unbounded["availability"], json!("available"));
 
-    // Saturate the bounded lane by holding its only permit; the signal must flip.
     let _held = sem
         .clone()
         .try_acquire_owned()
@@ -227,10 +192,7 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
         json!(true),
         "a saturated bounded lane must be flagged at_capacity in /stats"
     );
-    // The same saturation the `at_capacity` flag reports ALSO flows through the
-    // unified `availability` signal (breaker healthy, so the reason is at-capacity), with the
-    // honest at-capacity recovery floor (2s) instead of a deceptive Retry-After=1. The breaker
-    // axis stays independently "closed" — the two are orthogonal.
+
     assert_eq!(
         bounded["availability"],
         json!("at_capacity"),
@@ -244,9 +206,6 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
     assert_eq!(bounded["breaker_state"], json!("closed"));
 }
 
-/// Every lane in `/stats` carries a numeric `limit` field that aliases `max_concurrent`: the
-/// configured cap for a bounded lane, and the semaphore's max permit count (never null) for an
-/// unbounded one. Older scrapers key on `limit`, so it must stay present and numeric.
 #[tokio::test]
 async fn test_stats_limit_is_numeric_alias_of_max_concurrent() {
     register_planes();
@@ -298,9 +257,6 @@ async fn test_stats_limit_is_numeric_alias_of_max_concurrent() {
     assert_eq!(unbounded["limit"], unbounded["max_concurrent"]);
 }
 
-/// A lane that is BOTH breaker-Open AND at capacity can never close its breaker (its recovery
-/// probe needs a dispatch it cannot win). `/stats` must make that combination legible — the
-/// breaker axis and the capacity axis are exposed INDEPENDENTLY, never collapsed into one string.
 #[tokio::test]
 async fn test_stats_surfaces_open_and_at_capacity_independently() {
     register_planes();
@@ -318,7 +274,6 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
         .pool("p", &[(0, 1)])
         .build();
 
-    // Trip the pool cell Open (cooldown far in the future) AND hold the only permit.
     let t = now();
     app.store.force_open_in("p", 0, t + 60);
     let _held = sem
@@ -335,7 +290,6 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
         .cloned()
         .expect("wedged lane present");
 
-    // Breaker axis: Open. Capacity axis: at capacity, 0 permits. BOTH visible independently.
     assert_eq!(
         lane["breaker_state"],
         json!("open"),
@@ -343,8 +297,7 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
     );
     assert_eq!(lane["at_capacity"], json!(true), "capacity axis: saturated");
     assert_eq!(lane["available"], json!(0), "0 free permits");
-    // Breaker-first collapse: `availability` classifies BreakerOpen (checked before capacity),
-    // but the operator still learns about the saturation from the independent `at_capacity` flag.
+
     assert_eq!(
         lane["availability"],
         json!("breaker_open"),
@@ -356,9 +309,6 @@ async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {
     catalog_names(&app, &gov)
 }
 
-/// `models.list()` is the first call an OpenAI SDK or a self-hosted UI makes. An
-/// unrestricted caller sees every routable name: pools first, then direct models,
-/// each sorted (a deterministic order UIs can render directly).
 #[tokio::test]
 async fn test_v1_models_lists_pools_and_models() {
     let app = topology_app();
@@ -370,8 +320,6 @@ async fn test_v1_models_lists_pools_and_models() {
     );
 }
 
-/// Info-disclosure regression: a key restricted to `pool-a` must not enumerate
-/// `pool-b` or its private model through the model list — same rule as /stats.
 #[tokio::test]
 async fn test_v1_models_restricted_key_sees_only_reachable_names() {
     let app = topology_app();
@@ -386,7 +334,6 @@ async fn test_v1_models_restricted_key_sees_only_reachable_names() {
     );
 }
 
-/// An omitted-`allowed_pools` key (operator default; None) sees the full list, like /stats.
 #[tokio::test]
 async fn test_v1_models_empty_allowed_pools_sees_all() {
     let app = topology_app();
@@ -397,13 +344,8 @@ async fn test_v1_models_empty_allowed_pools_sees_all() {
     assert_eq!(ids.len(), 5);
 }
 
-// ── each plane generation's listed names (THE DESIGN section 2) ──────────────────────────────────
-
-/// The scope kind the listing door states: a grant of it names a listed name.
 const LISTING_KIND: &str = "listing_door_entry";
 
-/// A door plane folded under `key`/`section` whose generation lists `names`, and the topology app
-/// with that generation's slot installed.
 fn with_listing_door(
     key: &'static str,
     section: &'static str,
@@ -462,10 +404,6 @@ fn with_listing_door(
     t.build()
 }
 
-/// RED: `/v1/models` APPENDS EACH PLANE GENERATION'S LISTED NAMES after the routing tables' own, in
-/// the plane's order, a name already listed not listed twice, scope-filtered as the plane admits a
-/// direct route: a key whose grants name only pools sees none of them, a key granting the plane's
-/// scope kind sees the names it grants.
 #[tokio::test]
 async fn test_v1_models_appends_each_plane_generations_listed_names() {
     let app = with_listing_door(
@@ -505,9 +443,6 @@ async fn test_v1_models_appends_each_plane_generations_listed_names() {
     );
 }
 
-/// PIN: A PLANE GENERATION THAT LISTS NOTHING LEAVES `/v1/models` UNCHANGED (the 1.5.5 bytes): every
-/// caller, governed or not, is listed the same names as the app with no plane slot at all, so the
-/// plane renders the same bytes.
 #[tokio::test]
 async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
     let quiet = with_listing_door("v1-models-quiet", "v1_models_quiet", &[]);
@@ -525,9 +460,6 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
     }
 }
 
-// ── /healthz WITH MODEL LANES ──
-
-/// A door plane whose open answers for every generation, folded as the composition root folds one.
 fn opening_door() -> &'static busbar_kernel::plane_driver::registry::PlaneDecl {
     busbar_kernel::plane_driver::door::fold(busbar_contract::plane_calls::PlaneRegistration {
         key: "healthz-lanes-door",
@@ -566,9 +498,6 @@ fn opening_door() -> &'static busbar_kernel::plane_driver::registry::PlaneDecl {
     .expect("folds")
 }
 
-/// A deployment WITH model lanes is judged by its lanes alone, as in 1.5.5: every cell of its one
-/// lane Open answers 503 `no usable lanes`, even beside a configured plane that opened this
-/// generation; one ready cell answers 200 `ok`.
 #[tokio::test]
 async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened_plane() {
     register_planes();

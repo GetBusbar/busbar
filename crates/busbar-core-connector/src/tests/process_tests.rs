@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE DIAL JUDGE: the deployment's one guard behind `DialJudge` and the kernel's `DestJudge`,
-//! the same addresses in every egress class, each class's scheme rule, the node's own ports held
-//! off a loopback-allowed need.
 
 use std::time::Duration;
 
@@ -87,7 +85,7 @@ fn pended(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, 
 }
 
 /// Every egress class a need may declare is judged by the one guard: a public address is judged
-/// and pinned under each.
+
 #[test]
 fn every_egress_class_is_judged_by_the_one_guard() {
     let j = process_judge(&[], vec![]);
@@ -101,9 +99,7 @@ fn every_egress_class_is_judged_by_the_one_guard() {
 }
 
 /// RED: under the default, the provider class and a request-data class (the default class,
-/// open-web) refuse a private and a loopback address unless allowlisted (THE DESIGN §5 destination
-/// guard); operator infrastructure is allowed them (§5 egress-class
-/// table); metadata is refused in all.
+
 #[test]
 fn a_private_address_is_refused_for_providers_and_request_data_unless_allowlisted() {
     let strict = process_judge(&[], vec![]);
@@ -140,7 +136,7 @@ fn a_private_address_is_refused_for_providers_and_request_data_unless_allowliste
 }
 
 /// RED: a name resolving to loopback is refused after its one resolution, before any socket; the
-/// same name is pinned once the allowlist names it.
+
 #[test]
 fn a_name_resolving_to_loopback_is_refused_until_allowlisted() {
     let names = || vec![("db.internal", IpAddr::from([127, 0, 0, 1]))];
@@ -161,7 +157,7 @@ fn a_name_resolving_to_loopback_is_refused_until_allowlisted() {
 }
 
 /// Loopback-allowed (its loopback allowlisted) dials loopback, but never the node's own ports,
-/// answered at once for a literal and after resolution for a name.
+
 #[test]
 fn loopback_allowed_refuses_the_nodes_own_ports() {
     let names = vec![("localhost", IpAddr::from([127, 0, 0, 1]))];
@@ -170,7 +166,7 @@ fn loopback_allowed_refuses_the_nodes_own_ports() {
     assert!(now(&j, "127.0.0.1:4318", c).is_ok());
     assert_eq!(now(&j, &format!("127.0.0.1:{OWN}"), c), Err(DEST_INTERNAL));
     assert_eq!(now(&j, &format!("[::1]:{OWN}"), c), Err(DEST_INTERNAL));
-    // Another class may name that port: the rule is loopback-allowed's.
+
     assert!(now(
         &j,
         &format!("127.0.0.1:{OWN}"),
@@ -184,8 +180,7 @@ fn loopback_allowed_refuses_the_nodes_own_ports() {
 }
 
 /// `dest.judge`'s arms through the same judge: a URL's scheme by class (open-web secure only,
-/// loopback-allowed plaintext to loopback only), a foreign scheme and userinfo refused, an answer
-/// the kernel's own client resolved judged with the guard's sentence.
+
 #[test]
 fn the_kernel_asks_the_same_judge() {
     let j = guard_judge(&["127.0.0.1", "10.1.2.3"], vec![]);
@@ -314,10 +309,7 @@ impl Resolve for Asked {
 }
 
 /// An IDN name 1.5.5 dialled: a bare non-ASCII name the guard admitted is resolved as its
-/// UTS #46 punycode name, the name the guard judged and the one 1.5.5's client resolved, and the
-/// dial is pinned to what that name answered. The judge asked the resolver for the name as written,
-/// which a resolver does not know (`NXDOMAIN` here, as from `getaddrinfo`), and refused the dial
-/// `DEST_UNRESOLVABLE`. An ASCII name is asked for as written, byte for byte, its case kept.
+
 #[test]
 fn an_idn_name_is_resolved_as_its_punycode_name() {
     let public: IpAddr = "93.184.216.34".parse().unwrap();

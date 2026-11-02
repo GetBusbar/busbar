@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KEPT STATIC CANDIDATE HALF (Q128 contract C7): a `decide` reuses the static half of a
-//! candidate set it was already handed, and a reload that changes the candidates is never answered
-//! with the old ones.
-
 use super::*;
 use busbar_contract::abi::hook::{DecideOut, TransformOut};
 use busbar_contract::hook_calls::Pending;
@@ -30,8 +26,7 @@ impl HookCalls for Seen {
             })
             .unwrap_or_default();
         self.0.lock().unwrap().push(models);
-        // The answer is built inside the future: an out-record holds the call's raw out-pointers
-        // and is not `Send`, so a future that carries a built one is not either.
+
         Box::pin(async move {
             let (outcome, out) =
                 frame.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Abstain);
@@ -98,9 +93,6 @@ fn request() -> RoutingRequest<'static> {
     }
 }
 
-/// The same candidates reuse one static half; a reload that renames the candidate's model is
-/// answered with the new model, and switching back is answered with the old one again, never a
-/// stale set. RED before the fix: there was no kept half to reuse (every call built its own).
 #[tokio::test]
 async fn after_a_reload_the_hook_sees_the_new_candidates_never_stale_ones() {
     let seen = Arc::new(Seen::default());

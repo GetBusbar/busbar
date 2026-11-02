@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The store kind adapter: every checked op answers GREEN and RED through its `abi/store/check.rs`
-//! validator, a plugin count above the host's cap is FAULT before any slice exists, and every
-//! store slot has a name.
-
 use std::mem::{size_of, size_of_val};
 use std::ptr::{null, NonNull};
 
@@ -42,8 +38,6 @@ fn answer<I: InFrame, O: OutFrame>(s: u32, outcome: Outcome, i: &I, o: &O) -> An
 fn rule(r: Result<(), Fault>) -> Rule {
     r.expect_err("the answer must FAULT").rule
 }
-
-// ── record_get ───────────────────────────────────────────────────────────────────────────────
 
 fn record_get_in(buf: &mut [u8]) -> RecordGetIn {
     RecordGetIn {
@@ -101,8 +95,6 @@ fn record_get_green_red_and_short() {
     assert_eq!(rule(Store::check(&a)), Rule::NeededNotFailed);
 }
 
-// ── list_plane_records (a host list) ─────────────────────────────────────────────────────────
-
 fn list_in(items: &mut [Blob], bytes: &mut [u8]) -> ListPlaneRecordsIn {
     ListPlaneRecordsIn {
         head: in_head(),
@@ -152,7 +144,6 @@ fn list_plane_records_green_and_red() {
         Ok(())
     );
 
-    // A blob past the written bytes.
     let mut items = [blob_at(base.wrapping_add(2), 4), NO_BLOB];
     let i = list_in(&mut items, &mut bytes);
     let f = Store::check(&answer(slot::LIST_PLANE_RECORDS, Outcome::Ready, &i, &o)).unwrap_err();
@@ -186,8 +177,6 @@ fn list_plane_records_short() {
     assert!(Store::short(&a));
 }
 
-// ── a leased list ────────────────────────────────────────────────────────────────────────────
-
 fn leased(items: *const Blob, items_len: usize) -> LeasedListOut {
     LeasedListOut {
         head: out_head(),
@@ -207,18 +196,15 @@ fn leased_list_green_and_red() {
         Ok(())
     );
 
-    // A record with a length but no bytes.
     let items = [blob_at(null(), 3)];
     let o = leased(items.as_ptr(), 1);
     let f = Store::check(&answer(slot::LIST_KEYS, Outcome::Ready, &i, &o)).unwrap_err();
     assert_eq!(f, sc::OWNED_NULL_WITH_LEN);
 
-    // A count with a NULL array.
     let o = leased(null(), 1);
     let f = Store::check(&answer(slot::LIST_AUDIT, Outcome::Ready, &i, &o)).unwrap_err();
     assert_eq!((f.rule, f.field), (Rule::NullWithCount, "list_audit.items"));
 
-    // Above the hard maximum: refused before the dangling array is sliced.
     let o = leased(
         NonNull::dangling().as_ptr(),
         LIST_ITEMS_HARD_MAX as usize + 1,
@@ -226,14 +212,11 @@ fn leased_list_green_and_red() {
     let f = Store::check(&answer(slot::LIST_METERING, Outcome::Ready, &i, &o)).unwrap_err();
     assert_eq!((f.rule, f.field), (Rule::OverCap, "list_metering.items"));
 
-    // No lease on FAILED: nothing is read.
     assert_eq!(
         Store::check(&answer(slot::LIST_METERING, Outcome::Failed, &i, &o)),
         Ok(())
     );
 }
-
-// ── verdict, cancel ──────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn verdict_green_and_red() {
@@ -268,8 +251,6 @@ fn cancel_green_and_red() {
     }
 }
 
-// ── purges ───────────────────────────────────────────────────────────────────────────────────
-
 #[test]
 fn purges_route_to_the_count_check() {
     let i = in_head();
@@ -287,10 +268,6 @@ fn purges_route_to_the_count_check() {
     );
 }
 
-// ── every outcome ────────────────────────────────────────────────────────────────────────────
-
-/// Every store slot, and `cancel`, answered PENDING or REFUSED with a zeroed `in` and `out` of
-/// the slot's own sizes passes its check.
 #[test]
 fn a_zeroed_answer_on_pending_or_refused_passes_every_slot() {
     let zero_in = [0u64; 128];
@@ -317,8 +294,6 @@ fn a_zeroed_answer_on_pending_or_refused_passes_every_slot() {
         }
     }
 }
-
-// ── unchecked ops, names, faults ─────────────────────────────────────────────────────────────
 
 #[test]
 fn unchecked_op_answers_ok() {

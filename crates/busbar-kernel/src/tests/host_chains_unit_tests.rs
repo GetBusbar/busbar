@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host's half of a plane record chain (`host_chains.rs`): the declaration, the stored body, and
-//! the verified read.
-//!
-//! The chain these tests read is sealed by the ONE chain mechanism in the framing a plane's task
-//! chain declares (length-prefixed, its scope digested). The frozen pipe-joined chain a plane's task
-//! store sealed before this ABI is not shipped: the ABI declares the
-//! length-prefixed framing, so the goldens that pinned those pipe-joined bytes are retired.
-
 use super::*;
 
 #[derive(Default)]
@@ -107,7 +99,6 @@ fn a_losing_claim_leaves_the_winners_expiry_unchanged() {
     assert!(rows.claim(CLAIM_KIND, "token", 300, 100).unwrap());
 }
 
-/// A failed put must retain its still-live claim so a retry does not lose to itself.
 #[test]
 fn a_failed_put_can_retry_under_its_live_claim() {
     let rows = RetryRows::default();
@@ -198,8 +189,7 @@ fn expired_retry_does_not_bypass_a_renewed_store_claim() {
     assert!(book
         .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
         .is_err());
-    // Advance only the retained lease to expiry. The store token models another node's
-    // renewed claim; no sleeping, wall-clock changes, or production clock hook is needed.
+
     for held in book.claimed.lock().unwrap().values_mut() {
         held.expires_at = 0;
     }
@@ -225,7 +215,7 @@ fn abandoned_and_dropped_positions_retire_only_local_retry_custody() {
         .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
         .is_err());
     assert_eq!(book.claimed.lock().unwrap().len(), 1);
-    // A completed competing row advances the chain, retiring the old failed-write hint.
+
     let (record, _) = sealed();
     rows.record_put(
         EV,
@@ -254,7 +244,6 @@ fn abandoned_and_dropped_positions_retire_only_local_retry_custody() {
 
 const SCOPE: &str = "a11ce/task-1";
 
-/// Length-prefixed own bytes of one event: `ts`, then the text fields.
 fn own(ts: u64, fields: &[&str]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut field = |bytes: &[u8]| {
@@ -289,7 +278,6 @@ const LP_SCOPED: ChainFraming = ChainFraming {
 
 const EV: RecordSchemaId = RecordSchemaId::new("ev");
 
-/// Two records sealed by the chain mechanism, as the flush seals them.
 fn sealed() -> (StreamRecord, StreamRecord) {
     let mut chain = Chain::<StreamRecord>::new();
     let input = |b: Vec<u8>| StreamInput::new(b, Framing::LengthPrefixed, true);
@@ -298,7 +286,6 @@ fn sealed() -> (StreamRecord, StreamRecord) {
     (e1, e2)
 }
 
-/// The sealed chain as the store would hold it: `(chain key, stored body)`.
 fn stored() -> Vec<(Vec<u8>, Vec<u8>)> {
     let (e1, e2) = sealed();
     vec![
@@ -307,8 +294,6 @@ fn stored() -> Vec<(Vec<u8>, Vec<u8>)> {
     ]
 }
 
-/// The digest the host seals is the length-prefixed prelude (`prev`, the scope, the sequence as
-/// eight big-endian bytes, each after its length) joined to the plane's own bytes.
 #[test]
 fn the_host_seals_the_length_prefixed_prelude_and_the_planes_bytes() {
     let (e1, e2) = sealed();
@@ -327,9 +312,6 @@ fn the_host_seals_the_length_prefixed_prelude_and_the_planes_bytes() {
     verify_chain(&[e1, e2]).expect("the sealed chain verifies");
 }
 
-/// Ported from the plane engine's chain golden (`chain_golden.rs`, a boot restore of the chain
-/// reporting no tamper), over a sealed chain (B1 ruling 1). Stored and read back through the host's
-/// verified read, the chain announces no break and answers both records with the plane's bytes.
 #[test]
 fn a_read_of_a_sealed_chain_reports_no_tamper() {
     assert_eq!(
@@ -342,9 +324,6 @@ fn a_read_of_a_sealed_chain_reports_no_tamper() {
     );
 }
 
-/// Ported from the plane engine's chain golden (`chain_golden.rs`, one undecodable record not
-/// dropping the others on restore). One undecodable record wedged between the two sealed ones is
-/// skipped (and reported), the others still answered, and they still verify.
 #[test]
 fn one_undecodable_record_does_not_drop_the_others() {
     let mut rows = stored();
@@ -360,9 +339,6 @@ fn one_undecodable_record_does_not_drop_the_others() {
     );
 }
 
-/// Ported from the plane engine's task store tests (`taskstore_tests.rs`, the verifier detecting a
-/// tampered link in the persisted chain). One field of the second record rewritten in the store,
-/// the read names the chain, the record, and the kind of break.
 #[test]
 fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let mut rows = stored();
@@ -397,7 +373,6 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     assert_eq!(read.len(), 3, "and both records are still answered");
 }
 
-/// A link spliced out of order is a link break, not a digest one.
 #[test]
 fn a_relinked_record_is_a_link_break() {
     let mut rows = stored();
@@ -417,7 +392,6 @@ fn a_relinked_record_is_a_link_break() {
     assert!(words.contains("prev_hash"), "{words}");
 }
 
-/// The stored body round-trips, and a body of another layout is no record.
 #[test]
 fn a_stored_body_round_trips_and_a_foreign_one_is_none() {
     let (e1, e2) = sealed();
@@ -435,7 +409,6 @@ fn a_stored_body_round_trips_and_a_foreign_one_is_none() {
     assert!(decode(SCOPE, b"", LP_SCOPED).is_none());
 }
 
-/// The declaration maps to the framing it names; a code this build does not know is none.
 #[test]
 fn the_declaration_names_its_framing() {
     let chain = |framing, flags| RecordChain {
@@ -459,7 +432,6 @@ fn the_declaration_names_its_framing() {
     assert_eq!(ChainFraming::of(&chain(CHAIN_PIPE_SEPARATED, 2)), None);
 }
 
-/// A scope is UTF-8, not empty, and never shaped like a listed record's key.
 #[test]
 fn a_scope_is_never_a_record_key() {
     assert_eq!(scope_of(b"a11ce/t1"), Some("a11ce/t1"));

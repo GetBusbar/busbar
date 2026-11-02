@@ -3,8 +3,6 @@
 
 use super::*;
 
-/// TWO NODES NEVER SHARE A JOURNAL (item 404): an access sealed on one node's journal is not read
-/// off another's. The journal is an instance its node owns, never a process static.
 #[test]
 fn an_access_on_one_nodes_journal_is_not_read_by_another_nodes() {
     let (a, b) = (NodeAmendments::new(), NodeAmendments::new());
@@ -19,8 +17,6 @@ fn an_access_on_one_nodes_journal_is_not_read_by_another_nodes() {
         "a second node's journal read an access it never sealed"
     );
 
-    // Rebuilding a third journal from `a`'s run is that journal's act alone, under the
-    // durable-write grant: `a` and `b` are untouched.
     let c = NodeAmendments::new();
     let token = crate::teller::Kernel::new().durability_token();
     let through = c.restore(a.recent(), &token).expect("a's run verifies");
@@ -29,8 +25,6 @@ fn an_access_on_one_nodes_journal_is_not_read_by_another_nodes() {
     assert!(b.recent().is_empty());
 }
 
-/// A journal bound to a sink hands it every amendment it still holds above the position the sink
-/// was told is durable, then every one sealed after: what is durable has no gap.
 #[test]
 fn a_bound_sink_takes_the_held_tail_then_every_new_amendment() {
     struct Count(std::sync::Mutex<Vec<u64>>);

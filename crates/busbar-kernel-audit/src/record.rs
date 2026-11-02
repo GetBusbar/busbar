@@ -2,37 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The fixed audit record: the same shape for every caller, with no exceptions.
-//!
-//! ## Why "fixed" is the point
-//!
-//! An audit whose shape varies by the door it came in through is an audit an auditor cannot read.
-//! Somebody asking "what happened at 14:32" gets a different set of fields depending on which door
-//! the request came in through, and comparing two of them means reading two schemas. So the record
-//! is one shape, and a caller contributes exactly TWO IDENTIFIERS to it: what kind of operation this
-//! was, and how it finished. Everything else is the same for everybody.
-//!
-//! ## Six groups, because they answer six different questions
-//!
-//! WHO, WHAT, WHEN, OUTCOME, USAGE, CONTROLS, and the link to the record before. They are grouped
-//! rather than flattened because the groups are what a reader actually asks for: an incident asks
-//! who and what, a billing dispute asks usage, and a compliance review asks controls.
-//!
-//! ## A price is never in here either
-//!
-//! The record carries COUNTS and the provenance a read-time price needs — the tier, the fee count,
-//! the rate card version — and never a priced figure. Money is a view on the
-//! ledger and the rate card, computed when it is read through the one function
-//! (`busbar_kernel_ledger::cost::Tally`); a figure sealed here would be a second copy of that
-//! answer, frozen at seal time, that no correction to the card could ever reach.
-//!
-//! ## Content is never in here
-//!
-//! Not the request, not the response, not a fragment of either. The correlation LABEL is hashed, and
-//! the record carries the hash. This is not squeamishness: the journal is a financial record that is
-//! exempt from erasure, so anything put in it can never be taken out, and a prompt in a record that
-//! cannot be deleted is a promise nobody can keep. Content facts flow to export plugins, which are a
-//! different seam with a different lifetime — and every one of those accesses is itself an entry,
-//! which is what [`crate::amend`] is for.
 
 use busbar_contract::caps::{Abort, Origin, Outcome, ReasonCode, StepName, UnitKey};
 
@@ -124,14 +93,6 @@ pub struct OutcomeFacts {
 }
 
 /// One quantity, with where the number came from.
-///
-/// The source travels with the quantity because a figure the destination confirmed and a figure the
-/// node estimated are not the same evidence, and a billing dispute turns on exactly that
-/// difference. Both the line and its provenance are the capability crate's own: this record is the
-/// sealed copy of what the usage unit folded, and a record that spelled the provenance differently
-/// from the fold that produced it could not be checked against it. The audit crate carried a
-/// four-arm reading of the design's seven-arm set; those four are the first four of the seven,
-/// unchanged in meaning.
 pub use busbar_contract::caps::{QuantitySource, UsageLine};
 
 /// WHAT WAS USED: the counts, and the provenance a read-time price is computed from.
@@ -375,9 +336,7 @@ pub struct AuditChain {
 }
 
 /// HAND-WRITTEN for the reason the retired admin chain writes its own: a DERIVED default gives
-/// a next position of zero, which is not a position a chain has, and the position is now DIGESTED
-/// into every record — so a silently zero-based chain would seal records that a verifier walking
-/// from the genesis rejects. It delegates to the one real constructor so the two cannot drift.
+
 impl Default for AuditChain {
     fn default() -> Self {
         AuditChain::new()
@@ -398,14 +357,7 @@ impl AuditChain {
     }
 
     /// CONTINUE FROM THE RECORDS A PREDECESSOR SEALED, oldest first from the genesis, as the
-    /// journal reads them back: the next record links to the last one and takes the next position,
-    /// and the head history is REBUILT from them, so the head read answers with the tip the chain
-    /// really has and every window's anchor is the one it had before the restart.
-    ///
-    /// This rebuild supports complete legacy journals and standalone callers. The production root
-    /// then installs its independently persisted anchors through [`Self::retaining_heads`], so
-    /// their lifetime does not depend on retaining each source record. A tail-only rebuild by
-    /// itself cannot recover earlier anchors.
+
     pub fn resume(sealed: &[AuditRecord]) -> Self {
         let mut chain = AuditChain::new();
         for record in sealed {
@@ -419,10 +371,7 @@ impl AuditChain {
     }
 
     /// Restore the independently retained anchors after reading the journal's remaining records.
-    /// A retained tip remains the numbering authority even when its source record is absent.
-    ///
-    /// # Errors
-    /// The retained history is behind or contradicts the journal's latest retained audit record.
+
     pub fn retaining_heads(
         mut self,
         heads: crate::heads::HeadHistory,
@@ -447,13 +396,7 @@ impl AuditChain {
     }
 
     /// SIGN FROM HERE ON, with this key.
-    ///
-    /// A builder rather than a constructor argument, so that a node that was given no key keeps the
-    /// shape it had and a node that was given one says so in one place. Records sealed BEFORE this
-    /// was called stay unsigned, which is the truth about them.
-    ///
-    /// Signing is in-process and at seal time, because that is the only moment at which a signature
-    /// means "this node produced this record". See [`crate::sign`].
+
     #[must_use]
     pub fn signing_with(mut self, key: crate::sign::AuditSigningKey) -> Self {
         self.signer = Some(key);
@@ -461,17 +404,14 @@ impl AuditChain {
     }
 
     /// A secret derived from the key this chain signs with, under `label`
-    /// ([`crate::sign::AuditSigningKey::derived_secret`]); `None` when it signs with none.
+
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> Option<[u8; 32]> {
         self.signer.as_ref().map(|k| k.derived_secret(label))
     }
 
     /// SEAL AS THIS NODE from here on: every record names `node` ([`AuditRecord::node`]).
-    ///
-    /// A builder, like [`Self::signing_with`], and the composition root names the node it runs as.
-    /// A chain no root named one for seals node `0`, which no running node is: the root's node is a
-    /// non-zero draw of the OS CSPRNG.
+
     #[must_use]
     pub fn sealing_as(mut self, node: u64) -> Self {
         self.node = node;
@@ -485,9 +425,7 @@ impl AuditChain {
     }
 
     /// Which key this chain signs with, by identifier. `None` on a node that seals unsigned.
-    ///
-    /// The identifier, never the key: there is no accessor on this type that yields key material,
-    /// and adding one would defeat [`crate::sign::AuditSigningKey`]'s whole shape.
+
     pub fn signing_key_id(&self) -> Option<&str> {
         self.signer.as_ref().map(|k| k.key_id())
     }
@@ -498,9 +436,7 @@ impl AuditChain {
     }
 
     /// Sign one ledger checkpoint's body with THIS chain's key — the one keyset.
-    ///
-    /// `None` on a node that seals unsigned: its checkpoints are sealed unsigned too, which is the
-    /// truth about them, and no second key is ever looked for.
+
     pub fn sign_checkpoint_body(&self, body: &[u8]) -> Option<Vec<u8>> {
         self.signer.as_ref().map(|k| k.sign_checkpoint_body(body))
     }
@@ -511,17 +447,7 @@ impl AuditChain {
     }
 
     /// Check one record's signature against one key.
-    ///
-    /// Two judgements, not one: that the record hashes to its own fields (which is what the chain
-    /// walk checks) and that the signature over that hash verifies. A signature checked against a
-    /// hash nobody recomputed is a signature over a number, not over a record — an editor who
-    /// rewrote a field and left the old hash and the old signature in place would pass.
-    ///
-    /// # Errors
-    ///
-    /// The record carries no signature ([`crate::sign::KeyError::Unsigned`]), the record does not
-    /// hash to its own fields ([`crate::sign::KeyError::DigestMismatch`]: an edit, not a key
-    /// problem), or the signature does not verify ([`crate::sign::KeyError::BadSignature`]).
+
     pub fn verify_signature(
         record: &AuditRecord,
         key: &crate::sign::AuditVerifyingKey,
@@ -552,49 +478,19 @@ impl AuditChain {
     }
 
     /// Recompute one record's digest from its own fields — the verification primitive.
-    ///
-    /// ONE RECIPE, and this walks it. The field order, the framing and the exact spelling of every
-    /// value live in [`crate::recipe::digest_fields`], which is also what the range read publishes
-    /// and what `docs/audit-chain-digest-v4.md` describes (a record sealed under `v2`: the `v2`
-    /// page). Before, the order lived here and the document described it from the outside — two copies of one contract, and the one thing a
-    /// published digest recipe cannot survive is two spellings of itself: a drift between them
-    /// would make every third-party verification fail while looking, to the third party, exactly
-    /// like a tampered chain.
-    ///
-    /// LENGTH-PREFIXED, not separator-joined, and that survives the move. Every field here can hold
-    /// arbitrary text — a bucket chain reference, an operation class a caller named — and a
-    /// separator-joined digest is only safe while no field can contain the separator. Length
-    /// prefixes make the boundary unforgeable whatever the fields hold.
-    ///
-    /// The frozen hex in `the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex` is what
-    /// says the move did not cost a byte.
+
     pub fn digest_of(record: &AuditRecord) -> String {
         crate::recipe::digest_over(&crate::recipe::digest_fields(record))
     }
 
     /// VERIFY A WHOLE CHAIN: `records` is oldest-first and starts at the chain's genesis, so the
-    /// first position must be one and the first previous hash must be empty.
-    ///
-    /// That is what catches a HEAD truncation. A run whose oldest records were dropped links
-    /// perfectly to itself — every remaining record still names the one before it — and the only
-    /// thing that says records are missing is that the run does not begin where the chain does.
-    ///
-    /// An EMPTY run verifies, deliberately and for the same reason the retired admin chain
-    /// says so: "this chain has no records" and "every record was deleted" are indistinguishable
-    /// from the records alone, and claiming otherwise would claim a guarantee this cannot provide.
+
     pub fn verify_chain(records: &[AuditRecord]) -> Result<(), AuditBreak> {
         Self::walk(records, Anchor::Genesis)
     }
 
     /// VERIFY A WINDOW of a chain: the same walk, but the first record's position and link are
-    /// taken as given rather than required to be the genesis.
-    ///
-    /// This is for a run read out of a bounded store, where the oldest retained record's
-    /// predecessor was legitimately pruned. Everything after that first record is checked exactly
-    /// as [`Self::verify_chain`] checks it — contiguous positions, matching links, matching
-    /// digests — so a cut anywhere INSIDE the window is still caught. It is a separate entry point
-    /// rather than a lenient default: a caller holding a whole chain that called this would be
-    /// silently excusing a missing head.
+
     pub fn verify_window(records: &[AuditRecord]) -> Result<(), AuditBreak> {
         Self::walk(records, Anchor::Window)
     }
@@ -630,14 +526,7 @@ impl AuditChain {
 }
 
 /// THE LINK AND THE POSITION, judged in that order and reported apart.
-///
-/// The LINK first: a record missing, inserted or reordered breaks it, and at either end of a cut
-/// the position breaks too — so checking the link first names the real defect ("something is
-/// missing here") for every splice. The POSITION second, and as its own kind: a record that names
-/// its predecessor correctly but carries the wrong number was RENUMBERED, and saying it "does not
-/// point at its predecessor" would be false — it does. The operator's response to a renumbering is
-/// not the response to a splice, so the two do not share a kind. The amendment chain's walk judges
-/// its links through this same function.
+
 pub(crate) fn link_break(
     prev_hash: &str,
     seq: u64,
@@ -661,7 +550,6 @@ enum Anchor {
     /// The chain's beginning: position one and an empty previous hash are required.
     Genesis,
     /// A window into a longer chain: the first record's position and link are taken as given, and
-    /// only its own digest is checked.
     Window,
 }
 
@@ -683,8 +571,7 @@ impl Audit for AuditChain {
             outcome: inputs.outcome,
             usage: inputs.usage,
             controls: inputs.controls,
-            // The label is hashed here and dropped. There is no path from this function that keeps
-            // it, which is what "content never enters the chain" has to mean to be worth saying.
+
             correlation_hash: inputs
                 .correlation_label
                 .as_deref()
@@ -697,16 +584,7 @@ impl Audit for AuditChain {
             key_id: None,
         };
         record.hash = AuditChain::digest_of(&record);
-        // THE SIGNATURE, HERE AND NOWHERE ELSE.
-        //
-        // Position: immediately after the digest and before the head advances, so the thing signed
-        // is the digest this chain is about to adopt as its head. One signature per SEALED RECORD —
-        // which is one per finished unit, at the audit step, after the response has been produced —
-        // and not one per frame, per token or per byte. The serving path does not reach this
-        // function; nothing on it signs anything.
-        //
-        // No key configured is not an error and not a panic: it is an unsigned record, and a record
-        // that says it is unsigned is honest. See `crate::sign` for why nothing back-fills it.
+
         if let Some(signer) = &self.signer {
             record.key_id = Some(signer.key_id().to_string());
             record.signature = Some(signer.sign_digest(&record.hash));
@@ -714,8 +592,7 @@ impl Audit for AuditChain {
         self.tail_hash = record.hash.clone();
         self.next_seq = self.next_seq.saturating_add(1);
         self.sealed += 1;
-        // The anchor is taken from the finished record, so a head always carries the signature the
-        // record carries rather than a second one minted over the same digest.
+
         self.heads.observe(&record);
         record
     }
@@ -772,18 +649,6 @@ impl std::fmt::Display for AuditBreak {
 
 impl std::error::Error for AuditBreak {}
 
-// Three of the digested fields are enumerations, and their text used to be whatever the derived
-// `Debug` printed. That made every persisted chain hostage to a derive: renaming a variant, adding a
-// field to one, or a future compiler changing how it renders a struct variant would all move the
-// sealed hash, and a moved hash makes every stored record report itself as TAMPERED at the next
-// boot. None of those are changes anybody would expect to have that effect.
-//
-// So the text is written out here instead. The spellings are the ones the chain already froze —
-// they are deliberately the derive's spellings, because reproducing what is on disk is the whole
-// point — but they are now a decision in this file rather than a side effect somewhere else. A test
-// checks each one against today's `Debug` so that a rename is reported as a difference to look at
-// rather than applied silently to the hash.
-
 /// The frozen text for one step name.
 pub(crate) fn step_tag(step: StepName) -> &'static str {
     match step {
@@ -801,13 +666,7 @@ pub(crate) fn step_tag(step: StepName) -> &'static str {
 }
 
 /// The frozen text for one reason code: its wire name in upper camel case, which is exactly what the
-/// chain froze.
-///
-/// Derived from the wire name rather than written out as fifty match arms, because the reason list
-/// is open — it carries `#[non_exhaustive]`, so no match here could ever cover it — and because the
-/// relation "the frozen tag is the wire name in upper camel case" is a single rule a test can check
-/// against every declared reason at once. A reason added tomorrow gets the right tag by the same
-/// rule instead of falling into a catch-all arm that would digest two different reasons identically.
+
 pub(crate) fn reason_tag(reason: ReasonCode) -> String {
     let mut out = String::with_capacity(reason.as_str().len());
     let mut start_of_word = true;
@@ -826,8 +685,6 @@ pub(crate) fn reason_tag(reason: ReasonCode) -> String {
 
 /// The frozen text for how a unit was cut short.
 pub(crate) fn abort_tag(abort: Abort) -> String {
-    // A client that went away and a node that is draining both arrive as a kernel abort with a
-    // named reason, so the tag carries the reason rather than a variant of its own.
     match abort {
         Abort::Kernel { reason } => format!("Kernel {{ reason: {} }}", reason_tag(reason)),
         Abort::Superseded { by } => format!("Superseded {{ by: UnitKey({}) }}", by.get()),
@@ -871,9 +728,7 @@ pub(crate) fn direction_tag(direction: busbar_contract::ClassDirection) -> &'sta
 }
 
 /// The frozen text for where one reported quantity came from.
-///
-/// The locator's pointer keeps the quoting the chain froze — a quoted, escaped string — which is the
-/// library's own rendering of a text value and not a derive's rendering of a type.
+
 pub(crate) fn quantity_source_tag(source: &QuantitySource) -> String {
     match source {
         QuantitySource::Locator { direction, ptr } => format!(
@@ -903,10 +758,7 @@ pub(crate) fn subject_tag(subject: &Subject) -> &'static str {
 }
 
 /// The subject's own identifier, as one text field.
-///
-/// Two fields — a tag and a value — rather than one, so that a principal whose identifier happened to
-/// read as "node" could not be confused with a node. The node's number is IN the value, because
-/// leaving it out would let two nodes' records digest identically.
+
 pub(crate) fn subject_value(subject: &Subject) -> String {
     match subject {
         Subject::PrincipalId(p) => p.clone(),

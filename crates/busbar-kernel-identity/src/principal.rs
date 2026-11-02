@@ -4,11 +4,7 @@
 //! Who is calling — and the one caller who is nobody.
 
 /// The literal an unauthenticated caller renders as, on every surface that names an actor: the
-/// audit row, the chain hash and the idempotency namespace all spell it this way, so nothing that
-/// reads an actor id has to know whether a principal was resolved.
-///
-/// The internal attribution bucket for anonymous traffic is a different string entirely and never
-/// reaches a surface; the anonymous principal itself carries no bucket at all.
+
 pub const ANONYMOUS: &str = "anonymous";
 
 /// The caller a module identified.
@@ -51,19 +47,14 @@ impl Principal {
     }
 
     /// The actor id every surface writes. Identical to `id`, and stated as its own method so the
-    /// anonymous rendering is one fact in one place rather than a literal repeated at each surface.
+
     pub fn actor_id(&self) -> &str {
         &self.id
     }
 }
 
 /// The conversion the loop performs when it seals this step's answer.
-///
-/// The two types are kept apart on purpose: this crate's `Principal` carries the credential facts a
-/// chain produced, and the contract's identity carries only the actor an accrual is checked
-/// against. Everything else the chain learned stays here, where the next chain run can use it, and
-/// never travels on the capability that moves money. It is a `From` impl rather than a free
-/// function because one crate can now name both halves.
+
 impl From<&Principal> for busbar_contract::PrincipalId {
     fn from(p: &Principal) -> Self {
         busbar_contract::PrincipalId::new(p.actor_id())

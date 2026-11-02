@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The test side of `backend.rs`'s `#[cfg(test)]` hook point: the one directory fsync the log makes
-//! for its own segment files and quarantine copies.
-//!
-//! `backend.rs` keeps only the call. What it consults — the armed fault and the recorded fsyncs —
-//! lives here, per thread, so a test arms exactly the case it means and no other test sees it.
 
 use std::cell::RefCell;
 use std::io;
@@ -37,7 +33,7 @@ pub(crate) fn fault_reset() {
 }
 
 /// The directory-fsync hook: record `parent` as fsynced on this thread, then fail if a
-/// [`FaultStep::DirSync`] fault is armed.
+
 pub(crate) fn parent_fsync(parent: &Path) -> io::Result<()> {
     PARENT_FSYNCS.with(|c| c.borrow_mut().push(parent.to_path_buf()));
     FAULT_INJECT.with(|c| {

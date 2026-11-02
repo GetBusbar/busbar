@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ADMIN READS SCAN THE STORE WITHOUT THE BOOK'S LOCK (audit root B-5, row 159). Every node
-//! keeps its chain in the configured Store, and a read of the whole chain scans it
-//! through the store plugin, one wait per block of 256 sequence numbers. The book's lock is the one
-//! every unit's open, settle and seal takes on the request path, so a read that held it across the
-//! scan stalled all serving for as long as the chain took to read, and longer as the chain grew
-//! (`docs/design/BUSBAR-1.6.0.md:1285`, THE DESIGN §11.2: no blocking on the hot path; l.2182,
-//! Part 2 #5: admin is off the hot path). Each read takes what it needs under the lock and reads the
-//! store after letting go of it. A probe on the store double counts every scan, and every scan made
-//! while the lock was held.
-
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 
@@ -19,10 +9,8 @@ use super::*;
 use crate::root::store_double::RecordSlots;
 use crate::root::units_admin::{AuditView, NodeAudit};
 
-/// The node the store-kept chain is written under.
 const NODE: u64 = 47;
 
-/// Wall seconds the tests run at.
 const NOW: u64 = 1_700_000_000;
 
 fn token() -> Grant<DurableWrite> {
@@ -37,7 +25,6 @@ struct Scans {
 }
 
 impl Scans {
-    /// `read` went to the store, and never with the book's lock held.
     fn assert_unlocked(&self, read: &str) {
         let all = self.all.load(Ordering::Acquire);
         assert!(all > 0, "{read} reads the chain the store keeps");
@@ -50,9 +37,6 @@ impl Scans {
     }
 }
 
-/// A book with an unusable legacy directory over `slots`, made ready by
-/// `ready` and put behind the lock a settlement takes. From then on every scan of the store is
-/// counted, and counted again when that lock is held.
 fn node_over(
     slots: &RecordSlots,
     ready: impl FnOnce(&mut Durability),
@@ -87,7 +71,6 @@ fn node_over(
     (book, scans)
 }
 
-/// Seal unit `unit`'s one audit record.
 fn seal(durability: &mut Durability, unit: u64) {
     durability
         .seal_unit(
@@ -98,7 +81,6 @@ fn seal(durability: &mut Durability, unit: u64) {
         .expect("sealed");
 }
 
-/// A unit's audit inputs, numbered `unit`.
 fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
     use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
@@ -138,8 +120,6 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
     }
 }
 
-/// THE VERIFY WALK of every chain the store keeps scans the store without the journal's lock: it
-/// takes its inputs under the lock and walks after letting go of it (`docs/design/BUSBAR-1.6.0.md:1285`).
 #[test]
 fn the_verify_walk_scans_the_store_without_the_book_lock() {
     let slots = RecordSlots::new();
@@ -157,10 +137,6 @@ fn the_verify_walk_scans_the_store_without_the_book_lock() {
     scans.assert_unlocked("the verify walk");
 }
 
-/// AN AUDIT WINDOW OLDER THAN THE CACHE scans the store without the book's lock, and still answers
-/// the window off the chain (`docs/design/BUSBAR-1.6.0.md:1285`).
-///
-/// RED before the fix: `NodeAudit::read_window` read the window back off the chain under the lock.
 #[test]
 fn an_audit_window_older_than_the_cache_scans_the_store_without_the_book_lock() {
     let slots = RecordSlots::new();
@@ -181,12 +157,6 @@ fn an_audit_window_older_than_the_cache_scans_the_store_without_the_book_lock() 
     scans.assert_unlocked("an audit window older than the cache");
 }
 
-/// A UNIT SEALED WHILE AN AUDIT WINDOW READS THE STORE IS IN THAT WINDOW, and the anchor the range
-/// read folds in is the head after it: the records and the anchor still answer as of one moment
-/// (`AuditView::read`), though the store is read between the two holds of the lock.
-///
-/// RED before the fix: the window was read with the lock held, so no unit could be sealed while the
-/// store was read.
 #[test]
 fn a_unit_sealed_while_a_window_reads_the_store_is_in_that_window() {
     let slots = RecordSlots::new();
@@ -211,7 +181,7 @@ fn a_unit_sealed_while_a_window_reads_the_store_is_in_that_window() {
         flag.store(true, Ordering::Release);
     });
     let mut answered = None;
-    // From 0, before the first position: the cache does not cover it, so the chain is read.
+
     NodeAudit::new(Arc::clone(&book)).read_window(0, u64::MAX, &mut |chain, records| {
         answered = Some((
             records.map(|records| records.iter().map(|r| r.seq).collect::<Vec<_>>()),

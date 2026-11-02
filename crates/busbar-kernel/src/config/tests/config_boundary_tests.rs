@@ -15,7 +15,7 @@ fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
             .to_string();
         assert!(error.contains("duplicate field"), "{error}");
     }
-    // The pre-pass must enforce the same boundary for non-YAML entry points too.
+
     let mut json = serde_json::Deserializer::from_str(r#"{"auth":{"policy":{},"policy":{}}}"#);
     let error = deploy_from_deserializer(&mut json)
         .expect_err("duplicate JSON policy")

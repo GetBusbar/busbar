@@ -1,62 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE #11 TEST.** One crate, built BOTH ways, must be observationally identical.
-//!
-//! DECISIONS #11 says every plugin is compiled-in OR dropped-in over the same contract and one
-//! loading path, and that the distinction is a BUILD property and nothing more. For everything a
-//! plugin OBSERVES that claim was once FALSE:
-//!
-//! > a COMPILED-IN plugin can reach the process-global `metrics` recorder, while the same crate
-//! > built as a dropped-in `cdylib` gets its own and silently loses the counters.
-//!
-//! A `cdylib` statically links its own copy of every facade it uses. Its recorder (and its
-//! `tracing` dispatcher) is not the host's, nothing joins them, and everything a dropped-in sink
-//! observed went where nobody ever reads. The same source, built the other way, linked the host's
-//! and worked. Two builds, two different observable behaviours, and no test anywhere said so —
-//! which is precisely why #85's envelope exists: under it, reaching a recorder is not representable
-//! from either build, so both REPORT and the host ingests.
-//!
-//! ## The subjects (owner FIXTURES: "real plugins are the proofs"; NO-TEST-PLUGINS)
-//!
-//! The REAL request-log sinks on the export kind's MEMORY ABI, each LINKED by its logic crate's
-//! `door` and DROPPED IN as its `-plugin` crate's `cdylib` (signed first-party, its Statement
-//! rendering in its manifest), at the revs the composition root links:
-//!
-//! * the request-log FILE sink — a host-written destination: every append and rotation is the
-//!   HOST's act (`disk.append`), the sink never opens a path;
-//! * the request-log WEBHOOK sink — a host-carried outbound request: its POST rides the host's
-//!   connection table (the need its Statement declares), the sink never dials.
-//!
-//! The host services and the connection table are the host's side of the boundary, so this binary
-//! supplies them as the composition root does: [`DiskHost`] serves `disk.append` by the kernel's
-//! lane rules (append, rotating by rename first when due, `crate::host::rotate`), and [`Far`] is
-//! the connection table the webhook's need is declared on, recording what it is asked to carry.
-//!
-//! ## What this test compares, and why that is the right thing
-//!
-//! It runs the SAME sequence of operations against the SAME door reached two ways, and compares
-//! what the HOST was handed on the #85 envelope — every metric, diagnostic and log record its sink
-//! ([`Tape`]) ingested, byte for byte — plus what the host did for the sink (the files on disk, the
-//! requests carried).
-//!
-//! ## Red-before-green, PERMANENTLY
-//!
-//! [`the_pre_envelope_path_loses_a_dropped_in_plugins_counters`] is the RED arm, and it stays in the
-//! file. It replays what the old arrangement did over the production seam — the REAL file-sink
-//! cdylib, dlopened by the loader's staging, its replies' envelopes kept in a store of its own
-//! instead of crossing to the host — and shows the two builds diverging. A test that only ever
-//! passes cannot tell you what it is protecting you from.
-//!
-//! ## What the cold lane's suite had that the memory ABI does not
-//!
-//! Ported from the cold-lane suite (`predev-all/b9`), each arm on the door registries. One of its
-//! claims has no door form, and says why here rather than vanish: the cold `start` op (live,
-//! admission, words) — the export table has no `start`; a sink's in-flight bound is the one its
-//! settings state (`max_inflight_deliveries`), within its Statement's declared `max_inflight`, read
-//! at bind ([`a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool`] holds
-//! the bound).
-
 use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
@@ -99,41 +43,31 @@ use crate::sign::{Declares, Manifest};
 #[path = "export_refresh_tests.rs"]
 mod refresh_tests;
 
-// ── the subjects ─────────────────────────────────────────────────────────────────────────────────
-
-/// The request-log FILE sink's door, LINKED (its logic crate's `door`): the both-ways table's
-/// `export` row.
 const FILE_DOOR: DoorFn = both_ways::export_fixture::door;
-/// The FILE sink's `-plugin` crate, whose `cdylib` exports the same door: the DROPPED-IN build.
+
 fn file_cdylib() -> &'static str {
     both_ways::fixture("export").1
 }
-/// The request-log WEBHOOK sink's door, LINKED: the both-ways table's `export-carried` row.
+
 const WEBHOOK_DOOR: DoorFn = both_ways::export_carried_fixture::door;
-/// The WEBHOOK sink's `-plugin` crate's `cdylib`: the DROPPED-IN build.
+
 fn webhook_cdylib() -> &'static str {
     both_ways::fixture("export-carried").1
 }
-/// The span collector's door, LINKED: the both-ways table's `export-trace` row.
+
 const TRACE_DOOR: DoorFn = both_ways::export_trace_fixture::door::door;
-/// The span collector's `-plugin` crate's `cdylib`: the DROPPED-IN build.
+
 fn trace_cdylib() -> &'static str {
     both_ways::fixture("export-trace").1
 }
 
-/// The neutral FILE fixture carries request logs and accepted audit events.
 const FILE_CARRIES: &[u8] = &[ExportStream::Logs as u8, ExportStream::Events as u8];
 
-/// The FILE sink's own manifest declaration (its `declares.json`): its series, its codes and its
-/// one destination, `path`.
 fn file_declaration() -> Declares {
     Declares::from_declares_json(both_ways::export_fixture::DECLARES.as_bytes())
         .expect("the file sink's declaration parses")
 }
 
-/// [`file_declaration`] without its series. A first-party series is granted to ONE plugin per
-/// process (the grant is the host's namespace), so only the S1 arm, whose subject the grant is,
-/// states them; every other arm registers its row under a name of its own.
 fn file_declares() -> Declares {
     Declares {
         metrics: Vec::new(),
@@ -141,16 +75,11 @@ fn file_declares() -> Declares {
     }
 }
 
-/// `declared` with its `path` destination kept by RENAME (`declares.keep` 2): the host renames a
-/// due file and reports the rotation, so the sink observes and reports it. The arms whose subject
-/// is what the sink hands the host run under it; the host's undeclared default, 1.5.5's
-/// truncation, which reports no rotation, is the S4 arm's and the keep-0 arm's subject.
 fn renaming(mut declared: Declares) -> Declares {
     declared.keep.insert("path".to_string(), 2);
     declared
 }
 
-/// The WEBHOOK sink's own manifest declaration, without its series (as [`file_declares`]).
 fn webhook_declares() -> Declares {
     let declared =
         Declares::from_declares_json(both_ways::export_carried_fixture::DECLARES.as_bytes())
@@ -161,8 +90,6 @@ fn webhook_declares() -> Declares {
     }
 }
 
-/// A first-party export manifest named `name` (its alias too), at this host's export ABI, stating
-/// `declares`.
 fn manifest(name: &str, declares: Declares) -> Manifest {
     let mut m = both_ways::statement(
         "export",
@@ -174,8 +101,6 @@ fn manifest(name: &str, declares: Declares) -> Manifest {
     m
 }
 
-/// `m` stating `door`'s Statement rendering, as the pack tool signs it into a dropped plugin's
-/// manifest and as the linked row states it.
 fn stating(mut m: Manifest, door: DoorFn) -> Manifest {
     m.statement = Some(hex::encode(
         rendering_of(door).expect("the door renders its Statement"),
@@ -183,15 +108,10 @@ fn stating(mut m: Manifest, door: DoorFn) -> Manifest {
     m
 }
 
-/// The bytes of `crate_snake`'s built `cdylib`; not built, a hard failure naming the command that
-/// builds it (`both_ways::cdylib`), never a skip.
 fn cdylib_bytes(crate_snake: &str) -> Vec<u8> {
     std::fs::read(both_ways::cdylib(crate_snake)).expect("read the cdylib")
 }
 
-/// THE TWO DOORS through registration: `m` with `door` registered LINKED (through
-/// [`PluginRegistry::link`]) and `crate_snake`'s `cdylib` signed first-party into `plugins/` and
-/// scanned (the DROPPED-IN door) — both stating the door's Statement.
 fn both(m: Manifest, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
     let lib = cdylib_bytes(crate_snake);
     let m = stating(m, door);
@@ -202,10 +122,6 @@ fn both(m: Manifest, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
     [linked, dropped]
 }
 
-// ── the host's side: its envelope sink, its disk lane, its connection table ──────────────────────
-
-/// One envelope entry, as text: what the host ingested. A log record and a declared diagnostic
-/// are told apart, a metric names its family by index.
 fn entry_text(id: u32, severity: u8, text: &[u8]) -> String {
     let text = String::from_utf8_lossy(text);
     match id {
@@ -215,7 +131,6 @@ fn entry_text(id: u32, severity: u8, text: &[u8]) -> String {
     }
 }
 
-/// A metric, as text.
 fn metric_text(family: u32, kind: u8, value: f64) -> String {
     format!("metric {family} {kind} {value}")
 }
@@ -239,7 +154,6 @@ impl Tape {
             .clone()
     }
 
-    /// How many entries carry `needle`.
     fn count(&self, needle: &str) -> usize {
         self.seen().iter().filter(|l| l.contains(needle)).count()
     }
@@ -257,12 +171,6 @@ impl EnvelopeSink for Tape {
     }
 }
 
-/// THE HOST'S DISK LANE, as this binary serves it: `disk.append` appends to the file the loader
-/// bound for the caller's destination key, rotating first when the file already holds `rotate_at`
-/// bytes — truncated in place under `DiskRotate::Truncate` (1.5.5, reported as no rotation), or
-/// renamed keeping `keep` archives under
-/// `DiskRotate::Rename` ([`crate::host::rotate`]) — then opening it (created if absent) and writing
-/// the bytes whole: the same rules the kernel's lane follows.
 struct DiskHost;
 
 impl DiskHost {
@@ -308,8 +216,6 @@ impl DiskHost {
     }
 }
 
-/// This binary's host serves the disk lane only: every other service answers as the contract's
-/// shared double does, REFUSED as unserved, and the clock reads zero.
 impl crate::services_double::ServicesDouble for DiskHost {
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
         later(Self::append(dest, &bytes).stored());
@@ -317,7 +223,6 @@ impl crate::services_double::ServicesDouble for DiskHost {
     }
 }
 
-/// A dispatcher whose host services are [`DiskHost`]'s.
 fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
@@ -325,15 +230,12 @@ fn dispatcher() -> Arc<Dispatcher> {
     ))
 }
 
-/// A target the host's egress policy refuses: its need's declaration is refused, so its admission
-/// is.
 const REFUSED_TARGET: &str = "refused.example";
-/// A target the host admits and cannot reach: its connection fails at the open.
+
 const UNREACHABLE_TARGET: &str = "unreachable.example";
-/// A target whose far end holds every request until released: its reply pends, no thread waiting.
+
 const STALL_TARGET: &str = "stall.example";
 
-/// What the table answered one declaration, and the target it is pinned to.
 type Verdict = (Result<(), ConnError>, String);
 type OnForget = Arc<dyn Fn(InstanceId) + Send + Sync>;
 type OnDeclare = Arc<dyn Fn(&str) + Send + Sync>;
@@ -380,14 +282,14 @@ impl Far {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
-    /// How many requests the far end holds right now.
+
     fn stalled(&self) -> usize {
         self.stalled
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .len()
     }
-    /// Let every held request answer, waking each ticket that waits on one.
+
     fn release(&self) {
         self.released
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -436,8 +338,7 @@ impl DeclaredConns for Far {
                 "target_from": spec.target_from,
                 "target": target,
             }));
-        // The table's contract (`DeclaredConns::declare`, spec PB-100): a need whose `target_from`
-        // resolved to nothing is refused, as the host's connector refuses it.
+
         let unresolved = !spec.target_from.is_empty() && target.is_none();
         let target = target.unwrap_or_default().to_string();
         self.owners.lock().unwrap().push((owner, target.clone()));
@@ -585,11 +486,6 @@ impl Conns for Far {
     }
 }
 
-// ── a door that predates an op ───────────────────────────────────────────────────────────────────
-
-/// The FILE sink's own door with one slot of its ops table NULL: what a table built before that op
-/// existed hands the host. The memory ABI's table is the host's for the kind's ABI version, every
-/// slot present (`dispatch::load`), so such a door is never bound.
 struct OlderDoor(Door, Ops);
 // SAFETY: built once from the linked door's `'static` data and never written after; every pointer
 // names that data or the box itself.
@@ -597,7 +493,6 @@ unsafe impl Send for OlderDoor {}
 // SAFETY: as above.
 unsafe impl Sync for OlderDoor {}
 
-/// [`FILE_DOOR`]'s door, its table passed through `strip`, built once into `cell`.
 fn older(cell: &'static OnceLock<Box<OlderDoor>>, strip: fn(&mut Ops)) -> *const Door {
     &cell
         .get_or_init(|| {
@@ -621,17 +516,14 @@ fn older(cell: &'static OnceLock<Box<OlderDoor>>, strip: fn(&mut Ops)) -> *const
 static NO_VALIDATE: OnceLock<Box<OlderDoor>> = OnceLock::new();
 static NO_CHECK: OnceLock<Box<OlderDoor>> = OnceLock::new();
 
-/// The FILE sink's door from before `validate`.
 extern "C" fn door_without_validate() -> *const Door {
     older(&NO_VALIDATE, |ops| ops.head.validate = None)
 }
 
-/// The FILE sink's door from before `check`.
 extern "C" fn door_without_check() -> *const Door {
     older(&NO_CHECK, |ops| ops.check = None)
 }
 
-/// Why the one load refuses `door`.
 fn refused_at_load(door: busbar_contract::abi::sdk::door::RawDoorFn) -> String {
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
@@ -643,9 +535,6 @@ fn refused_at_load(door: busbar_contract::abi::sdk::door::RawDoorFn) -> String {
     }
 }
 
-// ── driving one instance ─────────────────────────────────────────────────────────────────────────
-
-/// Wait (at most a minute) until `done` holds.
 fn until(what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(60);
     while !done() {
@@ -654,7 +543,6 @@ fn until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// Hand `line` to `sink` on the request-log stream; it is queued.
 fn deliver(sink: &dyn ExportCalls, line: &serde_json::Value) {
     let queued = sink.deliver(
         ExportStream::Logs as u8,
@@ -664,20 +552,14 @@ fn deliver(sink: &dyn ExportCalls, line: &serde_json::Value) {
     assert!(matches!(queued, Delivered::Queued), "{queued:?}");
 }
 
-/// A line of `pad` bytes of padding, numbered `n`.
 fn line(n: u32, pad: usize) -> serde_json::Value {
     serde_json::json!({ "n": n, "pad": "x".repeat(pad) })
 }
 
-/// A line too large to share a 1 MiB file with another: a delivery of it to a file that already
-/// holds one has the host rotate first (`rotate_mb: 1`).
 fn big_line(n: u32) -> serde_json::Value {
     line(n, 1_100_000)
 }
 
-/// `text`'s JSON lines as their `n` fields, or `None` while it is not yet whole: the host appends a
-/// line in more than one write, so a reader racing it sees text that does not end in a newline, or
-/// a last line that does not parse yet.
 fn ns_of(text: &str) -> Option<Vec<u64>> {
     if !text.is_empty() && !text.ends_with('\n') {
         return None;
@@ -687,15 +569,10 @@ fn ns_of(text: &str) -> Option<Vec<u64>> {
         .collect()
 }
 
-/// `path`'s JSON lines as their `n` fields — what one door left on disk, independent of the pad —
-/// for a POLL: `None` while the file is absent or the host is still writing a line, so [`until`]
-/// keeps waiting instead of panicking on a half-written line.
 fn ns(path: &Path) -> Option<Vec<u64>> {
     ns_of(&std::fs::read_to_string(path).ok()?)
 }
 
-/// [`ns`] once the writes are settled: `None` only when the file is absent; a file present but not
-/// whole JSON lines is a failure, never read as absent.
 fn ns_settled(path: &Path) -> Option<Vec<u64>> {
     let text = std::fs::read_to_string(path).ok()?;
     Some(ns_of(&text).unwrap_or_else(|| {
@@ -707,12 +584,10 @@ fn ns_settled(path: &Path) -> Option<Vec<u64>> {
     }))
 }
 
-/// `path`'s `n`-th archive.
 fn archive(path: &Path, n: u32) -> PathBuf {
     PathBuf::from(format!("{}.{n}", path.display()))
 }
 
-/// A fresh scratch directory for `tag`.
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("busbar-11-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -720,15 +595,10 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// The FILE sink's settings: `path`, rotated at 1 MiB.
 fn file_settings(path: &Path) -> serde_json::Value {
     serde_json::json!({ "path": path.display().to_string(), "rotate_mb": 1 })
 }
 
-/// The operations the observation arms run, in order: three lines too large to share the file, so
-/// the second and the third each have the host rotate first — the destination is granted
-/// [`renaming`], so two renames the sink observes and reports — then the host's files: `[3]` live,
-/// `[2]` in `.1`, `[1]` in `.2`.
 fn script(sink: &dyn ExportCalls, path: &Path) {
     for n in 1..=3 {
         deliver(sink, &big_line(n));
@@ -740,9 +610,6 @@ fn script(sink: &dyn ExportCalls, path: &Path) {
     });
 }
 
-/// THE DOOR, BOUND: `door` (the linked row's or the dlopened image's) under `sink`, on `dispatcher`,
-/// granted the FILE sink's declared destination kept by rename ([`renaming`]), then OPENED over `settings` — the instance the
-/// opener makes ([`ExportRows::open`]'s memory arm).
 fn opened(
     plugin: Plugin<Export>,
     d: Arc<Dispatcher>,
@@ -752,7 +619,6 @@ fn opened(
     ExportInstance::open(plugin, d, settings.to_string().as_bytes()).expect("the sink opens")
 }
 
-/// The bind a door is loaded under: this test's envelope sink, `dispatcher`, no connections.
 fn bind(label: &str, sink: Arc<Tape>, d: &Dispatcher) -> Bind {
     Bind {
         instance: Arc::from(label),
@@ -763,8 +629,6 @@ fn bind(label: &str, sink: Arc<Tape>, d: &Dispatcher) -> Bind {
     }
 }
 
-/// Run [`script`] against the COMPILED-IN build: the FILE sink's door this crate LINKS, loaded
-/// through the one load, its envelope ingested by the host. What the host was handed.
 fn run_compiled_in(path: &Path) -> Vec<String> {
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
@@ -773,14 +637,11 @@ fn run_compiled_in(path: &Path) -> Vec<String> {
         load_linked::<Export>(&row, bind("#11-compiled-in", tape.clone(), &d)).expect("loads");
     let sink = opened(plugin, d, &file_settings(path));
     script(&sink, path);
-    // Dropping the instance waits for the batch in flight to answer: its envelope is in.
+
     drop(sink);
     tape.seen()
 }
 
-/// Run the same script against the DROPPED-IN build: the `cdylib` on disk, staged and `dlopen`ed by
-/// the loader against the Statement the linked door renders. A `cdylib` not built is a hard failure
-/// naming the command that builds it, never a skip.
 fn run_dropped_in(path: &Path) -> Vec<String> {
     let bytes = cdylib_bytes(file_cdylib());
     let tape = Arc::new(Tape::default());
@@ -805,7 +666,6 @@ fn run_dropped_in(path: &Path) -> Vec<String> {
     tape.seen()
 }
 
-/// The rotation record the FILE sink reports for a rotation of `path`.
 fn rotated_record(path: &Path) -> String {
     format!(
         "log 0 {target}: request-log file rotated by rename path={p} archive={p}.1",
@@ -814,12 +674,6 @@ fn rotated_record(path: &Path) -> String {
     )
 }
 
-/// **THE EQUIVALENCE.** The same crate, built both ways, hands the host byte-identical observations.
-///
-/// Before the envelope this could not pass: the dropped-in arm would have handed the host NOTHING
-/// (what it observed went into its own copy of the facade) while the compiled-in arm reported both
-/// rotations. The RED arm below reproduces exactly that divergence, so the difference between the
-/// two arrangements is visible in one file.
 #[test]
 fn compiled_in_and_dropped_in_report_identical_observations() {
     let dir = scratch("equivalence");
@@ -834,22 +688,13 @@ fn compiled_in_and_dropped_in_report_identical_observations() {
         "compiled-in and dropped-in builds of ONE crate must hand the host identical \
          observations — this is design decision #11's real test"
     );
-    // And they must both have SAID something: an equivalence between two empty sequences is the
-    // vacuous pass this test exists to avoid.
+
     assert!(
         !compiled.is_empty(),
         "neither build reported anything; the equivalence would be vacuous"
     );
 }
 
-/// The observations are the ones the sink actually produced — one record per rotation the host
-/// reported, on the reply of the delivery that caused it — so the equivalence above is over real
-/// content rather than over two identical nothings.
-///
-/// TWO records, not three: the first delivery finds no file to rotate, so it observes nothing; the
-/// second and the third each have the host rotate first, and the sink reports each rotation once
-/// (the FILE sink at its pin reports a rotation as its `info` record, the line 1.5.5 logged; it
-/// emits no metric). Nothing is dropped.
 #[test]
 fn the_reported_observations_are_the_ones_the_sink_produced() {
     let dir = scratch("produced");
@@ -863,12 +708,6 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
     );
 }
 
-/// A DESTINATION DECLARED `keep` 0 ROLLS OVER AS 1.5.5'S REQUEST-LOG FILE DID (v1.5.5
-/// `crates/busbar/src/export/file.rs` 96-108, truncation, no rename): the loader binds the
-/// destination with the retention its manifest declares, so the host truncates the live file in
-/// place before each due append — the same file, no `<path>.1`, nothing else beside it — and the
-/// sink is told of no rotation. RED before: the loader bound every destination with
-/// `DISK_KEEP`, so the host renamed the file to `.1` and `.2` and the sink reported two rotations.
 #[test]
 fn a_destination_declared_keep_zero_is_truncated_in_place_with_no_archive() {
     let dir = scratch("keep0");
@@ -900,16 +739,6 @@ fn a_destination_declared_keep_zero_is_truncated_in_place_with_no_archive() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **THE AXIS, BOTH WAYS** (DECISIONS #2 rule (1), item 141). The FILE sink registered through the
-/// LINKED door (its `door`, through [`PluginRegistry::link`]) and the DROPPED-IN door (its `cdylib`,
-/// signed into `plugins/`) resolves to the byte-identical registry row, and the sink each door's
-/// opener ([`ExportRows::open`]) opens — the one load over either image — answers the same streams
-/// and routes, writes the same files and hands the host byte-identical observations for the same
-/// deliveries. This is the equivalence above taken through the real registration and open a node
-/// runs.
-///
-/// RED by taking `export` out of the linked door's kinds: `link` refuses the row and the linked
-/// arm never opens.
 #[test]
 fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
     let name = "export-fixture";
@@ -930,7 +759,7 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
             .expect("the export sink opens through its alias");
         let streams = sink.streams().to_vec();
         let routes = sink.routes().len();
-        // Two lines too large to share the file: the second has the host rotate (rename) first.
+
         for n in [1, 2] {
             deliver(sink.as_ref(), &big_line(n));
         }
@@ -963,14 +792,8 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
     );
 }
 
-// ── THE RED ARM: the pre-envelope path ───────────────────────────────────────────────────────────
-
-/// What the pre-envelope build's plugin-side store received: every entry the sink OBSERVED and the
-/// pre-envelope wire had no field to carry. Process-global only because an op is a bare fn pointer
-/// with no closure; the RED arm is its only writer.
 static PRE_ENVELOPE_PLUGIN_LOCAL: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// The real dropped-in image's ops table, which the pre-envelope door's ops forward to.
 struct RealOps(Ops);
 // SAFETY: the table is the dlopened image's `'static` data (its pointers name its code), never
 // written; the library stays loaded for the life of the process (the RED arm leaks it).
@@ -979,7 +802,6 @@ unsafe impl Send for RealOps {}
 unsafe impl Sync for RealOps {}
 static PRE_ENVELOPE_REAL: OnceLock<RealOps> = OnceLock::new();
 
-/// The pre-envelope door: the real image's door, its ops table replaced by [`PRE_ENVELOPE_OPS`].
 struct ShimDoor(Door, Ops);
 // SAFETY: built once from the image's `'static` door and never written after; every pointer names
 // the image's `'static` data or [`PRE_ENVELOPE_DOORS`] itself.
@@ -1079,7 +901,6 @@ pre_envelope_ops! {
     pre_serve => serve;
 }
 
-/// The pre-envelope door function.
 extern "C" fn pre_envelope_door() -> *const Door {
     &PRE_ENVELOPE_DOORS
         .get()
@@ -1087,38 +908,15 @@ extern "C" fn pre_envelope_door() -> *const Door {
         .0
 }
 
-/// **THE RED ARM — what the old arrangement did, kept as the witness.**
-///
-/// Before #85 a dropped-in sink had no wire for what it observed: its reply was the kind's answer
-/// BARE, and what it observed went into the facade its own object statically linked — a store
-/// nobody reads. The compiled-in build of the same source linked the host's, so the two builds
-/// diverged and nothing errored.
-///
-/// This arm REPLAYS that arrangement over the production seam rather than modelling it: the REAL
-/// FILE-sink `cdylib` is staged and `dlopen`ed by the loader (`stage::load_library_from_bytes`), its
-/// door bound through the one load, and every op of its table answers exactly what the real op
-/// answered — with the reply's envelope moved into a store of the plugin's own
-/// ([`PRE_ENVELOPE_PLUGIN_LOCAL`]) before the host reads it. The compiled-in arm is the real one,
-/// and the host's envelope sink is the real ingestion's.
-///
-/// So it is RED-capable in every direction the claim has: if the real sink stops observing, if the
-/// host starts inventing entries, or if the two builds stop diverging, one of the assertions below
-/// fails.
-///
-/// The envelope makes this unrepresentable. A plugin has no symbol to call: it REPORTS, on a wire
-/// that goes to exactly one place, and the host is what ingests.
 #[test]
 fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     let dir = scratch("pre-envelope");
     let path = dir.join("requests.jsonl");
 
-    // Compiled-in, as the equivalence test runs it: the host ingests what the plugin reported.
     let compiled_in = run_compiled_in(&path);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
 
-    // Dropped-in, pre-envelope: the real cdylib staged by the real loader, its envelopes kept
-    // plugin-local.
     let bytes = cdylib_bytes(file_cdylib());
     let (lib, staged) = crate::stage::load_library_from_bytes(&bytes, "#11-pre-envelope")
         .expect("stage the file sink cdylib");
@@ -1166,7 +964,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     let plugin = load_linked::<Export>(&row, bind("#11-pre-envelope", tape.clone(), &d))
         .expect("the pre-envelope door loads");
     let sink = opened(plugin, d, &file_settings(&path));
-    // The sink still DOES its work — the host appends and rotates for it, exactly as before.
+
     script(&sink, &path);
     drop(sink);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1177,19 +975,18 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
             .unwrap_or_else(PoisonError::into_inner),
     );
 
-    // The compiled-in build's observations reached the host.
     assert_eq!(
         compiled_in.len(),
         2,
         "the compiled-in build must report both rotations: {compiled_in:?}"
     );
-    // The pre-envelope build OBSERVED exactly the same thing — the records existed...
+
     assert_eq!(
         plugin_local, compiled_in,
         "the pre-envelope build must have observed what the compiled-in one reported, or the \
          divergence below is a broken fixture rather than the defect"
     );
-    // ...and the host received none of it.
+
     assert!(
         dropped_in_pre_envelope.is_empty(),
         "the defect: a dropped-in plugin's observations land where nothing reads — the host \
@@ -1223,26 +1020,14 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
 /// to name both. Recorded here rather than in a document because a test file is the thing the next
 /// person editing this seam actually reads.
 #[test]
-fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {
-    // Nothing to assert; this test is a landmark. It fails only if deleted, which is the point.
-}
+fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {}
 
-/// A series the host itself emits, for the collision arm — installed once as this test binary's
-/// host catalog (the composition root installs the real one).
 const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
 
-/// **K9a S1 — THE FIRST-PARTY METRIC NAMESPACE, BOTH WAYS.** The FILE sink, its manifest declaring
-/// the reserved series it reports under (its own `declares.json`), registered through the LINKED
-/// door and the DROPPED-IN door (signed by the release key): each open GRANTS every declared series,
-/// so the host renders them as declared (the kernel's `observe` tests render the grant), and the
-/// two doors register one row and fold the same. RED ARMS, in the same test so the grant cannot pass
-/// vacuously: the same crate dropped in by a THIRD party (allowlisted, trusted, not first-party) is
-/// granted nothing whatever it declares, and a first-party claim on a series the host emits refuses
-/// the open naming it.
 #[test]
 fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     use busbar_contract::abi::mechanism::observe::SeriesDecl;
-    // The host's series are named on the dispatcher every open below binds on.
+
     let d = dispatcher();
     d.observing()
         .install_host_series(|name| name == S1_HOST_SERIES);
@@ -1252,8 +1037,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         .iter()
         .map(|s| (s.name.clone(), s.kind.clone()))
         .collect();
-    // The sink's one reserved series, as 1.5.5 declared it (v1.5.5 `metrics.rs:177`): the rotation
-    // counters 1.5.5 never had are no longer declared (the sink's own repo at 1980b90).
+
     assert!(
         series
             .iter()
@@ -1280,7 +1064,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
             deliver(sink.as_ref(), &big_line(n));
         }
         until("both lines on disk", || ns(&path) == Some(vec![2]));
-        // Read while the instance is live: its grant goes with it (§11.12 H2).
+
         let granted: Vec<bool> = series
             .iter()
             .map(|(s, k)| crate::observe::first_party_series(name, s, k))
@@ -1308,7 +1092,6 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     );
     assert_eq!(linked, dropped, "both doors grant and fold the same");
 
-    // RED ARM 1: a third party declaring the same claims is granted nothing.
     let lib = cdylib_bytes(file_cdylib());
     let mut third = stating(manifest("s1-third-party", declared.clone()), FILE_DOOR);
     third.publisher = "acme".into();
@@ -1321,7 +1104,6 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         assert!(!crate::observe::first_party_series("s1-third-party", s, k));
     }
 
-    // RED ARM 2: a first-party claim on a host series refuses the open.
     let mut collides = declared;
     collides.metrics = vec![SeriesDecl::new(S1_HOST_SERIES, "counter")];
     let registry = PluginRegistry::empty()
@@ -1344,11 +1126,6 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **K9a S2 — THE VALIDATE OP, BOTH WAYS.** The FILE sink registered through the LINKED door and the
-/// DROPPED-IN door answers the host's `validate` identically: settings it accepts report nothing,
-/// and settings it refuses report the sink's own line under the instance — the text the host prints
-/// among the configuration's errors, 1.5.5's. A module that is not an export row is not the axis's
-/// to judge. RED ARM: a door whose table predates `validate` is never bound.
 #[test]
 fn a_sink_validates_its_settings_the_same_through_either_door() {
     let name = "s2-sink";
@@ -1378,10 +1155,6 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
     );
     assert_eq!(linked, dropped, "both doors validate the same");
 
-    // RED ARM: a sink whose table predates the op. On the cold wire it answered UNSUPPORTED and the
-    // host took that for "nothing to report"; on the memory ABI the table is the kind's whole table,
-    // so a door without `validate` is refused at the load, naming the slot — it never reaches a
-    // configuration to judge.
     assert_eq!(
         refused_at_load(door_without_validate),
         format!(
@@ -1391,14 +1164,6 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
     );
 }
 
-/// **K9a S3 — PLUGIN DIAGNOSTICS, BOTH WAYS.** The request-log WEBHOOK sink, its manifest declaring
-/// the `BUSBAR-NNNN` codes it raises (its own `declares.json`), registered through the LINKED door
-/// and the DROPPED-IN door: both rows state the same declaration and are FIRST-PARTY — which is
-/// everything the composition root reads to register the codes into the host's catalogue
-/// (`root::linked::declared_diagnostics`, whose own tests hold the catalogue half) — and the sink
-/// raising a code (a delivery whose connection the host could not make: BUSBAR-7072) hands the host
-/// the same diagnostic either way. RED ARM, in the same test: the same declaration dropped in by a
-/// THIRD party is not first-party, which the root refuses.
 #[test]
 fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     let decl = webhook_declares();
@@ -1441,7 +1206,6 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     );
     assert_eq!(linked, dropped, "both doors state and raise the same");
 
-    // RED ARM: a third party's declaration is not first-party.
     let lib = cdylib_bytes(webhook_cdylib());
     let mut third = stating(manifest("s3-third-party", decl.clone()), WEBHOOK_DOOR);
     third.publisher = "acme".into();
@@ -1451,14 +1215,6 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     assert!(!row.first_party());
 }
 
-/// **K9a S4 — THE DESTINATION HANDLE, BOTH WAYS.** The request-log FILE sink, its manifest declaring
-/// the `path` settings key a destination, registered through the LINKED door and the DROPPED-IN door
-/// and opened with the operator's path: each delivery has the HOST append the batch
-/// (`disk.append`: the sink names the key; the host appends to the path it bound), rotating at the
-/// sink's `rotate_mb` — and both doors leave the same files and report the same observations. RED
-/// ARM, in the same test: the same sink whose manifest does NOT declare the key is refused every
-/// write — the path the operator's settings name is never created — and it reports the refusals
-/// (its BUSBAR-7074 line).
 #[test]
 fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_either_door() {
     let declaring = |name: &str, declared: bool| {
@@ -1470,7 +1226,7 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
     };
     let dir = scratch("s4");
     let path = dir.join("requests.jsonl");
-    // Two lines fill the MiB; the third has the host rotate first.
+
     let run = |registry: &PluginRegistry, name: &str, landed: &dyn Fn(&Tape) -> bool| {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
@@ -1499,8 +1255,7 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
             run(&registry, "s4-fixture", &on_disk),
         )
     });
-    // 1.5.5 parity (Q128 arch u50): the host truncated in place at `rotate_mb`, so no archive,
-    // and, as 1.5.5 reported nothing of a truncation, no rotation is reported.
+
     assert!(linked.1.contains(r#""archive":null"#), "{}", linked.1);
     assert!(linked.1.contains(r#""live":[3,4]"#), "{}", linked.1);
     assert!(
@@ -1510,8 +1265,6 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
     );
     assert_eq!(linked, dropped, "both doors write and rotate the same");
 
-    // RED ARM: undeclared, the key is not a destination — every write refused, nothing created,
-    // and the sink reports each refusal as its open-failed line.
     let registry = PluginRegistry::empty()
         .link(vec![LinkedPlugin::door(
             stating(declaring("s4-undeclared", false), FILE_DOOR),
@@ -1536,14 +1289,6 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
     );
 }
 
-/// **K9a S5 — THE HOST-CARRIED OUTBOUND REQUEST, BOTH WAYS.** The request-log WEBHOOK sink
-/// registered through the LINKED door and the DROPPED-IN door, opened with a `url`: its need (open
-/// web, framed by `http`, its target the `url` setting) is declared on the HOST's connection table,
-/// and each delivery has the HOST carry the POST (the sink never dials) — both doors hand the table
-/// the same requests and fold the same answer: nothing, for a far end that accepted every line, as
-/// the 1.5.5 webhook reported nothing. RED ARM, in the same test: a target the host's policy refuses
-/// never reaches the wire — nothing is carried — and the sink is told at its admission, and reports
-/// it (its BUSBAR-7070 line: the exporter is disabled).
 #[test]
 fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door() {
     let name = "s5-fixture";
@@ -1593,7 +1338,6 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
     );
     assert_eq!(linked, dropped, "both doors are carried the same");
 
-    // RED ARM: the policy refuses the target — nothing is carried, and the sink reports it.
     let registry = PluginRegistry::empty()
         .link(vec![LinkedPlugin::door(
             stating(m, WEBHOOK_DOOR),
@@ -1605,12 +1349,6 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
     assert!(refused.contains("BUSBAR-7070"), "{refused}");
 }
 
-/// **K9c — CHECK, BOTH WAYS.** The sinks' own checks across their instances, through either door:
-/// the FILE sink (which takes the SDK's default `check`) has nothing to say at either phase, and the
-/// WEBHOOK sink judges its instances in 1.5.5's words — its in-flight bound AMONG the operational
-/// limits' checks and each instance's delivery deadline AFTER them — identically through either
-/// door. A module that is not an export row is not the axis's. RED ARM: a door whose table predates
-/// `check` is never bound.
 #[test]
 fn a_sink_starts_and_checks_the_same_through_either_door() {
     let files = both(
@@ -1656,8 +1394,6 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     );
     assert_eq!(transcripts[0], transcripts[1], "both doors check the same");
 
-    // RED ARM: a sink whose table predates `check`. On the cold wire the host took UNSUPPORTED for
-    // "no lines"; on the memory ABI such a door is refused at the load, naming the slot.
     assert_eq!(
         refused_at_load(door_without_check),
         format!(
@@ -1667,16 +1403,10 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     );
 }
 
-/// **K9e-2 — A DECLARED EGRESS POLICY, AND EVERY REQUEST THE SINK ASKS FOR MEETS IT.** On the export
-/// kind's memory ABI a sink's egress is the egress CLASS of the need its Statement declares, and the
-/// HOST's connection table judges every connection of that need under it. The WEBHOOK sink, linked
-/// and dropped in, declares its one need on the table under the open-web class, framed by `http`,
-/// its target the `url` setting — identically through either door. The manifest spelling of a
-/// declared policy (`declares.egress`) still reads and writes as the manifest grammar states it.
 #[test]
 fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
     use crate::EgressPolicy;
-    // The declaration's manifest spelling; the default is left off the signed bytes.
+
     let collector = Declares {
         egress: EgressPolicy::Collector,
         ..Default::default()
@@ -1734,7 +1464,6 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
     assert_eq!(linked, dropped, "both doors declare the same need");
 }
 
-/// Releases the far end when dropped.
 struct Released(Arc<Far>);
 
 impl Drop for Released {
@@ -1743,16 +1472,6 @@ impl Drop for Released {
     }
 }
 
-/// **K9c — A SINK'S DELIVERIES IN FLIGHT ARE BOUNDED BY ITS ADMISSION ALONE** (ARCHITECT ruling
-/// MAX-INFLIGHT 2026-10-03). The request-log WEBHOOK sink, every delivery a host-carried POST,
-/// LINKED and DROPPED IN, its instance configured with an in-flight bound of 600
-/// (`max_inflight_deliveries`) — above the runtime's 512 blocking threads, on a dispatcher of ONE
-/// worker. With the far end holding every request, 600 deliveries are in flight at once, each
-/// pending on the host's connection table with no thread waiting, and never more: the 601st waits
-/// its turn in the instance's queue and is carried once the far end answers. The effective
-/// concurrency is the configured bound, as the 1.5.5 webhook's async deliveries were. (RED: one
-/// batch at a time per instance holds 1; a delivery that holds a thread while the far end answers
-/// plateaus at the pool.)
 #[test]
 fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool() {
     const BOUND: usize = 600;
@@ -1780,8 +1499,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
             .with_conns(far.clone())
             .open(name, "export.k9c", &settings)
             .expect("opens");
-        // Declared after the sink, so dropped before it: a failing arm still lets the far end
-        // answer, and the instance's drop (which waits for its deliveries) returns.
+
         let _answer = Released(far.clone());
         for n in 0..=BOUND {
             deliver(sink.as_ref(), &serde_json::json!({ "n": n }));
@@ -1789,7 +1507,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
         until("every admitted delivery in flight", || {
             far.stalled() == BOUND
         });
-        // Held a moment longer: nothing beyond the bound joins.
+
         std::thread::sleep(Duration::from_millis(300));
         let in_flight = far.stalled();
         let carried_while_held = far.carried().len();
@@ -1825,14 +1543,6 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
     assert_eq!(linked, dropped, "both doors are bounded the same");
 }
 
-/// **DROPPING AN INSTANCE NEVER WAITS ON A DELIVERY THAT NEVER WAKES** (`BUSBAR-1.6.0.md` §11.13
-/// M1: a host thread never waits on plugin code). The request-log WEBHOOK sink, LINKED, its one
-/// delivery pending on a far end that holds the request and never wakes it. Dropping the instance
-/// (a plugin removal, a config reload) gives the delivery a bounded grace, then abandons it on the
-/// dispatcher's client-drop path, the batch still lent to the op until it completes; the dropping
-/// thread returns. (RED: a write-behind delivery with no deadline is never cancelled or detached,
-/// the flusher's stop waited for it, and the drop joined the flusher, so the dropping thread hung
-/// forever.)
 #[test]
 fn dropping_an_instance_whose_delivery_never_wakes_returns() {
     let name = "bn2-stuck";
@@ -1842,7 +1552,7 @@ fn dropping_an_instance_whose_delivery_never_wakes_returns() {
             WEBHOOK_DOOR,
         )])
         .expect("the linked door admits the sink");
-    // No connection waker is installed: the held request is never woken.
+
     let far = Arc::new(Far::default());
     let sink = ExportRows::new(&registry, dispatcher())
         .with_conns(far.clone())
@@ -1864,7 +1574,6 @@ fn dropping_an_instance_whose_delivery_never_wakes_returns() {
     });
     let returned = returned.recv_timeout(Duration::from_secs(5));
     if returned.is_err() {
-        // The dropping thread is stuck on the plugin: leave it, so the suite does not hang.
         std::mem::forget(dropper);
     }
     assert!(
@@ -1873,12 +1582,6 @@ fn dropping_an_instance_whose_delivery_never_wakes_returns() {
     );
 }
 
-/// **K9e-2 — A LOOPBACK COLLECTOR THE OPERATOR TRUSTED LOADS, FIRST PARTY OR NOT** (`BUSBAR-1.6.0.md`
-/// §5; OWNER 2026-10-24, oracle BOOT-W23). The OTLP trace sink's one need is in the
-/// `loopback-allowed` class (a collector's loopback plaintext): LINKED, and DROPPED IN signed by
-/// the release key, it is admitted and opens through either door; the same cdylib dropped in by a
-/// THIRD party (allowlisted, trusted) is admitted and opens too, as 1.5.5 loaded it, and so is the
-/// webhook sink, whose need is in the open web. RED before: the third party's was refused.
 #[test]
 fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     let collector: DoorFn = TRACE_DOOR;
@@ -1910,8 +1613,6 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     );
     assert_eq!(opened[0], opened[1], "both doors declare the same need");
 
-    // The same collector from a third party the operator trusted is admitted and opens, as 1.5.5
-    // loaded it (OWNER 2026-10-24, oracle BOOT-W23: the opt-in is the operator's grant).
     let lib = cdylib_bytes(trace_cdylib());
     let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), collector);
     third.publisher = "acme".into();
@@ -1923,7 +1624,6 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
         .open("k9e2-third-otlp", "export.trace", &settings)
         .expect("an operator-trusted collector opens");
 
-    // The open web is any trusted plugin's: the webhook from the same third party is admitted.
     let lib = cdylib_bytes(webhook_cdylib());
     let mut third = stating(
         manifest("k9e2-third-hook", webhook_declares()),
@@ -1935,29 +1635,19 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     assert!(!row.first_party());
 }
 
-/// **#85 — AN OPENED SINK'S ENVELOPE REACHES THE HOST'S OBSERVABILITY, NEVER DISCARDED** (ARCHITECT
-/// rulings ENVELOPE and ENVELOPE-ALL 2026-10-03). The dispatcher stands the host's observability
-/// before every door's bound sink (the export opener's included): what an opened
-/// instance REPORTS — a metric of a family its Statement declares, a declared diagnostic — is handed
-/// to the installed observer (the one fold every plugin's back-channel takes) under the plugin's
-/// name and kind, named by what its Statement declares; behind `plugins.logs` the declared
-/// diagnostic ALSO lands in the plugin's own log. Driven through the FILE sink's real Statement
-/// (linked and dropped in alike: the sink is built from the stated rendering either door states).
-/// RED: before the ruling the opener bound `NoSink`, and nothing reached the observer. The binding
-/// itself is held per kind in `observe`'s tests.
 #[test]
 fn an_opened_sinks_envelope_reaches_the_host_observability() {
     use crate::dispatch::EnvelopeSink as _;
     let guard = crate::observe::testing::exclusive();
     let stated = rendering_of(FILE_DOOR).expect("renders");
-    // A sink named by the FILE sink's own Statement.
+
     let sink = crate::observe::EnvelopeObserver::of(
         crate::observe::testing::observing(),
         "export-sink",
         busbar_contract::abi::mechanism::kind::EXPORT,
         &stated,
     );
-    // A metric of a family the Statement declares, named by the family: a counter with one label.
+
     let counted = crate::observe::EnvelopeObserver::with_families(
         crate::observe::testing::observing(),
         "export-sink",
@@ -1976,7 +1666,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         value: 1.0,
         labels: &[b"/var/log/busbar/requests.jsonl"],
     });
-    // A family index past the Statement's is nobody's: nothing is folded for it.
+
     counted.metric(Metric {
         family: 7,
         kind: busbar_contract::abi::mechanism::call::METRIC_ADD,
@@ -2019,7 +1709,6 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     assert_eq!(diagnostics[0]["code"], "BUSBAR-7074");
     assert_eq!(diagnostics[0]["level"], "warn");
 
-    // Behind `plugins.logs`, the declared diagnostic reaches both the plugin log and the observer.
     crate::observe::testing::clear(&guard);
     let dir = scratch("envelope");
     let logs = crate::dispatch::PluginLogConfig::from_words(
@@ -2030,7 +1719,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         None,
     )
     .expect("a plugins.logs block");
-    // As the dispatcher binds every door: the host's observability before the binder's log sink.
+
     let log_sink = Arc::new(
         logs.sink(
             "export.tail",
@@ -2067,14 +1756,6 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     assert_eq!(folds[0].3[0]["code"], "BUSBAR-7074");
 }
 
-/// **K9a S7 — A CLOSED SPAN REACHES A COLLECTOR THE SAME THROUGH EITHER DOOR.** The OTLP trace
-/// sink (its need in the `loopback-allowed` class: a first-party collector), LINKED and DROPPED IN
-/// signed by the release key, is handed the same `traces` record — a closed span as the kernel's
-/// producer writes it — and the HOST carries the same OTLP/HTTP request for it to the collector,
-/// byte for byte: `POST` to the configured path, `application/x-protobuf`, one
-/// `ExportTraceServiceRequest` holding the span's identity. (The shipped binary's end-to-end proof
-/// cannot drop in a FIRST-PARTY collector — its release key's private half is not the test's — so
-/// the both-doors identity of span delivery is held here, where the release key is the test's.)
 #[test]
 fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
     let collector: DoorFn = TRACE_DOOR;
@@ -2125,10 +1806,6 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
     assert_eq!(linked, dropped, "both doors carry the same request");
 }
 
-/// THE OPERATOR'S `keep` OUTRANKS THE MANIFEST'S (owner signed 2026-10-27, "Keep N, default 9"):
-/// the file sink's manifest declares no `keep` (the host's default, 1.5.5's truncation), and the
-/// operator's `keep: 2` beside `path` has the host rotate the file by rename, keeping its archive.
-/// RED before the host read the operator's key: the file was truncated and no archive kept.
 #[test]
 fn the_operators_keep_beside_a_destination_outranks_the_manifest() {
     let dir = scratch("keep-setting");

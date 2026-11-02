@@ -27,7 +27,7 @@ fn a_store_reply_keeps_inline_and_owned_texts_across_other_ticket_answers() {
         reply_text(Text::render(format_args!("other {i}")), &answer);
         kept.insert(other_key, answer.into_inner());
     }
-    // Inspect current owners only. No assertion reads an old raw pointer on a RED keeper.
+
     assert_eq!(
         kept.with(first_key, |texts| texts.texts[0].as_str().to_owned()),
         Some("original 1".into())

@@ -1,15 +1,3 @@
-// THE THIN BINARY'S OWN TESTS — the boot and flag-surface helpers that live in this crate and
-// nowhere else: worker-thread sizing, --safe-mode detection, the shutdown/serve lifecycle, and the
-// signing-key command's stdout-only-secret contract. Everything engine-shaped moved out with the
-// core split (step 3.7) and rode the busbar-core absorption on to
-// busbar-kernel/src/tests/tests.rs, which is where it is today — `busbar-core` itself no longer
-// exists. DELETING these instead was the named failure mode: validate_worker_threads_config and
-// signing_key_command_output have no other coverage.
-//
-// They no longer live in ONE file, and the import below is why. main.rs was over the
-// structure-lint cap and split at the flag/serve seam, so the half this file covers that ANSWERS
-// AND EXITS is now `root::cli` while the half that BOOTS AND SERVES stayed in main.rs. `super::*`
-// reaches the second half only; the first is named explicitly.
 use super::*;
 use crate::root::cli::{
     config_override_notice, providers_override_notice, resolve_config_path,
@@ -17,10 +5,6 @@ use crate::root::cli::{
 };
 use busbar_kernel_testkit::test_support::EnvVarGuard;
 
-/// `worker_threads_from_env`: an unset var returns None (the normal default path, no warning); a
-/// valid positive integer returns Some(n); zero/negative/non-numeric returns None WITH a warning
-/// printed (not silently ignored, see the function's own doc comment). Uses a
-/// test-unique env var name so this can never collide with a concurrently-running test.
 #[test]
 fn worker_threads_from_env_parses_valid_rejects_invalid() {
     let unset_name = "BUSBAR_TEST_WORKER_THREADS_UNSET_MARKER_1";
@@ -52,11 +36,6 @@ fn worker_threads_from_env_parses_valid_rejects_invalid() {
     }
 }
 
-/// `validate_worker_threads_config`: a config-supplied `advanced.worker_threads: 0` is DIAGNOSED
-/// (`Err`, so the caller warns) rather than silently dropped — matching `worker_threads_from_env`'s
-/// treatment of an invalid env value. A positive count or an unset value passes through as `Ok`.
-/// Pre-fix the config path used `.filter(|n| *n >= 1)`, which returned `None` for
-/// `Some(0)` with NO diagnostic — reverting to that (removing this validation) fails the `Err` case.
 #[test]
 fn validate_worker_threads_config_diagnoses_zero() {
     assert!(
@@ -67,23 +46,8 @@ fn validate_worker_threads_config_diagnoses_zero() {
     assert_eq!(validate_worker_threads_config(None), Ok(None));
 }
 
-/// `worker_threads_from_config`: END-TO-END from a real config.yaml (not just a parse). A positive
-/// `advanced.worker_threads` is read back from the file the `BUSBAR_CONFIG` env var names; a `0` is
-/// diagnosed away to `None`. Deleting `worker_threads_from_config`'s parse (or its
-/// call in `main()`) means `advanced.worker_threads` stops being read from config.yaml — the positive
-/// assertion fails.
 #[test]
 fn worker_threads_from_config_reads_a_real_file() {
-    // `BUSBAR_CONFIG` is read ONLY by `worker_threads_from_config` outside of `main()`, so setting it
-    // here does not perturb other unit tests (they pass explicit config paths to `load_config_from_disk`).
-    //
-    // The restore MUST be panic-safe: a bare `assert_eq!` between the `set_var` and a manual restore
-    // at the bottom of the function would, on failure, unwind straight past the restore and leak a
-    // `BUSBAR_CONFIG` pointing at THIS test's (about-to-be-deleted) temp dir to every later test in
-    // the same binary — a process-global env var is not per-test state, so that leak is silent and
-    // order-dependent. `EnvVarGuard`'s `Drop` runs during unwind too, so the restore happens
-    // regardless of whether the assertions below pass. See
-    // `env_var_guard_restores_on_panic` for a direct proof of that unwind behavior.
     let _guard = EnvVarGuard::capture(ENV_CONFIG);
     let dir = std::env::temp_dir().join(format!(
         "busbar-wtcfg-{}-{}",
@@ -119,12 +83,9 @@ fn worker_threads_from_config_reads_a_real_file() {
         "advanced.worker_threads: 0 is invalid → None (diagnosed, not honored)"
     );
 
-    // `_guard`'s `Drop` restores `BUSBAR_CONFIG` here (or on unwind above) — no manual restore needed.
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `safe_mode_requested`: true iff `--safe-mode` is literally present among the args; absent, a
-/// near-miss, or an empty arg list must all return false.
 #[test]
 fn safe_mode_requested_matches_the_exact_flag_only() {
     assert!(safe_mode_requested(
@@ -139,29 +100,27 @@ fn safe_mode_requested_matches_the_exact_flag_only() {
     assert!(!safe_mode_requested(std::iter::empty()));
 }
 
-/// `value_flag`: extracts a value-taking flag in all accepted forms — `--long value`, `--long=value`,
-/// and the short `-x value` — returning the LAST occurrence, and `None` when the flag is absent.
 #[test]
 fn value_flag_parses_all_accepted_forms() {
     let v = |a: &[&str], long: &str, short: Option<&str>| {
         value_flag(a.iter().map(|s| s.to_string()), long, short)
     };
-    // `--config value`
+
     assert_eq!(
         v(&["--config", "/a/config.yaml"], "--config", Some("-c")),
         Some("/a/config.yaml".to_string())
     );
-    // `--config=value`
+
     assert_eq!(
         v(&["--config=/b/config.yaml"], "--config", Some("-c")),
         Some("/b/config.yaml".to_string())
     );
-    // `-c value` (short)
+
     assert_eq!(
         v(&["-c", "/c/config.yaml"], "--config", Some("-c")),
         Some("/c/config.yaml".to_string())
     );
-    // LAST occurrence wins.
+
     assert_eq!(
         v(
             &["-c", "/first", "--config", "/second"],
@@ -170,7 +129,7 @@ fn value_flag_parses_all_accepted_forms() {
         ),
         Some("/second".to_string())
     );
-    // Absent ⇒ None. `--providers` has no short form.
+
     assert_eq!(v(&["--validate"], "--providers", None), None);
     assert_eq!(
         v(&["--providers", "/p/providers.yaml"], "--providers", None),
@@ -178,9 +137,6 @@ fn value_flag_parses_all_accepted_forms() {
     );
 }
 
-/// `resolve_config_path`: the flag, when passed, wins over everything (the env layer is only consulted
-/// when the flag is `None`). The flag-present arm is deterministic (no env dependence), so it is the
-/// safe half to unit-test without racing the process environment.
 #[test]
 fn resolve_config_path_flag_wins() {
     assert_eq!(
@@ -189,57 +145,47 @@ fn resolve_config_path_flag_wins() {
     );
 }
 
-/// `config_override_notice`: fires ONLY when both the `--config` flag and `BUSBAR_CONFIG` are set to
-/// DIFFERENT paths (a real override to explain) — never on a bare flag, a bare env, or equal values.
 #[test]
 fn config_override_notice_fires_only_on_a_real_override() {
-    // Both set + differ ⇒ notice naming both.
     let n = config_override_notice(Some("/flag.yaml"), Some("/env.yaml")).expect("notice");
     assert!(
         n.contains("/flag.yaml") && n.contains("/env.yaml"),
         "got {n}"
     );
-    // Equal ⇒ no notice.
+
     assert_eq!(
         config_override_notice(Some("/same.yaml"), Some("/same.yaml")),
         None
     );
-    // Flag alone ⇒ no notice.
+
     assert_eq!(config_override_notice(Some("/flag.yaml"), None), None);
-    // Env alone ⇒ no notice.
+
     assert_eq!(config_override_notice(None, Some("/env.yaml")), None);
 }
 
-/// `providers_override_notice`: fires when `--providers` is set AND config.yaml ALSO declares a
-/// DIFFERENT `providers_file:` — naming both — and is silent for a bare flag or matching values.
 #[test]
 fn providers_override_notice_names_both_only_on_a_real_override() {
-    // Flag set + providers_file set (and differ) ⇒ notice naming BOTH.
     let n = providers_override_notice(Some("/flag.yaml"), Some("catalog.yaml")).expect("notice");
     assert!(
         n.contains("/flag.yaml") && n.contains("catalog.yaml") && n.contains("providers_file"),
         "the notice must name both the flag and the config's providers_file: {n}"
     );
-    // Flag alone (no providers_file in config) ⇒ no notice.
+
     assert_eq!(providers_override_notice(Some("/flag.yaml"), None), None);
-    // Matching values ⇒ no notice.
+
     assert_eq!(
         providers_override_notice(Some("catalog.yaml"), Some("catalog.yaml")),
         None
     );
-    // No flag ⇒ no notice regardless of providers_file.
+
     assert_eq!(providers_override_notice(None, Some("catalog.yaml")), None);
 }
 
-/// `recv_shutdown`: a `-> ()` mutant would resolve immediately regardless of the channel — the
-/// real function must genuinely BLOCK until something is sent (or the sender is dropped), then
-/// resolve promptly once it is.
 #[tokio::test(start_paused = true)]
 async fn recv_shutdown_blocks_until_a_send_then_resolves() {
     let (tx, rx) = tokio::sync::broadcast::channel(1);
     let handle = tokio::spawn(recv_shutdown(rx));
 
-    // Give the spawned task every chance to (wrongly) resolve on its own if it were a no-op.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(
         !handle.is_finished(),
@@ -253,8 +199,6 @@ async fn recv_shutdown_blocks_until_a_send_then_resolves() {
         .unwrap();
 }
 
-/// `shutdown_signal`: a `-> ()` mutant would resolve immediately — the real function must genuinely
-/// block (nothing sends SIGINT/SIGTERM in this test), never completing within a bounded wait.
 #[tokio::test]
 async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
     let result =
@@ -265,10 +209,6 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
     );
 }
 
-/// `serve_listener`: a `-> ()` mutant would never actually accept connections. Bind a real
-/// listener (the connector's, as the root binds its own), serve a trivial router through
-/// `serve_listener`, and confirm a real HTTP request against it succeeds before the shutdown
-/// future fires.
 #[cfg(unix)]
 #[tokio::test]
 async fn serve_listener_actually_serves_real_http_traffic() {
@@ -306,47 +246,33 @@ async fn serve_listener_actually_serves_real_http_traffic() {
         .unwrap();
 }
 
-/// SECURITY (signing-key stdout-only contract): `--generate-signing-key` prints the secret ONLY on
-/// stdout; the stderr guidance must be secret-free so a stderr capture (systemd journal, CI/build log,
-/// terminal scrollback) can never leak the master signing key. Enforced here, not merely commented.
-/// RED before the fix: the stderr guidance embedded `export BUSBAR_SIGNING_KEY={hex}`.
 #[test]
 fn signing_key_guidance_omits_secret() {
-    // A real generated key (64 hex chars) through the boot doorway (the signer type stays
-    // crate-private in core), so the assertion is against actual secret material.
     let hex = busbar_kernel::boot::generate_signing_key_hex().expect("generate a signing key");
     assert_eq!(hex.len(), 64, "sanity: an ed25519 secret is 64 hex chars");
 
     let (stdout, stderr) = signing_key_command_output(&hex);
 
-    // STDOUT carries the secret verbatim (and ONLY the secret).
     assert_eq!(
         stdout, hex,
         "the secret must be printed verbatim on stdout for `> /run/secrets/...` capture"
     );
-    // STDERR guidance must NOT contain the secret anywhere.
+
     assert!(
         !stderr.contains(&hex),
         "the stderr guidance must be secret-free — it must never embed the generated key"
     );
-    // And it must point the operator at the stdout value with a non-secret placeholder.
+
     assert!(
         stderr.contains("export BUSBAR_SIGNING_KEY=<paste-the-64-hex-key-printed-above>"),
         "the guidance must use a non-secret placeholder pointing at the stdout key"
     );
 }
 
-/// THE BUILD-PROVENANCE STAMP FORMAT IS LOCKED. `scripts/build-provenance-gate.sh` parses this line
-/// as space-separated `key=value` pairs to assert a release build's optimization posture (the guard
-/// against the ~20% "regression" that was a mis-built binary). A refactor that renames a key or
-/// changes the separator would silently blind that gate; this test fails first instead. It also pins
-/// that a TEST build (which is a debug profile) self-reports `profile=debug` / `debug-assertions=true`
-/// / `pgo=false` — the exact stamp the gate must be able to distinguish from an optimized release.
 #[test]
 fn build_info_line_format_is_locked() {
     let line = build_info_line();
 
-    // Every field the gate reads must be present as a `key=` token.
     for key in [
         "profile=",
         "opt-level=",
@@ -369,8 +295,6 @@ fn build_info_line_format_is_locked() {
         );
     }
 
-    // A `cargo test` binary is a DEBUG build, so the stamp must say so. If these ever read
-    // `release`/`false`, the stamp is decoupled from the actual build and the gate is worthless.
     assert!(
         line.contains("profile=debug"),
         "a test build must self-report profile=debug; got: {line}"
@@ -385,26 +309,10 @@ fn build_info_line_format_is_locked() {
     );
 }
 
-/// THE `pgo=` FIELD IS A FUNCTION OF THE FLAGS RUSTC WAS GIVEN, AND OF NOTHING ELSE.
-///
-/// `build.rs`'s header says the stamp exists so a build-config mismatch is impossible to
-/// MISDIAGNOSE. That makes a stamp field which can be asserted rather than derived a defect by
-/// construction, and `pgo=` was one: it read `BUSBAR_PGO=1 || -Cprofile-use present`, an OR whose
-/// left arm no shipping path sets (`scripts/pgo-build.sh` stopped exporting it precisely so the
-/// stamp would be an INDEPENDENT witness) and which nothing validated — so
-/// `BUSBAR_PGO=1 cargo build --release` produced a binary self-reporting `pgo=true` with no profile
-/// data anywhere near it. CI's own assertions were not fooled, but a hand-built, vendored or
-/// customer-built binary could lie about the one field the stamp exists for.
-///
-/// This walks the derivation itself (`src/build_stamp.rs`, the same file `build.rs` `include!`s)
-/// rather than the baked constant, because the constant is fixed at compile time and a test cannot
-/// rebuild itself under a different environment. Against the pre-fix derivation the environment arm
-/// is what decided the answer; here there is no environment arm to reach.
 #[test]
 fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
     use crate::build_stamp::{flag_value, pgo_from_flags};
 
-    // A real PGO build's flag list, in both shapes cargo delivers `-C` options in.
     assert!(pgo_from_flags(&["-Cprofile-use=/tmp/merged.profdata"]));
     assert!(pgo_from_flags(&["-C", "profile-use=/tmp/merged.profdata"]));
     assert!(pgo_from_flags(&[
@@ -412,8 +320,6 @@ fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
         "-Ctarget-cpu=native"
     ]));
 
-    // A plain release build, and an INSTRUMENTED (profile-generate) build — which is emphatically
-    // not a profile-USING one, and must not stamp itself as optimized.
     assert!(!pgo_from_flags(&[]));
     assert!(!pgo_from_flags(&["-Ctarget-cpu=native", "-Clto=fat"]));
     assert!(
@@ -425,9 +331,6 @@ fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
     ]));
     assert!(!pgo_from_flags(&["--cfg", "profile-use"]));
 
-    // THE REGRESSION ITSELF: no environment value, however spelled, can put PGO into the answer.
-    // `pgo_from_flags` takes only the flag list, so the ONLY way to reintroduce the escape hatch is
-    // to change its signature — and this line stops compiling if anyone does.
     let _: fn(&[&str]) -> bool = pgo_from_flags;
     for asserted in ["1", "true", "yes", "BUSBAR_PGO=1"] {
         assert!(
@@ -436,9 +339,6 @@ fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
         );
     }
 
-    // The sibling fields the same file derives, pinned alongside so a refactor of one cannot
-    // quietly change the others: present -> the value after `=`, absent -> None (the caller
-    // supplies the honest "default" / "(profile-table)" fallback).
     let flags = ["-Cprofile-use=/tmp/m.profdata", "-Ctarget-feature=+lse"];
     assert_eq!(
         flag_value(&flags, "target-feature").as_deref(),
@@ -448,11 +348,6 @@ fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
     assert_eq!(flag_value(&flags, "lto"), None);
 }
 
-/// THE STAMP REPORTS THE VALUE RUSTC USED (the stamp exists so a perf number is never pinned on the
-/// wrong build, `src/build_stamp.rs`): a `-C` option's value is the one its exact name carries, and
-/// when the option is passed twice rustc takes the last, so the stamp does too.
-/// RED before the fix: the first element CONTAINING `<name>=` won, so `-Ctarget-cpu=native
-/// -Ctarget-cpu=x86-64` stamped `native`, and `-Clinker-plugin-lto=<path>` stamped as `lto=<path>`.
 #[test]
 fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
     use crate::build_stamp::flag_value;
@@ -470,7 +365,7 @@ fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
         None,
         "another option whose name ends in the one asked for is not it"
     );
-    // The green twins: both shapes cargo hands a `-C` option in still read.
+
     assert_eq!(
         flag_value(&["-C", "lto=fat"], "lto").as_deref(),
         Some("fat")
@@ -496,45 +391,11 @@ fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// A PLANE-GATED MODULE IS NAMED ONLY FROM CODE UNDER THE SAME GATE
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-// THE BOOT JOURNAL: IT REACHES THE CONFIGURED STORE
-//
-// `node_book()` hard-coded `data_dir: None` and a `NullShipper`, so a deployment that configured a
-// data directory wrote its journal nowhere. The journal carries no money (MONEY-DESIGN §2c): no
-// opening balance is sealed, because the ledger is the store's usage counts, read as they are.
-//
-// The three tests below are one proof in three parts, split by WHAT EACH CAN SEE:
-//
-//   * `the_boot_path_opens_the_configured_directory` drives the REAL path — a real `App` out of the
-//     real `build_app_from_config`, then `root::boot::book`, the exact function `run()` calls. It can
-//     see the directory and the chain, so it proves the data directory is honoured.
-//   * `the_boot_book_ships_its_records_to_the_configured_store` drives `root::boot::compose_book`, the
-//     seam `root::boot::book` calls, over a store whose record slots the TEST holds, so what the
-//     store KEPT is observable: the boot's records, under this node's keys.
-//   * `no_configured_directory_still_opens_nothing_and_writes_nothing` holds the other half of the
-//     discipline: the fix gives a node WITH a directory somewhere to write, and must not make
-//     writing unconditional.
-// ─────────────────────────────────────────────────────────────────────────────────────────────────
-
-/// A scratch directory that removes itself, so a failing assertion never leaves a tree behind and
-/// two runs of the same test never read each other's journal.
-/// `BUSBAR_DATA_DIR` IS PROCESS-GLOBAL, and `cargo test` runs this binary's tests on parallel
-/// threads: two boot-book tests that each set it would resolve one directory and write two chains
-/// into one journal, whose replay then fails verification. Every test that sets it does so through
-/// [`data_dir_env`], which holds this lock until the test ends. Its only callers are the
-/// `linked_axis_body_ingress` boot-book cells, so it is gated with them.
 #[cfg(linked_axis_body_ingress)]
 static DATA_DIR_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Set `BUSBAR_DATA_DIR` to `dir` for the rest of the calling test, serialized against every other
-/// test that sets it. The tuple drops in order: the variable is restored, then the lock released.
 #[cfg(linked_axis_body_ingress)]
 fn data_dir_env(dir: &std::path::Path) -> (EnvVarGuard, std::sync::MutexGuard<'static, ()>) {
-    // A test that panicked while holding the lock still restored the variable on unwind.
     let held = DATA_DIR_ENV
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -566,9 +427,6 @@ impl BookDir {
         BookDir(path)
     }
 
-    /// What is in it now, by name, sorted. The assertion is made of a LISTING rather than of a
-    /// method's return value: "a file appeared" and "a file did not appear" are facts about a
-    /// filesystem, and asking the code under test whether it wrote one is asking the defendant.
     fn entries(&self) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(&self.0)
             .into_iter()
@@ -587,25 +445,12 @@ impl Drop for BookDir {
     }
 }
 
-/// The production boot uses the configured Store even with a legacy data directory supplied.
-/// No journal, identity file, or keyset cache appears there; Bootstrap is the only initial record.
-// A PROVIDER NEEDS A WIRE CODEC. `cfg_with_provider_api_key` configures one provider on the
-// registry's residual-default dialect, and a build that links no protocol (a single-plane build of a
-// plane with no body-ingress codec) has none to name: the fixture refuses, and which test happened to
-// register a dialect first decided the verdict. Gated on the linked axis that carries the codecs, as
-// the root's other provider-configuring cells are.
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
 
-    // ORDER-INDEPENDENCE, not decoration. `cfg_with_provider_api_key` names the registry's
-    // residual-default dialect, and in a test binary the protocol set is installed by whichever
-    // test installs it first — so without this the test passes in a full run and fails run alone.
-    // Every linked protocol declaration goes into the test registry, read off the linked table
-    // the root registers from.
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
@@ -616,15 +461,8 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
         "the fixture directory starts empty, or nothing below is evidence of anything"
     );
 
-    // THE CONFIGURED DIRECTORY. `BUSBAR_DATA_DIR` is the one source `preflight::fleet_data_dir`
-    // resolves today (there is no `data_dir:` config key yet — see that function's own comment), and
-    // it is the SAME accessor the plugin anti-downgrade floor persists under, which is why the boot
-    // book reads it through that function rather than probing for itself.
     let _env = data_dir_env(&dir.0);
 
-    // A REAL APP, off the REAL construction path — `build_app_from_config`, the one boot and config
-    // apply both run — so `app.governance` is the store this deployment actually resolved and
-    // `app.cost` is the resolved cost model the read plan is derived from. Not a stand-in for one.
     let app = busbar_kernel_testkit::app::build_once(
         busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_BOOT_BOOK"),
@@ -633,7 +471,6 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     )
     .expect("the app builds over the default memory store");
 
-    // THE FUNCTION `run()` CALLS. Not a re-implementation of it, not a recording double of it.
     let book = root::boot::book(&app, "test-store").expect("the boot book opens");
 
     let (on_disk, first_record) = {
@@ -660,16 +497,9 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     );
 }
 
-/// **A STORE THAT DOES NOT OFFER THE RECORD SLOTS REFUSES THE BOOT**, naming the store and the slots
-/// (ARCHITECT 2026-10-07 H3 open-question ruling): such a store cannot keep the node's journal, and
-/// a boot over it would serve while keeping nothing. The governance state here holds the store's
-/// 1.5.5 op set and no v3 calls — the store as a boot sees one that offers no record slots.
-///
-/// RED before the fix: the boot opened a book whose journal the adapter's shim "kept".
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
     for decls in crate::LINKED.protocols {
         busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
@@ -700,13 +530,6 @@ fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
     );
 }
 
-/// THE STORE HALF, at the only vantage point it is visible from: `root::boot::compose_book`, the seam
-/// `root::boot::book` calls, handed a store whose record slots the TEST holds.
-///
-/// What the store KEPT is read off the store: the boot's records under the journal schema, put
-/// through its `record_put` slot by the journal's lane, keyed by this node's identity and the
-/// record's sequence. The adapter's old shipper acknowledged a batch and kept a count, so this
-/// reading was nothing whatever it said (ARCHITECT 2026-10-07 H3 ruling).
 #[test]
 fn the_boot_book_ships_its_records_to_the_configured_store() {
     use busbar_kernel_wal::RecordClass;
@@ -729,15 +552,13 @@ fn the_boot_book_ships_its_records_to_the_configured_store() {
         .replay()
         .expect("the journal reads back")
         .expect("and verifies");
-    // The first boot with a data directory seals the deployment keyset's `Bootstrap` (spec #82(a);
-    // BUSBAR-1.6.0.md THE DESIGN, §2), and no money record.
+
     assert_eq!(
         replayed.iter().map(|r| r.class).collect::<Vec<_>>(),
         vec![RecordClass::Bootstrap],
         "exactly the keyset's Bootstrap is on the chain"
     );
 
-    // THE ASSERTION THIS TEST EXISTS FOR. The records reached the CONFIGURED store's record slots.
     let lane = durability
         .lane()
         .expect("a book over the store holds its lane")
@@ -758,21 +579,12 @@ fn the_boot_book_ships_its_records_to_the_configured_store() {
     );
 }
 
-/// The journal's lane to `slots`, as `root::boot::book` opens one over the configured store.
 fn journal_lane(slots: &crate::root::store_double::RecordSlots) -> root::durability::JournalLane {
     root::durability::JournalLane::start(slots.calls(), "test-store").expect("the lane starts")
 }
 
-/// THE OTHER HALF OF THE DISCIPLINE, and it is not a footnote: constructing an on-disk journal IS
-/// the decision to write to a disk, so a node whose configuration names NO data directory must
-/// still open nothing and leave nothing behind. The fix gives a node WITH a directory somewhere to
-/// write; it must not make writing unconditional.
-///
-/// The shipping still happens — that is the store's business, not the disk's — so this also pins
-/// that the two decisions are independent.
 #[test]
 fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
-    // A directory the node was never told about. Nothing may appear in it.
     let unnamed = BookDir::new("unnamed");
     let slots = crate::root::store_double::RecordSlots::new();
     let token = root::kernel::new_kernel().durability_token();
@@ -803,8 +615,6 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     );
 }
 
-/// The production compose seam uses the Store keyset on every restart, with a legacy directory
-/// supplied. A mismatched Store keyset refuses even if a local legacy cache has the right key.
 #[test]
 fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
     let token = root::kernel::new_kernel().durability_token();
@@ -874,20 +684,9 @@ fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
     assert_eq!(std::fs::read(&legacy).unwrap(), seed.as_bytes());
 }
 
-/// STAGE 4 BOOK IS BOOT-ONLY — ONE SEAL AFTER TWO RELOADS (`BUSBAR-1.6.0.md` §3: "Reload runs
-/// stages 1–3 and 5, never Book: the store carries over, and a changed `store:` applies on restart";
-/// its *Proven by* names "RED arms for one seal after two reloads"). Boot opens the one book over
-/// the store its generation resolved; two reloads then rebuild the generation the way
-/// `config/reload` and `config/apply` do, each over the one before it.
-///
-/// Two facts, read off the things themselves: (a) the third generation still holds the SAME
-/// store the boot opened — a reload that reopened it would hand the book's shipper a store no
-/// generation serves; (b) the book's chain carries exactly ONE sealed opening. RED arm: a rebuild
-/// that drops the prior generation's store (`build_app_from_config` ignoring `prior`) fails (a).
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn one_seal_after_two_reloads() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel_testkit::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
 
@@ -912,7 +711,6 @@ fn one_seal_after_two_reloads() {
     let first = busbar_kernel_testkit::app::build_once(cfg(), Some(&boot)).expect("reload 1");
     let second = busbar_kernel_testkit::app::build_once(cfg(), Some(&first)).expect("reload 2");
 
-    // (a) THE STORE CARRIES OVER.
     assert!(
         Arc::ptr_eq(
             second.governance.as_ref().expect("a reload keeps a store"),
@@ -922,7 +720,6 @@ fn one_seal_after_two_reloads() {
          the boot opened"
     );
 
-    // (b) ONE BOOTSTRAP SEAL, naming the key the boot bound.
     let durability = book
         .durability
         .lock()
@@ -950,17 +747,11 @@ fn one_seal_after_two_reloads() {
     );
 }
 
-/// THE IDLE PURGE NEVER WRITES A POSITIVE DECAY TO AN ARENA THAT RAN AT 0. The huge arena (where an
-/// oversize allocation lands) runs at decay 0, and a positive decay written to it makes jemalloc start
-/// a background thread for it — `not_reached()` on a build without background threads (a SIGTRAP on
-/// macOS debug, undefined behaviour in a static-musl release). Restoring the global default to every
-/// arena did exactly that on the first idle window after any oversize allocation, killing an idle
-/// process that had staged a large plugin library or served a large body.
 #[cfg(not(target_env = "msvc"))]
 #[test]
 fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
     use tikv_jemalloc_ctl::{Access, AsName};
-    // An oversize allocation (well past jemalloc's 8 MiB default threshold) brings the huge arena up.
+
     let big = vec![1u8; 64 << 20];
     assert_eq!(big[big.len() - 1], 1);
     drop(big);
@@ -993,10 +784,6 @@ fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
     }
 }
 
-/// THE LINE-SERVE FLAG IS THE PLANE'S (audit busbar-src H1): the root serves a plane on the
-/// process's own lines when a flag a linked plane declares is passed, read off the plane's `Flags:`
-/// rows; it names no flag of its own. A planted plane's flag asks for it, and the same word no plane
-/// declares does not.
 #[test]
 fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
     let planted: &[crate::root::linked::CliHelpRow] = &[(

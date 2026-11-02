@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! NO PLUGIN CODE RUNS UNDER A HOST LOCK (`BUSBAR-1.6.0.md` §11, M1 DISPATCH RULINGS), on a line:
-//! the holder that drives the connection has it out of the line, so a carrier crossing that hangs
-//! holds no lock, and a close or another holder's poll beside it never waits on it. The close is the
-//! owner's, made as it brings the connection back.
 
 use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
 use std::task::{Context, Waker};
@@ -27,12 +24,11 @@ mod retirement_tests;
 mod cancelled_opening_tests;
 
 /// One carrier crossing as the stub saw it: the op, the thread it ran on, and whether the line's
-/// lock was held while it ran.
+
 type Crossing = (&'static str, ThreadId, bool);
 
 /// THE TEST CARRIER, with a read that HANGS once armed: it says it is inside the crossing, then
-/// does not come back until the test lets it. Every crossing records whether the line's lock was
-/// held as it ran.
+
 struct Hanging {
     inner: Arc<dyn FramerDoor>,
     line: OnceLock<Weak<Line>>,
@@ -168,11 +164,7 @@ fn abandoned_pooled_openings_wipe_query_storage_on_rejection_close_and_return() 
 }
 
 /// RED before the connection had one owner: the line's lock was held across every crossing of a
-/// drive, so a close beside a hung carrier read (a reactor worker dropping the connection) waited
-/// on the plugin for as long as it hung. Now the hung read holds no lock; another holder's poll
-/// answers `Pending` and the close returns at once, both while the read still hangs; and the owner
-/// closes the connection on its own thread as it brings it back (what pended cancelled, then
-/// `shut`), the far end seeing the close.
+
 #[test]
 fn a_hung_carrier_crossing_holds_no_lock_and_a_close_beside_it_never_waits() {
     let rt = worker();
@@ -204,7 +196,6 @@ fn a_hung_carrier_crossing_holds_no_lock_and_a_close_beside_it_never_waits() {
             .await
             .expect("the dial lands");
 
-        // A HOLDER READS, and the carrier's read hangs with the connection in its hands.
         let (entered_tx, entered) = mpsc::channel();
         let (release, held_back) = mpsc::channel();
         *door.gate.lock().unwrap() = Some((entered_tx, held_back));
@@ -218,7 +209,6 @@ fn a_hung_carrier_crossing_holds_no_lock_and_a_close_beside_it_never_waits() {
             .recv_timeout(Duration::from_secs(10))
             .expect("the holder's read reaches the carrier");
 
-        // BESIDE IT, on another thread: another holder's poll, then the close, then a poll again.
         let (done_tx, done) = mpsc::channel();
         let closing = Arc::clone(&line);
         let closer = thread::spawn(move || {

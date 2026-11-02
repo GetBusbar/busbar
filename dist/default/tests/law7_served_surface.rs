@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LAW 7, END TO END — a 1.5.5 config served by the shipped binary sees 1.5.5's surface, with every
-//! plane compiled in (items 39/40/45). docs/design/BUSBAR-1.6.0.md Law 7: "Core loads a plugin
-//! **iff** its configuration section is present"; Part 0: the new planes are "purely additive and
-//! off by default". Part 2 #17 keeps every plane in `default`, so this is config gating, not removal.
-//!
-//! Before the gate, a 1.5.5 config (with its ordinary `public_url:`) booted with eleven admin paths
-//! 1.5.5 never had (`/tools`, `/tools/{name}`, `/tools/{name}/settings`, the tool plane's three
-//! trust verbs, the same CRUD for `/agents` and its two verbs), `DELETE /overlay/{section}` listing `tools` and
-//! `agents`, and the session plane's realtime doors mounted and audience-checked. The control
-//! boots the SAME binary with each plane section present and requires every one of those back.
 #![cfg(unix)]
 #![cfg(linked_every_plane_door)]
 
@@ -23,7 +13,6 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "law7-served-surface-admin";
 
-/// The eleven plane-owned admin paths (method, path under `/api/v1/admin`).
 const PLANE_ADMIN_PATHS: &[(&str, &str)] = &[
     ("GET", "/tools"),
     ("GET", "/tools/x"),
@@ -38,11 +27,8 @@ const PLANE_ADMIN_PATHS: &[(&str, &str)] = &[
     ("POST", "/agents/x/approve"),
 ];
 
-/// The plane sections a configured deployment adds (plus `public_url`, which a 1.5.5 config may
-/// already carry and which on its own must configure nothing).
 const PLANE_SECTIONS: &str = include_str!("fixtures/law7_plane_sections.yaml");
 
-/// The plane doors, as DATA (`tests/fixtures/law7_plane_doors.txt`): `(path, probed configured)`.
 fn plane_doors() -> Vec<(&'static str, bool)> {
     let rows: Vec<(&'static str, bool)> = include_str!("fixtures/law7_plane_doors.txt")
         .lines()
@@ -80,8 +66,6 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// Boot the shipped binary on a 1.5.5-shaped config (one provider, one model, keys, an admin token,
-/// `public_url:`), with every plane section appended when `with_planes`.
 fn boot(tag: &str, with_planes: bool) -> Booted {
     let dir = std::env::temp_dir().join(format!("busbar-law7-{tag}-{}-{}", std::process::id(), {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -211,15 +195,12 @@ fn read_to_string(path: &Path) -> String {
     s
 }
 
-/// The shape a mounted plane door answers an unauthenticated caller with (RFC 6750), as opposed to
-/// the catch-all plane's protocol-native envelope.
 fn is_plane_door(body: &str) -> bool {
     body.contains("error_description")
 }
 
 #[test]
 fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_own() {
-    // ── A 1.5.5 CONFIG: every plane-owned admin path answers exactly what an unmounted path does.
     let b = boot("155", false);
     let unmounted = admin(&b, "GET", "/no-such-path");
     assert_eq!(
@@ -253,7 +234,6 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
     }
     drop(b);
 
-    // ── THE CONTROL: the same binary with every plane section present serves every plane again.
     let b = boot("planes", true);
     let unmounted = admin(&b, "GET", "/no-such-path");
     for (method, path) in PLANE_ADMIN_PATHS {
@@ -282,13 +262,6 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
     }
 }
 
-/// THE TWO TRUST VERBS ARE BEHIND THE ADMIN GUARD. `connect` and `approve` are the routes that move
-/// a registration INTO SERVICE, so a regression that mounted them without the credential check
-/// would let any unauthenticated caller approve an agent. With the plane configured, a caller
-/// holding no admin credential, or the wrong one, is refused `401` on both; the same call with the
-/// right one reaches the verb (the agent `x` is unknown, which is not a `401`); and a refused call
-/// is refused BEFORE the verb looks anything up, so it answers what no lookup could.
-/// Ported from the retired agent engine's adminverbs_tests.rs::the_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one.
 #[test]
 fn the_agent_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one() {
     let b = boot("planes", true);
@@ -313,8 +286,6 @@ fn the_agent_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one
     }
 }
 
-/// Boot on the oracle's BOOT-181 mutation (listener TLS material that does not parse) and return the
-/// whole of what the refused boot printed.
 fn boot_181_output(extra: &str) -> String {
     let dir =
         std::env::temp_dir().join(format!("busbar-law7-boot181-{}-{}", std::process::id(), {
@@ -373,12 +344,6 @@ models:
     )
 }
 
-/// Oracle cell `boot.refusal|BOOT-181|boot`: on the default (all-planes) build a 1.5.5 config's
-/// boot output carries nothing from a plane it did not configure. The line this once caught — the
-/// root's listener-slot provisioning WARN — is 1.6.0-only text (1.5.5 refuses that plane's section key
-/// outright) and left with that provisioning; the arm stays as the guard against its return.
-/// Control: a configured plane is observable — each plane door answers as that plane's door once
-/// every plane section is configured, and does not on a 1.5.5 config.
 #[test]
 fn a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane() {
     const PLANE_LINE: &str = "listener slots were not provisioned";

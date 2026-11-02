@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A live stream asks for its policy through the existing operation extension blobs.
-//! Policy bytes contain no pointers or JSON and can be cached once per generation.
-//! These owned Rust values never change a C frame or slot table.
 
 use super::check::{check_route_view, MAX_LINES};
 use super::route::{RouteView, FIELD_PRESENT, FIELD_VALUE_PREFIX};
@@ -12,14 +10,14 @@ use crate::abi::host::service::LINE_NONE;
 use std::collections::HashSet;
 
 /// A framer reply asks the host to open this stream before route matching or auth.
-/// Its value is [`Open`]'s versioned, pointer-free bytes.
+
 pub const EXT_GUEST_OPEN: &str = "guest.open";
 /// The following call lends the selected generation's policy to the requesting operation.
 pub const EXT_GUEST_POLICY: &str = "guest.policy";
 const VERSION: u32 = 1;
 
 /// A reply confirming that the stream may use a previously decoded policy identity.
-/// The framer must possess that exact listener/generation before accepting this reply.
+
 pub const EXT_GUEST_CURRENT: &str = "guest.current";
 
 /// A stream opening, with the policy generation already cached by its framer.
@@ -43,9 +41,7 @@ impl Open {
     }
 
     /// Decode an entire opening value.
-    ///
-    /// # Errors
-    /// Unknown versions, truncation, or trailing bytes.
+
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let mut reader = Reader(bytes);
         if reader.u32()? != VERSION {
@@ -73,9 +69,7 @@ pub struct Identity {
 
 impl Identity {
     /// Encode an acknowledgement without allocation.
-    ///
-    /// # Errors
-    /// An absent listener or generation.
+
     pub fn encode(self) -> Result<[u8; size_of::<u32>() + 2 * size_of::<u64>()], &'static str> {
         if self.listener == 0 || self.generation == 0 {
             return Err("the policy has no listener or generation");
@@ -88,9 +82,7 @@ impl Identity {
     }
 
     /// Decode a whole acknowledgement; the caller still checks it against its cached policy.
-    ///
-    /// # Errors
-    /// An invalid identity, unknown version, truncation, or trailing bytes.
+
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let open = Open::decode(bytes)?;
         let identity = Self {
@@ -186,9 +178,7 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), &'static str> {
 }
 
 /// Encode an extension value once for this listener and generation.
-///
-/// # Errors
-/// An invalid line, zero generation, or an unrepresentable field length.
+
 pub fn encode(
     listener: u64,
     generation: u64,
@@ -254,9 +244,7 @@ impl<'a> Reader<'a> {
 }
 
 /// Decode a whole policy value. Lengths are checked against the actual input before allocation.
-///
-/// # Errors
-/// Unknown versions, truncated values, invalid routes or handles, or trailing bytes.
+
 pub fn decode(bytes: &[u8]) -> Result<Policy, &'static str> {
     let mut reader = Reader(bytes);
     if reader.u32()? != VERSION {
@@ -286,7 +274,7 @@ pub fn decode(bytes: &[u8]) -> Result<Policy, &'static str> {
         let path = reader.text()?;
         let count =
             usize::try_from(reader.u32()?).map_err(|_| "the predicate count does not fit")?;
-        // Each predicate needs an operation and two length words, even when both strings are empty.
+
         if count > reader.0.len() / (3 * size_of::<u32>()) {
             return Err("the policy predicates are truncated");
         }

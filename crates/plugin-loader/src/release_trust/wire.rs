@@ -1,49 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BYTE ENCODING of the release-trust documents, and nothing else: how a keys document and a
-//! release manifest are written, which bytes a signature covers, how a key is named and how a
-//! signature is spelled. Every other part of [`super`] works on the decoded shapes ([`KeysDoc`],
-//! [`TargetsDoc`], [`ReleaseKey`]) and never sees a byte of JSON.
-//!
-//! PROVISIONAL (`spec_version` [`SPEC_VERSION`]). ModernCI's release-signing design will publish a
-//! "v1 formats" section (canonicalization, algorithm tags, the offline encoding of PIV and WebAuthn
-//! signatures); this module is the one place that changes to match it. The encoding below is
-//! modelled on TUF (`docs/design/release-trust.md`):
-//!
-//! * an ENVELOPE `{"signatures":[{"keyid":<hex>,"sig":<hex>}],"signed":{...}}`;
-//! * the signed bytes are the CANONICAL JSON of `signed`: object keys sorted bytewise, no
-//!   whitespace, non-negative integers only (no floats), strings of printable ASCII only, escaping
-//!   only `"` and `\`. For that subset this is byte-identical to OLPC canonical JSON (TUF's) and
-//!   to Python's `json.dumps(v, sort_keys=True, separators=(",", ":"))`;
-//! * a KEY OBJECT is TUF's `{"keytype","scheme","keyval":{"public"}}`: `ed25519`/`ed25519` with the
-//!   32-byte key in hex, or `ecdsa`/`ecdsa-sha2-nistp256` with the 65-byte uncompressed SEC1 point
-//!   in hex (TUF writes PEM there; hex keeps the verifier free of a PEM parser);
-//! * a KEY ID is the lowercase hex SHA-256 of the key object's canonical JSON (TUF's rule);
-//! * a SIGNATURE is hex: ed25519's 64 raw bytes, or ECDSA P-256's ASN.1 DER `SEQUENCE { r, s }`
-//!   over SHA-256 of the signed bytes (what a YubiKey PIV slot and Cloud KMS both emit; TUF's
-//!   `ecdsa-sha2-nistp256` signature is DER too). DER, not fixed `r || s`, so neither signer's
-//!   output is re-encoded on its way into the envelope.
-
 use super::{KeysDoc, ReleaseKey, Role, Signed, Target, TargetsDoc};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The encoding's version, written in every document and required on read.
 pub const SPEC_VERSION: &str = "0.1-provisional";
-/// The keys document's `_type`.
+
 pub const KEYS_TYPE: &str = "busbar-keys";
-/// The release manifest's `_type` (TUF's targets role).
+
 pub const TARGETS_TYPE: &str = "targets";
 
-// ── canonical JSON ──────────────────────────────────────────────────────────────────────────────
-
-/// The canonical bytes of `v` ([module docs](self)).
-///
-/// # Errors
-///
-/// A float or negative number, or a string outside printable ASCII: the subset has one spelling
-/// per value, and anything outside it is refused rather than guessed at.
 pub fn canonical(v: &Value) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     write_canonical(v, &mut out)?;
@@ -103,9 +70,6 @@ fn write_string(s: &str, out: &mut Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
-// ── keys ────────────────────────────────────────────────────────────────────────────────────────
-
-/// A key's TUF key object.
 pub fn key_object(key: &ReleaseKey) -> Value {
     let (keytype, scheme, public) = match key {
         ReleaseKey::Ed25519(k) => ("ed25519", "ed25519", hex::encode(k.as_bytes())),
@@ -114,17 +78,11 @@ pub fn key_object(key: &ReleaseKey) -> Value {
     serde_json::json!({"keytype": keytype, "scheme": scheme, "keyval": {"public": public}})
 }
 
-/// A key's id: hex SHA-256 of its key object's canonical bytes.
 pub fn key_id(key: &ReleaseKey) -> String {
     let bytes = canonical(&key_object(key)).expect("a key object is in the canonical subset");
     crate::sign::sha256_hex(&bytes)
 }
 
-/// Read a TUF key object.
-///
-/// # Errors
-///
-/// An unknown keytype/scheme pair or a public key of the wrong shape.
 pub fn read_key_object(v: &Value) -> Result<ReleaseKey, String> {
     let obj = v.as_object().ok_or("a key is not an object")?;
     only_fields(obj, &["keytype", "scheme", "keyval"], "key")?;
@@ -146,7 +104,6 @@ pub fn read_key_object(v: &Value) -> Result<ReleaseKey, String> {
     }
 }
 
-/// Whether `sig` (this encoding's spelling, decoded from hex) is `key`'s signature over `msg`.
 pub fn verify(key: &ReleaseKey, msg: &[u8], sig: &[u8]) -> bool {
     match key {
         ReleaseKey::Ed25519(k) => {
@@ -165,15 +122,10 @@ pub fn verify(key: &ReleaseKey, msg: &[u8], sig: &[u8]) -> bool {
     }
 }
 
-// ── the envelope ────────────────────────────────────────────────────────────────────────────────
-
-/// Each `(keyid, signature)` of an envelope.
 type KeyedSigs = Vec<(String, Vec<u8>)>;
 
-/// A seal's two documents: the keys document's bytes, then the release manifest's.
 pub type SealBytes = (Vec<u8>, Vec<u8>);
 
-/// An envelope over `signed`: the signed bytes and each `(keyid, signature)`.
 fn read_envelope(bytes: &[u8], what: &str) -> Result<(Value, Vec<u8>, KeyedSigs), String> {
     let v: Value =
         serde_json::from_slice(bytes).map_err(|e| format!("the {what} is not JSON: {e}"))?;
@@ -206,11 +158,6 @@ fn read_envelope(bytes: &[u8], what: &str) -> Result<(Value, Vec<u8>, KeyedSigs)
     Ok((signed, signed_bytes, sigs))
 }
 
-/// Write an envelope: `signed` and its signatures. For the release tooling and tests.
-///
-/// # Errors
-///
-/// `signed` is outside the canonical subset.
 pub fn write_envelope(signed: &Value, sigs: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
     canonical(signed)?;
     let signatures: Vec<Value> = sigs
@@ -219,8 +166,6 @@ pub fn write_envelope(signed: &Value, sigs: &[(String, Vec<u8>)]) -> Result<Vec<
         .collect();
     canonical(&serde_json::json!({"signed": signed, "signatures": signatures}))
 }
-
-// ── the two documents ───────────────────────────────────────────────────────────────────────────
 
 fn str_field<'v>(obj: &'v serde_json::Map<String, Value>, k: &str) -> Result<&'v str, String> {
     obj.get(k)
@@ -261,11 +206,6 @@ fn header(obj: &serde_json::Map<String, Value>, ty: &str) -> Result<(u64, u64), 
     ))
 }
 
-/// Read a keys document envelope.
-///
-/// # Errors
-///
-/// Anything that is not one whole, well-formed keys document.
 pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
     let (signed, signed_bytes, signatures) = read_envelope(bytes, "keys document")?;
     let obj = signed.as_object().ok_or("`signed` is not an object")?;
@@ -355,11 +295,6 @@ pub fn read_keys(bytes: &[u8]) -> Result<Signed<KeysDoc>, String> {
     })
 }
 
-/// Read a release manifest (targets) envelope.
-///
-/// # Errors
-///
-/// Anything that is not one whole, well-formed release manifest.
 pub fn read_targets(bytes: &[u8]) -> Result<Signed<TargetsDoc>, String> {
     let (signed, signed_bytes, signatures) = read_envelope(bytes, "release manifest")?;
     let obj = signed.as_object().ok_or("`signed` is not an object")?;
@@ -437,7 +372,6 @@ pub fn read_targets(bytes: &[u8]) -> Result<Signed<TargetsDoc>, String> {
     })
 }
 
-/// The `signed` value of a keys document. For the release tooling and tests.
 pub fn keys_signed(doc: &KeysDoc) -> Value {
     let keys: serde_json::Map<String, Value> = doc
         .keys
@@ -465,7 +399,6 @@ pub fn keys_signed(doc: &KeysDoc) -> Value {
     })
 }
 
-/// The `signed` value of a release manifest. For the release tooling and tests.
 pub fn targets_signed(doc: &TargetsDoc) -> Value {
     let targets: serde_json::Map<String, Value> = doc
         .targets
@@ -491,13 +424,6 @@ pub fn targets_signed(doc: &TargetsDoc) -> Value {
     })
 }
 
-// ── time ────────────────────────────────────────────────────────────────────────────────────────
-
-/// `YYYY-MM-DDTHH:MM:SSZ` (UTC, TUF's spelling) as Unix seconds.
-///
-/// # Errors
-///
-/// Any other spelling, or an impossible date.
 pub fn parse_time(s: &str) -> Result<u64, String> {
     let bad = || format!("time '{s}' is not YYYY-MM-DDTHH:MM:SSZ");
     let b = s.as_bytes();
@@ -540,7 +466,6 @@ pub fn parse_time(s: &str) -> Result<u64, String> {
     Ok(days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + se)
 }
 
-/// Unix seconds as `YYYY-MM-DDTHH:MM:SSZ`.
 pub fn format_time(t: u64) -> String {
     let (days, rem) = (t / 86_400, t % 86_400);
     let (y, m, d) = civil_from_days(days);
@@ -594,19 +519,8 @@ fn civil_from_days(mut days: u64) -> (u64, u64, u64) {
     (y, m, days + 1)
 }
 
-// ── the seal a plugin manifest carries ──────────────────────────────────────────────────────────
-
-/// The prefix that marks a manifest `signature` as a RELEASE SEAL rather than a per-plugin ed25519
-/// signature (128 hex digits, which never start with it).
 pub const SEAL_PREFIX: &str = "seal:";
 
-/// The manifest `signature` spelling of a seal: [`SEAL_PREFIX`] then the canonical JSON
-/// `{"keys":<keys envelope>,"targets":<release manifest envelope>}`. The `signature` field is outside
-/// the plugin's canonical manifest bytes, so sealing never changes what the release lists.
-///
-/// # Errors
-///
-/// Either document is not a canonical-subset envelope.
 pub fn write_seal(keys: &[u8], targets: &[u8]) -> Result<String, String> {
     let keys: Value = serde_json::from_slice(keys).map_err(|e| format!("keys document: {e}"))?;
     let targets: Value =
@@ -618,8 +532,6 @@ pub fn write_seal(keys: &[u8], targets: &[u8]) -> Result<String, String> {
     ))
 }
 
-/// The seal in a manifest `signature`: `None` when it is not a seal, else its two documents'
-/// bytes.
 pub fn read_seal(signature: &str) -> Option<Result<SealBytes, String>> {
     let body = signature.trim().strip_prefix(SEAL_PREFIX)?;
     Some((|| {
@@ -635,8 +547,6 @@ pub fn read_seal(signature: &str) -> Option<Result<SealBytes, String>> {
     })())
 }
 
-/// The version of the keys document a seal carries, unverified (for raising the accepted floor
-/// after the chain was verified).
 pub fn sealed_keys_version(signature: &str) -> Option<u64> {
     let (keys, _) = read_seal(signature)?.ok()?;
     let v: Value = serde_json::from_slice(&keys).ok()?;

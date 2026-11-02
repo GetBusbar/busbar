@@ -1,16 +1,3 @@
-//! THE CLASS-LEVEL HARNESS for the config-mutation transaction guard.
-//!
-//! These are not per-site regression tests. Each asserts a property of the CHOKE POINT that, once
-//! true, holds for every mutation funnelling through it — including ones written later:
-//!
-//! - no dangling-group bind — a bind's existence check and its store write share one lock hold;
-//! - no stale snapshot — a body reads the config the lock froze, never one captured before it;
-//! - no blocking under the async lock — a slow store cannot stall the reactor, asserted by a
-//!   liveness probe on a SINGLE-worker runtime (the compile fence is `cargo xtask txn-fence`);
-//! - install/remove/reload/rollback share ONE mutation domain, so no plugin write can land
-//!   inside another plugin op's validate→rebuild window;
-//! - the swap lost-update invariant, modelled under loom in `tests/txn_loom.rs`.
-
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,18 +13,10 @@ use busbar_kernel::governance::GovState;
 use busbar_kernel::state::AppHandle;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-// ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
-
-/// A `Store` whose `list_keys()` BLOCKS for `delay`, standing in for a slow disk / remote DB behind
-/// the store-plugin boundary. Everything else delegates to the in-memory store.
-///
-/// `list_keys` is the exact call the group-delete bound-key guard and the mint's anti-sprawl cap
-/// make, so this double turns "does a store round-trip stall the reactor?" into an observable,
-/// deterministic question.
 struct SlowStore {
     inner: MemoryStore,
     delay: Duration,
-    /// How many times the blocking read was entered — proves the test really exercised it.
+
     reads: AtomicU64,
 }
 
@@ -120,7 +99,6 @@ impl busbar_contract::records::RecordStore for SlowStore {
     }
 }
 
-/// Governance with a deterministic token signer, so `POST /keys` actually mints.
 fn gov(store: Arc<dyn busbar_kernel::governance::RecordStore>) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
@@ -137,8 +115,6 @@ fn gov(store: Arc<dyn busbar_kernel::governance::RecordStore>) -> Arc<GovState> 
     )
 }
 
-/// A groups tree with RUNTIME (non-base) groups, so the write paths (delete, auto-provision,
-/// rebind) are not short-circuited by the base-config shadow guard.
 fn tree(names: &[&str]) -> std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> {
     names
         .iter()
@@ -154,7 +130,6 @@ fn anon() -> axum::Extension<busbar_kernel::auth::AuthPrincipal> {
     axum::Extension(busbar_kernel::auth::AuthPrincipal(None))
 }
 
-/// Mint one key bound to `group` through the REAL `POST /keys` handler.
 async fn mint(handle: &Arc<AppHandle>, name: &str, group: Option<&str>) -> StatusCode {
     let body = match group {
         Some(g) => json!({ "name": name, "group": g }),
@@ -182,9 +157,6 @@ async fn delete_team(handle: Arc<AppHandle>) -> StatusCode {
     .status()
 }
 
-// ── no blocking under the async lock (the executor-not-stalled assertion) ───────────────────
-
-/// The liveness probe: tick as fast as the executor allows, recording the worst gap.
 fn spawn_liveness_probe() -> (
     Arc<AtomicBool>,
     Arc<AtomicU64>,
@@ -213,19 +185,6 @@ fn spawn_liveness_probe() -> (
     (stop, worst, probe)
 }
 
-/// THE SHARPEST TEST. A store whose `list_keys()` blocks for 400ms is installed, then
-/// `DELETE /groups/team` — which MUST count bound keys through exactly that call — runs while a
-/// liveness probe repeatedly `yield_now().await`s and timestamps each tick.
-///
-/// The runtime has ONE worker thread, so a synchronous store call made on the async side genuinely
-/// wedges the executor and the probe's tick gap jumps to the full store latency. `spawn_blocking`
-/// has its own separate thread pool, so a read deferred through `txn.read_store` leaves the reactor
-/// scheduling and the gap stays in the noise.
-///
-/// A `build_without_group` that held a `&GovState` and called `all_keys()` inline under the async
-/// mutation lock would stall the probe for the whole read. The builder instead has no store handle
-/// at all (the count is an ARGUMENT), so the read can only happen inside the deferred closure, on a
-/// blocking thread.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_store_read_does_not_stall_the_executor() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -238,17 +197,11 @@ async fn slow_store_read_does_not_stall_the_executor() {
         .build();
     let handle = handle_for(app);
 
-    // The liveness probe: tick as fast as the executor allows, recording the worst gap.
     let (stop, worst, probe) = spawn_liveness_probe();
-    // Let the probe establish a baseline before the mutation starts.
+
     tokio::time::sleep(Duration::from_millis(20)).await;
     worst.store(0, Ordering::SeqCst);
 
-    // SPAWNED, not awaited inline: `#[tokio::test]` drives the test body with `block_on` on the
-    // MAIN thread, so an inline await would run the handler off the worker pool and a blocking call
-    // inside it could not stall the single worker the probe lives on. Spawning puts the handler and
-    // the probe on the SAME one worker — which is exactly the condition that makes a synchronous
-    // store call on the async side observable.
     let status = tokio::spawn(delete_team(handle.clone()))
         .await
         .expect("delete joins");
@@ -275,17 +228,6 @@ async fn slow_store_read_does_not_stall_the_executor() {
     );
 }
 
-// ── no stale snapshot: the body reads the config the lock froze ────────────────────────────
-
-/// A config change that COMMITS BEFORE this mint acquires the lock must be the config the mint
-/// enforces. Deterministic by construction rather than by racing: transaction A takes the lock and
-/// holds it (its blocking step sleeps) while lowering `max_keys_per_principal` from 5 to 1; the mint
-/// is fired while A still holds the lock, so it necessarily queues behind A and its post-lock
-/// snapshot is A's result.
-///
-/// With a pre-lock read the mint's snapshot would be captured by the extractor before A committed,
-/// so it would enforce the OLD cap of 5 and admit a second key. Under the txn, `txn.app()` is
-/// the post-lock snapshot and there is no older one in scope, so the mint sees cap 1 and 409s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cap_is_read_from_the_post_lock_snapshot() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -299,20 +241,17 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
         .max_keys_per_principal = 5;
     let handle = handle_for(app);
 
-    // One key already bound to `team`: a cap of 1 is already reached, a cap of 5 is not.
     assert_eq!(
         mint(&handle, "first", Some("team")).await,
         StatusCode::CREATED
     );
 
-    // A: hold the section open, then lower the cap to 1.
     let lowering = {
         let handle = handle.clone();
         tokio::spawn(async move {
             config_transaction::<_, _, AdminError>(&handle, |txn| {
                 let current = txn.app().clone();
                 Ok(txn.read_store(move || {
-                    // Hold the section long enough for the mint below to queue behind it.
                     std::thread::sleep(Duration::from_millis(300));
                     let mut next = (*current).clone();
                     next.config_version = current.config_version.wrapping_add(1);
@@ -324,8 +263,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
             .await
         })
     };
-    // Give A time to acquire the lock, then fire the mint: it blocks on the lock and therefore
-    // observes A's committed snapshot.
+
     tokio::time::sleep(Duration::from_millis(80)).await;
     let status = mint(&handle, "second", Some("team")).await;
     lowering.await.expect("join").expect("cap change commits");
@@ -344,21 +282,10 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
     );
 }
 
-// ── no dangling-group bind ─────────────────────────────────────────────────────────────────
-
-/// Mints binding `team` run concurrently with `DELETE /groups/team`. Whatever the interleaving, the
-/// TERMINAL store state must hold no key bound to a group that does not exist: either a bind lands
-/// first (and the delete's bound-key guard then 409s) or the delete lands first (and the bind fails
-/// closed). Both orders are legal; a durable key pointing at a deleted group is not — it would fail
-/// every request on that key CLOSED at admission.
-///
-/// This is the class property, not a per-site check: the existence test and the store write are the
-/// same `config_transaction` section for EVERY bind path, so a bind path added later inherits it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_mints_never_bind_a_deleted_group() {
     busbar_kernel_testkit::test_support::metrics::init();
-    // A separate positive fixture proves the same group bind can commit and be read back. It
-    // must not seed the race fixture: an existing bound key would make deletion-first impossible.
+
     {
         let g = gov(Arc::new(MemoryStore::new()));
         let app = crate::new_test_app()
@@ -383,9 +310,6 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
             .build();
         let handle = handle_for(app);
 
-        // The DELETE is launched in the MIDDLE of the mint fan-out, so it lands in the lock queue
-        // between mints that have already loaded a snapshot and mints that have not. That is exactly
-        // the window a pre-lock existence read would bind through.
         let mut minting = Vec::new();
         let mut deleting = None;
         for i in 0..8 {
@@ -440,8 +364,6 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
     }
 }
 
-/// The same property for the REBIND verb (`PATCH /keys/{id}` with `group`) — a second bind path into
-/// the same class, closed for the same structural reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_rebinds_never_bind_a_deleted_group() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -503,17 +425,6 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
     }
 }
 
-// ── one plugin mutation domain: install cannot interleave a validate→rebuild ───────────────
-
-/// `install_plugin` used to take NO lock at all, so a tarball write could land between a rollback's
-/// `resolve_plugin_rollback` (validate) and its `rebuild_app_from_disk` (read back) — the rollback
-/// would load bytes nothing validated. Per-plugin locks cannot close that: the rebuild reads the
-/// WHOLE plugin directory to build one `App`.
-///
-/// The fix is membership in one global mutation domain, and membership is what this asserts: while a
-/// transaction holds the section, an install cannot make progress. Outside the domain the install
-/// completes immediately regardless; inside it, the install necessarily lands after the holder
-/// releases, so no plugin write can appear inside another plugin op's validate→rebuild window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plugin_install_is_serialized_by_the_mutation_domain() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -540,9 +451,7 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
     };
     tokio::time::sleep(Duration::from_millis(80)).await;
     let started = Instant::now();
-    // A WELL-FORMED request whose tarball is not a valid plugin: the body parse and the base64
-    // decode succeed (both are pre-section by design — they cannot corrupt anything), so the
-    // rejection can only happen INSIDE the section, which is the property under test.
+
     let _ = install_plugin(
         State(handle.clone()),
         anon(),
@@ -566,10 +475,6 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── the primitive's own contract ────────────────────────────────────────────────────────────────
-
-/// FAIL-CLOSED BY CONSTRUCTION: a body that declares no plan mutates nothing. It cannot swap out of
-/// band either — it never receives the `AppHandle`.
 #[tokio::test]
 async fn a_txn_that_declares_no_plan_swaps_nothing() {
     let handle = handle_for(crate::new_test_app().build());
@@ -583,8 +488,6 @@ async fn a_txn_that_declares_no_plan_swaps_nothing() {
     assert_eq!(handle.load().config_version, before, "no plan ⇒ no swap");
 }
 
-/// FAIL-CLOSED ON PERSIST: `commit` is persist-THEN-swap, so a persist failure leaves the running
-/// engine exactly as it was and surfaces the site's own message.
 #[tokio::test]
 async fn a_failed_persist_swaps_nothing() {
     let handle = handle_for(crate::new_test_app().build());
@@ -607,8 +510,6 @@ async fn a_failed_persist_swaps_nothing() {
     );
 }
 
-/// A lost Store receipt can mean the candidate is already durable. It must still fail the
-/// administrative transaction: observing the new head is not an acknowledgement of this write.
 #[tokio::test]
 async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
@@ -670,8 +571,6 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     assert_eq!(candidates[0].fingerprint(), candidates[1].fingerprint());
 }
 
-/// Cancelling an admin caller while the Store is reading cannot cancel its persist or release
-/// the mutation domain. The Store accepts the write before the detached transaction swaps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain() {
     let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
@@ -719,8 +618,7 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     .await
     .is_err();
     let version_while_blocked = handle.load().config_version;
-    // Release the blocking Store callback before asserting, so a regression cannot strand the
-    // runtime's blocking pool during test teardown.
+
     tokio::task::spawn_blocking(move || barrier.wait())
         .await
         .unwrap();
@@ -751,9 +649,6 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     );
 }
 
-/// SERIALIZATION: N transactions that read-modify-write the same field cannot lose an update — each
-/// one's `txn.app()` already carries its predecessor's swap. (`tests/txn_loom.rs` proves the same
-/// invariant over the full interleaving space.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_transactions_never_lose_a_swap() {
     let handle = handle_for(crate::new_test_app().build());
@@ -781,28 +676,10 @@ async fn concurrent_transactions_never_lose_a_swap() {
     );
 }
 
-// ── the mutation domain survives handler-future cancellation ────────────────────────────────
-
-/// CANCELLATION SAFETY. Admin handlers are cancellable: hyper serves each connection on its own task
-/// (`serve_connection_with_upgrades`), so a client reset, disconnect, or timeout DROPS the service
-/// future wherever it is suspended. This asserts the property that has to hold for the whole choke
-/// point when that happens: **a transaction whose caller is cancelled still owns the mutation domain
-/// until its deferred work is genuinely finished.**
-///
-/// A borrowed `MutexGuard` held across `spawn_blocking(f).await` cannot carry that property.
-/// Dropping a `JoinHandle` does not cancel a blocking task, but dropping the ENCLOSING future drops
-/// the guard — so the abandoned section keeps running with its lock RELEASED, and a concurrent
-/// `rollback_plugin`/`reload_plugins` can take the domain and `rebuild_app_from_disk` over a
-/// plugins directory the abandoned `install_plugin` is still writing into. Under that shape the
-/// second transaction below acquires immediately and the timeout assertion fails.
-///
-/// The guard is instead `lock_owned()` and MOVED into the blocking task, which nothing can
-/// cancel, so the domain is released only when the last deferred step returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
     let handle = handle_for(crate::new_test_app().build());
 
-    // The deferred step announces it started, then parks until the test lets it go.
     let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let finished = Arc::new(AtomicBool::new(false));
@@ -822,16 +699,12 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
         })
     };
 
-    // Wait until the section is genuinely mid-flight, then CANCEL the caller: aborting the task
-    // drops the `config_transaction` future exactly as a dropped connection would.
     entered_rx
         .recv_timeout(Duration::from_secs(10))
         .expect("the deferred step must start");
     victim.abort();
     assert!(victim.await.is_err(), "the caller's future was cancelled");
 
-    // THE ASSERTION: the domain is still held. A second mutation must NOT be able to acquire it
-    // while the abandoned section's deferred work is still running.
     let contender = config_transaction::<_, _, AdminError>(&handle, |txn| Ok(txn.done(())));
     assert!(
         tokio::time::timeout(Duration::from_millis(500), contender)
@@ -845,8 +718,6 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
         "the deferred step is still in flight - the timeout above was a real lock wait"
     );
 
-    // Let the abandoned section finish; the domain must then be free, and the work must have run to
-    // COMPLETION rather than being torn down half-applied.
     release_tx.send(()).expect("deferred step still parked");
     tokio::time::timeout(
         Duration::from_secs(10),
@@ -861,13 +732,6 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
     );
 }
 
-// ── no blocking under the async lock, SECRET-PLUGIN edition ──────────────────────────────────────
-
-/// A `HookEnv` whose secret resolver's PLUGIN arm blocks for `delay`. In production that arm is
-/// `DynSecret::resolve` — a synchronous `transport_call` into a dlopened `kind: secret` plugin, and
-/// behind it a Vault / AWS-SM round trip. The registry declares the secret-bearing setting and
-/// the existing hook double supplies a valid gate, so the real delayed SECRET resolution is
-/// reached without bypassing either admission guard.
 fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::hooks::HookEnv::with_axis(
         busbar_kernel_testkit::test_support::rows::Rows::new()
@@ -888,9 +752,6 @@ fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
     )
 }
 
-/// Register one GLOBAL gate hook whose `licenseKey` is a `kind: secret` PLUGIN reference, through the
-/// REAL `POST /api/v1/admin/hooks` handler. Building the next snapshot re-resolves the global gate
-/// chain, and that resolution resolves the reference — the blocking FFI this test measures.
 async fn register_secret_hook(handle: Arc<AppHandle>) -> (StatusCode, String) {
     let body = json!({
         "name": "compliance-gate",
@@ -915,14 +776,6 @@ async fn register_secret_hook(handle: Arc<AppHandle>) -> (StatusCode, String) {
     (status, String::from_utf8(body.to_vec()).unwrap())
 }
 
-/// THE SAME ASSERTION AS `slow_store_read_does_not_stall_the_executor`, for the OTHER blocking seam a
-/// transaction body can reach: a `kind: secret` PLUGIN.
-///
-/// `config_transaction`'s body runs SYNCHRONOUSLY ON THE ASYNC SIDE (`txn.rs`: `let outcome =
-/// body(&Txn { .. })?` — only `Txn::read_store`/`store_write` defer). `build_with_hook` was called
-/// straight from that body, and it re-resolves the hook chain, which resolves every hook's
-/// `SecretRef` settings over synchronous plugin FFI — so a slow secret store wedged the reactor
-/// while ALSO holding the process-wide config-mutation lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_secret_plugin_does_not_stall_the_executor() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -936,8 +789,6 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     worst.store(0, Ordering::SeqCst);
 
-    // SPAWNED for the same reason the store test spawns: the handler and the probe must share the
-    // ONE worker, which is what makes a synchronous call on the async side observable.
     let (status, body) = tokio::spawn(register_secret_hook(handle.clone()))
         .await
         .expect("register joins");

@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE TRANSPORT KIND'S ANSWER VALIDATORS, which live beside the shapes they judge: one pure `check_<op>` per answer, built from the shared helpers in
-//! [`crate::abi::mechanism::check`]. The dispatcher turns an `Err` into FAULT.
-//!
-//! * `arrival` and `locate` have the short path (`locate`'s authority and name are one
-//!   multi-dimension answer); `listen`, `accept` and `read` do not: their lengths are at most the
-//!   capacity, and the host's `addr_cap`/`peer_cap` is at least [`MAX_ADDR`].
-//! * A framer has no short path either: a full sink is READY with [`YIELD_MORE`] (backpressure).
-//! * The tail and every list element it names are checked at load.
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
@@ -48,28 +41,19 @@ pub const MAX_PIECES: u64 = 4096;
 pub const MAX_CLAIMS: u64 = 1024;
 
 /// `listen`: no short path; the bound address fits `addr_cap`.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub const fn check_listen(out: &ListenOut, addr_cap: u64) -> Result<(), Fault> {
     within(out.addr_written, addr_cap, "listen.addr_written")
 }
 
 /// `accept`: no short path; the far end's address fits `peer_cap`.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub const fn check_accept(out: &AcceptOut, peer_cap: u64) -> Result<(), Fault> {
     within(out.peer_written, peer_cap, "accept.peer_written")
 }
 
 /// `arrival`: the far end's address, under the short-buffer rule.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) -> Result<(), Fault> {
     match result(
         outcome,
@@ -85,12 +69,7 @@ pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) ->
 }
 
 /// `read`/`write`: no short path; at most the buffer's capacity or the bytes offered. Partial I/O
-/// is not a short buffer: a FAILED read or write MAY report the bytes it already moved (the short-buffer rule
-/// carve-outs, beside backpressure, in this kind's module doc).
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
     if out.flags & !super::READ_END_OF_FRAME != 0 {
         return Err(fault(Rule::UnknownCode, "io.flags"));
@@ -99,12 +78,7 @@ pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
 }
 
 /// `locate`: authority, name and protocol offer under the short-buffer rule; `has_name` and
-/// `secure` are flags, and no name means nothing written or needed for it. The offer (`alpn`, the
-/// bytes written into the host's `alpn_buf`) is [`check_alpn`]'s.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_locate(
     outcome: Outcome,
     out: &LocateOut,
@@ -164,12 +138,7 @@ pub fn check_locate(
 pub const MAX_ALPN_BYTES: u64 = 0xffff;
 
 /// A protocol offer in the handshake's ProtocolNameList encoding: it partitions exactly into ids,
-/// each one length byte (`1..=255`) and that many bytes.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] for an empty id; [`Rule::SpanOutOfBounds`] for a length that runs past the
-/// end.
+
 pub fn check_alpn(offer: &[u8]) -> Result<(), Fault> {
     let mut at = 0usize;
     while at < offer.len() {
@@ -186,13 +155,7 @@ pub fn check_alpn(offer: &[u8]) -> Result<(), Fault> {
 }
 
 /// The protocol the handshake agreed, against the framer's offer: none agreed, or one of the
-/// offered ids exactly. The connector checks it before it hands the framer
-/// [`ConnFacts::agreed_protocol`].
-///
-/// # Errors
-///
-/// [`check_alpn`]'s rules for a malformed offer; [`Rule::Contradiction`] for an agreed protocol the
-/// framer never offered.
+
 pub fn check_agreed(offer: &[u8], agreed: &[u8]) -> Result<(), Fault> {
     check_alpn(offer)?;
     if agreed.is_empty() {
@@ -313,7 +276,7 @@ abi_op! {
 }
 
 /// Every route a datagram framer reported, read only up to its stated count
-/// ([`check_datagram_route`]).
+
 fn datagram_routes(out: &FramerOut, routes: &[DatagramRoute]) -> Result<(), Fault> {
     first(
         routes,
@@ -347,11 +310,7 @@ const fn request_paths_named(d: &DatagramYield) -> bool {
 }
 
 /// Rendezvous terms: absent whole, or every credential nonempty and the fingerprint exactly
-/// [`FINGERPRINT_BYTES`], each inside the first `frame_len` bytes of the frame.
-///
-/// # Errors
-///
-/// The rule the terms break.
+
 pub fn check_terms(t: &RendezvousTerms, frame_len: u64) -> Result<(), Fault> {
     code(
         u64::from(t.role),
@@ -415,12 +374,7 @@ abi_op! {
 }
 
 /// The lifecycle `cancel`'s disposition: on READY, one of the transport's three (`0` = unwritten is
-/// FAULT); on any other outcome the op did not answer a disposition, and it must be unwritten.
-///
-/// # Errors
-///
-/// [`Rule::UnknownCode`] for a READY disposition outside the three; [`Rule::Contradiction`] for
-/// a disposition written on another outcome.
+
 pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Fault> {
     if !matches!(outcome, Outcome::Ready) {
         if disposition != 0 {
@@ -437,15 +391,7 @@ pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Faul
 }
 
 /// A framer answer's field blocks, over the frame bytes it wrote (`frame`, the first `frame_len`
-/// bytes of the sink): a pseudo-field (a line whose name starts with `:`) never enters a block;
-/// the request's method, target and authority are [`HeadSlots`] slots. A line starts after every
-/// CR LF (also one split across two pieces), and at the first byte of a fields piece that does not
-/// carry [`PIECE_CONTINUED`].
-/// Run after [`check_framer`] passed.
-///
-/// # Errors
-///
-/// [`Rule::Foreign`] for a pseudo-field; [`Rule::SpanOutOfBounds`] for a piece outside `frame`.
+
 pub fn check_framer_fields(pieces: &[FramePiece], frame: &[u8]) -> Result<(), Fault> {
     const FIELD: &str = "framer.piece.pseudo_field";
     for p in pieces.iter().filter(|p| p.flags & PIECE_FIELDS != 0) {
@@ -457,7 +403,7 @@ pub fn check_framer_fields(pieces: &[FramePiece], frame: &[u8]) -> Result<(), Fa
         if p.flags & PIECE_CONTINUED == 0 && bytes.first() == Some(&b':') {
             return Err(fault(Rule::Foreign, FIELD));
         }
-        // A CR LF split across pieces: the LF opens this one and the next line follows it.
+
         if bytes.starts_with(b"\n:") || bytes.windows(3).any(|w| w == b"\r\n:") {
             return Err(fault(Rule::Foreign, FIELD));
         }
@@ -466,22 +412,13 @@ pub fn check_framer_fields(pieces: &[FramePiece], frame: &[u8]) -> Result<(), Fa
 }
 
 /// A framer answer's head slots (`heads`, the host's buffer of `heads_cap`): at most the
-/// capacity; one per stream; each slot inside the frame bytes written; a method and a target
-/// present together or both absent.
-///
-/// # Errors
-///
-/// The rule the slots break.
+
 pub fn check_head_slots(out: &FramerOut, heads: &[HeadSlots], heads_cap: u64) -> Result<(), Fault> {
     head_slots(out, heads, heads_cap, &[])
 }
 
 /// Head slots checked with the actual field pieces after [`check_framer`] passed. A reason-only
-/// slot immediately precedes its head's first piece in the SDK sink. An explicitly interim head
-/// does not consume the stream's terminal slot; a duplicate terminal head is still refused.
-///
-/// # Errors
-/// The same slot rules as [`check_head_slots`], including duplicate or uncorrelated head slots.
+
 pub fn check_head_slots_with_pieces(
     out: &FramerOut,
     heads: &[HeadSlots],
@@ -493,7 +430,7 @@ pub fn check_head_slots_with_pieces(
 }
 
 /// The actual first field piece adjacent to a dialled head's reason words, as the SDK sink
-/// writes them. Request words and absent reasons do not identify a response piece.
+
 #[must_use]
 pub fn head_piece_index(head: &HeadSlots, pieces: &[FramePiece]) -> Option<usize> {
     if head.method.len != 0
@@ -549,10 +486,7 @@ fn head_slots(
 }
 
 /// Connection facts: the size is the struct's own.
-///
-/// # Errors
-///
-/// [`Rule::Foreign`].
+
 pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
     if facts.size as usize != core::mem::size_of::<ConnFacts>() {
         return Err(fault(Rule::Foreign, "facts.size"));
@@ -599,12 +533,7 @@ abi_op! {
 }
 
 /// Every claim row: no string or list counted with a NULL pointer, its fact-key list bounded and
-/// aligned, the session bits `0`/`1` and the trigger and status-frame codes known. (A row's scheme name is the Statement's; see
-/// [`check_claim_rows`].)
-///
-/// # Errors
-///
-/// The rule a claim breaks.
+
 pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
     claims.iter().try_for_each(check_claim)
 }
@@ -626,11 +555,7 @@ abi_op! {
 }
 
 /// THE ONE SOURCE OF CLAIM NAMES, at admit: a transport's tail has exactly one row per scheme its
-/// Statement claims (row `i` describes `claims[i]`), so no claim is named in two places.
-///
-/// # Errors
-///
-/// [`Rule::Contradiction`] at `tail.claim_rows` when the counts differ.
+
 pub const fn check_claim_rows(statement_claims_len: usize, t: &TransportTail) -> Result<(), Fault> {
     if t.claim_rows_len != statement_claims_len {
         return Err(fault(Rule::Contradiction, "tail.claim_rows"));
@@ -639,37 +564,25 @@ pub const fn check_claim_rows(statement_claims_len: usize, t: &TransportTail) ->
 }
 
 /// The claims a framer composes over: no name counted with a NULL pointer.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`].
+
 pub fn check_composes_over(names: &[AbiStr]) -> Result<(), Fault> {
     texts(names, "composes_over.name")
 }
 
 /// The claims a connection may upgrade to: no name counted with a NULL pointer.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`].
+
 pub fn check_upgrades_to(names: &[AbiStr]) -> Result<(), Fault> {
     texts(names, "upgrades_to.name")
 }
 
 /// One claim's transport fact keys: no key counted with a NULL pointer.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`].
+
 pub fn check_claim_facts(keys: &[AbiStr]) -> Result<(), Fault> {
     texts(keys, "claim.fact")
 }
 
 /// Every status row: names a claim, `lo <= hi`, and a class that is stated.
-///
-/// # Errors
-///
-/// The rule a row breaks.
+
 pub fn check_status_rows(rows: &[StatusRow], claims_len: u64) -> Result<(), Fault> {
     rows.iter()
         .try_for_each(|r| check_status_row(r, claims_len))
@@ -685,14 +598,7 @@ abi_op! {
 }
 
 /// A stream's final status on close ([`FinishIn`]): `final_status` is a number the
-/// status rows of `claim` (the claim the stream arrived on) cover, or `0` on a claim stating no
-/// numbering; `final_message` and `final_details` lie inside `final_bytes` (or are empty), and a
-/// stated byte range has the bytes behind it. The host judges its own close before the crossing:
-/// a status the claim's numbering does not have is never handed to the framer.
-///
-/// # Errors
-///
-/// The rule the close breaks.
+
 pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Result<(), Fault> {
     let mut numbered = rows.iter().filter(|r| r.claim == claim).peekable();
     let covered = if numbered.peek().is_none() {
@@ -720,13 +626,7 @@ pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Resul
 }
 
 /// An `emit`'s OPENING BODY LENGTH ([`EmitIn::body_len`]): `body_len_known` is `0` or `1`, its
-/// padding is zero, and a length rides only with `body_len_known` `1` (a streamed body states
-/// none). The host stamps it; a framer refuses the emit that breaks it, before any byte of it
-/// reaches the wire.
-///
-/// # Errors
-///
-/// The rule the emit breaks.
+
 pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
     if i._body_len_reserved != 0 {
         return Err(fault(Rule::UnknownCode, "emit._body_len_reserved"));
@@ -739,12 +639,7 @@ pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
 }
 
 /// Validate an emit's neutral kind before consuming its fresh bytes. `side` is the framing's
-/// established side; `answers_head` states whether the stream still owes its initial head.
-/// A transport also refuses kinds it cannot render. Pending resumes and empty drains carry no
-/// new kind: the transport retains the original operation's custody.
-///
-/// # Errors
-/// Unknown flags, mixed message/trailer kinds, or trailers outside a final accepted answer.
+
 pub fn check_emit_flags(i: &EmitIn, side: u32, answers_head: bool) -> Result<(), Fault> {
     bits(
         u64::from(i.flags),
@@ -766,12 +661,7 @@ pub fn check_emit_flags(i: &EmitIn, side: u32, answers_head: bool) -> Result<(),
 }
 
 /// An `emit`'s STATUS ([`EmitIn::status`], INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): stated on
-/// the emit that carries an ACCEPTED stream's answer head (`answers_head`), and on no other. The
-/// framer refuses the emit that breaks it, before any byte of it reaches the wire.
-///
-/// # Errors
-///
-/// The rule the emit breaks.
+
 pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
     if i._status_reserved != 0 {
         return Err(fault(Rule::UnknownCode, "emit._status_reserved"));
@@ -784,11 +674,7 @@ pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
 }
 
 /// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
-/// `FAULT_NONE`: a code the table does not cover already reads none).
-///
-/// # Errors
-///
-/// The rule a row breaks.
+
 pub fn check_fault_rows(rows: &[FaultRow], claims_len: u64) -> Result<(), Fault> {
     rows.iter().try_for_each(|r| check_fault_row(r, claims_len))
 }
@@ -803,13 +689,7 @@ abi_op! {
 }
 
 /// A claim that classes its answers classes them for the breaker too: every claim named by a status
-/// row is named by at least one fault row. A framer that states status rows and no fault table
-/// would have every failure it reports read as the caller's, and the destination behind it would
-/// never trip, so the load is refused rather than served blind.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] at `tail.fault_rows` for the first claim with status rows and no fault row.
+
 pub fn check_fault_cover(status: &[StatusRow], faults: &[FaultRow]) -> Result<(), Fault> {
     for r in status {
         if !faults.iter().any(|f| f.claim == r.claim) {
@@ -820,10 +700,7 @@ pub fn check_fault_cover(status: &[StatusRow], faults: &[FaultRow]) -> Result<()
 }
 
 /// Every setting: a path and a known kind.
-///
-/// # Errors
-///
-/// The rule a setting breaks.
+
 pub fn check_settings(settings: &[SettingDecl]) -> Result<(), Fault> {
     settings.iter().try_for_each(check_setting)
 }
@@ -839,12 +716,7 @@ abi_op! {
 }
 
 /// The auth points a transport offers, read from its Statement's `extensions`
-/// ([`super::EXT_OFFERED_POINTS`]): `{Head, HeadBody}` when it states no record; else exactly four
-/// bytes of [`POINT_PEER`] | [`POINT_HEAD`] | [`POINT_HEAD_BODY`] bits.
-///
-/// # Errors
-///
-/// The record is not four bytes ([`Rule::Foreign`]) or names another bit ([`Rule::UnknownCode`]).
+
 pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
     let Some(value) = crate::abi::mechanism::extensions::get(extensions, super::EXT_OFFERED_POINTS)
     else {
@@ -860,11 +732,7 @@ pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
 }
 
 /// Whether a transport renders sealed values, read from its Statement's `extensions`
-/// ([`super::EXT_SEALED_VALUES`]): `false` when it states no record; the record's value is empty.
-///
-/// # Errors
-///
-/// The record holds a value ([`Rule::Foreign`]).
+
 pub fn check_sealed_values(extensions: &[u8]) -> Result<bool, Fault> {
     match crate::abi::mechanism::extensions::get(extensions, super::EXT_SEALED_VALUES) {
         None => Ok(false),
@@ -894,13 +762,7 @@ abi_op! {
 }
 
 /// A framer's stated agreed protocol ([`super::FramerYield::agreed`]) against the offer it was
-/// made on: `0` (not stated) always holds; any other value is a 1-based position in the
-/// `offer_len` protocols the listener offered. A dialled framing is judged against an offer of `0`
-/// (it states none).
-///
-/// # Errors
-///
-/// [`Rule::IndexOutOfRange`] for a position past the offer.
+
 pub const fn check_agreed_position(agreed: u32, offer_len: u64) -> Result<(), Fault> {
     if agreed as u64 > offer_len {
         return Err(fault(Rule::IndexOutOfRange, "framer.agreed"));
@@ -960,12 +822,7 @@ pub unsafe fn check_lines(i: &super::BeginIn) -> Result<(), Fault> {
 }
 
 /// A `begin`'s binding: on [`super::SIDE_DIAL`] a valid point set with a handle exactly when it
-/// is not empty; on an accepting side no points and no handle.
-///
-/// # Errors
-///
-/// [`Rule::Contradiction`] for points or a handle on an accepting side, or a handle that disagrees
-/// with the points; the point set's own rules.
+
 pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
     if i.side != super::SIDE_DIAL {
         if i.points != 0 || !i.auth.is_none() {
@@ -983,15 +840,7 @@ pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
 }
 
 /// A `begin`'s scheme ([`super::BeginIn::scheme`]), on every side: a declared code,
-/// [`SCHEME_PLAIN`](crate::abi::host::service::SCHEME_PLAIN) or
-/// [`SCHEME_SECURE`](crate::abi::host::service::SCHEME_SECURE). A zero never grants: the framer
-/// copies the scheme into every request view it builds for its auth call, so an undeclared one is
-/// refused here, before the crossing, rather than read as plain.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] for [`SCHEME_UNDECLARED`](crate::abi::host::service::SCHEME_UNDECLARED);
-/// [`Rule::UnknownCode`] for a code above `SCHEME_SECURE`.
+
 pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
     use crate::abi::host::service::{SCHEME_SECURE, SCHEME_UNDECLARED};
     if i.scheme == SCHEME_UNDECLARED {
@@ -1004,14 +853,7 @@ pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
 }
 
 /// A route's CONTENT, read: a method set inside the vocabulary and not empty, a known path form, a
-/// path that is not empty; an exact, pattern or prefix path that starts with `/`; a pattern that
-/// keeps the syntax; field names that are non-empty lower-case tokens; a value on a value-prefix
-/// predicate and none on a presence predicate. The kernel runs it on every line it seals into a
-/// guest list, so a route no request can match is refused at boot, never mounted.
-///
-/// # Errors
-///
-/// The rule the route breaks.
+
 pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
     use super::route::{pattern_segments, FIELD_VALUE_PREFIX, PATH_PATTERN, PATH_PREFIX};
     if r.methods == 0 {
@@ -1079,7 +921,7 @@ unsafe fn framer(outcome: Outcome, o: &FramerOut, sink: FramerSink) -> Result<()
         sink.frame_cap as u64,
         pieces_cap,
     )?;
-    // Only a field block's bytes are read here; payload never is.
+
     if pieces.iter().any(|p| p.flags & PIECE_FIELDS != 0) {
         // SAFETY: `sink.frame` is the host's own buffer of `frame_cap` bytes; `check_framer` held
         // `frame_len` within it.
@@ -1107,9 +949,6 @@ unsafe fn framer(outcome: Outcome, o: &FramerOut, sink: FramerSink) -> Result<()
     check_head_slots_with_pieces(o, heads, heads_cap, pieces)
 }
 
-// THE TRANSPORT KIND'S ANSWERS (`check_answer`), each op's frames in the order the loader reads
-// them. `dial`, `flush`, `shut` and the other lifecycle answers state no rule beyond the
-// mechanism's, and pass here.
 abi_answers! {
     cx: ();
     slot::LISTEN => listen(out ListenOut, in ListenIn) |_, i, o, _| {

@@ -130,8 +130,6 @@ impl busbar_kernel::governance::RecordStore for RewrapStore {
     }
 }
 
-/// The actual reload callback owns retries: listing failure and a lost claim both leave a row
-/// readable under previous, and an unchanged subsequent reload must finish the maintenance work.
 #[tokio::test]
 async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery() {
     busbar_kernel_testkit::test_support::metrics::init();
@@ -235,7 +233,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
                 .map(String::as_str),
             Some("recoverable-test-secret")
         );
-        // A failed settings commit cannot fire the deferred maintenance closure either.
+
         std::fs::write(&new_path, [5_u8; 32]).unwrap();
         overlay.fail_writes(true);
         let before = handle.load();
@@ -259,8 +257,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             "{rejected_text}"
         );
         assert!(Arc::ptr_eq(&before, &handle.load()));
-        // The existing setter reports whether the installed kids differed, so this checks that
-        // the rejected candidate did not install key 5 without adding a key-inspection API.
+
         assert!(!gov.set_at_rest_keys(Some(AtRestKeys::new(&[4_u8; 32], Some(&[3_u8; 32])))));
         assert_eq!(
             store.listings.load(Ordering::SeqCst),

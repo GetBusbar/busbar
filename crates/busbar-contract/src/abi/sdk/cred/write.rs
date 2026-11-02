@@ -66,7 +66,7 @@ impl Parts {
 }
 
 /// Bytes on their way to the host, held where the plugin cannot read them. Park it on the op's
-/// ticket across a PENDING answer and poll it again; it is wiped when it drops.
+
 #[allow(missing_debug_implementations)]
 pub struct SealedWrite {
     pub(crate) buf: Zeroizing<Vec<u8>>,
@@ -76,15 +76,11 @@ pub struct SealedWrite {
     /// The connection was confirmed secured before the first byte.
     confirmed: bool,
     /// The connection was found in the clear: every later poll refuses (a replayed `FACTS` writes
-    /// nothing, so only this remembers it).
     refused: bool,
 }
 
 /// Before a credential that must go out secured is written on `stream`: whether the host connector
-/// reports it secured ([`Connector::facts`]). A host that offers no facts, or a stream it reports
-/// in the clear, refuses ([`super::NOT_SECURE`]). `None` facts are a replayed call's: the entry
-/// that first made it decided. `allow_replay` is false for a driver that preserves its completed
-/// security check across entries and therefore needs a real observation for this call.
+
 pub(crate) fn confirm_secure(c: &mut Connector<'_>, stream: u64, allow_replay: bool) -> Answer<()> {
     match c.facts(stream) {
         Poll::Pending => Poll::Pending,
@@ -181,9 +177,7 @@ impl SealedWrite {
     }
 
     /// Write what is left on an I/O `handle`: `Ready(Ok(()))` once every byte is taken.
-    ///
-    /// An I/O handle reports no connection security, so a credential that must go out secured is
-    /// refused here.
+
     pub fn poll_io(&mut self, io: &mut Io<'_>, handle: u64) -> Poll<IoAnswer<()>> {
         if self.secure {
             return Poll::Ready(Err(crate::abi::sdk::io::IoFailure::Refused(
@@ -214,17 +208,10 @@ impl SealedWrite {
 }
 
 /// THE ANSWER PATH OF A KIND THAT ANSWERS INTO A HOST BUFFER (a plane's `on_piece` reply). The
-/// buffer takes plain bytes, so the sealed bytes leave the SDK here: copied straight from this
-/// write's zeroizing buffer into the host's, never through a plugin `Vec` or `String`. That copy
-/// is the in-process residual the destination requires (`cred::json`).
+
 impl SealedWrite {
     /// Write what is left into `buf`, as much as there is room for (backpressure: the host
-    /// flushes it and calls again). Answers how many bytes went in; [`SealedWrite::finished`]
-    /// once every byte is taken.
-    ///
-    /// # Errors
-    /// [`super::NOT_SECURE`]: it carries a credential that must go out secured, and a host buffer
-    /// reports no connection security (as [`SealedWrite::poll_io`] refuses it). Nothing is written.
+
     pub fn stream_into(
         &mut self,
         buf: &mut crate::abi::sdk::HostBuf<'_, u8>,

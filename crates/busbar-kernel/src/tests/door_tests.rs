@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The door's kernel-side acts: the facts an admitted or refused unit ends with, and the zero hold
-//! an exact admission carries.
-
 use super::*;
 
 #[test]
@@ -34,10 +31,6 @@ fn a_refused_unit_is_never_a_completion() {
     assert_eq!((f.op_class, f.finish), (op, FinishClass::Error));
 }
 
-/// Under `admission: exact` (the default) the admission carries a ZERO hold. The design's budget
-/// modes: "the 'hold sized at admit from estimate' idea ... becomes the estimate mode only"; exact
-/// refuses at admit only a budget already exhausted and reserves nothing. RED: any admission that
-/// reserves (an estimate-sized hold) fails this pin.
 #[test]
 fn an_exact_admission_carries_a_zero_hold() {
     use busbar_contract::caps::KernelSeal;

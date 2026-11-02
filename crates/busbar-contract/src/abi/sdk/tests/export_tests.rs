@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The export kind's shared sink pieces through a real door: a push sink built from them answers
-//! `scrape` and `serve` REFUSED in the kind's words, `status` READY, its `one_instance` check
-//! names every instance after the first, and its settings are refused in serde's words.
 
 use std::mem::size_of;
 
@@ -195,7 +193,7 @@ fn a_push_sink_refuses_scrape_and_serve_in_the_kinds_words() {
 }
 
 /// The `one_instance` check through the door: with more than one instance, the sink's one finding
-/// is why a second cannot run (the host words the refusal); one instance (or none) is none.
+
 #[test]
 fn a_second_instance_is_answered_with_the_sinks_reason() {
     let view = view();
@@ -258,7 +256,7 @@ fn settings_are_refused_in_serdes_words_empty_reading_as_an_object() {
 }
 
 /// The tail states the streams and routes it is given, an empty list NULL; the alias rewrite is
-/// the module name, `to` absent.
+
 #[test]
 fn the_tail_and_the_alias_state_what_they_are_given() {
     assert_eq!(TAIL.head.size as usize, size_of::<Tail>());
@@ -286,8 +284,7 @@ fn the_tail_and_the_alias_state_what_they_are_given() {
 }
 
 /// RED (the shared test kit, E11): what a reply's envelope carried (its diagnostics and metrics) is
-/// copied onto the [`reply::Called`] before the envelope's pointers are cleared, so a plugin's test
-/// reads the records its op reported. Before, the copy dropped them.
+
 #[test]
 fn a_called_op_keeps_a_copy_of_its_envelope() {
     let view = view();
@@ -322,7 +319,7 @@ fn a_called_op_keeps_a_copy_of_its_envelope() {
 }
 
 /// RED (export ABI defect 17): an op over the open instance answers a call with NO instance in the
-/// SDK's own words, before the plugin's body runs. Before, each sink hand-wrote that branch.
+
 #[test]
 fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
     let view = view();
@@ -330,8 +327,7 @@ fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
     let mut input: CheckIn = zeroed();
     input.head.op = crate::abi::export::slot::CHECK;
     input.phase = CHECK_PHASE_LIMITS;
-    // Deliberately malformed ABI entry: call_in protects ordinary fixtures from missing instances.
-    // Enter the raw slot so this checks the SDK's refusal rather than that fixture guard.
+
     let c = unsafe {
         reply::call(
             check.parts().0,
@@ -345,7 +341,7 @@ fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
 }
 
 /// RED (export ABI defect 5): a sink states no `refresh` — the host never refreshes an export
-/// instance (restart to apply) — and the SDK's default answers it REFUSED, saying so.
+
 #[test]
 fn a_sink_that_states_no_refresh_is_answered_by_the_sdk() {
     let Err(refused) = Probe.refresh(b"{}", &[], 2) else {

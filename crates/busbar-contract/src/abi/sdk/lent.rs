@@ -2,27 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! WHAT THE HOST LENDS A CALL, READ AND WRITTEN WITHOUT `unsafe` (THE DESIGN, the plugin ABI: the SDK's
-//! typed wrappers). A [`SafeSlot`](super::safe::SafeSlot) body is handed its `in` as a
-//! [`Lent`]: a borrow of the trampoline's copy of the host's `in` that only the SDK can make. Its
-//! lifetime is the call's, so nothing read through it can outlive the call.
-//!
-//! * A [`Blob`] or an [`AbiStr`] field is reached with [`Lent::field`] and read with
-//!   [`Lent::bytes`](Lent#method-bytes) (and, for text, [`Lent::as_str`](Lent#method-as_str)).
-//! * A list the host lends (`ptr` + `len`) is a [`LentList`]; one struct it points to is a
-//!   nested [`Lent`]; loose bytes (`ptr` + `len`) are a `&[u8]`. Each is an accessor named after
-//!   its pointer field (`input.fields()`, `input.bytes()`), stated once per `in` below.
-//! * A HOST BUFFER (`ptr` + `cap` in the `in`, `*_written` + `*_needed` in the `out`) is a
-//!   [`HostBuf`], also named after its pointer field (`input.units_buf()`): it fills up to the capacity and counts everything asked of it, so the `out`
-//!   reports `needed` exactly under the short-buffer rule
-//!   ([`OutHead`](crate::abi::mechanism::call::OutHead)).
-//!
-//! THE CALL CONTRACT these rely on, and nothing else: every pointer the host puts in an `in` is
-//! valid, as the kind's ABI states it, until the call returns; the host's buffers are writable for
-//! their stated capacity and overlap nothing else the call is lent. A call answering PENDING is
-//! re-invoked with the same `in` and `out`, so the host keeps what it lent alive until the call
-//! completes, even when the caller that submitted it has gone (the dispatcher's duty, not the
-//! plugin's). A `Lent` never outlives one invocation: it borrows the trampoline's frame, so a body
-//! that pends keeps nothing lent and re-reads its `in` on resume.
 
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -42,7 +21,6 @@ pub struct Lent<'a, T> {
     lent: &'a T,
 }
 
-// A borrow copies whatever it borrows (no `T: Copy` bound, as a derive would add).
 impl<T> Clone for Lent<'_, T> {
     fn clone(&self) -> Self {
         *self
@@ -64,10 +42,7 @@ impl<'a, T> Lent<'a, T> {
     }
 
     /// One field of the lent struct, still lent: `input.field(|i| &i.settings).bytes()`.
-    ///
-    /// # Panics
-    /// When `pick` answers a reference that is not inside the lent struct (a value it made rather
-    /// than a field it named). The trampoline answers the call FAULT.
+
     #[must_use]
     pub fn field<F>(self, pick: impl FnOnce(&'a T) -> &'a F) -> Lent<'a, F> {
         let f = pick(self.lent);
@@ -85,7 +60,7 @@ impl<'a, T> Lent<'a, T> {
 
 impl<'a, T: Scalar> Lent<'a, T> {
     /// The value, copied: a type with no pointer in it (a [`Scalar`]), so the copy names nothing
-    /// the call lent.
+
     #[must_use]
     pub fn copied(self) -> T {
         *self.lent
@@ -153,15 +128,13 @@ impl<'a> Lent<'a, AbiStr> {
     }
 
     /// The string as UTF-8; `""` when it is absent.
-    ///
-    /// # Errors
-    /// The bytes are not UTF-8.
+
     pub fn as_str(self) -> Result<&'a str, Utf8Error> {
         std::str::from_utf8(self.bytes())
     }
 
     /// The string, owned, when the host states one: UTF-8 and not empty. An absent string, an
-    /// empty one and one that is not UTF-8 each state nothing.
+
     #[must_use]
     pub fn stated(self) -> Option<String> {
         self.as_str()
@@ -251,9 +224,7 @@ pub struct HostBuf<'a, T> {
 
 impl<'a, T: Copy> HostBuf<'a, T> {
     /// Write `v` at the next index while there is room; count it either way. Answers its index.
-    /// The SDK's own writer for a row that may hold a pointer: only a kind SDK in this crate
-    /// writes one, naming memory the same answer lent the host (a plugin writes [`Scalar`]s,
-    /// through [`HostBuf::push`]).
+
     pub(crate) fn push_row(&mut self, v: T) -> usize {
         let at = self.asked;
         if at < self.cap {
@@ -283,8 +254,7 @@ impl<'a, T: Copy> HostBuf<'a, T> {
     }
 
     /// The room left, as the raw parts a HOST call writes into (`abi::sdk::io`: a carrier reads
-    /// straight into the host's buffer): a pointer and how many `T`s fit there. NULL with `0` when
-    /// none is left.
+
     pub(crate) fn room(&mut self) -> (*mut T, usize) {
         let left = self.cap.saturating_sub(self.asked);
         if left == 0 {
@@ -344,7 +314,7 @@ impl<'a, T: Copy> HostBuf<'a, T> {
 }
 
 /// Writing a host buffer: only pointer-free values ([`Scalar`]) go in by the plugin's hand, so no
-/// value in a host buffer points at memory the plugin may free.
+
 impl<T: Scalar> HostBuf<'_, T> {
     /// Write `v` at the next index while there is room; count it either way. Answers its index.
     pub fn push(&mut self, v: T) -> usize {
@@ -352,7 +322,7 @@ impl<T: Scalar> HostBuf<'_, T> {
     }
 
     /// Write `vs` from the next index while there is room; count all of them either way. Answers
-    /// the index of the first.
+
     pub fn extend(&mut self, vs: &[T]) -> usize {
         let at = self.asked;
         let room = self.cap.saturating_sub(at).min(vs.len());
@@ -366,7 +336,7 @@ impl<T: Scalar> HostBuf<'_, T> {
     }
 
     /// Write as much of `vs` as there is room for and count only that: a streamed buffer with no
-    /// short answer (backpressure). Answers how many went in.
+
     pub fn stream(&mut self, vs: &[T]) -> usize {
         let room = self.cap.saturating_sub(self.asked).min(vs.len());
         self.extend(&vs[..room]);
@@ -376,8 +346,7 @@ impl<T: Scalar> HostBuf<'_, T> {
 
 impl HostBuf<'_, crate::abi::hook::MessageView> {
     /// Write one prompt turn at the next index while there is room; count it either way. Answers
-    /// its index. `role` and `text` are spans the same call wrote into `arena`, the host's arena,
-    /// so the turn points only at host memory.
+
     pub fn push_turn(&mut self, arena: &HostBuf<'_, u8>, role: Span, text: Span) -> usize {
         self.push_row(crate::abi::hook::MessageView {
             role: arena.str_at(role),
@@ -401,8 +370,7 @@ pub enum SignalScalar {
 
 impl HostBuf<'_, crate::abi::hook::SignalEntry> {
     /// Write the signal `id` = `value` at the next index while there is room; count it either way.
-    /// Answers its index. (A string signal's value would point into memory; it is not written by
-    /// hand.)
+
     pub fn push_signal(&mut self, id: u32, value: SignalScalar) -> usize {
         use crate::abi::hook::{
             SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_I64,
@@ -436,7 +404,7 @@ impl HostBuf<'_, crate::abi::hook::SignalEntry> {
 
 impl HostBuf<'_, u8> {
     /// Copy `bytes` into this ARENA and answer their [`Span`](Span): the
-    /// offset they start at and their length.
+
     pub fn span(&mut self, bytes: &[u8]) -> Span {
         let at = self.extend(bytes);
         Span {
@@ -446,7 +414,7 @@ impl HostBuf<'_, u8> {
     }
 
     /// The [`AbiStr`] naming `span` inside this ARENA, for a struct that points into it (a
-    /// `project` view). It points at the host's memory; nothing here reads it.
+
     #[must_use]
     pub(crate) fn str_at(&self, span: Span) -> AbiStr {
         AbiStr {
@@ -465,12 +433,7 @@ impl<T> HostBuf<'_, T> {
 }
 
 /// ANSWER A FAILED `open` WITH ITS REASON, for any kind: `text` goes into the host's lent reason
-/// buffer ([`OpenIn::err_buf`]), cut on a char boundary to its capacity, and its length into the
-/// `out`'s `err_len` (`err_len` picks it: `|o| &o.err_len`, a plane's `|o| &o.open.err_len`).
-/// Nothing is kept on the plugin's side (no instance exists to keep it): the host copies the bytes
-/// before the call returns to its caller. Answers [`Outcome::Failed`].
-///
-/// A plane's `open` passes its lifecycle half: `input.field(|i| &i.open)`.
+
 pub fn open_failed<T: AbiOut>(
     input: Lent<'_, OpenIn>,
     out: &mut Out<'_, T>,
@@ -805,9 +768,6 @@ macro_rules! lend_kinds_list {
 
 lend_kinds_list!(lend);
 
-// THE STORE KIND (`abi::store`): the lists a write lends and the host buffers a request-path read
-// fills. A nested host buffer (`store::HostBuf`, `HostBlobs`, `HostRecords`) is
-// reached with `field()` first, then through its own row.
 use crate::abi::store::{
     AddUsageBatchIn, HostBlobs as StoreHostBlobs, HostBuf as StoreHostBuf, HostRecords, OpBlobsIn,
     RecordEntry, UsageCell,
@@ -830,8 +790,6 @@ macro_rules! lend_store_list {
 
 lend_store_list!(lend);
 
-// THE EXPORT KIND (`abi::export`): the recorder snapshot `scrape` lends (families, their samples,
-// their labels) and the host buffer it renders into, `check`'s instances and `serve`'s headers.
 use crate::abi::export::{
     CheckIn, CheckInstance, ScrapeFamily, ScrapeIn, ScrapeLabel, ScrapeSample,
     ServeIn as ExportServeIn,
@@ -1677,9 +1635,7 @@ mod tests;
 
 impl<'a> Lent<'a, LineEntry> {
     /// The line's route as the route vocabulary reads it ([`RouteView`]): what an accepting
-    /// transport matches a decoded head against, in table order (`path_and_fields_match`, then
-    /// `admits` for the method). `None` when the host lent a path or a predicate name that is not
-    /// UTF-8.
+
     #[must_use]
     pub fn route_view(self) -> Option<RouteView<'a>> {
         let route = self.field(|l| &l.route);

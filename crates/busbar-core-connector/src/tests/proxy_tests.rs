@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PROXY ENVIRONMENT, AS THE CONNECTOR HONOURS IT, held to 1.5.5's
-//! semantics: reqwest 0.12's implicit proxy environment, as the kernel engine's owned tunnel
-//! re-provided it (`busbar-kernel` `egress/engine/tests/engine_tests.rs`, whose rows these port):
-//! per-scheme slot resolution (`HTTPS_PROXY` / `HTTP_PROXY`, `ALL_PROXY` as the fallback for both),
-//! scheme-scoped selection, the full `NO_PROXY` rule set (host, domain suffix, IP literal, CIDR),
-//! an `https://` proxy and a garbage value refused without echoing the proxy password; and, end to
-//! end through [`Connector::open`], a framed dial that writes `CONNECT host:port` (+ Basic
-//! credential) to the proxy before anything else and then carries the exchange over the tunnel. Every
-//! proxy row drives the parse / resolve / select functions or a connector wired with a config
-//! directly: NEVER by mutating process environment, which races under the parallel test runner.
 
 use std::sync::Arc;
 
@@ -244,7 +235,7 @@ fn proxy_url_parse_extracts_auth_and_refuses_https_proxies() {
     assert!(parse_proxy("http://").is_err(), "garbage must not parse");
     assert!(parse_proxy("proxy.corp:3128").is_ok());
     assert!(parse_proxy("http://u:p@proxy.corp").is_ok());
-    // The Basic credential rides the CONNECT exactly as the engine wrote it.
+
     let spec = parse_proxy("http://u:p@proxy.corp").unwrap();
     assert_eq!(
         String::from_utf8(connect_request("upstream.test:443", &spec)).unwrap(),
@@ -446,9 +437,7 @@ fn proxy_env_refusals_never_echo_the_proxy_password() {
 }
 
 /// A REFUSAL NAMES THE HOST THE VALUE DIALS, OR NONE. The dialling stack ends a web URL's authority
-/// at a `\` as at a `/`, so in `https://proxy.corp\@victim.example` the text after the `@` is path,
-/// not host. RED before the one authority split: the mask read past the `\` and printed
-/// `***@victim.example`, naming a host the value never dials.
+
 #[test]
 fn a_proxy_refusal_names_no_host_the_value_does_not_dial() {
     for v in [
@@ -462,8 +451,7 @@ fn a_proxy_refusal_names_no_host_the_value_does_not_dial() {
 }
 
 /// The proxy's answer is read whole before the tunnel is up: an incomplete head waits, a 2xx
-/// head is the tunnel (and only its own bytes are the head's), any other status refuses in the
-/// engine's words, and an endless head refuses at 8 KiB.
+
 #[test]
 fn the_proxys_answer_is_judged_on_its_status_line() {
     assert_eq!(connect_answer(b"HTTP/1.1 200 Conn", "t:1"), Ok(None));
@@ -488,10 +476,8 @@ fn the_proxys_answer_is_judged_on_its_status_line() {
     assert_eq!(host_of("[::1]:8080"), "[::1]");
 }
 
-// ── end to end, through the connector ──
-
 /// A framer over the test carrier, the dial judged by a judge that pins IP literals and finds no
-/// name (so a named target is one only the proxy resolves), proxying under `config`.
+
 fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
     let view = Transports::new(vec![
         Entry {
@@ -516,7 +502,7 @@ fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
 }
 
 /// A scripted proxy on loopback: it records the CONNECT head, answers `answer`, and (on a 2xx)
-/// acts as the target on the same socket, answering `ping` with `pong`.
+
 async fn scripted_proxy(answer: &'static [u8]) -> (u16, Arc<std::sync::Mutex<String>>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -572,8 +558,7 @@ async fn read_until(
 }
 
 /// THE PROOF: a framed dial to a name only the proxy resolves goes to the proxy, asks it for the
-/// tunnel first (`CONNECT host:port`, `Host`, the Basic credential, exactly the engine's bytes),
-/// and the exchange then rides the tunnel: the target's answer comes back over the same socket.
+
 #[test]
 fn a_framed_dial_rides_a_connect_tunnel_through_the_proxy() {
     worker().block_on(async {
@@ -641,10 +626,7 @@ fn a_proxy_refusing_the_tunnel_refuses_the_exchange() {
 }
 
 /// THE CLAIM (security.md, "target judged before the proxy is asked"): a target the guard refuses
-/// never reaches the proxy. The judge here REFUSES every destination (the permissive judge the other
-/// rows use would admit it), with a verdict that is not "the name does not resolve here" (that one
-/// is the proxy's to resolve), so the open is refused and the scripted proxy is never contacted: no
-/// CONNECT head, not even a connection.
+
 #[test]
 fn a_target_the_guard_refuses_never_reaches_the_proxy() {
     use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
@@ -697,8 +679,7 @@ fn a_target_the_guard_refuses_never_reaches_the_proxy() {
 }
 
 /// RED: a host `NO_PROXY` names is dialled direct, and a carrier carried as itself (a driver's raw
-/// stream) is never tunnelled; the proxy is never reached. With no proxy configured, a name only a
-/// proxy could resolve is refused (the direct arm judges it).
+
 #[test]
 fn no_proxy_and_a_raw_stream_dial_direct() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -714,8 +695,7 @@ fn no_proxy_and_a_raw_stream_dial_direct() {
                 s.read_exact(&mut ping).await.unwrap();
                 s.write_all(b"pong").await.unwrap();
             });
-            // The raw-stream need's proxy config names no exclusion: only its being a carrier
-            // keeps it direct.
+
             let c = if scheme == "carrier" {
                 proxying(Some(test_config("127.0.0.1", port, None, "")))
             } else {
@@ -759,9 +739,7 @@ fn no_proxy_and_a_raw_stream_dial_direct() {
 }
 
 /// RED (the proxy environment honoured "exactly as 1.5.5's reqwest clients did"): the proxy URL's
-/// userinfo is percent-DECODED before it is Base64-encoded into `Proxy-Authorization: Basic`, as
-/// reqwest decodes it. Encoded as written, a password with a reserved character (`@`, `:`, `%`,
-/// written `%40`, `%3A`, `%25` in the URL) reached the proxy still percent-encoded and was refused.
+
 #[test]
 fn the_proxy_credential_is_percent_decoded_before_it_is_presented() {
     use base64::Engine;

@@ -112,8 +112,7 @@ pub struct ServiceHead {
 
 impl ServiceHead {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `ServiceHead { …, ..ServiceHead::ZERO }` so a field appended later reads
-    /// as not declared.
+
     pub const ZERO: Self = Self {
         size: 0,
         op: 0,
@@ -154,7 +153,7 @@ pub struct ServiceOut {
 }
 
 /// The size of the first [`ServiceOut`]: every caller lends at least this many bytes, and an
-/// `out` stating less is REFUSED with nothing written ([`lent_out`]).
+
 pub const SERVICE_OUT_V1: usize = 64;
 
 /// How many bytes of the caller's `out` the host may write: its stated `size` capped at the host's
@@ -189,8 +188,7 @@ pub unsafe fn write_out(out: *mut ServiceOut, mut o: ServiceOut, lent: usize) {
 
 impl ServiceOut {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `ServiceOut { …, ..ServiceOut::ZERO }` so a field appended later reads
-    /// as not declared.
+
     pub const ZERO: Self = Self {
         size: 0,
         outcome: RawOutcome(0),
@@ -218,8 +216,7 @@ pub struct ItemSpan {
 
 impl ItemSpan {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `ItemSpan { …, ..ItemSpan::ZERO }` so a field appended later reads as
-    /// not declared.
+
     pub const ZERO: Self = Self {
         key: Span::ZERO,
         value: Span::ZERO,
@@ -243,8 +240,7 @@ pub struct ServiceBufs {
 
 impl ServiceBufs {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `ServiceBufs { …, ..ServiceBufs::ZERO }` so a field appended later reads
-    /// as not declared.
+
     pub const ZERO: Self = Self {
         buf: std::ptr::null_mut(),
         cap: 0,
@@ -332,7 +328,7 @@ pub mod op {
 pub const SERVICES: u32 = 34;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
-/// an index past the table.
+
 #[must_use]
 pub const fn may_pend(service: u32) -> bool {
     !matches!(
@@ -358,8 +354,6 @@ pub const fn may_pend(service: u32) -> bool {
     ) && service < SERVICES
 }
 
-// ── clock ─────────────────────────────────────────────────────────────────────────────────────
-
 /// `clock.now`'s reading: the kernel's one clock.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -383,8 +377,6 @@ pub struct ClockNowIn {
     /// Where the host writes the reading.
     pub reading: *mut ClockReading,
 }
-
-// ── records ───────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::RECORDS_GET`]'s `in`: one record of the calling plugin's own record kinds. Reads see the
 /// instance's own queued write-behind batch. `value` = [`FOUND`] | [`ABSENT`]; found, span `0`'s
@@ -462,8 +454,7 @@ pub struct RecordsSecretIn {
 
 impl RecordsSecretIn {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `RecordsSecretIn { …, ..RecordsSecretIn::ZERO }` so a field appended
-    /// later reads as not declared.
+
     pub const ZERO: Self = Self {
         head: ServiceHead::ZERO,
         kind: AbiStr::ZERO,
@@ -485,8 +476,6 @@ pub const FOUND: u64 = 1;
 pub const CLAIM_WON: u64 = 1;
 /// `value` of [`op::RECORDS_CLAIM`]: the key was already claimed.
 pub const CLAIM_TAKEN: u64 = 2;
-
-// ── dest ──────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::DEST_JUDGE`]'s `in`: judge a destination named inside content against the egress rules of
 /// a class (the allow-list, the class, the cloud metadata hosts) without dialing. A refusal decidable
@@ -513,16 +502,13 @@ pub struct DestJudgeIn {
 }
 
 /// [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the
-/// addresses judged into [`DestJudgeIn::into`]; without it the judgement is the name's alone.
+
 pub const DEST_RESOLVE: u32 = 1;
 /// [`DestJudgeIn::flags`]: refuse every private address (and loopback name) under this judgement,
-/// whatever the deployment's private-address setting and the class: the caller's own
-/// configuration forbids the reach. The metadata refusal and the allow-list stand as they are.
+
 pub const DEST_REFUSE_PRIVATE: u32 = 2;
 /// [`DestJudgeIn::flags`], with [`DEST_RESOLVE`]: on a refusal an address or the resolution
-/// decided, write ONE span into [`DestJudgeIn::into`] naming what decided it (key = the refused
-/// address as text for [`DEST_INTERNAL`] / [`DEST_METADATA`]; the resolver's own reason for
-/// [`DEST_UNRESOLVABLE`]; value absent). A refusal the name alone decided writes nothing.
+
 pub const DEST_EXPLAIN: u32 = 4;
 
 /// `dest.judge` verdict: admissible.
@@ -544,8 +530,6 @@ pub const DEST_UNRESOLVABLE: u64 = 7;
 /// `dest.judge` verdict: the name resolved to nothing.
 pub const DEST_NO_ADDRESSES: u64 = 8;
 
-// ── sign ──────────────────────────────────────────────────────────────────────────────────────
-
 /// [`op::SIGN`]'s `in`: sign bytes with busbar's key under the plugin's declared signing domain and
 /// key-id prefix; refused for a plugin that declares none. Span `0`: key = the key id, value = the
 /// signature. Never pends.
@@ -559,8 +543,6 @@ pub struct SignIn {
     /// Where the key id and the signature go.
     pub into: ServiceBufs,
 }
-
-// ── unit ──────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::UNIT_NEST`]'s `in`: run a nested unit on whatever plugin serves the named claim, as a child
 /// of the calling unit (its principal, its audit correlation, its admission), depth-capped. The reply
@@ -582,8 +564,6 @@ pub struct UnitNestIn {
     /// Where the reply goes.
     pub into: ServiceBufs,
 }
-
-// ── work ──────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::WORK_OPEN`]'s `in`: open a durable work handle for the calling unit's principal. `value` =
 /// the handle; span `0`'s key is the handle's REFERENCE: [`WORK_REFERENCE_LEN`] lowercase hex digits
@@ -607,7 +587,7 @@ pub struct WorkOpenIn {
 pub const WORK_REFERENCE_LEN: usize = 32;
 
 /// The most bytes a work handle's record carries (the body lives in the plugin's own records; the
-/// handle's record names it).
+
 pub const MAX_WORK_RECORD: usize = 256;
 
 /// [`op::WORK_FIND`]'s `in`: the scoped lookup, within the calling instance and the calling unit's
@@ -657,8 +637,6 @@ pub struct WorkResumeIn {
     /// Where the record goes.
     pub into: ServiceBufs,
 }
-
-// ── trust ─────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::TRUST_SIGHT`]'s `in`: report a counterparty's catalogue hash; the kernel judges it.
 /// `value` = a `TRUST_*` verdict. With [`TRUST_UNREACHABLE`] the plane reports it could not reach
@@ -796,7 +774,7 @@ pub const UNDECIDED_STALE: u64 = 5;
 /// `trust.decide` refused: the calling instance has no such key.
 pub const UNDECIDED_UNKNOWN: u64 = 6;
 /// `trust.decide` refused: the counterparty declares no authenticity root; nothing at it is
-/// approvable.
+
 pub const UNDECIDED_ROOTLESS: u64 = 7;
 
 /// [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the
@@ -866,8 +844,6 @@ pub const SIGNED_NOT_BY_ROOT: u64 = 7;
 /// `trust.verify` verdict: the declared root key is not a key this verifier reads.
 pub const SIGNED_MALFORMED_ROOT: u64 = 8;
 
-// ── verify ────────────────────────────────────────────────────────────────────────────────────
-
 /// [`op::VERIFY_LOOKUP`]'s `in`: the host-side verify cache, single-flight. `value` =
 /// [`VERIFY_HIT`] (span `0`'s value is the entry), [`VERIFY_LEAD`] (the caller fetches and stores)
 /// or [`VERIFY_FOLLOW`] (another caller leads; the answer pends until it stores).
@@ -904,8 +880,6 @@ pub const VERIFY_LEAD: u64 = 2;
 /// `verify.lookup`: the caller followed a leader, whose entry is in span `0`.
 pub const VERIFY_FOLLOW: u64 = 3;
 
-// ── entitlement ───────────────────────────────────────────────────────────────────────────────
-
 /// [`op::ENTITLEMENT_CHECK`]'s `in`: whether the caller is entitled to the target (the catalogue
 /// visibility filter). `value` = [`ENTITLED`] | [`NOT_ENTITLED`]. Never pends.
 #[repr(C)]
@@ -923,12 +897,8 @@ pub const NOT_ENTITLED: u64 = 0;
 pub const ENTITLED: u64 = 1;
 
 /// [`op::ENTITLEMENT_CHECK`]'s target that asks whether the unit's PRINCIPAL STILL STANDS: the host
-/// re-resolves it live (gone, disabled, expired, or a role binding withdrawn is not entitled). Every
-/// other target is judged against the principal as re-resolved now, never the one admitted (a
-/// long-lived response re-asks per frame, ARCHITECT round 4 Q-L3B-SURFACES (a)).
-pub const ENTITLEMENT_STANDING: &str = "standing:";
 
-// ── random ────────────────────────────────────────────────────────────────────────────────────
+pub const ENTITLEMENT_STANDING: &str = "standing:";
 
 /// The most bytes one `random.fill` answers.
 pub const MAX_RANDOM_FILL: u64 = 1024;
@@ -948,11 +918,7 @@ pub struct RandomFillIn {
 }
 
 /// `random.fill`'s `in`, before any byte is drawn: a fill asks for at least one byte and at most
-/// [`MAX_RANDOM_FILL`]. The host REFUSES an `in` that breaks this.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] for `len == 0`; [`Rule::OverMax`] above [`MAX_RANDOM_FILL`].
+
 pub const fn check_random_fill_in(i: &RandomFillIn) -> Result<(), Fault> {
     if i.len == 0 {
         return Err(fault(Rule::Missing, "random_fill.len"));
@@ -962,8 +928,6 @@ pub const fn check_random_fill_in(i: &RandomFillIn) -> Result<(), Fault> {
     }
     Ok(())
 }
-
-// ── content ───────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::CONTENT_SCAN`]'s `in`: pass a piece of in-session content through the gate that governs
 /// it. `value` = [`CONTENT_PASS`] | [`CONTENT_BLOCK`]; the bytes, when written, are the content as
@@ -983,8 +947,6 @@ pub struct ContentScanIn {
 pub const CONTENT_PASS: u64 = 0;
 /// `content.scan`: the gate blocked it.
 pub const CONTENT_BLOCK: u64 = 1;
-
-// ── hook ──────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::HOOK_CALL`]'s input runs the calling
 /// unit's hook stage for an in-session sub-operation, over the hook kind's own
@@ -1047,14 +1009,7 @@ pub const HOOK_STOP_MIN: u64 = 400;
 pub const HOOK_STOP_MAX: u64 = 599;
 
 /// A `hook.call` `in`, before any hook runs: a known stage, a chain resumed no further than
-/// [`HOOK_FROM_MAX`], a gate never resumed, and a prompt view. The host REFUSES an `in` that breaks
-/// this, a distinct message per arm.
-///
-/// # Errors
-///
-/// [`Rule::UnknownCode`] for a stage that is neither; [`Rule::OverMax`] for `from` past
-/// [`HOOK_FROM_MAX`]; [`Rule::Contradiction`] for a gate with a `from`; [`Rule::Missing`] for a NULL
-/// prompt.
+
 pub fn check_hook_call_in(i: &HookCallIn) -> Result<(), Fault> {
     if i.stage != HOOK_GATE && i.stage != HOOK_REWRITE {
         return Err(fault(Rule::UnknownCode, "hook_call.stage"));
@@ -1070,8 +1025,6 @@ pub fn check_hook_call_in(i: &HookCallIn) -> Result<(), Fault> {
     }
     Ok(())
 }
-
-// ── snapshot ──────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::SNAPSHOT_READ`]'s `in`: THE HOST SNAPSHOT SERVICE (kind-neutral; `BUSBAR-1.6.0.md` owner
 /// law 2026-09-27, "the data a plugin needs arrives through a kind-neutral host service, for example
@@ -1102,18 +1055,16 @@ pub struct SnapshotReadIn {
 }
 
 /// [`SnapshotReadIn::scope`]: the host recorder's WHOLE snapshot, in its order (kind, then name),
-/// read after the host refreshes its scrape-time gauges and folds every export instance's status.
+
 pub const SNAPSHOT_SCOPE_WHOLE: u32 = 0;
 /// [`SnapshotReadIn::scope`]: the families the configured hooks REPORT (each hook's own metrics,
-/// labelled with its name), folded from the host's cache (it never waits on a hook).
+
 pub const SNAPSHOT_SCOPE_HOOKS: u32 = 1;
 /// How many scopes there are; a scope at or past it is REFUSED.
 pub const SNAPSHOT_SCOPES: u32 = 2;
 /// The alignment [`SnapshotReadIn::into`]'s `buf` holds (the scrape layout's: every record of it
-/// is pointer-aligned).
-pub const SNAPSHOT_ALIGN: usize = 8;
 
-// ── need ──────────────────────────────────────────────────────────────────────────────────────
+pub const SNAPSHOT_ALIGN: usize = 8;
 
 /// [`op::NEED_ADMIT`]'s `in`: the host's verdict on the calling instance's declared need `need` (its
 /// index in the Statement's needs), as the host admitted it when it bound the instance — its target,
@@ -1133,8 +1084,6 @@ pub struct NeedAdmitIn {
     /// Alignment padding.
     pub _reserved: u32,
 }
-
-// ── disk ──────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::DISK_APPEND`]'s `in`: append `bytes` to the local file the host maps the calling
 /// instance's `dest_key` to (THE DESIGN, the host-owned bounded disk lane: the ONE exception to "no
@@ -1181,8 +1130,7 @@ pub struct DiskWritten {
 
 impl DiskWritten {
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `DiskWritten { …, ..DiskWritten::ZERO }` so a field appended later reads
-    /// as not declared.
+
     pub const ZERO: Self = Self {
         size: 0,
         rotated: 0,
@@ -1195,12 +1143,12 @@ impl DiskWritten {
 /// [`DiskWritten::rotated`]: the host rotated the file before appending.
 pub const DISK_ROTATED: u8 = 1;
 /// [`DiskWritten::faults`]: dropping the oldest archive failed (the archive series may exceed the
-/// host's retention).
+
 pub const DISK_RETENTION_FAILED: u8 = 1;
 /// [`DiskWritten::faults`]: shifting an archive up one slot failed (it was left in place).
 pub const DISK_SHIFT_FAILED: u8 = 2;
 /// [`DiskWritten::faults`]: renaming the live file to its first archive failed (the append went to
-/// the live file, which keeps growing; nothing was truncated).
+
 pub const DISK_RENAME_FAILED: u8 = 4;
 /// Every [`DiskWritten::faults`] bit.
 pub const DISK_FAULTS: u8 = DISK_RETENTION_FAILED | DISK_SHIFT_FAILED | DISK_RENAME_FAILED;
@@ -1209,12 +1157,8 @@ pub const DISK_OPEN_FAILED: u64 = 1;
 /// A FAILED `disk.append`'s `ServiceOut::value`: the file opened, and writing the bytes failed.
 pub const DISK_APPEND_FAILED: u64 = 2;
 
-// ── carrier sessions ──────────────────────────────────────────────────────────────────────────
-
 /// The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the
-/// root states it on every unit it opens from a session that holds one carrier open (a process's
-/// own stdin/stdout), and never lets a caller state it. Its value is the session's number, in
-/// decimal; a plugin hands that number back to [`op::SESSION_EMIT`].
+
 pub const CARRIER_SESSION_FIELD: &str = "busbar-carrier-session";
 
 /// [`op::SESSION_EMIT`]'s `in`: write `bytes`, UNSOLICITED, on the open carrier session `session`
@@ -1234,10 +1178,7 @@ pub struct SessionEmitIn {
 }
 
 /// `session.emit`'s `in`: a session is named (never `0`) and something is written.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] for no session or no bytes.
+
 pub const fn check_session_emit_in(i: &SessionEmitIn) -> Result<(), Fault> {
     if i.session == 0 {
         return Err(fault(Rule::Missing, "session_emit.session"));
@@ -1247,8 +1188,6 @@ pub const fn check_session_emit_in(i: &SessionEmitIn) -> Result<(), Fault> {
     }
     Ok(())
 }
-
-// ── the host auth handle ──────────────────────────────────────────────────────────────────────
 
 /// One auth handle a transport presents: an inbound guest-list line's or an outbound binding's.
 ///
@@ -1349,7 +1288,7 @@ pub const SCHEME_PLAIN: u8 = 1;
 pub const SCHEME_SECURE: u8 = 2;
 
 /// THE REFUSAL of an `auth.call` whose request view declares no scheme ([`SCHEME_UNDECLARED`]):
-/// the host's answer text, REFUSED, before the auth runs.
+
 pub const SCHEME_UNDECLARED_REFUSED: &str = "the request view declares no scheme";
 
 /// [`AuthAnswer::flow`]: the transport carries on with the request.
@@ -1546,10 +1485,7 @@ pub struct UnitRefuseIn {
 }
 
 /// A [`HeadView`]: no string or list is a count behind NULL, and at most [`MAX_SPANS`] fields.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`]; [`Rule::OverMax`] for too many fields.
+
 pub fn check_head_view(v: &HeadView) -> Result<(), Fault> {
     check::text(v.method, "head_view.method")?;
     check::text(v.target, "head_view.target")?;
@@ -1569,15 +1505,7 @@ pub fn check_head_view(v: &HeadView) -> Result<(), Fault> {
 }
 
 /// The host's check of an `auth.call` `in`, after its exact size ([`check_head_exact`]): a handle,
-/// exactly one known point, a body only at the body point, no unit at the peer point, well-formed
-/// lists and an answer slot.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] for no handle, no answer slot, or a request view that declares no scheme
-/// ([`SCHEME_UNDECLARED`]) off the peer point; [`Rule::UnknownCode`] for a point that is not
-/// exactly one of the three; [`Rule::Contradiction`] for a body off the body point or a unit at
-/// the peer point; [`Rule::NullWithCount`] for a count behind NULL.
+
 pub fn check_auth_call_in(i: &AuthCallIn) -> Result<(), Fault> {
     use crate::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
     if i.auth.is_none() {
@@ -1594,7 +1522,7 @@ pub fn check_auth_call_in(i: &AuthCallIn) -> Result<(), Fault> {
         return Err(fault(Rule::Contradiction, "auth_call.unit"));
     }
     check_head_view(&i.request)?;
-    // A request's scheme is the host's to declare; an undeclared one (a zeroed view) never grants.
+
     if i.point != POINT_PEER && i.request.scheme == SCHEME_UNDECLARED {
         return Err(fault(Rule::Missing, "head_view.scheme"));
     }
@@ -1607,12 +1535,7 @@ pub fn check_auth_call_in(i: &AuthCallIn) -> Result<(), Fault> {
 }
 
 /// The host's check of a `unit.hand_in` `in`, after its exact size: a handle, a line, a request
-/// with a method, and an answer slot.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] for no handle, no line, no method or no answer slot; [`Rule::NullWithCount`]
-/// and [`Rule::OverMax`] by [`check_head_view`].
+
 pub fn check_unit_hand_in_in(i: &UnitHandInIn) -> Result<(), Fault> {
     if i.auth.is_none() {
         return Err(fault(Rule::Missing, "unit_hand_in.auth"));
@@ -1631,14 +1554,7 @@ pub fn check_unit_hand_in_in(i: &UnitHandInIn) -> Result<(), Fault> {
 }
 
 /// The host's check of a `unit.refuse` `in`, after its exact size: a known cause, [`LINE_NONE`]
-/// exactly for [`REFUSE_NO_ROUTE`], no unit without a line, an answer slot, and the request being
-/// refused ([`check_head_view`], with its method named).
-///
-/// # Errors
-///
-/// [`Rule::UnknownCode`] for an unknown cause; [`Rule::Contradiction`] for a line that disagrees
-/// with the cause or a unit with no line; [`Rule::Missing`] for no answer slot or no request
-/// method; the [`check_head_view`] faults for a malformed request.
+
 pub fn check_unit_refuse_in(i: &UnitRefuseIn) -> Result<(), Fault> {
     if i.cause < REFUSE_NO_ROUTE || i.cause > REFUSE_CHECK_FAILED {
         return Err(fault(Rule::UnknownCode, "unit_refuse.cause"));
@@ -1658,8 +1574,6 @@ pub fn check_unit_refuse_in(i: &UnitRefuseIn) -> Result<(), Fault> {
     }
     Ok(())
 }
-
-// ── tickets ───────────────────────────────────────────────────────────────────────────────────
 
 /// The most record bytes one `ticket.mint` stores with its ticket.
 pub const MAX_TICKET_RECORD: u64 = 64 * 1024;
@@ -1686,12 +1600,7 @@ pub struct TicketMintIn {
 }
 
 /// `ticket.mint`'s `in`, before anything is minted: a lifetime of at least one second, and a record
-/// within [`MAX_TICKET_RECORD`]. The host REFUSES an `in` that breaks this.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] for `ttl_secs == 0`; [`Rule::OverMax`] for a record above
-/// [`MAX_TICKET_RECORD`].
+
 pub const fn check_ticket_mint_in(i: &TicketMintIn) -> Result<(), Fault> {
     if i.ttl_secs == 0 {
         return Err(fault(Rule::Missing, "ticket_mint.ttl_secs"));
@@ -1720,8 +1629,6 @@ pub struct TicketTakeIn {
     /// Where the record goes.
     pub into: ServiceBufs,
 }
-
-// ── the table ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service
 /// this host does not offer, and a plugin that needs it refuses to open.
@@ -1802,14 +1709,8 @@ pub struct HostSlots {
     pub ticket_take: Option<ServiceFn>,
 }
 
-// ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
-
 /// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's, and
-/// the stated size covers the type.
-///
-/// # Errors
-///
-/// [`Rule::Contradiction`] for another op; [`Rule::Foreign`] for a short `in`.
+
 pub const fn check_head(head: &ServiceHead, service: u32, in_size: usize) -> Result<(), Fault> {
     if head.op != service {
         return Err(fault(Rule::Contradiction, "service.head.op"));
@@ -1821,12 +1722,7 @@ pub const fn check_head(head: &ServiceHead, service: u32, in_size: usize) -> Res
 }
 
 /// The head of an `in` whose size is EXACT: the op is the slot's and the stated size is the `in`
-/// type's, neither more nor less. Every service whose `in` has one v1 size checks this, never
-/// [`check_head`]'s "at least".
-///
-/// # Errors
-///
-/// [`Rule::Contradiction`] for another op; [`Rule::Foreign`] for any other size.
+
 pub const fn check_head_exact(
     head: &ServiceHead,
     service: u32,
@@ -1842,10 +1738,7 @@ pub const fn check_head_exact(
 }
 
 /// The caller's buffers: a capacity never comes with a NULL pointer.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`].
+
 pub fn check_bufs(into: &ServiceBufs) -> Result<(), Fault> {
     check::listed(into.buf.cast_const(), into.cap, "service.into.buf")?;
     check::listed(
@@ -1856,11 +1749,7 @@ pub fn check_bufs(into: &ServiceBufs) -> Result<(), Fault> {
 }
 
 /// A `records.claim` `in`: a claim states how long it stands; a zero time to live is refused, as
-/// there is no default to fall back on.
-///
-/// # Errors
-///
-/// [`Rule::Missing`] for `ttl_ms == 0`.
+
 pub const fn check_records_claim_in(i: &RecordsClaimIn) -> Result<(), Fault> {
     if i.ttl_ms == 0 {
         return Err(fault(Rule::Missing, "records_claim.ttl_ms"));
@@ -1869,12 +1758,7 @@ pub const fn check_records_claim_in(i: &RecordsClaimIn) -> Result<(), Fault> {
 }
 
 /// The host's check of a `disk.append` `in`: a key is named, neither the key nor the bytes come as a
-/// count behind NULL, the bytes fit one answer's bound, and there is a result slot.
-///
-/// # Errors
-///
-/// [`Rule::NullWithCount`]; [`Rule::Missing`] for an absent key or result slot; [`Rule::OverMax`]
-/// for bytes over [`MAX_BYTES`].
+
 pub fn check_disk_append_in(i: &DiskAppendIn) -> Result<(), Fault> {
     check::text(i.dest_key, "disk_append.dest_key")?;
     if i.dest_key.len == 0 {
@@ -1889,8 +1773,6 @@ pub fn check_disk_append_in(i: &DiskAppendIn) -> Result<(), Fault> {
     }
     Ok(())
 }
-
-// ── the caller's checks of an answer ──────────────────────────────────────────────────────────
 
 /// What a service's answer may carry beyond the common rules.
 #[derive(Debug, Clone, Copy)]
@@ -1956,7 +1838,7 @@ unsafe fn answer(
 }
 
 /// [`answer`]'s rules short of reading any span: the outcome, the size, PENDING, the short-buffer
-/// rule over `caps` (bytes, spans) and a READY `value` in `values`.
+
 fn common(
     ret: RawOutcome,
     head: &ServiceHead,
@@ -2109,10 +1991,7 @@ pub unsafe fn check_records_secret(
 }
 
 /// `snapshot.read`'s answer: the common rules; READY writes no spans.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_snapshot_read(
     i: &SnapshotReadIn,
     ret: RawOutcome,
@@ -2130,10 +2009,7 @@ pub fn check_snapshot_read(
 }
 
 /// A `snapshot.read` `in`: a known scope, and a buffer of the scrape layout's alignment.
-///
-/// # Errors
-///
-/// [`Rule::UnknownCode`] for an unknown scope; [`Rule::Foreign`] for a misaligned buffer.
+
 pub fn check_snapshot_read_in(i: &SnapshotReadIn) -> Result<(), Fault> {
     if i.scope >= SNAPSHOT_SCOPES {
         return Err(fault(Rule::UnknownCode, "snapshot_read.scope"));
@@ -2167,10 +2043,7 @@ pub unsafe fn check_records_list(
 }
 
 /// `records.claim`'s answer.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_records_claim(
     i: &RecordsClaimIn,
     ret: RawOutcome,
@@ -2286,11 +2159,7 @@ pub unsafe fn check_work_open(
 }
 
 /// A `work.open` or `work.settle` record: at most [`MAX_WORK_RECORD`] bytes. The host REFUSES an
-/// `in` that breaks this, before anything is opened or settled.
-///
-/// # Errors
-///
-/// [`Rule::OverMax`].
+
 pub const fn check_work_record(record: &Blob) -> Result<(), Fault> {
     if record.len > MAX_WORK_RECORD {
         return Err(fault(Rule::OverMax, "work.record"));
@@ -2321,10 +2190,7 @@ pub unsafe fn check_work_find(
 }
 
 /// `work.settle`'s answer.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_work_settle(
     i: &WorkSettleIn,
     ret: RawOutcome,
@@ -2359,10 +2225,7 @@ pub unsafe fn check_work_resume(
 }
 
 /// `trust.sight`'s answer.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_trust_sight(
     i: &TrustSightIn,
     ret: RawOutcome,
@@ -2380,10 +2243,7 @@ pub fn check_trust_sight(
 }
 
 /// `trust.sight_item`'s answer: a sighting verdict.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_trust_sight_item(
     i: &TrustSightItemIn,
     ret: RawOutcome,
@@ -2401,10 +2261,7 @@ pub fn check_trust_sight_item(
 }
 
 /// `trust.serves`'s answer: [`DISTRUST_NONE`] or a `DISTRUST_*`.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_trust_serves(
     i: &TrustServesIn,
     ret: RawOutcome,
@@ -2422,10 +2279,7 @@ pub fn check_trust_serves(
 }
 
 /// `trust.decide`'s answer: a `TRUST_DECIDED_*` verdict or an `UNDECIDED_*`.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_trust_decide(
     i: &TrustDecideIn,
     ret: RawOutcome,
@@ -2522,10 +2376,7 @@ pub unsafe fn check_verify_lookup(
 }
 
 /// `verify.store`'s answer.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_verify_store(
     i: &VerifyStoreIn,
     ret: RawOutcome,
@@ -2538,10 +2389,7 @@ pub fn check_verify_store(
 }
 
 /// `entitlement.check`'s answer.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_entitlement_check(
     i: &EntitlementCheckIn,
     ret: RawOutcome,
@@ -2638,7 +2486,7 @@ pub unsafe fn check_hook_call(
             into(op::HOOK_CALL, i.into, (0, HOOK_STOP_MAX)),
         )
     }?;
-    // READY answers `0`, a stopping status, or (a rewrite chain only) `1 + i` within the cap.
+
     if ret.outcome() == Outcome::Ready && out.value != 0 && out.value < HOOK_STOP_MIN {
         let resumable = i.stage == HOOK_REWRITE && out.value <= u64::from(HOOK_FROM_MAX);
         if !resumable {
@@ -2649,11 +2497,7 @@ pub unsafe fn check_hook_call(
 }
 
 /// `need.admit`'s answer: never pends; READY (`value` 0) = admitted, REFUSED = not, with the
-/// host's text.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_need_admit(
     i: &NeedAdmitIn,
     ret: RawOutcome,
@@ -2666,10 +2510,7 @@ pub fn check_need_admit(
 }
 
 /// `session.emit`'s answer: the common rules, nothing written back.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
+
 pub fn check_session_emit(
     i: &SessionEmitIn,
     ret: RawOutcome,
@@ -2867,7 +2708,7 @@ unsafe fn exact_answer<T: Copy>(p: *mut T, field: &'static str) -> Result<T, Fau
 }
 
 /// The unit an [`AuthAnswer`] carries, against the one the call presented: none at the peer
-/// point; otherwise present, and the presented one when one was presented.
+
 fn check_answer_unit(
     sent: UnitRef,
     got: UnitRef,
@@ -2936,9 +2777,7 @@ pub unsafe fn check_auth_call(
         i.point == POINT_PEER,
         "auth_call.answer.unit",
     )?;
-    // THE PEER POINT ANSWERS ONLY CONTINUE OR STOP: no field, no name, no byte (an outbound
-    // binding's peer call never carries key material; the client identity stays the
-    // connector's).
+
     if i.point == POINT_PEER && (out.len != 0 || out.items != 0) {
         return Err(fault(Rule::Contradiction, "auth_call.answer.peer_fields"));
     }

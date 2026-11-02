@@ -1,26 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE MONEY VIEW'S MEMO** (#43/#71; BUSBAR-1.6.0.md THE DESIGN, the export kind, property 4).
-//!
-//! The `/metrics` scrape reads each bucket's derived spend. It used to price every bucket on every
-//! poll, which made an external monitoring system's poll interval an input to the pricing path. The
-//! scrape now reads this memo: a bucket's figure is priced once, by the kernel's money view, and
-//! read back until something it was priced from changes.
-//!
-//! WHAT A FIGURE WAS PRICED FROM ([`Inputs`]): the bucket's window, the cell's recorded facts (its
-//! per-(model, era) counts, its request and billable-request counts, its fee eras), the card's
-//! generation and the dated history as the read resolves it. A recorded write (an `adjust`
-//! included: it is a usage-row delta), a window roll or a card change each leave the inputs
-//! different, so the next scrape reprices exactly that bucket. Nothing on the write side
-//! prices or even touches this memo: staleness is decided at read time, by comparing inputs, so no
-//! write path can forget to mark a bucket.
-
 use super::{
     wall_ms, BudgetCell, DerivedUsage, EntryId, History, MoneyError, RawFeeEras, RawRateEra,
 };
 
-/// A bucket's derived figure, or the one function's refusal.
 type Priced = Result<DerivedUsage, MoneyError>;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,8 +48,6 @@ impl PartialEq for Inputs {
 }
 
 impl Inputs {
-    /// The inputs of pricing `cell` (the bucket's current-window cell, live or durable) for
-    /// `period`, now.
     pub(in crate::governance) fn of(
         cost: &crate::cost::CostModel,
         period: &str,
@@ -110,7 +92,6 @@ pub(in crate::governance) struct MoneyView {
 }
 
 impl MoneyView {
-    /// `bucket_id`'s memoized figure, if it was priced from exactly `inputs`.
     pub(in crate::governance) fn fresh(&self, bucket_id: &str, inputs: &Inputs) -> Option<Priced> {
         let memo = self.memo.lock().unwrap_or_else(|p| p.into_inner());
         memo.get(bucket_id)
@@ -118,25 +99,20 @@ impl MoneyView {
             .map(|(_, usage)| usage.clone())
     }
 
-    /// Keep `usage` as `bucket_id`'s figure for `inputs`.
     pub(in crate::governance) fn keep(&self, bucket_id: &str, inputs: Inputs, usage: Priced) {
         let mut memo = self.memo.lock().unwrap_or_else(|p| p.into_inner());
         memo.insert(bucket_id.to_string(), (inputs, usage));
     }
 
-    /// Count one pricing.
     pub(in crate::governance) fn priced(&self) {
         self.pricings.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// How many times this view has priced. Built only where its one reader is
-    /// (`GovState::money_view_pricings`, the scrape-reprice tests' probe).
     #[cfg(test)]
     pub(in crate::governance) fn pricings(&self) -> u64 {
         self.pricings.load(Ordering::Relaxed)
     }
 
-    /// Forget a bucket that no longer exists (a deleted key, a reclaimed group cell).
     pub(in crate::governance) fn forget(&self, bucket_id: &str) {
         let mut memo = self.memo.lock().unwrap_or_else(|p| p.into_inner());
         memo.remove(bucket_id);

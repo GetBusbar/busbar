@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ROUTE VOCABULARY every kind that serves a route declares it in: a path, a method and the
-//! auth bar the host enforces before a matched request reaches the plugin. One plain type, shared
-//! by the mechanism (`BUSBAR-1.6.0.md` THE DESIGN, the closed ABI layout: the mechanism, one folder
-//! per kind, the host tables and the SDK): hooks, export sinks and planes declare routes, and the
-//! host's own routes are named in the same words. Each kind's `repr(C)` table form
-//! carries the same three facts.
 
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +25,7 @@ pub enum RouteMethod {
 
 impl RouteMethod {
     /// The canonical uppercase HTTP method token (`"GET"`, …) — the same spelling that rides the wire,
-    /// used verbatim in collision diagnostics (`GET /metrics`) and method matching.
+
     pub fn as_str(&self) -> &'static str {
         match self {
             RouteMethod::Get => "GET",

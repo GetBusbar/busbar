@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The metric-family guard ([`check_metric_families`]): what a plane may declare it adds to over
-//! the host's `counter_add`, judged against the reserved rows the host lets a plane carry.
 
 use super::*;
 
@@ -56,8 +55,7 @@ fn a_plane_family_and_a_carried_first_party_series_are_admitted() {
 }
 
 /// RED ARM: a plane cannot mint a first-party series — an unlisted `busbar_` name is refused, and
-/// so is a listed one whose label keys differ in set or in order (it would not render the host's
-/// bytes).
+
 #[test]
 fn a_reserved_family_the_host_does_not_list_is_refused() {
     const MINTED: &[MetricFamily] = &[counter("busbar_minted_total", &[])];

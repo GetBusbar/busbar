@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The kernel's trust state (`trust/book.rs`): one test per rule of the lifecycle.
-
 use std::sync::Arc;
 
 use super::*;
@@ -47,8 +45,6 @@ fn an_instance_never_admitted_or_a_counterparty_it_does_not_declare_is_not_judge
     assert_eq!(b.due("other"), None);
 }
 
-/// A FIRST SIGHTING PINS NOTHING (ARCHITECT 2026-10-06): with no declared pin a counterparty is
-/// NEW, and refused, until the operator approves what it reports; RED was trust on first sight.
 #[test]
 fn the_first_sighting_with_no_declared_pin_is_new_until_approved() {
     let (b, i) = book(entry(None, 0, 0));
@@ -76,14 +72,6 @@ fn the_first_sighting_with_no_declared_pin_is_new_until_approved() {
     );
 }
 
-/// A DECLARED FINGERPRINT IS INTENT, NOT AN APPROVAL (coordinator ruling 2026-10-07, OWNER
-/// 2026-09-28: the baseline is predev's behaviour). Ported from predev's plane cell
-/// `plane_tests.rs::a_declared_fingerprint_does_not_become_an_approval_at_boot`: an operator may
-/// write the fingerprint they intend to approve, but an approval is a statement about a document
-/// that was actually SEEN, so a registration lowered from config is PENDING until an operator
-/// approves it. The kernel's Approve refuses it (`NotApproved`) and the admin surface lists it NEW,
-/// whatever the config declared. RED was the declared fingerprint taken as the pin from the start,
-/// which `judge` answered `Ok` before any approval.
 #[test]
 fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
     let (b, i) = book(entry(Some("fp"), 0, 0));
@@ -142,19 +130,17 @@ fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
         Ok((Sight::Same, Effect::None)),
         "approved, the pin is the pinned catalogue"
     );
-    // The kept approval outlives a restart: replayed, the declared fingerprint is approved.
+
     let (fresh, f) = book(entry(Some("fp"), 0, 0));
     assert_eq!(fresh.judge(&f, &whole), Err(Distrust::NotApproved));
     fresh.admit_decided(&f, [&kept]);
     assert_eq!(fresh.judge(&f, &whole), Ok(()));
-    // A re-admit with the same declaration keeps the approval; a changed one is pending again.
+
     b.admit(&i, [("cp".to_string(), entry(Some("fp"), 0, 0))], []);
     assert_eq!(b.judge(&i, &whole), Ok(()));
     b.admit(&i, [("cp".to_string(), entry(Some("fp2"), 0, 0))], []);
     assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
-    // Every item there waits on the counterparty's approval, a configured one included
-    // (coordinator 2026-10-07, #555 point iii; predev crates/busbar-kernel/src/trust/mod.rs:336-337,
-    // `serves` is false while nothing is pinned).
+
     let mut e = entry(Some("fp"), 0, 0);
     e.approved.insert("t".to_string(), "d1".to_string());
     let (b, i) = book(e);
@@ -178,9 +164,7 @@ fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
 fn drift_answers_drifted_once_then_quarantined() {
     let (b, i) = book(entry(Some("h1"), 0, 0));
     b.sight("inst", "cp", "h1", 1).unwrap();
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     assert_eq!(
         b.sight("inst", "cp", "h2", 2),
@@ -196,9 +180,7 @@ fn drift_answers_drifted_once_then_quarantined() {
 fn a_resighting_of_the_pin_clears_the_quarantine() {
     let (b, i) = book(entry(Some("h1"), 0, 0));
     b.sight("inst", "cp", "h1", 1).unwrap();
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     b.sight("inst", "cp", "h2", 2).unwrap();
     assert_eq!(
@@ -215,16 +197,14 @@ fn a_resighting_of_the_pin_clears_the_quarantine() {
 fn a_clean_sighting_inside_the_recovery_backoff_is_held() {
     let (b, i) = book(entry(Some("h1"), 0, 100));
     b.sight("inst", "cp", "h1", 1).unwrap();
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     b.sight("inst", "cp", "h2", 10).unwrap();
     assert_eq!(
         b.sight("inst", "cp", "h1", 50),
         Ok((Sight::Quarantined, Effect::None))
     );
-    // A clock that went backwards past the drift holds it too.
+
     assert_eq!(
         b.sight("inst", "cp", "h1", 5),
         Ok((Sight::Quarantined, Effect::None))
@@ -248,8 +228,7 @@ fn a_replayed_demotion_quarantines_at_admit() {
         b.sight("inst", "cp", "other", 2),
         Ok((Sight::Quarantined, Effect::None))
     );
-    // Pending, never Same: the declared fingerprint was never approved (coordinator 2026-10-07,
-    // #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
+
     assert_eq!(
         b.sight("inst", "cp", "fp", 3),
         Ok((Sight::New, Effect::Clear))
@@ -259,9 +238,7 @@ fn a_replayed_demotion_quarantines_at_admit() {
 #[test]
 fn a_readmit_keeps_state_unless_the_declared_pin_changed() {
     let (b, i) = book(entry(Some("fp"), 0, 0));
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     b.sight("inst", "cp", "other", 1).unwrap();
     b.admit(&i, [("cp".to_string(), entry(Some("fp"), 0, 0))], []);
@@ -270,16 +247,13 @@ fn a_readmit_keeps_state_unless_the_declared_pin_changed() {
         Ok((Sight::Quarantined, Effect::None))
     );
     b.admit(&i, [("cp".to_string(), entry(Some("other"), 0, 0))], []);
-    // Pending, never Same: the declared fingerprint was never approved (coordinator 2026-10-07,
-    // #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
+
     assert_eq!(
         b.sight("inst", "cp", "other", 3),
         Ok((Sight::New, Effect::None))
     );
 }
 
-/// NO BACKGROUND TIMER (tool-and-agent-trust.md:61-62): whatever the declared cadence, and however
-/// long since the last sighting, no counterparty is ever due; one never admitted has no answer.
 #[test]
 fn no_counterparty_is_ever_due_by_the_clock() {
     let (b, _) = book(entry(None, 100, 0));
@@ -301,19 +275,13 @@ fn a_replayed_demotion_with_no_declared_pin_stays_until_one_is_declared() {
         Ok((Sight::Quarantined, Effect::None))
     );
     b.admit(&i, [("cp".to_string(), entry(Some("h"), 0, 0))], []);
-    // Pending, never Same: the declared fingerprint was never approved (coordinator 2026-10-07,
-    // #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
+
     assert_eq!(
         b.sight("inst", "cp", "h", 3),
         Ok((Sight::New, Effect::None))
     );
 }
 
-/// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06): a unit's stated trust facts are judged here, never
-/// by the plane. RED arms, one per refusal: an undeclared counterparty, one never sighted, one
-/// sighted and never approved, one quarantined, an item never sighted (unknown: a 404's case) apart
-/// from one sighted and never approved (known, ungranted: a 403's case), and one offered at another
-/// digest than approved.
 #[test]
 fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
     let (b, i) = book(entry(None, 0, 0));
@@ -343,7 +311,6 @@ fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
         "approved: trusted whole"
     );
 
-    // An unknown item, then known and ungranted, then granted at its digest alone.
     assert_eq!(
         b.judge(&i, &facts(Some("t"), None)),
         Err(Distrust::UnknownItem)
@@ -370,11 +337,11 @@ fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
         b.judge(&i, &facts(Some("t"), Some("d2"))),
         Err(Distrust::Changed)
     );
-    // A re-fetch that sees it drift: the last sighting no longer matches what was approved.
+
     assert_eq!(b.sight_item(&i, "cp", "t", "d2"), Ok(Sight::Drifted));
     assert_eq!(b.sight_item(&i, "cp", "t", "d2"), Ok(Sight::Same));
     assert_eq!(b.judge(&i, &facts(Some("t"), None)), Err(Distrust::Changed));
-    // Revoked, it is refused; approved again, at its new digest.
+
     b.decide(&i, "cp", Some("t"), Ruling::Revoke, None)
         .expect("a key");
     assert_eq!(
@@ -385,7 +352,6 @@ fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
         .expect("a key");
     assert_eq!(b.judge(&i, &facts(Some("t"), None)), Ok(()));
 
-    // The counterparty drifts: quarantined, whatever was approved.
     b.sight(&i, "cp", "h2", 2).expect("judged");
     assert_eq!(
         b.judge(&i, &facts(Some("t"), None)),
@@ -398,9 +364,6 @@ fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
     );
 }
 
-/// A CONFIGURED ITEM APPROVAL (`TRUST_ITEM_APPROVALS`) serves its item on its first call at the
-/// configured digest, with no counterparty approval; another digest is changed; an operator revoke
-/// wins over the configuration; and a counterparty revoke refuses every item there.
 #[test]
 fn a_configured_item_approval_serves_until_the_operator_revokes_it() {
     let mut e = entry(None, 0, 0);
@@ -428,9 +391,6 @@ fn a_configured_item_approval_serves_until_the_operator_revokes_it() {
     assert_eq!(b.judge(&i, &at(Some("d1"))), Err(Distrust::NotApproved));
 }
 
-/// THE ADMINISTRATIVE STATES (`GET /api/v1/admin/trust`): new until approved, approved, same once
-/// re-sighted as approved, drifted when a sighting moves from it (quarantined again until
-/// re-approved), and idempotent decisions: the same decision twice answers the same row.
 #[test]
 fn the_keys_list_their_states_and_decisions_are_idempotent() {
     let (b, i) = book(entry(None, 0, 0));
@@ -461,14 +421,14 @@ fn the_keys_list_their_states_and_decisions_are_idempotent() {
         Ok((Sight::Drifted, Effect::Demote))
     );
     assert_eq!(state("inst/cp"), Some(KeyState::Drifted));
-    // Re-approved at what it now reports: served again, and the drift is the new pin.
+
     let (row, fact) = b
         .decide(&i, "cp", None, Ruling::Approve, None)
         .expect("a key");
     assert_eq!(row.approved.as_deref(), Some("h2"));
     assert_eq!(fact.approved.as_deref(), Some("h2"));
     assert_eq!(b.sight(&i, "cp", "h2", 4), Ok((Sight::Same, Effect::None)));
-    // Revoked: new (refused) until approved again; the revoke is idempotent too.
+
     let r1 = b
         .decide(&i, "cp", None, Ruling::Revoke, None)
         .expect("a key");
@@ -478,14 +438,12 @@ fn the_keys_list_their_states_and_decisions_are_idempotent() {
     assert_eq!(r1, r2);
     assert_eq!(r1.0.state, KeyState::New);
     assert_eq!(r1.1.approved, None);
-    // Items list under their counterparty.
+
     b.sight_item(&i, "cp", "t", "d1").unwrap();
     assert_eq!(state("inst/cp/t"), Some(KeyState::New));
     assert_eq!(b.rows().len(), 2);
 }
 
-/// THE OPERATOR'S DECISIONS ARE DURABLE: replayed onto a fresh book they leave the state they
-/// left; a row for a counterparty no longer declared is ignored.
 #[test]
 fn kept_decisions_replay_at_admit() {
     let (b, i) = book(entry(None, 0, 0));
@@ -521,13 +479,10 @@ fn kept_decisions_replay_at_admit() {
     assert_eq!(fresh.judge(&i, &facts(Some("t"))), Ok(()));
 }
 
-/// UNREACHABLE (`TRUST_UNREACHABLE`): the last verdict, and nothing changes: no drift, no clear,
-/// the re-verification mark stands.
 #[test]
 fn an_unreachable_sighting_answers_the_last_verdict_and_changes_nothing() {
     let (b, i) = book(entry(Some("h1"), 100, 0));
-    // A declared fingerprint never approved is pending, reached or not (coordinator 2026-10-07,
-    // #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
+
     assert_eq!(b.last_verdict(&i, "cp"), Ok(Sight::New));
     assert_eq!(
         b.last_verdict(&i, "cp"),
@@ -546,9 +501,6 @@ fn an_unreachable_sighting_answers_the_last_verdict_and_changes_nothing() {
     assert_eq!(unpinned.last_verdict(&i, "cp"), Ok(Sight::New));
 }
 
-/// A REGISTRATION WITH NO AUTHENTICITY ROOT (a declared pin of the plane's no-root spelling, no
-/// fingerprint) APPROVES NOTHING: the operator's approval is refused at the counterparty and at its
-/// items (a revoke still stands), so nothing at it is ever served.
 #[test]
 fn a_rootless_registration_approves_nothing() {
     let mut e = entry(None, 0, 0);
@@ -585,10 +537,6 @@ fn a_rootless_registration_approves_nothing() {
     );
 }
 
-/// AN APPROVED ITEM NEVER SIGHTED IS PENDING (ARCHITECT 2026-10-06): a configured approval exists
-/// before the plane's first re-fetch, and has nothing to be compared against: unsighted, not
-/// changed and not serving. The first sighting compares: a match serves, a mismatch is changed
-/// (the item's quarantine, until re-approved).
 #[test]
 fn an_approved_item_never_sighted_is_pending_until_its_first_sighting_compares() {
     let mut e = entry(None, 0, 0);
@@ -611,13 +559,6 @@ fn an_approved_item_never_sighted_is_pending_until_its_first_sighting_compares()
     );
 }
 
-/// A FLAPPING UPSTREAM GETS ONE PERSISTENT QUARANTINE, AND EVERY FLAP IS STILL COUNTED (the served
-/// engine's verify battery, on the book that now holds drift): the quarantine persists across the
-/// clean answers inside the recovery backoff (one demotion, no storm), and the ledger records every
-/// drift observed (the operator sees the flapping, not only what survived the filter). Past the
-/// backoff a clean answer is believed: the hold delays recovery, it never refuses it. Four flaps
-/// count four here; the engine counted five because its first capture of an unruled skill was
-/// itself drift, where the book pins a declared fingerprint from the start.
 #[test]
 fn a_flapping_upstream_gets_one_persistent_quarantine_and_every_flap_is_still_counted() {
     let (b, i) = book(entry(Some("good"), 60_000, 300_000));
@@ -626,8 +567,7 @@ fn a_flapping_upstream_gets_one_persistent_quarantine_and_every_flap_is_still_co
         item: None,
         digest: None,
     };
-    // A declared fingerprint is intent, not an approval (coordinator ruling 2026-10-07, the
-    // predev baseline): the first sighting is new until the operator approves what was seen.
+
     assert_eq!(
         b.sight(&i, "cp", "good", 1_000),
         Ok((Sight::New, Effect::None))
@@ -682,8 +622,6 @@ fn a_flapping_upstream_gets_one_persistent_quarantine_and_every_flap_is_still_co
     assert_eq!(b.judge(&i, &whole), Ok(()));
 }
 
-/// A pin of the kind-neutral `mechanism`: an authenticity root holding `key`, or the no-root
-/// spelling (no root, no material, no fingerprint).
 fn pinned_by(mechanism: &str, root: bool, key: Option<&str>) -> TrustEntry {
     TrustEntry {
         pin: Some(DeclaredPin {
@@ -697,11 +635,6 @@ fn pinned_by(mechanism: &str, root: bool, key: Option<&str>) -> TrustEntry {
     }
 }
 
-/// AN IDENTITY CHANGE NEVER RIDES THE OLD APPROVAL (Q128 p8#1; `section.rs`: a registration with
-/// no authenticity root approves nothing). A counterparty approved, with an item, under a root is
-/// re-admitted with its pin changed to the no-root spelling, and then to another root: neither
-/// keeps the approvals. RED arm: the re-admit compared only the declared fingerprint, which is
-/// absent on both sides, so the subject was kept and `judge` answered `Ok` for both facts.
 #[test]
 fn a_pin_changed_to_no_root_or_another_root_keeps_no_approval() {
     let whole = TrustFacts {
@@ -743,7 +676,7 @@ fn a_pin_changed_to_no_root_or_another_root_keeps_no_approval() {
     );
     assert_ne!(b.judge(&i, &whole), Ok(()), "another root starts afresh");
     assert_ne!(b.judge(&i, &item), Ok(()));
-    // The same declaration keeps them.
+
     let (b, i) = book(pinned_by("root-kind", true, Some("K")));
     approved(&b, &i);
     b.admit(
@@ -755,8 +688,6 @@ fn a_pin_changed_to_no_root_or_another_root_keeps_no_approval() {
     assert_eq!(b.judge(&i, &item), Ok(()));
 }
 
-/// NO APPROVAL REPLAYS ONTO A ROOTLESS REGISTRATION (Q128 p8#1): even a kept row recorded under
-/// the very same no-root declaration replays as nothing, while a kept revocation still holds.
 #[test]
 fn a_kept_approval_never_replays_onto_a_rootless_registration() {
     let rootless = pinned_by("none", false, None);
@@ -787,10 +718,6 @@ fn a_kept_approval_never_replays_onto_a_rootless_registration() {
     assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
 }
 
-/// A RESTART AGREES WITH A RELOAD (Q128 p8#2): a declared fingerprint edited while the process was
-/// down starts the counterparty afresh, pending until the operator approves again, exactly as the
-/// same edit applied in-process does. RED arm: the kept approval was replayed whatever the
-/// declaration, so the fresh book served the counterparty at the old fingerprint.
 #[test]
 fn a_kept_approval_does_not_replay_over_a_declaration_changed_while_down() {
     let whole = TrustFacts {
@@ -820,13 +747,11 @@ fn a_kept_approval_does_not_replay_over_a_declaration_changed_while_down() {
         Err(Distrust::NotApproved),
         "a changed declaration is pending again"
     );
-    // ... as the in-process re-admit has it.
+
     b.admit(&i, [("cp".to_string(), entry(Some("fp2"), 0, 0))], []);
     assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
 }
 
-/// A RULING TAKES NOTHING UNTIL IT IS APPLIED (Q128 p5#2): `rule` answers the fact to keep and
-/// leaves the book as it was; `apply` takes it.
 #[test]
 fn a_ruling_changes_nothing_until_it_is_applied() {
     let whole = TrustFacts {
@@ -842,16 +767,11 @@ fn a_ruling_changes_nothing_until_it_is_applied() {
     let row = b.apply(&fact).unwrap();
     assert_eq!(row.approved.as_deref(), Some("h1"));
     assert_eq!(b.judge(&i, &whole), Ok(()));
-    // A fact whose declaration moved under it is not taken.
+
     b.admit(&i, [("cp".to_string(), entry(Some("fp"), 0, 0))], []);
     assert_eq!(b.apply(&fact), Err(Undecided::Stale));
 }
 
-/// A DRIFTED ITEM IS DEMOTED AT ITEM LEVEL, AND A REVERT DOES NOT LIFT IT (tool-and-agent-trust.md
-/// 34-37: a changed fingerprint is quarantined; mcp.astro:374 "until a person approves"). An item
-/// approved in config or by the operator, re-sighted at another digest, is refused; sighted back at
-/// its approved digest it is STILL refused, until the operator approves it again. RED before: the
-/// revert served, the drift a per-call refusal and nothing more.
 #[test]
 fn a_drifted_item_reverted_stays_refused_until_reapproved() {
     let at = |item| TrustFacts {
@@ -879,12 +799,12 @@ fn a_drifted_item_reverted_stays_refused_until_reapproved() {
             .map(|r| r.state)
     };
     assert_eq!(state(&b), Some(KeyState::Quarantined), "listed demoted");
-    // A re-admit (a config reload) is no person's approval of the drift.
+
     let mut e = entry(None, 0, 0);
     e.approved.insert("t".to_string(), "d1".to_string());
     b.admit(&i, [("cp".to_string(), e)], []);
     assert_eq!(b.judge(&i, &at("t")), Err(Distrust::Changed));
-    // The operator approves what it is offered at now: it serves.
+
     b.decide(&i, "cp", Some("t"), Ruling::Approve, None)
         .expect("a key");
     assert_eq!(b.judge(&i, &at("t")), Ok(()));

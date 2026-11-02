@@ -1,29 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KIND-NEUTRAL OUTBOUND AUTH DOUBLE a test build binds lane credentials on (BUSBAR-1.6.0.md
-//! THE DESIGN §1, "Kernel tests use kind-neutral doubles"): a test binary has no composition root,
-//! so no auth plugin is linked, and a lane's credential binds here instead. It serves EVERY style,
-//! and presents a bound credential (or, for a passthrough request, the caller's) as
-//! `authorization: Bearer <credential>`; an empty credential presents nothing. It is not any style's
-//! bytes: each style's real bytes are its plugin's, proven by that plugin's conformance suite and
-//! by the composition root's tests, which link the real plugins.
-//!
-//! THE INBOUND HALF ([`stand_in`]) answers the build's LINKED auth rows
-//! (`busbar_kernel_identity::operator::linked`, and any linked auth row a test's rows double holds,
-//! [`super::rows::Rows::with_linked`]) IN PROCESS, with no loader (BUSBAR-1.6.0.md THE
-//! DESIGN l.322): a row whose door is one of the kit's own auth doubles is answered by that double
-//! called directly — today the operator-credential double ([`super::operator_double`], a
-//! `VerifyPlugin`). What the stand-in states for the rows mirrors what the loader's auth rows
-//! (`AuthRows`, `crates/plugin-loader/src/auth_axis.rs`) state for the same doors: the linked
-//! rows' keys, the operator row (`FACT_OPERATOR` and its principal), each row's carriers, no
-//! credential reader (the double states none), and the default inbound style of the one linked row
-//! a test's rows double states it for ([`super::rows::Rows::with_linked_style`]). A linked door the
-//! kit has no double for, and a dropped-in auth row (a test's rows double carries no image), is
-//! a row that "will not load here": it answers, states nothing, and its open is refused naming it.
-//! How the loader binds and crosses a real auth door is the loader's and the root's to prove
-//! (`crates/plugin-loader`, `crates/busbar/tests`).
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -34,10 +11,6 @@ use busbar_contract::plugin_rows::{PluginRows, Row};
 use busbar_contract::redacted::Secret;
 use busbar_kernel_identity::operator::LinkedAuth;
 
-/// THE DOUBLE'S DEFAULT INBOUND STYLE: the carrier marks a test binary's stand-in axis answers
-/// when no linked row states `FACT_DEFAULT_INBOUND_STYLE` (a test binary links no auth plugin), in
-/// the 1.5.5 precedence order the linked header auth states them. Test data, never shipped: the
-/// shipped lines are that plugin's Statement's, proven by the composition root's tests.
 #[must_use]
 pub fn double_inbound_style() -> Vec<String> {
     ["authorization", "x-api-key", "x-goog-api-key"]
@@ -45,8 +18,6 @@ pub fn double_inbound_style() -> Vec<String> {
         .to_vec()
 }
 
-/// THE DOUBLE'S OPERATOR CARRIERS: what the stand-in axis answers for the operator credential's
-/// row when no linked row answers it, in the order the linked operator plugin states them.
 #[must_use]
 pub fn double_operator_carriers() -> Vec<String> {
     ["authorization", "x-admin-token"]
@@ -54,13 +25,6 @@ pub fn double_operator_carriers() -> Vec<String> {
         .to_vec()
 }
 
-/// THE DOUBLE'S DECLARED OUTBOUND STYLES: what a test binary's stand-in axis answers a provider's
-/// `auth:` against (a test binary links no auth plugin), each with the bits the linked plugin
-/// serving it states, ranked as they rank them: the header styles, the jwt-bearer grant (its
-/// endpoint in its credential), the client-credentials grant (its endpoint the entry's
-/// `token_url`), and one unranked word no release named that states the `token_url` bit, as a
-/// dropped-in style would. Test data, never shipped: the shipped words and bits are the plugins'
-/// Statements', proven by the composition root's tests, which link the real plugins.
 #[must_use]
 pub fn double_outbound_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
     use busbar_contract::abi::auth::{
@@ -82,27 +46,18 @@ pub fn double_outbound_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyl
     ])
 }
 
-/// The double's axis: answers no inbound module, serves every outbound style.
 #[must_use]
 pub fn axis() -> Arc<dyn AuthAxis> {
     Arc::new(DoubleAxis)
 }
 
-/// A test build's AUTH AXIS over `registry` (installed in place of the root's opener,
-/// [`crate::test_support::install_root_auth_axis`]): the test auth modules
-/// ([`super::auth_modules`]) and the build's linked auth rows answered in process, the registry's
-/// dropped-in auth rows refused at their open, and this double for every outbound style (see the
-/// module doc).
 #[must_use]
 pub fn stand_in(registry: Arc<dyn PluginRows>) -> Arc<dyn AuthAxis> {
     super::auth_modules::around(Arc::new(StandIn { registry }))
 }
 
-/// The auth kind's word in a row (`kind: auth`).
 const AUTH: &str = busbar_contract::abi::mechanism::kind::AUTH;
 
-/// Why a dropped-in auth row does not open here: it states no door the test kit can call (the
-/// loader's `NO_DOOR` for a row that states none, verbatim; a test's rows double carries no image).
 pub const NO_DOOR: &str = "it speaks the 1.5.5 JSON auth contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
 
 /// What a linked auth door is, in process.
@@ -114,7 +69,6 @@ enum KitDoor {
     Unknown,
 }
 
-/// Which of the kit's auth doubles `door` is (compared by fn address).
 fn kit_door(door: busbar_contract::abi::mechanism::door::DoorFn) -> KitDoor {
     if super::operator_double::is_door(door) {
         KitDoor::Operator
@@ -123,12 +77,6 @@ fn kit_door(door: busbar_contract::abi::mechanism::door::DoorFn) -> KitDoor {
     }
 }
 
-/// THE KIT'S READING of a linked auth door's Statement (`RootInstall::auth_chain_module`): whether
-/// it declares an INBOUND auth-chain module — an inbound capability, and not a host-held
-/// credentials' verifier (the loader's `declares_chain_module`,
-/// `crates/plugin-loader/src/dispatch/kinds/auth.rs`). The operator double states `CAP_INBOUND`
-/// (`verify_tail`) and `FACT_OPERATOR` alone, so it is one; a door the kit has no double for is read
-/// as none, as the loader reads a door whose Statement does not read as an auth Statement.
 #[must_use]
 pub fn declares_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
     kit_door(door) == KitDoor::Operator
@@ -144,9 +92,6 @@ struct LinkedAuthRow {
 }
 
 impl LinkedAuthRow {
-    /// The build's table entry `(key, canonical, door)`: its key, its canonical name and the former
-    /// names the root migration table gives its key (the loader's `Manifest::answers_to` over a linked
-    /// row).
     fn of_table(row: &LinkedAuth) -> Self {
         let mut words = vec![row.0.to_string(), row.1.to_string()];
         words.extend(crate::config::migration_table::former_names(row.0));
@@ -166,24 +111,17 @@ impl LinkedAuthRow {
     }
 }
 
-/// One auth row the stand-in answers.
 enum AuthRow {
-    /// A row this build links.
     Linked(LinkedAuthRow),
-    /// A dropped-in row of the registry.
+
     Dropped(Row),
 }
 
-/// THE STAND-IN AXIS over one build's registry.
 struct StandIn {
     registry: Arc<dyn PluginRows>,
 }
 
 impl StandIn {
-    /// The linked auth rows, in registration order: the build's table
-    /// (`busbar_kernel_identity::operator::linked`), then any linked auth row the registry holds
-    /// with a door of its own (a test's rows double, [`super::rows::Rows::with_linked`]) that the
-    /// table does not already link.
     fn linked_rows(&self) -> Vec<LinkedAuthRow> {
         let mut rows: Vec<LinkedAuthRow> = busbar_kernel_identity::operator::linked()
             .iter()
@@ -206,8 +144,6 @@ impl StandIn {
         rows
     }
 
-    /// The auth row config names by `module`: a linked row first, then the registry's dropped-in
-    /// `kind: auth` row.
     fn row(&self, module: &str) -> Option<AuthRow> {
         self.linked_rows()
             .into_iter()
@@ -221,8 +157,6 @@ impl StandIn {
             })
     }
 
-    /// The linked rows of a test's rows double that state the default inbound style
-    /// ([`super::rows::Rows::with_linked_style`]): each row's key and its lines.
     fn inbound_styles(&self) -> Vec<(String, Vec<String>)> {
         self.registry
             .as_any()
@@ -231,8 +165,6 @@ impl StandIn {
             .unwrap_or_default()
     }
 
-    /// What the stand-in states for `module`'s row: its own carriers (a row stating the default
-    /// inbound style states its lines). A row that will not load here states none.
     fn row_carriers(&self, module: &str) -> Vec<String> {
         match self.row(module) {
             Some(AuthRow::Linked(r)) if r.kit_door() == KitDoor::Operator => {
@@ -262,8 +194,6 @@ impl AuthAxis for StandIn {
         self.linked_rows().iter().any(|r| r.answers(module))
     }
 
-    /// The first linked row the operator double answers, under its key, and the principal the
-    /// double states. A dropped-in row will not load here and states nothing.
     fn operator(&self) -> Option<(String, String)> {
         self.linked_rows()
             .into_iter()
@@ -291,12 +221,10 @@ impl AuthAxis for StandIn {
         }
     }
 
-    /// No row the stand-in answers states `FACT_READS_CREDENTIALS` (the operator double does not).
     fn credential_readers(&self) -> Vec<String> {
         Vec::new()
     }
 
-    /// The row's own; where no row answers the operator credential, the double's operator carriers.
     fn carriers(&self, module: &str) -> Vec<String> {
         let rows = self.row_carriers(module);
         if rows.is_empty() && module == crate::config::operator_provider() {
@@ -305,12 +233,6 @@ impl AuthAxis for StandIn {
         rows
     }
 
-    /// The lines of the one linked row stating `FACT_DEFAULT_INBOUND_STYLE`
-    /// ([`super::rows::Rows::with_linked_style`]); where no row states it, the double's default
-    /// inbound style.
-    ///
-    /// # Errors
-    /// Two or more rows state it, in the loader's words (`auth_axis::two_default_inbound_styles`).
     fn default_inbound_style(&self) -> Result<Vec<String>, String> {
         let stating = self.inbound_styles();
         match stating.as_slice() {
@@ -432,7 +354,6 @@ impl OutboundAuth for Double {
     }
 }
 
-/// An answer already in hand.
 struct Settled(Option<Fields>);
 
 impl std::future::Future for Settled {

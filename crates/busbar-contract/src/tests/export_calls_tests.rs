@@ -2,12 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The recorder snapshot reader (`export_calls::parse_families`, K9a S6): what it reads, and what
-//! it refuses rather than guess.
 
 use super::*;
 
 /// A recorder exposition in the host recorder's own shape: a described counter, an undescribed
-/// counter, a gauge with escaped label values, a quantile summary and a bucketed histogram.
+
 const EXPOSITION: &str = "\
 # HELP busbar_requests_total Total ingress requests, by ingress protocol, pool, and outcome
 # TYPE busbar_requests_total counter

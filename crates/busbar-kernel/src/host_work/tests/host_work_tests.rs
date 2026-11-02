@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE WORK FAMILY (`work.open` / `work.find` / `work.settle` / `work.resume`), as the kernel
-//! serves it: durable handles over the store's typed records, the anti-enumeration scoped lookup,
-//! the bound that refuses at admission, retention swept on submit, and a handle found again after
-//! a restart.
-
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -21,7 +16,6 @@ use crate::host_services::tests::{caller, Mem};
 use crate::host_services::{InstanceFacts, KernelServices, Offload, NOT_A_KIND, POOL_REFUSED};
 use crate::host_units::UnitRecord;
 
-/// Runs every job at once, on the caller's thread.
 struct Inline;
 
 impl Offload for Inline {
@@ -60,8 +54,6 @@ struct Rig {
     clock: Arc<AtomicU64>,
 }
 
-/// Services over `store` (a restart is a second rig over the same store), "inst" and "other"
-/// admitted, units 1 and 2 in flight as principal "alice", unit 3 as "bob".
 fn rig_over(store: Arc<MemoryStore>, bounds: WorkBounds) -> Rig {
     let rows = Arc::new(Mem(Arc::clone(&store)));
     rig_with_rows(store, bounds, rows)
@@ -110,7 +102,6 @@ fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
     }
 }
 
-/// Open a handle as unit `unit` of "inst": its handle and reference.
 fn open(r: &Rig, unit: u64, record: &[u8]) -> (u64, Vec<u8>) {
     let s = run(|l| r.s.work_open(&caller("inst"), Some(unit), "job", record, l));
     assert_eq!((s.outcome, s.error), (Outcome::Ready, ""), "opened");
@@ -125,12 +116,10 @@ fn find(r: &Rig, instance: &str, unit: u64, reference: &[u8]) -> Stored {
     run(|l| r.s.work_find(&caller(instance), Some(unit), reference, l))
 }
 
-/// Settle `handle` as `instance`, from a crossing serving `unit`.
 fn settle(r: &Rig, instance: &str, unit: Option<u64>, handle: u64, record: &[u8]) -> Stored {
     run(|l| r.s.work_settle(&caller(instance), unit, handle, record, l))
 }
 
-/// The state byte and record a found or resumed answer carries.
 fn state_and_record(s: &Stored) -> (u8, Vec<u8>) {
     let sp = s.spans[0];
     let at = |o: u32, n: u32| s.bytes[o as usize..(o + n) as usize].to_vec();
@@ -148,11 +137,11 @@ fn an_opened_handle_is_found_by_its_reference_under_its_principal() {
     assert!(reference
         .iter()
         .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
-    // Another unit of the same principal finds it.
+
     let found = find(&r, "inst", 2, &reference);
     assert_eq!((found.outcome, found.value), (Outcome::Ready, handle));
     assert_eq!(state_and_record(&found), (WORK_LIVE, b"rec-1".to_vec()));
-    // Two opens mint two references.
+
     let (_, second) = open(&r, 1, b"rec-2");
     assert_ne!(second, reference);
 }
@@ -162,13 +151,9 @@ fn every_denial_of_a_lookup_answers_alike() {
     let r = rig();
     let (_, reference) = open(&r, 1, b"rec");
     let denied = [
-        // Another principal's handle.
         find(&r, "inst", 3, &reference),
-        // Another instance's lookup of it.
         find(&r, "other", 1, &reference),
-        // A reference no one opened.
         find(&r, "inst", 1, b"0123456789abcdef0123456789abcdef"),
-        // A malformed one, and an uppercase spelling of a real one.
         find(&r, "inst", 1, b"not-a-reference"),
         find(&r, "inst", 1, reference.to_ascii_uppercase().as_slice()),
     ];
@@ -191,7 +176,7 @@ fn a_settled_handle_answers_its_final_record_and_settles_once() {
         (again.outcome, again.error),
         (Outcome::Refused, refusal::SETTLED)
     );
-    // Another instance cannot settle it.
+
     let (h2, _) = open(&r, 1, b"x");
     let theirs = settle(&r, "other", Some(1), h2, b"y");
     assert_eq!(
@@ -216,13 +201,13 @@ fn the_bound_refuses_an_open_and_never_evicts_a_live_handle() {
         (third.outcome, third.error),
         (Outcome::Refused, refusal::AT_BOUND)
     );
-    // Both live handles are still there.
+
     assert_eq!(find(&r, "inst", 1, &r1).value, h1);
     assert_ne!(find(&r, "inst", 1, &r2).value, svc::ABSENT);
-    // The bound is per instance.
+
     let elsewhere = run(|l| r.s.work_open(&caller("other"), Some(1), "job", b"c", l));
     assert_eq!(elsewhere.outcome, Outcome::Ready);
-    // A settled handle no longer counts against it.
+
     let _ = settle(&r, "inst", Some(1), h1, b"done");
     let _ = open(&r, 1, b"c");
 }
@@ -240,10 +225,10 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
     let (live, lref) = open(&r, 1, b"b");
     let _ = settle(&r, "inst", Some(1), settled, b"done");
     r.clock.fetch_add(1_000, Ordering::SeqCst);
-    // Past its retention the settled handle is absent; the live one is not.
+
     assert_eq!(find(&r, "inst", 1, &sref), Stored::ready(svc::ABSENT));
     assert_eq!(find(&r, "inst", 1, &lref).value, live);
-    // A read swept nothing: the row is still in the store.
+
     let row = |reference: &[u8]| {
         let reference = parse_reference(reference).unwrap();
         r.store
@@ -253,7 +238,7 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
             .unwrap_or_default()
     };
     assert!(!row(&sref).is_empty());
-    // A submit sweeps it, from the book and the store.
+
     let held = r.s.work().held();
     let _ = open(&r, 1, b"c");
     assert_eq!(r.s.work().held(), held, "one swept, one opened");
@@ -261,10 +246,6 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
     assert!(!row(&lref).is_empty(), "a live row is never struck");
 }
 
-/// A SWEEP SHRINKS THE STORE (ARCHITECT 2026-10-21, slot 26: an empty `record_put` removes the
-/// row): the rows of the settled handles a submit sweeps LEAVE the store's `WORK_SCHEMA`, so the
-/// row count falls. A store that kept each strike as an empty row would grow by every handle ever
-/// opened.
 #[test]
 fn a_sweep_removes_the_swept_rows_from_the_store() {
     let r = rig_over(
@@ -287,7 +268,7 @@ fn a_sweep_removes_the_swept_rows_from_the_store() {
     let _ = settle(&r, "inst", Some(1), b, b"done");
     assert_eq!(rows(), 3, "three handles, three rows");
     r.clock.fetch_add(1_000, Ordering::SeqCst);
-    // The submit sweeps both settled handles and opens one.
+
     let _ = open(&r, 1, b"c");
     assert_eq!(rows(), 2, "two swept rows removed, one row opened");
 }
@@ -303,13 +284,13 @@ fn a_handle_is_found_and_resumed_after_a_restart() {
     let (_, reference) = open(&before, 1, b"park");
     let (_, other) = open(&before, 1, b"park-2");
     drop(before);
-    // A new process over the same store.
+
     let after = rig_over(Arc::clone(&store), bounds);
     let found = find(&after, "inst", 2, &reference);
     assert_eq!(found.outcome, Outcome::Ready);
     assert_ne!(found.value, svc::ABSENT);
     assert_eq!(state_and_record(&found), (WORK_LIVE, b"park".to_vec()));
-    // Resume binds it to the continuation unit, of the principal it recorded.
+
     let resumed = run(|l| {
         after
             .s
@@ -317,9 +298,7 @@ fn a_handle_is_found_and_resumed_after_a_restart() {
     });
     assert_eq!((resumed.outcome, resumed.value), (Outcome::Ready, 0));
     assert_eq!(state_and_record(&resumed), (WORK_LIVE, b"park".to_vec()));
-    // THE EARLIER PROCESS'S LIVE HANDLES HOLD NO SLOT (audit P-M8): their work died with the
-    // process that opened it, so the instance admits up to its full bound again; the bound still
-    // refuses past it.
+
     let _ = open(&after, 1, b"y");
     let _ = open(&after, 1, b"z");
     let refused = run(|l| after.s.work_open(&caller("inst"), Some(1), "job", b"!", l));
@@ -327,7 +306,7 @@ fn a_handle_is_found_and_resumed_after_a_restart() {
         (refused.outcome, refused.error),
         (Outcome::Refused, refusal::AT_BOUND)
     );
-    // Settled after the restart, it reads settled in a third process.
+
     let _ = settle(&after, "inst", Some(2), found.value, b"done");
     let third = rig_over(store, bounds);
     let again = find(&third, "inst", 1, &reference);
@@ -351,9 +330,6 @@ fn resume_is_refused_to_another_principal() {
     );
 }
 
-/// THE SETTLE IS SCOPED WHILE THE HANDLE'S UNIT RUNS (ARCHITECT 2026-10-07 K4-11 (B)): while the
-/// unit that opened or resumed a handle is in flight, only its principal settles it; another
-/// principal, or a crossing serving no unit, is refused exactly as a handle nobody holds is.
 #[test]
 fn settle_of_a_live_handle_is_refused_to_another_principal() {
     let r = rig();
@@ -363,23 +339,23 @@ fn settle_of_a_live_handle_is_refused_to_another_principal() {
         (nobodys.outcome, nobodys.error),
         (Outcome::Refused, refusal::NOT_A_HANDLE)
     );
-    // Bob, while alice's unit 1 runs; and a crossing that serves no unit.
+
     assert_eq!(settle(&r, "inst", Some(3), handle, b"swept"), nobodys);
     assert_eq!(settle(&r, "inst", None, handle, b"swept"), nobodys);
-    // Another instance, even as alice.
+
     assert_eq!(settle(&r, "other", Some(1), handle, b"swept"), nobodys);
-    // Nothing moved: the handle is live with alice's record.
+
     assert_eq!(
         state_and_record(&find(&r, "inst", 2, &reference)),
         (WORK_LIVE, b"working".to_vec())
     );
-    // A handle resumed by a unit still in flight is that unit's, though its opener ended.
+
     let (resumed, _) = open(&r, 1, b"parked");
     let bound = run(|l| r.s.work_resume(&caller("inst"), Some(2), resumed, l));
     assert_eq!(bound.outcome, Outcome::Ready);
     r.s.units().ended(1);
     assert_eq!(settle(&r, "inst", Some(3), resumed, b"swept"), nobodys);
-    // The owner settles its own live handle, from another of its units.
+
     let mine = settle(&r, "inst", Some(2), handle, b"done");
     assert_eq!((mine.outcome, mine.value), (Outcome::Ready, 0));
     assert_eq!(
@@ -388,9 +364,6 @@ fn settle_of_a_live_handle_is_refused_to_another_principal() {
     );
 }
 
-/// THE SWEEP KEEPS WORKING: once every unit a handle was opened or resumed by has ended (or
-/// lapsed: its end removes it from the unit table all the same), the instance settles it from
-/// whatever unit's crossing runs the sweep, whoever that unit's principal is.
 #[test]
 fn a_sweep_settles_a_handle_whose_units_have_ended() {
     let r = rig();
@@ -400,12 +373,12 @@ fn a_sweep_settles_a_handle_whose_units_have_ended() {
     assert_eq!(bound.outcome, Outcome::Ready);
     r.s.units().ended(1);
     r.s.units().ended(2);
-    // Bob's unit runs the sweep.
+
     let swept = settle(&r, "inst", Some(3), opened, b"cancelled");
     assert_eq!((swept.outcome, swept.value), (Outcome::Ready, 0));
     let swept = settle(&r, "inst", Some(3), resumed, b"lapsed");
     assert_eq!((swept.outcome, swept.value), (Outcome::Ready, 0));
-    // Alice, in a new unit, reads what the sweep wrote; it settles once.
+
     r.s.units().admitted(
         4,
         UnitRecord {
@@ -426,7 +399,7 @@ fn a_sweep_settles_a_handle_whose_units_have_ended() {
         (again.outcome, again.error),
         (Outcome::Refused, refusal::SETTLED)
     );
-    // Still only the instance's own.
+
     let (theirs, _) = open(&r, 4, b"x");
     r.s.units().ended(4);
     let refused = settle(&r, "other", Some(3), theirs, b"y");
@@ -436,16 +409,13 @@ fn a_sweep_settles_a_handle_whose_units_have_ended() {
     );
 }
 
-/// A HANDLE READ BACK FROM THE STORE has no unit in this process until its owner finds it: the
-/// owner's find records the finding unit, so while that unit runs another principal's settle is
-/// refused; a find does not displace a resuming unit still in flight.
 #[test]
 fn the_owners_find_scopes_the_settle_of_a_handle_read_from_the_store() {
     let store = Arc::new(MemoryStore::new());
     let before = rig_over(Arc::clone(&store), WorkBounds::default());
     let (_, reference) = open(&before, 1, b"park");
     drop(before);
-    // A new process over the same store: alice's unit 2 finds it.
+
     let after = rig_over(store, WorkBounds::default());
     let found = find(&after, "inst", 2, &reference);
     assert_eq!(state_and_record(&found), (WORK_LIVE, b"park".to_vec()));
@@ -454,7 +424,7 @@ fn the_owners_find_scopes_the_settle_of_a_handle_read_from_the_store() {
         (refused.outcome, refused.error),
         (Outcome::Refused, refusal::NOT_A_HANDLE)
     );
-    // Bob's find answers alike and records nothing: once alice's unit ends, the sweep settles it.
+
     assert_eq!(
         find(&after, "inst", 3, &reference),
         Stored::ready(svc::ABSENT)
@@ -463,8 +433,6 @@ fn the_owners_find_scopes_the_settle_of_a_handle_read_from_the_store() {
     let swept = settle(&after, "inst", Some(3), found.value, b"swept");
     assert_eq!((swept.outcome, swept.value), (Outcome::Ready, 0));
 
-    // In one process: a handle resumed by a unit still in flight stays that unit's, though
-    // another of alice's units finds it and ends.
     let r = rig();
     let (handle, reference) = open(&r, 1, b"working");
     let bound = run(|l| r.s.work_resume(&caller("inst"), Some(2), handle, l));
@@ -486,13 +454,11 @@ fn the_owners_find_scopes_the_settle_of_a_handle_read_from_the_store() {
     );
 }
 
-/// THE KERNEL JUDGES LAPSE, NEVER THE PLANE: a plane's own deadline passing and the record it
-/// settles with saying "lapsed" move nothing while the handle's unit is in flight.
 #[test]
 fn a_plane_claiming_lapsed_cannot_settle_a_live_handle() {
     let r = rig();
     let (handle, reference) = open(&r, 1, b"asked");
-    // A day on: past any deadline the plane keeps, and past retention.
+
     r.clock.fetch_add(86_400_000, Ordering::SeqCst);
     let claimed = settle(&r, "inst", Some(3), handle, b"lapsed");
     assert_eq!(
@@ -503,7 +469,7 @@ fn a_plane_claiming_lapsed_cannot_settle_a_live_handle() {
         state_and_record(&find(&r, "inst", 2, &reference)),
         (WORK_LIVE, b"asked".to_vec())
     );
-    // The store holds it live too.
+
     let row = r
         .store
         .record_get(
@@ -520,8 +486,6 @@ fn a_plane_claiming_lapsed_cannot_settle_a_live_handle() {
     assert!(held.is_some_and(|w| w.live && w.record == b"asked"));
 }
 
-/// A SETTLE THE POOL REFUSES MOVES NOTHING: the job is dropped unrun, the caller is answered
-/// FAILED, and the book agrees with the store that the handle is live, so the next settle lands.
 #[test]
 fn a_settle_the_pool_refuses_leaves_the_handle_live_in_the_book_and_the_store() {
     let gate = Arc::new(Gate::default());
@@ -553,7 +517,7 @@ fn a_settle_the_pool_refuses_leaves_the_handle_live_in_the_book_and_the_store() 
         stored.live && stored.record == b"working",
         "the store holds it live"
     );
-    // The pool takes jobs again: the settle lands, once.
+
     gate.0.store(false, Ordering::SeqCst);
     let landed = settle(&r, "inst", Some(1), handle, b"done");
     assert_eq!((landed.outcome, landed.value), (Outcome::Ready, 0));
@@ -585,7 +549,7 @@ fn an_open_is_refused_before_anything_is_written() {
         }),
         refusal::TOO_LONG,
     );
-    // No unit in flight, or no unit at all.
+
     refused(
         run(|l| r.s.work_open(&caller("inst"), Some(99), "job", b"r", l)),
         refusal::NO_UNIT,
@@ -599,7 +563,7 @@ fn an_open_is_refused_before_anything_is_written() {
         refusal::NO_UNIT,
     );
     assert_eq!(r.s.work().held(), 0);
-    // The longest record round-trips through its row.
+
     let (_, reference) = open(&r, 1, &[7; MAX_WORK_RECORD]);
     assert_eq!(
         state_and_record(&find(&r, "inst", 1, &reference)).1,
@@ -708,7 +672,7 @@ fn inspection_reads_actual_work_times_and_current_retention_without_inventing_li
             settled_ms: Some(1_000_100),
         }))
     );
-    // A later policy binding changes the next observation, never the actual settlement time.
+
     r.s.bound_work(
         "inst",
         WorkBounds {
@@ -811,7 +775,7 @@ fn inspection_carriers_are_instance_owned_point_in_time_observations_without_cal
             },
         ]))
     };
-    // A driver's validated instance is the authority, not any self-asserted user identity.
+
     let earlier = r.s.inspect(&caller("inst"), None, &query);
     assert_eq!(earlier, observation(true));
     r.s.close_carrier_session(alice);
@@ -859,7 +823,7 @@ impl RecordRows for SettlementRows {
             1 => Err(StoreError::Unavailable),
             2 => {
                 self.rows.record_put(schema, key, value)?;
-                Err(StoreError::Timeout) // The Store committed, but the caller has no confirmation.
+                Err(StoreError::Timeout)
             }
             3 => panic!("settlement Store unwound"),
             _ => self.rows.record_put(schema, key, value),
@@ -891,16 +855,12 @@ impl RecordRows for SettlementRows {
     }
 }
 
-/// Pending settlement never lends its live slot to another open, even at zero retention.
-/// Completion, unavailable/unknown Store results, unwind and an unrun job all retire ownership;
-/// only confirmed completion publishes the settled record and releases capacity.
 #[test]
 fn pending_settlement_keeps_capacity_and_survives_sweep_until_store_confirmation() {
     for mode in 0..=4 {
         let store = Arc::new(MemoryStore::new());
         let store_mode = Arc::new(AtomicU64::new(0));
-        // Bind the controlled Store before opening: attach_records is intentionally one-shot,
-        // and adopting a prior process's handle would not hold this process's live reservation.
+
         let r = rig_with_rows(
             store.clone(),
             WorkBounds {
@@ -1052,7 +1012,7 @@ fn dropping_a_queued_settlement_retires_ownership_before_its_callback_retries() 
         Ran::Later
     ));
     let job = held.job.lock().unwrap().take().unwrap();
-    drop(job); // The callback re-enters outside the offload's lock.
+    drop(job);
     assert!(answered.load(Ordering::SeqCst));
     assert_eq!(s.work().get("inst", handle).unwrap().record, b"retry");
 }

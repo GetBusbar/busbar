@@ -29,17 +29,12 @@
 //!   same fixture-cost tradeoff that applies to live-curl execution. Left unmarked with an
 //!   HTML-comment note in the doc itself pointing at the plugin-free substitute example.
 
-// The shipped/marked examples this file validates assume the DEFAULT feature set (what a real
-// user's copy-pasted config targets) -- an operator-credential block in an example fails closed
-// under `--no-default-features` (correct production behavior, not a bug this file should catch).
-// Gated on the operator credential's linked row (`linked_operator_auth`, build.rs).
 #![cfg(linked_operator_auth)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn repo_root() -> PathBuf {
-    // crates/busbar -> repo root
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -68,14 +63,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// Run the real busbar binary's `--validate` against `config_path`, with `providers_path` as the
-/// companion catalog. Returns (exit_code, stdout, stderr).
 fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, String) {
-    // `--validate` RESOLVES built-in (`env`/`file`) secret references, so a documented example
-    // naming an env var fails unless that var is set. Docs name real-looking vars on purpose, and
-    // enumerating them here would drift the moment a doc adds one. Instead: extract every
-    // `{ env: NAME }` the example references and set each to a placeholder, so the gate tests the
-    // config's SHAPE (what it is for) rather than this machine's environment.
     let referenced: Vec<String> = {
         let text = std::fs::read_to_string(config_path).unwrap_or_default();
         let mut v: Vec<String> = Vec::new();
@@ -92,18 +80,10 @@ fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, Stri
         }
         v
     };
-    // `file:` references are the same problem with no env-var escape: a shipped artifact names a
-    // PRODUCTION path (`/var/lib/busbar/signing.key`) that cannot exist in CI. Rewrite the copy
-    // under test to point at a real temp file, so the gate still checks the config's shape without
-    // asserting anything about this machine's filesystem layout.
+
     let rewritten = {
         let text = std::fs::read_to_string(config_path).unwrap_or_default();
         if text.contains("file:") {
-            // Scratch, NOT `config_path.parent()`. The documents under test are the SHIPPED files,
-            // so their parent is the repo itself: writing the stand-in and the patched copy there
-            // left four generated artifacts in the working tree, and two of them carried the
-            // absolute home-directory path of the machine that ran the test. The public-hygiene
-            // gate caught it. Nothing this test writes belongs anywhere a commit can reach.
             let dir = std::env::temp_dir().join(format!(
                 "busbar-doc-gate-{}-{}",
                 std::process::id(),
@@ -145,14 +125,12 @@ fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, Stri
     let effective = rewritten.as_deref().unwrap_or(config_path);
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
-    // 1.6.0: the catalog lives at the shipped root, NOT next to the temp config, so point busbar at
-    // it with the `--providers` flag (the removed `BUSBAR_PROVIDERS` env var no longer works).
+
     cmd.arg("--validate")
         .arg("--providers")
         .arg(providers_path)
         .env("BUSBAR_CONFIG", effective);
     for name in &referenced {
-        // 64 hex chars: valid for `auth.signing_key`, and harmless as any other secret's value.
         cmd.env(
             name,
             "0000000000000000000000000000000000000000000000000000000000000001",
@@ -166,8 +144,6 @@ fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, Stri
     )
 }
 
-/// One `<!-- doc-check: config -->`-marked fenced block: the doc file it came from (relative to
-/// repo root, for error messages), the 1-based line the fence opens on, and its extracted body.
 struct MarkedConfig {
     doc: String,
     fence_line: usize,
@@ -200,7 +176,6 @@ fn extract_marked_configs() -> Vec<MarkedConfig> {
         let mut i = 0;
         while i < lines.len() {
             if lines[i].trim() == "<!-- doc-check: config -->" {
-                // Skip any blank lines between the marker and the fence.
                 let mut j = i + 1;
                 while j < lines.len() && lines[j].trim().is_empty() {
                     j += 1;
@@ -236,12 +211,6 @@ fn extract_marked_configs() -> Vec<MarkedConfig> {
     out
 }
 
-/// Every `<!-- doc-check: config -->`-marked example is a COMPLETE config.yaml: validate it
-/// against the real, shipped `providers.yaml` catalog through the actual `busbar --validate`
-/// pipeline. This catches the `"ca"` vs `"client_ca"` class of bug, which slips past an example
-/// that is only a `PUT /config/settings` body fragment rather than a full config — any doc author
-/// who introduces a misspelled top-level key or field in a marked example now gets a local test
-/// failure instead of a 400 an operator hits under time pressure.
 #[test]
 fn marked_config_examples_validate() {
     let root = repo_root();
@@ -282,11 +251,6 @@ fn marked_config_examples_validate() {
     );
 }
 
-/// The SHIPPED config artifacts users literally copy or run — root `config.yaml`, the clean 1.5.0
-/// example, and `docker/config.yaml` (the default the getbusbar/busbar image boots when nothing is
-/// mounted, which the README's `docker run` relies on) — validate clean against the shipped
-/// `providers.yaml`. The docker default once shipped without the `store:` block 1.6.0 requires
-/// and the image refused to boot; this list is what catches that.
 #[test]
 fn shipped_config_artifacts_validate() {
     let root = repo_root();
@@ -308,8 +272,6 @@ fn shipped_config_artifacts_validate() {
     }
 }
 
-/// The protocols this build's binary knows, read off the refusal an operator reads for a provider
-/// naming one it does not (`must be one of: ...`), so this file names none of them.
 #[cfg(linked_axis_body_ingress)]
 fn known_protocols() -> Vec<String> {
     let dir = fixture_dir("known-protocols");
@@ -347,13 +309,6 @@ fn known_protocols() -> Vec<String> {
         .collect()
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/dialect_registry_facts_tests.rs::test_shipped_providers_catalog_valid`
-/// 1.5.5: the shipped `providers.yaml` catalog parses, is non-trivial
-/// (at least 10 providers), every entry names a protocol this build knows, and every entry's
-/// `base_url` is `https://`.
-///
-/// RED: the catalog stops parsing, shrinks below 10 entries, an entry names a protocol the binary
-/// does not speak (a dead lane at boot), or an entry's `base_url` is not `https://`.
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn test_shipped_providers_catalog_valid() {
