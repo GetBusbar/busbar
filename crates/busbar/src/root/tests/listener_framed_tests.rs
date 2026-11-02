@@ -2118,3 +2118,72 @@ async fn a_dropped_pending_admission_ack_cannot_publish_a_late_acceptance() {
     assert_eq!(door.message_attempts(), 0);
     assert!(door.responses().is_empty());
 }
+
+#[tokio::test]
+async fn a_plain_request_that_declines_detach_keeps_http_400_and_runs_no_plane_effect() {
+    use busbar_kernel::plane_routes::FramedSession;
+    use busbar_test_kit::root_door_fixtures::pending_mux_accept::{Mux, SESSION_REFUSE_WIRE};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let _publishing = anonymous_policy().await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let route_effects = effects.clone();
+    let router = Router::new().route(
+        "/first",
+        axum::routing::get(
+            move |axum::Extension(session): axum::Extension<FramedSession>| {
+                let effects = route_effects.clone();
+                async move {
+                    if session.admit().await {
+                        effects.fetch_add(1, Ordering::SeqCst);
+                    }
+                    axum::http::StatusCode::FORBIDDEN
+                }
+            },
+        ),
+    );
+    let door = Arc::new(Mux::with_declined_detach());
+    let (mut client, server) = tokio::io::duplex(4096);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let served = tokio::spawn(super::serve(
+        server,
+        staged_mux_framer(door.clone()),
+        router,
+        false,
+        Duration::from_secs(30),
+        stopped,
+    ));
+    client.write_all(b"1").await.unwrap(); // the fixture emits GET /first with no Upgrade fields.
+    let mut wire = vec![0; SESSION_REFUSE_WIRE.len()];
+    tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut wire))
+        .await
+        .expect("the retained HTTP framing writes its real 400 refusal")
+        .unwrap();
+    assert_eq!(wire, SESSION_REFUSE_WIRE);
+    assert_eq!(door.detach_attempts(), 1, "the actual detach refused");
+    assert_eq!(
+        door.adoption_attempts(),
+        0,
+        "the WS framer is never adopted"
+    );
+    assert_eq!(door.refusals(), vec![(1, 400, false)]);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(door.committed_heads(), 0);
+    assert!(
+        door.responses().is_empty(),
+        "the route's fallback 403 is suppressed"
+    );
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), served)
+        .await
+        .expect("the retained HTTP actor closes normally")
+        .unwrap();
+    let mut rest = Vec::new();
+    client.read_to_end(&mut rest).await.unwrap();
+    assert!(
+        rest.is_empty(),
+        "there is no duplicate refusal or 101 handshake"
+    );
+    assert_eq!(door.http_finishes(), 1);
+    assert_eq!(door.session_finishes(), 0);
+    assert_eq!(door.cancellations(), 0);
+}

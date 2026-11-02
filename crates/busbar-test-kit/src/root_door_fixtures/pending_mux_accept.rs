@@ -53,6 +53,11 @@ pub struct Mux {
     facts: DoorFacts,
     session: bool,
     refuse_adopt: bool,
+    decline_detach: bool,
+    detach_attempts: AtomicU32,
+    adoption_attempts: AtomicU32,
+    http_finishes: AtomicU32,
+    refusals: Mutex<Vec<(u64, u32, bool)>>,
     pending_adopt: bool,
     pending_adopt_refused: bool,
     pending_commit: bool,
@@ -88,6 +93,11 @@ impl Default for Mux {
         Self {
             session: false,
             refuse_adopt: false,
+            decline_detach: false,
+            detach_attempts: AtomicU32::new(0),
+            adoption_attempts: AtomicU32::new(0),
+            http_finishes: AtomicU32::new(0),
+            refusals: Mutex::new(Vec::new()),
             pending_adopt: false,
             pending_adopt_refused: false,
             pending_commit: false,
@@ -145,6 +155,26 @@ impl Mux {
             refuse_adopt: true,
             ..Self::with_session()
         }
+    }
+
+    pub fn with_declined_detach() -> Self {
+        Self {
+            decline_detach: true,
+            ..Self::with_session()
+        }
+    }
+
+    pub fn detach_attempts(&self) -> u32 {
+        self.detach_attempts.load(Ordering::SeqCst)
+    }
+    pub fn adoption_attempts(&self) -> u32 {
+        self.adoption_attempts.load(Ordering::SeqCst)
+    }
+    pub fn http_finishes(&self) -> u32 {
+        self.http_finishes.load(Ordering::SeqCst)
+    }
+    pub fn refusals(&self) -> Vec<(u64, u32, bool)> {
+        self.refusals.lock().unwrap().clone()
     }
 
     pub fn with_pending_adoption(refused: bool) -> Self {
@@ -504,8 +534,19 @@ impl FramerDoor for Mux {
                     self.second_done.notify_one();
                 }
             }
-            Call::Detach(_, _) if self.session => {}
+            Call::Detach(_, _) if self.session => {
+                self.detach_attempts.fetch_add(1, Ordering::SeqCst);
+                if self.decline_detach {
+                    return Crossed {
+                        outcome: Outcome::Refused,
+                        error: Some(b"the plain request was not upgraded".to_vec()),
+                    };
+                }
+            }
             Call::Adopt(input, out) if self.session => {
+                if !resume {
+                    self.adoption_attempts.fetch_add(1, Ordering::SeqCst);
+                }
                 if resume {
                     self.adoption_resumes.fetch_add(1, Ordering::SeqCst);
                 }
@@ -540,6 +581,22 @@ impl FramerDoor for Mux {
                     !stage_head(&input.sink, out, self.refuse_adopt),
                     Ordering::SeqCst,
                 );
+            }
+            Call::Refuse(input, out) if self.decline_detach => {
+                assert_eq!(
+                    input.framing, 1,
+                    "a declined detach retains the original HTTP framing token"
+                );
+                assert_eq!(input.has_stream, 1);
+                self.refusals.lock().unwrap().push((
+                    input.stream,
+                    input.status,
+                    input.head_sent != 0,
+                ));
+                wire(SESSION_REFUSE_WIRE, &input.sink, out);
+            }
+            Call::Finish(input, _) if self.decline_detach && input.framing == 1 => {
+                self.http_finishes.fetch_add(1, Ordering::SeqCst);
             }
             Call::Finish(input, out) if self.session && input.framing == 2 => {
                 self.finishes.fetch_add(1, Ordering::SeqCst);
