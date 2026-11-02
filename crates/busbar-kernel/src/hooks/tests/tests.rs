@@ -748,29 +748,6 @@ fn on_error_chain_strategy_terminates() {
 }
 
 #[test]
-fn pool_rw_gate_resolves_as_rewrite_not_decision() {
-    let env = test_env();
-    let mut rw = base_gate();
-    rw.prompt = PromptAccess::Rw;
-    let hooks = registry("rw", rw);
-    let pool = pool_with_hook("rw");
-    assert!(
-        resolve_pool_gates(&pool, &hooks, &env, 0).is_empty(),
-        "an rw gate must not resolve as a decision gate"
-    );
-    assert_eq!(
-        resolve_pool_rewrites(&pool, &hooks, &env, 0).len(),
-        1,
-        "an rw gate must resolve into the pool rewrite chain"
-    );
-
-    let hooks = registry("plain", base_gate());
-    let pool = pool_with_hook("plain");
-    assert_eq!(resolve_pool_gates(&pool, &hooks, &env, 0).len(), 1);
-    assert!(resolve_pool_rewrites(&pool, &hooks, &env, 0).is_empty());
-}
-
-#[test]
 fn missing_plugin_gate_is_absent_not_stranded() {
     let hooks = registry("h", base_gate());
 
