@@ -20,6 +20,7 @@ fn correction<'a>(
         pool: "",
         model: MODEL,
         entry_era: era_now(),
+        entry_id: None,
         card_epoch_ms: u64::try_from(std::time::Duration::from_secs(now).as_millis()).unwrap(),
         delta,
         now,
@@ -39,6 +40,112 @@ fn input(row: &UsageLedger) -> u64 {
 }
 fn delta() -> BTreeMap<String, i64> {
     BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), SUBTRACT_INPUT)])
+}
+
+fn metered_entry(store: &dyn RecordStore, key: &VirtualKey, era: RawRateEra, now: u64) {
+    store
+        .add_metering(&MeteringDelta {
+            key_id: key.id.clone(),
+            bucket: super::super::metering_bucket(now),
+            model: MODEL.into(),
+            provider: String::new(),
+            tokens_input: INITIAL_INPUT,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: era.entry_id.unwrap().metering_version(),
+            priced_from_ms: era.effective_from,
+            usage_units: Default::default(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn exact_entry_correction_cannot_take_counts_from_a_same_timestamp_sibling() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let key = key("vk_correction_exact_entry", None);
+    store.put_key(&key).unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    let first = RawRateEra::entry(0, EntryId([3; 12]));
+    let second = RawRateEra::entry(0, EntryId([4; 12]));
+    gov.record_usage_served_in_era(
+        &cm,
+        &key,
+        "",
+        MODEL,
+        None,
+        &toks(INITIAL_INPUT, 0),
+        now,
+        first,
+    );
+    metered_entry(store.as_ref(), &key, first, now);
+    metered_entry(store.as_ref(), &key, second, now);
+    let delta = delta();
+    let mut adj = correction(&key, &delta, now);
+    adj.entry_era = 0;
+    adj.entry_id = second.entry_id;
+    assert!(
+        matches!(
+            gov.adjust_usage(&cm, &adj).unwrap(),
+            Err(super::super::AdjustRefused::Unplaced { .. })
+        ),
+        "matching timestamp and metering do not give the sibling ownership of raw counts"
+    );
+    adj.entry_id = first.entry_id;
+    gov.adjust_usage(&cm, &adj).unwrap().unwrap();
+    assert_eq!(
+        input(&store.get_usage(&key.id, 0).unwrap()),
+        CORRECTED_INPUT
+    );
+}
+
+#[test]
+fn resumed_correction_does_not_treat_a_different_exact_entry_as_the_original_intent() {
+    let store = Arc::new(FlakyStore::new());
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let key = key("vk_correction_exact_intent", None);
+    store.put_key(&key).unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    let first = RawRateEra::entry(0, EntryId([5; 12]));
+    let second = RawRateEra::entry(0, EntryId([6; 12]));
+    gov.record_usage_served_in_era(
+        &cm,
+        &key,
+        "",
+        MODEL,
+        None,
+        &toks(INITIAL_INPUT, 0),
+        now,
+        first,
+    );
+    metered_entry(store.as_ref(), &key, first, now);
+    metered_entry(store.as_ref(), &key, second, now);
+    store
+        .lose_correction_reply
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let delta = delta();
+    let mut adj = correction(&key, &delta, now);
+    adj.entry_era = 0;
+    adj.entry_id = first.entry_id;
+    assert!(gov.adjust_usage(&cm, &adj).is_err());
+    adj.entry_id = second.entry_id;
+    assert!(
+        matches!(
+            gov.adjust_usage(&cm, &adj).unwrap(),
+            Err(super::super::AdjustRefused::Unplaced { .. })
+        ),
+        "receipt for the first exact entry does not accept a second entry's intent"
+    );
+    assert_eq!(
+        input(&store.get_usage(&key.id, 0).unwrap()),
+        CORRECTED_INPUT
+    );
 }
 
 #[test]

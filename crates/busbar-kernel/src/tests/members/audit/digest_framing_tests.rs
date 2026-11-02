@@ -62,7 +62,7 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
             }],
             tier_bp: 9_000,
             fee_count: 1,
-            rate_card_version: 3,
+            rate_card_version: Some([3; 20]),
             bucket_chain_ref: "chain:free>paid".into(),
         },
         controls: Controls {

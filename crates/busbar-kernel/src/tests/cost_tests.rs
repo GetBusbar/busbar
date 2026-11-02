@@ -165,7 +165,7 @@ fn unknown_model_with_card_is_unpriced_and_refuses() {
     assert_eq!(
         bucket_money(&cm, [("mystery-model", &t)], 0).and_then(Money::minor_i64),
         Err(busbar_kernel_ledger::cost::MoneyError::LaneUnpriced {
-            card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
+            card_seq: None,
             lane: "mystery-model".to_string(),
         })
     );
@@ -454,7 +454,7 @@ fn partial_card_prices_known_models_and_refuses_the_missing_one() {
     assert_eq!(
         bucket_money(&cm, [("priced", &known), ("absent", &absent)], 0).and_then(Money::minor_i64),
         Err(busbar_kernel_ledger::cost::MoneyError::LaneUnpriced {
-            card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
+            card_seq: None,
             lane: "absent".to_string(),
         }),
         "the missing model refuses the derivation; it never derives 0"

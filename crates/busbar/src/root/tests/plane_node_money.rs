@@ -98,40 +98,46 @@ fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
     );
     let pinned = holder.pin().expect("three applies put entries in place");
     assert_eq!(
-        pinned.seq().get(),
+        pinned.view().entries().last().unwrap().seq().get(),
         2,
         "the snapshot's head is the third entry — the figure a stamp must NOT be for a unit that \
          arrived before it, and the one a `read the head` implementation would answer every time"
     );
 
+    let keys: Vec<_> = pinned
+        .view()
+        .entries()
+        .iter()
+        .map(|entry| entry.key().0)
+        .collect();
     let stamped_ms = |ms: u64| card_in_force(Some(&pinned), ms);
 
     assert_eq!(
         stamped_ms(1_700_000_100_000),
-        0,
+        Some(keys[0]),
         "a unit that arrived before the second card was published is priced by the opening entry"
     );
     assert_eq!(
         stamped_ms(1_700_000_600_000),
-        1,
+        Some(keys[1]),
         "a unit that arrived in the second card's window names the SECOND entry — not the third, \
          which had not been published when it arrived (#79: publishing never reprices backwards)"
     );
     assert_eq!(
         stamped_ms(1_700_001_000_000),
-        2,
+        Some(keys[2]),
         "a unit that arrived after the third card names the third entry"
     );
 
     assert_eq!(
         card_in_force(None, 1_700_000_600_000),
-        0,
-        "no pinned history falls back to the opening entry"
+        None,
+        "no pinned history has no card entry identity"
     );
 
     assert_eq!(
         stamped_ms(1_700_000_600),
-        0,
+        Some(keys[0]),
         "a seconds-valued instant matches only the from-zero opening entry — which is why the \
          settle path resolves at `Arrived::ms()` and never at `Arrived::secs()`"
     );

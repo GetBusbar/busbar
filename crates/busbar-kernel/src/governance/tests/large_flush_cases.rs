@@ -560,6 +560,7 @@ fn in_flight_flush_preserves_roll_refund_and_independent_window_correction(initi
                         pool: "",
                         model: MODEL,
                         entry_era: era_now(),
+                        entry_id: None,
                         card_epoch_ms: epoch(now),
                         delta: &delta,
                         now
@@ -576,6 +577,7 @@ fn in_flight_flush_preserves_roll_refund_and_independent_window_correction(initi
                     pool: "",
                     model: MODEL,
                     entry_era: era_now(),
+                    entry_id: None,
                     card_epoch_ms: epoch(next),
                     delta: &delta,
                     now: next,

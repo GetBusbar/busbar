@@ -4,7 +4,7 @@
 //! The dated history and the lookup over it: appending never rewrites, the resolution rule takes
 
 use super::*;
-use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
+use crate::cost::{Author, CardEntryDraft, EntryKey, History, LaneClass, RateCard};
 
 /// A card pricing one class on one lane at a named rate.
 fn card_at(micro: f64) -> RateCard {
@@ -39,18 +39,42 @@ fn card_at_resolves_overlap_by_the_highest_covering_seq() {
     let history = overlapping_history();
     let view = history.current();
 
-    assert_eq!(view.card_at(10).expect("covered").0, HistorySeq(0));
+    assert_eq!(
+        view.card_at(10).expect("covered").0,
+        history.entries()[0].key()
+    );
 
-    assert_eq!(view.card_at(60).expect("covered").0, HistorySeq(2));
+    assert_eq!(
+        view.card_at(60).expect("covered").0,
+        history.entries()[2].key()
+    );
 
-    assert_eq!(view.card_at(120).expect("covered").0, HistorySeq(2));
+    assert_eq!(
+        view.card_at(120).expect("covered").0,
+        history.entries()[2].key()
+    );
 
-    assert_eq!(view.card_at(150).expect("covered").0, HistorySeq(1));
-    assert_eq!(view.card_at(1_000_000).expect("covered").0, HistorySeq(1));
+    assert_eq!(
+        view.card_at(150).expect("covered").0,
+        history.entries()[1].key()
+    );
+    assert_eq!(
+        view.card_at(1_000_000).expect("covered").0,
+        history.entries()[1].key()
+    );
 
-    assert_eq!(view.card_at(49).expect("covered").0, HistorySeq(0));
-    assert_eq!(view.card_at(50).expect("covered").0, HistorySeq(2));
-    assert_eq!(view.card_at(149).expect("covered").0, HistorySeq(2));
+    assert_eq!(
+        view.card_at(49).expect("covered").0,
+        history.entries()[0].key()
+    );
+    assert_eq!(
+        view.card_at(50).expect("covered").0,
+        history.entries()[2].key()
+    );
+    assert_eq!(
+        view.card_at(149).expect("covered").0,
+        history.entries()[2].key()
+    );
 }
 
 /// The opening entry is effective from instant ZERO, which is what makes a hole impossible for a
@@ -61,7 +85,7 @@ fn the_opening_entry_covers_every_instant_including_zero() {
     for t in [0u64, 1, 1_700_000_000_000, u64::MAX] {
         assert_eq!(
             view.card_at(t).expect("the opening entry is open-ended").0,
-            HistorySeq(0),
+            history.entries()[0].key(),
             "instant {t} is covered"
         );
     }
@@ -94,9 +118,12 @@ fn a_back_dated_entry_is_visible_as_one() {
 #[test]
 fn a_snapshot_above_the_head_sees_the_whole_history() {
     let history = overlapping_history();
-    let above = history.snapshot(HistorySeq(99));
+    let above = history.snapshot(EntryKey::new(u64::MAX, [u8::MAX; 8], u32::MAX));
     assert_eq!(above.entries().len(), 3);
-    assert_eq!(above.card_at(120).expect("covered").0, HistorySeq(2));
+    assert_eq!(
+        above.card_at(120).expect("covered").0,
+        history.entries()[2].key()
+    );
 }
 
 /// The current view of a history nothing has been appended to names no snapshot. Zero is the seq of
@@ -107,16 +134,17 @@ fn the_current_view_of_an_empty_history_names_no_snapshot() {
     assert!(empty.current().is_empty());
 
     let opened = History::opening(card_at(1.0), 0);
-    assert_eq!(opened.current().seq(), Some(HistorySeq::OPENING));
+    assert_eq!(opened.current().seq(), Some(opened.entries()[0].key()));
+    let history = overlapping_history();
     assert_eq!(
-        overlapping_history().current().seq(),
-        Some(HistorySeq(2)),
+        history.current().seq(),
+        Some(history.entries()[2].key()),
         "the current view is the head's snapshot"
     );
     assert_eq!(
-        overlapping_history().snapshot(HistorySeq(1)).seq(),
-        Some(HistorySeq(1)),
-        "a named snapshot keeps the seq it was named at"
+        history.snapshot(history.entries()[1].key()).seq(),
+        Some(history.entries()[1].key()),
+        "a named snapshot keeps its entry-key boundary"
     );
 }
 
@@ -141,31 +169,31 @@ fn sole_entry_over_names_the_one_entry_pricing_a_whole_window() {
         },
     });
     let view = history.current();
-    let seq = |from, until| view.sole_entry_over(from, until).map(|e| e.seq());
-    assert_eq!(seq(1_000, Some(6_000)), Some(HistorySeq(0)));
+    let seq = |from, until| view.sole_entry_over(from, until).map(|e| e.key());
+    assert_eq!(seq(1_000, Some(6_000)), Some(history.entries()[0].key()));
     assert_eq!(
         seq(1_000, Some(6_001)),
         None,
         "the edit at 6,000 prices part of it"
     );
-    assert_eq!(seq(6_000, Some(10_000)), Some(HistorySeq(1)));
+    assert_eq!(seq(6_000, Some(10_000)), Some(history.entries()[1].key()));
     assert_eq!(
         seq(6_000, None),
         None,
         "the amendment prices part of an open window"
     );
-    assert_eq!(seq(10_000, Some(12_000)), Some(HistorySeq(2)));
+    assert_eq!(seq(10_000, Some(12_000)), Some(history.entries()[2].key()));
     assert_eq!(
         seq(11_000, Some(12_001)),
         None,
         "runs past the amendment's end"
     );
-    assert_eq!(seq(12_000, None), Some(HistorySeq(1)));
+    assert_eq!(seq(12_000, None), Some(history.entries()[1].key()));
     assert_eq!(
         History::new()
             .current()
             .sole_entry_over(0, None)
-            .map(|e| e.seq()),
+            .map(|e| e.key()),
         None
     );
 }
@@ -254,37 +282,37 @@ fn serving_entry_survives_later_config_but_accepts_a_wall_scoped_amendment() {
     let view = history.current();
     let seq = |id, wall_at| view.card_for_entry_era(id, wall_at).map(|(seq, _)| seq);
 
-    assert_eq!(seq(opening, 150), Some(HistorySeq::OPENING));
-    assert_eq!(seq(config, 150), Some(HistorySeq(1)));
-    assert_eq!(seq(opening, 49), Some(HistorySeq::OPENING));
-    assert_eq!(seq(opening, 50), Some(HistorySeq(2)));
-    assert_eq!(seq(opening, 149), Some(HistorySeq(2)));
-    assert_eq!(seq(config, 120), Some(HistorySeq(2)));
+    assert_eq!(seq(opening, 150), Some(history.entries()[0].key()));
+    assert_eq!(seq(config, 150), Some(history.entries()[1].key()));
+    assert_eq!(seq(opening, 49), Some(history.entries()[0].key()));
+    assert_eq!(seq(opening, 50), Some(history.entries()[2].key()));
+    assert_eq!(seq(opening, 149), Some(history.entries()[2].key()));
+    assert_eq!(seq(config, 120), Some(history.entries()[2].key()));
 
     assert_eq!(
         view.card_for_raw_era(RawRateEra::legacy(0), 150)
             .map(|(seq, _)| seq),
-        Some(HistorySeq(1)),
+        Some(history.entries()[1].key()),
         "an undated legacy zero proves no opening identity"
     );
     assert_eq!(
         view.card_for_raw_era(RawRateEra::entry(0, opening), 150)
             .map(|(seq, _)| seq),
-        Some(HistorySeq::OPENING)
+        Some(history.entries()[0].key())
     );
     assert!(view
         .card_for_raw_era(RawRateEra::entry(100, opening), 150)
         .is_none());
     assert_eq!(
         history
-            .snapshot(HistorySeq(1))
+            .snapshot(history.entries()[1].key())
             .card_for_entry_era(opening, 120)
             .map(|(seq, _)| seq),
-        Some(HistorySeq::OPENING),
+        Some(history.entries()[0].key()),
         "a prior snapshot cannot see the later amendment"
     );
     assert!(history
-        .snapshot(HistorySeq::OPENING)
+        .snapshot(history.entries()[0].key())
         .card_for_entry_era(config, 150)
         .is_none());
 
@@ -294,7 +322,7 @@ fn serving_entry_survives_later_config_but_accepts_a_wall_scoped_amendment() {
             .current()
             .card_for_entry_era(opening, 120)
             .map(|(seq, _)| seq),
-        Some(HistorySeq::OPENING),
+        Some(history.entries()[0].key()),
         "a voided amendment no longer corrects counts"
     );
     let config_key = history.entries()[1].key();
@@ -304,7 +332,7 @@ fn serving_entry_survives_later_config_but_accepts_a_wall_scoped_amendment() {
             .current()
             .card_for_entry_era(config, 150)
             .map(|(seq, _)| seq),
-        Some(HistorySeq(1)),
+        Some(history.entries()[1].key()),
         "voiding a configuration keeps the card already-served counts name"
     );
 }
@@ -331,19 +359,19 @@ fn timestamp_eras_refuse_missing_or_ambiguous_original_entries() {
     assert!(view.card_for_config_era(100, 1_000).is_none());
     assert_eq!(
         view.card_for_entry_era(original, 120).map(|(seq, _)| seq),
-        Some(HistorySeq(2)),
+        Some(history.entries()[2].key()),
         "a later configuration does not erase an amendment of old-entry counts"
     );
     let later = history.entries()[3].id();
     assert_eq!(
         view.card_for_entry_era(later, 120).map(|(seq, _)| seq),
-        Some(HistorySeq(3)),
+        Some(history.entries()[3].key()),
         "an earlier amendment does not replace a later serving configuration"
     );
     assert_eq!(
         view.card_for_raw_era(RawRateEra::entry(100, original), 1_000)
             .map(|(seq, _)| seq),
-        Some(HistorySeq(1)),
+        Some(history.entries()[1].key()),
         "the recorded identity disambiguates equal configuration timestamps"
     );
 }
@@ -367,5 +395,71 @@ fn metering_identity_codec_preserves_legacy_names_and_refuses_malformed_new_name
     assert_eq!(
         EntryId::parse_metering_version(&format!("{}bad", EntryId::METERING_VERSION_PREFIX)),
         Some(None)
+    );
+}
+
+#[test]
+fn a_late_peer_entry_does_not_change_a_saved_history_snapshot_identity() {
+    let key = |at| EntryKey::new(at, if at == 200 { [2; 8] } else { [1; 8] }, 0);
+    let draft = |at, rate| CardEntryDraft {
+        effective_from: at,
+        effective_until: None,
+        card: card_at(rate),
+        appended_at: at,
+        author: Author::Config { policy_epoch: at },
+    };
+    let mut history = History::new();
+    history.insert(key(100), draft(100, 1.0));
+    history.insert(key(300), draft(300, 3.0));
+    let saved_as_of = history.current().seq().unwrap();
+    let saved_key = history.snapshot(saved_as_of).entry_at(350).unwrap().key();
+    let saved_id = history.entry(&saved_key).unwrap().id();
+    assert_eq!(saved_key, key(300));
+    assert!(history
+        .snapshot(saved_as_of)
+        .card_for_entry_era(saved_id, 350)
+        .is_some());
+
+    history.insert(key(200), draft(200, 2.0));
+    assert_eq!(history.current().entry_at(350).unwrap().key(), saved_key);
+    assert_eq!(
+        history.snapshot(saved_as_of).entry_at(350).unwrap().key(),
+        saved_key,
+        "the same saved as_of must continue to name the same history boundary"
+    );
+    assert!(history
+        .snapshot(saved_as_of)
+        .card_for_entry_era(saved_id, 350)
+        .is_some());
+}
+
+#[test]
+fn a_tally_names_its_attached_entry_key_and_leaves_an_unattached_card_unbound() {
+    let card = card_at(1.0);
+    let key = EntryKey::new(300, [3; 8], 1);
+    let refused = |mut tally: crate::cost::Tally<'_>| {
+        tally
+            .row(
+                "missing",
+                350,
+                crate::cost::STANDARD_TIER_BP,
+                [("input", crate::cost::whole(1))],
+                crate::cost::whole(0),
+            )
+            .unwrap_err()
+    };
+    assert_eq!(
+        refused(crate::cost::Tally::at_card_seq(key, &card)),
+        crate::cost::MoneyError::LaneUnpriced {
+            card_seq: Some(key),
+            lane: "missing".to_owned()
+        }
+    );
+    assert_eq!(
+        refused(crate::cost::Tally::at_card(&card)),
+        crate::cost::MoneyError::LaneUnpriced {
+            card_seq: None,
+            lane: "missing".to_owned()
+        }
     );
 }

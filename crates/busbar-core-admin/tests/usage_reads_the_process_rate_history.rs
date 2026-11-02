@@ -114,8 +114,41 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     );
     assert_eq!(
         body["rate_card_version"],
-        serde_json::json!(0),
+        serde_json::json!(holder.0.entries()[0].key().hex()),
         "the response names the history entry that priced it: {body}"
     );
+    let key = holder.0.entries()[0].key().hex();
+    let replay = reqwest::get(format!(
+        "http://{addr}/api/v1/admin/usage?window={bucket}&as_of={key}"
+    ))
+    .await
+    .expect("the keyed usage replay answers");
+    assert_eq!(replay.status().as_u16(), 200);
+    let replay: serde_json::Value = replay.json().await.expect("a JSON replay");
+    assert_eq!(replay["total"], body["total"]);
+    assert_eq!(replay["rate_card_version"], body["rate_card_version"]);
+    assert!(
+        replay["as_of"].is_u64(),
+        "response freshness remains numeric"
+    );
+    for invalid in [
+        "0",
+        "1",
+        "42",
+        "not-a-key",
+        "gggggggggggggggggggggggggggggggggggggggg",
+        "ffffffffffffffffffffffffffffffffffffffff",
+    ] {
+        let response = reqwest::get(format!(
+            "http://{addr}/api/v1/admin/usage?window={bucket}&as_of={invalid}"
+        ))
+        .await
+        .expect("an invalid snapshot request answers");
+        assert_eq!(
+            response.status().as_u16(),
+            400,
+            "invalid boundary {invalid} must be refused"
+        );
+    }
     serving.abort();
 }

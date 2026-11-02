@@ -1385,6 +1385,7 @@ fn a_back_dated_correction_survives_a_restart() {
                 |card, base| {
                     journal.record(
                         &crate::root::units_admin::AmendmentRecord {
+                            version: crate::root::units_admin::AmendmentVersion::V4,
                             effective_from: CORRECTED.0,
                             effective_until: Some(CORRECTED.1),
                             amended_at_ms: SIGNED_AT,
@@ -1466,6 +1467,7 @@ fn seal_correction(
             |card, base| {
                 journal.record(
                     &crate::root::units_admin::AmendmentRecord {
+                        version: crate::root::units_admin::AmendmentVersion::V4,
                         effective_from: window.0,
                         effective_until: Some(window.1),
                         amended_at_ms: signed_at,
@@ -1530,8 +1532,8 @@ fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
             effective_from: CORRECTED.0,
             effective_until: Some(CORRECTED.1),
             appended_at: SIGNED_AT,
-            sealed_over: super::CorrectionBase {
-                seq: busbar_kernel_ledger::cost::HistorySeq(1),
+            sealed_over: super::CorrectionBase::Key {
+                key: busbar_kernel_ledger::cost::EntryKey::new(CARD_B, [0; 8], 1),
                 card_digest: holder
                     .history()
                     .expect("a history")
@@ -1565,13 +1567,20 @@ fn a_restore_whose_base_digest_differs_refuses_the_correction() {
         let book = boot_book(holder, &store);
         let mut sealed_over = None;
         seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |mut base| {
-            base.card_digest[0] ^= 0xff;
+            match &mut base {
+                super::CorrectionBase::Key { card_digest, .. }
+                | super::CorrectionBase::LegacyOrdinal { card_digest, .. } => {
+                    card_digest[0] ^= 0xff
+                }
+            }
             sealed_over = Some(base);
             base
         });
         sealed_over.expect("the seal ran")
     };
-    assert_eq!(sealed_over.seq, busbar_kernel_ledger::cost::HistorySeq(0));
+    assert!(
+        matches!(sealed_over, super::CorrectionBase::Key { key, .. } if key == busbar_kernel_ledger::cost::EntryKey::new(BOOT_A, [0; 8], 0))
+    );
 
     let holder = process_holder();
     apply_at(holder, 3.0, REBOOT);
@@ -1729,6 +1738,7 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
                 |card, base| {
                     journal.record(
                         &crate::root::units_admin::AmendmentRecord {
+                            version: crate::root::units_admin::AmendmentVersion::V4,
                             effective_from: CORRECTED.0,
                             effective_until: Some(CORRECTED.1),
                             amended_at_ms: SIGNED_AT,
@@ -1934,4 +1944,165 @@ fn a_store_amendment_keeps_its_pinned_base_and_calls_the_store_outside_the_globa
         changed,
         "amend never replaces config own-selection"
     );
+}
+
+fn keyed_correction_fixture() -> (
+    busbar_kernel_ledger::cost::History,
+    super::Correction,
+    busbar_kernel_ledger::cost::EntryKey,
+) {
+    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, EntryKey, History, RateCard};
+    let key = EntryKey::new(100, [9; 8], 0);
+    let mut history = History::new();
+    history.insert(
+        key,
+        CardEntryDraft {
+            effective_from: 0,
+            effective_until: None,
+            card: RateCard::absent(3),
+            appended_at: 100,
+            author: Author::Opening,
+        },
+    );
+    let correction = super::Correction {
+        effective_from: 0,
+        effective_until: Some(100),
+        appended_at: 300,
+        author: Author::Amend {
+            reason_hash: [7; 32],
+        },
+        cells: Vec::new(),
+        fee: Some(9),
+    };
+    (history, correction, key)
+}
+
+#[test]
+fn correction_keys_and_pinned_boundaries_survive_a_late_lower_peer_key() {
+    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, EntryKey, RateCard};
+    let (mut history, correction, key) = keyed_correction_fixture();
+    let (sealed, expected) = correction
+        .draft_over(history.current())
+        .expect("a sole base");
+    let peer = EntryKey::new(100, [1; 8], 0);
+    history.insert(
+        peer,
+        CardEntryDraft {
+            effective_from: 0,
+            effective_until: None,
+            card: RateCard::absent(77),
+            appended_at: 100,
+            author: Author::Opening,
+        },
+    );
+    assert_eq!(
+        history.entry(&key).unwrap().seq(),
+        busbar_kernel_ledger::cost::HistorySeq(1)
+    );
+    assert_eq!(
+        correction
+            .rebuild_over(&history, sealed)
+            .unwrap()
+            .card
+            .digest(),
+        expected.card.digest()
+    );
+    let pin = PinnedHistory {
+        history: Arc::new(history),
+        at: key,
+    };
+    assert_eq!(pin.seq(), key);
+    assert_eq!(pin.view().card_at(1).unwrap().0, key);
+    assert_eq!(pin.view_at(EntryKey::new(999, [9; 8], 9)).seq(), Some(key));
+}
+
+#[test]
+fn correction_rebuild_refuses_unknown_keys_digest_mismatches_and_ordinary_legacy_lookup() {
+    use busbar_kernel_ledger::cost::{EntryKey, HistorySeq};
+    let (history, correction, key) = keyed_correction_fixture();
+    let digest = history.entry(&key).unwrap().card().digest();
+    for missing in [EntryKey([0; 20]), EntryKey::new(999, [9; 8], 9)] {
+        assert!(matches!(
+            correction.rebuild_over(
+                &history,
+                super::CorrectionBase::Key {
+                    key: missing,
+                    card_digest: digest
+                }
+            ),
+            Err(super::BaseMismatch::MissingBase)
+        ));
+    }
+    assert!(matches!(
+        correction.rebuild_over(
+            &history,
+            super::CorrectionBase::Key {
+                key,
+                card_digest: [5; 32]
+            }
+        ),
+        Err(super::BaseMismatch::BaseDigest)
+    ));
+    let legacy = super::CorrectionBase::LegacyOrdinal {
+        seq: HistorySeq(0),
+        card_digest: digest,
+    };
+    assert!(matches!(
+        correction.rebuild_over(&history, legacy),
+        Err(super::BaseMismatch::MissingBase)
+    ));
+    assert!(correction
+        .rebuild_from_original_chain(&history, legacy, &[Some(key)])
+        .is_ok());
+    assert!(matches!(
+        correction.rebuild_from_original_chain(&history, legacy, &[None, Some(key)]),
+        Err(super::BaseMismatch::MissingBase)
+    ));
+}
+
+#[test]
+fn legacy_correction_replay_uses_original_identity_and_checks_the_original_sole_base() {
+    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, EntryKey, HistorySeq, RateCard};
+    let (mut history, correction, key) = keyed_correction_fixture();
+    let legacy = super::CorrectionBase::LegacyOrdinal {
+        seq: HistorySeq(0),
+        card_digest: history.entry(&key).unwrap().card().digest(),
+    };
+    let draft = |fee| CardEntryDraft {
+        effective_from: 0,
+        effective_until: None,
+        card: RateCard::absent(fee),
+        appended_at: 100,
+        author: Author::Opening,
+    };
+    history.insert(EntryKey::new(100, [1; 8], 0), draft(77));
+    assert_eq!(
+        correction
+            .rebuild_from_original_chain(&history, legacy, &[Some(key)])
+            .unwrap()
+            .0,
+        key
+    );
+    let higher = EntryKey::new(200, [3; 8], 0);
+    history.insert(higher, draft(88));
+    assert!(
+        matches!(correction.rebuild_from_original_chain(&history, legacy, &[Some(key)]), Err(super::BaseMismatch::OtherBase(Some(found))) if found == higher)
+    );
+}
+
+#[test]
+fn an_actual_known_zero_opening_key_is_not_an_unattached_card_sentinel() {
+    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, EntryKey, History, RateCard};
+    let (_, correction, _) = keyed_correction_fixture();
+    let mut history = History::new();
+    history.append(CardEntryDraft {
+        effective_from: 0,
+        effective_until: None,
+        card: RateCard::absent(3),
+        appended_at: 0,
+        author: Author::Opening,
+    });
+    let (sealed, _) = correction.draft_over(history.current()).unwrap();
+    assert!(matches!(sealed, super::CorrectionBase::Key { key, .. } if key == EntryKey([0; 20])));
+    assert!(correction.rebuild_over(&history, sealed).is_ok());
 }

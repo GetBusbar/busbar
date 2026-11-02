@@ -128,7 +128,7 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
             ],
             tier_bp: 10000,
             fee_count: 1,
-            rate_card_version: u64::MAX,
+            rate_card_version: Some([0x4a; 20]),
             bucket_chain_ref: "a|b".into(),
         },
         controls: Controls {
@@ -150,7 +150,7 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
         correlation_hash: None,
         seq: 1,
         prev_hash: String::new(),
-        recipe: Recipe::V4,
+        recipe: Recipe::V5,
         hash: String::new(),
         signature: None,
         key_id: None,
@@ -360,4 +360,75 @@ fn file_options_run_offline_and_refuse_missing_or_repeated_trust_inputs() {
     assert!(crate::run(args[2..].to_vec()).is_err());
     std::fs::write(files.0.join("range"), b"not JSON").unwrap();
     assert!(crate::run(args).is_err());
+}
+
+#[test]
+fn keyed_recipe_rejects_noncanonical_presence_and_key_spelling() {
+    let (_, range, _) = chain();
+    let mut record = range["records"][0].clone();
+    record["recipe"] = json!(DIGEST_RECIPE);
+    for (present, key) in [
+        ("0", "".to_string()),
+        ("1", "00".repeat(20)),
+        ("1", "4a".repeat(20)),
+    ] {
+        record["rate_card_key_present"] = json!(present);
+        record["rate_card_version"] = json!(key);
+        assert!(record_digest(&record, DIGEST_RECIPE).is_ok());
+    }
+    for (present, key) in [
+        ("01", "".to_string()),
+        ("2", "00".repeat(20)),
+        ("0", "00".repeat(20)),
+        ("1", "".to_string()),
+        ("1", "A0".repeat(20)),
+        ("1", "0".repeat(39)),
+        ("1", "0".repeat(41)),
+        ("1", "é".repeat(20)),
+    ] {
+        record["rate_card_key_present"] = json!(present);
+        record["rate_card_version"] = json!(key);
+        assert!(record_digest(&record, DIGEST_RECIPE).is_err());
+    }
+}
+
+#[test]
+fn mixed_v2_v4_v5_window_verifies_without_rewriting_old_signed_record() {
+    let (mut keys, mut range, _) = chain();
+    let original = example(V2, 0)["records"][0].clone();
+    range["records"][0] = original.clone();
+    keys["keys"]
+        .as_array_mut()
+        .unwrap()
+        .push(example(V2, 2)["keys"][0].clone());
+    range["records"][1]["prev_hash"] = original["hash"].clone();
+    sign(&mut range["records"][1]);
+    range["records"][2]["recipe"] = json!(DIGEST_RECIPE);
+    range["records"][2]["rate_card_key_present"] = json!("1");
+    range["records"][2]["rate_card_version"] = json!("00".repeat(20));
+    range["records"][2]["prev_hash"] = range["records"][1]["hash"].clone();
+    sign(&mut range["records"][2]);
+    let trusted = head(&range["records"][2]);
+    range["anchor"] = trusted["head"].clone();
+    assert_eq!(range["recipe"], DIGEST_RECIPE_V4);
+    assert!(original.get("recipe").is_none());
+    assert_eq!(range["records"][1]["recipe"], DIGEST_RECIPE_V4);
+    assert_eq!(range["records"][2]["recipe"], DIGEST_RECIPE);
+    assert_eq!(
+        verify(&keys, &range, Some(&trusted)).unwrap_err(),
+        "a record recipe is absent"
+    );
+
+    range["recipe"] = json!(DIGEST_RECIPE_V2);
+    let report = verify(&keys, &range, Some(&trusted)).unwrap();
+    assert_eq!(report["result"], "complete-through-trusted-head");
+    assert_eq!(report["records"], 3);
+    assert_eq!(report["trusted_terminal_head"], true);
+    assert_eq!(report["to"], trusted["head"]["seq"]);
+    assert_eq!(trusted["head"]["seq"], 3);
+    assert_eq!(trusted["head"]["hash"], range["records"][2]["hash"]);
+    assert_eq!(
+        range["records"][0], original,
+        "the original old signature/preimage stays exact"
+    );
 }
