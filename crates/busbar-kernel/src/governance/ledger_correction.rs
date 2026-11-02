@@ -295,18 +295,6 @@ impl GovState {
         Ok(capacity.positive().deltas())
     }
 
-    pub(in crate::governance) fn quarantined_correction_owns_target(
-        &self,
-        bucket: &str,
-        window: u64,
-    ) -> bool {
-        self.correction_quarantine_events().iter().any(|event| {
-            recovery::Custody::decode(&event.payload).map_or(true, |custody| {
-                custody.owns_quarantined_target(bucket, window)
-            })
-        })
-    }
-
     pub(in crate::governance) fn stage_quarantined_correction_negatives(
         &self,
         bucket: &str,
