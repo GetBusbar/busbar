@@ -1408,7 +1408,7 @@ async fn issued_key_debug_never_leaks_the_live_token() {
 
 #[tokio::test]
 async fn proof_self_mint_disabled_refuses_self_serve() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for self_mint in [Some(true), Some(false), None] {
         let gov = gov();
         let overlay = crate::test_support::TestOverlayStore::new();
@@ -1470,7 +1470,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
     use crate::governance::mint_policy::{MintPolicy, RoleCeiling};
     use crate::governance::{SELF_KEY_BINDING_MODE, SELF_KEY_BINDING_MODE_APP};
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for route in ["exchange", "login", "refresh"] {
         for (block, role, allowed) in [
             (None, None, true),
@@ -1681,7 +1681,7 @@ impl busbar_contract::auth_calls::AuthCalls for ModeReplayIdentity {
 async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclaimed() {
     use busbar_contract::store_calls::StoreDoor;
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let opened = crate::test_support::store_axis_stand_in()
         .open(
             StoreDoor::Linked(crate::test_support::store_double::door),

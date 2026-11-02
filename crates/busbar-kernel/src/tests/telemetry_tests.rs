@@ -24,7 +24,7 @@ fn lane_protocol() -> &'static str {
 
 #[test]
 fn test_bank_multithread_adds_sum_exactly_under_concurrent_scrape() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let slot = counter_slot(
         crate::snapshot::REQUESTS_TOTAL,
         &[
@@ -88,7 +88,7 @@ fn test_reregistration_same_labels_resolves_same_slot() {
 
 #[test]
 fn test_config_reapply_accumulates_across_generations() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let build = || {
         TestApp::new()
             .lane(LaneSpec::new("tel-gen-model", lane_protocol(), "http://m"))
@@ -126,7 +126,7 @@ fn test_config_reapply_accumulates_across_generations() {
 
 #[test]
 fn test_request_finished_renders_premigration_names_and_labels() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "tel-parity-model",
@@ -186,7 +186,7 @@ fn test_request_finished_renders_premigration_names_and_labels() {
 
 #[test]
 fn test_engine_helpers_emit_premigration_series() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = TestApp::new()
         .lane(LaneSpec::new("tel-eng-model", lane_protocol(), "http://m"))
         .pool("tel-eng-pool", &[(0, 1)])
@@ -252,7 +252,7 @@ fn test_engine_helpers_emit_premigration_series() {
 
 #[test]
 fn test_unregistered_pool_falls_back_to_macro_emission() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = TestApp::new()
         .lane(LaneSpec::new("tel-fb-model", lane_protocol(), "http://m"))
         .pool("tel-fb-pool", &[(0, 1)])
@@ -278,7 +278,7 @@ fn test_unregistered_pool_falls_back_to_macro_emission() {
 
 #[test]
 fn test_histogram_bank_drains_all_thread_samples() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let slot = histogram_slot(
         crate::snapshot::REQUEST_DURATION_SECONDS,
         &[("ingress_protocol", "acme"), ("pool", "tel-hist-mt-pool")],
@@ -310,7 +310,7 @@ fn test_histogram_bank_drains_all_thread_samples() {
 
 #[test]
 fn test_translation_bank_counts_known_protocol_pair() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (from, to) = shipped_protocols();
     let labels = [("from", from), ("to", to)];
     let before = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &labels);
@@ -400,7 +400,7 @@ fn measure_on_a_fresh_thread() {
         a.saturating_sub(d)
     }
 
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let slot = histogram_slot(
         crate::snapshot::REQUEST_DURATION_SECONDS,
         &[
@@ -471,7 +471,7 @@ fn test_retaining_from_truth_table() {
 
 #[test]
 fn test_off_metrics_never_materializes_the_histogram_chunk() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let slot = histogram_slot(
         crate::snapshot::REQUEST_DURATION_SECONDS,
         &[
@@ -551,7 +551,7 @@ fn test_off_metrics_retains_effectively_nothing_below_the_drain_threshold() {
 
 #[test]
 fn an_exited_threads_bank_is_released_and_its_counts_survive() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let slot = counter_slot(
         crate::snapshot::REQUESTS_TOTAL,
         &[
@@ -636,7 +636,7 @@ fn off_metrics_releases_exited_banks_and_preserves_preinstall_counts() {
         bank.upgrade().is_none(),
         "offline telemetry has no maintenance thread to reap this bank"
     );
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     assert_eq!(metric_sum("offline_bank_custody_total", &[]), 17.0);
     slot.add(3);
     assert_eq!(metric_sum("offline_bank_custody_total", &[]), 20.0);
@@ -645,7 +645,7 @@ fn off_metrics_releases_exited_banks_and_preserves_preinstall_counts() {
 
 #[test]
 fn test_finish_outcome_mapping_503_is_exhausted() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     model_plane_key();
     let app = TestApp::new()
         .lane(LaneSpec::new(

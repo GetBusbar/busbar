@@ -409,18 +409,12 @@ const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3)
 pub const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Install the real recorder for a test-support caller with an explicit retention window.
-/// The external testkit owns fixture defaults; production uses [`init_with`] with the operator's
-/// configured `buffer_seconds`.
+/// Production uses [`init_with`] with the operator's configured `buffer_seconds`.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn init_for_test(buffer: Duration) {
     let _ = ENABLED.set(true);
     init_with(buffer);
-}
-
-#[cfg(test)]
-pub fn init() {
-    crate::test_support::metrics::init();
 }
 
 pub fn drain_pending() {

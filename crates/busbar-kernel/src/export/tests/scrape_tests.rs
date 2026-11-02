@@ -100,7 +100,7 @@ fn metrics_route_declared_only_when_configured() {
 
 #[test]
 fn a_granted_scrape_is_the_sinks_rendering_of_the_snapshot() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let granted = Granted(Arc::new(super::super::plugin::Served(scrape_sink())));
     let resp = granted.handle_http(&get("/metrics"));
     assert_eq!(
@@ -135,7 +135,7 @@ fn a_granted_scrape_is_the_sinks_rendering_of_the_snapshot() {
 
 #[test]
 fn an_ungranted_crossing_reads_no_snapshot() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let served = super::super::plugin::Served(scrape_sink());
     let resp = crate::plugin_routes::PluginHttpDispatch::handle_http(&served, &get("/metrics"));
     assert_eq!(
@@ -150,7 +150,7 @@ fn an_ungranted_crossing_reads_no_snapshot() {
 
 #[test]
 fn the_lend_lasts_exactly_the_crossing() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     lend(None, || {
         assert!(matches!(
             read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_WHOLE),

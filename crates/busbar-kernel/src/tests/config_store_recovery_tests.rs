@@ -126,7 +126,7 @@ fn locked_reload_never_reads_the_overlay_even_when_its_store_is_unreadable() {
 fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
     let _limits_lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let _fixture = crate::test_support::TestApp::new();
     let cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::none());
     let opened =

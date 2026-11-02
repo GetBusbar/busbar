@@ -30,7 +30,7 @@ fn dropping_a_permit_frees_a_slot() {
 
 #[test]
 fn denied_entry_increments_the_gate_counter() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let gate = AdmissionGate::new(1, "test-denied-counter");
     let _held = gate.try_enter().expect("first entry admits");
     assert!(gate.try_enter().is_none(), "second entry must be denied");

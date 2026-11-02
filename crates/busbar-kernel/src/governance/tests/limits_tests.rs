@@ -1962,7 +1962,7 @@ fn captured<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
 
 #[test]
 fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let pending = PendingMetering::new();
     let ((), lines) = captured(|| {
         for i in 0..(MAX_PENDING_METERING_PER_SHARD + 3) {

@@ -46,7 +46,7 @@ impl busbar_contract::auth::AuthModule for PlatformRole {
 #[test]
 fn auth_plugin_role_binding_and_scope_cap_apply() {
     use busbar_contract::authz::Scope;
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     let mut cfg = chain_with("idp", serde_json::Map::new());
 

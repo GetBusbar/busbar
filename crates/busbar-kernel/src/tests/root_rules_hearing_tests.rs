@@ -56,7 +56,7 @@ fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limi
         }
     }
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.allow_all_metadata = true;
     let refusing = Arc::new(RefuseBoot::default());
@@ -83,7 +83,7 @@ fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limi
 #[test]
 fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::none());
     let members: Vec<_> = (0..9).map(|index| format!("unbounded-{index}")).collect();
     for name in &members {
@@ -123,7 +123,7 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
         }
     }
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let cfg = || {
         let mut cfg = crate::test_support::cfg_with_provider_api_key(
             crate::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_BUILT_LISTENER"),
@@ -153,7 +153,7 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
 #[test]
 fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init();
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let cfg = || {
         let mut cfg = crate::test_support::cfg_with_provider_api_key(
             crate::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_COMMIT_GUARD"),
