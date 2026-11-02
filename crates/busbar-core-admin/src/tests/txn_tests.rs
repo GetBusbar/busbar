@@ -882,7 +882,7 @@ fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
 /// Register one GLOBAL gate hook whose `licenseKey` is a `kind: secret` PLUGIN reference, through the
 /// REAL `POST /api/v1/admin/hooks` handler. Building the next snapshot re-resolves the global gate
 /// chain, and that resolution resolves the reference — the blocking FFI this test measures.
-async fn register_secret_hook(handle: Arc<AppHandle>) -> StatusCode {
+async fn register_secret_hook(handle: Arc<AppHandle>) -> (StatusCode, String) {
     let body = json!({
         "name": "compliance-gate",
         "config": {
@@ -892,14 +892,18 @@ async fn register_secret_hook(handle: Arc<AppHandle>) -> StatusCode {
             "settings": { "licenseKey": { "module": "acme-vault", "settings": { "path": "kv/busbar" } } }
         }
     });
-    crate::v1::json::register_hook(
+    let response = crate::v1::json::register_hook(
         State(handle),
         anon(),
         HeaderMap::new(),
         axum::body::Bytes::from(body.to_string()),
     )
-    .await
-    .status()
+    .await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 65_536)
+        .await
+        .expect("the hook response body is bounded");
+    (status, String::from_utf8(body.to_vec()).unwrap())
 }
 
 /// THE SAME ASSERTION AS `slow_store_read_does_not_stall_the_executor`, for the OTHER blocking seam a
@@ -925,13 +929,17 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
 
     // SPAWNED for the same reason the store test spawns: the handler and the probe must share the
     // ONE worker, which is what makes a synchronous call on the async side observable.
-    let status = tokio::spawn(register_secret_hook(handle.clone()))
+    let (status, body) = tokio::spawn(register_secret_hook(handle.clone()))
         .await
         .expect("register joins");
     stop.store(true, Ordering::SeqCst);
     let ticks = probe.await.expect("probe joins");
 
-    assert_eq!(status, StatusCode::CREATED, "the hook registers: {status}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the hook registers: {status}: {body}"
+    );
     assert!(ticks > 0, "the probe must have run");
     let worst_gap = worst.load(Ordering::SeqCst);
     assert!(
