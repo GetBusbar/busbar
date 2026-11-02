@@ -443,6 +443,16 @@ pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
 const MAX_PLUGIN_FILENAME_LEN: usize = 256;
 
 fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError> {
+    validate_plugin_filename_with(file, |file| {
+        app.plugin_admission
+            .is_some_and(|admission| admission.is_tarball(file))
+    })
+}
+
+fn validate_plugin_filename_with(
+    file: &str,
+    is_tarball: impl FnOnce(&str) -> bool,
+) -> Result<String, AdminError> {
     if file.is_empty() || file.len() > MAX_PLUGIN_FILENAME_LEN {
         return Err(AdminError::Validation(format!(
             "plugin filename must be 1..={MAX_PLUGIN_FILENAME_LEN} chars"
@@ -465,7 +475,7 @@ fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError>
             ));
         }
     }
-    if !app.plugin_admission.is_some_and(|a| a.is_tarball(file)) {
+    if !is_tarball(file) {
         return Err(AdminError::Validation(
             "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
         ));

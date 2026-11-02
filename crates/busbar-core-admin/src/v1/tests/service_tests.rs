@@ -1278,38 +1278,48 @@ fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
 
 #[test]
 fn validate_plugin_filename_rejects_each_escape_form_independently() {
-    let app = app_with(tmp_plugins_dir("filename-escape"), strict_posture());
     assert!(
-        validate_plugin_filename(&app, "../evil.tar.gz").is_err(),
+        validate_plugin_filename_with("../evil.tar.gz", |file| file.ends_with(".tar.gz")
+            || file.ends_with(".tgz"))
+        .is_err(),
         "..  alone must reject"
     );
     assert!(
-        validate_plugin_filename(&app, "sub/evil.tar.gz").is_err(),
+        validate_plugin_filename_with("sub/evil.tar.gz", |file| file.ends_with(".tar.gz")
+            || file.ends_with(".tgz"))
+        .is_err(),
         "/ alone must reject"
     );
     assert!(
-        validate_plugin_filename(&app, "sub\\evil.tar.gz").is_err(),
+        validate_plugin_filename_with("sub\\evil.tar.gz", |file| file.ends_with(".tar.gz")
+            || file.ends_with(".tgz"))
+        .is_err(),
         "\\ alone must reject"
     );
     assert!(
-        validate_plugin_filename(&app, "plain.tar.gz").is_ok(),
+        validate_plugin_filename_with("plain.tar.gz", |file| file.ends_with(".tar.gz")
+            || file.ends_with(".tgz"))
+        .is_ok(),
         "a bare filename with none of the three must be accepted"
     );
 }
 
 #[test]
 fn validate_plugin_filename_length_boundary_is_exact() {
-    let app = app_with(tmp_plugins_dir("filename-length"), strict_posture());
     let suffix = ".tar.gz";
     let at_cap = "a".repeat(MAX_PLUGIN_FILENAME_LEN - suffix.len()) + suffix;
     assert_eq!(at_cap.len(), MAX_PLUGIN_FILENAME_LEN);
     assert!(
-        validate_plugin_filename(&app, &at_cap).is_ok(),
+        validate_plugin_filename_with(&at_cap, |file| file.ends_with(".tar.gz")
+            || file.ends_with(".tgz"))
+        .is_ok(),
         "exactly MAX_PLUGIN_FILENAME_LEN chars must be accepted"
     );
     let over_cap = format!("a{at_cap}");
     assert!(
-        validate_plugin_filename(&app, &over_cap).is_err(),
+        validate_plugin_filename_with(&over_cap, |file| file.ends_with(".tar.gz")
+            || file.ends_with(".tgz"))
+        .is_err(),
         "MAX_PLUGIN_FILENAME_LEN + 1 chars must be rejected"
     );
 }
