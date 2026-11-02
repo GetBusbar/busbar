@@ -8,6 +8,10 @@ version = "0.10"
 audit-as-crates-io = true
 notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
 
+[policy.fs_extra]
+audit-as-crates-io = true
+notes = "Local full audit binds the exact reviewed fixed Git snapshot; the published registry base is not certified."
+
 [policy.h2]
 audit-as-crates-io = true
 
