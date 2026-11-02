@@ -248,9 +248,13 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
         )
         .expect("read actual durable audit records");
     assert!(
-        durable
-            .iter()
-            .any(|body| String::from_utf8_lossy(body).contains(&failure_resource)),
+        durable.iter().any(|body| {
+            let stored: busbar_kernel::audit::journal::NeutralBody =
+                serde_json::from_slice(body).expect("the actual persisted audit record decodes");
+            stored.seq == failure[0].seq
+                && stored.hash == failure[0].hash
+                && String::from_utf8_lossy(&stored.content).contains(&failure_resource)
+        }),
         "the asynchronous refusal is durably appended"
     );
     emit_admin_hostless_now(
