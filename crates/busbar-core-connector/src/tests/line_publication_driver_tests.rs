@@ -765,10 +765,16 @@ fn a_ready_batch_after_reentrant_close_counts_taken_source_and_cancels_its_line_
     let weak = Arc::downgrade(&pairing);
     caller.then(move |input| {
         assert_eq!(input.unwrap().bytes, SOURCE);
-        weak.upgrade().unwrap().close();
+        let pairing = weak.upgrade().unwrap();
+        // Actual DatagramTurn::cross holds a producer while the framer is
+        // crossing. Keep that same concrete owner across the reentrant close
+        // so the returned LINE is classified before bridge metadata retires.
+        let producer = pairing.memory.producer().unwrap();
+        pairing.close();
         LineStep::Batch {
             yielded: {
                 let mut y = Yielded::default();
+                y.producer = producer;
                 y.pieces = vec![got(10, SOURCE, false)];
                 y
             },
