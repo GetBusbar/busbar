@@ -118,6 +118,11 @@ pub trait FramerDoor: Send + Sync {
     fn instance(&self) -> Option<u64> {
         None
     }
+    /// The host's opaque I/O owner for this supplier. This is the checked host context handle,
+    /// distinct from the public instance id; only the host-side loaded door supplies it.
+    fn io_owner(&self) -> Option<u64> {
+        None
+    }
     /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline
     /// (`crate::carrier`). `None` = the entry is no carrier the host can drive.
     fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {

@@ -33,7 +33,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Wake, Waker};
 
-use busbar_contract::conn::{ConnError, Piece, PieceKind, Program, PROGRAM_GENERATION_FIELD};
+use base64::Engine as _;
+use busbar_contract::conn::{
+    ConnError, Piece, PieceKind, Program, PROGRAM_GENERATION_FIELD, PROGRAM_IDENTITY_FIELD,
+    PROGRAM_INSTANCE_FIELD,
+};
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
@@ -252,6 +256,16 @@ pub(crate) struct Member {
 /// The next member's supervision key: process-wide, from `1`.
 static NEXT_SUPERVISION_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+fn next_supervision_key(counter: &std::sync::atomic::AtomicU64) -> Result<u64, ConnError> {
+    counter
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |next| next.checked_add(1),
+        )
+        .map_err(|_| ConnError::Refused)
+}
+
 /// A piece of `kind` that filled `len` bytes.
 fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {
     Piece {
@@ -324,8 +338,9 @@ impl Member {
         env: crate::spawn_env::HeldEnv,
         via: Via,
         alpn: Vec<Vec<u8>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ConnError> {
+        let supervision_key = next_supervision_key(&NEXT_SUPERVISION_KEY)?;
+        Ok(Self {
             program,
             env,
             via,
@@ -348,9 +363,8 @@ impl Member {
             }),
             spawned: Condvar::new(),
             fan: Arc::new(Fan::default()),
-            supervision_key: NEXT_SUPERVISION_KEY
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        }
+            supervision_key,
+        })
     }
 
     /// The program this member runs.
@@ -547,6 +561,18 @@ impl Member {
         head.extend_from_slice(busbar_contract::abi::transport::fields::SEPARATOR);
         head.extend_from_slice(generation.to_string().as_bytes());
         head.extend_from_slice(busbar_contract::abi::transport::fields::LINE_END);
+        for (name, value) in [
+            (PROGRAM_INSTANCE_FIELD, self.supervision_key.to_string()),
+            (
+                PROGRAM_IDENTITY_FIELD,
+                base64::engine::general_purpose::STANDARD.encode(self.program.command.as_bytes()),
+            ),
+        ] {
+            head.extend_from_slice(name.as_bytes());
+            head.extend_from_slice(busbar_contract::abi::transport::fields::SEPARATOR);
+            head.extend_from_slice(value.as_bytes());
+            head.extend_from_slice(busbar_contract::abi::transport::fields::LINE_END);
+        }
         st.leases.insert(
             lease,
             Inbox {

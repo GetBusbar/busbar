@@ -1518,7 +1518,9 @@ impl Connector {
             && spec.egress_class == EGRESS_OPERATOR_INFRASTRUCTURE
             && spec.auth.is_empty()
             && busbar_contract::section::member_program(&spec.target_from)
-            && programs.iter().all(|(_, p)| p.command.starts_with('/'));
+            && programs
+                .iter()
+                .all(|(_, p)| std::path::Path::new(&p.command).is_absolute());
         let Some((door, alpn)) = served.filter(|_| carried) else {
             self.set_need(owner, need, None);
             return Err(ConnError::Refused);
@@ -1542,8 +1544,9 @@ impl Connector {
                 if let Some(kept) = &kept {
                     kept.env().reload(scope);
                 }
-                let member = kept.unwrap_or_else(|| {
-                    Arc::new(program::Member::new(
+                let member = match kept {
+                    Some(kept) => kept,
+                    None => Arc::new(program::Member::new(
                         p.clone(),
                         spawn_env::HeldEnv::load(&p.env_refs, self.spawn_secrets, scope),
                         Via {
@@ -1551,11 +1554,11 @@ impl Connector {
                             io: Arc::clone(&self.io),
                         },
                         alpn.clone(),
-                    ))
-                });
-                (name.clone(), member)
+                    )?),
+                };
+                Ok((name.clone(), member))
             })
-            .collect();
+            .collect::<Result<_, ConnError>>()?;
         self.slab.declare(owner, need);
         self.set_need(
             owner,
@@ -1598,7 +1601,7 @@ impl Connector {
         let carried = spec.direction == DIRECTION_OUTBOUND
             && spec.egress_class == EGRESS_OPERATOR_INFRASTRUCTURE
             && spec.auth.is_empty()
-            && program.command.starts_with('/');
+            && std::path::Path::new(&program.command).is_absolute();
         let Some((door, alpn)) = served.filter(|_| carried) else {
             self.set_need(owner, need, None);
             return Err(ConnError::Refused);

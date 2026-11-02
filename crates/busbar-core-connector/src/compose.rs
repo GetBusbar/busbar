@@ -932,7 +932,7 @@ impl Connection {
         mut dial: Dial,
         supervision_key: u64,
     ) -> Result<Self, Failure> {
-        if !program.command.starts_with('/') {
+        if !std::path::Path::new(&program.command).is_absolute() {
             return Err(Failure::Refused(
                 "a program is spawned by its absolute path only".into(),
             ));

@@ -572,6 +572,9 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
 }
 
 impl FramerDoor for TestDoor {
+    fn io_owner(&self) -> Option<u64> {
+        Some(OWNER)
+    }
     fn facts(&self) -> &DoorFacts {
         &self.facts
     }
@@ -1226,6 +1229,9 @@ impl PendingDoor {
 }
 
 impl FramerDoor for PendingDoor {
+    fn io_owner(&self) -> Option<u64> {
+        self.inner.io_owner()
+    }
     fn facts(&self) -> &DoorFacts {
         self.inner.facts()
     }

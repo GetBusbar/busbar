@@ -702,6 +702,15 @@ pub fn is_sealed_fields_field(name: &[u8]) -> bool {
 /// reach the same running program.
 pub const PROGRAM_GENERATION_FIELD: &str = "generation";
 
+/// The host member incarnation. A replacement launch configuration receives a distinct value,
+/// even when its first child has the same generation as the previous member's first child.
+pub const PROGRAM_INSTANCE_FIELD: &str = "program-instance";
+
+/// Standard-base64 UTF-8 absolute command path from the host-admitted program. This identifies
+/// the configured command, not executable bytes, an inode, or a script's contents. It appears
+/// only in the host-generated first HEAD after an actual same-ticket host spawn.
+pub const PROGRAM_IDENTITY_FIELD: &str = "program-identity";
+
 /// The registration key a member's program environment is read from ([`Program::from_settings`]).
 pub const PROGRAM_ENV_KEY: &str = "env";
 
@@ -810,14 +819,14 @@ impl Program {
             .get("command")
             .and_then(serde_json::Value::as_str)
             .ok_or(ProgramRefused::NoCommand)?;
-        if !command.starts_with('/') {
+        if !std::path::Path::new(command).is_absolute() {
             return Err(ProgramRefused::NotAbsolute);
         }
         let cwd = match map.get("cwd") {
             None | Some(serde_json::Value::Null) => None,
             Some(value) => {
                 let directory = value.as_str().ok_or(ProgramRefused::Cwd)?;
-                if !directory.starts_with('/') || directory.trim() != directory {
+                if !std::path::Path::new(directory).is_absolute() || directory.trim() != directory {
                     return Err(ProgramRefused::Cwd);
                 }
                 Some(directory.to_owned())

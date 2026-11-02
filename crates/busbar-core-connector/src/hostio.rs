@@ -65,6 +65,7 @@ pub enum OpenFailure {
 #[derive(Debug, Default)]
 struct Admitted {
     what: Option<Admission>,
+    owner: Option<u64>,
     made: Option<u64>,
     failure: Option<OpenFailure>,
 }
@@ -266,6 +267,11 @@ impl HostIo {
     /// ADMIT `what` for the op about to run on `ticket` (the destination guard's pinned address, the
     /// bind, the program): the one thing that op may reach.
     pub fn admit(&self, ticket: Ticket, what: Admission) {
+        self.admit_for(ticket, what, None);
+    }
+
+    /// Admit one supplier's operation under its checked, opaque host I/O owner.
+    pub(crate) fn admit_for(&self, ticket: Ticket, what: Admission, owner: Option<u64>) {
         self.admitted
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -273,6 +279,7 @@ impl HostIo {
                 ticket,
                 Admitted {
                     what: Some(what),
+                    owner,
                     ..Admitted::default()
                 },
             );
@@ -326,6 +333,13 @@ impl HostIo {
             .get(id)
             .filter(|e| e.owner == owner)
             .ok_or_else(IoRefusal::unknown)
+    }
+
+    /// A successful same-ticket spawn still owns an actual program handle for this supplier.
+    pub(crate) fn program_receipt(&self, owner: u64, id: u64) -> bool {
+        self.handles
+            .get(id)
+            .is_some_and(|entry| entry.owner == owner && matches!(entry.kind, Kind::Program(_)))
     }
 
     /// TAKE a stream handle's socket off the host's table, as the byte stream moves on to the
@@ -716,6 +730,17 @@ impl IoHost for HostIo {
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
+        {
+            let admitted = self.admitted.lock().unwrap_or_else(PoisonError::into_inner);
+            if admitted
+                .get(&ticket)
+                .is_some_and(|a| a.owner.is_some_and(|expected| expected != owner))
+            {
+                return Err(IoRefusal::Refused(
+                    "the program admission belongs to another supplier".into(),
+                ));
+            }
+        }
         // The admitted program's environment REFERENCES: never in the destination the carrier was
         // handed (it carries the written values only), held since config time resolved them.
         let mut held = None;
@@ -730,7 +755,7 @@ impl IoHost for HostIo {
             }
             admitted
         })?;
-        if !spawn.program.starts_with('/') {
+        if !std::path::Path::new(spawn.program).is_absolute() {
             return Err(IoRefusal::Refused(
                 "a program is spawned by its absolute path only".into(),
             ));

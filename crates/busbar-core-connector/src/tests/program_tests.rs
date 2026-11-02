@@ -25,6 +25,82 @@ mod callback_tests;
 const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(1);
 
+#[test]
+fn member_incarnations_refuse_exhaustion_instead_of_reusing_an_identity() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let counter = AtomicU64::new(u64::MAX - 1);
+    assert_eq!(super::next_supervision_key(&counter), Ok(u64::MAX - 1));
+    assert_eq!(
+        super::next_supervision_key(&counter),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(
+        super::next_supervision_key(&counter),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+}
+
+#[test]
+fn program_heads_bind_command_and_monotonic_member_incarnation_without_private_recipe_values() {
+    worker().block_on(async {
+        async fn head(c: &Connector, id: ConnId) -> std::collections::BTreeMap<String, String> {
+            let mut bytes = [0; 4096];
+            let piece = read(c, id, &mut bytes).await.unwrap();
+            assert_eq!(piece.kind, PieceKind::Fields);
+            assert_eq!(
+                piece.status,
+                Some(busbar_contract::transport::wire::WireStatusClass::Success)
+            );
+            std::str::from_utf8(&bytes[..piece.len])
+                .unwrap()
+                .lines()
+                .map(|line| {
+                    let (name, value) = line.split_once(": ").unwrap();
+                    (name.to_owned(), value.to_owned())
+                })
+                .collect()
+        }
+        let c = connector();
+        let mut first = sh(ECHO_PID, &[("SECRET", "private-first-value")]);
+        first.cwd = Some("/".into());
+        declare(&c, &[("m", first.clone())]).unwrap();
+        let a = open(&c, "m", b"").unwrap();
+        let initial = head(&c, a).await;
+        assert_eq!(initial.len(), 3);
+        assert_eq!(initial["generation"], "1");
+        assert_eq!(initial["program-identity"], "L2Jpbi9zaA==");
+        assert!(!format!("{initial:?}").contains("private-first-value"));
+        declare(&c, &[("m", first)]).unwrap();
+        let b = open(&c, "m", b"").unwrap();
+        assert_eq!(head(&c, b).await, initial);
+        let mut changed = sh(ECHO_PID, &[("SECRET", "private-second-value")]);
+        changed.cwd = Some(
+            std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        );
+        declare(&c, &[("m", changed)]).unwrap();
+        let replacement = open(&c, "m", b"").unwrap();
+        let next = head(&c, replacement).await;
+        assert_eq!(next.len(), 3);
+        assert_eq!(next["generation"], "1");
+        assert_eq!(next["program-identity"], initial["program-identity"]);
+        assert!(
+            next["program-instance"].parse::<u64>().unwrap()
+                > initial["program-instance"].parse::<u64>().unwrap()
+        );
+        assert!(!format!("{next:?}").contains("private-second-value"));
+        for id in [a, b, replacement] {
+            c.close(OWNER, id).unwrap();
+        }
+        c.forget(OWNER);
+    });
+}
+
 fn connector() -> Connector {
     connector_over(TestDoor::identity("bytes"))
 }
@@ -126,7 +202,7 @@ async fn read(
 
 /// The lease's HEAD: the generation of the program it reaches.
 async fn generation(c: &Connector, id: ConnId) -> u64 {
-    let mut buf = [0_u8; 64];
+    let mut buf = [0_u8; 512];
     let piece = read(c, id, &mut buf).await.expect("the head");
     assert_eq!(
         piece.kind,
@@ -139,7 +215,8 @@ async fn generation(c: &Connector, id: ConnId) -> u64 {
     );
     let block = std::str::from_utf8(&buf[..piece.len]).unwrap().to_owned();
     block
-        .strip_prefix("generation: ")
+        .lines()
+        .find_map(|line| line.strip_prefix("generation: "))
         .and_then(|g| g.trim_end().parse().ok())
         .unwrap_or_else(|| panic!("a generation field: {block:?}"))
 }
@@ -909,6 +986,9 @@ struct HangingRead {
 }
 
 impl crate::framer::FramerDoor for HangingRead {
+    fn io_owner(&self) -> Option<u64> {
+        self.inner.io_owner()
+    }
     fn facts(&self) -> &crate::framer::DoorFacts {
         self.inner.facts()
     }

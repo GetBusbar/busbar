@@ -35,6 +35,9 @@ struct RetirementDoor {
 }
 
 impl crate::framer::FramerDoor for RetirementDoor {
+    fn io_owner(&self) -> Option<u64> {
+        self.inner.io_owner()
+    }
     fn facts(&self) -> &crate::framer::DoorFacts {
         self.inner.facts()
     }

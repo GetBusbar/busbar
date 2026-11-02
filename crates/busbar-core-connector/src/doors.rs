@@ -470,6 +470,10 @@ impl FramerDoor for Dispatched {
         Some(self.live.plugin.instance().0)
     }
 
+    fn io_owner(&self) -> Option<u64> {
+        Some(self.live.plugin.inner.ctx().handle)
+    }
+
     fn seals_values(&self) -> bool {
         self.seals
     }

@@ -274,7 +274,14 @@ impl Carried {
                 env_len: env.len(),
             },
         };
-        io.admit(wr.ticket(), dest.admission());
+        let program = matches!(dest, Dest::Program(..));
+        let owner = door.io_owner();
+        if program && owner.is_none() {
+            return Err(DialFailure::Refused(
+                "a program carrier has no checked host I/O owner".into(),
+            ));
+        }
+        io.admit_for(wr.ticket(), dest.admission(), owner);
         let mut i: DialIn = blank_in();
         i.dest = &raw;
         i.supervision_key = match dest {
@@ -297,6 +304,29 @@ impl Carried {
         // now, after the settle and with no lock held; a handle the carrier already closed
         // itself names nothing and is left alone.
         let ready = c.as_ref().is_some_and(|c| c.outcome == Outcome::Ready);
+        let program_proven = !program
+            || (failure.is_none()
+                && owner
+                    .zip(handle)
+                    .is_some_and(|(owner, handle)| io.program_receipt(owner, handle)));
+        if ready && !program_proven {
+            let mut rejected = Self {
+                door,
+                io,
+                conn: o.conn,
+                rd,
+                wr,
+                handle,
+                shut: false,
+            };
+            rejected.close();
+            if let Some(handle) = handle {
+                rejected.io.retire_handle(handle);
+            }
+            return Err(DialFailure::Refused(
+                "the program carrier supplied no successful host spawn receipt".into(),
+            ));
+        }
         if let (false, Some(h)) = (ready, handle) {
             io.retire_handle(h);
         }
@@ -535,3 +565,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/carrier_dial_retirement_tests.rs"]
 mod dial_retirement_tests;
+
+#[cfg(test)]
+#[path = "tests/program_receipt_tests.rs"]
+mod program_receipt_tests;
