@@ -168,7 +168,7 @@ pub struct OutboundRequest {
     /// plus one); `0` = the member's own.
     pub need: u32,
     /// The plane marked the request's message text (`PIECE_OUT_TEXT` on a far-bound answer): a far
-    /// end whose wire tells text from binary is written it as text (ARCHITECT Q-L5B-WS-DIAL).
+    /// end whose wire tells text from binary is written it as text.
     pub text: bool,
 }
 

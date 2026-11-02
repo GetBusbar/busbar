@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KIND TAIL'S FACTS (`kind_tail_facts` in the rendering's format): every field of a kind's
-//! Statement tail, so the signed manifest carries the tail itself and not only its size (ARCHITECT
-//! ruling 2026-10-20, audit root#7 and loader#9). A reader that must not open the plugin reads a
+//! Statement tail, so the signed manifest carries the tail itself and not only
+//! its size. A reader that must not open the plugin reads a
 //! dropped-in row's tail from its manifest ([`read_auth_tail`] for an auth row,
 //! [`read_plane_cli_help`] for a plane's command-line help), and the admit comparison covers the
 //! tail, so a manifest stating another tail than the door's refuses the load.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE POINTER AND LENGTH PAIRS of every struct a call lends (status row 194), from the one list
+//! THE POINTER AND LENGTH PAIRS of every struct a call lends, from the one list
 //! the SDK states its `Lent` accessors from (`lent.rs`): what a [`TestIn`](super::test_in::TestIn)
 //! may set together, and nothing else. It lives with its one reader, the test support.
 

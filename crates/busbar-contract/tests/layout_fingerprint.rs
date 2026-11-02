@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KIND LAYOUT FINGERPRINTS ARE THEIR FOLDS (status row 188).
+//! THE KIND LAYOUT FINGERPRINTS ARE THEIR FOLDS.
 //!
 //! Each kind states its fingerprint as a literal (`abi/<kind>/`'s `LAYOUT_FINGERPRINT`, which the
 //! generated C header carries) and lists its shapes (`LAYOUT_SHAPES`, evaluated by the compiler).

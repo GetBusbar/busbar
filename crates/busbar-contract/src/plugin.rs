@@ -275,13 +275,13 @@ pub trait KernelSeal: sealed::KernelSealed {
 /// The one seal a TEST harness may present — behind the `test-seal` feature, off in every real
 /// build.
 ///
-/// This exists because sealing [`KernelSeal`] (#65) closed a door that in-tree test harnesses were
-/// walking through. Most of them now mint a real capability token instead, but a PLANE crate may
-/// not name [`crate::caps`] at all (ARCHITECTURE section 1.2; each plane asserts it from the inside
-/// in its own `purity` test), so a plane's harness has no token to mint and no legal way to build
-/// the kernel-side values its fixtures need. `qa/construction.toml`'s `kernel-seal-impls` rule
-/// named this exact gap and the exact remedy — *"their test seals cannot move onto a token until
-/// the contract offers a seal a plane is allowed to name"*. This is that seal.
+/// Plane crates cannot name
+/// [`crate::caps`] under their purity
+/// boundary. The dev-only seal
+/// lets their test harnesses
+/// build kernel-side fixture
+/// views without implementing
+/// or reopening [`KernelSeal`].
 ///
 /// What it does NOT do is re-open the forgery:
 ///

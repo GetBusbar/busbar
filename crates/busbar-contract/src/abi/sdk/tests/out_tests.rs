@@ -443,8 +443,8 @@ fn a_full_envelope_reports_no_more() {
     assert_eq!(o.head.envelope.metrics_len, MAX_ENVELOPE_ENTRIES);
 }
 
-/// THE ROUTE SETTER (ARCHITECT Q-SW6/Q-FL3): the class and the entry's name, the name kept in the
-/// instance's memory past the call; with no instance the class is set and no name is.
+
+
 #[test]
 fn an_arrival_names_its_route_and_keeps_the_name() {
     use crate::abi::plane::{ArriveOut, ROUTE_DIRECT};
@@ -488,9 +488,9 @@ fn a_route_entry_already_kept_is_named_without_allocating() {
     );
 }
 
-/// THE TRUST FACTS SETTER (ARCHITECT 2026-10-06): the counterparty, item and digest a unit rests
-/// on, each kept in the instance's memory past the call; an empty counterparty, item or digest
-/// states none, and with no instance nothing is stated.
+
+
+
 #[test]
 fn an_arrival_states_its_trust_facts_and_keeps_them() {
     use crate::abi::plane::ArriveOut;

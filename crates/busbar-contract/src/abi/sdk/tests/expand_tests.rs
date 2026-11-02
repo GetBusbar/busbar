@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SAFE ABI SURFACE BESIDE THE OPEN FIELDS (status row 194, expand): every accessor,
+//! THE SAFE ABI SURFACE BESIDE THE OPEN FIELDS: every accessor,
 //! constructor, setter and builder this tree gains before #1471 makes the pointer and length
 //! fields private, each held to the field or path it replaces, so a plugin that moves to it reads
 //! and writes exactly what it did.

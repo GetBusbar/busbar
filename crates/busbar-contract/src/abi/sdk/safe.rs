@@ -416,7 +416,7 @@ pub struct Instance<'call, T> {
     ticket: Ticket,
     resuming: bool,
     opened: &'call Cell<Option<Box<Tagged<T>>>>,
-    /// INVARIANT in `'call` (status row 194): an instance cannot be shortened to a local's
+    /// INVARIANT in `'call`: an instance cannot be shortened to a local's
     /// lifetime, so the generation borrow it lends ([`Instance::generation`]) holds only what the
     /// instance state lives for.
     _call: PhantomData<fn(&'call ()) -> &'call ()>,
@@ -489,7 +489,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
         self.opened.set(Some(tagged));
     }
 
-    /// THE GENERATION BORROW this op is lent (status row 194): a string or payload borrowed for
+    /// THE GENERATION BORROW this op is lent: a string or payload borrowed for
     /// `'call` (the instance state [`Instance::get`] answers, or the program's memory) lives at
     /// least until the instance's next refresh generation, so the runtime writers
     /// ([`AbiStr::lent`](crate::abi::mechanism::call::AbiStr::lent),

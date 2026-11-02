@@ -156,15 +156,15 @@ pub struct App {
     /// priority so the merge's stable sort keeps globals-first on ties.
     pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
     /// THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS, resolved ONCE at config apply
-    /// (money-path Phase 3-4 C — the RATIFIED pool-hook facade). These USED to live on the relocated
-    /// plane's own per-pool runtime object, but their resolved values are the core-owned
-    /// `ResolvedPolicy` / `Arc<dyn RoutingPolicy>` (an Arc over a dlopen plugin), which the plane's
-    /// `build_runtime` cannot resolve (no `hook_env`, no usable current-`&App`). So they stay
-    /// resolved-and-read CORE-SIDE, keyed by pool, and the relocated plane reaches them through the
-    /// [`App::pool_policy`] / [`App::pool_gates`] / [`App::pool_rewrites`] down-facades —
-    /// byte-identical objects (the SAME resolution `hooks::resolve_pool_*` produced), read via the
-    /// facade instead of stored across the plane seam. Absent pool ⇒ the zero-cost default (no
-    /// policy / empty chain).
+    /// The resolved values are core-owned `ResolvedPolicy` / `Arc<dyn RoutingPolicy>`
+    /// objects over admitted plugins. A plane's `build_runtime` cannot
+    /// resolve them because it has no `hook_env` or
+    /// usable current `&App`. They are resolved and read
+    /// core-side, keyed by pool, and exposed through [`App::pool_policy`],
+    /// [`App::pool_gates`], and [`App::pool_rewrites`]. The facade returns the same
+    /// objects produced by `hooks::resolve_pool_*`, without storing them across
+    /// the plane seam. An absent pool uses the
+    /// zero-cost default: no policy and an empty chain.
     pub pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
     pub pool_decision_gates:
         std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
@@ -380,7 +380,7 @@ pub struct App {
     /// Monotonic config version — `0` at boot, incremented by each API config apply (the swap builds
     /// the next snapshot with `config_version + 1`). Exposed on `GET /api/v1/admin/info` so drift-detection
     /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
-    /// restart); durable version history + rollback is a follow-up.
+    /// restart).
     pub config_version: u64,
     /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
     /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".

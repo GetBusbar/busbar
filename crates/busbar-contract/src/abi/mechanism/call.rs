@@ -157,7 +157,7 @@ impl AbiStr {
     }
 }
 
-/// HOW AN `AbiStr` IS MADE AND READ (status row 194), through methods rather than its pointer and
+/// HOW AN `AbiStr` IS MADE AND READ, through methods rather than its pointer and
 /// length fields, which #1471 makes private:
 ///
 /// * [`AbiStr::of`] / [`AbiStr::of_bytes`] — memory that lives for the program (a Statement's
@@ -366,7 +366,7 @@ impl Blob {
     };
 }
 
-/// HOW A `Blob` IS MADE AND READ (status row 194), through methods rather than its pointer and
+/// HOW A `Blob` IS MADE AND READ, through methods rather than its pointer and
 /// length fields, which #1471 makes private: [`Blob::of`] / [`Blob::json`] over memory that lives
 /// for the program, [`Blob::lent`] over memory the op's generation borrow ([`Gen`]) proves, the
 /// `unsafe` [`Blob::from_raw_parts`] for the host's and the loader's per-call memory.
@@ -624,8 +624,8 @@ impl Envelope {
 /// [`super::door::MetricFamily`] and [`AbiStr`] are fixed by [`super::MECHANISM_VERSION`]; arrays of them
 /// carry no stride, so growing one is a mechanism bump.
 ///
-/// THE SHORT-BUFFER ANSWER (ARCHITECT ruling M-SB: one outcome for every kind; every kind cites this
-/// text and does not restate it): "your buffer is too small" is [`Outcome::Failed`] with each
+/// The short-buffer answer is shared by every kind: "your
+/// buffer is too small" is [`Outcome::Failed`] with each
 /// `needed_*` the answer needs above the capacity the host gave, and NOTHING applied. The host
 /// re-calls ONCE, on the same ticket, with at least `needed_*`; a second short answer is
 /// [`Outcome::Fault`]. A non-zero `needed_*` with any outcome other than FAILED is FAULT; FAILED

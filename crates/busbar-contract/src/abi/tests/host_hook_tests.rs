@@ -151,9 +151,9 @@ fn a_tap_view_carries_signals_and_the_prompt_only_when_projected() {
     );
 }
 
-/// RED (ARCHITECT ruling 2026-09-29, WIRE-HOOK Q5): the prompt rides `notify` ONLY under the tap's
-/// `prompt: ro` grant. An ungranted tap is handed no prompt even when the request it observes
-/// carries one: no presence bit, no system text, no messages, no body.
+
+
+
 #[test]
 fn red_an_ungranted_tap_never_sees_the_prompt_the_request_carries() {
     let tap = NotifyFrame::build(&req(true), None, false).input();
@@ -172,9 +172,9 @@ fn red_an_ungranted_tap_never_sees_the_prompt_the_request_carries() {
     assert_eq!(tap.signals_len, 1);
 }
 
-/// THE SESSION CROSSES (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session half): the
-/// request's opaque session reaches the hook's request view as octets, byte for byte; a request
-/// that names none crosses an absent blob.
+
+
+
 #[test]
 fn a_decide_view_carries_the_request_session_as_octets() {
     let ctx = RoutingContext {

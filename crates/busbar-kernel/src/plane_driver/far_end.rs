@@ -108,11 +108,11 @@ pub struct MemberRoute {
     /// Which of the far end's response head fields cross to the plane: its need's declared keep
     /// rule (THE DESIGN §5, "The response head and trailers": the kernel copies only those).
     pub keep: ResponseKeep,
-    /// EVERY need bound for the member beside [`Self::need`] (ARCHITECT Q-L5B-NEEDS 2026-10-03: one
-    /// binding per (transport, auth)), each with its keep rule: a far request that names one of
+    /// Every need bound for the member beside [`Self::need`], one per (transport, auth),
+    /// each with its keep rule: a far request that names one of
     /// them (`OutboundRequest::need`) opens on it. Empty = the member rides [`Self::need`] alone.
     pub rides: Vec<(NeedId, ResponseKeep)>,
-    /// The member's trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin and
+    /// The member's trust anchors: the far end's key pin and
     /// busbar's client identity, sealed into the connector at the egress's composition so every
     /// connection to the member, the walk's and the plane's own, is held to them. Default = none.
     pub anchors: busbar_contract::transport::trust::Anchors,
@@ -260,8 +260,8 @@ pub struct Egress {
 /// What one unit's walk is told at its start.
 #[derive(Debug, Clone)]
 pub struct UnitRoute {
-    /// The unit the walk serves: every dispatch record it writes names it (ARCHITECT P3 (c),
-    /// 2026-10-02).
+    /// The unit the walk serves; every dispatch
+    /// record it writes names this unit.
     pub unit: busbar_contract::UnitKey,
     /// The pool the unit routes over.
     pub pool: String,

@@ -614,9 +614,9 @@ fn an_interim_head_and_a_handshake_code_are_heads_with_codes() {
     );
 }
 
-/// RED (ARCHITECT, the stream-end ruling): an EMPTY piece is a message, text or binary, never the
-/// stream's end; PIECE_END is the end, and only on its own empty piece: with bytes it would
-/// swallow a message, with a field block or a failure's reason it is not the whole end.
+
+
+
 #[test]
 fn an_empty_piece_is_a_message_and_the_end_is_its_own_flag() {
     let mut o: FramerOut = z();
@@ -1086,9 +1086,9 @@ fn a_route_view_with_no_method_or_no_known_form_is_refused() {
     );
 }
 
-/// A stream's final status (ARCHITECT 4l): a number its claim's rows cover, ranges inside the
-/// bytes lent. RED arms: a status past the claim's numbering, a status on a claim with none, a
-/// message or details range past the bytes, a count with no bytes.
+
+
+
 #[test]
 fn a_streams_final_status_is_judged_against_its_claims_numbering() {
     let rows = [
@@ -1625,9 +1625,9 @@ fn a_begin_scheme_is_declared() {
     }
 }
 
-/// /status row 192 B: a framer's stated agreed protocol is a 1-based position in the offer its
-/// listener made: `0` (not stated) always holds, every position in the offer holds, one past it is
-/// refused, and a dialled framing (an offer of none) states none.
+
+
+
 #[test]
 fn an_agreed_protocol_past_the_offer_is_refused() {
     use crate::abi::transport::check::check_agreed_position;

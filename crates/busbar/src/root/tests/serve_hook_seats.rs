@@ -534,7 +534,7 @@ pub(crate) struct RigOpts<'a> {
     /// that reads what the plane does with the caller's parts).
     pub no_rewrite: bool,
     /// The deployment's `limits.request_body_max_bytes` (`None`: the default): the translation cap
-    /// the kernel hands the door in its settings, which the plane enforces (row 155).
+    /// the kernel hands the door in its settings, which the plane enforces.
     pub request_body_max_bytes: Option<usize>,
     /// The node's book keeps its journal in a configured store that refuses, and the lane to it is
     /// full ([`full_journal_book`]): the node fails closed on every new unit (H3).

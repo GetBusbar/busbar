@@ -130,7 +130,7 @@ abi_struct! {
         /// The settings naming what to resolve, in the plugin's own settings shape (a shorthand
         /// spelling already rewritten by the host per the Statement rewrite rule).
         pub settings: Blob,
-        /// THE HOST'S SECRET BUFFER, zeroed, lent for the call (the credential chip, row 6: host-owned secret bytes): a READY
+        /// The host's zeroed secret buffer is lent for the call: a READY
         /// `resolve` writes the material here and nowhere the host must later release. The host wipes
         /// it when its consumer is done. NULL (with `secret_cap` `0`) = no buffer: every value is short.
         pub secret_buf: *mut u8,

@@ -1044,9 +1044,9 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     assert!(may_pend(op::DISK_APPEND));
 }
 
-/// `trust.decide` (ARCHITECT 2026-10-06): it never pends, and its value is a `TRUST_DECIDED_*`
-/// verdict or an `UNDECIDED_*` refusal code; RED: a value past the vocabulary, and a PENDING
-/// answer even on a ticket, are FAULT.
+
+
+
 #[test]
 fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
     let i = TrustDecideIn {

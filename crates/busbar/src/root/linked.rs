@@ -164,7 +164,7 @@ pub struct LinkedTransport {
     /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
     pub claims: ClaimsOf,
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
-    /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
+    /// upgrade lines (`crate::root::serve::upgrade_carriers`).
     pub upgrades: ClaimsOf,
     /// The claims whose unit 0 opens on the FIRST LINE, read off the door's Statement: the line
     /// carrier the process's own stdin/stdout serves (`crate::root::serve::lines::line_carrier`).
@@ -183,9 +183,9 @@ pub type KeyOf = fn() -> &'static str;
 /// A row's declared layers, read off its door's transport tail when the seal first asks for them.
 pub type LayersOf = fn() -> &'static [&'static str];
 
-/// THE ONE LINKED TRANSPORT ROW, built from its bare `door` and nothing else (`BUSBAR-1.6.0.md`
-/// l.3560-3561; coordinator ruling (b) on row 159): the row's key, layers and session are read once
-/// off the door's Statement by the loader's one reader (`crate::root::doors::row_facts`: the
+/// The linked transport row is built
+/// from its bare `door`: its key,
+/// layers, and session are read once
 /// Statement's name held equal to its own claim, the tail's `composes_over`, the claim rows'
 /// `session`), and its build, claims, upgrade lines, first-line claims and offered points are read
 /// off the same door. The generated linked table expands one per `transport` row, so every

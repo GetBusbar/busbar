@@ -184,7 +184,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         Self::open(settings, host)
     }
 
-    /// THE CONNECT STEP of `open` (ARCHITECT ruling 2026-10-03 on Q-L16-2): what the store reaches
+    /// THE CONNECT STEP of `open`: what the store reaches
     /// before the host counts it opened (its backend's first round trip, a schema check: a backend
     /// whose stored schema is NEWER than this build's is refused, never written). It runs
     /// on the instance [`StoreSlots::open`] answered, on `open`'s own ticket, and may PEND on the

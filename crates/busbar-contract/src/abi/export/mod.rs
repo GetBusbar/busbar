@@ -7,8 +7,8 @@
 //! [`ExportStream`] tail. The one dispatcher calls this table (`busbar-plugin-loader`,
 //! `dispatch::kinds::export`).
 //!
-//! **ARCHITECT REVIEW RULING (fresh-Opus M3-SHAPES review, 2026-09-28), folded in on top of the
-//! first landing:**
+//! # Host-owned scrape buffers
+//!
 //! 2. `scrape`'s rendered-exposition buffer is HOST-owned and lives in [`ScrapeIn`]
 //!    (`buf`/`cap`), never a plugin-owned pointer in `out`: the host zeroes `out` before the call,
 //!    so nothing the plugin needs may live there. [`ScrapeOut`] carries `written`/`needed`: too
@@ -18,7 +18,7 @@
 //!    [`CheckOut::findings`]) are documented as memory class (iv): held live under `head.lease`
 //!    until `release(lease)`.
 //!
-//! **SECOND REVIEW PASS (ARCHITECT ruling, 2026-09-28), folded in on the same landing:**
+//! # Routes and scrape samples
 //! - [`Tail::routes`] carries [`Route`] entries (`path`, `method`, `auth`), not bare path
 //!   strings: none/key/admin auth cannot be read off a path alone.
 //! - [`ScrapeSample`] carries its own `name` and [`ScrapeLabel`] key/value pairs (not
@@ -688,8 +688,8 @@ pub const SCRAPE_KIND_UNTYPED: u8 = 4;
 /// a kind's bit rides through the call untouched.
 pub const SCRAPE_FLAG_HOOK_FAMILIES: u32 = 2;
 
-/// One label on a [`ScrapeSample`]: a key AND its value, ARCHITECT review ruling (fresh-Opus
-/// M3-SHAPES review, parity item) — a value-only array cannot carry a histogram's `le` or a
+/// One label on a [`ScrapeSample`]: its key and value. A
+/// value-only array cannot carry a histogram's `le` or a
 /// summary's `quantile` label, which is exactly what makes the host's exposition losslessly
 /// reproducible.
 #[repr(C)]
@@ -703,8 +703,8 @@ pub struct ScrapeLabel {
 
 /// One sample of a [`ScrapeFamily`]'s snapshot: its own series name (a histogram's `_bucket`/
 /// `_sum`/`_count` and a summary's `quantile` legs are each their own named series), its labels
-/// and its value as the recorder's OWN STRING SPELLING (not `f64` — ARCHITECT review ruling:
-/// re-rendering a re-parsed float would not reproduce the host's exposition byte for byte).
+/// and its value in the recorder's original string spelling. Re-rendering a
+/// parsed float would not reproduce the host's exposition byte for byte.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ScrapeSample {
@@ -735,18 +735,18 @@ pub struct ScrapeFamily {
     pub kind: u8,
     /// Alignment padding.
     pub _reserved: [u8; 7],
-    /// The samples, each carrying its own labels (ARCHITECT review ruling: labels moved onto the
-    /// sample, not shared at the family level, so a histogram/summary series keeps its `le`/
-    /// `quantile` label).
+    /// Samples carry their own labels, rather than
+    /// sharing family labels, so histogram and summary
+    /// series retain their `le` and `quantile` labels.
     pub samples: *const ScrapeSample,
     /// How many.
     pub samples_len: usize,
 }
 
-/// `scrape`'s `in`. ARCHITECT review ruling 2 (fresh-Opus M3-SHAPES review, 2026-09-28): the
-/// rendered-exposition buffer is HOST-owned and lives here, in the `in` (request-path results are
-/// host buffers, never a plugin-owned pointer in `out`; the host zeroes `out` before the call, so
-/// nothing the plugin needs may live there).
+/// `scrape`'s input carries the host-owned rendered-exposition buffer. Request-path
+/// results use host buffers, never plugin-owned pointers in
+/// `out`. The host zeroes `out` before each call,
+/// so no input data may live there.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ScrapeIn {
@@ -778,7 +778,7 @@ pub struct ScrapeOut {
 }
 
 /// `status`'s `out`. OFF-PATH: `status` is a plugin-owned result, memory class (iv) — live under
-/// `head.lease` until `release(lease)` (ARCHITECT review ruling 3).
+/// `head.lease` until `release(lease)`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct StatusOut {
@@ -796,9 +796,9 @@ pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// `CheckPhase::Instances` (the default).
 pub const CHECK_PHASE_INSTANCES: u32 = 1;
 
-/// One instance `check` may read across, at [`CHECK_PHASE_INSTANCES`] (ARCHITECT review ruling,
-/// fresh-Opus M3-SHAPES review, parity item: the OLD `Check{instances}` exists precisely for
-/// checks that read across every instance of a sink's module, not only the one being called).
+/// One instance `check` may read at
+/// [`CHECK_PHASE_INSTANCES`], for checks spanning every
+/// instance of a sink module.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CheckInstance {
@@ -826,7 +826,7 @@ pub struct CheckIn {
 }
 
 /// `check`'s `out`. OFF-PATH: `findings` is a plugin-owned result, memory class (iv) — live under
-/// `head.lease` until `release(lease)` (ARCHITECT review ruling 3).
+/// `head.lease` until `release(lease)`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CheckOut {
@@ -861,7 +861,7 @@ pub struct ServeIn {
 }
 
 /// `serve`'s `out`. OFF-PATH: the response is a plugin-owned result, memory class (iv) — the
-/// headers and body live under `head.lease` until `release(lease)` (ARCHITECT review ruling 3).
+/// headers and body live under `head.lease` until `release(lease)`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ServeOut {
@@ -888,8 +888,8 @@ pub const ROUTE_AUTH_KEY: u32 = 1;
 /// `RouteAuth::Admin`.
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
-/// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus
-/// M3-SHAPES review, parity item): `{path, method}` is the collision key the kernel checks at
+/// One HTTP route this instance serves via `serve`: `{path,
+/// method}` is the collision key the kernel checks at
 /// load; `auth` is enforced by the kernel BEFORE `serve` is ever called.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -915,8 +915,8 @@ pub struct Tail {
     pub streams: *const u8,
     /// How many.
     pub streams_len: usize,
-    /// The HTTP routes this instance serves via `serve` (ARCHITECT review ruling: a Statement
-    /// fact, not an op the host asks each instance at load).
+    /// The HTTP routes this instance serves via `serve`, declared once
+    /// in its Statement rather than queried per instance at load.
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,
@@ -935,7 +935,7 @@ impl Tail {
     };
 }
 
-/// HOW THE EXPORT KIND TAIL IS MADE (status row 194): from [`Tail::EMPTY`], its plain fields set
+/// HOW THE EXPORT KIND TAIL IS MADE: from [`Tail::EMPTY`], its plain fields set
 /// directly and each list by its setter, to items that live for the program.
 impl Tail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head

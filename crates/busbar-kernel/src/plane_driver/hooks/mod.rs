@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK STAGE ON THE DRIVER (`BUSBAR-1.6.0.md` Part 3, section 12, "Hooks"; ARCHITECT K5,
-//! 2026-10-02): the request-stage hooks run at the head of the route leg, after admission, over the
+//! The driver's request-stage hooks run at the head
+//! of the route leg, after admission, over the
 //! plane's own projection of the unit's request (`project`, pure, ticketless), in the order the
 //! previous release ran them:
 //!

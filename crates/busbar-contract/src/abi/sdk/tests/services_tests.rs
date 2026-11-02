@@ -568,11 +568,11 @@ fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
     );
 }
 
-/// THE JUDGED ADDRESSES (ARCHITECT DEST-PIN 2026-10-01): asked to resolve, the wrapper answers the
-/// verdict with the addresses the host wrote, views into the caller's buffers, and their joined
-/// form is the set an ESTABLISH's dial lands within; short buffers are a short answer naming what
-/// it needs; not asked, no address and an empty set. RED on the wrapper that answered the verdict
-/// alone.
+
+
+
+
+
 #[test]
 fn dest_judge_answers_the_judged_addresses_as_the_set_a_dial_lands_within() {
     let t = HostSlots {
@@ -2141,13 +2141,13 @@ fn secret_table(slot: Option<ServiceFn>) -> HostSlots {
     }
 }
 
-/// THE SAFE `records.secret` (ARCHITECT ruling on the auth kit's credential read): READY hands the
-/// secret's bytes and the live verdict in a holder the plugin owns; an id the host does not hold is
-/// READY too, with the host's dummy and NOT live (absent is `live == false`, never an error, so the
-/// plugin's check runs over the dummy in equal time); PENDING surfaces as `Poll::Pending`, for the
-/// op to answer PENDING and the host's wake to re-enter it; a secret past the first buffer is
-/// re-called once inside the call. RED before the wrapper: the SDK had no safe call, and an auth
-/// plugin crossed the raw slot in an `unsafe` module of its own.
+
+
+
+
+
+
+
 #[test]
 fn records_secret_answers_the_secret_and_its_liveness_and_pends_on_a_ticket() {
     let t = secret_table(Some(holds_secrets));

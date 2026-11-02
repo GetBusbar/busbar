@@ -270,7 +270,7 @@ pub const fn strip_field(name: &'static str) -> Strip {
     }
 }
 
-/// `VerifyOp` over the host services a real host's `open` handed (status row 194). #1471 ties
+/// `VerifyOp` over the host services a real host's `open` handed. #1471 ties
 /// `VerifyOp` to the tables its services were read from (`VerifyOp<'t>`) and states this alias as
 /// `VerifyOp<'static>`; a plugin names it where it names the op's type, and the same spelling
 /// compiles before and after.

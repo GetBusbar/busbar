@@ -841,7 +841,7 @@ pub struct Served {
     /// opened on while they run: the process's one node's.
     pub post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
     /// The framer that answers a claim, by its name: what frames a stream that arrived on a claim
-    /// another framer than the data listener's own answers (ARCHITECT 4l). `None` = the process's
+    /// another framer than the data listener's own answers. `None` = the process's
     /// one connector's.
     pub framers: Option<StreamFramers>,
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
@@ -5610,8 +5610,8 @@ fn deframed_arrival(
 /// piece, so a `write` resolves only once the body has taken the piece before it (the caller's side
 /// was writable). A body the server dropped (the caller went away) answers `false`.
 ///
-/// A unit served as a DUPLEX SESSION (its `arrive` stated `ROUTE_SESSION`, ARCHITECT round 5
-/// Q-L3B-K6-HTTP (a)) has this caller side as its session's caller leg: its read yields the
+/// A unit served as a duplex session (`ROUTE_SESSION`) uses this caller
+/// side as its session's caller leg: its read yields the
 /// arrival's body once, then nothing until the response is dropped, and the long-lived response is
 /// what the session writes.
 #[derive(Debug)]
@@ -5632,7 +5632,7 @@ type Head = (u32, HeadFields);
 pub struct IngressReply {
     head: oneshot::Receiver<Head>,
     body: mpsc::Receiver<Bytes>,
-    /// The answer's trailers, where a framer renders a close after its body (ARCHITECT 4l).
+    /// The answer's trailers, where a framer renders a close after its body.
     trailers: Option<oneshot::Receiver<axum::http::HeaderMap>>,
 }
 

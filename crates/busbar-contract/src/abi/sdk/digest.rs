@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE DIGEST A PLUGIN TAKES (ARCHITECT ruling fold-a2a-push-card-crypto (b), 2026-10-01): a
+//! THE SHARED PLUGIN DIGEST is SHA-256: a
 //! plane stays pure and links no crypto crate, so a document fingerprint is the contract's SHA-256,
 //! the same `sha2` the contract already carries for [`crate::sha256_hex`], which is this digest in
 //! lower-case hex. Judging a signature is the kernel's (`trust.verify`), never a plugin's.

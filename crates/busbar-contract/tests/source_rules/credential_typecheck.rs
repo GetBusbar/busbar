@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CREDENTIAL TYPECHECK (CREDENTIAL-LOCKDOWN Phase 0, P0.1): a mechanical, type-level
+//! The credential typecheck is a mechanical, type-level
 //! inventory of every place core's production source holds, prints or copies credential material
 //! outside the sealed types. The run prints what it finds and passes; chip row 9 makes it assert
 //! that it finds nothing. Each rule's own planted case below is strict, so a rule that stops

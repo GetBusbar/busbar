@@ -302,7 +302,7 @@ pub fn check_arrive(
     Ok(())
 }
 
-/// `arrive`'s TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): each a bounded text; a
+/// `arrive`'s trust facts are bounded text; a
 /// item only with a counterparty, a digest only with an item; and an answer that admits
 /// nothing states none.
 fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {

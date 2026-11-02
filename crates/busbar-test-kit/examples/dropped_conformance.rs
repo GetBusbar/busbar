@@ -20,7 +20,7 @@
 //!   * [`load_dropped`] admits it, and the KIND'S SCRIPT answers as the kind's contract requires,
 //!     every answer judged by the one dispatcher's kind checks (only `kind: secret` has a script
 //!     here today; another kind is a failure naming that, not a pass). A secret is written into the
-//!     host's buffer under no lease (the credential chip, row 6: host-owned secret bytes), a buffer
+//!     host's buffer under no lease, a buffer
 //!     too small gets the short-buffer answer, and no credential `conformance.json` names crosses
 //!     back in any answer's text (THE CANARY).
 //!   * RED ARM, KEPT: the same sources built with `-DBUSBAR_PLUGIN_KIND_ABI=<host ± 1>` are refused

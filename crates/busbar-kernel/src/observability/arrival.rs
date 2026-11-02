@@ -254,7 +254,7 @@ struct Fact {
     span: Option<ArrivalSpan>,
 }
 
-/// THE ENTRY SPANS OF ONE PLANE'S ROUTES (status row 173), built once from its snapshot's claims
+/// THE ENTRY SPANS OF ONE PLANE'S ROUTES, built once from its snapshot's claims
 /// when the routes are bound: the plane's FACTS, read in its snapshot's order, then each routed
 /// claim's own span. A fact mounts no route; it states which entry span an arrival opens when the
 /// request meets it, as the previous release chose its entry by the request's head fields and its

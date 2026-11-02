@@ -20,7 +20,7 @@
 
 use crate::secret_ref::SecretRef;
 
-/// RESOLVED SECRET BYTES, as the host holds them (the credential chip, row 6: host-owned secret bytes): the
+/// RESOLVED SECRET BYTES, as the host holds them: the
 /// zeroizing holder the secret plugin wrote the value into, never a plain `Vec` or `String`.
 pub type SecretBytes = crate::redacted::Secret<Vec<u8>>;
 
@@ -218,8 +218,8 @@ pub trait SecretCalls: Send + Sync {
     }
 }
 
-/// THE SECRET AXIS, as the composition root hands it to the kernel (ARCHITECT ruling Q8: the kernel
-/// receives contract `<Kind>Axis` seams from the root, never the loader): every secret plugin the
+/// The secret axis the composition root hands to the kernel, through
+/// the contract seam rather than the loader: every secret plugin the
 /// root admitted, linked or dropped in, by the `module` a reference spells (its Statement name or an
 /// alias). Installed once, in the root's rows; the kernel names nothing behind it.
 pub trait SecretAxis: Send + Sync {

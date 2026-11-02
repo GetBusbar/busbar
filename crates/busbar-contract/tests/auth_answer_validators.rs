@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH ANSWER VALIDATORS, RULE BY RULE (ARCHITECT ruling: answer validators live with the
-//! shape). Each test starts from an answer the validator accepts, breaks exactly one rule, and
+//! AUTH ANSWER VALIDATORS, RULE BY RULE. Each test starts from
+//! an answer the validator accepts, breaks exactly one rule, and
 //! asserts the named FAULT, so removing any one check turns its test red.
 
 use busbar_contract::abi::auth::{

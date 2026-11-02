@@ -407,17 +407,17 @@ fn test_translation_bank_counts_known_protocol_pair() {
 /// 1. `telemetry::flush_to_recorder` `mem::take`s a thread's sample `Vec` and DROPS it on the
 ///    DRAINING thread, so a concurrent test's `render()`/`drain_pending()` frees THIS thread's
 ///    buffers on ITS thread and leaves `allocated - deallocated` here permanently inflated —
-///    measured at 5.15 MiB (2.6 B/observation) against the 1 MiB tolerance, with the fix under test
-///    working correctly. Closed by `drain_serial`: making this thread the only drainer for the
-///    measured window is what the measurement always assumed.
-/// 2. Rust's default test harness runs `#[test]` functions on a pool of REUSED OS threads, not one
+///    buffers on its own thread,
+///    leaving this thread's `allocated -
+///    deallocated` inflated. `drain_serial` keeps the
+///    measured window on one drainer.
 ///    fresh thread per test — so even with drains serialized, an unrelated, already-finished test
 ///    that happened to allocate on the SAME reused thread before this one started can leave residual
 ///    `allocated - deallocated` bytes baked into the baseline this test reads. `drain_serial` cannot
 ///    close this hole: it only serializes telemetry's own drain path, not general allocator activity
-///    from unrelated code. Closed by running the entire measured section on a genuinely fresh,
-///    dedicated `std::thread::spawn` — a thread no other test has ever touched — so the per-thread
-///    counters start from a clean slate no matter what the harness's thread pool did beforehand.
+///    from unrelated code. A fresh, dedicated
+///    `std::thread::spawn` keeps the per-thread counters independent
+///    of the reused test-harness threads.
 ///
 /// A proof that only holds on an idle machine, or only on a freshly-started test binary, is no
 /// proof, so both holes are closed explicitly. Nothing about WHAT is asserted changes — same

@@ -50,7 +50,7 @@ use crate::root::linked::node::Resolve;
 
 // ── the pools ────────────────────────────────────────────────────────────────────────────────────
 
-/// THE POOLS A DOOR PLANE'S UNITS ROUTE OVER (ARCHITECT Q-SW6, 2026-10-02), read off its section
+/// THE POOLS A DOOR PLANE'S UNITS ROUTE OVER, read off its section
 /// once per generation: the section's entries (its `models` map's keys in a model-serving section,
 /// else every top-level key but the reserved ones) and its
 /// reserved `pools` sub-key (each named pool's member entries). An arrival names an entry name
@@ -477,7 +477,7 @@ impl busbar_kernel::door::PoolView for DoorPoolView<'_> {
 
 // ── admission ────────────────────────────────────────────────────────────────────────────────────
 
-/// HOW A UNIT IS ADMITTED (ARCHITECT P3 (a), 2026-10-02).
+/// How a unit is admitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {
     /// A keyed unit: admitted and charged on the governance book, its money opened.
@@ -574,9 +574,9 @@ pub struct DoorFacts {
     /// an answer carries is counted under the unit's dialect. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
     /// The plane's dialect names, by the index `arrive` answers: the `ingress` its units' request
-    /// span records (status row 173).
+    /// span records.
     pub dialects: Arc<[String]>,
-    /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
+    /// The plane's declared breaker fact (`declares.breaker`): whether a transient
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
     pub bench_below_trip_threshold: Option<bool>,
@@ -2138,9 +2138,9 @@ pub struct ProviderRoute {
 pub struct StyleParams {
     /// `token_url`, where stated.
     pub token_url: Option<String>,
-    /// `token_uri`, the service account's token endpoint (ARCHITECT 2026-10-04 parity ruling, THE
-    /// DESIGN §5 `loopback-allowed`: "auth mint endpoints (`token_url`, `token_uri`)"): the target
-    /// of the serving plugin's `settings.token_uri` need, judged as 1.5.5 judged it.
+    /// `token_uri`, the service-account token endpoint: the target
+    /// of the serving plugin's `settings.token_uri` need, subject
+    /// to the auth-mint endpoint destination policy.
     pub token_uri: Option<String>,
     /// `scope`, where stated.
     pub scope: Option<String>,

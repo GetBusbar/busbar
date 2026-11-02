@@ -762,7 +762,7 @@ plane_behaviour! {
     wire_format_names: fn(&PlaneDecl) -> &'static [&'static str],
 
     /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order
-    /// (ARCHITECT ruling 2026-10-16, item 3; BUSBAR-1.6.0.md #49: declared data). A door plane's
+    /// A door plane's
     /// are the dialects its tail's `dialect_auth` lines flag `DIALECT_PROVIDER`. The boot accepts a
     /// provider whose `protocol` some registered plane lists here, and its refusal lists them all.
     provider_dialects: fn(&PlaneDecl) -> &'static [&'static str],

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE REQUEST, ONE REPLY, over the host connector (THE DESIGN, the connections section; ARCHITECT R2a:
-//! `exchange()` is FRAMED). [`exchange`] opens a framed need, sends one [`Request`] through the
+//! ONE REQUEST, ONE REPLY, over a framed host connection. [`exchange`]
+//! opens a framed need, sends one [`Request`] through the
 //! framer ([`Connector::write_request`]: head, body, end — the framer writes its own wire head, one
 //! library per protocol) and reads the reply to its terminal piece into an [`ExchangeResponse`].
 //! [`send_and_ack`] is its form for any transport: it writes bytes and answers the transport's

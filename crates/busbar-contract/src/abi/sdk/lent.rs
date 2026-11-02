@@ -644,7 +644,7 @@ use crate::abi::transport::{
 };
 
 /// The one list of these `in`s' pointer fields: [`lend!`] states their accessors from it, and the
-/// test support its pointer and length pairs (status row 194).
+/// test support its pointer and length pairs.
 macro_rules! lend_kinds_list {
     ($then:ident $($arg:tt)*) => {
         $then! {
@@ -814,7 +814,7 @@ use crate::abi::store::{
 };
 
 /// The one list of these `in`s' pointer fields: [`lend!`] states their accessors from it, and the
-/// test support its pointer and length pairs (status row 194).
+/// test support its pointer and length pairs.
 macro_rules! lend_store_list {
     ($then:ident $($arg:tt)*) => {
         $then! {
@@ -838,7 +838,7 @@ use crate::abi::export::{
 };
 
 /// The one list of these `in`s' pointer fields: [`lend!`] states their accessors from it, and the
-/// test support its pointer and length pairs (status row 194).
+/// test support its pointer and length pairs.
 macro_rules! lend_export_list {
     ($then:ident $($arg:tt)*) => {
         $then! {
@@ -857,7 +857,7 @@ macro_rules! lend_export_list {
 
 lend_export_list!(lend);
 
-/// THE FIELD ACCESSORS of every struct a call lends (status row 194), one per field and named after
+/// THE FIELD ACCESSORS of every struct a call lends, one per field and named after
 /// it, so a [`Lent`] reads all of its struct without its `Deref` (which #1471 removes). A number or
 /// a pointer-free struct (`val`) is copied; a string (`str`), a payload (`blob`) or an embedded
 /// struct (`sub`) stays a `Lent` of the same call. One `val` is not pointer-free: a signal entry's

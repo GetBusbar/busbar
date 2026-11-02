@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KIND LAYOUT FINGERPRINT (status row 188): one number per kind ABI that moves whenever a
+//! THE KIND LAYOUT FINGERPRINT: one number per kind ABI that moves whenever a
 //! `#[repr(C)]` struct crossing that kind's table changes its size, its alignment or the offset of
 //! any of its fields.
 //!

@@ -684,7 +684,7 @@ abi_op! {
     }
 }
 
-/// A stream's FINAL STATUS on its close ([`FinishIn`], ARCHITECT 4l): `final_status` is a number the
+/// A stream's final status on close ([`FinishIn`]): `final_status` is a number the
 /// status rows of `claim` (the claim the stream arrived on) cover, or `0` on a claim stating no
 /// numbering; `final_message` and `final_details` lie inside `final_bytes` (or are empty), and a
 /// stated byte range has the bytes behind it. The host judges its own close before the crossing:

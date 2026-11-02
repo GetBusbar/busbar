@@ -116,7 +116,7 @@ pub struct LineEntry {
     pub route: RouteMatch,
 }
 
-/// HOW THE ROUTE ROW IS MADE (status row 194): from [`RouteMatch::EMPTY`], its plain fields set
+/// HOW THE ROUTE ROW IS MADE: from [`RouteMatch::EMPTY`], its plain fields set
 /// directly and each list by its setter, to items that live for the program.
 impl RouteMatch {
     /// Nothing stated: every string absent, every list empty, every number zero.

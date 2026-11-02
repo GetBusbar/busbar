@@ -1191,8 +1191,8 @@ slot!(
 /// ([`marks`]).
 ///
 /// A store that reaches its backend over the host's connections declares its NEEDS, `(transport,
-/// auth)` per need, exactly as every other kind does (THE DESIGN, connections; ARCHITECT ruling
-/// 2026-10-03 on Q-L14-1): `store_door!(MyStore, "my-store", "1.0.0", 64, needs: NEEDS);` with
+/// auth)` per need, exactly as every other kind
+/// does: `store_door!(MyStore, "my-store", "1.0.0", 64, needs: NEEDS);` with
 /// `NEEDS: &'static [Need]` ([`Need`](crate::abi::host::conn::connector::Need)). The loader then
 /// hands the instance the connector table and declares each need on the host's one connection
 /// table, a need whose `target_from`/`trust_from` names a settings path at `open` and every
@@ -1201,8 +1201,8 @@ slot!(
 #[macro_export]
 macro_rules! store_door {
     // Every argument after the max-inflight is optional and keeps this order: the needs it states,
-    // its Statement's extensions (its `declares` document under `EXT_DECLARES`, ARCHITECT ruling
-    // 2026-10-21; BUSBAR-1.6.0.md l.246; a `Blob` built by `statement_extensions!`), and the
+    // its Statement's extensions (its `declares` document under `EXT_DECLARES`,
+    // a `Blob` built by `statement_extensions!`), and the
     // settings paths it declares secret (`secret_refs`, `.`-separated, `*` = any key or index;
     // `busbar_contract::secret_fields`).
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {

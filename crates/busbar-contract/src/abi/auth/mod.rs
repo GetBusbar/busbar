@@ -415,7 +415,7 @@ impl AuthTail {
     };
 }
 
-/// HOW THE AUTH KIND TAIL IS MADE (status row 194): from [`AuthTail::EMPTY`], its plain fields set
+/// HOW THE AUTH KIND TAIL IS MADE: from [`AuthTail::EMPTY`], its plain fields set
 /// directly and each list by its setter, to items that live for the program.
 impl AuthTail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head

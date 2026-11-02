@@ -54,7 +54,7 @@ pub type PlaneRouteFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneRouteFuture + Send + Syn
 pub type PlaneRefuseFn =
     Arc<dyn Fn(busbar_contract::caps::ReasonCode, &str) -> PlaneResponse + Send + Sync>;
 
-/// A KERNEL-SHAPED REFUSAL (ARCHITECT ruling 2026-10-16, 3b B): what the kernel decided, outside the
+/// A KERNEL-SHAPED REFUSAL: what the kernel decided, outside the
 /// auth chain and before any unit, for a request at `path` — the reason, the status and the words —
 /// handed to the plane whose door owns the path to render the body.
 #[derive(Clone, Copy, Debug)]
@@ -99,8 +99,8 @@ pub struct PlaneRefusalSpec {
     /// The issued-id prefix of the tickets the route takes: `Some` for a `CLAIM_TICKET` claim whose
     /// plane declares one; `None` = the route takes keys alone.
     pub ticket_prefix: Option<String>,
-    /// THE SIGNED PATHS of its plane (ARCHITECT ruling 2026-10-16, 3b A): the raw-affix target
-    /// (`<prefix>*<suffix>`, `abi::plane::CLAIM_RAW_AFFIX`, ARCHITECT ruling 2026-10-17) of every
+    /// THE SIGNED PATHS of its plane: the raw-affix target
+    /// (`<prefix>*<suffix>`, `abi::plane::CLAIM_RAW_AFFIX`) of every
     /// claim the plane flags `abi::plane::CLAIM_SIGNED_INGRESS`, whatever this route's own path and
     /// verb. The auth middleware puts a request to a path one of them matches through the
     /// signed-request pre-step, by path and whatever its verb.
@@ -269,7 +269,7 @@ pub struct SessionOut {
 }
 
 /// THE CALLER'S SIDE OF AN ADMITTED SESSION ROUTE, as the core adapter carries it over today's
-/// hyper upgrade (ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, the `IngressCaller` pattern): each
+/// hyper upgrade, using the `IngressCaller` pattern: each
 /// message the caller sends goes into `from_caller` (dropped when the caller closes); every frame the
 /// session writes comes out of `to_caller` (the socket closes when its sender is dropped).
 #[derive(Debug)]

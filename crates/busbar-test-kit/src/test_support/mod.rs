@@ -222,16 +222,16 @@ pub struct ClaimRow {
 ///
 /// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
 /// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
-/// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
-/// closed by the root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` (the ABI's ptr/len
-/// fields private behind `const` constructors from `'static` slices and strs).
+/// pointer/length fields. The caller
+/// must ensure each count
+/// matches its backing storage.
 #[derive(Debug, Clone, Copy)]
 pub struct DoorView {
     door: &'static Door,
     statement: &'static Statement,
 }
 
-/// ONE SLOT OF A DOOR THE CONTRACT'S MACRO BUILT (status row 159): what [`DoorView::op`] answers
+/// ONE SLOT OF A DOOR THE CONTRACT'S MACRO BUILT: what [`DoorView::op`] answers
 /// and [`reply::call_in`] enters. It names the door it is a slot of and which slot, and is made
 /// nowhere else, so a test enters only a slot a door states, never a raw `Op`.
 #[derive(Debug, Clone, Copy)]

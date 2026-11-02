@@ -123,7 +123,7 @@ pub struct OpsHead {
 
 /// `validate`'s `in`.
 ///
-/// THE VALIDATE REFUSAL, every kind (ARCHITECT ruling 2026-09-29): the settings blob is exactly the
+/// THE VALIDATE REFUSAL, every kind: the settings blob is exactly the
 /// operator's section, so the plugin cannot name its instance; the HOST composes the refusal words.
 /// A FAILED `validate`'s error text may hold several lines separated by `\n` (none empty, no
 /// leading or trailing `\n`: [`check_validate_refusal`]). The host splits them; a line whose first

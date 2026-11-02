@@ -198,8 +198,8 @@ pub type PluginsFetch = fn(
 
 /// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries and its registry
 /// build — and, as each kind's axis lands, that kind's
-/// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
-/// the root, never the loader). A field is added by name; nothing is positional. Nothing
+/// `<kind>_axis` field. The kernel receives contract `<Kind>Axis` seams from the root, never
+/// the loader. A field is added by name; nothing is positional. Nothing
 /// installed ([`Default`]): no linked rows, and a build and a fetch that refuse, naming the missing
 /// root.
 #[derive(Clone, Copy, Default)]
@@ -210,8 +210,8 @@ pub struct RootInstall {
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
-    /// The hook axis the root builds over a registry (ARCHITECT ruling 2026-09-29, the opener seam;
-    /// the SWITCH-OVER hook axis): every `kind: hook` row, compiled in or dropped in, opened on the
+    /// The hook axis the root builds over a registry: every `kind:
+    /// hook` row, compiled in or dropped in, opened on the
     /// hook kind's ABI over the process's one dispatcher. `None` = no hook opens.
     pub hook_axis: Option<HookAxisBuild>,
     /// The printed name of each hook row this build LINKS, in manifest order (the root's
@@ -235,7 +235,7 @@ pub struct RootInstall {
     /// every instant dates to the opening entry (`0`) and no era has a history.
     pub rate_epoch: Option<&'static dyn crate::rate_apply::RateEpoch>,
     /// The export axis: every `kind: export` row, opened on the export kind's ABI by the root over
-    /// the process's one dispatcher (ARCHITECT ruling 2026-09-29, the opener seam). `None` = no
+    /// the process's one dispatcher. `None` = no
     /// export module resolves.
     pub export_axis: Option<&'static dyn busbar_contract::export_calls::ExportAxis>,
     /// The root's PLUGIN ADMISSION over its ONE plugin trust builder — the one boot admits plugins

@@ -892,10 +892,10 @@ fn validate_refuses_what_open_refuses() {
     assert_eq!(validated::<OpenPicky>(b""), (Outcome::Ready, String::new()));
 }
 
-/// RED (ARCHITECT ruling 2026-09-29, the hooks law: memory ABI, body zero-copy): a typed hook's
-/// view BORROWS the host's `in`. The prompt body the plugin sees through the `decide` slot is the
-/// host's own slice (same pointer, same length), and the message text is the host's bytes, not a
-/// copy.
+
+
+
+
 #[test]
 fn red_the_content_body_a_hook_sees_is_the_hosts_own_bytes() {
     std::thread_local! {
@@ -1041,10 +1041,10 @@ const TICKET: Ticket = Ticket {
     generation: 1,
 };
 
-/// RED (ARCHITECT ruling 2026-10-02, the ORPHANS seam): a hook waiting on its exchange answers
-/// PENDING, writing nothing; the host's RESUME re-enters it and the exchange resumes on its
-/// parked state (the same handle re-issued, the stored result read); a fresh entry on the ticket
-/// starts over, and a ticket-less call cannot pend at all.
+
+
+
+
 #[test]
 fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
     ESTABLISHED.set(0);
@@ -1244,9 +1244,9 @@ fn cancel_a_pending_decide(conns: &'static ConnectorSlots) {
     closed::<OpenForward>(p);
 }
 
-/// RED (status row 159, a cancelled exchange leaks its connection): a hook whose exchange
-/// established its stream and pends on the request is cancelled; the SDK drops the exchange it
-/// parked, and that closes the stream on the host, once, on no ticket (a close never pends).
+
+
+
 #[test]
 fn a_cancelled_exchange_closes_the_stream_it_established() {
     cancel_a_pending_decide(&CLOSING_SLOTS);
@@ -1296,9 +1296,9 @@ impl HookOpen for OpenRecording {
     }
 }
 
-/// RED (ARCHITECT ruling 2026-10-02: operator-visible text equals 1.5.5): `open` hands the plugin
-/// its settings verbatim. An empty blob stays empty (1.5.5's hooks were handed exactly that, and
-/// answer it in their own words), never rewritten to `{}`; a present one crosses byte for byte.
+
+
+
 #[test]
 fn red_open_hands_the_plugin_its_settings_verbatim_an_empty_blob_stays_empty() {
     let empty = opened_with::<OpenRecording>(&zeroed());
@@ -1319,9 +1319,9 @@ fn red_open_hands_the_plugin_its_settings_verbatim_an_empty_blob_stays_empty() {
     closed::<OpenRecording>(present);
 }
 
-/// THE SESSION CROSSES TO THE SDK (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session
-/// half): a hook reads the request's opaque session off its view, byte for byte, and the 1.5.5
-/// JSON projection a JSON hook is handed stays byte-identical (the session is never on that wire).
+
+
+
 #[test]
 fn a_hook_reads_the_session_and_the_1_5_5_projection_does_not_carry_it() {
     let ctx = RoutingContext {

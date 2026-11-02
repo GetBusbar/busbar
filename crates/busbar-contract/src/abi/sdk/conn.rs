@@ -754,7 +754,7 @@ impl Connector<'_> {
 
 /// WHAT CLOSES A STREAM WITH NO OP RUNNING: the instance's host context and connector table, the
 /// two a CLOSE crosses with, kept by a continuation the SDK parks so that one given up (its op
-/// cancelled, or a fresh op on its ticket) closes the stream it established (status row 159).
+/// cancelled, or a fresh op on its ticket) closes the stream it established.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Closer {
     ctx: HostCtx,

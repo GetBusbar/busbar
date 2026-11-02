@@ -401,7 +401,7 @@ impl<'h, O: Reply> Called<'h, O> {
     }
 }
 
-/// An INSTANCE a door's `open` answered READY through [`call_in`] (status row 159): the only
+/// An INSTANCE a door's `open` answered READY through [`call_in`]: the only
 /// instance [`call_in`] hands a slot. Its fields are private, it is neither `Clone` nor `Copy`, and
 /// it is made in one place only, [`Called::take_instance`] of an `open` that answered READY, at
 /// most once. It names the door it was opened on, and [`close_in`] takes it by value: no slot is

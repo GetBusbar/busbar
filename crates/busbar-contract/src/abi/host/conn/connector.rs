@@ -101,7 +101,7 @@ pub struct Need {
     /// registration, the object holding busbar's client identity for it (`{cert, key}`, secret
     /// references); the host seals it, with the registration's far-end key pin (its plane's pin
     /// key, under a mechanism flagged `abi::plane::MECHANISM_PEER_KEY`), into the member's route,
-    /// and the connector enforces both on every connection to the member (the transport pin, ARCHITECT 2026-10-03).
+    /// and the connector enforces both on every connection to the member.
     pub trust_from: AbiStr,
     /// The need's details, validated only by the claiming transport.
     pub details: Blob,
@@ -152,7 +152,7 @@ impl Need {
     };
 }
 
-/// HOW THE NEED ROW IS MADE (status row 194): from [`Need::EMPTY`], its plain fields set directly
+/// HOW THE NEED ROW IS MADE: from [`Need::EMPTY`], its plain fields set directly
 /// and each list by its setter, to items that live for the program.
 impl Need {
     /// Nothing stated: every string absent, every list empty, every number zero.
@@ -289,7 +289,7 @@ pub struct EstablishIn {
     /// The need, by its index in the plugin's declared needs.
     pub need: u32,
     /// How long the dial may take, milliseconds; `0` = the need's `timeout_ms`, else the host's
-    /// default (a store's operator-set connect timeout, ARCHITECT ruling 2026-10-03 VALKEY-TIMEOUT).
+    /// default (a store's operator-set connect timeout).
     /// Was alignment padding (always `0`): the layout is unchanged.
     pub timeout_ms: u32,
     /// The target; absent = the need's `target_from`.
@@ -451,7 +451,7 @@ pub struct StreamFacts {
     pub agreed_protocol: AbiStr,
     /// The hash of the far end's certificate (the channel-binding input); absent = not secure.
     pub peer_cert_hash: AbiStr,
-    /// Appended (the transport pin, ARCHITECT 2026-10-03): the far end's KEY as the connector observed
+    /// The far end's key as the connector observed
     /// it, the pin of its leaf certificate's SubjectPublicKeyInfo in the one spelling
     /// (`transport::trust::key_pin`); absent = the stream carried no certificate. Where the need's
     /// trust anchors pin a key the connector refused any other before a request byte left, and

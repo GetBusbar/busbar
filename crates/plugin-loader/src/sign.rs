@@ -480,7 +480,7 @@ pub struct Declares {
     /// before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "EgressPolicy::is_default")]
     pub egress: EgressPolicy,
-    /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
+    /// The plane's BREAKER FACTS: how its members' breaker cells treat a transient
     /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
     /// holds; left off the wire when absent, so every manifest packed before the field existed
     /// keeps its canonical bytes.
@@ -493,8 +493,8 @@ pub struct Declares {
     /// false, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disk: bool,
-    /// THE HOOK FACTS a `kind: hook` plugin states about itself (ARCHITECT ruling, status row 194,
-    /// BUSBAR-1.6.0.md l.246: `declares` carries structured answers): see [`HookDecl`]. Absent, the
+    /// The hook facts a `kind: hook` plugin declares
+    /// as structured answers; see [`HookDecl`]. Absent, the
     /// hook is judged and served as every hook before the field existed (it may order); left off
     /// the wire when absent, so every manifest packed before the field existed keeps its canonical
     /// bytes.
@@ -519,7 +519,7 @@ impl HookDecl {
     }
 }
 
-/// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
+/// A plane's declared breaker facts (`declares.breaker`): per-plane facts about the
 /// breaker cells of its members, which the host reads and applies to that plane's cells alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

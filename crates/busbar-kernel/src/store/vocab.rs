@@ -318,9 +318,9 @@ pub struct LaneSnapshot {
 /// One lane's PORTABLE health state, keyed by its STABLE IDENTITY (member + route) instead of
 /// its array position. This is the carrier that lets learned reliability state survive the
 /// two events that invalidate positional indexing: a config APPLY that changes the lane set (the
-/// new store is built with the surviving lanes' snapshots restored), and — via serde, for the
-/// persistence follow-up — a RESTART. Ephemeral state is deliberately NOT carried: semaphores /
-/// in-flight counts (empty by definition in a fresh store), the single-flight probe flag (reset —
+/// new store is built with surviving lanes'
+/// snapshots restored), or serialized for restart. Ephemeral
+/// state is not carried: semaphores /
 /// an in-flight probe records into the OLD store snapshot it was dispatched under), SWRR fairness
 /// counters (positional by nature; reset is harmless), and the rolling outcome windows (strictly
 /// time-windowed — they refill within seconds and carrying them would import stale samples).

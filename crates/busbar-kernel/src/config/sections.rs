@@ -207,8 +207,8 @@ pub struct AdvancedCfg {
     /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
-    /// THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD; THE DESIGN §5, ARCHITECT ruling
-    /// CRATES-14): refuse a provider dial, and an outbound connection whose target came from
+    /// The destination guard refuses a provider dial, or
+    /// an outbound connection whose target came from
     /// request data or the network, when it is, or resolves to, a private, loopback, link-local,
     /// CGNAT or unique-local address, unless `allow_destinations` names it; judged after resolution
     /// and dialled at the judged address. Operator infrastructure (a database, secret service or

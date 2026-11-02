@@ -664,10 +664,10 @@ pub struct Decoded {
     pub dialect: u32,
     /// The expected units (the admission estimate).
     pub expected: Vec<UnitCount>,
-    /// The entry it routes over: the name inside the plane's own section (ARCHITECT Q-SW6), opaque
+    /// The entry it routes over: the name inside the plane's own section, opaque
     /// bytes the kernel never parses; `None` = it named none.
     pub pool: Option<Vec<u8>>,
-    /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3), or how the
+    /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT`, or how the
     /// unit routes with no entry named (`ROUTE_LOCAL`, `ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`).
     pub route: u8,
     /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`,
@@ -885,7 +885,7 @@ pub(crate) struct UnitState {
     declined_words: Option<Vec<u8>>,
     /// A REFUSED `arrive`'s stated outcome (`ArriveOut::refusal_flags`, `REFUSED_*`).
     declined_flags: u32,
-    /// THE WAIT THE KERNEL'S REFUSAL CARRIES (ARCHITECT Q5): the reason the loop refused the unit
+    /// THE WAIT THE KERNEL'S REFUSAL CARRIES: the reason the loop refused the unit
     /// under, and the Retry-After its `Refusal` names in whole seconds: an admission's window
     /// reset, as 1.5.5 rendered it. Handed to the plane's `refusal` beside that reason alone.
     refused_wait: Option<(ReasonCode, u32)>,

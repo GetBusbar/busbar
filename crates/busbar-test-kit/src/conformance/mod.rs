@@ -52,7 +52,7 @@
 //! * the mechanism's optional `ready` (discovery at boot) is a step of every kind's script: a door
 //!   that states none is not called (0 crossings); one that states it is awaited on a real ticket.
 //!
-//! THE CONNECTION TABLE (ARCHITECT, "SUITE CONNECTIONS"): a plugin whose Statement declares a
+//! The suite's connection table: a plugin whose Statement declares a
 //! need the table serves (its stream transport, `stand_in.json`: `host:port` or a local socket
 //! path) is bound, on each leg, to a connection
 //! table of its own built the same way ([`Subject::conns`], the loader's test table
@@ -2792,7 +2792,7 @@ macro_rules! conformance_suite {
         }
 
         /// RED: a door stating another layout fingerprint than its kind's is refused at load, for
-        /// every kind (status row 188).
+        /// every kind.
         #[test]
         fn red_a_door_built_against_another_kind_layout_is_refused() {
             $crate::conformance::red_kind_layout(&__busbar_conformance_subject());

@@ -1039,7 +1039,7 @@ impl PlaneRecord {
 
 /// A [`PlaneRecord`] BORROWED: what [`RecordStore::upsert_plane_record`] and
 /// [`RecordStore::append_plane_record`] take, so the store door hands a store the host's ABI memory
-/// as it is, with no copy on the request path (ARCHITECT R7 2026-10-01). A store that keeps the
+/// as it is, with no copy on the request path. A store that keeps the
 /// record copies it itself ([`PlaneRecordRef::to_record`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaneRecordRef<'a> {

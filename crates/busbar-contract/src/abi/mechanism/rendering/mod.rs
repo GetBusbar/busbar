@@ -45,7 +45,7 @@
 //! blob  = u32 fmt, u32 flags, u32 length, then the bytes
 //! ```
 //!
-//! THE KIND TAIL IS RENDERED WHOLE (ARCHITECT ruling 2026-10-20, audit root#7 and loader#9): a
+//! THE KIND TAIL IS RENDERED WHOLE: a
 //! reader that must not open the plugin reads a dropped-in row's tail facts (an auth row's outbound
 //! styles, `FACT_*` flags, operator principal and credential kinds; every other kind's tail alike)
 //! from the signed manifest, and the admit comparison covers them, so a manifest that states another

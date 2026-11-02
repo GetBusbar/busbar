@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH ANSWER VALIDATORS (ARCHITECT ruling: answer validators live with the shape). Each is
+//! AUTH ANSWER VALIDATORS, defined beside their output shapes. Each is
 //! a PURE function over the op's `out` and the capacities the host handed in. They use `u64`
 //! math and hold no state. The dispatcher calls them after every READY or FAILED answer, and
 //! any `Err` makes the answer FAULT. No host re-implements them.

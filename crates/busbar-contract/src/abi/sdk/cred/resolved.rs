@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SECRET PLUGIN'S ANSWER (the credential chip, row 6: host-owned secret bytes): the resolved value goes
+//! A SECRET PLUGIN'S ANSWER goes directly into host-owned secret memory: the resolved value goes
 //! straight into the HOST'S zeroed buffer (`ResolveIn::secret_buf`) and the plugin's own copy is
 //! wiped as the answer is made. No lease, no copy left on the plugin's side, and no getter on the
 //! way: the value reaches the SDK in a [`Held`] and leaves it only into host memory.

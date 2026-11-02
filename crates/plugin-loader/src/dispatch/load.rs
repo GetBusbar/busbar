@@ -188,8 +188,8 @@ impl LoadedDoor {
     }
 }
 
-/// THE LINKED DOOR'S ONE ENTRY (status row 195; coordinator ruling (a), `BUSBAR-1.6.0.md`
-/// l.272-274: the root is `forbid(unsafe_code)`, and the loader holds the reviewed `unsafe`): a
+/// The loader holds the linked door's unsafe entry
+/// so the root can forbid unsafe code: a
 /// compiled-in door-root crate's bare `door` (Part 4 A.1, l.3560: its only public item), admitted
 /// exactly as a dropped-in library's door is once `dlsym` has resolved it (Part 2 #2 rule (1):
 /// compiled in = dropped in, one path), and only then a [`LoadedDoor`]. The door function is called
@@ -217,9 +217,9 @@ pub(crate) unsafe fn open_linked(door: RawDoorFn) -> Result<LoadedDoor, LoadErro
     Ok(unsafe { LoadedDoor::from_raw(door) })
 }
 
-/// THE LINKED DOOR'S SAFE ENTRY (status row 195; ARCHITECT rulings: the composition root generates
-/// the linked table and alone depends on the plugin crates, the loader names none; and the entry
-/// takes a SEALED door): a compiled-in crate's `door`, a [`DoorFn`] answering a `&'static Door`
+/// The linked door's safe entry takes a sealed door. The composition root
+/// generates the linked table and alone depends on plugin crates; the loader
+/// names none. A compiled-in crate's `door`, a [`DoorFn`] answering a `&'static Door`
 /// that only the contract's `unsafe` door constructor builds (its fields are private), admitted
 /// through [`open_linked`] (the `dlopen` path's own checks, the one reviewed `unsafe` beside the
 /// `dlopen` call), as a [`LoadedDoor`]. A refusal is the same [`LoadError`] the dropped-in door
@@ -485,7 +485,7 @@ pub enum LoadError {
     /// A door was built against other shapes of its kind: it states another layout fingerprint
     /// ([`Door::layout`]) than this host's for its kind (`0`: a door that predates the word), so
     /// every struct crossing its table would be read and written at another layout. The same
-    /// refusal for every kind, compiled in and dropped in (status row 188).
+    /// refusal for every kind, compiled in and dropped in.
     KindLayout {
         /// The plugin the Statement names.
         plugin: String,

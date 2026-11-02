@@ -96,10 +96,10 @@ pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
         .map(|(_, v)| v)
 }
 
-/// THE `declares` DOCUMENT'S KEY in a door's `Statement::extensions` (ARCHITECT ruling 2026-10-21
-/// on the door-only gaps; BUSBAR-1.6.0.md l.246, the One Statement table: the Statement's `declares`
-/// row is "metric series, diagnostics, structured answers", diagnostics in full; l.3574's
-/// "diagnostic ids" is the indexed view of the same document). The WHOLE document travels here as a
+/// The `declares` document's key in a door's `Statement::extensions`.
+/// It carries metric series, complete diagnostics, and structured
+/// answers; diagnostic ids index this same document.
+/// The whole document travels here as a
 /// JSON payload (catalog entries, metric families with `shed`, the disk need of the host's bounded disk lane (the Q-DISK ruling),
 /// `breaker`), read ONCE at load and never per request ("JSON only as a payload"). It rides the
 /// shared mechanism's extensions blob, not a `repr(C)` field: a field would change the Statement's
@@ -139,7 +139,7 @@ pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
-/// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions` (status row 173). Its
+/// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions`. Its
 /// value is the JSON `true` when the door takes each `traces` line's full span record as its
 /// reserved `span` member (everything the previous release's exporter sent for a span: attributes,
 /// events, status), whatever `fields:` selected; `false`, or no entry, takes none. It rides the

@@ -750,11 +750,11 @@ fn agreed_on_the_listener(door: TestDoor, registered: Vec<Vec<u8>>) -> Option<Ve
     })
 }
 
-/// /status row 192 B, the agreed protocol: the protocol an accepting framer states it agreed
-/// (`FramerYield::agreed`, a 1-based position in its accepting offer) is read back by the
-/// connector, resolved against the offer the listener made ([`Connection::agreed`]); a framer that
-/// states `0` agreed nothing the host knows of; and a position past the offer is the framer's
-/// fault, refusing the connection.
+
+
+
+
+
 #[test]
 fn an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_offer() {
     use crate::support::Knobs;

@@ -365,7 +365,7 @@ impl MetricFamily {
     };
 }
 
-/// HOW A `MetricFamily` IS MADE (status row 194): [`MetricFamily::new`], its label keys set with
+/// HOW A `MetricFamily` IS MADE: [`MetricFamily::new`], its label keys set with
 /// [`MetricFamily::with_label_keys`].
 impl MetricFamily {
     /// The family `name`, with `help`, `unit` (absent = none) and `kind`, and no label keys.
@@ -505,7 +505,7 @@ impl Statement {
     };
 }
 
-/// HOW A `Statement` IS MADE (status row 194): from
+/// HOW A `Statement` IS MADE: from
 /// [`statement`](crate::abi::sdk::door::statement) (its name, version and in-flight bound, every
 /// list empty), each list set by its setter to items that live for the program, the kind tail by
 /// [`Statement::with_kind_tail`]. Its other fields are plain and set directly.

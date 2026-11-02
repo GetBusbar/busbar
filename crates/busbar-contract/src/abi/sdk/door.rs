@@ -746,7 +746,7 @@ pub const unsafe fn door<T: KindOps>(
     }
 }
 
-/// THE SEALED DOOR (status row 195, ARCHITECT ruling on `admit_linked`): a [`DoorFn`] answers a
+/// THE SEALED DOOR: a [`DoorFn`] answers a
 /// `&'static Door`, and a [`Door`]'s fields are private behind the `unsafe`
 /// [`Door::__from_parts`] ([`door`] is `unsafe` over it), so the loader's safe `admit_linked`
 /// takes any `DoorFn` safe code can name. Each refusal below has a twin that differs in the one
@@ -882,10 +882,10 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 ///
 /// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
 /// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
-/// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
-/// closed by the root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` (the ABI's ptr/len
-/// fields private behind `const` constructors from `'static` slices and strs).
-///
+/// pointer/length fields. The
+/// caller must ensure
+/// each count matches
+/// its backing storage.
 /// THE SAFE SURFACE OF THE MACRO DOOR, PROVED IN PAIRS. Each `compile_fail` below has a twin that
 /// differs from it in the one forbidden spelling and MUST compile, so the failure is the guard's
 /// and nothing else's (stable rustdoc checks no error code). The test support's own pairs
@@ -1278,8 +1278,8 @@ macro_rules! plugin_door {
             // SAFETY: `door` is the function this macro expanded just above: it answers the
             // `'static`, fully initialised `Door` the SDK laid out as `const` items. The Statement's
             // content (its lists, strings, blobs and kind tail) is the caller's own `const` data;
-            // that its counts match its storage is closed by the root unsafe-ABI change on branch
-            // `lane-row159-abi-unsafe-fn`.
+            // The caller must ensure each
+            // count matches its backing storage.
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
 
     };

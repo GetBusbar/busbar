@@ -133,8 +133,8 @@ fn reference_fields_read_from_the_statement_extensions() {
     }
 }
 
-/// THE FULL SPAN RECORDS a door states under `span_records` (status row 173): a JSON boolean;
-/// absent takes none; anything else is malformed.
+
+
 #[test]
 fn span_records_read_from_the_statement_extensions() {
     use super::{span_records, EXT_DECLARES, EXT_SPAN_RECORDS};

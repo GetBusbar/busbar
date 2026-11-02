@@ -29,7 +29,7 @@
 //! one (`Instance::refuse`): a resolve before `open`, a second `open`, a resolve after `close`
 //! (FAULT); the host-side read (`facts`); and `ready` ([`super::ready_step`]).
 //!
-//! THE HOST'S BUFFER (the credential chip, row 6: host-owned secret bytes): every resolve is lent a zeroed buffer the host owns,
+//! The host buffer: every resolve is lent a zeroed buffer the host owns,
 //! and a READY value must be written into it, under no lease; a buffer too small for the value is
 //! the short-buffer answer (`resolve short`), and the host re-calls with the size it names.
 

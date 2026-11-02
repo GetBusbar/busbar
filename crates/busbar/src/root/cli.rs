@@ -491,7 +491,7 @@ pub(crate) fn validate_config_command() -> i32 {
         println!(
             "  plugins:   enabled — {} validated, {} skipped (untrusted) in '{}'",
             // A copy of a plugin this build links, at its version, was validated too: the linked
-            // row serves it (the one-version rule, ARCHITECT C').
+            // row serves it under the one-version rule.
             registry.loadable().len() + registry.linked_copies().len(),
             registry.skipped().len(),
             loaded.deploy.plugins.dir,

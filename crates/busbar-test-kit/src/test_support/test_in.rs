@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SLOT'S `in`, BUILT FOR A TEST AND BORROWING WHAT IT NAMES (status row 194). An `in` struct
+//! A SLOT'S `in`, BUILT FOR A TEST AND BORROWING WHAT IT NAMES. An `in` struct
 //! keeps its fields pub for the host, so a hand-built one can name any pointer; once #1471 lands,
 //! [`reply::call`] does not take one. It takes a [`TestIn<'a, I>`], which only this module makes
 //! (here first, so a test builds its `in` this way before the switch): it starts all
@@ -122,7 +122,7 @@ pub struct TestIn<'a, I> {
     /// Lists the builders made (strings, payloads, fields over borrowed bytes), each on the heap
     /// and never moved, freed with the `TestIn`.
     pub(crate) held: Vec<Box<dyn Any>>,
-    /// Every pointer and length the builders set together (status row 194): `(pointer's offset,
+    /// Every pointer and length the builders set together: `(pointer's offset,
     /// length's offset, length's width, pointer, length)`, as written. A call checks the `in`
     /// against it before the slot reads a byte.
     lent: Vec<(usize, usize, usize, u64, u64)>,

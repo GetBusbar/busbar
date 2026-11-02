@@ -189,10 +189,10 @@ pub mod handle_impl {
 }
 
 /// The soft-seal: `IrHandle` can only be implemented by a type that also implements this trait.
-/// `pub` (so the first-party dialect crates can name it and implement `IrHandle`) but `#[doc(hidden)]` — it is not part of the documented surface, so the
-/// implementor set stays closed by convention to the crates that deliberately reach for it. In-tree
-/// this is equivalent to the `pub(crate)` hard seal the owner ruled on (2026-08-20): nothing outside
-/// the workspace names `Sealed`, and there is no `Box<dyn Any>` downcast anywhere.
+/// It is public so first-party dialect crates can implement `IrHandle`,
+/// but hidden from the documented surface. The implementor set
+/// stays closed by workspace convention: nothing outside the workspace
+/// names `Sealed`, and no `Box<dyn Any>` downcast is used.
 #[doc(hidden)]
 pub mod sealed {
     #[allow(dead_code)] // the seal's implementors are the dialect crates and the neutral handles.

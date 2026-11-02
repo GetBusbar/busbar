@@ -398,7 +398,7 @@ impl<T> std::fmt::Debug for Out<'_, T> {
 }
 
 impl Out<'_, crate::abi::plane::ArriveOut> {
-    /// THE ROUTE a READY arrival names (ARCHITECT Q-SW6 / Q-FL3, 2026-10-02): `class`
+    /// THE ROUTE a READY arrival names: `class`
     /// ([`crate::abi::plane::ROUTE_POOL`] or [`crate::abi::plane::ROUTE_DIRECT`]) and the `entry`
     /// inside the plane's own section it names, the name kept in the instance's memory for the
     /// answer. An answer with no instance keeps no name, so it names none. An entry the instance
@@ -414,8 +414,8 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
         }
     }
 
-    /// THE UNIT IS THE PLANE'S OWN TO ANSWER ([`crate::abi::plane::ROUTE_LOCAL`], ARCHITECT
-    /// Q-L3B-LOCAL): it names no entry, and the kernel admits it with no route walk.
+    /// The unit is the plane's own to answer ([`crate::abi::plane::ROUTE_LOCAL`]): it names
+    /// no entry, and the kernel admits it with no route walk.
     pub fn local(&mut self) {
         self.set(|o| &o.route, crate::abi::plane::ROUTE_LOCAL);
     }
@@ -600,8 +600,8 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.out
     }
 
-    /// Read the pointer-free field `pick` names (a [`Scalar`]), as written so far (status row
-    /// 194). `pick` is handed a ZEROED `T`, never the `out` itself: it learns where the field is
+    /// Read the pointer-free field `pick` names (a [`Scalar`]), as written so far. `pick` is
+    /// handed a zeroed `T`, never the output itself: it learns where the field is
     /// and reads nothing the call wrote, so a string or payload an SDK writer named is never copied
     /// out. #1471 keeps this name beside its own `get(pick)`; `out.pick(|o| &o.f)` compiles before
     /// and after.

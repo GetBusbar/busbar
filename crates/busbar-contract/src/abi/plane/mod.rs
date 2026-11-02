@@ -127,8 +127,8 @@
 //! 4. The kernel never logs or audits the text, since it may echo what the caller sent.
 //! 5. [`MAX_REFUSAL_TEXT`] is at or above the largest field line a transport admits, so words that
 //!    echo a field line the caller sent never overflow it.
-//! 6. A REFUSAL ABOUT AN ENTRY (ARCHITECT Q-DEL-A2A-GATE: "refused → audits the refusal; nothing
-//!    was charged", and the caller's grant is judged before the entry's standing): a REFUSED
+//! 6. A refusal concerning an entry is audited without charging the caller.
+//! The caller's grant is judged before the entry's standing. A REFUSED
 //!    `arrive` that names the entry its refusal concerns ([`ArriveOut::pool`] with a
 //!    [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`], and its operation class and
 //!    dialect) is held: the kernel judges the caller's identity and its grant over that entry
@@ -650,23 +650,23 @@ pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
 /// under the resolved entry.
 pub const ROUTE_SCOPE_LOCAL: u8 = 4;
 
-/// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4
-/// Q-L3B-SURFACES (h): the walk does repeatable). A walk over a pool still moves to another member
+/// [`ArriveOut::route_flags`]: the unit's operation is performed at most once. A
+/// walk over a pool still moves to another member
 /// before anything was answered (a refused connection, an open breaker), but a member that ANSWERED
 /// with a failure is not retried on another: its answer is the unit's. Unset, an answered failure
 /// fails over as the walk's status table says.
 pub const ROUTE_ONCE: u8 = 1;
 
-/// [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5
-/// Q-L3B-K6-HTTP (a)): its route leg is the driver's session, whose caller leg is the unit's own
+/// [`ArriveOut::route_flags`]: the unit is served as a duplex session. Its route leg
+/// is the driver's session, whose caller leg is the unit's own
 /// caller side (its read yields the arrival's body once, then nothing until the caller goes). Its
 /// pieces name the unit's stream ([`OnPieceIn::stream`]), its unsolicited output is named on the
 /// instance's driver ticket (`drive`) and collected on the session's caller-side ticket, and it is
 /// one unit with one line. Unset, the unit's route is one request's.
 pub const ROUTE_SESSION: u8 = 2;
 
-/// [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut,
-/// 2026-10-05). The plane states it, because only the plane reads its dialect's body; the kernel
+/// [`ArriveOut::route_flags`]: the caller asked for a streamed answer. The plane states
+/// this because only it reads its dialect's body; the kernel
 /// applies what a stream means to the walk from it: the stream ceiling bounds the whole send rather
 /// than the pool's request timeout, and once a byte of the answer has reached the caller a cut is
 /// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
@@ -1283,15 +1283,15 @@ pub struct DialectAuth {
     /// Index into [`PlaneTail::dialects`].
     pub dialect: u32,
     /// [`DIALECT_PROVIDER`]; any other bit refuses the load. The word was the line's alignment
-    /// padding, so a line that predates it states `0`: a dialect no provider may name (ARCHITECT
-    /// ruling 2026-10-16, an append in place).
+    /// padding, so an older line states `0`:
+    /// a dialect no provider may name.
     pub flags: u32,
     /// The style, an open string.
     pub style: AbiStr,
     /// The style's parameters for this dialect, a [`super::mechanism::call::BLOB_JSON`] object the
     /// host hands the auth plugin's `open_outbound` as its settings at seal, under the provider's
-    /// own (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS; ruling 2026-09-28 "the kernel resolves the
-    /// dialect's declared parameters at seal into OpenOutboundIn::settings"). [`Blob::ABSENT`]: the
+    /// own settings. The kernel resolves the dialect's declared
+    /// parameters at seal into `OpenOutboundIn::settings`. [`Blob::ABSENT`]: the
     /// style takes none. A value `{"host_label_after": [labels], "default": word, "unread": text}`
     /// is resolved at seal from the provider's base URL host: the dotted label after one of
     /// `labels` when it reads as a dashed name ending in a number (`<word>-...-<digits>`, three
@@ -1545,7 +1545,7 @@ impl TrustKey {
     };
 }
 
-/// HOW THE TRUST KEY ROW IS MADE (status row 194): from [`TrustKey::EMPTY`], its plain fields set
+/// HOW THE TRUST KEY ROW IS MADE: from [`TrustKey::EMPTY`], its plain fields set
 /// directly and each list by its setter, to items that live for the program.
 impl TrustKey {
     /// Nothing stated: every string absent, every list empty, every number zero.
@@ -1679,8 +1679,8 @@ pub struct PlaneTail {
     /// default, emitted by the kernel verbatim; NULL when forwarding the caller's credential is
     /// legitimate on this plane.
     pub caller_credential_refusal: AbiStr,
-    /// THE ADMIN ROUTES THE PLANE SERVES, stated once (ARCHITECT Q-L3B-VERBS: the kernel's registry
-    /// row reads a door plane's admin verbs from its Statement): each verb, target relative to the
+    /// The admin routes the plane serves, read by the kernel
+    /// from its Statement: each verb, target relative to the
     /// admin mount, flags and audit word, as its snapshots publish them. NULL/0 = none. A tail
     /// addition.
     pub admin_routes: *const AdminRoute,
@@ -1690,7 +1690,7 @@ pub struct PlaneTail {
     /// to the admin mount (the kernel keys it under the mount when it merges the admin document);
     /// absent = none. A tail addition.
     pub admin_openapi: Blob,
-    /// THE PLANE'S STREAM CEILING, seconds (ARCHITECT ruling 2026-10-07, STREAM-CEILING): how long a
+    /// THE PLANE'S STREAM CEILING, seconds: how long a
     /// unit whose `arrive` stated [`ROUTE_STREAM`] may run, measured from the moment its route is
     /// known. The kernel stamps it as the unit's deadline, so it bounds the whole streamed answer
     /// and a caller that stops reading it alike: when it passes, the unit is cut
@@ -1776,7 +1776,7 @@ impl PlaneTail {
     };
 }
 
-/// HOW THE PLANE KIND TAIL IS MADE (status row 194): from [`PlaneTail::EMPTY`], its plain fields
+/// HOW THE PLANE KIND TAIL IS MADE: from [`PlaneTail::EMPTY`], its plain fields
 /// set directly and each list by its setter, to items that live for the program.
 impl PlaneTail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
@@ -1957,7 +1957,7 @@ pub struct PlaneSnapshot {
     pub audience: AbiStr,
     /// Its resource metadata.
     pub resource_metadata: AbiStr,
-    /// THE PROTECTED-RESOURCE FACTS beside its audience (ARCHITECT Q-L3B-RFC9728): a JSON object
+    /// THE PROTECTED-RESOURCE FACTS beside its audience: a JSON object
     /// `{"authorization_servers": [..], "scopes_supported": [..]}`, from which the kernel renders the
     /// RFC 9728 document at [`PlaneSnapshot::resource_metadata`] (no unit, no audit row); absent =
     /// none stated. A tail addition.
@@ -1969,8 +1969,8 @@ pub struct PlaneSnapshot {
     pub listed: *const AbiStr,
     /// How many.
     pub listed_len: usize,
-    /// THE ARRIVAL SPANS of its claims (status row 173: the request span a route's arrival opens,
-    /// as the previous release's ingress entry spans did), PARALLEL to [`PlaneSnapshot::claims`]:
+    /// The arrival spans of its
+    /// claims, parallel to [`PlaneSnapshot::claims`]:
     /// entry `i` names the span an arrival on `claims[i]` opens, empty = that claim opens none. Each
     /// name is DATA the kernel builds one tracing callsite for when it binds the snapshot, never per
     /// request; a non-empty name is `[a-z0-9_]`, at most [`MAX_ARRIVAL_SPAN`] bytes. NULL/0 = no
@@ -2009,8 +2009,8 @@ pub struct PlaneOpenIn {
     pub public_url: AbiStr,
     /// THE PLANE'S OTHER OWNED SECTIONS this document writes (the Statement's sections that are
     /// neither its declaring section nor consumed), as one JSON object keyed by section name, each
-    /// as written; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it writes none (ARCHITECT
-    /// Q-L3B-AUD: a plane reads its own sections and states its claims from them). A tail addition.
+    /// as written; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it writes none. The plane reads
+    /// its own sections and states its claims from them.
     pub owned: Blob,
     /// THE DIALECT FACTS OF THE PROVIDERS ITS SECTION REFERENCES (each `models.<m>.provider`), one
     /// per provider, in the order first referenced; NULL/0 = none. Read at `open` only: the root
@@ -2252,12 +2252,12 @@ pub struct ArriveOut {
     /// `0` = not a cancel. Never set together with a non-zero [`ArriveOut::correlation`].
     pub cancels: u64,
     /// On READY: the ENTRY the unit routes over, its name inside the plane's own config section
-    /// (ARCHITECT Q-SW6, 2026-10-02): a pool or a model entry, as [`ArriveOut::route`] says. The kernel
+    ///: a pool or a model entry, as [`ArriveOut::route`] says. The kernel
     /// resolves (plane key, entry) and never parses the name; none named is refused. Plane memory,
     /// valid until the instance's next call. A tail addition; absent on every other outcome.
     pub pool: AbiStr,
-    /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names (ARCHITECT Q-FL3,
-    /// 2026-10-02), or [`ROUTE_LOCAL`], [`ROUTE_SCOPE`] or [`ROUTE_SCOPE_LOCAL`] with no pool named
+    /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names, or
+    /// [`ROUTE_LOCAL`], [`ROUTE_SCOPE`] or [`ROUTE_SCOPE_LOCAL`] with no pool named
     /// (the scope's two naming their candidates there). A tail addition;
     /// [`ROUTE_POOL`] on every
     /// other outcome.
@@ -2268,14 +2268,14 @@ pub struct ArriveOut {
     pub route_flags: u8,
     /// Alignment padding.
     pub _route_reserved: [u8; 6],
-    /// On READY: the unit's STICKY-ROUTING KEY, opaque to the kernel (ARCHITECT Q1 ArriveOut,
-    /// 2026-10-05): the plane computes it from what only it reads (its dialect's body, its own
+    /// On READY: the unit's sticky-routing key, opaque to the kernel. The plane
+    /// computes it from what only it reads (its dialect's body, its own
     /// section's settings), and the walk prefers one stable member for every unit stating the same
     /// key, with no plane or protocol knowledge. Absent (NULL, `0`) = no affinity, and absent on
     /// every other outcome. Plane memory, valid until the instance's next call. A tail addition.
     pub affinity: AbiStr,
-    /// On READY: THE TRUST FACTS the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
-    /// Approve step, and a plane states facts and judges none): the COUNTERPARTY, a name among the
+    /// On READY: the trust facts the unit rests on. The plane states facts but does
+    /// not judge them; the kernel's Approve step judges the counterparty, a name among the
     /// trust entries the plane's section declares (its trust keys). The kernel's Approve judges it
     /// against its trust book (declared, sighted, not quarantined) and refuses the unit
     /// [`RefusalCode::Untrusted`] otherwise. Absent = the unit rests on no counterparty, and nothing
@@ -2404,13 +2404,13 @@ pub struct OnPieceOut {
     pub verb: Span,
     /// With `verb`: the request's target, in the arena; a zero length = none.
     pub target: Span,
-    /// With [`EMIT_TO_FAR_END`]: the need the far request rides (ARCHITECT Q-L5B-NEEDS 2026-10-03,
-    /// spec #3: a plane's needs are a list of (transport, auth) per direction, and the kernel binds
-    /// every declared outbound need of a member), as its index in the Statement's needs PLUS ONE;
+    /// With [`EMIT_TO_FAR_END`]: the need carrying the far request, as its index
+    /// in the Statement's needs plus one. The kernel binds every
+    /// declared outbound need of a member, one per (transport, auth);
     /// `0` = the member's first bound need (a plane with one outbound need never names one). A tail
     /// addition.
     pub need: u32,
-    /// THE PLANE'S BREAKER FAULT READING of a far-end answer (ARCHITECT 2026-10-05): the
+    /// THE PLANE'S BREAKER FAULT READING of a far-end answer: the
     /// destination's health as the plane reads the answer, in the transport kind's ONE fault
     /// vocabulary (`abi::transport::FAULT_*`: none, caller, transient, hard, healthy), which the
     /// breaker records against the destination (healthy: a success, whatever the status). Separate from [`OnPieceOut::verdict`] (the walk's routing
@@ -2468,7 +2468,7 @@ pub struct OnPieceOut {
     /// plane whose answer stops short of it states none (the host reads an absent tail field as
     /// zero, `abi::mechanism::call` SIZES).
     pub wait_member: Span,
-    /// THE REASON THE FAULT READING STATES (ARCHITECT, the far-end fault reading): beside a
+    /// The reason accompanying a fault reading: beside a
     /// [`OnPieceOut::fault`] reading, the plane's own neutral words for why it reads the answer so
     /// (an exhausted account, a refused credential), in the arena; a zero length = none stated. The plane classifies the far end's code; the kernel carries these words
     /// VERBATIM to the breaker's record of the reading (the member's down reason and its operator

@@ -625,11 +625,11 @@ fn bounded_checks_the_cap_and_the_alignment_and_leaves_null_to_listed() {
     assert_eq!(bounded(off, 0, "t"), Ok(()));
 }
 
-/// THE ISSUED-CREDENTIAL SHAPE MARKS (row 159, K3#4): an auth row that reads host-held credentials
-/// states the shape of the credential the host issues for it as word marks of five kind-neutral
-/// classes (the public id's prefix, length and alphabet; the secret's length and alphabet), each a
-/// known class the statement check admits, distinct from the hook and carrier classes. RED before
-/// the classes exist.
+
+
+
+
+
 #[test]
 fn the_issued_credential_shape_marks_are_known_distinct_classes() {
     use crate::abi::mechanism::door::{

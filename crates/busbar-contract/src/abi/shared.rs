@@ -43,7 +43,7 @@ impl DeclStr {
     }
 
     /// The range `len` bytes at `ptr` name (NULL = absent), unchecked: the host's and the
-    /// loader's door for the memory they lend one call (status row 194).
+    /// loader's door for the memory they lend one call.
     ///
     /// # Safety
     ///

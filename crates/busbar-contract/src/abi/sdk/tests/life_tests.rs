@@ -456,9 +456,9 @@ fn an_unknown_lease_is_refused_in_words() {
     assert_eq!(close(inst), Outcome::Ready);
 }
 
-/// A resolved secret is written into the host's buffer and takes no lease (row 6); a leased answer
-/// (the leased-string probe) is held until its release, each its own, and an unknown lease is
-/// refused.
+
+
+
 #[test]
 fn a_resolved_secret_takes_no_lease_and_a_leased_answer_is_held_until_release() {
     let secret = blob(b"s3cret");

@@ -923,7 +923,7 @@ pub struct LoadRequest<'a> {
     pub opening: Option<Opening<'a>>,
 }
 
-/// THE AUTH OPEN AND READY at the one load (ARCHITECT 2026-10-02, discovery at boot): every bound
+/// THE AUTH OPEN AND READY at the one load: every bound
 /// auth instance is opened with its settings block from `doc`, then its `ready` is awaited on
 /// `dispatcher` (the one that adopts it) before the load answers, so before any listener binds. An
 /// instance that will not open or will not be ready refuses the boot with the plugin's own text,
@@ -936,7 +936,7 @@ pub struct Opening<'a> {
     pub dispatcher: &'a crate::dispatch::Dispatcher,
     /// The secret kind's resolver: each settings key the Statement names in `secret_refs` is
     /// resolved through it, in that order, into `OpenIn::secrets`, and stripped from the settings
-    /// `open` is handed (ARCHITECT 2026-10-02).
+    /// `open` is handed.
     pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
     /// The config-time proof the boot that loads holds (THE DESIGN §11.11 R4): every declared
     /// secret resolves through it, so a source that reads the disk answers on the host's lane.

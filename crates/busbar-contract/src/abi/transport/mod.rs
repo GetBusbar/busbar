@@ -767,7 +767,7 @@ impl Claim {
     };
 }
 
-/// HOW THE TRANSPORT CLAIM ROW IS MADE (status row 194): from [`Claim::EMPTY`], its plain fields
+/// HOW THE TRANSPORT CLAIM ROW IS MADE: from [`Claim::EMPTY`], its plain fields
 /// set directly and each list by its setter, to items that live for the program.
 impl Claim {
     /// Nothing stated: every string absent, every list empty, every number zero.
@@ -962,7 +962,7 @@ impl TransportTail {
     };
 }
 
-/// HOW THE TRANSPORT KIND TAIL IS MADE (status row 194): from [`TransportTail::EMPTY`], its plain
+/// HOW THE TRANSPORT KIND TAIL IS MADE: from [`TransportTail::EMPTY`], its plain
 /// fields set directly and each list by its setter, to items that live for the program.
 impl TransportTail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head
@@ -1552,7 +1552,7 @@ pub struct BeginIn {
     /// [`SIDE_DIAL`]: the dial's OPENING head fields, the request's own lines from the plane and
     /// nothing else, for a framer whose wire carries them on its connection's opening (an upgrade
     /// request) rather than on a message; a framer that renders them per message takes them in
-    /// `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). The binding's auth
+    /// `encode` too and ignores these. The binding's auth
     /// fields are never here: the framer adds its own lines, then calls the auth with
     /// [`auth`](Self::auth) at [`points`](Self::points)
     /// ([`op::AUTH_CALL`](crate::abi::host::service::op::AUTH_CALL)), then appends what the auth
@@ -1734,7 +1734,7 @@ pub struct RefuseIn {
 
 /// `finish`'s `in` (the framer's `close`).
 ///
-/// THE FINAL STATUS (ARCHITECT 4l, 2026-10-05): on a framing begun on [`SIDE_ACCEPT_STREAM`], the
+/// THE FINAL STATUS: on a framing begun on [`SIDE_ACCEPT_STREAM`], the
 /// close is the stream's last answer, and the four `final_*` fields state how it ended, as the unit
 /// stated it: `final_status` in the numbering of the claim the stream arrived on (a number the
 /// claim's status rows cover; `0` where the unit stated none and the claim's numbering has one for

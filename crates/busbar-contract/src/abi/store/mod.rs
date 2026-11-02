@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE STORE KIND'S ABI (v3): its version, its table, its slots, its data shapes, its Statement
-//! tail and its cancel vocabulary (THE DESIGN, the owner-locked plugin ABI: seven ABIs on one
-//! mechanism, one place for every ABI shape; the signed per-kind design B.1 "store (v3)"; the
-//! ARCHITECT rulings in `m3-inputs.md` "store v3 money slots" and "window caps").
+//! tail and cancel vocabulary. The seven
+//! ABIs share one mechanism and
+//! one definition for every shape.
 //!
 //! The one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::store`).
 //!
@@ -51,7 +51,7 @@
 //!
 //! * REQUEST-PATH results go into HOST buffers the `in` names, pointer + capacity ([`HostBuf`],
 //!   [`HostBlobs`], [`HostRecords`]), never in the `out`, which the host zeroes before every call (mechanism
-//!   memory class (i); ARCHITECT 2026-09-28). A result that does not fit is the short-buffer answer, M-SB, stated once on
+//!   memory class (i)). A result that does not fit is the short-buffer answer, M-SB, stated once on
 //!   [`OutHead`] and not restated here; the answer validators in [`check`] enforce it.
 //! * OFF-PATH results (the 1.5.5 lists and single records) are plugin-owned under the
 //!   `out`'s lease until `release(lease)` (mechanism memory class (iv)); secret material is a

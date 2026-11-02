@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH KIND'S OUTBOUND SCRIPT (`abi/auth/outbound.rs`, v3; ARCHITECT ruling, P5 outbound auth
-//! conformance). It drives the OUTBOUND family — `open_outbound`, `fields`, `outbound_ready` —
+//! The auth kind's outbound script
+//! drives `open_outbound`, `fields`, and `outbound_ready`
 //! the way the kernel drives a provider's auth binding: the instance opened over the binding's
 //! settings (so a need whose target comes from them is declared pinned to it), the style bound to
 //! its credential, and the per-request call (THE DESIGN §6.4, §11.6: one memory-ABI call per
@@ -69,7 +69,7 @@
 //! after `close` 0 (the host refuses an op on a closed instance before any crossing). The inbound
 //! and login families the tail does not declare answer REFUSED.
 //!
-//! AN ON-DEMAND style (ARCHITECT ruling, the on-demand outbound script): `fields`(S) on a ticket
+//! For an on-demand style, `fields`(S) on a ticket
 //! before the first `tick` 1 → PENDING, and a second ticket's `fields`(S) while it waits 1 → PENDING,
 //! no exchange yet; `tick` → EXACTLY ONE exchange, and both waiting calls READY with the same token
 //! (`expect_fields`; the tick is the one first invocation, the two calls resume — SINGLE-FLIGHT); ticket-less

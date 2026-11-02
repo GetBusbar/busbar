@@ -566,10 +566,10 @@ fn a_transport_that_never_acks_is_a_conformance_failure() {
     );
 }
 
-/// THE TRANSPORT PIN, PLUGIN SIDE (the transport pin, ARCHITECT 2026-10-03): an exchange that asks reads its stream's facts
-/// once the reply ended, before the close — the far end's key and whether busbar presented its
-/// client identity — and keeps them across the op's re-entries, whose replayed `FACTS` writes
-/// nothing; no service runs twice. An exchange that does not ask makes no `FACTS` at all.
+
+
+
+
 #[test]
 fn an_observing_exchange_reads_its_streams_facts_before_the_close() {
     let _g = SERIAL
@@ -786,8 +786,8 @@ fn ran<T>(r: &Run<T>, op: u32) -> usize {
     r.ops.iter().filter(|&&o| o == op).count()
 }
 
-/// RED (status row 159, a failed exchange leaks its connection): a reply the host fails mid-read
-/// closes the stream the exchange established, once, and the exchange holds no stream after it.
+
+
 #[test]
 fn a_failed_reply_read_closes_its_stream() {
     let _g = SERIAL
@@ -815,8 +815,8 @@ fn a_failed_reply_read_closes_its_stream() {
     assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
 }
 
-/// RED (status row 159): a reply past the exchange's limit is refused with its own failure, and
-/// the stream is closed once right after the read that passed it: no read follows the refusal.
+
+
 #[test]
 fn a_reply_over_the_limit_closes_its_stream() {
     let _g = SERIAL
@@ -851,8 +851,8 @@ fn a_reply_over_the_limit_closes_its_stream() {
     assert_eq!(r.state.stream(), None);
 }
 
-/// RED (status row 159): a request the stream refuses (a send that fails) closes the stream it
-/// was established on, and the refusal is still what the exchange answers.
+
+
 #[test]
 fn a_refused_send_closes_its_stream() {
     let _g = SERIAL
@@ -1351,11 +1351,11 @@ fn an_ops_exchange_takes_its_reply_limit() {
     );
 }
 
-/// A RAW EXCHANGE PARKED BY ITS CALLER CLOSES ITS STREAM WHEN DROPPED (status row 159): an export
-/// door drives the free [`exchange`] itself and keeps the [`Exchange`] across PENDING entries; given
-/// up while it pends (its op cancelled or superseded, its instance closed) it CLOSEs the stream it
-/// established, as one [`Op::exchange`] parked does — the host reclaims a connection only on its
-/// CLOSE. RED: a free exchange that never kept what closes its stream leaves the stream held.
+
+
+
+
+
 #[test]
 fn a_raw_exchange_dropped_while_it_pends_closes_its_stream() {
     let _g = SERIAL

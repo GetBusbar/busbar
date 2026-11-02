@@ -173,7 +173,7 @@ impl<T: Zeroize> Secret<T> {
     }
 }
 
-/// THE HOST'S ZEROIZING BYTE HOLDER (the credential chip, row 6: host-owned secret bytes): a secret plugin
+/// THE HOST'S ZEROIZING BYTE HOLDER: a secret plugin
 /// writes its resolved value straight into one ([`Secret::zeroed`], [`Secret::lend_mut`]); the
 /// loader and the kernel keep the bytes in it, never in a `String`; it reaches a consumer's `open`
 /// from here and is wiped when it drops.

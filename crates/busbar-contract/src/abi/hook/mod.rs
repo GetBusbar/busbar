@@ -12,8 +12,8 @@
 //! `RoutingDecision`, `TransformOutcome`, `HookStageProjection`, `HookContext`,
 //! `BudgetBucketState`) into fixed C layout, unchanged in meaning.
 //!
-//! **ARCHITECT REVIEW RULING (fresh-Opus M3-SHAPES review, 2026-09-28), folded in on top of the
-//! first landing:**
+//! # Host-owned request results
+//!
 //! 1. **No plugin-pointer results on the request path.** `decide`/`transform` are REQUEST-PATH, so
 //!    every result they write goes into a HOST-owned buffer named in [`DecideIn`]
 //!    (`reject_message_buf`/`_cap`, `restrict_tags_buf`/`_cap`, `rewrite_buf`/`_cap`, alongside the
@@ -45,8 +45,8 @@
 //!    [`CandidateStatic::context_max`] widened `u32` -> `u64` (a context window is a token count,
 //!    not bounded to 32 bits).
 //!
-//! **SECOND REVIEW PASS (ARCHITECT ruling, 2026-09-28), folded in on the same landing — the
-//! reviewer's own "extra parity findings" beyond the fresh-Opus review's ten items:**
+//! # Route and result shapes
+//!
 //! 9. [`Tail::routes`] carries [`Route`] entries (`path`, `method`, `auth`), not bare path
 //!    strings: none/key/admin auth cannot be read off a path, and `{path, method}` is the
 //!    collision key the kernel checks at load (the same shape B.5 gives export's routes).
@@ -115,15 +115,15 @@
 //!   malformed class (M4 HOOK-PARITY, after this shape lands).
 //!
 //! ASSUMPTIONS (M3-SHAPES, noted for the SLOT-LOG; none are money- or customer-visible — 1.5.5
-//! reply BEHAVIOUR is unchanged, only its wire shape moves from JSON to fixed C layout, which is
-//! the whole point of this milestone — so none is an owner question):
+//! Reply behavior is unchanged; the wire
+//! shape uses fixed C layout:
 //! - "hook words" (B.4's tail bullet) are Statement word marks,
-//!   [`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK) (ARCHITECT ruling, folded in on
-//!   top of the first landing): STATIC, a Statement fact, not a per-call answer — a native
+//!   [`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK): static Statement data, not
+//!   a per-call answer. A native
 //!   ranking strategy (the OLD `RESERVED_HOOK_NAMES`: `cheapest`/`fastest`/`least_busy`/`usage`)
 //!   becomes a hook plugin by declaring the word it claims here.
 //! - `routes` (B.4's "routes, serve" row) is [`Tail::routes`], now [`Route`] entries (path +
-//!   method + auth, ARCHITECT ruling: a bare path string cannot state none/key/admin auth), a
+//!   method + auth: a bare path string cannot state none/key/admin auth), a
 //!   Statement fact the plugin states once; `serve` is the op the kernel calls per matched
 //!   request.
 //! - Signal ids ([`signal`]) are numbered in the OLD `Signal` enum's declared order
@@ -404,8 +404,8 @@ pub struct RequestView {
     /// names its own key; a plane with none leaves it absent). Neither the kernel nor a hook reads
     /// meaning into the bytes: the kernel keys its incremental scan on them, bound to the caller and
     /// the hook generation. [`BLOB_ABSENT`](super::mechanism::call::BLOB_ABSENT) = no session, and
-    /// every request is screened whole. ARCHITECT RULING 2026-10-03 (Q-FOLD-A2A-2-PROJECT-POOL,
-    /// session half): appended, a pre-tag v1 layout edit, the layout golden regenerated, no bump.
+    /// every request is
+    /// screened whole.
     pub session: Blob,
 }
 
@@ -434,7 +434,7 @@ pub struct CandidateStatic {
     /// Alignment padding (widened `context_max` below needs 8-byte alignment).
     pub _reserved3: u32,
     /// The `context_max`, meaningful only when [`CANDIDATE_HAS_CONTEXT_MAX`] is set.
-    /// ARCHITECT review ruling 8: widened `u32` -> `u64` (a context window is a token count).
+    /// A context window is a token count, represented as `u64`.
     pub context_max: u64,
     /// The `tier`, meaningful only when [`CANDIDATE_HAS_TIER`] is set.
     pub tier: AbiStr,
@@ -494,7 +494,7 @@ pub struct PromptView {
     pub system: AbiStr,
     /// How many messages the prompt holds.
     pub message_count: u64,
-    /// The body blob, ARCHITECT review ruling 6: the RAW origin-dialect request bytes, as
+    /// The body blob contains the raw origin-dialect request bytes, as
     /// [`super::mechanism::call::BLOB_OCTETS`] — zero-copy, never a kernel-built JSON document
     /// (the shared mechanism's own rule: JSON crosses only as an already-opaque payload the
     /// KERNEL never constructs). The SDK/plugin parses its own dialect (llm/mcp/a2a) to recover
@@ -573,7 +573,7 @@ pub const VIEW_HAS_BUDGET_REMAINING: u32 = 1 << 2;
 
 /// `decide`'s and `transform`'s shared `in` (both ops see identical views; only their `out` and
 /// grant differ — B.4: "identical for both"). Carries every HOST-owned result buffer the two ops
-/// write into (ARCHITECT review ruling 1: no plugin-pointer results on the request path).
+/// write into; request-path results never contain plugin-owned pointers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DecideIn {
@@ -617,7 +617,7 @@ pub struct DecideIn {
     /// `restrict_tags_buf`'s capacity, in bytes.
     pub restrict_tags_cap: usize,
     /// The host-owned buffer `transform` writes its rewrite bytes into (opaque octets, the
-    /// caller's own dialect — never kernel-built JSON, ARCHITECT review ruling 6); unused by
+    /// caller's own dialect, never kernel-built JSON); unused by
     /// `decide`.
     pub rewrite_buf: *mut u8,
     /// `rewrite_buf`'s capacity, in bytes.
@@ -699,7 +699,7 @@ pub struct TransformOut {
     /// `0` unless `reject_message_written == 0` because the buffer was too small.
     pub reject_message_needed: usize,
     /// How many bytes the plugin wrote into [`DecideIn::rewrite_buf`]: opaque octets in the
-    /// caller's own dialect (ARCHITECT review ruling 6), never kernel-parsed.
+    /// caller's own dialect, never kernel-parsed.
     pub rewrite_written: usize,
     /// `0` unless `rewrite_written == 0` because `rewrite_buf` was too small.
     pub rewrite_needed: usize,
@@ -731,7 +731,7 @@ pub const STAGE_AT_RESPONSE: u32 = 2;
 /// The stage view a tap receives: [`RequestView`] with NO prompt and NO
 /// signals (B.4's explicit exclusion), plus the stage fields (`at`, `model`,
 /// `attempt_number`, `remaining_candidates`, `previous_failure`, `outcome`, `status`),
-/// presence-bitmasked (ARCHITECT review ruling 4) since they ride only stage taps
+/// presence-bitmasked since they ride only stage taps
 /// (candidate/routing/response), never a request-stage tap.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -804,7 +804,7 @@ pub struct NotifyIn {
     pub _reserved: u32,
 }
 
-/// `configure`'s `in`. ARCHITECT review ruling (fresh-Opus M3-SHAPES review, parity item):
+/// `configure`'s input
 /// echoes the instance name, so the fresh management instance knows which
 /// instance it is configuring.
 #[repr(C)]
@@ -905,8 +905,8 @@ pub const ROUTE_AUTH_KEY: u32 = 1;
 /// [`Route::auth`]: admin auth required, reachable only on the admin listener.
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
-/// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus M3-SHAPES
-/// review, parity item): `{path, method}` is the collision key the kernel checks at load;
+/// One HTTP route this instance serves via `serve`: `{path, method}`
+/// is the collision key the kernel checks at load;
 /// `auth` is enforced by the kernel BEFORE `serve` is ever called — none/key/admin auth cannot be
 /// read off a bare path string, which is why a route is this struct, not an [`AbiStr`].
 #[repr(C)]
@@ -974,7 +974,7 @@ pub struct Tail {
     pub routes_len: usize,
 }
 
-/// HOW THE HOOK KIND TAIL IS MADE (status row 194): from [`Tail::EMPTY`], its plain fields set
+/// HOW THE HOOK KIND TAIL IS MADE: from [`Tail::EMPTY`], its plain fields set
 /// directly and each list by its setter, to items that live for the program.
 impl Tail {
     /// Nothing stated: every string absent, every list empty, every number zero; the head

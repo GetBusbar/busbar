@@ -246,10 +246,10 @@ fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
     );
 }
 
-/// THE POOL AN ARRIVAL NAMES (ARCHITECT Q-SW6, 2026-10-02): the entry name inside the plane's own
-/// section, on a READY answer only. Absent is valid (the plane's single default entry); a length
-/// with no bytes is FAULT, a failed arrival naming a pool is a contradiction, and a refused one may
-/// name the entry its refusal is about (ARCHITECT Q-DEL-A2A-GATE).
+
+
+
+
 #[test]
 fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
     let mut o: ArriveOut = z();
@@ -1098,9 +1098,9 @@ fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     );
 }
 
-/// THE ARRIVAL SPANS (status row 173): a snapshot published before they were appended states the
-/// size its fields end at and opens none; a list is none or one per claim, never counted over NULL,
-/// and each name is empty (that claim opens none) or at most `MAX_ARRIVAL_SPAN` bytes.
+
+
+
 #[test]
 fn a_snapshots_arrival_spans_are_none_or_one_per_claim() {
     use crate::abi::plane::check::check_arrival_spans;
@@ -1312,10 +1312,10 @@ fn a_pattern_claims_one_level_only() {
     assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
 }
 
-/// THE MULTI-SEGMENT PLACEHOLDER (ARCHITECT ruling 2026-10-16, 3b A): `{name+}` takes one or more
-/// segments, so `/model/{id+}/converse` matches an identifier carrying a raw `/` (an unencoded
-/// inference-profile ARN) and an encoded one alike, the previous release's prefix-and-suffix rule;
-/// it never matches nothing, and a sibling suffix is a different path.
+
+
+
+
 #[test]
 fn a_plus_placeholder_spans_one_or_more_segments() {
     let Ok(crate::grammar::Selector::PathPattern(p)) =
@@ -1541,9 +1541,9 @@ fn dialect_auth_names_a_dialect_and_a_style() {
     );
 }
 
-/// THE PER-DIALECT FLAGS (ARCHITECT ruling 2026-10-16, item 3): a line states whether a provider may
-/// name its dialect; the word was padding, so `0` (a line that predates it) states no. RED arm: a
-/// bit past the known one refuses the load.
+
+
+
 #[test]
 fn dialect_auth_flags_are_provider_and_nothing_else() {
     let mut d = DialectAuth {
@@ -1993,10 +1993,10 @@ fn a_verdict_is_known() {
     );
 }
 
-/// THE BREAKER FAULT READING (ARCHITECT 2026-10-05): one vocabulary with the transport's
-/// (`FAULT_*`, healthy included), separate from the verdict. RED arms: past `FAULT_HEALTHY`, on an
-/// answer that is not
-/// READY, and its padding not zero.
+
+
+
+
 #[test]
 fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
     use crate::abi::transport::{
@@ -2036,9 +2036,9 @@ fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
     );
 }
 
-/// THE USAGE-TAP FAULT rides the answer as data (row 155), beside the breaker reading and separate
-/// from it, on a READY answer only. A value past the vocabulary is ADMITTED: the kernel counts it
-/// as `unknown` rather than refusing the answer it rides. RED arm: a fault on a non-READY answer.
+
+
+
 #[test]
 fn a_usage_tap_fault_rides_only_a_ready_answer() {
     use crate::abi::plane::{
@@ -2108,8 +2108,8 @@ fn an_attempt_answer_names_its_verb_and_target_in_the_arena() {
     );
 }
 
-/// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a far request may name the need it rides; a need
-/// named on an answer that sends nothing to the far end contradicts it.
+
+
 #[test]
 fn a_named_need_rides_only_a_far_request() {
     let mut o = attempt_answer();
@@ -2469,8 +2469,8 @@ fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
     );
 }
 
-/// RED (ARCHITECT 2026-10-06): the configured item approvals name the field each item's digest is
-/// written under (`default`), and carry no flags and no mechanisms.
+
+
 #[test]
 fn an_item_approvals_key_names_its_digest_field() {
     let approvals = duration_key(TRUST_ITEM_APPROVALS);
@@ -3014,8 +3014,8 @@ fn projected_strings_lie_inside_the_arena_written() {
     );
 }
 
-/// THE SESSION (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session half): absent, or
-/// flagless octets inside the arena written; anything else is FAULT, naming the field.
+
+
 #[test]
 fn a_projected_session_is_absent_or_octets_inside_the_arena_written() {
     use crate::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
@@ -3326,9 +3326,9 @@ fn pending_drive_names_ready_sessions_while_other_work_waits() {
     );
 }
 
-/// RED (ARCHITECT ruling 2026-10-01, a money invariant): the overdraft ceiling and a stale slice
-/// are kernel-only money verdicts. A plane that names either code is answering malformed, never
-/// carrying the verdict: its tail row is refused, and the code decodes to no reason.
+
+
+
 #[test]
 fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
     for reason in [ReasonCode::OverdraftCeiling, ReasonCode::StaleSlice] {
@@ -3348,9 +3348,9 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
     }
 }
 
-/// THE ROUTE FLAGS (ARCHITECT round 4 Q-L3B-SURFACES (h) `ROUTE_ONCE`; round 5 Q-L3B-K6-HTTP (a)
-/// `ROUTE_SESSION`): a READY arrival may state either or both, whatever it routes over; a bit the
-/// contract does not define is FAULT, and an answer that admits nothing states none.
+
+
+
 #[test]
 fn an_arrivals_route_flags_are_once_and_session() {
     for flags in [
@@ -3401,10 +3401,10 @@ fn an_arrivals_route_flags_are_once_and_session() {
     );
 }
 
-/// THE TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): a READY arrival may state a
-/// counterparty, a capability there and the digest it is offered at, each a bounded text. RED arms:
-/// a capability with no counterparty, a digest with no capability, a fact counted with no bytes, a
-/// fact past the text bound, and any fact on an answer that admits nothing.
+
+
+
+
 #[test]
 fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
     let s = |b: &'static [u8]| AbiStr {
@@ -3471,9 +3471,9 @@ fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
     );
 }
 
-/// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05): a READY arrival may state an
-/// opaque key, bounded like every plane text; a key counted with no bytes is FAULT, and an answer
-/// that admits nothing states none (RED arms).
+
+
+
 #[test]
 fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
     let key = b"session-7";
@@ -3529,10 +3529,10 @@ fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
     );
 }
 
-/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02, Q-L3B-LOCAL and Q-DEL-A2A-SELECT):
-/// a READY arrival names whether its entry is a pool or a model routed directly, that the plane
-/// answers it itself, or that the kernel routes it by the principal's scope (both naming no entry); any other class is FAULT, and an answer that admits nothing names the default
-/// class only.
+
+
+
+
 #[test]
 fn an_arrivals_route_class_is_pool_or_direct() {
     for class in [ROUTE_POOL, ROUTE_DIRECT] {
@@ -3613,10 +3613,10 @@ fn a_unit_answered_at_its_scopes_one_entry_is_a_route_of_its_own() {
     );
 }
 
-/// A REFUSAL ABOUT AN ENTRY (ARCHITECT Q-DEL-A2A-GATE, abi/plane "A refused arrival" rule 6): a
-/// REFUSED arrival may name the entry its refusal concerns, with its class, operation class and
-/// dialect, and then wear a 5xx; one naming no entry stays a 4xx; a named entry with a class the
-/// rule does not admit, or an operation class the plane does not have, is FAULT.
+
+
+
+
 #[test]
 fn a_refused_arrival_may_name_the_entry_it_is_about() {
     let about = |route: u8, status: u32| {
@@ -3725,8 +3725,8 @@ fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
     );
 }
 
-/// THE ATTEMPT'S COUNTER LABELS (ARCHITECT ruling: one optional per-attempt tail): where an answer
-/// states them, each sits inside the arena it wrote; absent is a zero length.
+
+
 #[test]
 fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
     let mut o = attempt_answer();
@@ -3869,9 +3869,9 @@ fn a_cut_and_a_final_mark_ride_only_the_far_ends_own_pieces() {
     }
 }
 
-/// A RAW-AFFIX CLAIM'S TARGET (`CLAIM_RAW_AFFIX`, ARCHITECT ruling 2026-10-17): exactly one `*`
-/// between a prefix that starts with `/` and a non-empty suffix, never beside the open, exact or
-/// pattern bits. RED: each malformed spelling and each forbidden pairing is refused.
+
+
+
 #[test]
 fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
     assert_eq!(
@@ -3951,10 +3951,10 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     );
 }
 
-/// AN ENTRY FACT (status row 173, `CLAIM_ENTRY`): its target is one or more predicates, `field:`
-/// (present, or its value's prefix) and at most one `path:` pattern, in which `*` is any run of
-/// bytes and a whole segment `{}` or `{<field>}` one non-empty segment, a named one captured. A
-/// malformed target, or the flag beside another, is refused at bind.
+
+
+
+
 #[test]
 fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments() {
     use crate::abi::plane::check::EntryPredicate::{Field, Path};
@@ -4001,9 +4001,9 @@ fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments(
     );
 }
 
-/// THE SIGNED FLAG RIDES A RAW AFFIX ALONE (ARCHITECT ruling 2026-10-17): a signed path is matched
-/// against the raw path as the previous release matched it, so the flag on an exact, pattern or
-/// prefix claim is refused at bind, and a raw affix, which mounts no route, lists no catalog.
+
+
+
 #[test]
 fn a_signed_claim_is_a_raw_affix_and_a_raw_affix_is_no_catalog() {
     let signed = CLAIM_RAW_AFFIX | CLAIM_SIGNED_INGRESS;

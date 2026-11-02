@@ -217,9 +217,9 @@ pub struct StatedAdminRoute {
     pub audit_verb: &'static str,
 }
 
-/// THE REGISTRY FACTS A PLANE DOOR STATES (ARCHITECT RULING 2026-10-03 on a deleted plane's
-/// declaration; spec #49 and R2-C: a plane's config section, scope kinds and the rest are DERIVED
-/// from its Statement, never declared in the root). The loader reads them off a door's Statement
+/// Registry facts derived from a plane door's
+/// Statement, never declared separately in the root.
+/// The loader reads them off the Statement
 /// (`sections`) and its plane tail, linked or dropped alike, and the kernel folds them into its
 /// plane registry before the config prepass (`busbar_kernel::plane_driver::door::fold`). Every word
 /// is kept for the process.
@@ -246,7 +246,7 @@ pub struct PlaneRegistration {
     /// the map at that point (each registration, each entry). The kernel enumerates the references
     /// they name in its section, so `--validate` and boot resolve every one.
     pub secret_refs: Vec<&'static str>,
-    /// The admin routes its tail states (ARCHITECT Q-L3B-VERBS): the kernel's row mounts each on
+    /// The admin routes its tail states: the kernel's row mounts each on
     /// the admin router, served by the instance's `serve` op.
     pub admin_routes: Vec<StatedAdminRoute>,
     /// Their OpenAPI path fragment, each path relative to the admin mount (JSON); `None` = none.
@@ -266,8 +266,8 @@ pub struct PlaneRegistration {
     /// The tail's dialects, in order (the plane's wire formats).
     pub dialects: Vec<&'static str>,
     /// Each dialect's `DIALECT_*` flags (its `dialect_auth` line's), parallel to
-    /// [`Self::dialects`]: whether a provider's `protocol` may name it (ARCHITECT ruling
-    /// 2026-10-16, item 3).
+    /// [`Self::dialects`]: whether a provider's
+    /// `protocol` may name it.
     pub dialect_flags: Vec<u32>,
     /// The tail's scope kinds.
     pub scope_kinds: Vec<&'static str>,
@@ -285,7 +285,7 @@ pub struct PlaneRegistration {
     /// falls through to, and its card is the flat one (at most one registered plane).
     pub fallback: bool,
     /// The provider-key descriptor its Statement states under
-    /// [`crate::provider_keys::EXT_PROVIDER_KEYS`] (row 155 B1c): the `providers:` entry keys the
+    /// [`crate::provider_keys::EXT_PROVIDER_KEYS`]: the `providers:` entry keys the
     /// plane owns, per form, in their frozen order and the neutral shape vocabulary; `None` = it
     /// states none. The kernel's door fold keeps it; nothing parses an entry from it yet.
     pub provider_keys: Option<crate::provider_keys::ProviderKeys>,
@@ -365,12 +365,12 @@ pub trait PlaneCalls: Send + Sync {
         grow: Grow<'_, ArriveIn, ArriveOut>,
     ) -> Outcome;
 
-    /// The pool a READY `arrive` named ([`ArriveOut::pool`], ARCHITECT Q-SW6), copied out of the
+    /// The pool a READY `arrive` named ([`ArriveOut::pool`]), copied out of the
     /// plane's memory while that answer is the instance's last; `None` when it named none.
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
 
-    /// The sticky-routing key a READY `arrive` stated ([`ArriveOut::affinity`], ARCHITECT Q1
-    /// ArriveOut), copied out of the plane's memory while that answer is the instance's last;
+    /// The sticky-routing key a READY `arrive` stated ([`ArriveOut::affinity`]), copied out of
+    /// the plane's memory while that answer is the instance's last;
     /// `None` when it stated none. Opaque: the kernel only hashes it.
     fn arrived_affinity(&self, out: &ArriveOut) -> Option<Vec<u8>> {
         let _ = out;

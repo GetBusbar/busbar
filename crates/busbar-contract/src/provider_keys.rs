@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROVIDER-KEY DESCRIPTOR (row 155 B1c, ARCHITECT ruling "Option A"): the keys of a
+//! THE PROVIDER-KEY DESCRIPTOR states the keys of a
 //! `providers:` entry that a PLANE owns, stated by that plane as data in its Statement, so the
 //! kernel parses a provider entry without holding one plane key name.
 //!

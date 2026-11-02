@@ -7,7 +7,7 @@
 //! * [`mechanism`] and `abi/<kind>/` — the ONE memory ABI: one door, one call shape, one
 //!   lifecycle, and each kind's own operations, shapes and version.
 //! * The HOT lane (`abi::hot`, a `#[repr(C)]` fn-pointer vtable) and the COLD/JSON lane, which THE
-//!   DESIGN's plugin ABI abolished, are deleted (status row 84), with the handshake (`busbar_abi`,
+//!   DESIGN's plugin ABI abolished, are deleted, with the handshake (`busbar_abi`,
 //!   `busbar_plugin_kind`) they shared. A 1.5.5 JSON-contract plugin is refused at boot naming the
 //!   rebuild against the 1.6.0 SDK (the plugin ABI's "no legacy loading").
 //!
@@ -78,10 +78,10 @@ macro_rules! slot_table {
     };
 }
 
-/// THE LIST FIELDS OF ONE ABI STRUCT, written and read through methods (status row 194): a list
-/// is a pointer and a length, which these set together, to items that live for the program. The
-/// fields themselves stay pub until row 194 makes them private (#1471); these methods are the
-/// surface a plugin moves to first. Per list `name, name_len: T => name_ptr, with_name,
+/// THE LIST FIELDS OF ONE ABI STRUCT, written and read through methods: a list
+/// is a pointer and a length, which these set together,
+/// to items that live for the program. The fields remain
+/// public. Per list `name, name_len: T => name_ptr, with_name,
 /// with_raw_name;` it states, in the struct's `impl`:
 ///
 /// * `with_name(&'static [T])` — the safe setter, `const`: the pointer and the length together;
@@ -159,7 +159,7 @@ macro_rules! abi_lists {
 }
 
 /// `len` items at `p`, or none for a NULL `p` or a zero `len`: the one place the lists and strings
-/// of the ABI are read as slices by their `unsafe` readers (status row 194).
+/// of the ABI are read as slices by their `unsafe` readers.
 ///
 /// # Safety
 ///

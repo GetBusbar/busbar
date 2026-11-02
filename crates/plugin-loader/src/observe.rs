@@ -657,7 +657,7 @@ pub(crate) mod testing {
         /// that reported it, so what a test's own sinks report carries its scope, and what every
         /// other test of the binary folds concurrently (any door it drives with a non-bare
         /// envelope, the guard serializing only the readers) carries another or none. Busbar
-        /// status row 118: a reader that counted the whole log saw 10 where its sink folded 1.
+        /// Counting the whole log would include entries outside this sink's scope.
         static SCOPE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
 

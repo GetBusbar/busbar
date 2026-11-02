@@ -165,23 +165,23 @@ pub struct ServedFacts {
     pub need_targets: Vec<&'static str>,
     /// Each need's `trust_from`, in Statement need order: on a member-target need, a member path
     /// (`settings.*.<key>`) names, per registration, the object holding busbar's client identity
-    /// for it, `{cert, key}` as secret references (the transport pin, ARCHITECT 2026-10-03).
+    /// for it, `{cert, key}` as secret references.
     pub need_trust: Vec<&'static str>,
     /// The tail's kernel-owned trust keys: a registration whose pin names a mechanism that pins the
     /// far end's key (`PinMechanismDecl::peer_key`) has that key sealed into its member route.
     pub trust_keys: Vec<TrustKeyDecl>,
     /// Each need's transport, in the same order (`Need::transport`): a member binds at most one
-    /// need per (transport, auth) (ARCHITECT Q-L5B-NEEDS).
+    /// need per (transport, auth).
     pub need_transports: Vec<&'static str>,
     /// The tail's dialects, in order.
     pub dialects: Vec<&'static str>,
     /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
     /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this), and the style's parameters
-    /// for it, a JSON object's text (empty: none; ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
+    /// for it, a JSON object's text (empty: none).
     pub dialect_auth: Vec<(u32, &'static str, &'static [u8])>,
     /// Each dialect's `DIALECT_*` flags off its `dialect_auth` line, parallel to
     /// [`Self::dialects`] (`0` for a dialect with no line): whether a provider may name it
-    /// (ARCHITECT ruling 2026-10-16, item 3).
+    ///.
     pub dialect_flags: Vec<u32>,
     /// The tail's `label`, `subject_noun` and `admin_noun` (what the kernel's registry entry names
     /// the plane and one registration by).
