@@ -427,16 +427,17 @@ def _key_list_ok(spec) -> bool:
             key_id, algorithm, key = parts
         else:
             return False
-        if key_id is not None:
-            if not re.fullmatch(r"[a-z0-9-]+", key_id) or key_id in ids:
-                return False
-            ids.add(key_id)
+        if key_id is not None and not re.fullmatch(r"[a-z0-9-]+", key_id):
+            return False
         pattern = {"ed25519": r"[0-9a-fA-F]{64}", "p256": r"04[0-9a-fA-F]{128}"}.get(algorithm)
         if pattern is None or not re.fullmatch(pattern, key):
             return False
         material = (algorithm, key.lower())
-        if material in keys or (algorithm == "ed25519" and key.lower() == retired):
+        if key_id is None:
+            key_id = "ed25519:" + key.lower()[:16]
+        if key_id in ids or material in keys or (algorithm == "ed25519" and key.lower() == retired):
             return False
+        ids.add(key_id)
         keys.add(material)
     return True
 
@@ -1474,6 +1475,7 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
         "duplicate key": "r:%s,s:ed25519:%s" % (ed, ed),
         "duplicate case": "r:%s,s:%s" % (ed, ed.upper()),
         "duplicate bare": "%s,r:%s" % (ed, ed),
+        "duplicate bare ID": "%s,%s" % (ed, other_ed),
         "duplicate P-256": "r:p256:%s,s:p256:%s" % (p256, p256),
         "retired bare": retired, "retired legacy": "r:" + retired,
         "retired explicit": "r:ed25519:" + retired,

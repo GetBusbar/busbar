@@ -64,16 +64,17 @@ for entry in os.environ.get("BUSBAR_RELEASE_PUBKEY", "").split(","):
         key_id, algorithm, key = parts
     else:
         sys.exit(1)
-    if key_id is not None:
-        if not re.fullmatch(r"[a-z0-9-]+", key_id) or key_id in ids:
-            sys.exit(1)
-        ids.add(key_id)
+    if key_id is not None and not re.fullmatch(r"[a-z0-9-]+", key_id):
+        sys.exit(1)
     pattern = {"ed25519": r"[0-9a-fA-F]{64}", "p256": r"04[0-9a-fA-F]{128}"}.get(algorithm)
     if pattern is None or not re.fullmatch(pattern, key):
         sys.exit(1)
     material = (algorithm, key.lower())
-    if material in keys or (algorithm == "ed25519" and key.lower() == retired):
+    if key_id is None:
+        key_id = "ed25519:" + key.lower()[:16]
+    if key_id in ids or material in keys or (algorithm == "ed25519" and key.lower() == retired):
         sys.exit(1)
+    ids.add(key_id)
     keys.add(material)
 PYEOF
 }
@@ -136,6 +137,7 @@ if [ "${MODE}" = "--selftest" ]; then
       "duplicate-id|r:${GOOD_KEY},r:${GOOD_KEY%b}c" "duplicate-key|r:${GOOD_KEY},s:ed25519:${GOOD_KEY}" \
       "duplicate-case|r:${GOOD_KEY},s:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB" \
       "duplicate-bare|${GOOD_KEY},r:${GOOD_KEY}" "duplicate-p256|r:p256:${P256_POINT},s:p256:${P256_POINT}" \
+      "duplicate-bare-id|${GOOD_KEY},${GOOD_KEY%b}c" \
       "retired-bare|${RETIRED_KEY}" "retired-legacy|r:${RETIRED_KEY}" "retired-explicit|r:ed25519:${RETIRED_KEY}" \
       "retired-in-list|${GOOD_LIST},r:ed25519:B18395A332803151B9CD40A71489A86A96D8BEA3EE6A37A45F59DEC197BACBA7" \
       "newline|${GOOD_KEY}"$'\n'; do
