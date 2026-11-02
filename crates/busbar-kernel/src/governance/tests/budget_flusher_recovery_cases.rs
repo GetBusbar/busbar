@@ -123,10 +123,80 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         RecoveryState::VerdictNotLanded
     );
 
-    let app = crate::test_support::TestApp::new()
-        .governance(gov.clone())
-        .cost(old_cost)
-        .build();
+    let registry: Arc<dyn busbar_contract::plugin_rows::PluginRows> =
+        Arc::new(busbar_plugin_loader::registry::PluginRegistry::empty());
+    let secret_resolver = Arc::new(crate::config::secret::SecretResolver::builtins_only());
+    let app = Arc::new(crate::state::App::from_test_parts(crate::state::AppParts {
+        fallback_runtime_key: "",
+        serve_tables: Default::default(),
+        root_rules: Arc::new(crate::appbuild::AcceptAll),
+        config_projection: Default::default(),
+        config_tables: Default::default(),
+        store: Arc::new(crate::store::HealthState::new(Vec::new())),
+        limits: Default::default(),
+        session_store: Arc::new(crate::session::SessionStore::new(1024, None)),
+        incremental_scan: Default::default(),
+        plane_pools: Default::default(),
+        auth: Arc::new(
+            crate::auth::AuthMiddleware::new(
+                &crate::config::AuthCfg::default_none(),
+                &registry,
+                &secret_resolver,
+            )
+            .unwrap(),
+        ),
+        rewrite_hooks: Default::default(),
+        tap_hooks: Default::default(),
+        tap_hooks_candidate: Default::default(),
+        tap_hooks_routing: Default::default(),
+        tap_hooks_response: Default::default(),
+        global_gates: Default::default(),
+        pool_orderings: Default::default(),
+        pool_decision_gates: Default::default(),
+        pool_rewrite_chains: Default::default(),
+        plane_gates: Default::default(),
+        plane_rewrites: Default::default(),
+        hook_env: crate::hooks::HookEnv::new(registry, secret_resolver.clone()).unwrap(),
+        hook_registry: Default::default(),
+        requested_signals: Default::default(),
+        any_content_hook: Default::default(),
+        global_hooks: Default::default(),
+        base_hook_names: Default::default(),
+        groups_registry: Default::default(),
+        base_group_names: Default::default(),
+        identity_providers: Default::default(),
+        export_defs: Default::default(),
+        admin: Default::default(),
+        admin_chain: Default::default(),
+        admin_modules: Arc::new(crate::auth::AdminAuthChain::empty()),
+        public_url: Default::default(),
+        oauth_as: Default::default(),
+        demotion_record: Default::default(),
+        amendments: Arc::clone(gov.amendments()),
+        planes: Default::default(),
+        plane_slots: Default::default(),
+        plane_sections: Default::default(),
+        auth_scope_caps: Default::default(),
+        role_bindings: Default::default(),
+        config_path: Default::default(),
+        providers_path: Default::default(),
+        overlay_path: Default::default(),
+        config_version: Default::default(),
+        max_keys_per_principal: Default::default(),
+        max_auto_provisioned_groups: Default::default(),
+        governance: Some(gov.clone()),
+        secret_resolver: secret_resolver,
+        cost: Arc::new(old_cost),
+        plugins_dir: Default::default(),
+        plugins_cfg: Default::default(),
+        plugin_admission: Default::default(),
+        self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
+        mint_policy: Default::default(),
+        request_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        plugin_routes: Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
+        boot_route_paths: Default::default(),
+        planes_awaiting_restart: Default::default(),
+    }));
     let handle = Arc::new(crate::state::AppHandle::new(app.clone()));
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
