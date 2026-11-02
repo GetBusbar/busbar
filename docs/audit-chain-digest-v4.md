@@ -285,9 +285,10 @@ deployment without this schema, it first verifies the complete journal and backf
 before accepting new writes. Interrupted backfills resume from matching samples; an existing
 malformed checkpoint is reported rather than treated as an old deployment.
 
-A head is about a hundred bytes. One hourly sample is 8 760 per year, and samples never age out.
-The genesis sample is always kept. The current tip also preserves the sampler's last sampled clock,
-so a restart or a backward wall clock cannot move an existing sample.
+Hourly sampling adds 8 760 records per year, each within the Store's 512-byte payload ceiling;
+keys and backend indexes add overhead. Samples never age out, and the genesis sample is always
+kept. The current tip also preserves the sampler's last sampled clock, so a restart or a backward
+wall clock cannot move an existing sample.
 
 There is currently no production fixed-audit record-pruning API. The bounded in-memory audit ring
 is a cache over the durable journal; evicting a cache entry does not delete a durable record. The

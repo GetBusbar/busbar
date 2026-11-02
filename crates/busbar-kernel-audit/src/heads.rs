@@ -14,9 +14,9 @@
 //!
 //! ## Why keeping them all is affordable
 //!
-//! A head is a position, a digest, a signature, a key identifier and a clock — about a hundred
-//! bytes. Sampled hourly that is 8 760 of them a year, under a megabyte, so the sampling rate is the
-//! only bound there is.
+//! A head is a position, a digest, a signature, a key identifier and a clock. Hourly sampling adds
+//! 8 760 samples per year; serialized records and Store indexes add their own overhead. Sampling
+//! bounds the growth rate, never the lifetime of an anchor.
 //!
 //! ## Sampled, plus the tip
 //!
@@ -32,8 +32,8 @@ use crate::record::AuditRecord;
 
 /// How often a head joins the permanent series: one per hour.
 ///
-/// Hourly is the rate the retention argument is costed at — 8 760 heads a year, under a megabyte —
-/// and it is fine enough that the anchor for any window a puller missed is at most an hour older
+/// Hourly retains 8 760 sampled heads per year and is fine enough that the anchor for any window
+/// a puller missed is at most an hour older
 /// than the window's start.
 pub const HEAD_SAMPLE_SECONDS: u64 = 3_600;
 
