@@ -324,11 +324,13 @@ async fn opaque_and_literal_settings_still_reuse_the_opened_transport() {
 
 #[test]
 fn nested_reference_resolution_diagnostics_do_not_contain_credentials() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let capture = WarnCapture::capturing_debug();
-    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(output.clone())
+        .finish();
     let (env, source, _) = environment(&[SECRET_PATH], &[]);
     let hook = settings(json!({"servers": [{"env": {"TOKEN": source_reference()}}]}));
     tracing::subscriber::with_default(subscriber, || {
@@ -338,6 +340,7 @@ fn nested_reference_resolution_diagnostics_do_not_contain_credentials() {
         *source.value.lock().unwrap() = None;
         assert!(gate_transport_named(HOOK_NAME, &hook, &env, 0).is_none());
     });
+    let capture = String::from_utf8(output.lock().unwrap().clone()).expect("UTF-8 diagnostics");
     assert!(capture.contains("servers.0.env.TOKEN"));
     assert!(capture.contains(SOURCE_UNAVAILABLE));
     assert!(!capture.contains(ORIGINAL_VALUE) && !capture.contains(ROTATED_VALUE));
