@@ -759,8 +759,123 @@ mod tests {
 
     #[test]
     fn partial_staging_keeps_old_head_and_replays_the_same_generation() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+        use std::sync::atomic::{AtomicIsize, Ordering};
+        use std::sync::Arc;
+
+        struct LimitChunkWrites {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            remaining: AtomicIsize,
+        }
+        impl StoreCalls for LimitChunkWrites {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                self.inner.record_transaction(request)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                let remaining = self.remaining.load(Ordering::SeqCst);
+                if remaining == 0 {
+                    Box::pin(std::future::ready(Err(StoreFailure::Refused(
+                        "planted chunk write refusal".into(),
+                    ))))
+                } else {
+                    if remaining > 0 {
+                        self.remaining.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    self.inner.record_put(schema, key, value)
+                }
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                self.inner.record_get(schema, key)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(LimitChunkWrites {
+            inner: crate::real_store::store(),
+            remaining: AtomicIsize::new(1),
+        });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
         let mut doc = OverlayDoc::default();
         doc.named_maps.insert(
             "export".into(),
@@ -769,10 +884,9 @@ mod tests {
                 serde_json::json!("x".repeat(busbar_contract::MAX_RECORD_BYTES + 10)),
             )]),
         );
-        fixture.fail_after_chunk_writes(1);
         assert!(write(&backend, &doc).is_err());
         assert!(backend.read_required().unwrap().is_none());
-        fixture.allow_chunk_writes();
+        calls.remaining.store(-1, Ordering::SeqCst);
         assert!(write(&backend, &OverlayDoc::default()).is_err());
         assert_eq!(
             serde_json::to_value(backend.read_required().unwrap().unwrap()).unwrap(),
