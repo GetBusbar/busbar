@@ -158,6 +158,18 @@ async fn a_panicking_handler_fails_only_its_own_request() {
             auth: RouteAuth::None,
             handler: Arc::new(|_: PlaneReqCtx| Box::pin(async { fine().await.into_response() })),
         },
+        PlaneRouteSpec {
+            path: "/door/x".into(),
+            method: RouteMethod::Post,
+            auth: RouteAuth::None,
+            handler: Arc::new(|_: PlaneReqCtx| Box::pin(async { fine().await.into_response() })),
+        },
+        PlaneRouteSpec {
+            path: "/door/failed".into(),
+            method: RouteMethod::Post,
+            auth: RouteAuth::None,
+            handler: Arc::new(|_: PlaneReqCtx| Box::pin(async { fine().await.into_response() })),
+        },
     ];
     let (router, admin, handle) =
         busbar_kernel::build_split_routers_serving(Arc::new(app), routes, 1 << 20, 0, false);
@@ -180,7 +192,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
                 next.run(req).await
             },
         ))
-        .layer(busbar_kernel::router::CatchPanicLayer::new(handle));
+        .layer(busbar_kernel::router::CatchPanicLayer::new(handle.clone()));
     let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let admin_addr = admin_listener.local_addr().unwrap();
     let admin_server =
@@ -257,6 +269,71 @@ async fn a_panicking_handler_fails_only_its_own_request() {
             "{logged}"
         );
     }
+    // The same normally built application's method fallback asks the physical door,
+    // preserves every refusal field, and uses its own envelope when no door renders.
+    let response = client
+        .get(format!("http://{addr}/door/x?q=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 405);
+    assert_ne!(response.bytes().await.unwrap().as_ref(), b"door");
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_routes::{KernelRefusal, PlaneRefuseByPathFn};
+    type Seen = Vec<(ReasonCode, u16, String, String, String)>;
+    let seen: Arc<std::sync::Mutex<Seen>> = Arc::default();
+    let observations = seen.clone();
+    let refuser: PlaneRefuseByPathFn = Arc::new(move |r: &KernelRefusal<'_>| {
+        observations.lock().unwrap().push((
+            r.reason,
+            r.status,
+            r.text.into(),
+            r.path.into(),
+            r.target.into(),
+        ));
+        (r.path != "/door/failed").then(|| {
+            axum::http::Response::builder()
+                .status(r.status)
+                .body(axum::body::Body::from("door"))
+                .unwrap()
+        })
+    });
+    handle.bind_door_refuser(refuser);
+    let response = client
+        .get(format!("http://{addr}/door/x?q=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 405);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"door");
+    assert_eq!(
+        seen.lock().unwrap().last().cloned(),
+        Some((
+            ReasonCode::MethodNotAllowed,
+            405,
+            "method not allowed for this resource".into(),
+            "/door/x".into(),
+            "/door/x?q=1".into(),
+        ))
+    );
+    let response = client
+        .get(format!("http://{addr}/door/failed?q=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(response.bytes().await.unwrap().as_ref(), b"door");
+    let asked = seen.lock().unwrap().len();
+    let response = client
+        .post(format!("http://{admin_addr}/api/v1/admin/info?q=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(response.bytes().await.unwrap().as_ref(), b"door");
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        asked,
+        "the native API root asks no door"
+    );
     admin_server.abort();
     server.abort();
     println!("{WITNESS}");

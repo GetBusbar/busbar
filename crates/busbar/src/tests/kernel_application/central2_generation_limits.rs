@@ -180,7 +180,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         Default::default(),
         Default::default(),
         (None, None),
-        None,
+        Some(&app),
         &rules,
     ) else {
         panic!("validation refuses it");
@@ -207,7 +207,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         Default::default(),
         Default::default(),
         (None, None),
-        None,
+        Some(&app),
         &rules,
     )
     .expect("builds");
