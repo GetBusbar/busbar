@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[allow(unsafe_code)]
+#[path = "actual_store.rs"]
+mod actual_store;
+
 use std::sync::Arc;
 
 use busbar_contract::abi::store::OpId;
@@ -85,16 +89,16 @@ fn transcript(s: &OpenedStore) -> Vec<String> {
 #[test]
 fn boot_opens_the_build_store_through_its_door_linked_and_dropped_in_alike() {
     let axis = axis();
-    let door = crate::both_ways::store_fixture::door;
+    let door = actual_store::door;
     let linked = axis
-        .open(StoreDoor::Linked(door), "store", b"{}")
+        .open(StoreDoor::Linked(door), "store", &actual_store::settings())
         .expect("the linked door opens");
     let linked = transcript(&linked);
     assert!(
         linked.iter().all(|l| !l.contains("Err")),
         "the linked store answered the script: {linked:#?}"
     );
-    let path = crate::both_ways::example_cdylib("store_v3_door");
+    let path = actual_store::path();
     let dropped = axis
         .open(
             StoreDoor::Dropped {
@@ -103,7 +107,7 @@ fn boot_opens_the_build_store_through_its_door_linked_and_dropped_in_alike() {
                 stated: rendering_of(door).expect("the store renders its Statement"),
             },
             "store-dropped",
-            b"{}",
+            &actual_store::settings(),
         )
         .expect("the dropped-in door opens");
     assert_eq!(transcript(&dropped), linked, "the two doors answer alike");
@@ -112,7 +116,7 @@ fn boot_opens_the_build_store_through_its_door_linked_and_dropped_in_alike() {
 #[test]
 fn boot_is_handed_a_stores_door_and_a_row_with_none_is_refused() {
     use crate::{LinkedPlugin, PluginRegistry};
-    let door = crate::both_ways::store_fixture::door;
+    let door = actual_store::door;
     let reg = PluginRegistry::empty()
         .link(vec![
             // A store row whose entry is not the store's own door states none to boot.
@@ -135,7 +139,7 @@ fn boot_is_handed_a_stores_door_and_a_row_with_none_is_refused() {
         "the row's own door"
     );
     let opened = axis()
-        .open(StoreDoor::Linked(d), "with-door", b"{}")
+        .open(StoreDoor::Linked(d), "with-door", &actual_store::settings())
         .expect("it opens through the axis");
     assert!(opened.records.list_keys().is_ok());
 }

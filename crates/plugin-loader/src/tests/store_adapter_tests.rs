@@ -22,12 +22,16 @@
 //! integration suite, which takes the token from the kernel's test token helper:
 //! `crates/busbar/tests/store_adapter_verb_seam.rs`.
 
+#[allow(unsafe_code)]
+#[path = "actual_store.rs"]
+mod actual_store;
+
 use super::*;
 use crate::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
 use std::sync::Arc;
 
 fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
-    Arc::from(crate::both_ways::store_fixture::open("{}").expect("the store fixture opens"))
+    Arc::new(actual_store::open())
 }
 
 fn adapter_over_published_schema() -> StoreAdapter {

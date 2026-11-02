@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[allow(unsafe_code)]
+#[path = "actual_store.rs"]
+mod actual_store;
+
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{RecordStore, VirtualKey};
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
-use super::door_both_ways::{self as both, same, Loaded};
 use crate::dispatch::kinds::store::Store;
+use crate::dispatch::{load_dropped, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink};
 use crate::store_v3::LoadedStore;
+use std::sync::Arc;
 
 const SCHEMA: &str = "both-ways";
 
@@ -20,8 +25,25 @@ fn block<T>(f: impl std::future::Future<Output = T>) -> T {
         .block_on(f)
 }
 
-fn store(loaded: Loaded<Store>) -> LoadedStore {
-    LoadedStore::open(loaded.plugin, loaded.dispatcher, b"{}", mint).expect("the store opens")
+fn dropped_store() -> LoadedStore {
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let path = actual_store::path();
+    let stated =
+        crate::dispatch::rendering_of(actual_store::door).expect("actual SQLite statement");
+    let plugin = load_dropped::<Store>(
+        &path,
+        &stated,
+        Bind {
+            instance: "actual-store-dropped".into(),
+            max_inflight_cap: 1024,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("the actual SQLite image loads through the dropped ABI");
+    LoadedStore::open(plugin, dispatcher, &actual_store::settings(), mint)
+        .expect("the dropped actual SQLite database opens")
 }
 
 fn read(answer: Result<Option<RecordBytes>, StoreFailure>) -> String {
@@ -96,11 +118,12 @@ fn script(s: &LoadedStore) -> Vec<String> {
 
 #[test]
 fn a_linked_and_a_dropped_in_store_answer_get_and_put_identically() {
-    let door = crate::both_ways::store_fixture::door;
-    let linked = script(&store(both::linked::<Store>(door)));
-    let dropped = both::dropped::<Store>(door, "store_v3_door");
-    let dropped = script(&store(dropped));
-    same(&linked, &dropped);
+    let linked = script(&actual_store::open());
+    let dropped = script(&dropped_store());
+    assert_eq!(
+        linked, dropped,
+        "the actual same Store image answers both origins alike"
+    );
 
     assert!(linked[1].contains("one"), "{}", linked[1]);
     assert!(linked[2].ends_with("Ok(None)"), "{}", linked[2]);
