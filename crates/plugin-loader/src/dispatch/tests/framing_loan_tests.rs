@@ -250,7 +250,10 @@ mod typed_transport_cancellation {
             // SAFETY: the genuine descriptor has the transport ABI table; the normal loader
             // below validates its Statement, layout and table before any operation is submitted.
             let mut ops = unsafe { *real.ops.cast::<transport::Ops>() };
-            let cancel = ops.head.cancel.expect("the product transport serves CANCEL");
+            let cancel = ops
+                .head
+                .cancel
+                .expect("the product transport serves CANCEL");
             ops.adopt = Some(pending_adopt);
             ops.emit = Some(pending_commit);
             ops.head.cancel = Some(observed_cancel);
@@ -286,7 +289,12 @@ mod typed_transport_cancellation {
     }
 
     fn control(instance: *mut c_void) -> Arc<Control> {
-        controls().lock().unwrap().get(&(instance as usize)).unwrap().clone()
+        controls()
+            .lock()
+            .unwrap()
+            .get(&(instance as usize))
+            .unwrap()
+            .clone()
     }
 
     fn pending(
@@ -302,7 +310,10 @@ mod typed_transport_cancellation {
         let mut input = control.input.lock().unwrap();
         let identity = (slot, ticket, frame, bytes as usize, len);
         if let Some(original) = *input {
-            assert_eq!(identity, original, "a recall must keep the exact typed frame and loan");
+            assert_eq!(
+                identity, original,
+                "a recall must keep the exact typed frame and loan"
+            );
         } else {
             *input = Some(identity);
         }
@@ -351,7 +362,10 @@ mod typed_transport_cancellation {
     fn until(mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + WAIT;
         while !ready() {
-            assert!(Instant::now() < deadline, "the transport cancellation did not progress");
+            assert!(
+                Instant::now() < deadline,
+                "the transport cancellation did not progress"
+            );
             std::thread::yield_now();
         }
     }
@@ -368,7 +382,14 @@ mod typed_transport_cancellation {
         fn wake(self: Arc<Self>) {}
     }
 
-    fn rig() -> (Dispatcher, Plugin<Transport>, usize, Arc<Control>, Arc<FramingContext>, u64) {
+    fn rig() -> (
+        Dispatcher,
+        Plugin<Transport>,
+        usize,
+        Arc<Control>,
+        Arc<FramingContext>,
+        u64,
+    ) {
         let dispatcher = Dispatcher::new(DispatchConfig::default());
         let plugin = load_linked::<Transport>(
             &LinkedRow::of(fault_door).expect("the genuine transport Statement renders"),
@@ -398,8 +419,13 @@ mod typed_transport_cancellation {
                 err_len: 0,
             },
         );
-        assert_eq!(plugin.call(life::OPEN, &mut opening).outcome, Outcome::Ready);
-        let scope = dispatcher.framing_context(plugin.instance().0, 0, 0).unwrap();
+        assert_eq!(
+            plugin.call(life::OPEN, &mut opening).outcome,
+            Outcome::Ready
+        );
+        let scope = dispatcher
+            .framing_context(plugin.instance().0, 0, 0)
+            .unwrap();
         let mut input: BeginIn = blank_in();
         input.side = transport::SIDE_DIAL;
         input.scheme = busbar_contract::abi::host::service::SCHEME_PLAIN;
@@ -408,14 +434,31 @@ mod typed_transport_cancellation {
             len: b"http://127.0.0.1/".len(),
         };
         let mut beginning = Frame::new(input, blank_out::<FramerOut>());
-        let begun = with_context(Some(scope.clone()), || plugin.call(transport::slot::BEGIN, &mut beginning));
-        assert_eq!(begun.outcome, Outcome::Ready, "the actual product begins the source framing");
+        let begun = with_context(Some(scope.clone()), || {
+            plugin.call(transport::slot::BEGIN, &mut beginning)
+        });
+        assert_eq!(
+            begun.outcome,
+            Outcome::Ready,
+            "the actual product begins the source framing"
+        );
         assert_ne!(beginning.out.framing, 0);
         scope.confirm(beginning.out.framing).unwrap();
         let instance = opening.out.instance as usize;
         let control = Arc::new(Control::default());
-        assert!(controls().lock().unwrap().insert(instance, control.clone()).is_none());
-        (dispatcher, plugin, instance, control, scope, beginning.out.framing)
+        assert!(controls()
+            .lock()
+            .unwrap()
+            .insert(instance, control.clone())
+            .is_none());
+        (
+            dispatcher,
+            plugin,
+            instance,
+            control,
+            scope,
+            beginning.out.framing,
+        )
     }
 
     fn cancelled<I: crate::dispatch::InFrame>(
@@ -435,20 +478,34 @@ mod typed_transport_cancellation {
             .is_pending());
         assert_eq!(control.input.lock().unwrap().unwrap().0, slot);
         assert_eq!(control.cancel_entries.load(Ordering::SeqCst), 0);
-        assert!(Arc::strong_count(loan) > 1, "Pending retains the original payload loan");
+        assert!(
+            Arc::strong_count(loan) > 1,
+            "Pending retains the original payload loan"
+        );
         drop(reply);
         until(|| control.cancel_entries.load(Ordering::SeqCst) == 1);
         assert_eq!(control.cancel_completions.load(Ordering::SeqCst), 0);
-        assert!(Arc::strong_count(loan) > 1, "CANCEL still borrows the original payload");
+        assert!(
+            Arc::strong_count(loan) > 1,
+            "CANCEL still borrows the original payload"
+        );
         drop(release);
         until(|| control.cancel_completions.load(Ordering::SeqCst) == 1);
         assert!(dispatcher.retirement_barrier(ticket, WAIT));
-        assert_eq!(Arc::strong_count(loan), 1, "only retirement releases dispatcher custody");
+        assert_eq!(
+            Arc::strong_count(loan),
+            1,
+            "only retirement releases dispatcher custody"
+        );
         let waking = crate::dispatch::ticket::Waking::of(plugin.inner.wake).unwrap();
         waking.wake(ticket);
         waking.wake(ticket);
         assert!(dispatcher.retirement_barrier(ticket, WAIT));
-        assert_eq!(control.calls.load(Ordering::SeqCst), 1, "late wakes never recall ADOPT or EMIT");
+        assert_eq!(
+            control.calls.load(Ordering::SeqCst),
+            1,
+            "late wakes never recall ADOPT or EMIT"
+        );
         assert_eq!(control.cancel_entries.load(Ordering::SeqCst), 1);
         assert_eq!(control.cancel_completions.load(Ordering::SeqCst), 1);
         dispatcher.recycle(ticket);
@@ -463,11 +520,26 @@ mod typed_transport_cancellation {
         input.side = transport::SIDE_ACCEPT;
         input.leftover = loan.as_ptr();
         input.leftover_len = loan.len();
-        let reply = with_context(Some(scope), || dispatcher.submit_lent(
-            &plugin, ticket, transport::slot::ADOPT, Frame::new(input, blank_out::<FramerOut>()),
-            DeadlineClass::Call, 0, loan.clone(),
-        ));
-        cancelled(&dispatcher, &plugin, &control, ticket, reply, &loan, transport::slot::ADOPT);
+        let reply = with_context(Some(scope), || {
+            dispatcher.submit_lent(
+                &plugin,
+                ticket,
+                transport::slot::ADOPT,
+                Frame::new(input, blank_out::<FramerOut>()),
+                DeadlineClass::Call,
+                0,
+                loan.clone(),
+            )
+        });
+        cancelled(
+            &dispatcher,
+            &plugin,
+            &control,
+            ticket,
+            reply,
+            &loan,
+            transport::slot::ADOPT,
+        );
         controls().lock().unwrap().remove(&instance);
     }
 
@@ -483,11 +555,26 @@ mod typed_transport_cancellation {
         input.len = loan.len();
         input.end_of_frame = 1;
         input.status = 101;
-        let reply = with_context(Some(scope), || dispatcher.submit_lent(
-            &plugin, ticket, transport::slot::EMIT, Frame::new(input, blank_out::<FramerOut>()),
-            DeadlineClass::Call, 0, loan.clone(),
-        ));
-        cancelled(&dispatcher, &plugin, &control, ticket, reply, &loan, transport::slot::EMIT);
+        let reply = with_context(Some(scope), || {
+            dispatcher.submit_lent(
+                &plugin,
+                ticket,
+                transport::slot::EMIT,
+                Frame::new(input, blank_out::<FramerOut>()),
+                DeadlineClass::Call,
+                0,
+                loan.clone(),
+            )
+        });
+        cancelled(
+            &dispatcher,
+            &plugin,
+            &control,
+            ticket,
+            reply,
+            &loan,
+            transport::slot::EMIT,
+        );
         controls().lock().unwrap().remove(&instance);
     }
 }
