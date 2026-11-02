@@ -467,22 +467,6 @@ async fn a_door_callback_hands_the_plugin_the_cookies_state_and_nonce() {
     );
 }
 
-#[tokio::test]
-async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
-    let door = DoorLogin::new(LoginOutcome::Identify(Principal::from_id("alice")));
-    let app = door_app(door.clone());
-    let resp = callback(
-        &app,
-        &cred_handle(&app),
-        Some(door_cookie().encode()),
-        "the-code".into(),
-        Some("FOREIGN".into()),
-    )
-    .await;
-    assert_eq!(resp.status().as_u16(), 400);
-    assert!(door.seen.lock().unwrap().is_empty());
-}
-
 #[test]
 fn a_door_callback_renders_each_answer_on_its_page() {
     for (outcome, status, heading) in [

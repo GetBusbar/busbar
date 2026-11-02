@@ -529,3 +529,24 @@ async fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     }
     handle.abort();
 }
+
+#[tokio::test]
+async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let (raw, _cookie) = start_cookie(&base).await;
+    let code = format!("foreign-state-{}", busbar_kernel::door::op_id().counter());
+    let response = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[("code", code.as_str()), ("state", "FOREIGN")])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    assert_eq!(
+        issuer::exchanges_for(&code),
+        0,
+        "the actual plugin makes no token exchange on a foreign state"
+    );
+    handle.abort();
+}
