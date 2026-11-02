@@ -145,23 +145,25 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store carries its statement");
-    let mut manifest = common::plugins::manifest(
-        "store",
-        store.name(),
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = common::plugins::manifest("store", store.name(), "third-party");
     manifest.statement = Some(hex::encode(statement));
     let directory = common::plugins::scratch(&format!("{}-store", provider.name));
     let library = std::fs::read(&library_path).expect("the actual Store image reads");
-    let archive =
-        common::plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    let archive = common::plugins::signed(&common::plugins::key(0x33), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("the actual signed Store is staged");
-    let store_plugins = busbar_kernel::config::PluginsCfg {
+    let mut store_plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
         ..Default::default()
     };
+    store_plugins
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(common::plugins::key(0x33).verifying_key().as_bytes()),
+        });
     let settings: serde_json::Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
@@ -201,12 +203,19 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
         .unwrap()
         .name;
     let directory = common::plugins::scratch(provider.name);
-    common::credentials::install_auth_plugin(&directory, &module, provider.name, true);
-    let plugins = busbar_kernel::config::PluginsCfg {
+    common::credentials::install_auth_plugin(&directory, &module, provider.name, false);
+    let mut plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
         ..Default::default()
     };
+    plugins
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(common::plugins::key(0x33).verifying_key().as_bytes()),
+        });
     let registry = busbar_kernel::plugins_preflight(
         None,
         None,
