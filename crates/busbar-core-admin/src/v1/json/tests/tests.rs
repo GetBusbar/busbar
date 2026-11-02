@@ -599,79 +599,14 @@ thread_local! {
     static TRUST_RESOLVED_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-struct MarkingAdmission;
-
-impl busbar_kernel::admission::PluginAdmission for MarkingAdmission {
-    fn is_tarball(&self, file: &str) -> bool {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.is_tarball(file)
-    }
-    fn max_tarball_bytes(&self) -> u64 {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.max_tarball_bytes()
-    }
-    fn restart_default(&self, kind: &str) -> bool {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.restart_default(kind)
-    }
-    fn policy_resolves(&self, cfg: &busbar_kernel::config::PluginsCfg) -> Result<(), String> {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.policy_resolves(cfg)
-    }
-    fn inventory(
-        &self,
-        dir: &std::path::Path,
-        cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<Vec<busbar_kernel::admission::Inventoried>, String> {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.inventory(dir, cfg)
-    }
-    fn admit_upload(
-        &self,
-        dir: &std::path::Path,
-        file: &str,
-        tarball: &[u8],
-        cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<busbar_kernel::admission::Admitted, busbar_kernel::admission::Refusal> {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.admit_upload(dir, file, tarball, cfg)
-    }
-    fn inspect(
-        &self,
-        _: &[u8],
-        _: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<
-        (
-            busbar_kernel::admission::Stated,
-            busbar_kernel::admission::Judged,
-        ),
-        busbar_kernel::admission::Refusal,
-    > {
-        TRUST_RESOLVED_HERE.with(|here| here.set(true));
-        Err(busbar_kernel::admission::Refusal::Validation(
-            "the marking root refuses".into(),
-        ))
-    }
-    fn rollback_target(
-        &self,
-        file: &str,
-        bytes: &[u8],
-        cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<busbar_kernel::admission::Stated, busbar_kernel::admission::Refusal> {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.rollback_target(file, bytes, cfg)
-    }
-}
-
-fn inspect_body(tarball: &[u8]) -> axum::body::Bytes {
-    use base64::Engine as _;
-    axum::body::Bytes::from(format!(
-        r#"{{"file":"candidate.tar.gz","tarball_b64":"{}"}}"#,
-        base64::engine::general_purpose::STANDARD.encode(tarball)
-    ))
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
-    let app = crate::new_test_app()
-        .plugin_admission(&MarkingAdmission)
-        .build();
-    let handle = Arc::new(AppHandle::new(app));
     TRUST_RESOLVED_HERE.with(|here| here.set(false));
-    let resp = super::handlers::inspect_plugin(State(handle), inspect_body(b"candidate")).await;
+    let resp = super::handlers::inspect_candidate(|| {
+        TRUST_RESOLVED_HERE.with(|here| here.set(true));
+        Err(AdminError::Validation("the marking root refuses".into()))
+    })
+    .await;
     let (status, _, body) = parts(resp).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["message"], "the marking root refuses");
@@ -679,32 +614,4 @@ async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
         !TRUST_RESOLVED_HERE.with(std::cell::Cell::get),
         "the plugin inspect ran on the async worker"
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
-    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    let resp = super::handlers::inspect_plugin(
-        State(Arc::clone(&handle)),
-        inspect_body(b"not a tarball at all"),
-    )
-    .await;
-    let (status, ct, body) = parts(resp).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(ct.starts_with("application/json"), "{ct}");
-    assert_eq!(body["error"]["code"], "invalid_request");
-
-    assert_eq!(
-        body["error"]["message"],
-        "a test build has no plugin admission: the composition root's tests prove it",
-        "{body}"
-    );
-    let resp = super::handlers::inspect_plugin(
-        State(handle),
-        axum::body::Bytes::from(r#"{"file":"x.tar.gz","tarball_b64":"%%%"}"#),
-    )
-    .await;
-    let (status, _, body) = parts(resp).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_request");
 }

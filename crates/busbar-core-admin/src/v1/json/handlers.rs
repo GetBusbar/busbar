@@ -230,7 +230,13 @@ pub(crate) async fn inspect_plugin(
     };
 
     let service = service(&handle);
-    match tokio::task::spawn_blocking(move || service.inspect_plugin(&tarball)).await {
+    inspect_candidate(move || service.inspect_plugin(&tarball)).await
+}
+
+pub(super) async fn inspect_candidate(
+    inspect: impl FnOnce() -> Result<serde_json::Value, AdminError> + Send + 'static,
+) -> Response {
+    match tokio::task::spawn_blocking(inspect).await {
         Ok(view) => respond(StatusCode::OK, view),
         Err(join_err) => {
             diag_error!(
