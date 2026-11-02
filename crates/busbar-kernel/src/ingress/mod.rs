@@ -410,8 +410,7 @@ pub mod arrival;
 
 pub mod byte_duplex;
 
-#[cfg(feature = "runtime")]
-pub mod duplex_ws;
+pub mod session;
 
 pub mod protocol;
 

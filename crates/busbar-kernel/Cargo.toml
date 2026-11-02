@@ -26,7 +26,7 @@ busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 libc = { workspace = true, optional = true }
 axum = { workspace = true }
 tower = { workspace = true }
-# No `net`: the kernel opens no socket; `test-support` adds it.
+# No `net`: the kernel opens no socket; its external dev-only kit enables socket tests.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -59,9 +59,6 @@ arc-swap = { workspace = true }
 httpdate = { workspace = true }
 
 [features]
-# Off by default so the shipped build carries no `axum/ws` edge.
-duplex-ws  = ["runtime"]
-runtime = ["axum/ws"]
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]
 # Never on in a normal build; dependents enable it from [dev-dependencies].
