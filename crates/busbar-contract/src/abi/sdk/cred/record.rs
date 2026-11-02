@@ -66,9 +66,9 @@ impl Drop for Scope {
 /// credential.
 pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Zeroizing<Vec<u8>>, serde_json::Error> {
     let _scope = Scope::open();
-    let mut out = Zeroizing::new(Vec::new());
-    serde_json::to_writer(&mut *out, value)?;
-    Ok(out)
+    let mut out = crate::abi::sdk::secret_bytes::SecretBytes::default();
+    serde_json::to_writer(&mut out, value)?;
+    Ok(out.into_zeroizing())
 }
 
 /// The field's serializer: the credential as a JSON string, inside [`to_vec`] only.

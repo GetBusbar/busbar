@@ -7,7 +7,9 @@
 //! Applied permits the next independent publication. Refused and Indeterminate permit neither.
 
 use crate::abi::mechanism::{extensions, ticket::Ticket};
+use crate::abi::sdk::secret_bytes::SecretBytes;
 use crate::abi::sdk::store::conditional::{Decision, Expected};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Host capability, present only with a supporting configured store.
 pub const CAPABILITY: &str = "busbar.plane.record-transaction/1";
@@ -138,6 +140,56 @@ pub struct Request {
     pub candidate: ConditionalCandidate,
 }
 
+impl Zeroize for RecordPredicate {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+        self.expected.zeroize();
+    }
+}
+impl Zeroize for RecordMutation {
+    fn zeroize(&mut self) {
+        match self {
+            Self::Put { key, value, .. } => {
+                key.zeroize();
+                value.zeroize();
+            }
+            Self::Delete { key, .. } => key.zeroize(),
+        }
+    }
+}
+impl Zeroize for ChainMutation {
+    fn zeroize(&mut self) {
+        match self {
+            Self::Check { scope, life, .. } | Self::Drop { scope, life, .. } => {
+                scope.zeroize();
+                life.zeroize();
+            }
+            Self::Append {
+                scope,
+                life,
+                content,
+                ..
+            } => {
+                scope.zeroize();
+                life.zeroize();
+                content.zeroize();
+            }
+        }
+    }
+}
+impl Zeroize for ConditionalCandidate {
+    fn zeroize(&mut self) {
+        self.predicates.zeroize();
+        self.mutations.zeroize();
+        self.chains.zeroize();
+    }
+}
+impl Zeroize for Request {
+    fn zeroize(&mut self) {
+        self.candidate.zeroize();
+    }
+}
+
 /// A read-only chain incarnation observation bound to the host's current operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
@@ -185,7 +237,30 @@ impl Observation {
     }
 }
 
-fn expected(out: &mut Vec<u8>, value: &Expected) -> Result<(), &'static str> {
+trait Encode {
+    fn extend_from_slice(&mut self, bytes: &[u8]);
+    fn push(&mut self, byte: u8);
+}
+
+impl Encode for Vec<u8> {
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        Vec::extend_from_slice(self, bytes);
+    }
+    fn push(&mut self, byte: u8) {
+        Vec::push(self, byte);
+    }
+}
+
+impl Encode for SecretBytes {
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        SecretBytes::extend_from_slice(self, bytes);
+    }
+    fn push(&mut self, byte: u8) {
+        SecretBytes::push(self, byte);
+    }
+}
+
+fn expected(out: &mut impl Encode, value: &Expected) -> Result<(), &'static str> {
     match value {
         Expected::Absent => out.push(0),
         Expected::Bytes(bytes) => {
@@ -196,7 +271,7 @@ fn expected(out: &mut Vec<u8>, value: &Expected) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn blob(out: &mut Vec<u8>, value: &[u8]) -> Result<(), &'static str> {
+fn blob(out: &mut impl Encode, value: &[u8]) -> Result<(), &'static str> {
     out.extend_from_slice(
         &u32::try_from(value.len())
             .map_err(|_| INVALID)?
@@ -205,11 +280,11 @@ fn blob(out: &mut Vec<u8>, value: &[u8]) -> Result<(), &'static str> {
     out.extend_from_slice(value);
     Ok(())
 }
-fn count(out: &mut Vec<u8>, n: usize) -> Result<(), &'static str> {
+fn count(out: &mut impl Encode, n: usize) -> Result<(), &'static str> {
     out.extend_from_slice(&u32::try_from(n).map_err(|_| INVALID)?.to_le_bytes());
     Ok(())
 }
-fn authority(out: &mut Vec<u8>, c: Capability) {
+fn authority(out: &mut impl Encode, c: Capability) {
     out.extend_from_slice(&1_u32.to_le_bytes());
     out.extend_from_slice(&c.ticket.slot.to_le_bytes());
     out.extend_from_slice(&c.ticket.generation.to_le_bytes());
@@ -366,8 +441,15 @@ pub fn read_capability(bytes: &[u8]) -> Result<Option<Capability>, &'static str>
     Ok(Some(c))
 }
 /// Encode one immutable pending candidate, bound to this crossing's capability.
+/// The returned allocation belongs to the caller; retain it under a wiping owner when its
+/// record bytes contain credentials. Private SDK uses keep that owner throughout encoding.
 pub fn encode_request(request: &Request) -> Result<Vec<u8>, &'static str> {
-    let mut out = Vec::new();
+    let mut bytes = encode_request_held(request)?;
+    Ok(std::mem::take(&mut *bytes))
+}
+
+pub(crate) fn encode_request_held(request: &Request) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    let mut out = SecretBytes::default();
     authority(&mut out, request.capability);
     let c = &request.candidate;
     if c.correlation == 0 {
@@ -434,9 +516,73 @@ pub fn encode_request(request: &Request) -> Result<Vec<u8>, &'static str> {
     if out.len() > crate::abi::mechanism::check::HARD_MAX_BYTES as usize {
         return Err(INVALID);
     }
-    Ok(extensions::encode(&[(INTENT, &out)]))
+    // Both the body and its envelope remain wiping owners. The final allocation is sized once;
+    // extension encoding through an ordinary growing Vec would retire unwiped body prefixes.
+    let mut encoded = SecretBytes::with_capacity(extensions::entry_len(INTENT, &out));
+    encoded.extend_from_slice(&(INTENT.len() as u16).to_le_bytes());
+    encoded.extend_from_slice(INTENT.as_bytes());
+    encoded.extend_from_slice(&u32::try_from(out.len()).map_err(|_| INVALID)?.to_le_bytes());
+    encoded.extend_from_slice(&out);
+    Ok(encoded.into_zeroizing())
+}
+
+fn request_digest(request: &Request) -> Result<[u8; 32], &'static str> {
+    let encoded = encode_request_held(request)?;
+    Ok(crate::abi::sdk::digest::sha256(&encoded))
+}
+
+fn held_bytes(bytes: Vec<u8>) -> Zeroizing<Vec<u8>> {
+    let bytes = Zeroizing::new(bytes);
+    #[cfg(test)]
+    crate::abi::sdk::secret_bytes::watch(&bytes);
+    bytes
+}
+
+struct HeldExpected(Expected);
+impl HeldExpected {
+    fn new(expected: Expected) -> Self {
+        #[cfg(test)]
+        if let Expected::Bytes(bytes) = &expected {
+            crate::abi::sdk::secret_bytes::watch(bytes);
+        }
+        Self(expected)
+    }
+    fn take(&mut self) -> Expected {
+        std::mem::replace(&mut self.0, Expected::Absent)
+    }
+}
+impl Drop for HeldExpected {
+    fn drop(&mut self) {
+        if let Expected::Bytes(bytes) = &mut self.0 {
+            bytes.zeroize();
+        }
+    }
+}
+
+// Only the decoder owns this guard. The public wire carriers retain their existing move/Drop
+// behavior; success transfers the complete Request to its caller without making another copy.
+struct Decoding(Request);
+impl Decoding {
+    fn take(mut self) -> Request {
+        let candidate = &mut self.0.candidate;
+        Request {
+            capability: self.0.capability,
+            candidate: ConditionalCandidate {
+                correlation: candidate.correlation,
+                predicates: std::mem::take(&mut candidate.predicates),
+                mutations: std::mem::take(&mut candidate.mutations),
+                chains: std::mem::take(&mut candidate.chains),
+            },
+        }
+    }
+}
+impl Drop for Decoding {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 /// Decode and own every candidate byte before returning the plugin's answer lease.
+/// A failed decode wipes all partial copies. Success transfers raw record custody to the caller.
 pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
     if bytes.len() > crate::abi::mechanism::check::HARD_MAX_BYTES as usize {
         return Err(INVALID);
@@ -450,64 +596,77 @@ pub fn read_request(bytes: &[u8]) -> Result<Option<Request>, &'static str> {
     if correlation == 0 {
         return Err(INVALID);
     }
-    let mut predicates = Vec::new();
+    let mut decoded = Decoding(Request {
+        capability,
+        candidate: ConditionalCandidate {
+            correlation,
+            predicates: Vec::new(),
+            mutations: Vec::new(),
+            chains: Vec::new(),
+        },
+    });
     for _ in 0..r.u32()? {
         let kind = r.u32()?;
-        let key = r.bytes()?;
-        let expected = match r.take(1)?[0] {
-            0 => Expected::Absent,
-            1 => Expected::Bytes(r.bytes()?),
+        let mut key = held_bytes(r.bytes()?);
+        let mut expected = HeldExpected::new(r.expected()?);
+        // Reserve before releasing the field guards: no fallible work remains during handoff.
+        decoded.0.candidate.predicates.reserve(1);
+        decoded.0.candidate.predicates.push(RecordPredicate {
+            kind,
+            key: std::mem::take(&mut *key),
+            expected: expected.take(),
+        });
+    }
+    for _ in 0..r.u32()? {
+        let tag = r.take(1)?[0];
+        let kind = r.u32()?;
+        let mut key = held_bytes(r.bytes()?);
+        let mut value = match tag {
+            0 => held_bytes(Vec::new()),
+            1 => held_bytes(r.bytes()?),
             _ => return Err(INVALID),
         };
-        predicates.push(RecordPredicate {
-            kind,
-            key,
-            expected,
-        });
-    }
-    let mut mutations = Vec::new();
-    for _ in 0..r.u32()? {
-        let tag = r.take(1)?[0];
-        let kind = r.u32()?;
-        let key = r.bytes()?;
-        mutations.push(match tag {
-            0 => RecordMutation::Delete { kind, key },
+        decoded.0.candidate.mutations.reserve(1);
+        decoded.0.candidate.mutations.push(match tag {
+            0 => RecordMutation::Delete {
+                kind,
+                key: std::mem::take(&mut *key),
+            },
             1 => RecordMutation::Put {
                 kind,
-                key,
-                value: r.bytes()?,
+                key: std::mem::take(&mut *key),
+                value: std::mem::take(&mut *value),
             },
-            _ => return Err(INVALID),
+            _ => unreachable!("the mutation tag was checked before handoff"),
         });
     }
-    let mut chains = Vec::new();
     for _ in 0..r.u32()? {
         let tag = r.take(1)?[0];
         let kind = r.u32()?;
-        let scope = r.bytes()?;
-        let life = r.expected()?;
-        chains.push(match tag {
+        let mut scope = held_bytes(r.bytes()?);
+        let mut life = HeldExpected::new(r.expected()?);
+        let mut content = match tag {
+            0 | 2 => held_bytes(Vec::new()),
+            1 => held_bytes(r.bytes()?),
+            _ => return Err(INVALID),
+        };
+        decoded.0.candidate.chains.reserve(1);
+        let scope = std::mem::take(&mut *scope);
+        let life = life.take();
+        decoded.0.candidate.chains.push(match tag {
             2 => ChainMutation::Check { kind, scope, life },
             0 => ChainMutation::Drop { kind, scope, life },
             1 => ChainMutation::Append {
                 kind,
                 scope,
                 life,
-                content: r.bytes()?,
+                content: std::mem::take(&mut *content),
             },
-            _ => return Err(INVALID),
+            _ => unreachable!("the chain tag was checked before handoff"),
         });
     }
     r.end()?;
-    Ok(Some(Request {
-        capability,
-        candidate: ConditionalCandidate {
-            correlation,
-            predicates,
-            mutations,
-            chains,
-        },
-    }))
+    Ok(Some(decoded.take()))
 }
 /// Encode a definitive result bound to its actual ticket and epoch.
 pub fn encode_result(
@@ -517,7 +676,7 @@ pub fn encode_result(
     let mut out = Vec::new();
     authority(&mut out, request.capability);
     out.extend_from_slice(&result.correlation.to_le_bytes());
-    out.extend_from_slice(&crate::abi::sdk::digest::sha256(&encode_request(request)?));
+    out.extend_from_slice(&request_digest(request)?);
     out.push(match result.decision {
         Ok(Decision::Applied) => 0,
         Ok(Decision::ConditionConflict) => 1,
@@ -543,7 +702,7 @@ pub fn read_result(
     if correlation != request.candidate.correlation {
         return Err(INVALID);
     }
-    if r.take(32)? != crate::abi::sdk::digest::sha256(&encode_request(request)?) {
+    if r.take(32)? != request_digest(request)? {
         return Err(INVALID);
     }
     let decision = match r.take(1)?[0] {
@@ -579,7 +738,7 @@ impl Settlement {
     pub fn matches(&self, request: &Request) -> Result<bool, &'static str> {
         Ok(self.capability == request.capability
             && self.result.correlation == request.candidate.correlation
-            && self.request_digest == crate::abi::sdk::digest::sha256(&encode_request(request)?))
+            && self.request_digest == request_digest(request)?)
     }
 }
 
@@ -598,7 +757,7 @@ impl SettlementAck {
     pub fn matches(&self, request: &Request) -> Result<bool, &'static str> {
         Ok(self.capability == request.capability
             && self.correlation == request.candidate.correlation
-            && self.request_digest == crate::abi::sdk::digest::sha256(&encode_request(request)?))
+            && self.request_digest == request_digest(request)?)
     }
 }
 
@@ -1190,15 +1349,14 @@ mod tests {
                 !observations.reentered,
                 "OS memory reader reentered the allocator"
             );
-            assert_eq!(
-                observations
-                    .payloads
-                    .iter()
-                    .map(|record| record.len)
-                    .collect::<Vec<_>>(),
-                expected_lengths,
-                "observe the original secret blob and every composed copy, including temporaries"
-            );
+            for len in expected_lengths {
+                assert!(
+                    observations.payloads.iter().any(|record| record.len == len),
+                    "observe the original secret blob and the final composed copy"
+                );
+            }
+            // Encoder growth and repeated/rejected candidate temporaries are registered too;
+            // every one of them must satisfy the same wipe-before-free proof below.
             for record in &observations.payloads {
                 assert!(record.freed, "secret allocation was not freed: {record:?}");
                 #[cfg(target_os = "linux")]
@@ -1226,3 +1384,7 @@ mod tests {
         eprintln!("Secret blobs and frees checked; memory proof requires Linux /proc/self/mem");
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/conditional_custody_tests.rs"]
+mod custody_tests;

@@ -8,7 +8,7 @@ use busbar_contract::abi::sdk::plane::conditional::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Exchange {
-    Commit(Request),
+    Commit(zeroize::Zeroizing<Request>),
     Observe(Observation),
 }
 impl Exchange {
@@ -167,7 +167,7 @@ impl ServiceStore {
         self.exchange_begin(
             std::ptr::from_ref(owner) as usize,
             unit,
-            Exchange::Commit(request.clone()),
+            Exchange::Commit(zeroize::Zeroizing::new(request.clone())),
             Some(owner),
         )
     }
@@ -223,7 +223,7 @@ impl ServiceStore {
         self.exchange_complete(
             caller,
             unit,
-            Exchange::Commit(request.clone()),
+            Exchange::Commit(zeroize::Zeroizing::new(request.clone())),
             receipt,
             matches!(
                 result.decision,
@@ -316,12 +316,15 @@ impl ServiceStore {
             .get(&request.capability.ticket)
             .and_then(|h| h.conditionals.get(&(caller, request.capability.epoch)))
             .is_some_and(|k| {
-                k.cancelled && matches!(&k.request, Exchange::Commit(held) if held == request)
+                k.cancelled && matches!(&k.request, Exchange::Commit(held) if &**held == request)
             })
     }
 
     /// One immutable outcome for this same instance; never a capability or a new submission.
-    pub(crate) fn settlement_input(&self, caller: usize) -> Option<(Request, Arc<[u8]>)> {
+    pub(crate) fn settlement_input(
+        &self,
+        caller: usize,
+    ) -> Option<(zeroize::Zeroizing<Request>, Arc<[u8]>)> {
         // The InstanceWake driver-selection lock serializes lending. Keep a lent receipt sticky
         // until ACK, then select the oldest existing epoch so new arrivals cannot starve it.
         for previously_lent in [true, false] {
@@ -394,6 +397,32 @@ impl ServiceStore {
         ack: &busbar_contract::abi::sdk::plane::conditional::SettlementAck,
         consume: bool,
     ) -> Result<bool, ()> {
+        // Hash the retained snapshot outside the shard lock. Its encoder and snapshot both
+        // carry wiping owners, and retiring either owner must not happen under a host lock.
+        let request = {
+            let map = self.lock(ack.capability.ticket);
+            let Some(h) = map.get(&ack.capability.ticket) else {
+                return Ok(false);
+            };
+            let Some(k) = h.conditionals.get(&(caller, ack.capability.epoch)) else {
+                return if h
+                    .conditionals
+                    .keys()
+                    .any(|(owner, epoch)| *owner != caller && *epoch == ack.capability.epoch)
+                {
+                    Err(())
+                } else {
+                    Ok(false)
+                };
+            };
+            let Exchange::Commit(request) = &k.request else {
+                return Err(());
+            };
+            request.clone()
+        };
+        if !ack.matches(&request).map_err(|_| ())? {
+            return Err(());
+        }
         let removed = {
             let mut map = self.lock(ack.capability.ticket);
             let Some(h) = map.get_mut(&ack.capability.ticket) else {
@@ -411,14 +440,14 @@ impl ServiceStore {
                 }
                 return Ok(false);
             };
-            let Exchange::Commit(request) = &k.request else {
+            let Exchange::Commit(current) = &k.request else {
                 return Err(());
             };
             if !k.cancelled
                 || k.finished
                 || !k.settlement_lent
                 || k.receipt.is_none()
-                || !ack.matches(request).map_err(|_| ())?
+                || **current != *request
             {
                 return Err(());
             }

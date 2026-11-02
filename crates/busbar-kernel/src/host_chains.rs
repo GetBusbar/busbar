@@ -496,6 +496,21 @@ pub(crate) struct ConditionalChain {
     pub action: ConditionalChainAction,
 }
 
+impl zeroize::Zeroize for ConditionalChainAction {
+    fn zeroize(&mut self) {
+        if let Self::Append(contents) = self {
+            zeroize::Zeroize::zeroize(contents);
+        }
+    }
+}
+impl zeroize::Zeroize for ConditionalChain {
+    fn zeroize(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.scope);
+        zeroize::Zeroize::zeroize(&mut self.life);
+        zeroize::Zeroize::zeroize(&mut self.action);
+    }
+}
+
 /// A prepared append advances the committed-position hint only after an Applied receipt.
 #[derive(Debug)]
 pub(crate) enum ConditionalPosition {

@@ -252,7 +252,7 @@ fn conflict_can_replan_but_unknown_cannot_and_cancel_retains_late_delivery() {
             complete(&route, Ok(Decision::Applied));
             assert_eq!(route.wakes.load(Ordering::SeqCst), 2);
             let (kept, _) = route.store.settlement_input(caller(wake)).unwrap();
-            assert_eq!(kept, next);
+            assert_eq!(*kept, next);
         }
     }
 }
@@ -274,7 +274,7 @@ fn stale_ticket_epoch_unit_and_instance_never_receive_another_result() {
     complete(&route, Ok(Decision::Applied));
     assert_eq!(route.wakes.load(Ordering::SeqCst), 1);
     let (kept, receipt) = route.store.settlement_input(caller(wake)).unwrap();
-    assert_eq!(kept, first);
+    assert_eq!(*kept, first);
     assert!(wire::read_result(&receipt, &next).is_err());
     assert_eq!(
         tick_answer(wake, &input, Some(7), &first, Outcome::Pending),

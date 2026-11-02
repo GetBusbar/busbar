@@ -15,8 +15,10 @@ use super::dedupe::{Body, Dedupe};
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::check::HARD_MAX_BYTES;
 use crate::abi::mechanism::extensions;
+use crate::abi::sdk::secret_bytes::SecretBytes;
 use crate::abi::store::OpId;
 use crate::bounded::MAX_RECORD_BYTES;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The request and result codec version.
 pub const VERSION: u32 = 1;
@@ -99,6 +101,46 @@ pub struct Request {
     pub predicates: Vec<Predicate>,
     /// Nonempty, disjoint mutation selectors; applied together with the dedupe receipt.
     pub mutations: Vec<Mutation>,
+}
+
+impl Zeroize for Expected {
+    fn zeroize(&mut self) {
+        if let Self::Bytes(bytes) = self {
+            bytes.zeroize();
+        }
+    }
+}
+impl Zeroize for Predicate {
+    fn zeroize(&mut self) {
+        self.schema.zeroize();
+        self.key.zeroize();
+        self.expected.zeroize();
+    }
+}
+impl Zeroize for Mutation {
+    fn zeroize(&mut self) {
+        match self {
+            Self::Put { schema, key, value } => {
+                schema.zeroize();
+                key.zeroize();
+                value.zeroize();
+            }
+            Self::Delete { schema, key } => {
+                schema.zeroize();
+                key.zeroize();
+            }
+            Self::DeleteRange { schema, prefix, .. } => {
+                schema.zeroize();
+                prefix.zeroize();
+            }
+        }
+    }
+}
+impl Zeroize for Request {
+    fn zeroize(&mut self) {
+        self.predicates.zeroize();
+        self.mutations.zeroize();
+    }
 }
 
 /// A definitive transaction decision, distinct from an operation-id body conflict.
@@ -205,8 +247,18 @@ impl Request {
     /// # Errors
     /// Invalid semantics or an encoding beyond the existing ABI byte bound.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
+        let mut encoded = self.encode_held()?;
+        Ok(std::mem::take(&mut *encoded))
+    }
+
+    /// Encode under wiping custody, including every allocation retired during growth. Retain
+    /// this owner for validation, hashing and adapter temporaries that do not transfer bytes.
+    ///
+    /// # Errors
+    /// The same semantic or byte-bound refusal as [`Self::encode`].
+    pub fn encode_held(&self) -> Result<Zeroizing<Vec<u8>>, &'static str> {
         self.validate()?;
-        let mut writer = Writer(Vec::new());
+        let mut writer = Writer(SecretBytes::default());
         writer.push(&self.version.to_le_bytes())?;
         writer.push(&self.op_id.0)?;
         writer.count(self.predicates.len())?;
@@ -245,7 +297,7 @@ impl Request {
         if extensions::entry_len(INTENT, &writer.0) as u64 > HARD_MAX_BYTES {
             return Err("record transaction exceeds ABI byte bound");
         }
-        Ok(writer.0)
+        Ok(writer.0.into_zeroizing())
     }
 
     /// Decode one complete request, refusing unknown versions and trailing or truncated bytes.
@@ -259,54 +311,80 @@ impl Request {
             return Err("unsupported record transaction version");
         }
         let op_id = OpId(reader.take(16)?.try_into().map_err(|_| WIRE)?);
-        let mut predicates = Vec::new();
+        let mut request = Zeroizing::new(Self {
+            version,
+            op_id,
+            predicates: Vec::new(),
+            mutations: Vec::new(),
+        });
         let count = reader.count()?;
         for _ in 0..count {
-            let schema = reader.text()?;
-            let key = reader.bytes()?.to_vec();
-            let expected = match reader.byte()? {
+            let mut schema = Zeroizing::new(reader.text()?);
+            #[cfg(test)]
+            crate::abi::sdk::secret_bytes::watch(schema.as_bytes());
+            let mut key = held_copy(reader.bytes()?);
+            let mut expected = Zeroizing::new(match reader.byte()? {
                 0 => Expected::Absent,
-                1 => Expected::Bytes(reader.bytes()?.to_vec()),
+                1 => {
+                    let mut bytes = held_copy(reader.bytes()?);
+                    Expected::Bytes(std::mem::take(&mut *bytes))
+                }
                 _ => return Err(WIRE),
-            };
-            predicates.push(Predicate {
-                schema,
-                key,
-                expected,
+            });
+            request.predicates.reserve(1);
+            request.predicates.push(Predicate {
+                schema: std::mem::take(&mut *schema),
+                key: std::mem::take(&mut *key),
+                expected: std::mem::replace(&mut *expected, Expected::Absent),
             });
         }
-        let mut mutations = Vec::new();
         let count = reader.count()?;
         for _ in 0..count {
             let tag = reader.byte()?;
-            let schema = reader.text()?;
-            let key = reader.bytes()?.to_vec();
-            mutations.push(match tag {
+            let mut schema = Zeroizing::new(reader.text()?);
+            #[cfg(test)]
+            crate::abi::sdk::secret_bytes::watch(schema.as_bytes());
+            let mut key = held_copy(reader.bytes()?);
+            let mut value = if tag == 0 {
+                held_copy(reader.bytes()?)
+            } else {
+                Zeroizing::new(Vec::new())
+            };
+            let exact_key_length = if tag == 2 {
+                u64::from_le_bytes(reader.take(8)?.try_into().map_err(|_| WIRE)?)
+            } else {
+                0
+            };
+            if tag > 2 {
+                return Err(WIRE);
+            }
+            request.mutations.reserve(1);
+            request.mutations.push(match tag {
                 0 => Mutation::Put {
-                    schema,
-                    key,
-                    value: reader.bytes()?.to_vec(),
+                    schema: std::mem::take(&mut *schema),
+                    key: std::mem::take(&mut *key),
+                    value: std::mem::take(&mut *value),
                 },
-                1 => Mutation::Delete { schema, key },
+                1 => Mutation::Delete {
+                    schema: std::mem::take(&mut *schema),
+                    key: std::mem::take(&mut *key),
+                },
                 2 => Mutation::DeleteRange {
-                    schema,
-                    prefix: key,
-                    exact_key_length: u64::from_le_bytes(
-                        reader.take(8)?.try_into().map_err(|_| WIRE)?,
-                    ),
+                    schema: std::mem::take(&mut *schema),
+                    prefix: std::mem::take(&mut *key),
+                    exact_key_length,
                 },
-                _ => return Err(WIRE),
+                _ => unreachable!("the mutation tag was checked before handoff"),
             });
         }
         reader.finish()?;
-        let request = Self {
+        request.validate()?;
+        Ok(Self {
             version,
             op_id,
-            predicates,
-            mutations,
-        };
-        request.validate()?;
-        Ok(request)
+            predicates: std::mem::take(&mut request.predicates),
+            mutations: std::mem::take(&mut request.mutations),
+        })
     }
 }
 
@@ -427,7 +505,14 @@ fn strict_entry<'a>(bytes: &'a [u8], wanted: &str) -> Result<Option<&'a [u8]>, &
     Ok(found)
 }
 
-struct Writer(Vec<u8>);
+fn held_copy(bytes: &[u8]) -> Zeroizing<Vec<u8>> {
+    let bytes = Zeroizing::new(bytes.to_vec());
+    #[cfg(test)]
+    crate::abi::sdk::secret_bytes::watch(&bytes);
+    bytes
+}
+
+struct Writer(SecretBytes);
 impl Writer {
     fn push(&mut self, bytes: &[u8]) -> Result<(), &'static str> {
         let len = self.0.len().checked_add(bytes.len()).ok_or(WIRE)?;
