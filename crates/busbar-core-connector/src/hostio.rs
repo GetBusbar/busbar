@@ -730,31 +730,39 @@ impl IoHost for HostIo {
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
-        {
+        let (held, cwd) = {
             let admitted = self.admitted.lock().unwrap_or_else(PoisonError::into_inner);
-            if admitted
-                .get(&ticket)
-                .is_some_and(|a| a.owner.is_some_and(|expected| expected != owner))
-            {
+            let admitted = admitted.get(&ticket).ok_or_else(|| {
+                IoRefusal::Refused("the host did not admit this for the op that asked".into())
+            })?;
+            if admitted.owner.is_some_and(|expected| expected != owner) {
                 return Err(IoRefusal::Refused(
                     "the program admission belongs to another supplier".into(),
                 ));
             }
-        }
-        // The admitted program's environment REFERENCES: never in the destination the carrier was
-        // handed (it carries the written values only), held since config time resolved them.
-        let mut held = None;
-        let mut cwd = None;
-        self.admits(ticket, |a| {
-            let admitted = matches!(a, Admission::Spawn(p, _) if p.command == spawn.program
-                && p.args.iter().map(String::as_str).eq(spawn.args.iter().copied())
-                && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()));
-            if let (true, Admission::Spawn(program, env)) = (admitted, a) {
-                held = Some(env.clone());
-                cwd.clone_from(&program.cwd);
+            match admitted.what.as_ref() {
+                Some(Admission::Spawn(program, env))
+                    if program.command == spawn.program
+                        && program
+                            .args
+                            .iter()
+                            .map(String::as_str)
+                            .eq(spawn.args.iter().copied())
+                        && program
+                            .env
+                            .iter()
+                            .map(|(k, v)| (k.as_str(), v.as_str()))
+                            .eq(spawn.env.iter().copied()) =>
+                {
+                    (env.clone(), program.cwd.clone())
+                }
+                _ => {
+                    return Err(IoRefusal::Refused(
+                        "the host did not admit this for the op that asked".into(),
+                    ))
+                }
             }
-            admitted
-        })?;
+        };
         if !std::path::Path::new(spawn.program).is_absolute() {
             return Err(IoRefusal::Refused(
                 "a program is spawned by its absolute path only".into(),
@@ -767,12 +775,10 @@ impl IoHost for HostIo {
         // (`crate::spawn_env`): the spawn loads them and resolves nothing, so no secret resolution
         // runs on the request a spawn serves. One that did not resolve at its last load or refresh
         // spawns nothing.
-        let held = held.map(|env| env.now());
-        let resolved = match held.as_deref().map(crate::spawn_env::Resolved::env) {
-            None => &[][..],
-            Some(Ok(env)) => env,
-            Some(Err(why)) => return Err(IoRefusal::Refused(why.to_owned())),
-        };
+        let held = held.now();
+        let resolved = held
+            .env()
+            .map_err(|why| IoRefusal::Refused(why.to_owned()))?;
         // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
         // The child's error output is the host's own (a spawned command inherits it).
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
