@@ -14,8 +14,8 @@ use busbar_contract::abi::sdk::auth_door::{
 };
 use busbar_contract::abi::sdk::door::statement;
 use std::ffi::c_void;
-use std::sync::atomic::AtomicUsize;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::{mpsc, Condvar, Mutex, OnceLock, PoisonError};
 
 const SUBJECT: &str = "short-pin-subject";
 const LABEL: &str = "verify short, re-called";
@@ -23,6 +23,16 @@ static SERIAL: Mutex<()> = Mutex::new(());
 static VERIFIES: AtomicUsize = AtomicUsize::new(0);
 static RELEASES: AtomicUsize = AtomicUsize::new(0);
 static JUDGMENTS: AtomicUsize = AtomicUsize::new(0);
+static RELEASE_GATE: Mutex<Option<Arc<ReleaseGate>>> = Mutex::new(None);
+static BARRIER_FROM_WORKER: Mutex<Option<Arc<Dispatcher>>> = Mutex::new(None);
+static SAME_WORKER_SEEN: AtomicBool = AtomicBool::new(false);
+static SAME_WORKER_REJECTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Default)]
+struct ReleaseGate {
+    state: Mutex<(bool, bool)>, // entered, released
+    changed: Condvar,
+}
 
 pub struct Probe;
 impl VerifyPlugin for Probe {
@@ -63,12 +73,42 @@ extern "C" fn retained_verify(
     out: *mut c_void,
 ) -> RawOutcome {
     VERIFIES.fetch_add(1, Ordering::SeqCst);
+    let same_worker = BARRIER_FROM_WORKER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    if let Some(dispatcher) = same_worker {
+        // SAFETY: this selected VERIFY's complete input remains borrowed for this wrapper.
+        let ticket = unsafe { (&*input.cast::<VerifyIn>()).head.ticket };
+        SAME_WORKER_SEEN.store(dispatcher.current_worker().is_some(), Ordering::SeqCst);
+        // A missing same-worker guard would block this real callback beyond the outer call's
+        // deadline. The healthy path rejects immediately, without a clock-threshold assertion.
+        SAME_WORKER_REJECTED.store(
+            !dispatcher.retirement_barrier(ticket, Duration::from_secs(60)),
+            Ordering::SeqCst,
+        );
+    }
     // SAFETY: this wrapper occupies VERIFY and forwards the original live SDK instance,
     // exclusive complete host frames and nested loans unchanged through its original slot.
     unsafe { real_ops().verify.unwrap()(instance, input, out) }
 }
 
 extern "C" fn release(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+    let gate = RELEASE_GATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    if let Some(gate) = gate {
+        let mut state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.0 = true;
+        gate.changed.notify_all();
+        // Bounded even if the observing test unwinds before releasing its gate.
+        drop(
+            gate.changed
+                .wait_timeout_while(state, Duration::from_secs(30), |state| !state.1)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
     RELEASES.fetch_add(1, Ordering::SeqCst);
     // SAFETY: the loader returns this real SDK lease to the same still-live instance, using
     // its exact initialized ReleaseIn/OutHead frames before they leave the crossing.
@@ -141,6 +181,8 @@ fn opened(static_reply: bool) -> (Arc<Dispatcher>, Plugin<Auth>, Presented) {
     VERIFIES.store(0, Ordering::SeqCst);
     RELEASES.store(0, Ordering::SeqCst);
     JUDGMENTS.store(0, Ordering::SeqCst);
+    SAME_WORKER_SEEN.store(false, Ordering::SeqCst);
+    SAME_WORKER_REJECTED.store(false, Ordering::SeqCst);
     let door: DoorFn = if static_reply {
         static_door
     } else {
@@ -286,4 +328,68 @@ fn an_unleased_static_short_reply_requires_its_explicit_storage_declaration() {
         }
         assert_eq!(close(&p).outcome, Outcome::Ready);
     }
+}
+
+#[test]
+fn submitted_short_fences_actual_release_and_rejects_same_worker_wait() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let (d, p, case) = opened(false);
+    let gate = Arc::new(ReleaseGate::default());
+    *RELEASE_GATE.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&gate));
+    *BARRIER_FROM_WORKER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&d));
+    let (finished, received) = mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let storage = ShortReply::of(&serde_json::json!({}));
+        let mut rec = Recorder::new(crossings(&p));
+        rec.line(LABEL, storage.crossings(), || {
+            verify_short_submitted(&p, &d, &case, storage)
+        });
+        let fold = rec.fold();
+        let _ = finished.send(());
+        (fold, p, d)
+    });
+    let state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
+    let (mut state, _) = gate
+        .changed
+        .wait_timeout_while(state, SUBMIT_WAIT, |state| !state.0)
+        .unwrap_or_else(PoisonError::into_inner);
+    let entered = state.0;
+    let returned_before_cleanup = received.recv_timeout(Duration::from_millis(100)).is_ok();
+    let during = counts();
+    // Unblock before any assertion, including on timeout, so no worker is stranded by failure.
+    state.1 = true;
+    drop(state);
+    gate.changed.notify_all();
+    let retired = RELEASE_GATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    drop(retired);
+    let retired = BARRIER_FROM_WORKER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    drop(retired);
+    let (fold, p, _d) = client.join().expect("the submitted SHORT caller completes");
+    assert!(entered, "the real deferred RELEASE reached its gate");
+    assert!(
+        !returned_before_cleanup,
+        "Done publication is not completed lease retirement"
+    );
+    assert_eq!(
+        during,
+        (2, 0, 1),
+        "no original RELEASE forwarded while gated"
+    );
+    assert!(SAME_WORKER_SEEN.load(Ordering::SeqCst));
+    assert!(SAME_WORKER_REJECTED.load(Ordering::SeqCst));
+    exact(&fold).unwrap();
+    assert_eq!(
+        fold[0].crossed, 3,
+        "the retirement barrier adds no plugin crossing"
+    );
+    assert_eq!(counts(), (2, 1, 1));
+    assert_eq!(close(&p).outcome, Outcome::Ready);
 }

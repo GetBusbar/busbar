@@ -609,6 +609,10 @@ fn verify_short_submitted(
         other => submitted_answer(&lend, &other),
     };
     d.recycle(ticket);
+    assert!(
+        d.retirement_barrier(ticket, SUBMIT_WAIT),
+        "the submitted SHORT decision's cleanup must retire before its step is measured"
+    );
     format!("short={short} {answer}")
 }
 
