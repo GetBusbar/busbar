@@ -1673,6 +1673,13 @@ fn auth_material_never_prints() {
     };
     let request = FieldsRequest {
         caller_credential: Some(b"caller-key".to_vec().into()),
+        body: Default::default(),
+        method: Default::default(),
+        authority: Default::default(),
+        path: Default::default(),
+        query: Default::default(),
+        headers: Default::default(),
+        extensions: Default::default(),
         ..FieldsRequest::default()
     };
     let printed = format!("{field:?} {request:?}");

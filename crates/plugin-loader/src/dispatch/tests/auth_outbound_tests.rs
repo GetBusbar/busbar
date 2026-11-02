@@ -388,6 +388,11 @@ fn request() -> FieldsRequest {
         authority: "far.example:443".into(),
         path: b"/v1/call".to_vec(),
         timestamp: 1_700_000_000,
+        body: Default::default(),
+        query: Default::default(),
+        headers: Default::default(),
+        caller_credential: Default::default(),
+        extensions: Default::default(),
         ..FieldsRequest::default()
     }
 }
@@ -462,15 +467,11 @@ fn a_short_fields_answer_is_recalled_once_with_what_it_needs() {
 #[test]
 fn a_refused_fields_is_refused_on_a_ticket_and_left_to_it_on_the_spot() {
     let a = opened();
-    let passthrough = FieldsRequest {
-        caller_credential: Some(b"caller-key".to_vec().into()),
-        ..request()
-    };
+    let mut passthrough = request();
+    passthrough.caller_credential = Some(b"caller-key".to_vec().into());
     assert_eq!(a.fields_now(1, &passthrough), None);
-    let passthrough = FieldsRequest {
-        caller_credential: Some(b"caller-key".to_vec().into()),
-        ..request()
-    };
+    let mut passthrough = request();
+    passthrough.caller_credential = Some(b"caller-key".to_vec().into());
     assert_eq!(
         futures_lite_block_on(a.fields(1, passthrough, 0)),
         Fields::Refused
@@ -495,10 +496,11 @@ fn the_body_is_lent_at_head_body_and_never_at_head() {
         .unwrap(),
         other => panic!("{other:?}"),
     };
-    let at = |point| FieldsRequest {
-        point,
-        body: Some(b"{\"a\":1}".to_vec()),
-        ..request()
+    let at = |point| {
+        let mut request = request();
+        request.point = point;
+        request.body = Some(b"{\"a\":1}".to_vec());
+        request
     };
     let head_body = format!("{POINT_HEAD_BODY} {{\"a\":1}}");
     let head = format!("{POINT_HEAD} -");
@@ -519,11 +521,9 @@ fn the_body_is_lent_at_head_body_and_never_at_head() {
         Some(head)
     );
     // An empty body at `HeadBody` is lent present and empty, never absent.
-    let empty = FieldsRequest {
-        point: AuthPoint::HeadBody,
-        body: Some(Vec::new()),
-        ..request()
-    };
+    let mut empty = request();
+    empty.point = AuthPoint::HeadBody;
+    empty.body = Some(Vec::new());
     assert_eq!(
         a.fields_now(3, &empty).map(signed),
         Some(format!("{POINT_HEAD_BODY} "))
@@ -546,16 +546,14 @@ fn the_extensions_blob_carries_the_per_call_scope_to_the_plugin() {
         .unwrap(),
         other => panic!("{other:?}"),
     };
-    let scoped = FieldsRequest {
-        extensions: busbar_contract::abi::mechanism::extensions::encode(&[
-            ("unknown", b"ignored"),
-            (
-                busbar_contract::abi::auth::EXT_SCOPE,
-                b"fs_read_file fs_write_file",
-            ),
-        ]),
-        ..request()
-    };
+    let mut scoped = request();
+    scoped.extensions = busbar_contract::abi::mechanism::extensions::encode(&[
+        ("unknown", b"ignored"),
+        (
+            busbar_contract::abi::auth::EXT_SCOPE,
+            b"fs_read_file fs_write_file",
+        ),
+    ]);
     assert_eq!(
         a.fields_now(4, &scoped).map(scope_of),
         Some("fs_read_file fs_write_file".to_string())

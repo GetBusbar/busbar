@@ -208,6 +208,7 @@ impl crate::services_double::ServicesDouble for Provider {
         self.saw(c, "trust.verify", &[payload, b"|", sigs].concat());
         Stored {
             bytes: cp.as_bytes().to_vec(),
+            spans: Vec::new(),
             ..Stored::ready(payload.len() as u64)
         }
     }
@@ -224,6 +225,7 @@ impl crate::services_double::ServicesDouble for Provider {
         self.saw(c, "ticket.mint", arg.as_bytes());
         Stored {
             bytes: format!("tk_{}", unit.unwrap_or(0)).into_bytes(),
+            spans: Vec::new(),
             ..Stored::ready(1_700_000_000 + ttl_secs)
         }
     }
@@ -234,6 +236,7 @@ impl crate::services_double::ServicesDouble for Provider {
         if unit == Some(7) {
             Stored {
                 bytes: b"rec".to_vec(),
+                spans: Vec::new(),
                 ..Stored::ready(svc::TICKET_TAKEN)
             }
         } else {
@@ -246,6 +249,7 @@ impl crate::services_double::ServicesDouble for Provider {
         let n = self.filled.fetch_add(1, Ordering::SeqCst) + 1;
         Stored {
             bytes: vec![n as u8; len as usize],
+            spans: Vec::new(),
             ..Stored::ready(0)
         }
     }
@@ -368,6 +372,7 @@ impl crate::services_double::ServicesDouble for Provider {
         self.saw(c, "hook.call", arg.as_bytes());
         Ran::Now(Stored {
             bytes: b"rw".to_vec(),
+            spans: Vec::new(),
             ..Stored::ready(1 + u64::from(ask.from))
         })
     }
