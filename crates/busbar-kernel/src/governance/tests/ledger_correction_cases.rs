@@ -622,7 +622,6 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
     let cm = model(&[]);
     let now = crate::store::now();
     let grant = first.try_admit(&cm, &key, "", now).unwrap();
-    let refund = grant.charge().clone();
     first.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
     metered(&first, &key.id, MODEL, INITIAL_INPUT, now);
     journal
@@ -699,6 +698,7 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
         "foreign staging performs no Store I/O"
     );
     assert_eq!(input(&store.get_usage(&key.id, 0).unwrap()), 0);
+    drop(grant);
     drop(first);
     journal
         .fail_after_write
@@ -733,14 +733,21 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
         gov.recovery_event(original.operation_id).unwrap().state,
         RecoveryState::LandedUnknown
     );
+    let fresh_grant = gov.try_admit(&cm, &key, "", now).unwrap();
     gov.record_usage(&cm, &key, "", MODEL, &toks(CONCURRENT_INPUT, 0), now);
-    gov.refund_charge(&refund);
+    gov.flush_budgets();
+    assert_eq!(
+        store.get_usage(&key.id, 0).unwrap().billable_requests,
+        2,
+        "the new runtime records its own positive fee while the old correction is quarantined"
+    );
+    gov.refund_charge(fresh_grant.charge());
     gov.flush_budgets();
     let fresh = store.get_usage(&key.id, 0).unwrap();
     assert_eq!(
         (input(&fresh), fresh.billable_requests),
-        (FOREIGN_INPUT + CONCURRENT_INPUT, 1),
-        "fresh positives post and the refund waits for the old positive's verdict"
+        (FOREIGN_INPUT + CONCURRENT_INPUT, 2),
+        "fresh positives post and their refund waits while the segment has quarantined positive custody"
     );
     let selected = gov.recovery_event(original.operation_id).unwrap();
     let resolution = RecoveryResolution {
@@ -768,7 +775,7 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
     let after = store.get_usage(&key.id, 0).unwrap();
     assert_eq!(
         (input(&after), after.requests, after.billable_requests),
-        (CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT, 2, 1)
+        (CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT, 3, 2)
     );
     assert_eq!(
         gov.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
