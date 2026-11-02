@@ -202,18 +202,11 @@ thread_local! {
     static FORCE_UNSUPERVISED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Scope-guard: forces `supervisor_detected()` to `false` for the duration of `f` on THIS thread
-/// only, restoring the prior value afterward even if `f` panics.
+/// Replace this thread's supervisor override, returning the prior value.
+/// The dev-only fixture owns its scope and restoration.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn with_forced_unsupervised<F, Fut, T>(f: F) -> T
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = T>,
-{
-    let prior = FORCE_UNSUPERVISED.with(|c| c.replace(true));
-    let result = f().await;
-    FORCE_UNSUPERVISED.with(|c| c.set(prior));
-    result
+pub fn swap_forced_unsupervised(forced: bool) -> bool {
+    FORCE_UNSUPERVISED.with(|value| value.replace(forced))
 }
 
 /// Whether a process supervisor will bring busbar back up.

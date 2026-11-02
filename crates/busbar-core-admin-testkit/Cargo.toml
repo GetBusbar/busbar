@@ -1,0 +1,20 @@
+[package]
+name = "busbar-core-admin-testkit"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "Dev-only fixtures for the admin service's real seams."
+license = "Apache-2.0"
+
+[lib]
+test = false
+
+[dependencies]
+busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
+schemars = { workspace = true, optional = true }
+serde_json = { workspace = true }
+
+[features]
+openapi-schema = ["dep:schemars", "busbar-core-admin/openapi-schema"]

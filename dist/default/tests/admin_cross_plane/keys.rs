@@ -1824,7 +1824,7 @@ async fn drive_admin_error_surface() {
         // race, not just a theoretical one -- these 3 rows close it. `can_restart()` is backed by a
         // `OnceLock` never populated in a test binary, so `confirm: true` deterministically reaches
         // the NotRestartable gate regardless of environment; `restart_no_supervisor` forces the
-        // unsupervised environment deterministically (see `restart::with_forced_unsupervised`'s doc
+        // unsupervised environment deterministically (see `busbar_core_admin_testkit::with_forced_unsupervised`'s doc
         // comment) rather than assuming the real env lacks the supervisor markers -- CI runners were
         // found to genuinely set INVOCATION_ID themselves, which broke that original assumption.
         (
@@ -2080,10 +2080,10 @@ async fn drive_admin_error_surface() {
             // `restart_no_supervisor` needs a deterministically-unsupervised environment to reach
             // the real NoSupervisor 409 through the real handler -- CI runners were found to
             // genuinely set INVOCATION_ID themselves, so the env alone can't be trusted. See
-            // `restart::with_forced_unsupervised`'s doc comment for why this is thread-local, not
+            // `busbar_core_admin_testkit::with_forced_unsupervised`'s doc comment for why this is thread-local, not
             // an env var.
             let resp = if *label == "restart_no_supervisor" {
-                crate::restart::with_forced_unsupervised(|| req.send()).await
+                busbar_core_admin_testkit::with_forced_unsupervised(|| req.send()).await
             } else {
                 req.send().await
             }

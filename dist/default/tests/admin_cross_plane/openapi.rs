@@ -158,7 +158,7 @@ fn openapi_plane_component_schemas_are_the_committed_ones() {
         .as_object()
         .expect("committed component schemas");
     let mut seen = 0usize;
-    for (plane, name, schema) in busbar_core_admin::test_support::plane_component_schemas() {
+    for (plane, name, schema) in busbar_core_admin_testkit::plane_component_schemas() {
         assert_eq!(
             committed.get(&name),
             Some(&schema),

@@ -7,6 +7,7 @@
 //! They get the handlers and documents the root's admin tests drive (`crates/busbar/tests/
 //! admin_cross_plane/`), which need a linked plane this crate's tests may not link.
 
+#[cfg(test)]
 use crate::v1::contract::taxonomy::MethodTag;
 #[cfg(test)]
 use crate::v1::contract::{taxonomy::ErrKind, AdminError};
@@ -14,7 +15,7 @@ use crate::v1::contract::{taxonomy::ErrKind, AdminError};
 // The lowercase OpenAPI operation key for this verb. Only called from #[cfg(test)] sites
 // (the taxonomy drift audit in json/mod.rs and admin/tests/tests.rs) — unlike `from_op_key`, never
 // from openapi_doc's own body — so it needs no feature alternative.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl MethodTag {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -96,39 +97,4 @@ pub fn openapi_json() -> String {
 #[cfg(feature = "openapi-schema")]
 pub fn openapi_doc() -> serde_json::Value {
     crate::v1::json::openapi_doc()
-}
-
-/// Every component schema a registered plane's `openapi_schemas` contributes, as
-/// `(plane key, schema name, schema)`, each plane folded over the two generators `openapi_doc` hands
-/// every contributor, configured as it configures them (the composition root's admin tests hold
-/// them to the committed document with the door planes registered).
-#[cfg(feature = "openapi-schema")]
-pub fn plane_component_schemas() -> Vec<(&'static str, String, serde_json::Value)> {
-    let generator = |serialize: bool| {
-        let settings = schemars::generate::SchemaSettings::draft2020_12().with(|s| {
-            s.definitions_path = "/components/schemas".into();
-            s.meta_schema = None;
-        });
-        if serialize {
-            settings.for_serialize().into_generator()
-        } else {
-            settings.for_deserialize().into_generator()
-        }
-    };
-    let mut out = Vec::new();
-    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
-        let Some(schemas) = decl.openapi_schemas else {
-            continue;
-        };
-        let (mut gen, mut req_gen) = (generator(true), generator(false));
-        let mut paths = match decl.openapi.map(|openapi| openapi(decl)) {
-            Some(serde_json::Value::Object(paths)) => paths,
-            _ => serde_json::Map::new(),
-        };
-        schemas(decl, &mut gen, &mut req_gen, &mut paths);
-        for (name, schema) in gen.definitions().iter().chain(req_gen.definitions()) {
-            out.push((decl.key, name.clone(), schema.clone()));
-        }
-    }
-    out
 }

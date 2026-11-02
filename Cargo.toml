@@ -6,6 +6,7 @@ members = [
     "crates/busbar",
     "crates/busbar-core-connector",
     "crates/busbar-core-admin",
+    "crates/busbar-core-admin-testkit",
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
     "crates/busbar-kernel",

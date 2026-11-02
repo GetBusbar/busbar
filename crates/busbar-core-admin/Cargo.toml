@@ -30,6 +30,8 @@ test-support = ["busbar-kernel/test-support"]
 openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
 
 [dev-dependencies]
+busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }
+busbar-core-admin-testkit = { path = "../busbar-core-admin-testkit" }
 http-body-util = { workspace = true }
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }

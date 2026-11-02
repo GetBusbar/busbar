@@ -351,9 +351,11 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-core-admin-testkit",
  "busbar-kernel",
  "busbar-kernel-egress",
  "busbar-kernel-seams",
+ "busbar-kernel-testkit",
  "flate2",
  "http-body-util",
  "reqwest",
@@ -364,6 +366,16 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "busbar-core-admin-testkit"
+version = "1.6.0"
+dependencies = [
+ "busbar-core-admin",
+ "busbar-kernel",
+ "schemars",
+ "serde_json",
 ]
 
 [[package]]

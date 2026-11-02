@@ -10439,13 +10439,14 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     );
 
     // No supervisor detected and no confirmation: refuse rather than risk leaving busbar down.
-    // Forced deterministically unsupervised (see `restart::with_forced_unsupervised`'s doc comment)
+    // Forced deterministically unsupervised (see `busbar_core_admin_testkit::with_forced_unsupervised`'s doc comment)
     // rather than gated on an env-var guess -- CI runners were found to genuinely set INVOCATION_ID
     // themselves, which silently skipped this whole assertion block under the old `if unsupervised`
     // env check.
-    let resp = crate::restart::with_forced_unsupervised(|| admin(client.post(&url)).send())
-        .await
-        .unwrap();
+    let resp =
+        busbar_core_admin_testkit::with_forced_unsupervised(|| admin(client.post(&url)).send())
+            .await
+            .unwrap();
     assert_eq!(
         resp.status().as_u16(),
         409,

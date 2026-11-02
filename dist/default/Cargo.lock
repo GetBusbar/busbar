@@ -416,6 +416,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-core-admin-testkit"
+version = "1.6.0"
+dependencies = [
+ "busbar-core-admin",
+ "busbar-kernel",
+ "schemars",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
@@ -483,6 +493,7 @@ dependencies = [
  "busbar-auth-webhook-signature",
  "busbar-contract",
  "busbar-core-admin",
+ "busbar-core-admin-testkit",
  "busbar-core-connector",
  "busbar-core-oauth2",
  "busbar-export-file",
