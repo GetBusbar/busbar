@@ -198,17 +198,23 @@ fn descriptor() -> WireOpenDesc {
 // ── THE RAW SLOTS ────────────────────────────────────────────────────────────────────────────────
 
 fn open_slot(ctx: ConnCtx, desc: &WireOpenDesc, out: *mut u64) -> Result<(), ConnError> {
-    (host_slots().open.unwrap())(ctx, NEED.0, desc, out).result()
+    // SAFETY: this private fixture keeps ctx/desc live; out is its exclusive initialized slot
+    // or NULL, which this host rejects before opening anything.
+    unsafe { (host_slots().open.unwrap())(ctx, NEED.0, desc, out) }.result()
 }
 
 fn write_slot(ctx: ConnCtx, conn: ConnId, out: *mut usize) -> Result<(), ConnError> {
     let bytes = b"x";
-    (host_slots().write.unwrap())(ctx, conn.0, bytes.as_ptr(), bytes.len(), 0, out).result()
+    // SAFETY: ctx stays live, bytes is immutable, and out is exclusive or intentionally NULL
+    // for this host's rejection path. The host validates numeric conn.
+    unsafe { (host_slots().write.unwrap())(ctx, conn.0, bytes.as_ptr(), bytes.len(), 0, out) }
+        .result()
 }
 
 fn wait_slot(ctx: ConnCtx, conn: ConnId, out: *mut usize) -> Result<(), ConnError> {
     let set = [conn.0];
-    (host_slots().wait.unwrap())(ctx, set.as_ptr(), set.len(), 0, out).result()
+    // SAFETY: ctx/set stay live; out is exclusive or NULL for this host's rejection path.
+    unsafe { (host_slots().wait.unwrap())(ctx, set.as_ptr(), set.len(), 0, out) }.result()
 }
 
 /// A piece slot holding a sentinel no success answer writes.
@@ -221,7 +227,10 @@ fn unwritten_piece() -> WirePiece {
 
 fn read_slot(ctx: ConnCtx, conn: ConnId, out: *mut WirePiece) -> Result<(), ConnError> {
     let mut buf = [0_u8; 1];
-    (host_slots().read.unwrap())(ctx, conn.0, 0, buf.as_mut_ptr(), buf.len(), out).result()
+    // SAFETY: ctx stays live and buf is exclusive; out is an initialized exclusive piece or
+    // NULL, rejected by this host before any backend operation.
+    unsafe { (host_slots().read.unwrap())(ctx, conn.0, 0, buf.as_mut_ptr(), buf.len(), out) }
+        .result()
 }
 
 /// A facts slot holding a sentinel no success answer writes.
@@ -233,11 +242,13 @@ fn unwritten_facts() -> WireConnFacts {
 }
 
 fn facts_slot(ctx: ConnCtx, conn: ConnId, out: *mut WireConnFacts) -> Result<(), ConnError> {
-    (host_slots().facts.unwrap())(ctx, conn.0, out).result()
+    // SAFETY: ctx stays live; out is initialized/exclusive or NULL for this host's rejection.
+    unsafe { (host_slots().facts.unwrap())(ctx, conn.0, out) }.result()
 }
 
 fn close_slot(ctx: ConnCtx, conn: ConnId) -> Result<(), ConnError> {
-    (host_slots().close.unwrap())(ctx, conn.0).result()
+    // SAFETY: this fixture keeps ctx live; the host validates numeric conn.
+    unsafe { (host_slots().close.unwrap())(ctx, conn.0) }.result()
 }
 
 // ── THE WITNESS (host's private table) ───────────────────────────────────────────────────────────
