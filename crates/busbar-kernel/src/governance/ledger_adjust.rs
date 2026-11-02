@@ -96,6 +96,8 @@ pub struct Adjustment<'a> {
 /// Why an adjustment was refused. Nothing was applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdjustRefused {
+    /// The corrected unit has not arrived.
+    FutureEpoch { at: u64, now: u64 },
     /// No key by that id.
     UnknownKey,
     /// The correction carries no non-zero delta.
@@ -146,6 +148,10 @@ pub enum AdjustRefused {
 impl std::fmt::Display for AdjustRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            AdjustRefused::FutureEpoch { at, now } => write!(
+                f,
+                "the corrected unit epoch {at} is later than the current instant {now}"
+            ),
             AdjustRefused::UnknownKey => f.write_str("no key by that id"),
             AdjustRefused::Empty => f.write_str("the adjustment moves no count"),
             AdjustRefused::NotMetered { day } => write!(
@@ -214,6 +220,9 @@ impl GovState {
         let _claim = self.correction_claims.claim(adj.key_id.to_string());
         if self.resume_usage_correction(adj)? {
             return Ok(Ok(()));
+        }
+        if let Err(refused) = check_epoch(adj.card_epoch_ms, crate::store::now_ms()) {
+            return Ok(Err(refused));
         }
         if !self.store.supports_usage_correction() {
             return Err(RecordStoreError("usage corrections unsupported".into()));
@@ -299,6 +308,30 @@ impl GovState {
             }
         }
         Ok(result)
+    }
+}
+
+fn check_epoch(at: u64, now: u64) -> Result<(), AdjustRefused> {
+    if at > now {
+        Err(AdjustRefused::FutureEpoch { at, now })
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod epoch_tests {
+    use super::*;
+
+    #[test]
+    fn arrival_comparison_preserves_millisecond_precision_and_equality() {
+        let now = 1_234_567;
+        assert_eq!(check_epoch(now - 1, now), Ok(()));
+        assert_eq!(check_epoch(now, now), Ok(()));
+        assert_eq!(
+            check_epoch(now + 1, now),
+            Err(AdjustRefused::FutureEpoch { at: now + 1, now })
+        );
     }
 }
 

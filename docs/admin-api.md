@@ -161,7 +161,7 @@ its counts x the card in effect at the unit's own time. The body names the key, 
 rate-card history `entry` the counts were priced with, and the unit's **`card_epoch_ms`** (its
 arrival instant): the correction lands where the unit was ledgered — in each budget window, card
 entry segment and metering day holding that instant — never in the window or card current when the
-correction is made. It fails closed: an epoch no card entry covers, an `entry` other than the one
+correction is made. It fails closed: a future arrival epoch, an epoch no card entry covers, an `entry` other than the one
 the unit's counts were dated with, a window that no longer holds the counts a downward delta moves,
 or a count taken below zero is refused `400 invalid_request` with a message saying why, and nothing
 is applied. The body also names the **`pool`** the unit was dispatched through, and it is

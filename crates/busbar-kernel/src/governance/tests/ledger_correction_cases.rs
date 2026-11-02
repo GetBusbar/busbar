@@ -303,9 +303,15 @@ fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
         let facts = || {
             (
                 store.get_usage(&key.id, 0).unwrap(),
-                store.get_usage(&super::super::era_bucket(&key.id), 0).unwrap(),
-                store.get_usage(super::super::ADJUST_UP_BUCKET, day).unwrap(),
-                store.get_usage(super::super::ADJUST_DOWN_BUCKET, day).unwrap(),
+                store
+                    .get_usage(&super::super::era_bucket(&key.id), 0)
+                    .unwrap(),
+                store
+                    .get_usage(super::super::ADJUST_UP_BUCKET, day)
+                    .unwrap(),
+                store
+                    .get_usage(super::super::ADJUST_DOWN_BUCKET, day)
+                    .unwrap(),
                 store.list_metering(day).unwrap(),
                 gov.usage_adjustments(day).unwrap(),
                 gov.usage_for(&cm, &key.id, now).unwrap(),
@@ -318,7 +324,10 @@ fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
             ..correction(&key, &delta, now)
         };
         let result = gov.adjust_usage(&cm, &adj).unwrap();
-        assert!(result.is_err(), "a future epoch must be refused: {result:?}");
+        assert!(
+            result.is_err(),
+            "a future epoch must be refused: {result:?}"
+        );
         assert_eq!(facts(), before, "no ledger or metering fact may change");
     }
 }
