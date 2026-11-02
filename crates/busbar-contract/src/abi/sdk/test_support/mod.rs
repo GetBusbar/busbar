@@ -12,23 +12,7 @@ mod sealed {
 
 #[cfg(any(test, feature = "test-seal"))]
 pub mod chip;
-mod pairs;
 pub mod sink;
-
-/// `t`, lent: what the test kit's fake host hands a door as its host tables.
-///
-/// # Safety
-/// Every pointer in `*t` is valid, as the kind's ABI states it, for `'a`.
-#[doc(hidden)]
-pub const unsafe fn lend<T>(t: &T) -> crate::abi::sdk::Lent<'_, T> {
-    // SAFETY: the caller's promise, as `Lent::new` states it.
-    unsafe { crate::abi::sdk::Lent::new(t) }
-}
-
-/// The pointer and length pairs (offsets of the pointer, of the length, and the element size) of
-/// every list the struct `t` lends, nested structs included: what a test-built `in` may set together.
-#[doc(hidden)]
-pub use pairs::lent_pairs;
 
 /// A REVIEWED ABI struct whose all-zero bit pattern is a valid value. Sealed: the implementors are
 pub trait AllZero: sealed::Sealed + Copy + 'static {}
