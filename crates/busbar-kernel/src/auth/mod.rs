@@ -744,7 +744,7 @@ pub struct AdminModule {
 
 impl AdminModule {
     /// An in-process module (a TEST stand-in, answered on the spot) as an external admin module.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn in_process(module: Box<dyn AuthModule>) -> Self {
         Self {
             calls: std::sync::Arc::new(stand_in::InProcessAuth::new(module)),
@@ -1062,7 +1062,7 @@ impl AuthMiddleware {
     /// the modules the test build's auth axis answers in process resolve). Panics on a plugin-name entry — a test that
     /// needs a real `kind: auth` plugin builds a registry and calls [`new`] directly. Keeps the
     /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
         let mut mw = Self::new(
             cfg,
@@ -3192,7 +3192,7 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
 /// LINKED rows' where the test binary links auth rows (a composition root's test links the real
 /// header auth, and reads only what it states), else the stand-in double's (a test binary that
 /// links no auth plugin at all).
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn test_inbound_style() -> Vec<HeaderName> {
     if crate::preflight::linked_auth_names().is_empty() {
         return header_names(&crate::test_support::outbound_auth::double_inbound_style());
@@ -3206,11 +3206,13 @@ fn test_inbound_style() -> Vec<HeaderName> {
 
 #[cfg(any(test, feature = "test-support"))]
 impl AuthMiddleware {
-    /// Build an `AuthMiddleware` directly over `chain`: each `(provider NAME, instance)` an instance
-    /// the auth axis opened on the memory ABI (a door: awaited on the request path). For a dependent
-    /// crate's test that opens a door over settings a chain entry's
-    /// `settings:` map cannot spell.
-    pub fn from_doors_for_test(chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>) -> Self {
+    /// Build a chain over already-opened calls and explicit carrier names. This behavioral
+    /// injector keeps the chain's private representation inside the kernel; the external testkit
+    /// owns all fixture selection, fallback styles, and stand-in implementations.
+    pub fn from_calls_for_test(
+        chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>,
+        carriers: &[&str],
+    ) -> Self {
         let chain = chain
             .into_iter()
             .map(|(provider, calls)| ChainEntry {
@@ -3223,9 +3225,20 @@ impl AuthMiddleware {
             keys_in_chain: false,
             chain,
             readers: Vec::new(),
-            carriers: test_inbound_style(),
+            carriers: carriers
+                .iter()
+                .filter_map(|word| HeaderName::from_bytes(word.as_bytes()).ok())
+                .collect(),
             issued: None,
         }
+    }
+
+    /// The kernel's own unit tests retain their local convenience; external suites use the kit.
+    #[cfg(test)]
+    pub fn from_doors_for_test(chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>) -> Self {
+        let carriers = test_inbound_style();
+        let names: Vec<&str> = carriers.iter().map(HeaderName::as_str).collect();
+        Self::from_calls_for_test(chain, &names)
     }
 
     /// TEST-ONLY: this chain naming `keys`, with `calls` as a host-held credentials' verifier that
@@ -3288,9 +3301,11 @@ pub mod exchange;
 /// `busbar-core-oauth2`'s, reached through [`login::seam`].
 pub mod login;
 
-/// TEST STAND-INS ONLY: an in-process module as a chain position.
-#[cfg(any(test, feature = "test-support"))]
-pub mod stand_in;
+// The adapter belongs to the external kernel testkit. Unit tests mount the same source privately;
+// no feature-enabled kernel library exports or links the fixture.
+#[cfg(test)]
+#[path = "../../../busbar-kernel-testkit/src/test_support/auth_stand_in.rs"]
+pub(crate) mod stand_in;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]
@@ -3305,3 +3320,7 @@ mod plugin_chain_tests;
 #[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
 mod acceptance_1_5_5_tests;
+
+#[cfg(test)]
+#[path = "tests/c7_injection_tests.rs"]
+mod c7_injection_tests;

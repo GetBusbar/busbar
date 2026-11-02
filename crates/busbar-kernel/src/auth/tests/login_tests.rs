@@ -426,3 +426,38 @@ async fn the_kernel_serves_no_hosted_login_page_of_its_own() {
     );
     handle.abort();
 }
+
+#[test]
+fn a_fixture_login_injection_keeps_the_previous_app_map_unchanged() {
+    let prior = crate::test_support::TestApp::new().build();
+    let mut next = (*prior).clone();
+    let calls: Arc<dyn AuthCalls> = Arc::new(OpenedLogin);
+    install_method(
+        &mut next,
+        "fixture-idp",
+        calls.clone(),
+        LoginKind::Redirect,
+        true,
+    );
+    assert!(login_method(&prior, "fixture-idp").is_none());
+    assert_eq!(
+        login_method(&next, "fixture-idp"),
+        Some(LoginMethodView {
+            name: "fixture-idp".to_string(),
+            has_button: true,
+            issuer: None,
+            login_kind: LoginKind::Redirect,
+        })
+    );
+    install_method(
+        &mut next,
+        "fixture-idp",
+        calls,
+        LoginKind::Credential,
+        false,
+    );
+    let changed = login_method(&next, "fixture-idp").unwrap();
+    assert_eq!(changed.login_kind, LoginKind::Credential);
+    assert!(!changed.has_button);
+    assert!(login_method(&prior, "fixture-idp").is_none());
+}

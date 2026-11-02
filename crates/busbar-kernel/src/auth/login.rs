@@ -38,6 +38,7 @@ use crate::state::{App, AppHandle};
 /// The plugin makes its own token exchange over its own declared need with the client secret the
 /// host lent it at `open`, and binds the IdP's answer to the login's nonce itself; the core holds no
 /// secret for it and runs no hop.
+#[derive(Clone)]
 pub(crate) struct LoginMethod {
     pub(crate) module: Arc<dyn AuthCalls>,
     pub(crate) inbound_style: Option<busbar_contract::auth_calls::InboundStyle>,
@@ -53,8 +54,32 @@ pub(crate) struct LoginMethod {
 
 /// The resolved hosted-login map — insertion-ordered (config order = button order), keyed by the
 /// method/module name. Built on boot AND reload in `build_app_from_config`.
+#[derive(Clone)]
 pub(crate) struct LoginMethods {
     pub(crate) methods: IndexMap<String, LoginMethod>,
+}
+
+/// Install one already-opened login method in an unpublished fixture App. The external testkit
+/// owns the fixture calls and their selected metadata; the kernel keeps the login map opaque.
+/// Copy-on-write preserves an App that already shares the previous method map.
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_method(
+    app: &mut App,
+    name: &str,
+    calls: Arc<dyn AuthCalls>,
+    login_kind: busbar_contract::auth::LoginKind,
+    has_button: bool,
+) {
+    Arc::make_mut(&mut app.login_methods).methods.insert(
+        name.to_string(),
+        LoginMethod {
+            module: calls,
+            inbound_style: None,
+            has_button,
+            issuer: None,
+            login_kind,
+        },
+    );
 }
 
 /// A configured provider belonging to one completed application candidate. Listener tables keep
