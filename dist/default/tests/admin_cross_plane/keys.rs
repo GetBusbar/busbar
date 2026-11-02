@@ -6,6 +6,7 @@ use busbar_kernel::plane_driver::serve::ServeTables;
 use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
+use busbar_kernel_testkit::test_support::TestOverlayStore;
 use std::sync::Arc;
 
 /// The governance posture a keys error case is exercised against.
@@ -188,15 +189,10 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let overlay = std::env::temp_dir().join(format!(
-        "busbar-apply-plane-fee-{}-{}.json",
-        std::process::id(),
-        busbar_kernel::store::now()
-    ));
-    let _ = std::fs::remove_file(&overlay);
+    let overlay = TestOverlayStore::new();
     let app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
 
     let section = "tools";
@@ -259,8 +255,6 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         "named as boot names it: {body}"
     );
     assert_eq!(fee(&handle), 7, "a refused apply changes nothing");
-
-    let _ = std::fs::remove_file(&overlay);
 }
 
 #[tokio::test]
@@ -585,7 +579,7 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
     assert!(
-        busbar_kernel::config::overlay::read(&overlay)
+        busbar_kernel::config::overlay::read(&overlay.backend())
             .expect("overlay written")
             .named_maps
             .get("export")
@@ -622,9 +616,9 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
     );
 
     assert!(
-        busbar_kernel::config::overlay::read(&overlay)
+        busbar_kernel::config::overlay::read(&overlay.backend())
             .is_none_or(|d| !d.named_maps.contains_key("export")),
-        "the overlay `export` section is cleared on disk"
+        "the overlay `export` section is cleared in the configured Store"
     );
 
     let idp = admin(client.get(format!(
@@ -1997,7 +1991,7 @@ async fn drive_plugin_rollback_errors() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let overlay = dir.join("overlay.yaml");
+    let overlay = TestOverlayStore::new();
 
     let tarball = admin_test_tarball("rollme", "rollme");
     let file = "rollme-1.0.0.tar.gz";
@@ -2008,7 +2002,7 @@ async fn drive_plugin_rollback_errors() {
         .governance(gov)
         .plugins_dir(dir.clone())
         .plugins_cfg(busbar_kernel::config::PluginsCfg::default())
-        .overlay_path(overlay)
+        .overlay_backend(overlay.backend())
         .build();
     let router = crate::build_router(app);
     let (addr, server, client) = spin_up(router).await;
@@ -2118,14 +2112,14 @@ async fn drive_plugin_inspect_errors() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let overlay = dir.join("overlay.yaml");
+    let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app()
         .governance(gov)
         .plugins_dir(dir.clone())
         .plugins_cfg(busbar_kernel::config::PluginsCfg::default())
-        .overlay_path(overlay)
+        .overlay_backend(overlay.backend())
         .build();
     let router = crate::build_router(app);
     let (addr, server, client) = spin_up(router).await;
@@ -2208,8 +2202,15 @@ fn rate_limit_doc_table_matches_classifier() {
         .filter_map(|v| crate::verb::verb_name(*v))
         .collect();
     let answered_by_loop = |rel: &str, method: MethodTag| {
+        let method = match method {
+            MethodTag::Get => "GET",
+            MethodTag::Post => "POST",
+            MethodTag::Put => "PUT",
+            MethodTag::Patch => "PATCH",
+            MethodTag::Delete => "DELETE",
+        };
         crate::admin_codec::verbs::resolve(
-            &method.as_str().to_uppercase(),
+            method,
             &format!("{}{rel}", busbar_core_admin::v1::contract::ADMIN_PREFIX),
         )
         .is_some_and(|row| loop_verbs.contains(row.verb))
@@ -2420,7 +2421,7 @@ async fn named_map_app(
     reference_corp_ad: bool,
 ) -> (
     std::path::PathBuf,
-    std::path::PathBuf,
+    TestOverlayStore,
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
@@ -2432,7 +2433,7 @@ async fn named_map_app_serving(
     tables: ServeTables,
 ) -> (
     std::path::PathBuf,
-    std::path::PathBuf,
+    TestOverlayStore,
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
@@ -2446,7 +2447,7 @@ async fn named_map_app_opts(
     tables: ServeTables,
 ) -> (
     std::path::PathBuf,
-    std::path::PathBuf,
+    TestOverlayStore,
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
@@ -2458,13 +2459,13 @@ async fn named_map_app_opts(
     let disk: serde_yaml::Value =
         serde_yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
 
-    let overlay = dir.join(busbar_kernel::config::overlay::DEFAULT_OVERLAY_FILENAME);
+    let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut builder = crate::new_test_app()
         .governance(gov)
         .serve_tables(tables)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .disk_paths(config_path, providers_path)
         .identity_provider(
             "base-idp",
@@ -2652,7 +2653,8 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
         );
         assert_eq!(after["module"], def["module"]);
 
-        let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay written");
+        let doc =
+            busbar_kernel::config::overlay::read(&overlay.backend()).expect("overlay written");
         assert_eq!(
             doc.named_maps[*section][&name], *def,
             "the overlay stores the definition VERBATIM"
@@ -3756,7 +3758,7 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
         404,
         "the rejected definition was never stored"
     );
-    if let Ok(bytes) = std::fs::read(&overlay) {
+    if let Some(bytes) = overlay.read_bytes() {
         let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(
             doc["named_maps"]["export"]["spare"].is_null(),
@@ -3800,8 +3802,7 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    std::fs::write(
-        &overlay,
+    overlay.seed_bytes(
         serde_json::json!({
             "version": 1,
             "named_maps": {
@@ -3811,9 +3812,9 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
                 }
             }
         })
-        .to_string(),
-    )
-    .unwrap();
+        .to_string()
+        .as_bytes(),
+    );
 
     let body: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/export")))
         .send()
