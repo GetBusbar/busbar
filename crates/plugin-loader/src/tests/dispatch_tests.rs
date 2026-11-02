@@ -1023,7 +1023,7 @@ fn red_an_open_reason_longer_than_the_buffer_lent_is_fault() {
 /// (`crate::dispatch_tests::c_abi!`): each spelling of its literal is a Law 0 hit (the scan reads
 /// it as a secret instance's id).
 macro_rules! c_abi {
-    ($($(#[$m:meta])* fn $name:ident($($arg:ident: $t:ty),* $(,)?) -> $ret:ty $body:block)*) => {
+    ($($(#[$m:meta])* fn $name:ident($($arg:tt: $t:ty),* $(,)?) -> $ret:ty $body:block)*) => {
         $($(#[$m])* extern "C" fn $name($($arg: $t),*) -> $ret $body)*
     };
 }
