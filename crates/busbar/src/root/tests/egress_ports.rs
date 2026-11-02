@@ -227,6 +227,7 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
             records: store.clone(),
             calls: Some(store),
         }),
+        false,
     )
     .expect("the product builds the timeout sealing application");
     limits.keep().expect("the serving limits commit");

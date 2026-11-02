@@ -981,7 +981,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
-        cfg.clone(),
+        cfg,
         Default::default(),
         None,
         Default::default(),
