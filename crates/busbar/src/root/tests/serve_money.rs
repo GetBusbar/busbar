@@ -1483,8 +1483,9 @@ async fn a_session_decode_refusal_uses_the_bound_live_facts() {
             .last()
             .expect("session audit")
             .what
-            .op_class,
-        live_kind
+            .op_class
+            .as_str(),
+        live_kind.as_str()
     );
     assert_eq!(g.post.open_units(), 0);
     assert_eq!(g.money.open_units(), 0);
