@@ -2972,6 +2972,11 @@ impl ListenerPlan {
             })
             .flatten()
         {
+            // `keys` is a kernel-owned position, evaluated by inbound::PositionKind::Keys.
+            // Keep it in the guest chain and its point set; it has no boxed plugin calls.
+            if name == busbar_kernel::config::KEYS_MODULE {
+                continue;
+            }
             let calls = app
                 .auth
                 .position_calls(name)

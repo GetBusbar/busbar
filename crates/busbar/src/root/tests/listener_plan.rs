@@ -959,3 +959,216 @@ async fn newly_opened_data_paths_are_physically_served_without_a_restart_report(
         b"served"
     );
 }
+
+/// The default data chain's keys position is implemented by the kernel, with no AuthCalls
+/// object. Listener preparation must preserve that position while collecting only plugin calls.
+#[tokio::test]
+async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
+    use busbar_contract::abi::auth::POINT_HEAD;
+    use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE, FLOW_STOP};
+    use busbar_contract::auth_calls::StripPlace;
+    use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
+    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_kernel::inbound::{Call, HandIn, Head, Inbound, Listener, Seals};
+    const PATH: &str = "/exports/private/secured";
+    const OWNER: u64 = 27;
+    const GENERATION: u64 = 1;
+    const FRAMING: u64 = 31;
+    let topology = topology();
+    let plan = plan(topology.clone());
+    let signer = TokenSigner::from_secret_bytes(&[37; 32], DEFAULT_KID);
+    let gov = Arc::new(
+        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer)).unwrap(),
+    );
+    let now = busbar_kernel::store::now();
+    let (key, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "listener-key".into(),
+                ..Default::default()
+            },
+            now + 3600,
+            now,
+        )
+        .unwrap();
+    let enforcing = busbar_kernel::test_support::TestApp::new()
+        .keys_chain()
+        .governance(gov.clone())
+        .build();
+    let mut candidate = app(
+        topology,
+        vec![route("private", PATH, RouteAuth::Key)],
+        GENERATION,
+    );
+    let state = Arc::get_mut(&mut candidate).unwrap();
+    state.auth = enforcing.auth.clone();
+    state.governance = Some(gov.clone());
+    assert!(candidate.auth.keys_in_chain);
+    assert!(candidate
+        .auth
+        .position_calls(busbar_kernel::config::KEYS_MODULE)
+        .is_none());
+    plan.check(&candidate)
+        .expect("kernel keys requires no opened plugin calls");
+    let guests = plan.guests(&candidate, PRIVATE_LISTENER).unwrap();
+    let Matched::Line(line) = guests.matched("GET", PATH, &[]) else {
+        panic!("protected route remains present");
+    };
+    assert!(matches!(&line.auth, LineAuth::Chain(names, points)
+        if names == &[busbar_kernel::config::KEYS_MODULE] && *points == AuthPoints::HEAD));
+    let auths = plan.auths(&candidate, &guests).unwrap();
+    assert!(
+        auths.is_empty(),
+        "the kernel position has no counterfeit auth plugin"
+    );
+    let mut missing = line.clone();
+    missing.auth = LineAuth::Chain(
+        vec![
+            busbar_kernel::config::KEYS_MODULE.into(),
+            "missing-auth-plugin".into(),
+        ],
+        AuthPoints::HEAD,
+    );
+    assert!(
+        plan.auths(&candidate, &GuestList::seal(vec![missing]).unwrap())
+            .err()
+            .expect("an unprovided plugin position still refuses preparation")
+            .contains("missing-auth-plugin"),
+        "only the kernel-owned position may lack plugin calls"
+    );
+
+    let next = Arc::new(std::sync::atomic::AtomicU64::new(100));
+    let inbound = Inbound::new(
+        Seals {
+            mint: Arc::new(move || next.fetch_add(1, std::sync::atomic::Ordering::SeqCst)),
+            mac: Arc::new(|tag| {
+                crate::root::loader::dispatch::auth_handle::mint_unit_ref(
+                    tag.secret,
+                    tag.generation,
+                    tag.owner,
+                    tag.line,
+                    tag.unit,
+                )
+                .map(|unit| unit.mac)
+            }),
+        },
+        Arc::new(|future| {
+            tokio::spawn(future);
+        }),
+        Arc::new(|_| {}),
+    );
+    let ids: Vec<_> = (1..=guests.lines().len() as u64).collect();
+    inbound
+        .install(
+            OWNER,
+            GENERATION,
+            Listener {
+                guests,
+                auths,
+                body_limit: 1024,
+                app: candidate,
+                door_refusals: Vec::new(),
+                ids,
+                signed_ingress: Arc::new(|_, _| false),
+                scope: None,
+            },
+        )
+        .unwrap();
+    inbound
+        .framing_started(OWNER, 0, FRAMING, GENERATION)
+        .unwrap();
+    let specs = inbound.specs(OWNER, GENERATION).unwrap();
+    let line = specs.iter().find(|spec| spec.points == POINT_HEAD).unwrap();
+    for (index, (credential, accepted, disabled)) in [
+        (None, false, false),
+        (Some("not-a-valid-key"), false, false),
+        (Some(token.as_str()), true, false),
+        (Some(token.as_str()), false, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if disabled {
+            gov.update_key(&key.id, Some(false), None).unwrap().unwrap();
+        }
+        let stream = index as u64 + 1;
+        inbound
+            .grant_stream(OWNER, FRAMING, stream, GENERATION)
+            .unwrap();
+        let head = Head {
+            method: "GET".into(),
+            target: PATH.into(),
+            authority: "listener.test".into(),
+            query: None,
+            fields: credential
+                .map(|token| {
+                    vec![(
+                        "authorization".into(),
+                        format!("Bearer {token}").into_bytes(),
+                    )]
+                })
+                .unwrap_or_default(),
+        };
+        let (done, waited) = tokio::sync::oneshot::channel();
+        let answered = inbound.auth_call(
+            Call {
+                owner: OWNER,
+                generation: GENERATION,
+                auth: line.auth,
+                unit: UnitRef::NONE,
+                point: POINT_HEAD,
+                conn: FRAMING,
+                stream,
+                framing: FRAMING,
+                head: head.clone(),
+                body: None,
+                deadline: None,
+            },
+            Box::new(move |answer| {
+                let _ = done.send(answer);
+            }),
+        );
+        let answer = match answered {
+            Some(answer) => answer,
+            None => waited.await.unwrap(),
+        }
+        .unwrap();
+        assert_eq!(
+            answer.flow,
+            if accepted { FLOW_CONTINUE } else { FLOW_STOP }
+        );
+        let mut sanitized = head;
+        sanitized.fields.retain(|(name, _)| {
+            !answer.strips.iter().any(|strip| {
+                strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
+            })
+        });
+        let handed = inbound
+            .hand_in(HandIn {
+                owner: OWNER,
+                generation: GENERATION,
+                auth: line.auth,
+                unit: answer.unit,
+                line: line.line,
+                conn: FRAMING,
+                stream,
+                framing: Some(FRAMING),
+                head: sanitized.clone(),
+            })
+            .unwrap();
+        assert_eq!(handed.0, if accepted { FLOW_CONTINUE } else { FLOW_STOP });
+        if accepted {
+            let identified = inbound.admitted(answer.unit.id).unwrap();
+            assert_eq!(identified.resolved.unwrap().id, key.id);
+            assert!(inbound
+                .claim_request(OWNER, FRAMING, stream, &sanitized)
+                .is_ok());
+        } else {
+            assert!(inbound
+                .claim_request(OWNER, FRAMING, stream, &sanitized)
+                .is_err());
+        }
+        inbound.stream_ended(OWNER, FRAMING, stream);
+    }
+    inbound.framing_ended(FRAMING);
+}
