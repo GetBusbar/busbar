@@ -125,6 +125,11 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
         ChainVerdict::Denied,
         "no credential at all must be denied by a configured chain"
     );
+    assert_eq!(
+        mw.run_chain(Some("not-a-grp")),
+        ChainVerdict::Denied,
+        "the old unrecognized admin credential is refused by the real OIDC product"
+    );
     assert!(!mw.validate_token(Some("tok3")));
     assert!(!mw.validate_token(None));
     assert!(!mw.validate_token(Some("")));
@@ -327,4 +332,68 @@ fn a_keys_only_chain_is_not_an_open_front_door() {
     )
     .expect("the real auth chain constructs");
     assert!(!both.is_open(), "a boxed module closes the door regardless");
+}
+
+#[test]
+fn a_verified_oidc_role_is_bound_under_the_provider_name() {
+    crate::dist_root_install::install();
+    let artifact = common::plugins::token_verifier_cdylib_path()
+        .expect("the freshly built actual OIDC product is required");
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
+        .expect("the actual OIDC statement reads")
+        .expect("the actual OIDC product exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual OIDC statement is valid")
+        .name;
+    let directory = common::plugins::scratch(
+        "auth-ordinary-chain-a_verified_oidc_role_is_bound_under_the_provider_name",
+    );
+    common::credentials::install_auth_plugin(&directory, &module, "idp", true);
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let registry = busbar_kernel::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("the actual root admits the signed OIDC product");
+    let mut provider = busbar_kernel::config::AuthChainEntry::bare(module);
+    provider.name = "idp".to_string();
+    provider.settings = common::credentials::settings(AUDIENCE);
+    let cfg = busbar_kernel::config::AuthCfg {
+        chain: vec![provider],
+        ..busbar_kernel::config::AuthCfg::default_none()
+    };
+    let mw = AuthMiddleware::new(
+        &cfg,
+        &registry,
+        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("the actual named provider constructs");
+    match mw.run_chain(Some(&common::credentials::token_for(
+        "alice",
+        &["platform"],
+        AUDIENCE,
+    ))) {
+        ChainVerdict::Identified {
+            module, principal, ..
+        } => {
+            assert_eq!(module, "idp");
+            assert_eq!(principal.id, "oidc:alice");
+            assert_eq!(principal.roles, vec!["platform".to_string()]);
+        }
+        other => panic!("expected Identified, got {other:?}"),
+    }
+    assert!(mw.validate_token(Some(&common::credentials::token_for(
+        "alice",
+        &["platform"],
+        AUDIENCE
+    ))));
+    assert!(!mw.is_open());
 }

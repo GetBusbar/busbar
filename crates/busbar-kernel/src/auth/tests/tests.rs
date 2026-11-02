@@ -1088,54 +1088,47 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     server.shutdown().await;
 }
 
-/// The module `max_admin_scope` ceiling (App.auth_scope_caps) still caps what role_bindings
-/// grant, exercised through `dry_run_admin_scope` (the same chain -> bindings -> cap pipeline
-/// the admin middleware runs):
-///   - an external module DEFAULTS to a read-only ceiling, so a full binding is capped;
-///   - an explicit `max_admin_scope: full` cap lifts the ceiling;
-///   - module scoping holds through the full stack: a binding under another module's table
-///     earns the identified principal nothing;
-///   - a credential no module identifies is denied outright.
+/// Internal policy continuation: real callers supply their verified principal and configured
+/// bindings/caps to these same production functions. Real OIDC refusal is covered separately in
+/// the root's test_nonempty_chain_fails_closed_on_all_pass, including the old not-a-grp input.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    let mk_app = |cap: Option<&str>, bind_module: &str| {
-        let mut app = crate::test_support::TestApp::new().build();
-        let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-        a.admin_chain = vec!["test-scope-module".to_string()];
-        a.role_bindings = bindings_for(bind_module, &[("ops", binding(None, None, Some("full")))]);
-        if let Some(c) = cap {
-            a.auth_scope_caps
-                .insert("test-scope-module".to_string(), c.to_string());
-        }
-        app
+    let operator = Operator::new("operator-provider");
+    let principal = grp_principal("test:ops", &["ops"]);
+    let module = "test-scope-module";
+    let granted = |configured: Option<&str>, bind_module: &str| {
+        let bindings = bindings_for(bind_module, &[("ops", binding(None, None, Some("full")))]);
+        let caps = configured
+            .map(|cap| (module.to_string(), cap.to_string()))
+            .into_iter()
+            .collect();
+        cap_admin_scope(
+            admin_scope_from_bindings(
+                &bindings,
+                &operator,
+                "operator:local",
+                Some(module),
+                Some(&principal),
+            ),
+            module_scope_cap(&caps, &operator, module),
+        )
     };
 
-    let app = mk_app(None, "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
+        granted(None, module),
         Grants::of(Scope::ReadOnly),
         "an external module without an explicit cap must be ceilinged to read-only"
     );
-
-    let app = mk_app(Some("full"), "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
+        granted(Some("full"), module),
         Grants::of(Scope::Full),
         "an explicit full cap must let the full binding through"
     );
-
-    let app = mk_app(Some("full"), "other-module");
-    assert!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)) == Grants::default(),
+    assert_eq!(
+        granted(Some("full"), "other-module"),
+        Grants::default(),
         "a binding under another module's table must grant nothing"
-    );
-
-    let app = mk_app(Some("full"), "test-scope-module");
-    assert!(
-        dry_run_admin_scope(&app, &admin_headers(Some("not-a-grp"), None)) == Grants::default()
     );
 }
 
