@@ -36,7 +36,7 @@ fn mint() -> OpId {
     )
 }
 
-fn open_frame(settings: &'static [u8]) -> Frame<OpenIn, OpenOut> {
+fn open_frame(settings: &[u8]) -> Frame<OpenIn, OpenOut> {
     Frame::new(
         OpenIn {
             head: in_head(),
@@ -70,10 +70,7 @@ fn lifecycle_on_permanent_workers_open_and_close_from_a_throwaway_thread() {
             let row = LinkedRow::of(actual_store::door).expect("the store states its Statement");
             let plugin = load_linked::<Store>(&row, bind(&d)).expect("the door loads");
             let opened = plugin
-                .call(
-                    slot::OPEN,
-                    &mut open_frame(Box::leak(actual_store::settings().into_boxed_slice())),
-                )
+                .call(slot::OPEN, &mut open_frame(&actual_store::settings()))
                 .outcome;
             let mut c: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
             let closed = plugin.call(slot::CLOSE, &mut c).outcome;
