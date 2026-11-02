@@ -15,3 +15,7 @@ path = "src/lib.rs"
 busbar-contract = { path = "../busbar-contract" }
 hex = { workspace = true }
 ring = { workspace = true }
+
+[features]
+# Exposes only explicit metadata injection; fixture values and auth rows remain caller-owned.
+test-support = []

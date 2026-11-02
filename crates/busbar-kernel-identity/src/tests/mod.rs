@@ -8,6 +8,7 @@ mod chain_tests;
 mod hardening;
 mod invariants;
 mod operator_tests;
+mod operator_words_tests;
 
 use crate::chain::{ChainEntry, ResolvedKey};
 use crate::module::{AuthModule, AuthOutcome};

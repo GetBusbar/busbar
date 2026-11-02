@@ -51,6 +51,18 @@ pub fn install_linked(rows: &'static [LinkedAuth], words: OperatorWords) {
     let _ = LINKED.set((rows, words));
 }
 
+// Metadata supplied by a test's composition root is separate from its linked auth rows: knowing
+// the operator vocabulary does not mean a verifier for it was installed.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_WORDS: std::sync::OnceLock<OperatorWords> = std::sync::OnceLock::new();
+
+/// Supply operator metadata without linking any auth row. The first metadata hand-in stands;
+/// an actual [`install_linked`] hand-in always takes precedence. Fixture values remain caller-owned.
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_test_words(words: OperatorWords) {
+    let _ = TEST_WORDS.set(words);
+}
+
 /// This build's linked auth rows, in registration order.
 pub fn linked() -> &'static [LinkedAuth] {
     LINKED.get().map(|l| l.0).unwrap_or_default()
@@ -67,9 +79,17 @@ pub fn principal_id() -> &'static str {
     words().principal_id
 }
 
-/// The operator credential's words: the ones a root (or a test binary) handed in, else empty.
+/// The operator credential's words: a linked root's hand-in takes precedence over explicit test
+/// metadata. Without either hand-in, the words are empty.
 pub fn words() -> OperatorWords {
-    LINKED.get().map_or_else(OperatorWords::default, |l| l.1)
+    if let Some((_, words)) = LINKED.get() {
+        return *words;
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(words) = TEST_WORDS.get() {
+        return *words;
+    }
+    OperatorWords::default()
 }
 
 /// The names of this build's linked auth rows, in registration order.
