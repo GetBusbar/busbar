@@ -27,7 +27,7 @@ pub struct Linked {
 
     #[cfg(test)]
     pub protocols:
-        &'static [&'static [&'static busbar_kernel::ingress::protocols::ProtocolDecl]],
+        &'static [&'static [&'static busbar_kernel_testkit::ingress::protocols::ProtocolDecl]],
 
     pub protocol_seams: &'static [fn()],
 
@@ -285,7 +285,7 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
             .iter()
             .flat_map(|decls| decls.iter().copied())
             .collect();
-        busbar_kernel::ingress::protocols::install_protocols(installed);
+        busbar_kernel_testkit::ingress::protocols::install_protocols(installed);
     }
     for install in linked.protocol_seams {
         install();

@@ -1,8 +1,10 @@
 use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::protocol::ProtocolDecl;
-use busbar_kernel::ingress::protocols::streaming_content_types as event_content_types;
-use busbar_kernel::ingress::protocols::{detect_protocol, residual_dialect_for_path, Registry};
+use busbar_kernel_testkit::ingress::protocols::streaming_content_types as event_content_types;
+use busbar_kernel_testkit::ingress::protocols::{
+    detect_protocol, residual_dialect_for_path, Registry,
+};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::sync::LazyLock;
@@ -54,14 +56,14 @@ fn headers(v: &Value) -> HeaderMap {
 }
 
 fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
-    busbar_kernel::ingress::protocols::decl_for(proto).and_then(|d| d.handler)
+    busbar_kernel_testkit::ingress::protocols::decl_for(proto).and_then(|d| d.handler)
 }
 
 #[test]
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
     registered();
     assert_eq!(
-        busbar_kernel::ingress::protocols::known_protocols(),
+        busbar_kernel_testkit::ingress::protocols::known_protocols(),
         strs(&FIXTURE["protocol_order"]).as_slice(),
         "the protocol name set AND ITS ORDER are operator-visible: the order indexes telemetry's \
          metric families and the set is what the config validator accepts"
@@ -72,7 +74,7 @@ fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
 fn the_derived_protocol_list_is_not_empty() {
     registered();
     assert!(
-        !busbar_kernel::ingress::protocols::known_protocols().is_empty(),
+        !busbar_kernel_testkit::ingress::protocols::known_protocols().is_empty(),
         "the codec-protocol list is derived from the declarations; an empty one means the built-in \
          table stopped being read, and every operator config would be refused with no cause named"
     );
@@ -87,7 +89,7 @@ fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
         "the absorbed event-stream content types"
     );
     assert_eq!(
-        busbar_kernel::ingress::protocols::array_stream_shim_keys(),
+        busbar_kernel_testkit::ingress::protocols::array_stream_shim_keys(),
         strs(&FIXTURE["array_stream_shim_keys"]).as_slice(),
         "absorbed proto::array_stream_shim_keys()"
     );
@@ -160,7 +162,7 @@ fn every_declared_verb_has_a_serving_handler() {
 fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
     registered();
     assert!(
-        !busbar_kernel::ingress::protocols::known_protocols().is_empty(),
+        !busbar_kernel_testkit::ingress::protocols::known_protocols().is_empty(),
         "the exclusion below is asserted against a NON-EMPTY codec fold"
     );
     let codec_less: Vec<&'static ProtocolDecl> = linked_decls()
@@ -168,11 +170,12 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
         .filter(|d| d.codec.is_none())
         .collect();
     for decl in codec_less {
-        let d = busbar_kernel::ingress::protocols::decl_for(decl.name).expect("it declares itself");
+        let d = busbar_kernel_testkit::ingress::protocols::decl_for(decl.name)
+            .expect("it declares itself");
         assert!(d.codec.is_none());
         assert!(d.handler.is_some(), "{} serves operations", d.name);
         assert!(
-            !busbar_kernel::ingress::protocols::known_protocols().contains(&d.name),
+            !busbar_kernel_testkit::ingress::protocols::known_protocols().contains(&d.name),
             "a provider lane cannot name {}, which has no wire codec",
             d.name
         );
