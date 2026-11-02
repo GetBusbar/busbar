@@ -1938,10 +1938,11 @@ impl GovState {
             }
         }
 
+        let foreign_settled = self.capture_foreign_settled_snapshot();
         for mut map in self.budget.write_all() {
             for (id, cell) in map.iter_mut() {
                 if cell.dirty {
-                    let _ = self.capture_budget_flushes(id, cell);
+                    let _ = self.capture_budget_flushes(id, cell, &foreign_settled);
                 }
             }
         }
@@ -1972,7 +1973,7 @@ impl GovState {
                     continue;
                 }
 
-                new_flights.extend(self.capture_budget_flushes(id, cell));
+                new_flights.extend(self.capture_budget_flushes(id, cell, &foreign_settled));
                 if self.store.supports_usage_batch_deduped() {
                     let correcting = cell.correction.is_some();
                     cell.mutate(|cell| {

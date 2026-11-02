@@ -502,6 +502,7 @@ impl GovState {
         &self,
         bucket: &str,
         cell: &mut BudgetCell,
+        settled: &super::raw_recovery::ForeignSettledSnapshot,
     ) -> Vec<Arc<BudgetFlushFlight>> {
         let mut captured = Vec::new();
         if self.budget_bucket_deleting(bucket) {
@@ -584,7 +585,13 @@ impl GovState {
                             })
                         })
                 } else {
-                    self.capture_usage_recovery(bucket, window, plain.clone(), dated.clone())
+                    self.capture_usage_recovery(
+                        bucket,
+                        window,
+                        plain.clone(),
+                        dated.clone(),
+                        settled,
+                    )
                 };
                 match prepared {
                     Ok(flight) => Some(flight),

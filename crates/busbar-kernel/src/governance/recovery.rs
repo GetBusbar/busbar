@@ -1140,6 +1140,18 @@ impl super::GovState {
             .map_err(|error| super::RecordStoreError(error.to_string()))
     }
 
+    pub(super) fn verify_current_recovery_checkpoint(
+        &self,
+        event: &RecoveryEvent,
+    ) -> super::RecordStoreResult<()> {
+        self.recovery_book
+            .sink
+            .get()
+            .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
+            .verify_checkpoint(event)
+            .map_err(|error| super::RecordStoreError(error.to_string()))
+    }
+
     pub(super) fn verify_recovery_checkpoint(
         &self,
         event: &RecoveryEvent,
@@ -1392,7 +1404,8 @@ pub(in crate::governance) mod tests {
                         .and_then(|(_, events)| events.first().cloned())
                 })
                 .unwrap_or_else(|| event.clone());
-            if event.origin_reference()? != genesis.origin_reference()?
+            if (event.revision == 0 && event != &genesis)
+                || event.origin_reference()? != genesis.origin_reference()?
                 || event.kind != genesis.kind
                 || event.body_fingerprint != genesis.body_fingerprint
                 || event.first_sent_at_ms != genesis.first_sent_at_ms
@@ -1665,6 +1678,7 @@ pub(in crate::governance) mod tests {
                 0,
                 negative,
                 super::super::ExactUsageDelta::default(),
+                &gov.capture_foreign_settled_snapshot(),
             )
             .unwrap();
         assert!(captured.child.is_none());
@@ -1771,6 +1785,7 @@ pub(in crate::governance) mod tests {
                     ..Default::default()
                 },
                 Default::default(),
+                &gov.capture_foreign_settled_snapshot(),
             )
             .unwrap();
         assert!(captured.child.is_none());
@@ -1782,6 +1797,7 @@ pub(in crate::governance) mod tests {
                 0,
                 captured.deferred_plain,
                 captured.deferred_dated,
+                &gov.capture_foreign_settled_snapshot(),
             )
             .unwrap();
         assert!(remaining.child.is_none());
@@ -2285,6 +2301,7 @@ pub(in crate::governance) mod tests {
                     ..Default::default()
                 },
                 Default::default(),
+                &gov.capture_foreign_settled_snapshot(),
             )
             .unwrap();
         let prerequisite = captured.prerequisite.as_ref().unwrap().clone();
