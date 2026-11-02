@@ -23,6 +23,57 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
 
 #[tokio::test]
 async fn test_patch_key_three_state_group_and_enabled() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_09864D86888C";
+    const WITNESS: &str = "actual root case test_patch_key_three_state_group_and_enabled completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     let groups = std::collections::BTreeMap::from([(
         "eng".to_string(),
         busbar_kernel::config::GroupCfg {
@@ -124,9 +175,12 @@ async fn test_patch_key_three_state_group_and_enabled() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -228,10 +282,63 @@ async fn test_patch_key_three_state_group_and_enabled() {
     }
 
     handle.abort();
+    println!("{WITNESS}");
 }
 
 #[tokio::test]
 async fn test_mint_auto_provisions_leaf_from_child_default() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_7B9EAABE3676";
+    const WITNESS: &str =
+        "actual root case test_mint_auto_provisions_leaf_from_child_default completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     let groups = std::collections::BTreeMap::from([
         (
             "acme".to_string(),
@@ -335,9 +442,12 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -431,10 +541,62 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
     );
 
     handle.abort();
+    println!("{WITNESS}");
 }
 
 #[tokio::test]
 async fn test_mint_parent_mismatch_is_409() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_B60C0101EFA5";
+    const WITNESS: &str = "actual root case test_mint_parent_mismatch_is_409 completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     let groups = std::collections::BTreeMap::from([
         (
             "team-a".to_string(),
@@ -541,9 +703,12 @@ async fn test_mint_parent_mismatch_is_409() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -583,10 +748,62 @@ async fn test_mint_parent_mismatch_is_409() {
     assert_eq!(ok.status().as_u16(), 201, "matching parent binds");
 
     handle.abort();
+    println!("{WITNESS}");
 }
 
 #[tokio::test]
 async fn test_max_keys_per_principal_cap_trips() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_B3E0DC0AF08C";
+    const WITNESS: &str = "actual root case test_max_keys_per_principal_cap_trips completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     let groups = std::collections::BTreeMap::from([
         (
             "capped".to_string(),
@@ -686,9 +903,12 @@ async fn test_max_keys_per_principal_cap_trips() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -729,10 +949,63 @@ async fn test_max_keys_per_principal_cap_trips() {
     assert_eq!(mint("d", "other").await.unwrap().status().as_u16(), 201);
 
     handle.abort();
+    println!("{WITNESS}");
 }
 
 #[tokio::test]
 async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_6624966B1C92";
+    const WITNESS: &str =
+        "actual root case test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     let groups = std::collections::BTreeMap::from([(
         "capped".to_string(),
         busbar_kernel::config::GroupCfg {
@@ -825,9 +1098,12 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -891,10 +1167,63 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
     );
 
     handle.abort();
+    println!("{WITNESS}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_4DA88626C3DB";
+    const WITNESS: &str =
+        "actual root case test_max_keys_per_principal_atomic_under_concurrent_mint completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     let groups = std::collections::BTreeMap::from([(
         "capped".to_string(),
         busbar_kernel::config::GroupCfg {
@@ -986,9 +1315,12 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1050,4 +1382,5 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
     );
 
     handle.abort();
+    println!("{WITNESS}");
 }

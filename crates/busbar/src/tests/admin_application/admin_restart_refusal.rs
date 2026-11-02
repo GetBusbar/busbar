@@ -118,9 +118,12 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();

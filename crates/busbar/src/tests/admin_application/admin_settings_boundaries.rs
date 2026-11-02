@@ -151,9 +151,12 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -338,9 +341,12 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -524,9 +530,12 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -724,9 +733,12 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -905,9 +917,12 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();

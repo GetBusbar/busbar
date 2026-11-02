@@ -10,6 +10,57 @@ mod plugins;
 
 #[tokio::test]
 async fn test_admin_v1_hooks_read_surface() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_5C29F8CCC80E";
+    const WITNESS: &str = "actual root case test_admin_v1_hooks_read_surface completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = PathBuf::from(
@@ -114,9 +165,12 @@ async fn test_admin_v1_hooks_read_surface() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -175,10 +229,62 @@ async fn test_admin_v1_hooks_read_surface() {
     assert_eq!(body["error"]["code"], "not_found");
 
     handle.abort();
+    println!("{WITNESS}");
 }
 
 #[tokio::test]
 async fn test_admin_v1_plugins_catalog_by_type() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_B5FB0086B623";
+    const WITNESS: &str = "actual root case test_admin_v1_plugins_catalog_by_type completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = PathBuf::from(
@@ -282,9 +388,12 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -361,10 +470,63 @@ async fn test_admin_v1_plugins_catalog_by_type() {
     assert_eq!(body["error"]["code"], "invalid_request");
 
     handle.abort();
+    println!("{WITNESS}");
 }
 
 #[tokio::test]
 async fn test_admin_v1_config_effective_snapshot_no_secrets() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_EEAE159E9165";
+    const WITNESS: &str =
+        "actual root case test_admin_v1_config_effective_snapshot_no_secrets completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = PathBuf::from(
@@ -487,9 +649,12 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -550,4 +715,5 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     }
 
     handle.abort();
+    println!("{WITNESS}");
 }
