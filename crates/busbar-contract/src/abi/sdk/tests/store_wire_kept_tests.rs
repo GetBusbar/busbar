@@ -109,6 +109,7 @@ mod replay_handles {
         #[default]
         RepeatedPending,
         CancelRead,
+        RecoverTimedOutRead,
         ZeroWrite,
         PoolWait,
     }
@@ -158,7 +159,7 @@ mod replay_handles {
                 let pending = match (s.mode, kind) {
                     (Mode::RepeatedPending, Kind::Establish | Kind::Read) => 2,
                     (Mode::RepeatedPending, Kind::Write) if bytes == b"A" => 2,
-                    (Mode::CancelRead, Kind::Read) => usize::MAX,
+                    (Mode::CancelRead | Mode::RecoverTimedOutRead, Kind::Read) => usize::MAX,
                     (Mode::PoolWait, Kind::Read) if handle.ticket == HOLDER => usize::MAX,
                     _ => 0,
                 };
@@ -514,6 +515,78 @@ mod replay_handles {
         assert_eq!(establish.len(), 1);
         assert!(establish[0].handle.seq > identity[0].handle.seq);
         assert_eq!(script(|s| s.bodies), 2, "one body per original ticket");
+    }
+
+    fn recover_after_timeout(wire: Wire, reconnect: bool) -> Body<Result<(), ConnFailure>> {
+        Box::pin(async move {
+            wire.bound(1);
+            wire.connect(0, None).await?;
+            assert!(matches!(
+                wire.fill().await,
+                Err(ConnFailure::Failed(why)) if why == crate::conn::ConnError::Timeout.text()
+            ));
+            wire.bound(0);
+            if reconnect {
+                wire.reconnect().await?;
+            } else {
+                wire.close().await;
+                wire.connect(0, None).await?;
+            }
+            wire.write_all(b"recovered").await?;
+            wire.close().await;
+            Ok(())
+        })
+    }
+
+    fn close_after_timeout(wire: Wire) -> Body<Result<(), ConnFailure>> {
+        recover_after_timeout(wire, false)
+    }
+
+    fn reconnect_after_timeout(wire: Wire) -> Body<Result<(), ConnFailure>> {
+        recover_after_timeout(wire, true)
+    }
+
+    #[test]
+    fn a_caught_pending_read_timeout_cannot_rebind_its_handle_to_close_or_reconnect() {
+        for start in [
+            close_after_timeout as Start,
+            reconnect_after_timeout as Start,
+        ] {
+            let (_fake, host) = host(Mode::RecoverTimedOutRead);
+            let pool = Pool::new(1);
+            let (answer, held, attempted) = enter(&host, &pool, TICKET, None, start);
+            let expiry = match answer {
+                Step::Pending { wake_at_ns } if wake_at_ns != 0 => wake_at_ns,
+                other => panic!("the bound must suspend the actual pending read: {other:?}"),
+            };
+            assert!(attempted);
+            script(|s| s.now = expiry + 1);
+            finish(&host, &pool, TICKET, Some(held), start);
+            let reads = calls(Kind::Read);
+            assert_eq!(reads.len(), 1, "expiry abandons the pending host request");
+            assert!(!reads[0].ready);
+            let closed = calls(Kind::Close);
+            assert_eq!(
+                closed.len(),
+                2,
+                "both old and recovered streams close normally"
+            );
+            assert!(closed[0].handle.seq > reads[0].handle.seq);
+            let establish = calls(Kind::Establish);
+            assert_eq!(establish.len(), 2);
+            assert!(establish[1].handle.seq > closed[0].handle.seq);
+            let writes = calls(Kind::Write);
+            assert_eq!(writes.len(), 1);
+            assert!(writes[0].ready);
+            assert!(writes[0].handle.seq > establish[1].handle.seq);
+            assert!(closed[1].handle.seq > writes[0].handle.seq);
+            assert_eq!(script(|s| s.accepted.clone()), b"recovered");
+            assert_eq!(
+                script(|s| s.bodies),
+                1,
+                "recovery continues the original future"
+            );
+        }
     }
 }
 
