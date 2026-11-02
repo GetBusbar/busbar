@@ -108,15 +108,7 @@ impl FirstPartyKey {
     /// the same compromised-key guard used by the build-time parser and manifest evaluator.
     #[must_use]
     pub fn retired_reason(&self) -> Option<&'static str> {
-        let ReleaseKey::Ed25519(key) = &self.key else {
-            return None;
-        };
-        RETIRED_RELEASE_KEYS.iter().find_map(|(hex, why)| {
-            public_key_from_hex(hex)
-                .ok()
-                .filter(|retired| retired == key)
-                .map(|_| *why)
-        })
+        self.key.retired_reason()
     }
 }
 
@@ -1506,7 +1498,7 @@ fn hard_seal_refusal(refusal: &crate::release_trust::SealRefusal) -> Option<Reje
     use crate::release_trust::SealRefusal as S;
     match refusal {
         S::DigestRevoked { .. } | S::SignerRevoked { .. } => Some(RejectKind::Revoked),
-        S::RetiredRoot { .. } => Some(RejectKind::RetiredKey),
+        S::RetiredRoot { .. } | S::RetiredSigner { .. } => Some(RejectKind::RetiredKey),
         S::KeysRollback { .. } => Some(RejectKind::AntiDowngrade),
         _ => None,
     }

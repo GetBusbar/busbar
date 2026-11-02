@@ -459,3 +459,12 @@ fn retired_root_refusals_remain_hard_policy_vetoes() {
     };
     assert_eq!(hard_seal_refusal(&refusal), Some(RejectKind::RetiredKey));
 }
+
+#[test]
+fn permanently_retired_delegated_signers_remain_hard_policy_vetoes() {
+    let refusal = crate::release_trust::SealRefusal::RetiredSigner {
+        id: "retired-delegate".into(),
+        why: "permanently retired signing material".into(),
+    };
+    assert_eq!(hard_seal_refusal(&refusal), Some(RejectKind::RetiredKey));
+}
