@@ -8,13 +8,16 @@ use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation, Predicat
 use busbar_contract::caps::{DurableWrite, Grant, StepName};
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel::governance::recovery::{
-    RecoveryError, RecoveryEvent, RecoveryInspection, RecoveryResolution, RecoverySink,
-    RecoveryState, RecoveryVerdict,
+    RecoveryError, RecoveryEvent, RecoveryInspection, RecoveryLink, RecoveryResolution,
+    RecoverySelection, RecoverySink, RecoveryState, RecoveryVerdict,
 };
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, Record, RecordClass};
 use serde::{Deserialize, Serialize};
 
-use super::store_chain::{confirm_record_bytes, off_runtime, read_chain, wait_for, ACK_DEADLINE};
+use super::store_chain::{
+    confirm_record_bytes, off_runtime, read_chain, read_record_exact, verify_stored_chain,
+    wait_for, ACK_DEADLINE,
+};
 use super::{Durability, JournalLane};
 
 pub(crate) const HEAD_SCHEMA: &str = "busbar.usage-recovery-head.v1";
@@ -57,7 +60,112 @@ struct AdoptionProof {
     reason: String,
 }
 
+#[derive(Clone, Copy)]
+struct DecisionTag {
+    node: u64,
+    revision: u64,
+    state: RecoveryState,
+    digest: [u8; 32],
+}
+
+struct CompactCandidate {
+    head: Head,
+    link: RecoveryLink,
+    payload_hash: [u8; 32],
+    adoption: Option<AdoptionProof>,
+    newer: Option<DecisionTag>,
+}
+
+impl CompactCandidate {
+    fn of(head: &Head, candidate: &Candidate, newer: Option<DecisionTag>) -> Self {
+        Self {
+            head: head.clone(),
+            link: RecoveryLink::from_event(&candidate.event),
+            payload_hash: busbar_kernel_wal::body_digest(&candidate.event.payload),
+            adoption: candidate.adoption.clone(),
+            newer,
+        }
+    }
+
+    fn tag(&self) -> DecisionTag {
+        DecisionTag {
+            node: self.head.node,
+            revision: self.head.revision,
+            state: self.link.state,
+            digest: self.head.event_digest,
+        }
+    }
+}
+
 impl AdoptionProof {
+    fn validate_compact(
+        &self,
+        parent_head: &Head,
+        parent: &RecoveryEvent,
+        child: &CompactCandidate,
+    ) -> Result<(), RecoveryError> {
+        if self.version != 1
+            || self.operation_id != child.link.operation_id
+            || self.body_fingerprint != child.link.body_fingerprint
+            || self.foreign_head != *parent_head
+            || parent_head.node == child.head.node
+            || !self.sender_quiesced
+            || !self.backend_quiesced
+            || self.actor.trim().is_empty()
+            || self.actor.len() > 256
+            || self.reason.trim().is_empty()
+            || self.reason.len() > 4096
+        {
+            return Err(invalid("invalid attested recovery handover proof"));
+        }
+        let verdict = if self.landed {
+            RecoveryState::VerdictLanded
+        } else {
+            RecoveryState::VerdictNotLanded
+        };
+        let same_payload = child.payload_hash == busbar_kernel_wal::body_digest(&parent.payload);
+        let decision = match parent.state {
+            RecoveryState::LandedUnknown if child.link.state == verdict => child.tag(),
+            RecoveryState::Intent if child.link.state == RecoveryState::LandedUnknown => {
+                let newer = child
+                    .newer
+                    .ok_or_else(|| invalid("handover verdict is not selected"))?;
+                if child.head.revision.checked_add(1) != Some(newer.revision) {
+                    return Err(invalid("handover verdict skips the unknown checkpoint"));
+                }
+                newer
+            }
+            state if state == verdict && child.link.state == state && same_payload => child.tag(),
+            RecoveryState::Applied
+                if self.landed && child.link.state == RecoveryState::Applied && same_payload =>
+            {
+                child.tag()
+            }
+            RecoveryState::ConditionConflict
+                if !self.landed
+                    && child.link.state == RecoveryState::ConditionConflict
+                    && same_payload =>
+            {
+                child.tag()
+            }
+            _ => return Err(invalid("handover changes a foreign recovery decision")),
+        };
+        let expected = match parent.state {
+            RecoveryState::Applied => RecoveryState::Applied,
+            RecoveryState::ConditionConflict => RecoveryState::ConditionConflict,
+            _ => verdict,
+        };
+        if decision.node != child.head.node
+            || decision.state != expected
+            || decision.digest != self.final_event_digest
+        {
+            return Err(invalid(
+                "attested handover decision differs from selected ancestry",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate(
         &self,
         previous: &(Head, Candidate),
@@ -200,6 +308,123 @@ fn head(
 
 type Chains = BTreeMap<u64, Vec<JournalRecord>>;
 
+fn stream_selection(
+    calls: &dyn StoreCalls,
+    operation: &[u8; 16],
+    tip: &Head,
+    owner: u64,
+    mut visit: impl FnMut(&Head, &Candidate) -> Result<(), RecoveryError>,
+) -> Result<RecoverySelection, RecoveryError> {
+    if tip.node != owner {
+        return Err(invalid("recovery selection is not owned by this node"));
+    }
+    let mut next = tip.clone();
+    let mut selected = None;
+    let mut child: Option<CompactCandidate> = None;
+    let mut verified_owner = None;
+    loop {
+        let at = next;
+        if at.version != 1 || at.node == 0 || at.sequence == 0 {
+            return Err(invalid("invalid recovery predecessor pointer"));
+        }
+        // A node segment is checked once, in pages, with no retained journal payload index.
+        // Revisiting a former owner after another handover performs a new cold verification.
+        if verified_owner != Some(at.node) {
+            verify_stored_chain(calls, at.node).map_err(invalid)?;
+            verified_owner = Some(at.node);
+        }
+        let record = read_record_exact(calls, at.node, at.sequence).map_err(invalid)?;
+        let candidate = candidate(&record)?
+            .ok_or_else(|| invalid("selected record is not a recovery candidate"))?;
+        drop(record);
+        if candidate.event.operation_id != *operation
+            || candidate.event.revision != at.revision
+            || candidate.event.fingerprint()? != at.event_digest
+        {
+            return Err(invalid("selected recovery record identity differs"));
+        }
+        if selected.is_none() {
+            selected = Some(candidate.event.clone());
+        }
+        if let Some(child) = &child {
+            child.link.follows(Some(&candidate.event))?;
+            if child.head.node == at.node {
+                if child.adoption.is_some() || at.sequence >= child.head.sequence {
+                    return Err(invalid(
+                        "recovery predecessor is not an earlier owned journal record",
+                    ));
+                }
+            } else {
+                child
+                    .adoption
+                    .as_ref()
+                    .ok_or_else(|| {
+                        invalid("recovery ownership changed without an attested decision")
+                    })?
+                    .validate_compact(&at, &candidate.event, child)?;
+            }
+        }
+        visit(&at, &candidate)?;
+        match &candidate.previous_head {
+            Some(previous)
+                if previous.revision.checked_add(1) == Some(at.revision)
+                    && candidate.event.previous_event == Some(previous.event_digest) =>
+            {
+                next = previous.clone()
+            }
+            None if at.revision == 0
+                && candidate.event.previous_event.is_none()
+                && candidate.adoption.is_none() =>
+            {
+                candidate.event.follows(None)?;
+                return Ok(RecoverySelection {
+                    initial: candidate.event,
+                    selected: selected.unwrap(),
+                });
+            }
+            _ => return Err(invalid("invalid selected recovery predecessor")),
+        }
+        let newer = child.as_ref().map(CompactCandidate::tag);
+        child = Some(CompactCandidate::of(&at, &candidate, newer));
+    }
+}
+
+fn selection(
+    calls: &dyn StoreCalls,
+    operation: &[u8; 16],
+    tip: &Head,
+    owner: u64,
+) -> Result<RecoverySelection, RecoveryError> {
+    stream_selection(calls, operation, tip, owner, |_, _| Ok(()))
+}
+
+fn selected_checkpoint(
+    calls: &dyn StoreCalls,
+    operation: &[u8; 16],
+    tip: &Head,
+    digest: [u8; 32],
+    missing: &str,
+) -> Result<RecoveryEvent, RecoveryError> {
+    let mut found = None;
+    stream_selection(calls, operation, tip, tip.node, |at, _| {
+        if at.event_digest == digest {
+            found = Some(at.clone());
+        }
+        Ok(())
+    })?;
+    let at = found.ok_or_else(|| invalid(missing))?;
+    // Retain only the pointer while the fold continues. Materialize this one payload AFTER the
+    // full selected chain has verified, never alongside a retained historical payload list.
+    let record = read_record_exact(calls, at.node, at.sequence).map_err(invalid)?;
+    let event = candidate(&record)?
+        .ok_or_else(|| invalid("selected checkpoint is not a recovery candidate"))?
+        .event;
+    if event.fingerprint()? != at.event_digest || event.operation_id != *operation {
+        return Err(invalid("selected checkpoint changed during readback"));
+    }
+    Ok(event)
+}
+
 fn selected(
     calls: &dyn StoreCalls,
     operation: &[u8; 16],
@@ -229,7 +454,7 @@ fn selected_chain(
         if at.version != 1 || at.node == 0 || at.sequence == 0 {
             return Err(invalid("invalid recovery predecessor pointer"));
         }
-        if !chains.contains_key(&at.node) {
+        if let std::collections::btree_map::Entry::Vacant(entry) = chains.entry(at.node) {
             let records = read_chain(calls, at.node).map_err(unavailable)?;
             let decoded = busbar_kernel_wal::decode_run(&records).map_err(invalid)?;
             if records
@@ -242,7 +467,7 @@ fn selected_chain(
                 ));
             }
             busbar_kernel_wal::verify_journal(&decoded).map_err(invalid)?;
-            chains.insert(at.node, decoded);
+            entry.insert(decoded);
         }
         let record = chains[&at.node]
             .iter()
@@ -364,6 +589,34 @@ fn adopted_history(
         .collect())
 }
 
+fn adopted_selection(
+    calls: &dyn StoreCalls,
+    node: u64,
+    tip: &Head,
+    resolution: &RecoveryResolution,
+    transitions: &[RecoveryEvent],
+) -> Result<RecoverySelection, RecoveryError> {
+    let mut attested = false;
+    let result = stream_selection(
+        calls,
+        &resolution.operation_id,
+        tip,
+        node,
+        |_, candidate| {
+            attested |= candidate.adoption.as_ref().is_some_and(|proof| {
+                proof.final_event_digest == tip.event_digest && proof.matches(resolution)
+            });
+            Ok(())
+        },
+    )?;
+    if transitions.last() != Some(&result.selected) || !attested {
+        return Err(RecoveryError::Conflict(
+            "selected handover differs from this attested decision".into(),
+        ));
+    }
+    Ok(result)
+}
+
 #[derive(Clone)]
 struct Pending {
     event: RecoveryEvent,
@@ -481,18 +734,14 @@ impl StoreRecovery {
         let (lane, node) = self.inputs()?;
         let fences = lane.recovery_predicates(node).map_err(unavailable)?;
         let calls = lane.calls();
-        let mut chains = Chains::new();
         let mut tips = Vec::new();
         for (operation, tip) in heads(calls.as_ref())? {
             if tip.node != node {
-                if let Some(event) =
-                    selected(calls.as_ref(), &operation, &tip, tip.node, &mut chains)?.pop()
-                {
-                    tips.push(RecoveryInspection {
-                        owner_node: tip.node,
-                        event,
-                    });
-                }
+                let event = selection(calls.as_ref(), &operation, &tip, tip.node)?.selected;
+                tips.push(RecoveryInspection {
+                    owner_node: tip.node,
+                    event,
+                });
             }
         }
         if lane.recovery_predicates(node).map_err(unavailable)? != fences {
@@ -508,16 +757,9 @@ impl StoreRecovery {
         let fences = lane.recovery_predicates(node).map_err(unavailable)?;
         let calls = lane.calls();
         let initial = match head(calls.as_ref(), &event.operation_id)? {
-            Some((tip, _)) => selected(
-                calls.as_ref(),
-                &event.operation_id,
-                &tip,
-                tip.node,
-                &mut Chains::new(),
-            )?
-            .into_iter()
-            .next()
-            .ok_or_else(|| invalid("recovery child has no selected genesis"))?,
+            Some((tip, _)) => {
+                selection(calls.as_ref(), &event.operation_id, &tip, tip.node)?.initial
+            }
             None => {
                 event.follows(None)?;
                 event.clone()
@@ -541,18 +783,13 @@ impl StoreRecovery {
         if let Some(origin) = origin {
             let (tip, _) = head(calls.as_ref(), &origin.operation_id)?
                 .ok_or_else(|| invalid("recovery origin parent has no selected head"))?;
-            let parent = selected(
+            let parent = selected_checkpoint(
                 calls.as_ref(),
                 &origin.operation_id,
                 &tip,
-                tip.node,
-                &mut Chains::new(),
-            )?
-            .into_iter()
-            .find(|parent| parent.fingerprint().ok() == Some(origin.event_fingerprint))
-            .ok_or_else(|| {
-                invalid("recovery origin checkpoint is not in the current selected parent chain")
-            })?;
+                origin.event_fingerprint,
+                "recovery origin checkpoint is not in the current selected parent chain",
+            )?;
             parent.authorizes_child(&initial)?;
         }
         if lane.recovery_predicates(node).map_err(unavailable)? != fences {
@@ -563,11 +800,58 @@ impl StoreRecovery {
         Ok(())
     }
 
-    fn adopt_verdict_at(
+    fn verify_checkpoint_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let (lane, node) = self.inputs()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let calls = lane.calls();
+        let (tip, _) = head(calls.as_ref(), &event.operation_id)?
+            .ok_or_else(|| invalid("recovery checkpoint has no selected operation"))?;
+        let actual = selected_checkpoint(
+            calls.as_ref(),
+            &event.operation_id,
+            &tip,
+            event.fingerprint()?,
+            "recovery checkpoint is not in the current selected ancestry",
+        )?;
+        if &actual != event {
+            return Err(invalid(
+                "selected checkpoint differs from its exact event identity",
+            ));
+        }
+        self.verify_origin_at(&actual)?;
+        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+            return Err(unavailable(
+                "the local node fence changed during checkpoint verification",
+            ));
+        }
+        Ok(())
+    }
+
+    fn replay_selections_at(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
+        let (lane, node) = self.inputs()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let calls = lane.calls();
+        let mut summaries = Vec::new();
+        for (operation, tip) in heads(calls.as_ref())? {
+            if tip.node == node {
+                let summary = selection(calls.as_ref(), &operation, &tip, node)?;
+                self.verify_origin_at(&summary.selected)?;
+                summaries.push(summary);
+            }
+        }
+        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+            return Err(unavailable(
+                "the local node fence changed during recovery replay",
+            ));
+        }
+        Ok(summaries)
+    }
+
+    fn adopt_verdict_selection_at(
         &self,
         resolution: &RecoveryResolution,
         transitions: &[RecoveryEvent],
-    ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+    ) -> Result<RecoverySelection, RecoveryError> {
         if !resolution.sender_quiesced
             || !resolution.backend_quiesced
             || resolution.actor.trim().is_empty()
@@ -600,7 +884,7 @@ impl StoreRecovery {
             .ok_or_else(|| invalid("foreign recovery operation does not exist"))?;
         let digest = last.fingerprint()?;
         if current.node == node {
-            let run = adopted_history(calls.as_ref(), node, &current, resolution, transitions)?;
+            let run = adopted_selection(calls.as_ref(), node, &current, resolution, transitions)?;
             self.verify_origin_at(last)?;
             if head(calls.as_ref(), &resolution.operation_id)?
                 .as_ref()
@@ -619,16 +903,13 @@ impl StoreRecovery {
                 .remove(&resolution.operation_id);
             return Ok(run);
         }
-        let run = selected(
+        let run = selection(
             calls.as_ref(),
             &resolution.operation_id,
             &current,
             current.node,
-            &mut Chains::new(),
         )?;
-        let foreign = run
-            .last()
-            .ok_or_else(|| invalid("foreign recovery history is empty"))?;
+        let foreign = &run.selected;
         if foreign.revision != resolution.expected_revision
             || foreign.body_fingerprint != resolution.body_fingerprint
         {
@@ -758,7 +1039,7 @@ impl StoreRecovery {
         let observed = head(calls.as_ref(), &resolution.operation_id)?;
         if let Some((tip, observed_raw)) = &observed {
             if tip.node == node && tip.event_digest == digest {
-                let run = adopted_history(calls.as_ref(), node, tip, resolution, transitions)?;
+                let run = adopted_selection(calls.as_ref(), node, tip, resolution, transitions)?;
                 self.verify_origin_at(last)?;
                 if head(calls.as_ref(), &resolution.operation_id)?
                     .as_ref()
@@ -813,14 +1094,8 @@ impl StoreRecovery {
                 ));
             }
             if current_head.event_digest == digest {
-                let run = selected(
-                    calls.as_ref(),
-                    &event.operation_id,
-                    current_head,
-                    node,
-                    &mut Chains::new(),
-                )?;
-                if run.last() != Some(event) {
+                let run = selection(calls.as_ref(), &event.operation_id, current_head, node)?;
+                if &run.selected != event {
                     return Err(invalid("recovery event digest collision"));
                 }
                 if head(calls.as_ref(), &event.operation_id)?
@@ -847,18 +1122,10 @@ impl StoreRecovery {
         }
         let previous = current.as_ref().map(|(head, _)| head);
         let run = previous
-            .map(|head| {
-                selected(
-                    calls.as_ref(),
-                    &event.operation_id,
-                    head,
-                    node,
-                    &mut Chains::new(),
-                )
-            })
+            .map(|head| selection(calls.as_ref(), &event.operation_id, head, node))
             .transpose()?;
         event
-            .follows(run.as_ref().and_then(|events| events.last()))
+            .follows(run.as_ref().map(|summary| &summary.selected))
             .map_err(|_| {
                 RecoveryError::Conflict(
                     "recovery selection has advanced or names another predecessor".into(),
@@ -967,14 +1234,8 @@ impl StoreRecovery {
         if let Some((selected_head, selected_raw)) = &observed {
             if selected_head.node == node && selected_head.event_digest == digest {
                 if selected_raw != &value {
-                    let run = selected(
-                        calls.as_ref(),
-                        &event.operation_id,
-                        selected_head,
-                        node,
-                        &mut Chains::new(),
-                    )?;
-                    if run.last() != Some(event) {
+                    let run = selection(calls.as_ref(), &event.operation_id, selected_head, node)?;
+                    if &run.selected != event {
                         return Err(invalid("recovery event digest collision"));
                     }
                 }
@@ -1020,6 +1281,22 @@ impl StoreRecovery {
 }
 
 impl RecoverySink for StoreRecovery {
+    fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
+        off_runtime(|| self.replay_selections_at())
+    }
+
+    fn adopt_verdict_selection(
+        &self,
+        resolution: &RecoveryResolution,
+        transitions: &[RecoveryEvent],
+    ) -> Result<RecoverySelection, RecoveryError> {
+        off_runtime(|| self.adopt_verdict_selection_at(resolution, transitions))
+    }
+
+    fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        off_runtime(|| self.verify_checkpoint_at(event))
+    }
+
     fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         off_runtime(|| self.verify_origin_at(event))
     }
@@ -1033,7 +1310,15 @@ impl RecoverySink for StoreRecovery {
         resolution: &RecoveryResolution,
         transitions: &[RecoveryEvent],
     ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
-        off_runtime(|| self.adopt_verdict_at(resolution, transitions))
+        // Compatibility only. Production ownership handover consumes the bounded selection API.
+        off_runtime(|| {
+            self.adopt_verdict_selection_at(resolution, transitions)?;
+            let (lane, node) = self.inputs()?;
+            let calls = lane.calls();
+            let (tip, _) = head(calls.as_ref(), &resolution.operation_id)?
+                .ok_or_else(|| invalid("selected handover disappeared"))?;
+            adopted_history(calls.as_ref(), node, &tip, resolution, transitions)
+        })
     }
 
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
@@ -1041,6 +1326,7 @@ impl RecoverySink for StoreRecovery {
     }
 
     fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+        // Compatibility only. Production startup uses replay_selections instead of history Vecs.
         off_runtime(|| {
             let (lane, node) = self.inputs()?;
             let predicates = lane.recovery_predicates(node).map_err(unavailable)?;

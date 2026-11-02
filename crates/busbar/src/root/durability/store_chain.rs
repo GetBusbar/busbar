@@ -13,7 +13,9 @@ use busbar_contract::abi::sdk::store::conditional::{
 };
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
-use busbar_kernel_wal::{Record, ShipError, Shipper, MEMORY_BUFFER_RECORDS};
+use busbar_kernel_wal::{
+    JournalRecord, QuarantineNote, Record, RecordClass, ShipError, Shipper, MEMORY_BUFFER_RECORDS,
+};
 
 use super::store_identity::{HeldLease, NodeLease};
 
@@ -251,6 +253,207 @@ pub fn read_chain(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Record>, Stri
     let (records, torn) = scan_chain(calls, node)?;
     warn_torn(node, torn.last().copied());
     Ok(records)
+}
+
+/// Fold bounded Store pages in key order. Neither a node's journal nor its historical bodies
+/// accumulate here: at most one record's bounded parts are assembled beside one 256-row page.
+fn fold_stored_records(
+    calls: &dyn StoreCalls,
+    node: u64,
+    prefix: Vec<u8>,
+    mut visit: impl FnMut(Record) -> Result<(), String>,
+) -> Result<(), String> {
+    struct Partial {
+        sequence: u64,
+        count: usize,
+        next: usize,
+        valid: bool,
+        bytes: Vec<u8>,
+    }
+    fn finish(
+        node: u64,
+        pending: &mut Option<Partial>,
+        visit: &mut impl FnMut(Record) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if let Some(record) = pending.take() {
+            if record.valid && record.next == record.count {
+                visit(Record::new(node, record.sequence, record.bytes))?;
+            }
+        }
+        Ok(())
+    }
+    const PAGE: u32 = 256;
+    let mut prefixes = vec![prefix];
+    let mut previous_key: Option<Vec<u8>> = None;
+    let mut pending: Option<Partial> = None;
+    while let Some(prefix) = prefixes.pop() {
+        let page = wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix, PAGE))
+            .map_err(|why| format!("the Store journal page is unreadable: {why}"))?;
+        if page.len() > PAGE as usize
+            || page
+                .iter()
+                .any(|(key, _)| key.len() != 18 || !key.starts_with(&prefix))
+            || page.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+        {
+            return Err("invalid Store journal page".into());
+        }
+        // With one selector byte left, 256 distinct exact-length keys exhaust the namespace.
+        if page.len() == PAGE as usize && prefix.len() < 17 {
+            for byte in (0..=u8::MAX).rev() {
+                let mut child = prefix.clone();
+                child.push(byte);
+                prefixes.push(child);
+            }
+            continue;
+        }
+        for (key, value) in page {
+            if previous_key
+                .as_ref()
+                .is_some_and(|previous| previous >= &key)
+            {
+                return Err("Store journal pages repeat or reorder a part".into());
+            }
+            previous_key = Some(key.clone());
+            let sequence = u64::from_be_bytes(
+                key[8..16]
+                    .try_into()
+                    .map_err(|_| "invalid journal sequence")?,
+            );
+            let part = usize::from(u16::from_be_bytes(
+                key[16..18].try_into().map_err(|_| "invalid journal part")?,
+            ));
+            let raw = value.as_slice();
+            let count = raw
+                .get(..2)
+                .and_then(|count| count.try_into().ok())
+                .map(u16::from_be_bytes)
+                .map(usize::from)
+                .filter(|count| *count > 0)
+                .ok_or_else(|| "invalid journal part count".to_string())?;
+            if pending
+                .as_ref()
+                .is_some_and(|record| record.sequence != sequence)
+            {
+                finish(node, &mut pending, &mut visit)?;
+            }
+            let record = pending.get_or_insert_with(|| Partial {
+                sequence,
+                count,
+                next: 0,
+                valid: part == 0,
+                bytes: Vec::new(),
+            });
+            if record.next >= record.count {
+                return Err("unexpected trailing journal part".into());
+            }
+            if record.count != count || record.next != part {
+                record.valid = false;
+                record.bytes.clear();
+            }
+            if record.valid {
+                record.bytes.extend_from_slice(&raw[2..]);
+            }
+            record.next = part + 1;
+        }
+    }
+    finish(node, &mut pending, &mut visit)
+}
+
+fn checked_record(record: Record) -> Result<JournalRecord, String> {
+    let decoded = JournalRecord::decode(&record.body).map_err(|why| why.to_string())?;
+    if decoded.identity() != record.identity() || decoded.encode() != record.body {
+        return Err("recovery journal key and sealed record identity differ".into());
+    }
+    busbar_kernel_wal::verify_journal(std::slice::from_ref(&decoded))
+        .map_err(|why| why.to_string())?;
+    Ok(decoded)
+}
+
+pub(super) fn read_record_exact(
+    calls: &dyn StoreCalls,
+    node: u64,
+    sequence: u64,
+) -> Result<JournalRecord, String> {
+    let key = part_key(node, sequence, 0);
+    let mut found = None;
+    fold_stored_records(calls, node, key[..16].to_vec(), |record| {
+        if record.identity() != (node, sequence) || found.is_some() {
+            return Err("exact journal lookup returned another record".into());
+        }
+        found = Some(checked_record(record)?);
+        Ok(())
+    })?;
+    found.ok_or_else(|| "selected recovery journal record is missing or incomplete".into())
+}
+
+#[derive(Clone, Copy)]
+struct ChainPoint {
+    node: u64,
+    sequence: u64,
+    hash: [u8; 32],
+    previous: [u8; 32],
+}
+
+fn bridge_covers(
+    calls: &dyn StoreCalls,
+    previous: ChainPoint,
+    current: ChainPoint,
+) -> Result<bool, String> {
+    let mut covered = false;
+    fold_stored_records(
+        calls,
+        current.node,
+        current.node.to_be_bytes().to_vec(),
+        |record| {
+            let record = checked_record(record)?;
+            let bridge = (record.class == RecordClass::ChainBreak)
+                .then(|| QuarantineNote::read(&record.body).and_then(|note| note.bridge))
+                .flatten();
+            drop(record);
+            let Some(bridge) = bridge else {
+                return Ok(());
+            };
+            if bridge.before.0 != current.node || current.sequence <= bridge.before.1 {
+                return Ok(());
+            }
+            let named_after = bridge.after == Some((current.node, current.sequence));
+            if named_after && bridge.before == (previous.node, previous.sequence) {
+                covered = true;
+                return Ok(());
+            }
+            if (named_after || bridge.after.is_none()) && bridge.before.1 <= previous.sequence {
+                let anchor = read_record_exact(calls, bridge.before.0, bridge.before.1)?;
+                covered |= anchor.hash == current.previous;
+            }
+            Ok(())
+        },
+    )?;
+    Ok(covered)
+}
+
+/// The same sealed hash/sequence authority as the ordinary journal reader, folded without a
+/// history Vec. Quarantine bridge lookup rescans only on an actual gap, retaining no bridge log.
+pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(), String> {
+    let mut previous: Option<ChainPoint> = None;
+    fold_stored_records(calls, node, node.to_be_bytes().to_vec(), |record| {
+        let record = checked_record(record)?;
+        let current = ChainPoint {
+            node: record.node,
+            sequence: record.node_seq,
+            hash: record.hash,
+            previous: record.prev_hash,
+        };
+        drop(record);
+        if let Some(previous) = previous {
+            let follows = current.previous == previous.hash
+                && current.sequence == previous.sequence.saturating_add(1);
+            if !follows && !bridge_covers(calls, previous, current)? {
+                return Err("the streamed Store journal has a broken hash link or sequence".into());
+            }
+        }
+        previous = Some(current);
+        Ok(())
+    })
 }
 
 fn warn_torn(node: u64, seq: Option<u64>) {
