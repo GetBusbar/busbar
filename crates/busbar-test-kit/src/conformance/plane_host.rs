@@ -13,6 +13,8 @@
 //!   `null` states the counterparty's own verdict, the one an item-less ask is answered. An item no
 //!   row names is `DISTRUST_UNKNOWN_ITEM`; an item-less ask of a counterparty no row names is
 //!   `DISTRUST_UNKNOWN`, a counterparty the instance does not declare.
+//! * `trust.sight` and `trust.sight_item` record nonempty evidence for the admitted instance's
+//!   configured trust rows. Receipts report new, same or drifted evidence; they change no approval.
 //! * `clock.now` reads `0`, so what a plane stamps with the host's clock folds the same on both legs.
 //! * `random.fill` writes the bytes asked for, fresh at every call, from a deterministic stream that
 //!   starts over on each leg, so what a plane mints from it folds the same on both; a fill of no
@@ -61,7 +63,7 @@ use busbar_contract::abi::host::service::{
     DEST_REFUSE_PRIVATE, DEST_RESOLVE, DEST_SCHEME, DEST_UNRESOLVABLE, DISTRUST_CHANGED,
     DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_QUARANTINED, DISTRUST_UNKNOWN,
     DISTRUST_UNKNOWN_ITEM, DISTRUST_UNSIGHTED, ENTITLED, FOUND, MAX_RANDOM_FILL, MAX_SPANS,
-    NOT_ENTITLED,
+    NOT_ENTITLED, TRUST_DRIFTED, TRUST_NEW, TRUST_QUARANTINED, TRUST_SAME,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
@@ -88,6 +90,9 @@ const NOT_A_KIND: &str = "not a record kind the instance declared";
 
 const CHAIN_READ_WHOLE: &str = "a chained record kind is read whole, through records.list";
 
+const NOT_A_TRUST_SUBJECT: &str = "not a configured trust subject";
+const INVALID_TRUST_EVIDENCE: &str = "trust evidence must be nonblank and contain no NUL";
+
 const PRIVATE_REFUSED_IN: &[u32] = &[EGRESS_DEFAULT, EGRESS_PROVIDER, EGRESS_OPEN_WEB];
 
 struct Grant {
@@ -111,6 +116,8 @@ struct Kept {
     chains: BTreeMap<(String, Vec<u8>), u64>,
     /// `(kind, key)` claimed. The host's clock reads `0`, so no claim lapses within a fold.
     claims: HashSet<(String, Vec<u8>)>,
+    catalogue_sightings: BTreeMap<String, String>,
+    item_sightings: BTreeMap<(String, String), String>,
 }
 
 pub(super) struct Host {
@@ -303,6 +310,53 @@ impl Host {
             .find(|(k, _)| k == kind)
             .map(|(_, chained)| *chained)
             .ok_or_else(|| Stored::refused(NOT_A_KIND))
+    }
+
+    fn trust_scope(
+        &self,
+        kept: &Kept,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        evidence: &str,
+    ) -> Result<(), Stored> {
+        if !kept
+            .admitted
+            .as_ref()
+            .is_some_and(|admitted| admitted.instance == caller.instance)
+        {
+            return Err(Stored::refused(NOT_ADMITTED));
+        }
+        if !self.trusted.iter().any(|(name, configured, _)| {
+            name == counterparty && item.is_none_or(|item| configured.as_deref() == Some(item))
+        }) {
+            return Err(Stored::refused(NOT_A_TRUST_SUBJECT));
+        }
+        if evidence.trim().is_empty() || evidence.contains('\0') {
+            return Err(Stored::refused(INVALID_TRUST_EVIDENCE));
+        }
+        Ok(())
+    }
+
+    fn sighting_verdict(
+        &self,
+        counterparty: &str,
+        item: Option<&str>,
+        before: Option<&str>,
+        evidence: &str,
+    ) -> u64 {
+        if self.trusted.iter().any(|(name, configured, verdict)| {
+            name == counterparty
+                && (configured.is_none() || configured.as_deref() == item)
+                && *verdict == DISTRUST_QUARANTINED
+        }) {
+            return TRUST_QUARANTINED;
+        }
+        match before {
+            None => TRUST_NEW,
+            Some(before) if before == evidence => TRUST_SAME,
+            Some(_) => TRUST_DRIFTED,
+        }
     }
 
     fn draw(&self, len: usize) -> Vec<u8> {
@@ -637,8 +691,20 @@ impl HostServices for Host {
     fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
         Stored::refused(UNSERVED)
     }
-    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Pended) -> Ran {
-        Ran::Now(Stored::refused(UNSERVED))
+    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, _: Pended) -> Ran {
+        let mut kept = self.kept();
+        if let Err(refused) = self.trust_scope(&kept, caller, counterparty, None, hash) {
+            return Ran::Now(refused);
+        }
+        let before = kept
+            .catalogue_sightings
+            .insert(counterparty.to_owned(), hash.to_owned());
+        Ran::Now(Stored::ready(self.sighting_verdict(
+            counterparty,
+            None,
+            before.as_deref(),
+            hash,
+        )))
     }
     fn trust_due(&self, _: &Caller) -> Stored {
         Stored::refused(UNSERVED)
@@ -649,8 +715,22 @@ impl HostServices for Host {
     fn trust_unreached(&self, _: &Caller, _: &str) -> Stored {
         Stored::refused(UNSERVED)
     }
-    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str) -> Stored {
-        Stored::refused(UNSERVED)
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        let mut kept = self.kept();
+        if let Err(refused) = self.trust_scope(&kept, caller, counterparty, Some(item), digest) {
+            return refused;
+        }
+        let before = kept.item_sightings.insert(
+            (counterparty.to_owned(), item.to_owned()),
+            digest.to_owned(),
+        );
+        Stored::ready(self.sighting_verdict(counterparty, Some(item), before.as_deref(), digest))
     }
     fn trust_decide(
         &self,

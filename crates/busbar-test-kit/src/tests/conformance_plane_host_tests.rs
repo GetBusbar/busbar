@@ -11,7 +11,9 @@ use busbar_contract::abi::host::conn::connector::{
 use busbar_contract::abi::host::service::{
     DEST_ALLOWED, DEST_EXPLAIN, DEST_INTERNAL, DEST_METADATA, DEST_NO_HOST, DEST_OBFUSCATED,
     DEST_PLAINTEXT, DEST_REFUSE_PRIVATE, DEST_RESOLVE, DEST_SCHEME, DEST_UNRESOLVABLE,
-    DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_UNKNOWN, DISTRUST_UNKNOWN_ITEM, MAX_RANDOM_FILL,
+    DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_QUARANTINED, DISTRUST_UNKNOWN,
+    DISTRUST_UNKNOWN_ITEM, MAX_RANDOM_FILL, TRUST_DRIFTED, TRUST_NEW, TRUST_QUARANTINED,
+    TRUST_SAME,
 };
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::KindCode;
@@ -324,6 +326,145 @@ fn admitted() -> Host {
         ..InstanceDecl::default()
     });
     h
+}
+
+fn trust_host() -> Host {
+    let h = host(&json!({ "trusted": [
+        ["fs", "read", "none"],
+        ["fs", "draft", "not_approved"],
+        ["other", "read", "none"],
+        ["quarantined", null, "quarantined"],
+        ["quarantined", "read", "none"]
+    ] }));
+    h.admit(&InstanceDecl {
+        label: Arc::from("plane"),
+        ..InstanceDecl::default()
+    });
+    h
+}
+
+fn sight(h: &Host, c: &Caller, counterparty: &str, evidence: &str) -> Stored {
+    let (l, rx) = later();
+    answer(h.trust_sight(c, counterparty, evidence, l), &rx)
+}
+
+#[test]
+fn configured_trust_sightings_record_evidence_without_changing_explicit_approvals() {
+    let h = trust_host();
+    let c = caller("plane");
+    for (evidence, expected) in [
+        ("one", TRUST_NEW),
+        ("one", TRUST_SAME),
+        ("two", TRUST_DRIFTED),
+    ] {
+        let receipt = sight(&h, &c, "fs", evidence);
+        assert_eq!((receipt.outcome, receipt.value), (Outcome::Ready, expected));
+        let receipt = h.trust_sight_item(&c, "fs", "read", evidence);
+        assert_eq!((receipt.outcome, receipt.value), (Outcome::Ready, expected));
+        assert_eq!(
+            h.trust_serves(&c, "fs", Some("read"), Some(evidence)).value,
+            DISTRUST_NONE
+        );
+        let receipt = h.trust_sight_item(&c, "fs", "draft", evidence);
+        assert_eq!((receipt.outcome, receipt.value), (Outcome::Ready, expected));
+        assert_eq!(
+            h.trust_serves(&c, "fs", Some("draft"), Some(evidence))
+                .value,
+            DISTRUST_NOT_APPROVED
+        );
+    }
+    assert_eq!(sight(&h, &c, "other", "two").value, TRUST_NEW);
+    assert_eq!(
+        h.trust_sight_item(&c, "other", "read", "two").value,
+        TRUST_NEW
+    );
+    assert_eq!(
+        h.trust_serves(&c, "fs", Some("unknown"), None).value,
+        DISTRUST_UNKNOWN_ITEM
+    );
+    let separate_leg = trust_host();
+    assert_eq!(sight(&separate_leg, &c, "fs", "two").value, TRUST_NEW);
+    assert_eq!(
+        separate_leg.trust_sight_item(&c, "fs", "read", "two").value,
+        TRUST_NEW
+    );
+}
+
+#[test]
+fn trust_sighting_refuses_unadmitted_or_other_owners_without_mutating_evidence() {
+    let h = host(&json!({ "trusted": [["fs", "read", "none"]] }));
+    let c = caller("plane");
+    let refused = sight(&h, &c, "fs", "one");
+    assert_eq!(
+        (refused.outcome, refused.error),
+        (Outcome::Refused, NOT_ADMITTED)
+    );
+    let refused = h.trust_sight_item(&c, "fs", "read", "one");
+    assert_eq!(
+        (refused.outcome, refused.error),
+        (Outcome::Refused, NOT_ADMITTED)
+    );
+    h.admit(&InstanceDecl {
+        label: Arc::from("plane"),
+        ..InstanceDecl::default()
+    });
+    let other = caller("another-instance");
+    assert_eq!(
+        sight(&h, &other, "fs", "wrong-owner").outcome,
+        Outcome::Refused
+    );
+    assert_eq!(
+        h.trust_sight_item(&other, "fs", "read", "wrong-owner")
+            .outcome,
+        Outcome::Refused
+    );
+    assert_eq!(sight(&h, &c, "fs", "one").value, TRUST_NEW);
+    assert_eq!(h.trust_sight_item(&c, "fs", "read", "one").value, TRUST_NEW);
+    assert_eq!(sight(&h, &other, "fs", "changed").outcome, Outcome::Refused);
+    assert_eq!(
+        h.trust_sight_item(&other, "fs", "read", "changed").outcome,
+        Outcome::Refused
+    );
+    assert_eq!(sight(&h, &c, "fs", "one").value, TRUST_SAME);
+    assert_eq!(
+        h.trust_sight_item(&c, "fs", "read", "one").value,
+        TRUST_SAME
+    );
+}
+
+#[test]
+fn trust_receipts_refuse_unknown_subjects_and_invalid_evidence_and_keep_quarantine() {
+    let h = trust_host();
+    let c = caller("plane");
+    assert_eq!(sight(&h, &c, "unknown", "one").outcome, Outcome::Refused);
+    for (counterparty, item) in [("unknown", "read"), ("fs", "unknown")] {
+        let refused = h.trust_sight_item(&c, counterparty, item, "one");
+        assert_eq!(refused.outcome, Outcome::Refused);
+    }
+    for evidence in ["", " \t\n", "before\0after"] {
+        assert_eq!(sight(&h, &c, "fs", evidence).outcome, Outcome::Refused);
+        assert_eq!(
+            h.trust_sight_item(&c, "fs", "read", evidence).outcome,
+            Outcome::Refused
+        );
+    }
+    assert_eq!(sight(&h, &c, "fs", "one").value, TRUST_NEW);
+    assert_eq!(h.trust_sight_item(&c, "fs", "read", "one").value, TRUST_NEW);
+    for evidence in ["one", "two"] {
+        assert_eq!(
+            sight(&h, &c, "quarantined", evidence).value,
+            TRUST_QUARANTINED
+        );
+        assert_eq!(
+            h.trust_sight_item(&c, "quarantined", "read", evidence)
+                .value,
+            TRUST_QUARANTINED
+        );
+        assert_eq!(
+            h.trust_serves(&c, "quarantined", None, None).value,
+            DISTRUST_QUARANTINED
+        );
+    }
 }
 
 fn get(h: &Host, c: &Caller, kind: &str, key: &str) -> Stored {
