@@ -19,13 +19,6 @@ mod hosted_routes_tests;
 mod mount_tests;
 mod registration_tests;
 
-fn oauth_as_plane(app: &App) -> Option<Arc<busbar_core_oauth2::plane::AsPlane>> {
-    app.oauth_as_any()?
-        .clone()
-        .downcast::<busbar_core_oauth2::plane::AsPlane>()
-        .ok()
-}
-
 /// Build through the shipped root and its normal plugin loader. The required store
 /// artifact is a freshly built product, never a fixture implementation of Store.
 fn application(oauth_as: Option<&OauthAsCfg>, prior: Option<&App>) -> Arc<App> {

@@ -35,11 +35,9 @@
 //! is then a COMPILE ERROR here until somebody has decided, in this file, whether it names a mounted
 //! route. Omission is not something anybody has to remember.
 
-use std::sync::Arc;
-
 use busbar_core_oauth2::config::{AsIdentity, OauthAsCfg};
 
-use super::{application, oauth_as_plane};
+use super::application;
 
 const ISSUER: &str = "https://as.example.com";
 
@@ -114,7 +112,7 @@ async fn without_the_config_block_the_plane_serves_nothing() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = application(None, None);
     assert!(
-        oauth_as_plane(&app).is_none(),
+        app.oauth_as_any().is_none(),
         "the unconfigured product must not be an authorization server"
     );
     let served = served_paths(&app);
@@ -145,7 +143,7 @@ async fn the_inventory_is_exactly_what_the_mount_registers() {
     let block = cfg();
     let app = application(Some(&block), None);
     assert!(
-        oauth_as_plane(&app).is_some(),
+        app.oauth_as_any().is_some(),
         "the config block was given, so the plane must exist"
     );
     let with = served_paths(&app);
@@ -213,8 +211,7 @@ async fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
 async fn the_mounted_surface_and_the_app_state_cannot_disagree() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let app = application(Some(&cfg()), None);
-    let _plane: Arc<busbar_core_oauth2::plane::AsPlane> =
-        oauth_as_plane(&app).expect("configured, so present");
+    assert!(app.oauth_as_any().is_some(), "configured, so present");
     let served = served_paths(&app);
     for path in inventory(&AsIdentity::from_cfg(&cfg()).expect("valid configured identity")) {
         assert!(
