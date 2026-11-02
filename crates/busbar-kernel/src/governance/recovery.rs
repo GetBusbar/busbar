@@ -44,6 +44,51 @@ pub trait RecoverySink: Send + Sync {
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError>;
     fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError>;
 
+    /// Return one bounded summary per operation only AFTER verifying its complete
+    /// current selected ancestry, including genesis, identities, legal states,
+    /// predecessor fingerprints and every revision. Endpoint equality is not proof.
+    fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
+        summarize_recovery_chains(self.replay()?)
+    }
+
+    /// Confirm exact membership in the CURRENT selected predecessor chain. An
+    /// immutable journal candidate by itself never establishes this authority.
+    fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let events = self.replay()?;
+        let present = events.iter().any(|selected| selected == event);
+        summarize_recovery_chains(events)?;
+        if present {
+            Ok(())
+        } else {
+            Err(RecoveryError::Conflict(
+                "recovery checkpoint is not in current selected ancestry".into(),
+            ))
+        }
+    }
+
+    /// Adopt through the same full ancestry proof, retaining only its verified
+    /// initial and selected events at the caller. Production adapters stream it.
+    fn adopt_verdict_selection(
+        &self,
+        resolution: &RecoveryResolution,
+        transitions: &[RecoveryEvent],
+    ) -> Result<RecoverySelection, RecoveryError> {
+        let mut selections =
+            summarize_recovery_chains(self.adopt_verdict(resolution, transitions)?)?;
+        if selections.len() != 1 {
+            return Err(RecoveryError::Invalid(
+                "adoption must select exactly one operation".into(),
+            ));
+        }
+        let selection = selections.pop().expect("one verified operation");
+        if selection.selected.operation_id != resolution.operation_id {
+            return Err(RecoveryError::Invalid(
+                "adoption selected another operation".into(),
+            ));
+        }
+        Ok(selection)
+    }
+
     /// Foreign custody is visible without granting this process any write or send authority.
     fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
         Ok(Vec::new())
@@ -68,6 +113,36 @@ pub trait RecoverySink: Send + Sync {
             "recovery Store does not support audited foreign custody adoption".into(),
         ))
     }
+}
+
+/// A summary issued only after the sink has verified the full CURRENT selected
+/// predecessor chain. Keeping its endpoints does not replace that Store proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverySelection {
+    pub initial: RecoveryEvent,
+    pub selected: RecoveryEvent,
+}
+
+fn summarize_recovery_chains(
+    events: Vec<RecoveryEvent>,
+) -> Result<Vec<RecoverySelection>, RecoveryError> {
+    let mut selections = std::collections::BTreeMap::<[u8; 16], RecoverySelection>::new();
+    for event in events {
+        if let Some(selection) = selections.get_mut(&event.operation_id) {
+            event.follows(Some(&selection.selected))?;
+            selection.selected = event;
+        } else {
+            event.follows(None)?;
+            selections.insert(
+                event.operation_id,
+                RecoverySelection {
+                    initial: event.clone(),
+                    selected: event,
+                },
+            );
+        }
+    }
+    Ok(selections.into_values().collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
