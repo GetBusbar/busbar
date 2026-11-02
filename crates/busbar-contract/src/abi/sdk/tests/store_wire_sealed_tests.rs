@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::task::{Context, Poll};
 
 use super::{drive_kept, Body, Pool, Wire};
-use crate::abi::host::conn::connector::{ConnectorSlots, FactsIn, IoIn, StreamFacts};
+use crate::abi::host::conn::connector::{
+    ConnectorSlots, EstablishIn, FactsIn, IoIn, StreamFacts, UpgradeIn, UPGRADE_VERIFY_OFF,
+};
 use crate::abi::host::service::ServiceOut;
 use crate::abi::mechanism::call::{Outcome, RawOutcome};
 use crate::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
@@ -53,6 +55,8 @@ struct Script {
     accepted: Vec<u8>,
     established: u64,
     closed: usize,
+    dial_timeouts: Vec<u32>,
+    upgrade_flags: Vec<u32>,
 }
 
 static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -66,8 +70,11 @@ fn script<R>(f: impl FnOnce(&mut Script) -> R) -> R {
     f(SCRIPT.lock().unwrap().as_mut().unwrap())
 }
 
-extern "C" fn establish(_: HostCtx, _: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+extern "C" fn establish(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the existing connector callback receives its initialized EstablishIn.
+    let timeout = unsafe { (*input.cast::<EstablishIn>()).timeout_ms };
     let stream = script(|s| {
+        s.dial_timeouts.push(timeout);
         s.established += 1;
         s.established
     });
@@ -96,8 +103,13 @@ extern "C" fn facts(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> Raw
     RawOutcome::of(Outcome::Ready)
 }
 
-extern "C" fn upgrade(_: HostCtx, _: *const c_void, _: *mut ServiceOut) -> RawOutcome {
-    script(|s| s.security = Security::Secure);
+extern "C" fn upgrade(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the existing connector callback receives its initialized UpgradeIn.
+    let flags = unsafe { (*input.cast::<UpgradeIn>()).flags };
+    script(|s| {
+        s.upgrade_flags.push(flags);
+        s.security = Security::Secure;
+    });
     RawOutcome::of(Outcome::Ready)
 }
 
@@ -581,4 +593,32 @@ fn a_kept_connection_requires_fresh_secure_facts_for_the_next_credential() {
     assert_eq!(pool.idle(), 0);
     drop(parked);
     assert_eq!(script(|s| s.closed), 1);
+}
+
+/// Forwarding only: actual TLS and operator-class enforcement remain the connector's
+/// cryptographic tests. This observes the existing ABI boundary without a new host adapter.
+#[test]
+fn wire_dial_timeout_and_upgrade_flags_reach_the_host_unchanged() {
+    let _serial = serial();
+    for (unverified, expected_flags) in [(false, 0), (true, UPGRADE_VERIFY_OFF)] {
+        let pool = Pool::new(1);
+        let host = make_host(Security::Clear, true, []);
+        let (answer, parked) = enter(&pool, &host, None, move |wire| {
+            Box::pin(async move {
+                wire.connect_timed(0, Some("store.example:5432"), 300)
+                    .await?;
+                if unverified {
+                    wire.upgrade_secure_unverified(None).await?;
+                } else {
+                    wire.upgrade_secure(None).await?;
+                }
+                Ok(())
+            })
+        });
+        assert_eq!(answer, Step::Ready(Ok(())));
+        assert_eq!(script(|s| s.dial_timeouts.clone()), vec![300]);
+        assert_eq!(script(|s| s.upgrade_flags.clone()), vec![expected_flags]);
+        drop(parked);
+        drop(pool);
+    }
 }
