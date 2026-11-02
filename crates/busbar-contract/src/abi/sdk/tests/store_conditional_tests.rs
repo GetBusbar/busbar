@@ -22,6 +22,75 @@ fn candidate() -> Request {
 }
 
 #[test]
+fn raw_record_encoder_growth_and_partial_decodes_retire_every_owned_copy_wiped() {
+    use crate::alloc_counter::InitializedPayloadProbe;
+    use zeroize::Zeroizing;
+
+    let mut request = Zeroizing::new(candidate());
+    request.predicates[0].expected = Expected::Bytes(b"old-record-CANARY".repeat(16));
+    if let Mutation::Put { value, .. } = &mut request.mutations[0] {
+        *value = b"new-record-CANARY".repeat(24);
+    }
+    // SAFETY: every encoder allocation is an initialized owned base prefix and stays on this
+    // thread through wiping/free or the end of observation. No spare capacity is inspected.
+    let probe = unsafe { InitializedPayloadProbe::start().expect("open payload observer") };
+    let bytes = request.encode_held().unwrap();
+    let decoded = Zeroizing::new(Request::decode(&bytes).unwrap());
+    assert_eq!(*decoded, *request);
+    assert_eq!(decoded.fingerprint(), request.fingerprint());
+    drop(decoded);
+    drop(bytes);
+    assert_owned_wiped(probe, 6);
+
+    let encoded = request.encode_held().unwrap();
+    for removed in [0, 1, 8, 32] {
+        let mut broken = Zeroizing::new(encoded.to_vec());
+        if removed == 0 {
+            broken.push(0);
+        } else {
+            let len = broken.len() - removed;
+            broken.truncate(len);
+        }
+        // SAFETY: decoded field owners remain initialized on this thread until the failed
+        // constructor's guards wipe them and free them before returning.
+        let probe = unsafe { InitializedPayloadProbe::start().expect("open payload observer") };
+        assert!(Request::decode(&broken).is_err());
+        assert_owned_wiped(probe, 4);
+    }
+}
+
+fn assert_owned_wiped(probe: crate::alloc_counter::InitializedPayloadProbe, minimum: usize) {
+    let observations = probe.finish();
+    assert!(!observations.reentered);
+    assert!(
+        observations.payloads.len() >= minimum,
+        "actual owned payloads were registered"
+    );
+    for payload in observations.payloads {
+        assert!(
+            payload.freed,
+            "conditional record allocation survived: {payload:?}"
+        );
+        assert!(
+            !payload.reallocated,
+            "ordinary realloc retired raw record bytes"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(payload.read_error, None);
+            assert!(payload.complete_read);
+            assert_eq!(payload.bytes_read, payload.len);
+            assert!(
+                payload.wiped,
+                "raw record allocation reached free unwiped: {payload:?}"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(payload.read_error, Some(std::io::ErrorKind::Unsupported));
+    }
+}
+
+#[test]
 fn codec_preserves_binary_keys_all_predicates_and_mutations() {
     let mut request = candidate();
     request.predicates.push(Predicate {

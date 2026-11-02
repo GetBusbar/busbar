@@ -1506,6 +1506,7 @@ impl KernelServices {
         candidate: crate::host_records::ConditionalCandidate,
         acked: crate::host_records::ConditionalAcked,
     ) -> Result<(), &'static str> {
+        let candidate = zeroize::Zeroizing::new(candidate);
         use crate::host_records::{
             ChainMutation, ConditionalOwed, ConditionalWrite, RecordMutation,
         };
@@ -1542,32 +1543,34 @@ impl KernelServices {
             }
             Ok(schema)
         };
-        let mut request = Request {
+        let mut request = zeroize::Zeroizing::new(Request {
             version: VERSION,
             op_id: crate::door::op_id(),
             predicates: Vec::new(),
             mutations: Vec::new(),
-        };
-        for predicate in candidate.predicates {
+        });
+        for predicate in &candidate.predicates {
             let schema = schema_at(predicate.kind, false)?;
+            request.predicates.reserve(1);
             request.predicates.push(Predicate {
                 schema: schema.as_str().to_string(),
                 key: record_key(&caller.instance, &predicate.key),
-                expected: predicate.expected,
+                expected: predicate.expected.clone(),
             });
         }
-        for mutation in candidate.mutations {
+        for mutation in &candidate.mutations {
+            request.mutations.reserve(1);
             request.mutations.push(match mutation {
                 RecordMutation::Put { kind, key, value } => {
-                    let schema = schema_at(kind, false)?;
+                    let schema = schema_at(*kind, false)?;
                     Mutation::Put {
                         schema: schema.as_str().to_string(),
                         key: record_key(&caller.instance, &key),
-                        value,
+                        value: value.clone(),
                     }
                 }
                 RecordMutation::Delete { kind, key } => {
-                    let schema = schema_at(kind, false)?;
+                    let schema = schema_at(*kind, false)?;
                     Mutation::Delete {
                         schema: schema.as_str().to_string(),
                         key: record_key(&caller.instance, &key),
@@ -1575,60 +1578,65 @@ impl KernelServices {
                 }
             });
         }
-        let mut chains: Vec<crate::host_chains::ConditionalChain> = Vec::new();
+        let mut chains =
+            zeroize::Zeroizing::new(Vec::<crate::host_chains::ConditionalChain>::new());
         let mut chain_scopes = std::collections::HashMap::new();
-        for chain in candidate.chains {
+        for chain in &candidate.chains {
             use crate::host_chains::ConditionalChainAction;
-            let (kind, scope, life, action) = match chain {
+            let (kind, scope, life) = match chain {
                 ChainMutation::Append {
-                    kind,
-                    scope,
-                    life,
-                    content,
-                } => (
-                    kind,
-                    scope,
-                    life,
-                    ConditionalChainAction::Append(vec![content]),
-                ),
-                ChainMutation::Drop { kind, scope, life } => {
-                    (kind, scope, life, ConditionalChainAction::Drop)
+                    kind, scope, life, ..
                 }
-                ChainMutation::Check { kind, scope, life } => {
-                    (kind, scope, life, ConditionalChainAction::Check)
-                }
+                | ChainMutation::Drop { kind, scope, life }
+                | ChainMutation::Check { kind, scope, life } => (*kind, scope, life),
             };
             let schema = schema_at(kind, true)?;
-            let scope = crate::host_chains::scope_of(&scope)
-                .ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?
-                .to_string();
-            let address = (schema.as_str(), scope.clone());
+            let mut scope = zeroize::Zeroizing::new(
+                crate::host_chains::scope_of(scope)
+                    .ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?
+                    .to_string(),
+            );
+            let mut life = zeroize::Zeroizing::new(life.clone());
+            let mut action = zeroize::Zeroizing::new(match chain {
+                ChainMutation::Append { content, .. } => {
+                    ConditionalChainAction::Append(vec![content.clone()])
+                }
+                ChainMutation::Drop { .. } => ConditionalChainAction::Drop,
+                ChainMutation::Check { .. } => ConditionalChainAction::Check,
+            });
+            let address = (schema.as_str(), scope.to_string());
             if let Some(&index) = chain_scopes.get(&address) {
                 let previous: &mut crate::host_chains::ConditionalChain = &mut chains[index];
-                if previous.life != life {
+                if previous.life != *life {
                     return Err("conflicting conditional chain observations");
                 }
-                match (&mut previous.action, action) {
+                match (&mut previous.action, &mut *action) {
                     (
                         ConditionalChainAction::Append(existing),
-                        ConditionalChainAction::Append(mut additional),
-                    ) => existing.append(&mut additional),
+                        ConditionalChainAction::Append(additional),
+                    ) => existing.append(additional),
                     _ => return Err("overlapping conditional chain operations"),
                 }
                 continue;
             }
             chain_scopes.insert(address, chains.len());
             let framing = chain_at(kind).ok_or(NOT_A_KIND)?;
+            chains.reserve(1);
             chains.push(crate::host_chains::ConditionalChain {
                 schema,
-                scope,
+                scope: std::mem::take(&mut *scope),
                 framing,
-                life,
-                action,
+                life: std::mem::replace(
+                    &mut *life,
+                    busbar_contract::abi::sdk::store::conditional::Expected::Absent,
+                ),
+                action: std::mem::replace(&mut *action, ConditionalChainAction::Check),
             });
         }
         if chains.is_empty() {
-            request.encode().map_err(|_| "invalid record transaction")?;
+            request
+                .encode_held()
+                .map_err(|_| "invalid record transaction")?;
         }
         let write = ConditionalWrite::new(
             Arc::clone(&caller.instance),
@@ -2865,10 +2873,11 @@ impl HostServices for KernelServices {
         };
         Ran::Now(
             match self.work.bind(&caller.instance, handle, &owner, unit) {
-                Ok(w) => Stored {
-                    value: 0,
-                    ..work_found(handle, &w)
-                },
+                Ok(w) => {
+                    let mut stored = work_found(handle, &w);
+                    stored.value = 0;
+                    stored
+                }
                 Err(why) => Stored::refused(why),
             },
         )

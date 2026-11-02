@@ -816,7 +816,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         request: &crate::abi::sdk::plane::conditional::Request,
     ) -> Result<(), &'static str> {
         use crate::abi::sdk::plane::conditional as wire;
-        self.conditional_extension(leases, wire::INTENT, wire::encode_request(request)?)
+        self.conditional_extension(leases, wire::INTENT, wire::encode_request_held(request)?)
     }
 
     /// Lease a read-only original-incarnation observation. Return PENDING, then issue fresh
@@ -827,7 +827,11 @@ impl<'a, T: AbiOut> Out<'a, T> {
         request: &crate::abi::sdk::plane::conditional::Observation,
     ) -> Result<(), &'static str> {
         use crate::abi::sdk::plane::conditional as wire;
-        self.conditional_extension(leases, wire::OBSERVE, wire::encode_observation(request)?)
+        self.conditional_extension(
+            leases,
+            wire::OBSERVE,
+            zeroize::Zeroizing::new(wire::encode_observation(request)?),
+        )
     }
 
     /// Lease an exact outcome-only settlement acknowledgement. Return PENDING from DRIVE/TICK
@@ -839,7 +843,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         settlement: &crate::abi::sdk::plane::conditional::Settlement,
     ) -> Result<(), &'static str> {
         use crate::abi::sdk::plane::conditional as wire;
-        let encoded = wire::encode_settlement_ack(settlement);
+        let encoded = zeroize::Zeroizing::new(wire::encode_settlement_ack(settlement));
         wire::read_settlement_ack(&encoded)?;
         self.conditional_extension(leases, wire::SETTLEMENT_ACK, encoded)
     }
@@ -848,7 +852,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         &mut self,
         leases: &Leases,
         key: &str,
-        encoded: Vec<u8>,
+        encoded: zeroize::Zeroizing<Vec<u8>>,
     ) -> Result<(), &'static str> {
         use crate::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
         use crate::abi::sdk::plane::conditional as wire;
@@ -897,30 +901,19 @@ impl<'a, T: AbiOut> Out<'a, T> {
             .checked_add(encoded.len())
             .filter(|&n| n <= crate::abi::mechanism::check::HARD_MAX_BYTES as usize)
             .ok_or(wire::INVALID)?;
-        let mut bytes = Vec::with_capacity(len);
+        let mut bytes = crate::abi::sdk::secret_bytes::SecretBytes::with_capacity(len);
         bytes.extend_from_slice(prior);
-        #[cfg(test)]
-        // SAFETY: this owned initialized Vec stays on the probe's thread through lease release.
-        if ext.flags & BLOB_SECRET != 0 {
-            unsafe {
-                crate::alloc_counter::watch_initialized_payload(&bytes);
-            }
-        }
         bytes.extend_from_slice(&encoded);
-        #[cfg(test)]
-        // SAFETY: include the initialized appended bytes without observing spare capacity.
-        if ext.flags & BLOB_SECRET != 0 {
-            unsafe {
-                crate::alloc_counter::watch_initialized_payload(&bytes);
-            }
-        }
         self.held_by(&leases.alive);
-        let mut blob = if ext.flags & BLOB_SECRET != 0 {
-            leases.secret_blob(self.head(), bytes, BLOB_OCTETS)
+        // An intent can carry raw record credentials even when there was no prior secret
+        // extension. Its final lease must wipe just like its private encoder and compose scratch.
+        let flags = ext.flags | if key == wire::INTENT { BLOB_SECRET } else { 0 };
+        let mut blob = if flags & BLOB_SECRET != 0 {
+            leases.secret_blob(self.head(), bytes.into_vec(), BLOB_OCTETS)
         } else {
-            leases.blob(self.head(), bytes, BLOB_OCTETS)
+            leases.blob(self.head(), bytes.into_vec(), BLOB_OCTETS)
         };
-        blob.flags = ext.flags;
+        blob.flags = flags;
         self.head().extensions = blob;
         Ok(())
     }

@@ -77,6 +77,8 @@ pub mod digest;
 pub mod hmac;
 // A PLUGIN'S CREDENTIALS: sealed at settings parse, no getter, no Debug (the chip design, its section on plugin credentials).
 pub mod cred;
+// Private storage for encoders whose payload may contain credentials.
+mod secret_bytes;
 // THE CHIP'S RECIPES: every auth step performed by the credential (the chip design, its section on recipe classes).
 pub mod chip;
 // THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its

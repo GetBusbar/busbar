@@ -66,11 +66,13 @@ pub(crate) unsafe fn prepare(
     }
     let driver = matches!(operation, slot::DRIVE | slot::TICK);
     let settlement = if driver {
-        let mut selected = wake
-            .conditional_driver
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        *selected = Some(head.ticket);
+        {
+            let mut selected = wake
+                .conditional_driver
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *selected = Some(head.ticket);
+        }
         served
             .store
             .settlement_input(caller(wake))
@@ -398,7 +400,9 @@ pub(crate) unsafe fn answer(
     {
         return Err(());
     }
-    let request = wire::read_request(bytes).map_err(|_| ())?;
+    let request = wire::read_request(bytes)
+        .map_err(|_| ())?
+        .map(zeroize::Zeroizing::new);
     let observation = wire::read_observation(bytes).map_err(|_| ())?;
     if request.is_some() == observation.is_some() {
         return Err(());

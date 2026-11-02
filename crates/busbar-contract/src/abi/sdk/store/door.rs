@@ -1060,6 +1060,7 @@ slot!(
             Err(error) => return refused(s, o, Text::render(format_args!("{error}"))),
         };
         if let Some(request) = request {
+            let request = zeroize::Zeroizing::new(request);
             if !s.record_transaction_supported() {
                 return refused(s, o, Text::render(format_args!("record transactions unsupported")));
             }
