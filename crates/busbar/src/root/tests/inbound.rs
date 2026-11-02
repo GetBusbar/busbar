@@ -37,10 +37,79 @@ fn line(path: &str, methods: u32) -> Line {
     }
 }
 
+fn app() -> Arc<busbar_kernel::state::App> {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = crate::root::test_plugins::scratch(&format!(
+        "inbound-app-{}",
+        busbar_kernel::door::op_id().counter(),
+    ));
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    drop(limits);
+    drop(rotate);
+    Arc::new(app)
+}
+
 fn side() -> (Arc<Inbound>, GuestList) {
-    for decls in crate::LINKED.protocols {
-        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-    }
+    crate::dist_root_install::install();
     let guests = GuestList::seal(vec![line(NATIVE, METHOD_POST)]).expect("the list seals");
     let next = Arc::new(AtomicU64::new(1));
     let inbound = Inbound::new(
@@ -59,14 +128,14 @@ fn side() -> (Arc<Inbound>, GuestList) {
                 guests: guests.clone(),
                 auths: std::collections::HashMap::new(),
                 body_limit: 16,
-                app: busbar_kernel_testkit::test_support::TestApp::new().build(),
+                app: app(),
                 door_refusals: Vec::new(),
                 ids: guests
                     .lines()
                     .iter()
                     .map(|_| auth_handle::next_ref_id(RefSpace::Line))
                     .collect(),
-                signed_ingress: busbar_kernel_testkit::test_support::inbound::signed_by_dialect(),
+                signed_ingress: Arc::new(|_, _| false),
                 scope: None,
             },
         )

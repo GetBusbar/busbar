@@ -95,7 +95,12 @@ pub fn release_policy(release: &SigningKey) -> TrustPolicy {
 }
 
 pub fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("busbar-plugins-{tag}-{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-plugins-{tag}-{}-{next}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a scratch directory");
     dir

@@ -1117,19 +1117,97 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    crate::dist_root_install::install();
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(
-        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = fixture_plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(&statement));
+    let directory = fixture_plugins::scratch("plane-driver-admin-audit");
+    let library = std::fs::read(&path).expect("the actual store library reads");
+    let key = fixture_plugins::key(0x5a);
+    std::fs::write(
+        directory.join("store.tar.gz"),
+        fixture_plugins::signed(&key, manifest, &library),
     )
+    .expect("stage the actual store archive");
+    busbar_kernel::preflight::install_linked_rows(busbar_kernel::preflight::RootInstall {
+        registry_build: Some(|input, _notes| {
+            assert!(
+                input.linked.is_empty(),
+                "this external binary links no cold plugins"
+            );
+            let registry = busbar_plugin_loader::boot::registry(
+                busbar_plugin_loader::boot::Build {
+                    linked: Vec::new(),
+                    scan: input
+                        .plugins
+                        .map(|plugins| busbar_plugin_loader::boot::Scan {
+                            policy: fixture_plugins::release_policy(&fixture_plugins::key(0x5a)),
+                            data_dir: input.data_dir,
+                            dir: plugins.enabled.then(|| std::path::Path::new(&plugins.dir)),
+                        }),
+                },
+                &mut |_| {},
+            )?;
+            Ok(Arc::new(registry))
+        }),
+        ..Default::default()
+    });
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_dropped::<busbar_plugin_loader::dispatch::kinds::store::Store>(
+        &path,
+        &statement,
+        Bind {
+            instance: "plane-driver-admin-audit".into(),
+            max_inflight_cap: 1024,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("the actual store loads through the memory ABI");
+    let settings =
+        std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".to_string());
+    let _: serde_json::Value =
+        serde_json::from_str(&settings).expect("the actual store settings are JSON");
+    let store = Arc::new(
+        busbar_plugin_loader::store_v3::LoadedStore::open(
+            plugin,
+            dispatcher,
+            settings.as_bytes(),
+            busbar_kernel::door::op_id,
+        )
+        .expect("the actual store opens"),
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "store": {"module": module},
+        "auth": {"chain": [], "admin_auth": []},
+        "providers": {},
+        "models": {},
+    }))
     .expect("the admin-route deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the admin-route deployment resolves");
-    let store = crate::root::real_store::store();
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
-        Arc::new(crate::root::door_steps::Rules::default());
+        Arc::new(busbar_kernel::appbuild::AcceptAll);
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        Default::default(),
+        busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
         None,
         Default::default(),
         Default::default(),

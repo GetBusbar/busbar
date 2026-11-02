@@ -586,7 +586,8 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     ROOT_CARD.card_applied(&boot, "actual boot");
     ROOT_CARD.boot_in_store(None).unwrap();
     let build = |fee, prior: Option<&busbar_kernel::state::App>| {
-        let mut cfg = config.clone();
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual product deployment resolves for this generation");
         cfg.per_request_fee = fee;
         if let Some(prior) = prior {
             cfg.limits.request_body_max_bytes = prior

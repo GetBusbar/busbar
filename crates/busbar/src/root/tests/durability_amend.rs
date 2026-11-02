@@ -123,7 +123,7 @@ fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_ker
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config_with_store(
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugins,
         None,
@@ -136,6 +136,7 @@ fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_ker
             records: slots.records(),
             calls: Some(slots.calls()),
         }),
+        false,
     )
     .expect("the product builds the amendment deployment over its actual store");
     limits.keep().expect("the product limits commit");

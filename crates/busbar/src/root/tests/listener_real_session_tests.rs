@@ -6,6 +6,77 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const VALID: &[u8] = b"GET /session HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
 
+fn app() -> Arc<busbar_kernel::state::App> {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = crate::root::test_plugins::scratch(&format!(
+        "real-session-app-{}",
+        busbar_kernel::door::op_id().counter(),
+    ));
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    drop(limits);
+    drop(rotate);
+    Arc::new(app)
+}
+
 async fn real_framer() -> (tokio::sync::MutexGuard<'static, ()>, DataFramer) {
     use crate::root::doors::{bind_on, Dispatched};
     use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
@@ -15,6 +86,7 @@ async fn real_framer() -> (tokio::sync::MutexGuard<'static, ()>, DataFramer) {
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 
     let publishing = crate::root::PUBLISHING.lock().await;
+    crate::dist_root_install::install();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     assert!(crate::root::inbound::install(&dispatcher));
     let http = crate::root::test_plugins::linked_transport(
@@ -52,7 +124,7 @@ async fn real_framer() -> (tokio::sync::MutexGuard<'static, ()>, DataFramer) {
     }])
     .unwrap();
     crate::root::inbound::stage(guests, Vec::new());
-    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
+    let app = app();
     assert!(crate::root::inbound::publish(&app).is_some());
     (publishing, framer)
 }
@@ -102,7 +174,17 @@ fn route(effects: Arc<AtomicUsize>, accepted: bool) -> Router {
 }
 
 async fn exchange(framer: DataFramer, router: Router, request: &[u8], body: &[u8]) -> Vec<u8> {
-    let (mut client, server) = tokio::io::duplex(16 * 1024);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a real loopback TCP listener");
+    let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .expect("the real peer connects");
+    let (server, _) = listener
+        .accept()
+        .await
+        .expect("the product accepts its peer");
+    drop(listener);
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::super::serve(
         server,
