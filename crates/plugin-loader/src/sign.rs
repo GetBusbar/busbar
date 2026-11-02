@@ -646,11 +646,7 @@ pub enum Verdict {
 }
 
 pub fn kind_restart_default(kind: &str) -> bool {
-    match kind {
-        "hook" | "auth" => false,
-
-        _ => true,
-    }
+    !matches!(kind, "hook" | "auth")
 }
 
 /// The EFFECTIVE restart-required verdict for one settings field: the kind-derived default
@@ -678,19 +674,14 @@ pub fn effective_restart_required(
         None => default,
         Some(true) => true,
         Some(false) => {
-            if !default {
-                false
-            } else if matches!(
-                verdict,
-                Verdict::Trusted {
-                    first_party: true,
-                    ..
-                }
-            ) {
-                false
-            } else {
-                true
-            }
+            default
+                && !matches!(
+                    verdict,
+                    Verdict::Trusted {
+                        first_party: true,
+                        ..
+                    }
+                )
         }
     }
 }

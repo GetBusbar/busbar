@@ -463,13 +463,7 @@ pub struct AppParts {
     pub pool_decision_gates:
         std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
 
-    pub pool_rewrite_chains: std::collections::HashMap<
-        String,
-        Vec<(
-            std::time::Duration,
-            std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
-        )>,
-    >,
+    pub pool_rewrite_chains: ContainerRewriteMap,
 
     pub plane_gates: PlaneGateMap,
 
