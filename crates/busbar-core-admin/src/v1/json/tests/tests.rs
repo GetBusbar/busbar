@@ -587,8 +587,7 @@ async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_is_answered_with_1_5_5s_head() {
-    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    let resp = super::handlers::openapi(State(Arc::clone(&handle))).await;
+    let resp = super::handlers::openapi_document_response(super::handlers::openapi_json());
     assert_eq!(resp.status(), StatusCode::OK);
     let names: Vec<&str> = resp.headers().keys().map(|k| k.as_str()).collect();
     assert_eq!(names, ["content-type"], "{:?}", resp.headers());
