@@ -42,6 +42,15 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
     // slice for this synchronous call. Rust's borrows keep all four buffers live and disjoint;
     // sink itself stays initialized here and the SDK retains none of these ranges.
     let sink = unsafe { Lent::new(&sink) };
-    sink::fill(owed, sink, &mut Out::new(&mut out), class_of, fault_of);
+    // Use the normal custody constructor, also present under the test-support feature. Fill
+    // writes only scalar yield fields and the caller's buffers, so no holder escapes this call.
+    let holders = crate::abi::sdk::out::Holders::default();
+    sink::fill(
+        owed,
+        sink,
+        &mut Out::lent(&mut out, None, &holders),
+        class_of,
+        fault_of,
+    );
     out
 }
