@@ -355,25 +355,14 @@ pub fn try_resolve_pool_ordering(
     default_hook: Option<&str>,
     settings_version: u64,
 ) -> Result<Option<ResolvedPolicy>, String> {
-    if !cfg.base_named {
-        if let Some(name) = default_hook {
-            if let Some(hook) = hooks.get(name) {
-                if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
-                    return Ok(resolve_gate_transport(
-                        name,
-                        hook,
-                        hooks,
-                        env,
-                        settings_version,
-                    ));
-                }
-                tracing::warn!(
-                    hook = %name,
-                    "`default: true` hook is not a decision gate; ignored as the base ordering \
-                     (the compiled-in weighted backstop applies)"
-                );
-            }
-        }
+    if let Some((name, hook)) = inherited_ordering(cfg, hooks, default_hook) {
+        return Ok(resolve_gate_transport(
+            name,
+            hook,
+            hooks,
+            env,
+            settings_version,
+        ));
     }
     let Some(name) = cfg.policy.native_name() else {
         return Ok(None);
@@ -384,6 +373,25 @@ pub fn try_resolve_pool_ordering(
         .ok_or_else(|| format!("ranking strategy '{name}' has no hook axis"))?;
     let (policy, timeout) = crate::preflight::ranking_on_axis(axis.as_ref(), name)?;
     Ok(Some(ranked_policy(policy, timeout)))
+}
+
+fn inherited_ordering<'a>(
+    cfg: &crate::config::PoolCfg,
+    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    default_hook: Option<&'a str>,
+) -> Option<(&'a str, &'a crate::config::HookCfg)> {
+    if cfg.base_named {
+        return None;
+    }
+    let name = default_hook?;
+    let hook = hooks.get(name)?;
+    if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
+        return Some((name, hook));
+    }
+    tracing::warn!(hook = %name,
+        "`default: true` hook is not a decision gate; ignored as the base ordering \
+         (the compiled-in weighted backstop applies)");
+    None
 }
 
 pub fn resolve_pool_gates(

@@ -527,7 +527,6 @@ fn native_policy_resolves_constructed_policy() {
 
 #[test]
 fn default_hook_resolves_as_base_for_unnamed_pools() {
-    let env = test_env();
     let mut def = base_gate();
     def.default = true;
     let mut hooks = registry("def", def);
@@ -539,43 +538,34 @@ fn default_hook_resolves_as_base_for_unnamed_pools() {
     let mut unnamed = pool_with_hook("x");
     unnamed.gates.clear();
     assert!(
-        resolve_pool_ordering(&unnamed, &hooks, &env, Some("def"), 0).is_some(),
+        inherited_ordering(&unnamed, &hooks, Some("def")).is_some(),
         "an unnamed-base pool inherits the default hook as its ordering"
     );
 
     assert!(
-        resolve_pool_ordering(
-            &pool_policy(PoolPolicy::Weighted),
-            &hooks,
-            &env,
-            Some("def"),
-            0
-        )
-        .is_none(),
+        inherited_ordering(&pool_policy(PoolPolicy::Weighted), &hooks, Some("def")).is_none(),
         "a pool that named its base keeps it; the default does not override"
     );
 
     let gated = pool_with_hook("h");
     assert!(
-        resolve_pool_ordering(&gated, &hooks, &env, Some("def"), 0).is_some(),
+        inherited_ordering(&gated, &hooks, Some("def")).is_some(),
         "an unnamed-base pool with its own gate still inherits the default as base"
     );
     assert_eq!(
-        resolve_pool_gates(&gated, &hooks, &env, 0).len(),
+        decision_definitions(&hooks, &gated.gates).len(),
         1,
         "the pool's own gate resolves separately, on top of the inherited base"
     );
 
     assert!(
-        resolve_pool_ordering(&unnamed, &HashMap::new(), &env, None, 0).is_none(),
+        inherited_ordering(&unnamed, &HashMap::new(), None).is_none(),
         "no default hook ⇒ the compiled-in weighted backstop (None)"
     );
 }
 
 #[test]
 fn default_rw_hook_is_not_the_base_ordering() {
-    let env = test_env();
-
     let mut rw = base_gate();
     rw.prompt = PromptAccess::Rw;
     rw.default = true;
@@ -583,7 +573,7 @@ fn default_rw_hook_is_not_the_base_ordering() {
     let mut unnamed = pool_with_hook("x");
     unnamed.gates.clear();
     assert!(
-        resolve_pool_ordering(&unnamed, &hooks, &env, Some("def"), 0).is_none(),
+        inherited_ordering(&unnamed, &hooks, Some("def")).is_none(),
         "a prompt:rw default hook must not become the base ordering — it can never return an order"
     );
 
@@ -594,7 +584,7 @@ fn default_rw_hook_is_not_the_base_ordering() {
     let mut unnamed2 = pool_with_hook("x");
     unnamed2.gates.clear();
     assert!(
-        resolve_pool_ordering(&unnamed2, &hooks, &env, Some("deftap"), 0).is_none(),
+        inherited_ordering(&unnamed2, &hooks, Some("deftap")).is_none(),
         "a tap default hook must not become the base ordering — it has no decision arm"
     );
 }
