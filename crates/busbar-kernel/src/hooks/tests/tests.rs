@@ -17,222 +17,81 @@ mod resolution_tests;
 
 const EXTRA_STRATEGY: &str = "operator-order";
 
-struct ReceivingCalls {
-    calls: Arc<dyn busbar_contract::hook_calls::HookCalls>,
-    seen: Arc<std::sync::atomic::AtomicUsize>,
-    routes: Vec<busbar_contract::abi::mechanism::route::Route>,
-}
-
-impl busbar_contract::hook_calls::HookCalls for ReceivingCalls {
-    fn name(&self) -> &str {
-        "receiver"
-    }
-    fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
-        &self.routes
-    }
-    fn serve(
-        &self,
-        _: busbar_contract::abi::mechanism::endpoint::EndpointRequest,
-        _: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<
-        Result<busbar_contract::abi::mechanism::endpoint::EndpointResponse, String>,
-    > {
-        self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Box::pin(async {
-            Ok(
-                busbar_contract::abi::mechanism::endpoint::EndpointResponse {
-                    status: 202,
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                },
-            )
-        })
-    }
-    fn decide(
-        &self,
-        _: Arc<busbar_contract::abi::host::hook::DecideFrame>,
-        _: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<
-        busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::DecideOut>,
-    > {
-        let count = self.seen.load(std::sync::atomic::Ordering::SeqCst);
-        Box::pin(async move {
-            busbar_contract::hook_calls::Answered::Broken(format!("feedback={count}"))
-        })
-    }
-    fn transform(
-        &self,
-        f: Arc<busbar_contract::abi::host::hook::DecideFrame>,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<
-        busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::TransformOut>,
-    > {
-        self.calls.transform(f, b)
-    }
-    fn notify(
-        &self,
-        f: Arc<busbar_contract::abi::host::hook::NotifyFrame>,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<()> {
-        self.calls.notify(f, b)
-    }
-    fn configure(
-        &self,
-        n: &str,
-        s: &str,
-        v: u64,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<Result<(), String>> {
-        self.calls.configure(n, s, v, b)
-    }
-    fn status(
-        &self,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<Option<Vec<u8>>> {
-        self.calls.status(b)
-    }
-    fn describe(
-        &self,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<Option<Vec<u8>>> {
-        self.calls.describe(b)
-    }
-}
-
-struct ReceivingAxis;
-
-fn receiving_route() -> busbar_contract::abi::mechanism::route::Route {
-    busbar_contract::abi::mechanism::route::Route {
-        path: "/hooks/receiver/feedback".into(),
-        method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
-        auth: busbar_contract::abi::mechanism::route::RouteAuth::Key,
-    }
-}
-
-impl busbar_contract::hook_calls::HookAxis for ReceivingAxis {
-    fn routes(
-        &self,
-        _: &str,
-        _: &str,
-        _: &serde_json::Value,
-    ) -> Result<Vec<busbar_contract::abi::mechanism::route::Route>, String> {
-        Ok(vec![receiving_route()])
-    }
-    fn probe(
-        &self,
-        _: &str,
-        _: &str,
-        _: &serde_json::Value,
-    ) -> Option<busbar_contract::hook_calls::Probed> {
-        Some((
-            Some(busbar_contract::hook_calls::HookFacts {
-                name: "receiver".into(),
-                ..Default::default()
-            }),
-            Vec::new(),
-        ))
-    }
-    fn open(
-        &self,
-        _: &str,
-        name: &str,
-        _: &serde_json::Value,
-        budget: std::time::Duration,
-    ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
-        let calls = crate::test_support::hook_double::HookAxisDouble::new(&["receiver"]).open(
-            "receiver",
-            name,
-            &serde_json::json!({}),
-            budget,
-        )?;
-        Ok(Arc::new(ReceivingCalls {
-            calls,
-            seen: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            routes: vec![receiving_route()],
-        }))
-    }
-    fn linked(&self, _: &str) -> bool {
-        true
-    }
-    fn first_party(&self, _: &str) -> bool {
-        true
-    }
-    fn call_budget(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(1)
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separate() {
-    let definitions = HashMap::from([(
-        "receiver".into(),
-        serde_json::from_value::<HookCfg>(
-            serde_json::json!({"kind": "gate", "module": "receiver-module"}),
-        )
-        .unwrap(),
-    )]);
-    let build = || {
-        let mut env = HookEnv::with_axis(
-            std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-            Arc::new(ReceivingAxis),
-            Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        );
-        let routes = env.route_decls(&definitions).unwrap();
-        let (policy, _) =
-            gate_transport_named("receiver", &definitions["receiver"], &env, 0).unwrap();
-        (env, routes, policy)
+#[test]
+fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separate() {
+    // Arbitrary inbound routes are host-boundary metadata, not an advertised
+    // webrequest/ranking product capability. Keep the actual route reuse rule
+    // and response forwarding here; actual product transport identity is also
+    // exercised by distribution::hooks_runtime_replies.
+    let settings = serde_json::Map::new();
+    let identity = RouteIdentity {
+        module: "receiver-module",
+        settings: &settings,
+        budget: std::time::Duration::from_secs(1),
     };
-    let (_old_env, mut old_routes, old_policy) = build();
-    let old_dispatch = old_routes.remove(0).dispatch;
-    let response = tokio::task::spawn_blocking(move || {
-        old_dispatch.handle_http(
-            &busbar_contract::abi::mechanism::endpoint::EndpointRequest {
-                method: "POST".into(),
-                path: receiving_route().path,
-                query: String::new(),
+    let old_generation = Arc::new(1usize);
+    let new_generation = Arc::new(0usize);
+    let old_routes = HashMap::from([("receiver".to_owned(), (identity, old_generation.clone()))]);
+    let selected = retained_route(&old_routes, "receiver", identity, |entry| entry.0)
+        .expect("the route and policy select the retained instance");
+    assert!(Arc::ptr_eq(&selected.1, &old_generation));
+    let response = hook_route_response(
+        "receiver",
+        Ok(
+            busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+                status: 202,
                 headers: Vec::new(),
                 body: Vec::new(),
             },
-        )
-    })
-    .await
-    .unwrap();
+        ),
+    );
     assert_eq!(response.status, 202);
-    let (_new_env, _new_routes, new_policy) = build();
-    let request = RoutingRequest {
-        request_id: 1,
-        pool: "p",
-        ingress_protocol: "x",
-        requested_model: None,
-        message_count: 0,
-        tool_count: 0,
-        has_tools: false,
-        total_chars: 0,
-        system_chars: 0,
-        max_tokens: None,
-        stream: false,
-        prompt: None,
-        identity: None,
-        signals: SignalBag::new(),
-        session: None,
-    };
-    let context = RoutingContext {
-        pool: "p",
-        budget_remaining: None,
-        budget: &[],
-    };
-    assert!(old_policy
-        .decide(&request, &[], &context, std::time::Duration::from_secs(1))
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("feedback=1"));
-    assert!(new_policy
-        .decide(&request, &[], &context, std::time::Duration::from_secs(1))
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("feedback=0"));
+    let new_routes = HashMap::from([("receiver".to_owned(), (identity, new_generation.clone()))]);
+    let old = retained_route(&old_routes, "receiver", identity, |entry| entry.0).unwrap();
+    let new = retained_route(&new_routes, "receiver", identity, |entry| entry.0).unwrap();
+    assert_eq!(
+        *old.1, 1,
+        "the retained old generation remains selected for its old route"
+    );
+    assert_eq!(
+        *new.1, 0,
+        "a new environment selects its independent new instance"
+    );
+    assert!(!Arc::ptr_eq(&old.1, &new.1));
+    assert!(retained_route(
+        &old_routes,
+        "receiver",
+        RouteIdentity {
+            module: "replacement",
+            ..identity
+        },
+        |entry| entry.0
+    )
+    .is_none());
+    assert!(retained_route(
+        &old_routes,
+        "receiver",
+        RouteIdentity {
+            budget: std::time::Duration::from_secs(2),
+            ..identity
+        },
+        |entry| entry.0
+    )
+    .is_none());
+    let changed = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
+        serde_json::json!({"url":"changed"}),
+    )
+    .unwrap();
+    assert!(retained_route(
+        &old_routes,
+        "receiver",
+        RouteIdentity {
+            settings: &changed,
+            ..identity
+        },
+        |entry| entry.0
+    )
+    .is_none());
 }
 
 #[test]

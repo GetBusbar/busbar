@@ -128,11 +128,20 @@ impl HookEnv {
         name: &str,
         timeout_ms: u64,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
-        if let Some(opened) = self.route_calls.get(name).filter(|opened| {
-            opened.module == module
-                && opened.resolved.as_value() == settings.as_value()
-                && opened.budget == policy_timeout(timeout_ms)
-        }) {
+        if let Some(opened) = retained_route(
+            &self.route_calls,
+            name,
+            RouteIdentity {
+                module,
+                settings,
+                budget: policy_timeout(timeout_ms),
+            },
+            |opened| RouteIdentity {
+                module: &opened.module,
+                settings: &opened.resolved,
+                budget: opened.budget,
+            },
+        ) {
             return Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
                 opened.calls.clone(),
                 name,
@@ -172,12 +181,22 @@ impl HookEnv {
                 continue;
             }
             let budget = policy_timeout(hook.timeout_ms);
-            let opened = match self.route_calls.get(name).filter(|opened| {
-                opened.module == hook.plugin
-                    && opened.resolved.as_value() == resolved.as_value()
-                    && opened.budget == budget
-                    && opened.calls.routes() == routes.as_slice()
-            }) {
+            let opened = match retained_route(
+                &self.route_calls,
+                name,
+                RouteIdentity {
+                    module: &hook.plugin,
+                    settings: &resolved,
+                    budget,
+                },
+                |opened| RouteIdentity {
+                    module: &opened.module,
+                    settings: &opened.resolved,
+                    budget: opened.budget,
+                },
+            )
+            .filter(|opened| opened.calls.routes() == routes.as_slice())
+            {
                 Some(opened) => opened.calls.clone(),
                 None => axis.open(&hook.plugin, name, resolved.as_value(), budget)?,
             };
@@ -281,6 +300,27 @@ fn preopen_definitions<T>(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct RouteIdentity<'a> {
+    module: &'a str,
+    settings: &'a serde_json::Map<String, serde_json::Value>,
+    budget: std::time::Duration,
+}
+
+fn retained_route<'a, T>(
+    routes: &'a std::collections::HashMap<String, T>,
+    name: &str,
+    requested: RouteIdentity<'_>,
+    identity: impl Fn(&'a T) -> RouteIdentity<'a>,
+) -> Option<&'a T> {
+    routes.get(name).filter(|retained| {
+        let retained = identity(*retained);
+        retained.module == requested.module
+            && retained.settings == requested.settings
+            && retained.budget == requested.budget
+    })
+}
+
 struct RouteCalls {
     module: String,
     definition: ResolvedSettings,
@@ -299,17 +339,26 @@ impl crate::plugin_routes::PluginHttpDispatch for HookHttp {
         &self,
         request: &busbar_contract::abi::mechanism::endpoint::EndpointRequest,
     ) -> busbar_contract::abi::mechanism::endpoint::EndpointResponse {
-        match tokio::runtime::Handle::current()
-            .block_on(self.calls.serve(request.clone(), self.budget))
-        {
-            Ok(response) => response,
-            Err(why) => {
-                tracing::warn!(hook = self.calls.name(), error = %why, "hook route failed");
-                busbar_contract::abi::mechanism::endpoint::EndpointResponse {
-                    status: 502,
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                }
+        hook_route_response(
+            self.calls.name(),
+            tokio::runtime::Handle::current()
+                .block_on(self.calls.serve(request.clone(), self.budget)),
+        )
+    }
+}
+
+fn hook_route_response(
+    name: &str,
+    response: Result<busbar_contract::abi::mechanism::endpoint::EndpointResponse, String>,
+) -> busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+    match response {
+        Ok(response) => response,
+        Err(why) => {
+            tracing::warn!(hook=name,error=%why,"hook route failed");
+            busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+                status: 502,
+                headers: Vec::new(),
+                body: Vec::new(),
             }
         }
     }
@@ -761,11 +810,20 @@ fn gate_transport_named(
     env: &HookEnv,
     _settings_version: u64,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
-    if let Some(opened) = env.route_calls.get(name).filter(|opened| {
-        opened.module == hook.plugin
-            && *opened.definition == hook.settings
-            && opened.budget == policy_timeout(hook.timeout_ms)
-    }) {
+    if let Some(opened) = retained_route(
+        &env.route_calls,
+        name,
+        RouteIdentity {
+            module: &hook.plugin,
+            settings: &hook.settings,
+            budget: policy_timeout(hook.timeout_ms),
+        },
+        |opened| RouteIdentity {
+            module: &opened.module,
+            settings: &opened.definition,
+            budget: opened.budget,
+        },
+    ) {
         return Some((
             crate::plane_driver::hooks::policy::HookPolicy::policy(opened.calls.clone(), name),
             opened.resolved.clone(),
