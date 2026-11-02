@@ -172,10 +172,31 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
     drop(gone);
     // A healthy instance's pending op is told it ended (`cancel`) before its frame and lent memory
     // go: off the watchdog's thread, so a `cancel` that hangs never stops the watchdog (the
-    // ticket-less watch judges it). A thread that cannot be started drops them as before.
+    // ticket-less watch judges it). A failed OS thread spawn must retain these still-lent
+    // ranges: no native closing callback has returned to release them.
     if !orphans.is_empty() {
-        let _ = std::thread::Builder::new()
+        let retained = Arc::new(std::sync::Mutex::new(Some(orphans)));
+        let crossing = Arc::clone(&retained);
+        let spawned = std::thread::Builder::new()
             .name("busbar-orphan-cancel".into())
-            .spawn(move || orphans.into_iter().for_each(super::worker::Orphan::cancel));
+            .spawn(move || {
+                let batch = crossing.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(batch) = batch {
+                    batch.into_iter().for_each(super::worker::Orphan::cancel);
+                }
+            });
+        if spawned.is_err() {
+            let batch = retained.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(mut batch) = batch {
+                // The batch lock is gone before reply/waker callbacks. Keep the frames and
+                // admission counts forever on this exceptional path rather than free raw
+                // ranges the plugin still owns. Faulted callers cannot mistake them for READY.
+                for orphan in &mut batch {
+                    orphan.fault_replies();
+                }
+                std::mem::forget(batch);
+                tracing::error!("could not start orphan cancellation; retained still-lent frames");
+            }
+        }
     }
 }

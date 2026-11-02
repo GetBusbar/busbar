@@ -1480,19 +1480,30 @@ impl Instance {
         class: DeadlineClass,
         unit: Option<u64>,
         framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
-    ) -> Outcome {
+    ) -> Crossed {
         let mut frame = (self.cancel_frame)();
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
         let crossed = self.watched(slot::CANCEL, || {
             crate::ffi_thread::on_plugin_thread(|| {
-                let _framing = super::framing_context::enter(framing);
+                let _framing = super::framing_context::enter(framing.clone());
                 // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
-                unsafe { self.cross(slot::CANCEL, input, out, out_size) }
+                let mut crossed = unsafe { self.cross(slot::CANCEL, input, out, out_size) };
+                if crossed.outcome == Outcome::Ready {
+                    crossed.disposition = Some(frame.disposition());
+                    crossed.cancel_writes = frame.writes();
+                }
+                // Copy the cancel's owned result and release any unconsumed answer lease while
+                // still on this FFI worker, before its next crossing can reuse returned storage.
+                if crossed.lease != 0 {
+                    self.release_unread(crossed.lease);
+                    crossed.lease = 0;
+                }
+                crossed
             })
         });
         drop(self.wake.exports.forget(self.wake, ticket));
-        crossed.map_or(Outcome::Fault, |c| c.outcome)
+        crossed.unwrap_or_else(|_| Crossed::host(Outcome::Fault))
     }
 
     /// CLOSE THE LIVE BOX OF AN `open` THE HOST JUDGED FAULT: the plugin answered READY or PENDING,
