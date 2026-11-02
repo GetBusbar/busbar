@@ -1211,6 +1211,52 @@ fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
 }
 
 #[test]
+fn a_verify_crossing_keeps_zeroising_request_facts_until_its_last_owner_retires() {
+    fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+    for point in [AuthPoint::Peer, AuthPoint::HeadBody] {
+        let mut req = request(None, None);
+        req.point = point;
+        req.peer = (point == AuthPoint::Peer).then(|| b"peer-canary".to_vec());
+        req.body = (point == AuthPoint::HeadBody).then(|| b"body-canary".to_vec());
+        req.method = "POST".into();
+        req.authority = "caller.example".into();
+        req.path = "/private".into();
+        req.query = Some("token=query-canary".into());
+        let held = super::Held::new(&req, None, &super::Headers::None, 16, 1, 1);
+        wiped_when_dropped(&held.peer);
+        wiped_when_dropped(&held.body);
+        wiped_when_dropped(&held.method);
+        wiped_when_dropped(&held.authority);
+        wiped_when_dropped(&held.path);
+        wiped_when_dropped(&held.query);
+
+        let in_flight = Arc::clone(&held);
+        drop(req);
+        drop(held);
+        let frame = in_flight.input(false);
+        if point == AuthPoint::Peer {
+            assert_eq!(in_flight.peer.as_deref(), Some(&b"peer-canary"[..]));
+            assert!(in_flight.body.is_none());
+            assert_eq!(frame.peer.ptr, in_flight.peer.as_ref().unwrap().as_ptr());
+            assert_eq!(frame.peer.len, b"peer-canary".len());
+        } else {
+            assert!(in_flight.peer.is_none());
+            assert_eq!(in_flight.body.as_deref(), Some(&b"body-canary"[..]));
+            assert_eq!(frame.body.ptr, in_flight.body.as_ref().unwrap().as_ptr());
+            assert_eq!(frame.body.len, b"body-canary".len());
+        }
+        assert_eq!(in_flight.method.as_str(), "POST");
+        assert_eq!(in_flight.authority.as_str(), "caller.example");
+        assert_eq!(in_flight.path.as_str(), "/private");
+        assert_eq!(in_flight.query.as_deref(), Some("token=query-canary"));
+        let retired = Arc::downgrade(&in_flight);
+        drop(in_flight);
+        assert!(retired.upgrade().is_none());
+    }
+}
+
+#[test]
 fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
     use crate::auth_door::{AuthInstance, AuthSink};
     use crate::dispatch::{load_linked, Bind, LinkedRow};
