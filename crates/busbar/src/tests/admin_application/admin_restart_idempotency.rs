@@ -142,24 +142,25 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
             .expect("the actual Store exposes typed calls"),
     )
     .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .expect("the real root composes the configured Store and admin application");
+    let (app, credential_rotation, limits) =
+        busbar_kernel::appbuild::build_app_from_config_with_store(
+            config,
+            plugin_config,
+            Some(overlay),
+            HashSet::new(),
+            HashSet::new(),
+            (None, None),
+            None,
+            &rules,
+            Some(anchor),
+            true,
+        )
+        .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let book = crate::root::boot::book(&app, &module)
         .expect("the first actual Store boot binds rate history and usage recovery");
     limits.keep().expect("the actual limits commit");
-    if let Some(rotate) = rotate {
+    if let Some(rotate) = credential_rotation {
         rotate();
     }
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -196,19 +197,20 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
         records: store.clone(),
         calls: Some(calls),
     };
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        restart_plugins,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .expect("the real root cold-composes a new App and governance over the same actual Store");
+    let (app, credential_rotation, limits) =
+        busbar_kernel::appbuild::build_app_from_config_with_store(
+            config,
+            restart_plugins,
+            Some(overlay),
+            HashSet::new(),
+            HashSet::new(),
+            (None, None),
+            None,
+            &rules,
+            Some(anchor),
+            true,
+        )
+        .expect("the real root cold-composes a new App and governance over the same actual Store");
     assert_eq!(
         app.config_version, 0,
         "the second App is a cold generation, not a reload carrying the first App"
@@ -217,7 +219,7 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
     let _book = crate::root::boot::book(&app, &module)
         .expect("the cold restarted governance reopens its book on the same actual Store");
     limits.keep().expect("actual restarted limits commit");
-    if let Some(rotate) = rotate {
+    if let Some(rotate) = credential_rotation {
         rotate();
     }
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -382,24 +384,25 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
             .expect("the actual Store exposes typed calls"),
     )
     .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .expect("the real root composes the configured Store and admin application");
+    let (app, credential_rotation, limits) =
+        busbar_kernel::appbuild::build_app_from_config_with_store(
+            config,
+            plugin_config,
+            Some(overlay),
+            HashSet::new(),
+            HashSet::new(),
+            (None, None),
+            None,
+            &rules,
+            Some(anchor),
+            true,
+        )
+        .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let book = crate::root::boot::book(&app, &module)
         .expect("the first actual Store boot binds rate history and usage recovery");
     limits.keep().expect("the actual limits commit");
-    if let Some(rotate) = rotate {
+    if let Some(rotate) = credential_rotation {
         rotate();
     }
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -444,19 +447,20 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
         records: store.clone(),
         calls: Some(calls),
     };
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        restart_plugins,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .expect("the real root cold-composes a new App and governance over the same actual Store");
+    let (app, credential_rotation, limits) =
+        busbar_kernel::appbuild::build_app_from_config_with_store(
+            config,
+            restart_plugins,
+            Some(overlay),
+            HashSet::new(),
+            HashSet::new(),
+            (None, None),
+            None,
+            &rules,
+            Some(anchor),
+            true,
+        )
+        .expect("the real root cold-composes a new App and governance over the same actual Store");
     assert_eq!(
         app.config_version, 0,
         "the second App is a cold generation, not a reload carrying the first App"
@@ -465,7 +469,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
     let _book = crate::root::boot::book(&app, &module)
         .expect("the cold restarted governance reopens its book on the same actual Store");
     limits.keep().expect("actual restarted limits commit");
-    if let Some(rotate) = rotate {
+    if let Some(rotate) = credential_rotation {
         rotate();
     }
     let gov = app

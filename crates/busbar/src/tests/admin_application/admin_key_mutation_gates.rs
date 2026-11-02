@@ -844,7 +844,10 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     };
 
     let doomed_url = keys_url.clone();
-    let doomed = tokio::spawn(async move { post(&client, &doomed_url).await });
+    let doomed = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        post(&client, &doomed_url).await
+    });
 
     const RENDEZVOUS_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(60);
     tokio::time::timeout(RENDEZVOUS_BACKSTOP, entered_rx.recv())
