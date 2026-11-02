@@ -16,7 +16,7 @@ pub mod routes;
 
 // Fixture source is also mounted privately by the kernel's unit tests. Production paths in
 // that shared source resolve through the kernel's existing public API here.
-pub use busbar_kernel::*;
+use busbar_kernel::*;
 pub mod ingress;
 pub mod test_support;
 pub mod testkit;
