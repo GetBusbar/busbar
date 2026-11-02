@@ -190,3 +190,104 @@ fn actual_secure_and_undeclared_refusals_happen_before_any_destination_open() {
     );
     assert_eq!(judged.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn actual_http_target_and_request_path_reach_the_same_real_peer() {
+    use busbar_contract::conn::{Conns, PieceKind, NO_TICKET};
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+    let _reactor = runtime().enter();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(2))
+                }
+                other => panic!("actual HTTP peer not reached: {other:?}"),
+            }
+        };
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 512];
+        loop {
+            let n = socket.read(&mut chunk).unwrap();
+            assert_ne!(n, 0);
+            bytes.extend_from_slice(&chunk[..n]);
+            if bytes.windows(4).any(|w| w == b"\r\n\r\n") && bytes.ends_with(b"body") {
+                break;
+            }
+            assert!(bytes.len() < 4096 && Instant::now() < deadline);
+        }
+        socket
+            .write_all(b"HTTP/1.1 201 Created\r\ncontent-length: 6\r\n\r\nanswer")
+            .unwrap();
+        bytes
+    });
+    let connector = Connector::serving(
+        Transports::new(vec![
+            actual_transport("BUSBAR_TEST_TCP_CDYLIB"),
+            actual_transport("BUSBAR_TEST_HTTP_CDYLIB"),
+        ])
+        .unwrap(),
+        busbar_core_connector::process::judge(
+            busbar_core_connector::process::dest_judge(&Default::default()).unwrap(),
+            &[],
+        ),
+        None,
+        Arc::new(|_, _| {}),
+    );
+    DeclaredConns::declare(
+        &connector,
+        OWNER,
+        NeedId(0),
+        &need("http", EGRESS_LOOPBACK_ALLOWED),
+        None,
+        None,
+    )
+    .unwrap();
+    let target = format!("http://{address}/base");
+    let desc = OpenDesc {
+        target: &target,
+        method: b"GET",
+        head_target: b"/reply",
+        body: Some(b"body".to_vec()),
+        timeout_ms: 5_000,
+        ..Default::default()
+    };
+    let connection = connector
+        .open_request(OWNER, NeedId(0), &desc, false, 123)
+        .expect("actual HTTP request opens");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut body = Vec::new();
+    let mut heads = 0;
+    let mut buffer = [0u8; 512];
+    while body.len() < 6 {
+        match connector.read(OWNER, connection, NO_TICKET, &mut buffer) {
+            Err(ConnError::Pending) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(2))
+            }
+            Ok(piece) => match piece.kind {
+                PieceKind::Fields => heads += 1,
+                PieceKind::Body => body.extend_from_slice(&buffer[..piece.len]),
+                PieceKind::Completion => break,
+                PieceKind::HookReply => panic!("HTTP reply became a hook reply"),
+            },
+            other => panic!("actual HTTP reply: {other:?}"),
+        }
+    }
+    connector.close(OWNER, connection).unwrap();
+    let request = peer.join().unwrap();
+    assert!(request.starts_with(b"GET /reply HTTP/1.1\r\n"));
+    assert!(request.ends_with(b"body"));
+    assert_eq!(heads, 1);
+    assert_eq!(body, b"answer");
+}
