@@ -16,6 +16,14 @@
 //! `admin::v1::json` (the `err_json`/`ok_json`/`err_json_cond` envelope primitives),
 //! and `admin::planeverbs` (the plane trust verbs' audit record and refusal envelope). The config version history (`versions`) lives here, on `App` behind the seam's slot.
 
+// Unit tests compile the real service as their own crate instance. Mount the same fixture
+// source against that instance so its thread-local override reaches these handlers.
+#[cfg(test)]
+extern crate self as busbar_core_admin;
+#[cfg(test)]
+#[path = "../../busbar-core-admin-testkit/src/restart.rs"]
+mod restart_fixture;
+
 pub mod admin_state;
 pub mod keys;
 pub mod restart;

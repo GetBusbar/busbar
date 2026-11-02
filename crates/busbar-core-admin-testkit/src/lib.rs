@@ -3,23 +3,9 @@
 
 //! Dev-only orchestration over the admin service's real seams.
 
-/// Force the real restart handler to see no supervisor on this thread while `f` runs.
-/// Restores the prior override when the future completes, panics, or is dropped. Like the
-/// underlying thread-local seam, this requires a current-thread executor.
-pub async fn with_forced_unsupervised<F, Fut, T>(f: F) -> T
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = T>,
-{
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            busbar_core_admin::restart::swap_forced_unsupervised(self.0);
-        }
-    }
-    let _restore = Restore(busbar_core_admin::restart::swap_forced_unsupervised(true));
-    f().await
-}
+mod restart;
+
+pub use restart::with_forced_unsupervised;
 
 /// Every component schema a registered plane's `openapi_schemas` contributes, as
 /// `(plane key, schema name, schema)`, each plane folded over the two generators `openapi_doc` hands

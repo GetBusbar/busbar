@@ -351,7 +351,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "busbar-contract",
- "busbar-core-admin-testkit",
  "busbar-kernel",
  "busbar-kernel-egress",
  "busbar-kernel-seams",
