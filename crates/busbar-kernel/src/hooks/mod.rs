@@ -446,6 +446,20 @@ pub fn resolve_pool_rewrites(
     ranked.into_iter().map(|(_, t, p)| (t, p)).collect()
 }
 
+fn failed_rewrite(
+    on_error: &crate::config::PolicyOnError,
+    message: String,
+) -> busbar_contract::hooks::TransformOutcome {
+    if failed_call_refuses(on_error) {
+        busbar_contract::hooks::TransformOutcome::Reject {
+            status: REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            message: REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+        }
+    } else {
+        busbar_contract::hooks::TransformOutcome::Failed { message }
+    }
+}
+
 struct RewriteOnError {
     inner: Arc<dyn RoutingPolicy>,
     on_error: crate::config::PolicyOnError,
@@ -485,15 +499,8 @@ impl RoutingPolicy for RewriteOnError {
                         "rewrite hook call failed and the hook is declared load-bearing \
                          (on_error: reject); refusing the request"
                     );
-
-                    busbar_contract::hooks::TransformOutcome::Reject {
-                        status: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-                        message: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
-                            .to_string(),
-                    }
-                } else {
-                    busbar_contract::hooks::TransformOutcome::Failed { message }
                 }
+                failed_rewrite(&self.on_error, message)
             }
             other => other,
         }
@@ -1307,6 +1314,10 @@ pub fn resolve_container_rewrites<'a>(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/failed_policy_tests.rs"]
+mod failed_policy_tests;
 
 pub type TapEntry = (
     std::time::Duration,

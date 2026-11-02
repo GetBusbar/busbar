@@ -7713,17 +7713,17 @@ pub(crate) mod hook_parity {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_hook_that_panics_is_the_seams_own_failed_verdict() {
+    async fn rewrite_failure_outcomes_preserve_the_body_or_refuse_before_the_tool_hop() {
         let _one = PUBLISHING.lock().await;
-        let instance = "door-hook-panic";
+        let instance = "door-hook-failure-dispositions";
         let body = call(serde_json::json!({ "path": "/etc/hosts" }));
         let mut server = TlsToolServer::new().await;
         let weighted = rig(
             instance,
             &server,
             vec![(
-                "panicky",
-                gate("rw", serde_json::json!({ "panic_transform": true })),
+                "optional-outcome",
+                gate("rw", serde_json::json!({ "raw_transform_reply": {} })),
             )],
         );
         let (status, answer) = send_as(
@@ -7742,10 +7742,20 @@ pub(crate) mod hook_parity {
         );
         drop(weighted);
 
-        let mut required = gate("rw", serde_json::json!({ "panic_transform": true }));
+        let mut required = gate(
+            "rw",
+            serde_json::json!({
+                "raw_transform_reply": {
+                    "reject": {
+                        "status": busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                        "message": busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+                    }
+                }
+            }),
+        );
         required.on_error =
             serde_json::from_value(serde_json::json!("reject")).expect("an on_error disposition");
-        let required = rig(instance, &server, vec![("panicky-required", required)]);
+        let required = rig(instance, &server, vec![("required-outcome", required)]);
         let (status, body) = send_as(
             &required.router,
             Some(&required.bound_token()),
@@ -7757,8 +7767,14 @@ pub(crate) mod hook_parity {
         assert_eq!(
             status.as_u16(),
             busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-            "a load-bearing hook that panicked refuses the call: {}",
+            "the required-hook failure outcome refuses the call: {}",
             String::from_utf8_lossy(&body)
+        );
+        let answer: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+        assert_eq!(
+            answer["error"]["message"],
+            busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+            "the content-free refusal reaches the caller: {answer}",
         );
         assert!(
             calls_heard(&mut server.heard).is_empty(),
