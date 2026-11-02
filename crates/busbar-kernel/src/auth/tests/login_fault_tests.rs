@@ -39,7 +39,7 @@ fn a_faulted_login_rejects_and_names_each_existing_method_and_operation() {
     let rows = [
         ("idp", "begin_login"),
         ("idp", "complete_login"),
-        ("directory", "complete_login"),
+        ("test-login-double", "complete_login"),
     ];
     tracing::subscriber::with_default(subscriber, || {
         for (method, op) in rows {
@@ -60,7 +60,7 @@ fn a_faulted_login_rejects_and_names_each_existing_method_and_operation() {
     assert_eq!(
         actual.len(),
         3,
-        "one4003 per faulted begin/callback/credential step: {actual:?}"
+        "one 4003 per faulted begin/callback/credential step: {actual:?}"
     );
     for (event, (method, op)) in actual.iter().zip(rows) {
         assert_eq!(event.get("diag").map(String::as_str), Some("BUSBAR-4003"));
@@ -93,6 +93,6 @@ fn a_nonfault_decline_or_identity_passes_through_without_a_panic_diagnostic() {
     });
     assert!(
         events.0.lock().unwrap().is_empty(),
-        "a declining plugin emits no4003"
+        "a declining plugin emits no 4003"
     );
 }
