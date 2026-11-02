@@ -1836,7 +1836,7 @@ impl TestApp {
         // once cut over) would stay empty. This funnel guarantees every live-server audit test's
         // `record_by` feeds the seam. Idempotent + re-entrancy-guarded (this is itself on the shared
         // global app's build path).
-        crate::audit::auditlog::ensure_global_audit_stream_registered();
+        audit::ensure_global_audit_stream_registered();
         (app, store)
     }
 }
@@ -1865,6 +1865,7 @@ pub fn hook_axis_stand_in(
 }
 
 pub mod auth_helpers;
+pub mod audit;
 pub mod governance;
 pub use governance::GovStateFixtures;
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in

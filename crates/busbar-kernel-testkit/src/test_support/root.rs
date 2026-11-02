@@ -83,7 +83,14 @@ pub fn publish() {
 /// calls before it reads the record.
 pub fn ensure() {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(publish);
+    ONCE.call_once(|| {
+        // A fixture with no composition root installs its own explicit operator row before
+        // deriving configuration defaults. A root-provided row already installed wins.
+        if crate::config::operator_provider().is_empty() {
+            super::operator_double::install();
+        }
+        publish();
+    });
 }
 
 /// Hand in a root test binary's own rows (the first stands) and republish.
