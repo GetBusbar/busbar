@@ -39,6 +39,11 @@ pub mod secret_calls;
 #[path = "tests/needs_restated.rs"]
 mod needs_restated;
 
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_load_negatives.rs"]
+mod ordinary_load_negatives;
+
 pub mod settings_schema;
 pub mod sign;
 #[allow(unsafe_code)]
