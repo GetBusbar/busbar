@@ -787,6 +787,14 @@ mod tests {
             restarted.recovery_retention_expired(intent.operation_id),
             None
         );
+        let raw: serde_json::Value = serde_json::from_slice(
+            &restarted
+                .recovery_event(intent.operation_id)
+                .unwrap()
+                .payload,
+        )
+        .unwrap();
+        assert_eq!(raw["age_unknown"], true);
         assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
     }
 

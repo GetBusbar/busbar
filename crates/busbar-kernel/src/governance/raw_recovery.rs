@@ -19,6 +19,8 @@ pub(super) struct UsageCustody {
     pub(super) chunk_plain: UsageDelta,
     pub(super) chunk_dated: UsageDelta,
     #[serde(default)]
+    pub(super) age_unknown: bool,
+    #[serde(default)]
     pub(super) absorbed_plain: ExactUsageDelta,
     #[serde(default)]
     pub(super) absorbed_dated: ExactUsageDelta,
@@ -34,6 +36,8 @@ pub(super) struct UsageCustody {
 #[serde(deny_unknown_fields)]
 struct MeteringCustody {
     delta: MeteringDelta,
+    #[serde(default)]
+    age_unknown: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<RecoveryOrigin>,
     #[serde(default)]
@@ -103,6 +107,7 @@ impl GovState {
             window,
             chunk_plain,
             chunk_dated,
+            age_unknown: false,
             plain,
             dated,
             absorbed_plain: ExactUsageDelta::default(),
@@ -128,6 +133,7 @@ impl GovState {
     ) -> RecordStoreResult<RecoveryEvent> {
         let custody = MeteringCustody {
             delta: delta.clone(),
+            age_unknown: false,
             origin: None,
             handoffs: Vec::new(),
             verdict: None,
@@ -274,6 +280,12 @@ impl GovState {
         match event.kind {
             RecoveryKind::Usage => {
                 let custody: UsageCustody = decode(&event.payload)?;
+                SegmentedUsage::of(&custody.plain, &custody.dated)?;
+                SegmentedUsage::of(&custody.absorbed_plain, &custody.absorbed_dated)?;
+                SegmentedUsage::of(
+                    &ExactUsageDelta::from_signed(&custody.chunk_plain),
+                    &ExactUsageDelta::from_signed(&custody.chunk_dated),
+                )?;
                 if usage_fingerprint(&custody)? != event.body_fingerprint {
                     return Err(invalid("usage original fingerprint differs"));
                 }
@@ -404,10 +416,16 @@ impl GovState {
     }
 
     fn expired_raw_payload(&self, event: &RecoveryEvent) -> RecordStoreResult<Vec<u8>> {
-        if event.kind != RecoveryKind::Usage {
-            return Ok(event.payload.clone());
+        let age_unknown = self
+            .recovery_retention_expired(event.operation_id)
+            .is_none();
+        if event.kind == RecoveryKind::Metering {
+            let mut custody: MeteringCustody = decode(&event.payload)?;
+            custody.age_unknown = age_unknown;
+            return encode(&custody);
         }
         let mut custody: UsageCustody = decode(&event.payload)?;
+        custody.age_unknown = age_unknown;
         let mut unsent_plain = custody.plain.clone();
         let mut unsent_dated = custody.dated.clone();
         unsent_plain.subtract(&custody.chunk_plain);
@@ -544,6 +562,7 @@ impl GovState {
                 let mut custody: MeteringCustody = decode(&event.payload).map_err(map)?;
                 if !verdict.landed {
                     let child_custody = MeteringCustody {
+                        age_unknown: false,
                         origin: None,
                         handoffs: Vec::new(),
                         verdict: None,
