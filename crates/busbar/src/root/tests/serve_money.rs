@@ -619,6 +619,9 @@ async fn node_boot_hooks_arm() {
         "the root's install record carries neither half (holder, dater) of the rate seam"
     );
 
+    // The app fixture must retain the actual boot root's rate hooks rather than publish its
+    // independent stand-in record over them when its first build initializes the fixture root.
+    busbar_kernel_testkit::test_support::install_test_root(rows);
     busbar_kernel_testkit::test_support::metrics::init();
 
     let cfg = || {

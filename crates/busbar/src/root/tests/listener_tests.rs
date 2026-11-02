@@ -652,6 +652,9 @@ async fn server_posture_matches_the_1_5_5_defaults() {
     use std::future::Future as _;
     use tokio::io::AsyncWriteExt as _;
     tokio::time::pause();
+    // Settle onto the timer wheel's millisecond grid before measuring the exact header deadline.
+    // Otherwise a sub-millisecond runtime-start offset rounds the 30-second wake to the next tick.
+    tokio::time::sleep(Duration::from_millis(1)).await;
     let (mut client, server) = tokio::io::duplex(1024);
     client.write_all(b"GET / HTTP/1.1\r\nhost:").await.unwrap();
     let service = hyper::service::service_fn(|_: hyper::Request<hyper::body::Incoming>| async {

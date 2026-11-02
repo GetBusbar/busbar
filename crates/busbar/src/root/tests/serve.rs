@@ -650,7 +650,9 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
 
     let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
     let claims = tokio::task::spawn_blocking(move || {
-        let now = 1_000;
+        // The real store validates expiry against its own wall clock; an epoch-1000 token is
+        // already expired even when the caller supplies the same historical `now`.
+        let now = busbar_kernel::store::now();
         [
             rows.claim("attach-claim", "t", now + 60, now),
             rows.claim("attach-claim", "t", now + 60, now),
