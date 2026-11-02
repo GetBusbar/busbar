@@ -929,14 +929,13 @@ async fn early_drain_wakes_the_next_writer_after_cancel_without_overtaking_accep
             .await
             .unwrap()
             .unwrap();
-    let notified = wake.0.load(Ordering::SeqCst);
     let accepted = match later_retry {
         Poll::Ready(ok) => ok,
         Poll::Pending => tokio::time::timeout(real::WAIT, later).await.unwrap(),
     };
     assert!(cancelled_poll.is_pending() && later_poll.is_pending() && later_retry.is_pending());
     assert!(
-        notified > 0,
+        wake.0.load(Ordering::SeqCst) > 0,
         "draining accepted early input wakes the surviving writer"
     );
     assert!(accepted);
