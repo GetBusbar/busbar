@@ -22,7 +22,6 @@ use busbar_contract::conn::{DeclaredConns, PollConns};
 use busbar_kernel::host_services::BlockingPool;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use ed25519_dalek::Signer as _;
-use http_body_util::BodyExt as _;
 use tower::ServiceExt as _;
 
 use crate::root::loader::dispatch::{
@@ -175,19 +174,16 @@ async fn http_bytes(
         .header(header.0, header.1)
         .body(axum::body::Body::from(body))
         .unwrap();
-    let response = tokio::time::timeout(Duration::from_secs(20), router.clone().oneshot(request))
-        .await
-        .expect("the actual root response is bounded")
-        .unwrap();
-    let status = response.status().as_u16();
-    let bytes = response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes()
-        .to_vec();
-    (status, bytes)
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let response = router.clone().oneshot(request).await.unwrap();
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("the actual root's small response stays within its fixture bound");
+        (status, bytes.to_vec())
+    })
+    .await
+    .expect("the actual root headers and complete body finish within one deadline")
 }
 
 fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin<Plane> {
@@ -780,9 +776,13 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         async move {
             let method = request.method().clone();
             let path = request.uri().path().to_owned();
-            let body = axum::body::to_bytes(request.into_body(), 64 * 1024)
-                .await
-                .unwrap();
+            let body = tokio::time::timeout(
+                Duration::from_secs(20),
+                axum::body::to_bytes(request.into_body(), 64 * 1024),
+            )
+            .await
+            .expect("the actual peer request body finishes within its deadline")
+            .expect("the actual peer request stays within its byte bound");
             let reply = if method == axum::http::Method::POST {
                 assert_eq!(path, "/agent");
                 assert_eq!(
