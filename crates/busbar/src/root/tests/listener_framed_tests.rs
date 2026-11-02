@@ -9,7 +9,7 @@ use busbar_core_connector::framer::FramerDoor;
 use busbar_test_kit::root_door_fixtures::h1_accept::H1Accept;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use super::{data_framer, DataFramer, DATA_LINE, DATA_SCHEME};
+use super::{data_framer, DataFramer, DATA_SCHEME};
 
 fn h1_fixture_ingest_chunks(
     chunks: &[&[u8]],
@@ -970,6 +970,18 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
     let _publishing = anonymous_policy().await;
     let door = Arc::new(H1Accept::new(true));
     let framer = found(Arc::clone(&door)).expect("an accepting framer is found by its facts");
+    let declared = framer
+        .guests()
+        .expect("the listener publishes its guest lines");
+    assert_eq!(
+        declared
+            .lines()
+            .iter()
+            .map(|line| (line.line, line.points, !line.auth.is_none()))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, true)],
+        "the sealed single anonymous declaration uses ordinal zero and a host-issued auth handle"
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("binds");
@@ -1003,7 +1015,7 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
     );
     assert_eq!(
         *door.begun.lock().unwrap(),
-        vec![vec![(DATA_LINE, 0, true)]],
+        vec![vec![(0, 0, true)]],
         "the framing was begun lent the listener's one `none` line, with the host's handle"
     );
     drop(s);
@@ -1844,6 +1856,7 @@ async fn a_pending_session_adoption_admits_only_after_its_original_ticket_is_rea
     assert_eq!(door.commit_attempts(), 1);
     assert_eq!(door.committed_heads(), 1);
     assert_eq!(door.cancellations(), 0);
+    drop(client);
     stop.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
@@ -1978,6 +1991,7 @@ async fn a_pending_session_commit_holds_wire_and_application_calls_until_ready()
     assert_eq!(door.message_attempts(), 1);
     assert_eq!(door.emitted()[0].bytes, b"after-commit");
     assert_eq!(door.cancellations(), 0);
+    drop(client);
     stop.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
