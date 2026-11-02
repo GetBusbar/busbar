@@ -224,6 +224,7 @@ mod pending_lost {
     };
     static LOST: AtomicBool = AtomicBool::new(false);
     static PENDED: AtomicBool = AtomicBool::new(false);
+    static INJECTED: AtomicBool = AtomicBool::new(false);
 
     extern "C" fn batch(
         instance: *mut c_void,
@@ -234,7 +235,7 @@ mod pending_lost {
         // dispatcher retains its request and output through the resumed ticket.
         unsafe {
             let head = &*input.cast::<InHead>();
-            if head.flags & FLAG_RESUME != 0 {
+            if head.flags & FLAG_RESUME != 0 && INJECTED.swap(false, Ordering::AcqRel) {
                 let output = &mut *out.cast::<OutHead>();
                 *output = crate::dispatch::out_head();
                 let answer = if !LOST.swap(true, Ordering::AcqRel) {
@@ -248,9 +249,10 @@ mod pending_lost {
             }
             let ops = &*actual_store::door().ops().cast::<Ops>();
             let answer = (ops.add_usage_batch.expect("SQLite batch slot"))(instance, input, out);
-            if answer != RawOutcome::of(Outcome::Ready) {
+            if answer != RawOutcome::of(Outcome::Ready) || (*out.cast::<OutHead>()).lease != 0 {
                 return answer;
             }
+            INJECTED.store(true, Ordering::Release);
             PENDED.store(true, Ordering::Release);
             let output = &mut *out.cast::<OutHead>();
             output.outcome = RawOutcome::of(Outcome::Pending);
