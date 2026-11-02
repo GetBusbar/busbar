@@ -239,7 +239,11 @@ impl OneStore {
             let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
                 continue;
             };
+            let original = value.clone();
             change(&schema, &mut value);
+            if value == original {
+                continue;
+            }
             let candidate = Shared::candidate(
                 &schema,
                 std::str::from_utf8(&key).expect("OAuth root id"),

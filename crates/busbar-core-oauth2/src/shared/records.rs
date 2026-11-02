@@ -1,6 +1,6 @@
 //! Physical bounded rows for logical OAuth cells. The descriptor, chunks, indexes and receipt
-//! share one conditional commit. Chunk generations are content-addressed; a reader checks the
-//! root again before accepting any reconstruction, including a missing old generation.
+//! share one conditional commit. Content-addressed bytes verify the initially observed version;
+//! a missing or corrupt old generation rechecks its root before retrying or refusing.
 use std::sync::Arc;
 
 use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation, Request};
