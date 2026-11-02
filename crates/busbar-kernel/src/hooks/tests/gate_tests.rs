@@ -1128,7 +1128,7 @@ impl RoutingPolicy for CeilingChangingSpy {
         self.spy.decide(req, candidates, ctx, budget).await
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         RoutingPolicy::name(self.spy.as_ref())
     }
 }
