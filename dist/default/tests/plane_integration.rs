@@ -5,7 +5,8 @@ mod linked;
 
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
-use busbar_kernel_testkit::test_support::*;
+#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+mod plugins;
 use std::sync::Arc;
 
 fn door_plane() -> &'static PlaneDecl {
@@ -42,8 +43,9 @@ fn resolved(sections: &str) -> RootCfg {
         "acme".to_string(),
         serde_yaml::from_str(&format!(
             "protocol: {}\nbase_url: https://api.example.com\n",
-            busbar_kernel::ingress::protocols::residual_default_dialect()
-                .expect("a residual-default dialect")
+            (linked::fallback().provider_dialects)(linked::fallback())
+                .first()
+                .expect("the actual fallback declares provider dialects")
         ))
         .expect("provider def"),
     );
@@ -54,7 +56,7 @@ fn resolved(sections: &str) -> RootCfg {
 fn bootable(sections: &str) -> RootCfg {
     let mut cfg = resolved(sections);
     cfg.public_url = Some("https://busbar.example".to_string());
-    cfg.auth = Some(closed_auth_chain("test-groups-module"));
+    cfg.auth = Some(busbar_kernel::config::AuthCfg::default_none());
     cfg
 }
 
@@ -74,23 +76,6 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
             (decl.build)(decl, &ctx).map(|obj| (decl, obj))
         })
         .collect()
-}
-
-fn configured(mut app: TestApp, sections: &str, public_url: Option<&str>) -> TestApp {
-    let mut cfg = resolved(sections);
-    cfg.public_url = public_url.map(str::to_string);
-    for (decl, obj) in built_planes(&cfg) {
-        let claims = (decl.claims)(&*obj);
-        let admission = (decl.admission)(&*obj);
-        for (path, wire) in claims {
-            app.mount_plane(decl.key, &path, wire);
-        }
-        if let Some(admission) = admission {
-            app.admit_plane(decl.key, admission);
-        }
-        app.install_plane_runtime(decl.key, obj);
-    }
-    app
 }
 
 fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
@@ -132,10 +117,70 @@ fn door_served_by_root(decl: &'static PlaneDecl, sections: &str) -> bool {
 
 #[tokio::test]
 async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dialect() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
-    let app = configured(TestApp::new(), &sections, None).build();
+    let mut cfg = resolved(&sections);
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("installed-door-route");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    cfg.store = Some(busbar_kernel::config::StoreCfg {
+        module,
+        settings: settings
+            .as_object()
+            .expect("product settings object")
+            .clone(),
+    });
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        cfg,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
 
     let v = oversized_413_body(app, &mount).await;
 
@@ -157,10 +202,70 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
 
 #[tokio::test]
 async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
-    let app = configured(TestApp::new(), &sections, None).build();
+    let mut cfg = resolved(&sections);
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("installed-door-route");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    cfg.store = Some(busbar_kernel::config::StoreCfg {
+        module,
+        settings: settings
+            .as_object()
+            .expect("product settings object")
+            .clone(),
+    });
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        cfg,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
 
     let under = oversized_413_body(app.clone(), &format!("{mount}/anything")).await;
     assert_eq!(
@@ -183,7 +288,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
 
 #[test]
 fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
     let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gw.example.com"));
     let cfg = bootable(&sections);
     let configured: Vec<&'static PlaneDecl> = linked::planes()
@@ -198,7 +303,68 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         configured.iter().map(|d| d.key).collect::<Vec<_>>()
     );
 
-    let app = build_once(cfg, None).expect("app builds with the door + agents: configured");
+    let mut cfg = cfg;
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("installed-door-route");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    cfg.store = Some(busbar_kernel::config::StoreCfg {
+        module,
+        settings: settings
+            .as_object()
+            .expect("product settings object")
+            .clone(),
+    });
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        cfg,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+
     let routes = busbar_kernel::base_data_core_lines(&app)
         .into_iter()
         .map(|(path, method, auth)| (path, method.as_str().to_string(), auth))
@@ -253,7 +419,7 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
 
 #[test]
 fn plane_slot_is_none_when_the_plane_is_not_configured() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
     let cfg = resolved("");
     assert!(
         cfg.endpoint_resources.is_empty(),
@@ -268,7 +434,67 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         "fixture control: no plane section configured"
     );
 
-    let app = build_once(cfg, None).expect("app builds with no plane configured");
+    let mut cfg = cfg;
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("installed-door-route");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    cfg.store = Some(busbar_kernel::config::StoreCfg {
+        module,
+        settings: settings
+            .as_object()
+            .expect("product settings object")
+            .clone(),
+    });
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        cfg,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
 
     let mounting: Vec<&'static PlaneDecl> = linked::planes()
         .iter()
@@ -324,17 +550,74 @@ mod metrics_scrape {
 
     #[tokio::test]
     async fn mounted_plane_traffic_appears_on_a_real_metrics_scrape() {
-        busbar_kernel_testkit::test_support::metrics::init();
+        busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
         linked::install();
         let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gateway.example.com"));
         let door_mount = jsonrpc_mount(door_plane(), &sections);
         let agents_mount = jsonrpc_mount(agents_plane(), &sections);
-        let app = configured(
-            TestApp::new().public_url("https://busbar.example"),
-            &sections,
-            Some("https://busbar.example"),
+        let mut cfg = resolved(&sections);
+        cfg.public_url = Some("https://busbar.example".into());
+        crate::dist_root_install::install();
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+        );
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual store statement reads")
+            .expect("the actual store exports its statement");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual store statement is valid")
+            .name;
+        let mut manifest = plugins::manifest(
+            "store",
+            &module,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        let library = std::fs::read(library_path).expect("the actual store library reads");
+        let directory = plugins::scratch("installed-door-route");
+        let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual store archive");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
         )
-        .build();
+        .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+        assert!(
+            settings.is_object(),
+            "the actual store settings are an object"
+        );
+        cfg.store = Some(busbar_kernel::config::StoreCfg {
+            module,
+            settings: settings
+                .as_object()
+                .expect("product settings object")
+                .clone(),
+        });
+        let plugin_config = busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let rules = Arc::new(crate::root::door_steps::Rules::default())
+            as Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            plugin_config,
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the actual product builds the door deployment");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        let app = Arc::new(app);
+
         let router = busbar_kernel::build_router(app);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -437,9 +720,8 @@ const BODY_INGRESS_ROUTES: [&str; 2] = ["/{name}/v1/messages", "/{provider}/{mod
 async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::GovState;
-    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(60));
     let door = door_plane();
 
     const HOST: &str = "busbar.example.com";
@@ -459,10 +741,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         ));
     }
 
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::root::real_store::records();
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
@@ -499,23 +778,77 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         Some("client-1"),
     );
 
-    let app = configured(
-        TestApp::new()
-            .lane(
-                LaneSpec::new(
-                    "test-model",
-                    busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC,
-                    &server.base_url(),
-                )
-                .api_key("busbar-upstream-key"),
-            )
-            .pool("pa", &[(0, 1)])
-            .keys_chain()
-            .governance(gov),
-        &sections,
-        None,
+    let mut cfg = resolved(&sections);
+    let mut auth = busbar_kernel::config::AuthCfg::with_chain(vec![
+        busbar_kernel::config::AuthChainEntry::bare("keys"),
+    ]);
+    auth.signing_key = Some(busbar_kernel::config::SecretRef::template(hex::encode(
+        [9u8; 32],
+    )));
+    cfg.auth = Some(auth);
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("installed-door-route");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
-    .build();
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    cfg.store = Some(busbar_kernel::config::StoreCfg {
+        module,
+        settings: settings
+            .as_object()
+            .expect("product settings object")
+            .clone(),
+    });
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        cfg,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+
+    let mut app = app;
+    Arc::make_mut(&mut app).governance = Some(gov);
 
     let core_routes = busbar_kernel::base_data_core_lines(&app)
         .into_iter()
@@ -774,5 +1107,30 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     }
 
     handle.abort();
-    server.shutdown().await;
+}
+
+async fn oversized_413_body(app: Arc<busbar_kernel::state::App>, path: &str) -> serde_json::Value {
+    let (router, _) = busbar_kernel::build_router_with_limits(app, 64, 16, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let address = listener.local_addr().expect("address");
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}{path}"))
+        .header("content-type", "application/json")
+        .body(vec![b'x'; 128])
+        .send()
+        .await
+        .expect("oversized request");
+    let status = response.status();
+    let bytes = response.bytes().await.expect("response body");
+    task.abort();
+    assert_eq!(
+        status.as_u16(),
+        413,
+        "{path}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).expect("the refusal is JSON")
 }
