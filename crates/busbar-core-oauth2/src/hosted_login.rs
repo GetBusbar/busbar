@@ -220,7 +220,18 @@ async fn callback(
     }
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
 
-    let request = LoginCallback {
+    let request = callback_request(&cookie, code, redirect_uri);
+    let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
+    let principal = match callback_outcome(&cookie.method, outcome) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+
+    clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
+}
+
+fn callback_request(cookie: &LoginCookie, code: String, redirect_uri: String) -> LoginCallback {
+    LoginCallback {
         state: cookie.state.clone(),
         nonce: Some(cookie.nonce.clone()),
         login: CompleteLogin {
@@ -229,14 +240,7 @@ async fn callback(
             code_verifier: Some(cookie.code_verifier.clone()),
             ..Default::default()
         },
-    };
-    let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
-    let principal = match callback_outcome(&cookie.method, outcome) {
-        Ok(principal) => principal,
-        Err(response) => return response,
-    };
-
-    clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
+    }
 }
 
 fn callback_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Response> {

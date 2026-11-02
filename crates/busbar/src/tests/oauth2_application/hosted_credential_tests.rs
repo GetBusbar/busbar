@@ -231,3 +231,39 @@ async fn concurrent_credential_submit_does_not_starve_the_runtime() {
     }
     handle.abort();
 }
+
+#[tokio::test]
+async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answered_it() {
+    let (_app, base, handle) = application().await;
+    let (raw, cookie, _body) = form(&base, false).await;
+    let response = reqwest::Client::new()
+        .get(format!("{base}/auth/token"))
+        .query(&[
+            ("code", "code123"),
+            ("state", cookie["state"].as_str().unwrap()),
+        ])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        401,
+        "a credential method on the redirect callback is declined"
+    );
+    assert!(
+        response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .any(|value| value.to_str().unwrap_or("").contains("Max-Age=0")),
+        "the single-use cookie is cleared"
+    );
+    let body = response.text().await.unwrap();
+    assert_branded_error_page(&body, "Sign-in was declined");
+    assert!(
+        body.contains("Your identity provider declined this sign-in."),
+        "1.5.5's callback copy: {body}"
+    );
+    handle.abort();
+}

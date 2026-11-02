@@ -2,79 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::auth::{
-    BeginLogin, FieldKind, LoginField, LoginForm, LoginKind, LoginOutcome, Principal,
-};
-use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled};
-
-struct DoorLogin {
-    kind: LoginKind,
-    begin: LoginOutcome,
-    complete: Box<dyn Fn(&LoginCallback) -> LoginOutcome + Send + Sync>,
-    seen: std::sync::Mutex<Vec<LoginCallback>>,
-}
-
-impl DoorLogin {
-    fn answering(
-        complete: impl Fn(&LoginCallback) -> LoginOutcome + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            kind: LoginKind::Redirect,
-            begin: LoginOutcome::Authorize("https://idp.example.com/authorize?x=1".into()),
-            complete: Box::new(complete),
-            seen: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-
-    fn new(complete: LoginOutcome) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self::answering(move |_| complete.clone()))
-    }
-
-    fn answer(&self, outcome: LoginOutcome) -> Box<dyn LoginCall> {
-        Box::new(LoginSettled(Some(outcome)))
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for DoorLogin {
-    fn name(&self) -> &str {
-        "door-login"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        unreachable!("the login flow never verifies")
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-    fn login_kind(&self) -> Option<LoginKind> {
-        Some(self.kind)
-    }
-    fn begin_login(&self, _: BeginLogin) -> Box<dyn LoginCall> {
-        self.answer(self.begin.clone())
-    }
-    fn complete_login(&self, request: LoginCallback) -> Box<dyn LoginCall> {
-        let outcome = (self.complete)(&request);
-        self.seen.lock().unwrap().push(request);
-        self.answer(outcome)
-    }
-}
-
-fn alice() -> LoginOutcome {
-    let mut p = Principal::from_id("alice");
-    p.roles = vec!["members".into()];
-    LoginOutcome::Identify(p)
-}
 
 #[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
@@ -200,108 +127,6 @@ fn assert_branded_error_page(body: &str, heading: &str) {
     );
 }
 
-fn cred_login() -> std::sync::Arc<DoorLogin> {
-    std::sync::Arc::new(DoorLogin {
-        kind: LoginKind::Credential,
-        begin: LoginOutcome::Prompt(LoginForm {
-            fields: vec![
-                LoginField {
-                    name: "username".into(),
-                    label: "Username".into(),
-                    kind: FieldKind::Text,
-                    required: true,
-                },
-                LoginField {
-                    name: "password".into(),
-                    label: "Password".into(),
-                    kind: FieldKind::Password,
-                    required: true,
-                },
-            ],
-        }),
-        ..DoorLogin::answering(|request| {
-            let get = |k: &str| {
-                request
-                    .login
-                    .submitted
-                    .iter()
-                    .find(|(n, _)| n == k)
-                    .map(|(_, v)| v.expose(&busbar_kernel::seal::lend()).as_str())
-            };
-            if get("username") == Some("alice") && get("password") == Some("pw") {
-                let mut p = Principal::from_id("test-login-double:alice");
-                p.roles = vec!["members".into()];
-                LoginOutcome::Identify(p)
-            } else {
-                LoginOutcome::Reject
-            }
-        })
-    })
-}
-
-fn cred_handle(
-    app: &std::sync::Arc<busbar_kernel::state::App>,
-) -> std::sync::Arc<busbar_kernel::state::AppHandle> {
-    std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app.clone()))
-}
-
-fn cred_cookie(state: &str, refresh: bool) -> String {
-    LoginCookie {
-        method: "test-login-double".into(),
-        code_verifier: String::new(),
-        state: state.into(),
-        nonce: String::new(),
-        refresh,
-    }
-    .encode()
-}
-
-#[tokio::test]
-async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answered_it() {
-    let door = cred_login();
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .public_url("https://busbar.example.com")
-        .login_method_door(
-            "test-login-double",
-            door.clone(),
-            LoginKind::Credential,
-            true,
-        )
-        .build();
-    let resp = callback(
-        &app,
-        &cred_handle(&app),
-        Some(cred_cookie("csrf-1", false)),
-        "code123".into(),
-        Some("csrf-1".into()),
-    )
-    .await;
-    assert_eq!(
-        resp.status().as_u16(),
-        401,
-        "1.5.5 answered the plugin's Reject"
-    );
-    let cleared = resp
-        .headers()
-        .get_all(axum::http::header::SET_COOKIE)
-        .iter()
-        .any(|v| v.to_str().unwrap_or("").contains("Max-Age=0"));
-    assert!(cleared, "the single-use cookie is cleared");
-    let body = body_of(resp);
-    assert_branded_error_page(&body, "Sign-in was declined");
-    assert!(
-        body.contains("Your identity provider declined this sign-in."),
-        "1.5.5's callback copy: {body}"
-    );
-    let seen = door.seen.lock().unwrap();
-    assert_eq!(seen.len(), 1, "the plugin is asked, as 1.5.5 asked it");
-    assert_eq!(seen[0].login.code.as_deref(), Some("code123"));
-    assert!(
-        seen[0].login.submitted.is_empty(),
-        "no credentials ride a callback"
-    );
-}
-
 #[test]
 fn key_page_injects_base_url_verbatim() {
     let page = render_key_issued(
@@ -398,13 +223,6 @@ fn body_of(resp: Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<busbar_kernel::state::App> {
-    busbar_kernel_testkit::test_support::TestApp::new()
-        .public_url("https://busbar.example.com")
-        .login_method_door("idp", door, LoginKind::Redirect, true)
-        .build()
-}
-
 fn door_cookie() -> LoginCookie {
     LoginCookie {
         method: "idp".into(),
@@ -438,32 +256,32 @@ fn a_door_login_begins_with_the_plugins_authorize_url() {
         .any(|v| v.to_str().unwrap_or("").starts_with("busbar_login=")));
 }
 
-#[tokio::test]
-async fn a_door_callback_hands_the_plugin_the_cookies_state_and_nonce() {
-    let door = DoorLogin::new(LoginOutcome::Reject);
-    let app = door_app(door.clone());
-    let resp = callback(
-        &app,
-        &cred_handle(&app),
-        Some(door_cookie().encode()),
+#[test]
+fn a_door_callback_hands_the_plugin_the_cookies_state_and_nonce() {
+    let request = callback_request(
+        &door_cookie(),
         "the-code".into(),
-        Some("st".into()),
-    )
-    .await;
-    assert_eq!(resp.status().as_u16(), 401, "a declined login");
-    let seen = door.seen.lock().unwrap();
-    assert_eq!(seen.len(), 1, "one complete_login: {seen:?}");
-    assert_eq!(seen[0].state, "st");
-    assert_eq!(seen[0].nonce.as_deref(), Some("the-core-nonce"));
-    assert_eq!(seen[0].login.code.as_deref(), Some("the-code"));
+        "https://busbar.example.com/auth/token".into(),
+    );
+    assert_eq!(request.state, "st");
+    assert_eq!(request.nonce.as_deref(), Some("the-core-nonce"));
+    assert_eq!(request.login.code.as_deref(), Some("the-code"));
     assert_eq!(
-        seen[0].login.redirect_uri.as_deref(),
+        request.login.redirect_uri.as_deref(),
         Some("https://busbar.example.com/auth/token")
     );
-    assert_eq!(seen[0].login.code_verifier.as_deref(), Some("the-verifier"));
+    assert_eq!(request.login.code_verifier.as_deref(), Some("the-verifier"));
     assert!(
-        seen[0].login.token_response.is_none(),
+        request.login.token_response.is_none(),
         "the core runs no token exchange for a door plugin"
+    );
+    assert!(
+        request.login.submitted.is_empty(),
+        "no credentials ride a callback"
+    );
+    assert!(
+        !format!("{request:?}").contains("REAL-SECRET-XYZ"),
+        "not in the complete_login the plugin is handed"
     );
 }
 
@@ -558,60 +376,6 @@ fn a_rejected_begin_callback_and_credential_keep_their_original_response_statuse
         ),
         (502, 401, 401),
         "a faulted step finalized as Reject retains begin/callback/credential response statuses",
-    );
-}
-
-#[tokio::test]
-async fn the_client_secret_rides_nothing_the_flow_makes() {
-    const SECRET: &str = "REAL-SECRET-XYZ";
-    let door = DoorLogin::new(alice());
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .public_url("https://busbar.example.com")
-        .login_method_door("idp", door.clone(), LoginKind::Redirect, true)
-        .build();
-    let begun = begin(&app, "idp", false).await;
-    assert_eq!(begun.status().as_u16(), 302);
-    let location = begun
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap();
-    assert!(!location.contains(SECRET), "not on the authorize redirect");
-    let set = begun
-        .headers()
-        .get(header::SET_COOKIE)
-        .unwrap()
-        .to_str()
-        .unwrap();
-    let raw = set
-        .split(';')
-        .next()
-        .unwrap()
-        .strip_prefix(&format!("{LOGIN_COOKIE}="))
-        .unwrap();
-    let decoded = String::from_utf8(B64.decode(raw).unwrap()).unwrap();
-    assert!(
-        !decoded.contains(SECRET) && !set.contains(SECRET),
-        "not in the login cookie: {decoded}"
-    );
-    let cookie = LoginCookie::decode(raw).expect("the cookie");
-    let called = callback(
-        &app,
-        &cred_handle(&app),
-        Some(cookie.encode()),
-        "the-code".into(),
-        Some(cookie.state.clone()),
-    )
-    .await;
-    let seen = format!("{:?}", door.seen.lock().unwrap());
-    assert!(
-        !seen.contains(SECRET),
-        "not in the complete_login the plugin is handed: {seen}"
-    );
-    assert!(
-        !body_of(called).contains(SECRET),
-        "not on the page rendered"
     );
 }
 

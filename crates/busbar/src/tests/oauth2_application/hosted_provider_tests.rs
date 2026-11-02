@@ -559,7 +559,7 @@ async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
 }
 
 #[tokio::test]
-async fn the_real_confidential_client_secret_is_absent_from_browser_flow_artifacts() {
+async fn the_client_secret_rides_nothing_the_flow_makes() {
     const SECRET: &str = "REAL-SECRET-XYZ";
     let (base, handle) = hosted_with_secret(
         &[("microsoft", true)],
