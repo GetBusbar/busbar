@@ -8,13 +8,10 @@ use base64::Engine as _;
 use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
 use serde_json::{json, Value};
 
-use crate::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
-use busbar_kernel_testkit::test_support::TestApp;
+use busbar_core_oauth2::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
 
-use crate::flow_tests::{
-    encode_component, location, path_of, percent_decode, query_param, send, Jar,
-};
-use crate::testkit::TestAppOauthExt;
+use super::application_with_resource_auth;
+use super::browser::{encode_component, location, path_of, percent_decode, query_param, send, Jar};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
 
@@ -289,11 +286,7 @@ async fn serve(fapi2: bool) -> Subject {
         ],
     };
 
-    let app = TestApp::new()
-        .admin_chain(Vec::new())
-        .idp_chain()
-        .oauth_as(&cfg)
-        .build();
+    let app = application_with_resource_auth(Some(&cfg), None, true);
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("serve");
@@ -1022,13 +1015,13 @@ async fn resource_after_inbound(s: &Subject, token: &str, scheme: &str, proofs: 
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
     use busbar_kernel::inbound::{Call, HandIn, Head, Inbound, Listener, Seals};
 
-    let provider = "test-idp-module";
+    let provider = "oauth-resource";
     let verifier = Arc::new(InboundCandidate {
         calls: s
             .app
             .auth
             .position_calls(provider)
-            .expect("the existing IdP stand-in"),
+            .expect("the actual configured OIDC verifier"),
         expected: busbar_contract::redacted::Secret::new(token.as_bytes().to_vec()),
         seen: AtomicU64::new(0),
     });
