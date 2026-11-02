@@ -28,15 +28,6 @@ fn bindings_for(
     rb
 }
 
-fn chain_cfg(modules: &[&str]) -> crate::config::AuthCfg {
-    let mut cfg = crate::config::AuthCfg::default_none();
-    cfg.chain = modules
-        .iter()
-        .map(|m| crate::config::AuthChainEntry::bare(*m))
-        .collect();
-    cfg
-}
-
 fn grp_principal(id: &str, roles: &[&str]) -> Principal {
     let mut p = Principal::from_id(id);
     p.roles = roles.iter().map(|r| r.to_string()).collect();

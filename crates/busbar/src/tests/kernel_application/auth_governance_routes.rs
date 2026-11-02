@@ -30,13 +30,30 @@ fn in_isolated_root() -> bool {
         std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &name, "--nocapture"])
             .env(CHILD, "1")
+            .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("isolate the actual root"),
     );
     let until = Instant::now() + Duration::from_secs(90);
     loop {
         if let Some(status) = child.0.try_wait().unwrap() {
-            assert!(status.success(), "actual-root case {name} failed: {status}");
+            use std::io::Read;
+            let mut output = String::new();
+            child
+                .0
+                .stdout
+                .take()
+                .expect("captured child output")
+                .read_to_string(&mut output)
+                .unwrap();
+            assert!(
+                status.success(),
+                "actual-root case {name} failed: {status}: {output}"
+            );
+            assert!(
+                output.contains(&format!("GOVERNANCE_ROOT_COMPLETED:{name}")),
+                "the exact child must execute its assertions: {output}"
+            );
             return false;
         }
         assert!(Instant::now() < until, "actual-root case {name} timed out");
@@ -283,6 +300,10 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
         .await,
     );
     assert!(session(app, Some(&enabled)).await.is_err());
+    println!(
+        "GOVERNANCE_ROOT_COMPLETED:{}",
+        std::thread::current().name().unwrap()
+    );
 }
 
 #[tokio::test]
@@ -395,6 +416,10 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
         .map(|u| u.spend_cents)
         .unwrap_or(0);
     assert_eq!(spend, 0, "the ignored presented key is never metered");
+    println!(
+        "GOVERNANCE_ROOT_COMPLETED:{}",
+        std::thread::current().name().unwrap()
+    );
 }
 
 #[tokio::test]
@@ -504,6 +529,10 @@ async fn open_chain_without_operator_still_inserts_default_context() {
         .map(|u| u.spend_cents)
         .unwrap_or(0);
     assert_eq!(spend, 0, "the ignored presented key is never metered");
+    println!(
+        "GOVERNANCE_ROOT_COMPLETED:{}",
+        std::thread::current().name().unwrap()
+    );
 }
 
 #[tokio::test]
@@ -632,6 +661,10 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
         assert!(session(app.clone(), Some(token)).await.is_err());
     }
     native_refusal(stats(router, None).await);
+    println!(
+        "GOVERNANCE_ROOT_COMPLETED:{}",
+        std::thread::current().name().unwrap()
+    );
 }
 
 #[tokio::test]
@@ -757,4 +790,8 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
         assert!(session(app.clone(), Some(token)).await.is_err());
     }
     native_refusal(stats(router, None).await);
+    println!(
+        "GOVERNANCE_ROOT_COMPLETED:{}",
+        std::thread::current().name().unwrap()
+    );
 }
