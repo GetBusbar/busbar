@@ -7,7 +7,8 @@
 //! the store before the process is gone, whichever transport the answer went out on (ruling H2
 //! U10; BUSBAR-1.6.0.md THE DESIGN, §7):
 //!
-//! 1. the budget and metering write-behind, each final flush awaited off the runtime;
+//! 1. dropped plane callers are settled under the shared record-drain deadline, before their
+//!    cancellation bills reach the budget and metering write-behind final flushes;
 //! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]);
 //! 3. the journal's lane to the configured store, drained under the same deadline
 //!    ([`crate::root::serve::RECORD_DRAIN`]): on a node with no data directory the store is where
