@@ -80,6 +80,135 @@ pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", 
 /// so `host` is what disambiguates them structurally rather than trusting `kind` alone.
 pub const HOST_IDENTITY: &str = "busbar";
 
+/// One first-party ROOT key this build trusts: the id every refusal names, and the public key.
+/// A root key vouches for keys documents ([`crate::release_trust`]); an ed25519 root key also
+/// verifies a per-plugin `signature` directly (the pre-1.6.0 shape, kept for run keys and tests).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstPartyKey {
+    /// The key's name (`busbar-plugins-root`), stated beside it in the key list. A bare-hex entry
+    /// (a run key, a test key) is named `ed25519:<first 16 hex digits>` ([`FirstPartyKey::unnamed`]).
+    pub id: String,
+    /// The public key.
+    pub key: ReleaseKey,
+}
+
+pub use crate::release_trust::ReleaseKey;
+
+impl FirstPartyKey {
+    /// An ed25519 key the list states no id for, named by its first 16 hex digits.
+    pub fn unnamed(key: VerifyingKey) -> Self {
+        let hex = hex::encode(key.as_bytes());
+        FirstPartyKey {
+            id: format!("ed25519:{}", &hex[..16]),
+            key: ReleaseKey::Ed25519(key),
+        }
+    }
+
+    /// Why this public root is permanently retired. Constructing a root directly never bypasses
+    /// the same compromised-key guard used by the build-time parser and manifest evaluator.
+    #[must_use]
+    pub fn retired_reason(&self) -> Option<&'static str> {
+        let ReleaseKey::Ed25519(key) = &self.key else {
+            return None;
+        };
+        RETIRED_RELEASE_KEYS.iter().find_map(|(hex, why)| {
+            public_key_from_hex(hex)
+                .ok()
+                .filter(|retired| retired == key)
+                .map(|_| *why)
+        })
+    }
+}
+
+/// The build-time variable carrying the first-party key list ([`parse_release_keys`]).
+pub const RELEASE_KEYS_ENV: &str = "BUSBAR_RELEASE_PUBKEY";
+
+/// Parse a first-party ROOT key list: entries separated by `,`, each one of
+///
+/// * `<id>:p256:<130 hex>`: an ECDSA P-256 key, its 65-byte uncompressed SEC1 point;
+/// * `<id>:ed25519:<64 hex>`: an ed25519 key;
+/// * `<id>:<64 hex>`: an ed25519 key (the pre-1.6.0 spelling);
+/// * `<64 hex>`: an unnamed ed25519 key ([`FirstPartyKey::unnamed`]; a run key).
+///
+/// Every entry must be a usable key; ids are valid plugin names (`[a-z0-9-]+`) and neither an id
+/// nor a key may repeat. An empty list is refused: a list that names no key is a packaging bug,
+/// not a choice.
+///
+/// # Errors
+///
+/// The first entry that is not a usable, unique key, naming it by position.
+pub fn parse_release_keys(spec: &str) -> Result<Vec<FirstPartyKey>, String> {
+    let mut keys: Vec<FirstPartyKey> = Vec::new();
+    for (i, entry) in spec.split(',').map(str::trim).enumerate() {
+        let n = i + 1;
+        if entry.is_empty() {
+            return Err(format!("{RELEASE_KEYS_ENV} entry {n} is empty"));
+        }
+        let parts: Vec<&str> = entry.split(':').map(str::trim).collect();
+        let (id, key) = match parts.as_slice() {
+            [hex_key] => (None, public_key_from_hex(hex_key).map(ReleaseKey::Ed25519)),
+            [id, hex_key] => (
+                Some(*id),
+                public_key_from_hex(hex_key).map(ReleaseKey::Ed25519),
+            ),
+            [id, "ed25519", hex_key] => (
+                Some(*id),
+                public_key_from_hex(hex_key).map(ReleaseKey::Ed25519),
+            ),
+            [id, "p256", hex_key] => (Some(*id), ReleaseKey::p256_from_hex(hex_key)),
+            [_, alg, _] => (
+                None,
+                Err(format!("algorithm '{alg}' is not one of ed25519, p256")),
+            ),
+            _ => (
+                None,
+                Err("is not <id>:<algorithm>:<hex>, <id>:<hex> or <hex>".to_string()),
+            ),
+        };
+        let key = key.map_err(|e| format!("{RELEASE_KEYS_ENV} entry {n}: {e}"))?;
+        let key = match (id, key) {
+            (Some(id), _) if !valid_name(id) => {
+                return Err(format!(
+                    "{RELEASE_KEYS_ENV} entry {n}: key id '{id}' is not lowercase [a-z0-9-]+"
+                ));
+            }
+            (Some(id), key) => FirstPartyKey {
+                id: id.to_string(),
+                key,
+            },
+            (None, ReleaseKey::Ed25519(k)) => FirstPartyKey::unnamed(k),
+            (None, ReleaseKey::P256(_)) => {
+                return Err(format!(
+                    "{RELEASE_KEYS_ENV} entry {n}: a p256 key must be named"
+                ));
+            }
+        };
+        if let Some(why) = key.retired_reason() {
+            return Err(format!(
+                "{RELEASE_KEYS_ENV} entry {n}: root '{}' is retired: {why}",
+                key.id
+            ));
+        }
+        if let Some(dup) = keys.iter().find(|k| k.id == key.id || k.key == key.key) {
+            return Err(format!(
+                "{RELEASE_KEYS_ENV} entry {n} ('{}') repeats the id or key of '{}'",
+                key.id, dup.id
+            ));
+        }
+        keys.push(key);
+    }
+    Ok(keys)
+}
+
+/// The first-party public root list embedded at build time. Malformed or missing lists yield no
+/// roots, so a build cannot silently trust only the valid prefix of a damaged key list.
+#[must_use]
+pub fn embedded_release_keys() -> Vec<FirstPartyKey> {
+    option_env!("BUSBAR_RELEASE_PUBKEY")
+        .and_then(|spec| parse_release_keys(spec).ok())
+        .unwrap_or_default()
+}
+
 /// The busbar release ed25519 PUBLIC key embedded at BUILD time via the `BUSBAR_RELEASE_PUBKEY`
 /// environment variable (64 hex chars). `None` in a build where it was not provided (local dev
 /// builds): first-party verification is then impossible and a `publisher: busbar` plugin is treated
@@ -94,10 +223,14 @@ pub const HOST_IDENTITY: &str = "busbar";
 /// ([`evaluate`]).
 /// (Owner ruling 2026-09-30, N3 / Q90: a statement of the contract, not a deferral.)
 pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
-    let hex_key: &str = option_env!("BUSBAR_RELEASE_PUBKEY")?;
-    // A malformed build-time key is a build/packaging bug; fail closed to "no first-party key"
-    // rather than panic in the engine (the plugin then simply cannot verify as first-party).
-    public_key_from_hex(hex_key).ok()
+    // Compatibility for callers that can use one legacy ed25519 root. Release verification
+    // uses the whole list, including P-256 roots, through embedded_release_keys instead.
+    embedded_release_keys()
+        .into_iter()
+        .find_map(|root| match root.key {
+            ReleaseKey::Ed25519(key) => Some(key),
+            ReleaseKey::P256(_) => None,
+        })
 }
 
 /// THE RETIRED RELEASE KEYS: `(hex ed25519 public key, why it is retired)`. A first-party manifest

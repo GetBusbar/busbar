@@ -1878,3 +1878,48 @@ fn overflowing_min_version_components_refuse_a_real_signed_artifact() {
         "empty means no floor"
     );
 }
+
+#[test]
+fn release_root_lists_are_complete_unique_and_never_restore_retired_keys() {
+    let a = test_key(71).verifying_key();
+    let b = test_key(72).verifying_key();
+    let a_hex = hex::encode(a.as_bytes());
+    let b_hex = hex::encode(b.as_bytes());
+    let roots = parse_release_keys(&format!("current:ed25519:{a_hex}, next:{b_hex}")).unwrap();
+    assert_eq!(roots.len(), 2);
+    assert_eq!(roots[0].id, "current");
+    assert_eq!(roots[0].key, ReleaseKey::Ed25519(a));
+    assert_eq!(roots[1].id, "next");
+    assert_eq!(roots[1].key, ReleaseKey::Ed25519(b));
+    assert_eq!(
+        parse_release_keys(&a_hex).unwrap(),
+        vec![FirstPartyKey::unnamed(a)]
+    );
+    for invalid in [
+        String::new(),
+        format!("current:{a_hex},"),
+        format!("same:{a_hex},same:{b_hex}"),
+        format!("one:{a_hex},two:{a_hex}"),
+        format!("UPPER:{a_hex}"),
+        format!("root:unknown:{a_hex}"),
+        "root:p256:04".into(),
+    ] {
+        assert!(
+            parse_release_keys(&invalid).is_err(),
+            "invalid root list accepted"
+        );
+    }
+    let retired = RETIRED_RELEASE_KEYS[0].0;
+    for spec in [
+        retired.to_owned(),
+        format!("old:{retired}"),
+        format!("old:ed25519:{retired}"),
+    ] {
+        assert!(parse_release_keys(&spec).unwrap_err().contains("retired"));
+    }
+    assert!(
+        FirstPartyKey::unnamed(public_key_from_hex(retired).unwrap())
+            .retired_reason()
+            .is_some()
+    );
+}
