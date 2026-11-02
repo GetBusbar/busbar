@@ -43,7 +43,7 @@ pub fn fallback_error_response(
     }
 
     {
-        use crate::admin::gate::{ApiError, API_ROOT};
+        use crate::admin::gate::{API_ROOT, ApiError};
         if path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")) {
             if status == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
                 return crate::admin::gate::error_envelope(status.as_u16(), kind, message);
@@ -732,7 +732,7 @@ where
 
     fn call(&mut self, req: axum::extract::Request) -> Self::Future {
         use std::future::Future as _;
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
         use std::task::Poll;
 
         let mut inner = self.inner.clone();
@@ -1303,7 +1303,3 @@ mod router_door_tests;
 #[cfg(test)]
 #[path = "tests/router_session_tests.rs"]
 mod router_session_tests;
-
-#[cfg(test)]
-#[path = "../../busbar-kernel-testkit/src/websocket.rs"]
-mod session_socket_test_adapter;

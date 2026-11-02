@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
+use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::plane_driver::registry::PlaneDecl;
 use busbar_kernel::plane_driver::registry::PlaneDeclaration;
-use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve)>;
@@ -24,10 +24,6 @@ pub struct Linked {
         busbar_contract::abi::mechanism::door::DoorFn,
         &'static str,
     )],
-
-    #[cfg(test)]
-    pub protocols:
-        &'static [&'static [&'static busbar_kernel_testkit::ingress::protocols::ProtocolDecl]],
 
     pub protocol_seams: &'static [fn()],
 
@@ -278,15 +274,6 @@ pub struct BookCtx<'a> {
 }
 
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    #[cfg(test)]
-    {
-        let installed = linked
-            .protocols
-            .iter()
-            .flat_map(|decls| decls.iter().copied())
-            .collect();
-        busbar_kernel_testkit::ingress::protocols::install_protocols(installed);
-    }
     for install in linked.protocol_seams {
         install();
     }
