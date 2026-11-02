@@ -2735,6 +2735,33 @@ fn a_dropped_instance_is_forgotten_on_the_table_and_a_live_neighbour_is_not() {
     assert_eq!(*table.forgotten.lock().unwrap(), vec![id, kept]);
 }
 
+/// The original authority retires on refresh; dropping the instance later must retire only
+/// the replacement authority, even if teardown is requested more than once.
+#[test]
+fn refreshed_connection_authorities_are_each_forgotten_once() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(NEEDS)), &table);
+    let original = p.instance();
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
+    assert_eq!(
+        refresh_with(&p, br#"{"upstream":"127.0.0.2:9"}"#),
+        Outcome::Ready
+    );
+    let replacement = table.declared.lock().unwrap().last().unwrap().0;
+    assert_ne!(original, replacement);
+    assert_eq!(table.forgotten.lock().unwrap().clone(), vec![original]);
+    p.inner.let_go_held();
+    p.inner.let_go_held();
+    drop(p);
+    assert_eq!(
+        table.forgotten.lock().unwrap().clone(),
+        vec![original, replacement]
+    );
+}
+
 /// The connector's `RANDOM` slot is RETIRED and served by no host: `random.fill`, a host service,
 /// is the one random service.
 #[test]

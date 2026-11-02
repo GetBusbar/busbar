@@ -1221,6 +1221,21 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
             }
         }
     }
+    forget_authority(id, table);
+}
+
+/// Retire one connection authority. The first export generation shares the original owner
+/// with instance teardown; refreshed generations have distinct owners and retire independently.
+pub(crate) fn forget_authority(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
+    if let Some(wake) = super::handle::supplier_of(id) {
+        if wake.conn.get().is_some_and(|(original, _)| *original == id)
+            && wake
+                .conn_forgotten
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+    }
     table.forget(id);
 }
 

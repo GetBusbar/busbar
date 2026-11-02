@@ -109,6 +109,9 @@ pub(crate) struct InstanceWake {
         busbar_contract::conn::InstanceId,
         std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
     )>,
+    /// Original connection authority is shared by instance teardown and the first export
+    /// generation. Whichever retires it first owns the single table notification.
+    pub(crate) conn_forgotten: std::sync::atomic::AtomicBool,
     /// What the connector slots hold for the instance: its streams, their facts, its dials in
     /// flight and its kept answers (`super::conn_services`), under locks of its own.
     pub(crate) conn_state: super::conn_services::ConnState,

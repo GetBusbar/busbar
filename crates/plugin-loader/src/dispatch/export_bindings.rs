@@ -18,7 +18,7 @@ pub(crate) struct Generation {
 impl Drop for Generation {
     fn drop(&mut self) {
         if let Some((owner, table)) = &self.conn {
-            table.forget(*owner);
+            super::conn_services::forget_authority(*owner, table);
         }
     }
 }
