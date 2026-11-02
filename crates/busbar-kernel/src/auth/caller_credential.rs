@@ -54,8 +54,8 @@ impl ConsumedCredentials {
     }
 
     /// The consumed fields `headers` carries, each by its lower-case name with its value's scheme
-    /// word (the value up to its first space; empty when it has none): what an entry fact may read
-    /// of a field the gate consumed, never the credential itself.
+    /// word for `Authorization` only (empty for raw credential carriers and strip-only fields):
+    /// what an entry fact may read of a field the gate consumed, never the credential itself.
     pub(crate) fn fields_of(consumed: Option<&Self>, headers: &HeaderMap) -> Vec<(String, String)> {
         let Some(consumed) = consumed else {
             return Vec::new();
@@ -65,9 +65,11 @@ impl ConsumedCredentials {
             .iter()
             .filter_map(|name| {
                 let value = headers.get(name)?;
-                let scheme = value
-                    .to_str()
-                    .ok()
+                // The host reads Authorization as a scheme and every other carrier raw
+                // (`carried_credential`). A space in a raw secret does not make its prefix public.
+                let scheme = (*name == axum::http::header::AUTHORIZATION)
+                    .then(|| value.to_str().ok())
+                    .flatten()
                     .and_then(|v| v.split_once(' '))
                     .map(|(word, _)| word.to_owned())
                     .unwrap_or_default();
