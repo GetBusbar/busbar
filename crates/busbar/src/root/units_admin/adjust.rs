@@ -61,6 +61,7 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
             None => return Ok(Err(Refused::UnknownEntry)),
         };
         let adjustment = busbar_kernel::governance::Adjustment {
+            entry_id: None,
             key_id: &c.key,
             pool: &c.pool,
             model: &c.lane,
