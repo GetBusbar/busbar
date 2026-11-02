@@ -607,3 +607,44 @@ fn reap_releases_every_handle_of_its_owner_and_no_other() {
         assert_eq!(io.held(), 0);
     });
 }
+
+/// A fork can hold a close-on-exec listener until the child reaches exec. Retiring the host's
+/// handle must stop that same socket from listening before the copied descriptor closes.
+#[test]
+fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_open() {
+    worker().block_on(async {
+        for retirement in ["reap", "close", "retire"] {
+            let io = HostIo::new();
+            io.admit(ticket(60), Admission::Bind("127.0.0.1:0".into()));
+            let (handle, at) = io.listen(OWNER, ticket(60), "127.0.0.1:0").unwrap();
+            let entry = io.handles.get(handle).unwrap();
+            let Kind::Listener(listener) = &entry.kind else {
+                panic!("listen returned a different handle kind");
+            };
+            // A duplicate refers to the same socket as an inherited descriptor, without starting
+            // a child or depending on the interval between fork and exec.
+            let inherited = listener.get_ref().try_clone().unwrap();
+            let original = std::sync::Arc::downgrade(&entry);
+            drop(entry);
+            // The listener was reachable before retirement; this is not an unused port.
+            drop(tokio::net::TcpStream::connect(&at).await.unwrap());
+            match retirement {
+                "reap" => io.reap(OWNER),
+                "close" => io.close(OWNER, handle).unwrap(),
+                "retire" => io.retire_listener(handle),
+                _ => unreachable!(),
+            }
+            assert_eq!(io.held(), 0);
+            assert!(
+                original.upgrade().is_none(),
+                "{retirement} retained the entry"
+            );
+            assert!(
+                tokio::net::TcpStream::connect(&at).await.is_err(),
+                "{retirement} left the copied socket listening at {at}"
+            );
+            // Keep the duplicate open through the refusal check, just as a child before exec can.
+            drop(inherited);
+        }
+    });
+}
