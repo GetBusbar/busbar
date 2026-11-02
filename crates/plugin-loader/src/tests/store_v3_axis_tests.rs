@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#[allow(unsafe_code)]
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 
 use std::sync::Arc;
 

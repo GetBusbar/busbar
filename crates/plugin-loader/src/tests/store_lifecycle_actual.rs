@@ -3,9 +3,7 @@
 
 //! OPEN/READY/CLOSE ownership through the qualified actual SQLite descriptor.
 
-#[allow(unsafe_code)]
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{

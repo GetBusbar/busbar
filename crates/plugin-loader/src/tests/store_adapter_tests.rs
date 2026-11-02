@@ -22,9 +22,7 @@
 //! integration suite, which takes the token from the kernel's test token helper:
 //! `crates/busbar/tests/store_adapter_verb_seam.rs`.
 
-#[allow(unsafe_code)]
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 
 use super::*;
 use crate::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
