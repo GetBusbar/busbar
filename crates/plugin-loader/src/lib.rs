@@ -426,3 +426,13 @@ mod ordinary_suite_hook_ticket_tests;
 #[allow(unsafe_code)]
 #[path = "tests/actual_store.rs"]
 mod actual_store;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/actual_env_secret.rs"]
+mod actual_env_secret;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/actual_exports.rs"]
+mod actual_exports;
