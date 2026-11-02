@@ -8,6 +8,8 @@ description = "The busbar plugin subsystem: signed-tarball discovery, in-memory 
 license = "Apache-2.0"
 
 [features]
+# Dev-only conformance retirement barrier; not enabled by shipped defaults.
+test-support = []
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
 
