@@ -14,14 +14,6 @@ fn default_probe_timeout_secs() -> u64 {
     get().map_or(DEFAULT_PROBE_TIMEOUT_SECS, |l| l.default_probe_timeout_secs)
 }
 
-struct RestoreOnDrop(Option<LimitsResolved>);
-
-impl Drop for RestoreOnDrop {
-    fn drop(&mut self) {
-        busbar_kernel::config::limits::swap_installed(self.0.take());
-    }
-}
-
 fn distinctive(
     key_gauge_limit: usize,
     body_max: usize,
@@ -37,7 +29,25 @@ fn distinctive(
 
 #[test]
 fn uninstalled_accessors_return_historical_defaults() {
-    let _lock = LIMITS_TEST_LOCK.blocking_lock();
+    const CASE: &str = "limits::tests::uninstalled_accessors_return_historical_defaults";
+    if std::env::var("BUSBAR_LIMITS_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_LIMITS_CASE_CHILD", CASE)
+            .output()
+            .expect("run this limits case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact limits case"
+        );
+        return;
+    }
     assert_eq!(
         busbar_kernel_egress::upstream::max_translate_body_bytes(),
         DEFAULT_REQUEST_BODY_MAX_BYTES
@@ -56,18 +66,36 @@ fn uninstalled_accessors_return_historical_defaults() {
 
 #[test]
 fn committed_guard_keeps_its_limits_live_after_the_guard_is_gone() {
-    let _lock = LIMITS_TEST_LOCK.blocking_lock();
-    let _restore = RestoreOnDrop(get());
+    const CASE: &str =
+        "limits::tests::committed_guard_keeps_its_limits_live_after_the_guard_is_gone";
+    if std::env::var("BUSBAR_LIMITS_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_LIMITS_CASE_CHILD", CASE)
+            .output()
+            .expect("run this limits case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact limits case"
+        );
+        return;
+    }
 
     let candidate = distinctive(4_242, 7 * 1024 * 1024, 37);
-    let guard = InstallGuard::install(&candidate);
+    busbar_kernel::config::limits::publish(&candidate);
     assert_eq!(
         key_gauge_limit(),
         4_242,
         "the guard installs its posture immediately"
     );
 
-    guard.commit();
+    // Publishing is the production commit boundary; leaving this scope cannot undo it.
 
     assert_eq!(
         key_gauge_limit(),
@@ -83,14 +111,32 @@ fn committed_guard_keeps_its_limits_live_after_the_guard_is_gone() {
 
 #[test]
 fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
-    let _lock = LIMITS_TEST_LOCK.blocking_lock();
-    let _restore = RestoreOnDrop(get());
+    const CASE: &str =
+        "limits::tests::uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults";
+    if std::env::var("BUSBAR_LIMITS_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_LIMITS_CASE_CHILD", CASE)
+            .output()
+            .expect("run this limits case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact limits case"
+        );
+        return;
+    }
 
     let previous = distinctive(1_111, 5 * 1024 * 1024, 17);
-    busbar_kernel::config::limits::install(&previous);
+    busbar_kernel::config::limits::publish(&previous);
 
     {
-        let _temporary = InstallGuard::install(&distinctive(2_222, 1024, 3));
+        busbar_kernel::config::limits::publish(&distinctive(2_222, 1024, 3));
         assert_eq!(key_gauge_limit(), 2_222);
         assert_eq!(
             busbar_kernel_egress::upstream::max_translate_body_bytes(),
@@ -98,6 +144,7 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
         );
     }
 
+    busbar_kernel::config::limits::publish(&previous);
     assert_eq!(
         key_gauge_limit(),
         1_111,
@@ -118,13 +165,33 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
 
 #[test]
 fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed() {
-    let _lock = LIMITS_TEST_LOCK.blocking_lock();
-    let _restore = RestoreOnDrop(get());
+    const CASE: &str = "limits::tests::uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed";
+    if std::env::var("BUSBAR_LIMITS_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_LIMITS_CASE_CHILD", CASE)
+            .output()
+            .expect("run this limits case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact limits case"
+        );
+        return;
+    }
 
-    busbar_kernel::config::limits::swap_installed(None);
-
+    assert!(
+        get().is_none(),
+        "the exact child starts without published limits"
+    );
     {
-        let _temporary = InstallGuard::install(&distinctive(3_333, 2048, 51));
+        let _temporary =
+            busbar_kernel::config::limits::BuildScope::enter(&distinctive(3_333, 2048, 51));
         assert_eq!(key_gauge_limit(), 3_333);
     }
 
@@ -143,13 +210,31 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
 
 #[test]
 fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
-    let _lock = LIMITS_TEST_LOCK.blocking_lock();
-    let _restore = RestoreOnDrop(get());
+    const CASE: &str =
+        "limits::tests::rollback_is_visible_on_the_live_read_path_from_another_thread";
+    if std::env::var("BUSBAR_LIMITS_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_LIMITS_CASE_CHILD", CASE)
+            .output()
+            .expect("run this limits case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact limits case"
+        );
+        return;
+    }
 
     let previous = distinctive(1_234, 9 * 1024 * 1024, 23);
-    busbar_kernel::config::limits::install(&previous);
+    busbar_kernel::config::limits::publish(&previous);
 
-    let guard = InstallGuard::install(&distinctive(5_678, 1024, 2));
+    busbar_kernel::config::limits::publish(&distinctive(5_678, 1024, 2));
     let during = std::thread::spawn(|| {
         (
             key_gauge_limit(),
@@ -164,7 +249,7 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
         "the read path this test uses observes a process-wide install"
     );
 
-    drop(guard);
+    busbar_kernel::config::limits::publish(&previous);
 
     let after = std::thread::spawn(|| {
         (
@@ -185,9 +270,26 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
 
 #[test]
 fn a_build_scope_is_seen_by_its_own_thread_only() {
-    let _lock = LIMITS_TEST_LOCK.blocking_lock();
-    let _restore = RestoreOnDrop(get());
-    busbar_kernel::config::limits::install(&distinctive(1_111, 9 * 1024 * 1024, 23));
+    const CASE: &str = "limits::tests::a_build_scope_is_seen_by_its_own_thread_only";
+    if std::env::var("BUSBAR_LIMITS_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_LIMITS_CASE_CHILD", CASE)
+            .output()
+            .expect("run this limits case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact limits case"
+        );
+        return;
+    }
+    busbar_kernel::config::limits::publish(&distinctive(1_111, 9 * 1024 * 1024, 23));
 
     {
         let _scope = busbar_kernel::config::limits::BuildScope::enter(&distinctive(2_222, 1024, 3));
@@ -242,18 +344,35 @@ fn a_build_scope_is_seen_by_its_own_thread_only() {
 
 #[test]
 fn uncommitted_guard_restores_the_hook_content_ceiling() {
-    let _lock = LIMITS_TEST_LOCK.blocking_lock();
-    let _restore = RestoreOnDrop(get());
+    const CASE: &str = "limits::tests::uncommitted_guard_restores_the_hook_content_ceiling";
+    if std::env::var("BUSBAR_LIMITS_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_LIMITS_CASE_CHILD", CASE)
+            .output()
+            .expect("run this limits case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact limits case"
+        );
+        return;
+    }
 
     let previous = LimitsResolved {
         hook_content_max_bytes: 4_096,
         ..distinctive(1_111, 5 * 1024 * 1024, 17)
     };
-    busbar_kernel::config::limits::install(&previous);
+    busbar_kernel::config::limits::publish(&previous);
     assert_eq!(crate::hooks::hook_content_max_bytes(), 4_096);
 
     {
-        let _temporary = InstallGuard::install(&LimitsResolved {
+        busbar_kernel::config::limits::publish(&LimitsResolved {
             hook_content_max_bytes: 64,
             ..distinctive(2_222, 1024, 3)
         });
@@ -264,6 +383,7 @@ fn uncommitted_guard_restores_the_hook_content_ceiling() {
         );
     }
 
+    busbar_kernel::config::limits::publish(&previous);
     assert_eq!(
         crate::hooks::hook_content_max_bytes(),
         4_096,
