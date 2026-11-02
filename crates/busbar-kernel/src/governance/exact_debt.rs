@@ -21,30 +21,6 @@ pub(super) struct ExactUsageDelta {
     pub(super) models: Vec<ExactModelDelta>,
 }
 impl ExactUsageDelta {
-    pub(super) fn chunk(&self) -> UsageDelta {
-        let part = |count: i128| count.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
-        UsageDelta {
-            requests: part(self.requests),
-            billable_requests: part(self.billable_requests),
-            models: self
-                .models
-                .iter()
-                .filter_map(|model| {
-                    let usage_units: BTreeMap<_, _> = model
-                        .usage_units
-                        .iter()
-                        .filter(|(_, count)| **count != 0)
-                        .map(|(unit, count)| (unit.clone(), part(*count)))
-                        .collect();
-                    (!usage_units.is_empty()).then(|| busbar_contract::records::ModelTokensDelta {
-                        model: model.model.clone(),
-                        usage_units,
-                    })
-                })
-                .collect(),
-        }
-    }
-
     pub(super) fn subtract(&mut self, chunk: &UsageDelta) {
         let mut acknowledged = Self::from_signed(chunk);
         acknowledged.requests = -acknowledged.requests;
