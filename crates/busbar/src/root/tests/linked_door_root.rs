@@ -7,27 +7,6 @@ use crate::root::linked::linked_transport;
 use crate::root::registry::{compose, Dropped};
 use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 
-#[allow(unsafe_code)]
-extern "C" fn misnamed_tcp() -> &'static busbar_contract::abi::mechanism::door::Door {
-    use busbar_contract::abi::mechanism::door::{Door, Statement};
-    use busbar_contract::abi::sdk::door::abi_str;
-
-    let actual = busbar_transport_tcp::door();
-    // SAFETY: the actual linked TCP product owns this immutable, process-lifetime Statement.
-    let statement = unsafe { *actual.statement() };
-    let statement = Box::leak(Box::new(Statement {
-        name: abi_str("tcp-misnamed"),
-        ..statement
-    }));
-    let mut parts = actual.parts();
-    parts.statement = statement;
-    // SAFETY: only the name's valid static string changes. Every list, tail and operation
-    // pointer remains the actual TCP product's process-lifetime data and implementation.
-    Box::leak(Box::new(unsafe {
-        Door::__from_parts(parts).__with_migrate(actual.migrate())
-    }))
-}
-
 #[test]
 fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() {
     let row = linked_transport!(busbar_transport_tcp::door);
@@ -72,45 +51,27 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
 
 #[test]
 fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
-    let actual = busbar_transport_tcp::door();
-    let mutated = misnamed_tcp();
-    assert_eq!(stated_row(busbar_transport_tcp::door).unwrap().key, "tcp");
-    let original = actual.parts();
-    let restated = mutated.parts();
-    assert_eq!(restated.magic, original.magic);
-    assert_eq!(restated.mechanism_version, original.mechanism_version);
-    assert_eq!(restated.size, original.size);
-    assert_eq!(restated.kind, original.kind);
-    assert_eq!(restated.kind_abi, original.kind_abi);
-    assert_eq!(restated.ops, original.ops);
-    assert_eq!(
-        restated.ready.map(|op| op as usize),
-        original.ready.map(|op| op as usize)
-    );
-    assert_eq!(restated.layout, original.layout);
-    assert_eq!(
-        mutated.migrate().map(|op| op as usize),
-        actual.migrate().map(|op| op as usize)
-    );
-    let mut original = busbar_contract::abi::mechanism::rendering::read(
-        &crate::root::loader::dispatch::rendering_of(busbar_transport_tcp::door).unwrap(),
-    )
-    .unwrap();
-    original.name = "tcp-misnamed".into();
-    let restated = busbar_contract::abi::mechanism::rendering::read(
-        &crate::root::loader::dispatch::rendering_of(misnamed_tcp).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        restated, original,
-        "only the real TCP product's name is faulted"
-    );
-    let refused = stated_row(misnamed_tcp).expect_err("a misnamed door is refused");
-    assert!(
-        refused.contains("`tcp-misnamed`") && refused.contains("`tcp`"),
-        "the refusal names both spellings: {refused}"
-    );
-    let row = linked_transport!(misnamed_tcp);
+    // The actual name/claim fault is tested at doors::identity_tests::actual_tcp_name_fault_is_refused.
+    // This separate root control checks composition's propagation of a refused key callback.
+    const REFUSED: &str = "identity-reader-refused-the-linked-key";
+    fn refused_key() -> &'static str {
+        panic!("a linked transport door is refused: {REFUSED}");
+    }
+    let actual = linked_transport!(busbar_transport_tcp::door);
+    let positive = compose(&[actual], Dropped::NONE, &TransportSettings::default())
+        .expect("the actual TCP product composes before the callback fault");
+    assert_eq!(positive[0].0.key, "tcp");
+    assert_eq!(positive[0].1.key(), "tcp");
+    let row = crate::root::linked::LinkedTransport {
+        key: refused_key,
+        ..actual
+    };
+    assert_eq!(row.composes_over as usize, actual.composes_over as usize);
+    assert_eq!(row.build as usize, actual.build as usize);
+    assert_eq!(row.claims as usize, actual.claims as usize);
+    assert_eq!(row.upgrades as usize, actual.upgrades as usize);
+    assert_eq!(row.lines as usize, actual.lines as usize);
+    assert_eq!(row.offered as usize, actual.offered as usize);
     let boot = std::panic::catch_unwind(|| {
         compose(&[row], Dropped::NONE, &TransportSettings::default()).map(|built| built.len())
     })
@@ -121,8 +82,12 @@ fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
         .or_else(|| boot.downcast_ref::<&str>().map(|s| (*s).to_owned()))
         .unwrap_or_default();
     assert!(
-        said.contains("a linked transport door is refused") && said.contains(&refused),
-        "the boot refusal is the reader's: {said}"
+        said.contains("a linked transport door is refused") && said.contains(REFUSED),
+        "the boot preserves the refused key callback's panic: {said}"
+    );
+    assert_eq!(
+        said,
+        format!("a linked transport door is refused: {REFUSED}")
     );
 }
 
