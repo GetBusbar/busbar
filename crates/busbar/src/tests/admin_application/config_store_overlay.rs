@@ -526,6 +526,468 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
     }
     println!("{WITNESS}");
 }
+#[tokio::test]
+async fn settings_preserves_a_large_store_overlay_across_reload() {
+    const CHILD: &str = "BUSBAR_ADMIN_OVERLAY_FAILURE_CHILD";
+    const WITNESS: &str = "actual root overlay refusal assertions completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root test"),
+        );
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root usage witness failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                Instant::now() < until,
+                "the actual-root usage witness timed out"
+            );
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
+    }
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("admin-store-overlay");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["plugins"] = serde_json::json!({"enabled": true, "dir": directory.to_string_lossy()});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let dir = directory.clone();
+    let config_path = dir.join("config.yaml");
+    let providers_path = dir.join("providers.yaml");
+    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(&providers_path, "{}\n").unwrap();
+    app.config_path = Some(config_path.clone());
+    app.providers_path = Some(providers_path);
+    let calls = app
+        .governance
+        .as_ref()
+        .expect("actual governance")
+        .store_calls()
+        .expect("actual Store calls");
+    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual rate history boots in the configured Store");
+    let faults = OverlayFaults::new(calls);
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+        .expect("actual Store overlay");
+    app.overlay_path = Some(overlay.clone());
+    let (_data, admin, handle) =
+        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, admin).await });
+    let client = reqwest::Client::new();
+    let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = (0..32)
+        .map(|index| (format!("persisted-team-{index:04}"), Default::default()))
+        .collect();
+    busbar_kernel::config::overlay::write(
+        &overlay,
+        &busbar_kernel::config::overlay::OverlayDoc {
+            groups: groups.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let response = reqwest::Client::new()
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"per_request_fee": 31}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "{:?}",
+        response.text().await
+    );
+    let loaded = busbar_kernel::load_config_from_disk_with_store(
+        &dir.join("config.yaml"),
+        Some(&dir.join("providers.yaml")),
+        false,
+        busbar_kernel::config::EnvSubst::Strict,
+        rules.as_ref(),
+        Some(overlay.clone()),
+    )
+    .unwrap();
+    let doc = loaded.overlay_doc.unwrap();
+    assert_eq!(doc.root.unwrap().per_request_fee, Some(31));
+    assert_eq!(
+        serde_json::to_value(doc.groups).unwrap(),
+        serde_json::to_value(groups).unwrap()
+    );
+    assert!(
+        overlay
+            .read_bytes()
+            .unwrap()
+            .expect("actual stored overlay bytes")
+            .len()
+            > busbar_contract::MAX_RECORD_BYTES
+    );
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+    println!("{WITNESS}");
+}
+#[tokio::test]
+async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation() {
+    const CHILD: &str = "BUSBAR_ADMIN_OVERLAY_FAILURE_CHILD";
+    const WITNESS: &str = "actual root overlay refusal assertions completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root test"),
+        );
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root usage witness failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                Instant::now() < until,
+                "the actual-root usage witness timed out"
+            );
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
+    }
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("admin-store-overlay");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["plugins"] = serde_json::json!({"enabled": true, "dir": directory.to_string_lossy()});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let dir = directory.clone();
+    let config_path = dir.join("config.yaml");
+    let providers_path = dir.join("providers.yaml");
+    std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    std::fs::write(&providers_path, "{}\n").unwrap();
+    app.config_path = Some(config_path.clone());
+    app.providers_path = Some(providers_path);
+    let original_config = std::fs::read(&config_path).unwrap();
+    let calls = app
+        .governance
+        .as_ref()
+        .expect("actual governance")
+        .store_calls()
+        .expect("actual Store calls");
+    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual rate history boots in the configured Store");
+    let faults = OverlayFaults::new(calls);
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+        .expect("actual Store overlay");
+    app.overlay_path = Some(overlay.clone());
+    let (_data, admin, handle) =
+        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, admin).await });
+    let client = reqwest::Client::new();
+    let before = handle.load();
+    faults.lose_reply.store(true, Ordering::SeqCst);
+    let put = |fee| {
+        let client = client.clone();
+        async move {
+            client
+                .put(format!("http://{addr}/api/v1/admin/config/settings"))
+                .json(&serde_json::json!({"per_request_fee": fee}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(put(17).await.status().as_u16(), 400);
+    assert!(Arc::ptr_eq(&handle.load(), &before));
+    assert_eq!(
+        overlay
+            .read_required()
+            .unwrap()
+            .unwrap()
+            .root
+            .unwrap()
+            .per_request_fee,
+        Some(17),
+        "the Store applied the candidate before its reply was lost"
+    );
+
+    assert_eq!(put(29).await.status().as_u16(), 400);
+    assert!(Arc::ptr_eq(&handle.load(), &before));
+    let candidates = faults.requests.lock().unwrap().clone();
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].op_id, candidates[1].op_id);
+    assert_eq!(candidates[0].fingerprint(), candidates[1].fingerprint());
+
+    let mut invalid = document.clone();
+    invalid["groups"] = serde_json::json!({"broken": {"parent": "missing"}});
+    std::fs::write(&config_path, serde_yaml::to_string(&invalid).unwrap()).unwrap();
+    let failed = client
+        .post(format!("http://{addr}/api/v1/admin/config/reload"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failed.status().as_u16(), 400);
+    assert!(Arc::ptr_eq(&handle.load(), &before));
+    let group = client
+        .post(format!("http://{addr}/api/v1/admin/groups"))
+        .json(&serde_json::json!({"name": "after_failed_reload", "config": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(group.status().as_u16(), 400);
+    assert!(Arc::ptr_eq(&handle.load(), &before));
+    assert_eq!(
+        faults.requests.lock().unwrap().clone().len(),
+        2,
+        "quarantine admits no new candidate"
+    );
+
+    std::fs::write(&config_path, original_config).unwrap();
+    let reset = client
+        .delete(format!("http://{addr}/api/v1/admin/overlay/root"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        reset.status().as_u16(),
+        400,
+        "a reset rebuild also retains quarantine"
+    );
+    assert!(Arc::ptr_eq(&handle.load(), &before));
+    assert_eq!(faults.requests.lock().unwrap().clone().len(), 2);
+
+    let reloaded = client
+        .post(format!("http://{addr}/api/v1/admin/config/reload"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reloaded.status().as_u16(), 200);
+    let recovered = handle.load();
+    assert!(!Arc::ptr_eq(&recovered, &before));
+    assert_eq!(
+        recovered
+            .overlay_path
+            .as_ref()
+            .unwrap()
+            .read_required()
+            .unwrap()
+            .unwrap()
+            .root
+            .unwrap()
+            .per_request_fee,
+        Some(17),
+        "reload publishes the recovered Store generation"
+    );
+    assert_eq!(
+        put(41).await.status().as_u16(),
+        200,
+        "the published fresh carrier can mutate"
+    );
+    assert_eq!(
+        overlay
+            .read_required()
+            .unwrap()
+            .unwrap()
+            .root
+            .unwrap()
+            .per_request_fee,
+        Some(41),
+        "the new mutation persists to the same configured Store"
+    );
+    assert!(
+        busbar_kernel::config::overlay::persist_root(
+            Some(&overlay),
+            &busbar_kernel::config::overlay::RootSettings::default(),
+        )
+        .is_err(),
+        "publishing a new carrier never clears the old generation's quarantine"
+    );
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+    println!("{WITNESS}");
+}
 // Narrow faults around the actual configured Store. Every unaffected operation delegates.
 struct OverlayFaults {
     inner: Arc<dyn StoreCalls>,
