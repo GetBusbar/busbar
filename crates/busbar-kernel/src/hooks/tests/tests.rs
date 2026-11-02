@@ -1122,7 +1122,6 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
 
 #[test]
 fn resolve_gate_hooks_admits_only_decision_gates() {
-    let env = test_env();
     let mk = |kind: HookKind, prompt: PromptAccess| HookCfg {
         kind,
         prompt,
@@ -1140,7 +1139,7 @@ fn resolve_gate_hooks_admits_only_decision_gates() {
         "no-gate".to_string(),
         "a-tap".to_string(),
     ];
-    let resolved = resolve_gate_hooks(&hooks, &global, &env, 0);
+    let resolved = decision_definitions(&hooks, &global);
     assert_eq!(
         resolved.len(),
         2,
@@ -1151,7 +1150,6 @@ fn resolve_gate_hooks_admits_only_decision_gates() {
 #[test]
 fn resolve_tap_hooks_admits_only_request_stage_taps() {
     use crate::config::HookStage;
-    let env = test_env();
     let mk = |kind: HookKind, phase: Vec<HookStage>| HookCfg {
         kind,
         phase,
@@ -1176,15 +1174,14 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
         "tap-completion".to_string(),
         "a-gate".to_string(),
     ];
-    let resolved = resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Request);
+    let resolved = tap_definitions(&hooks, &global, crate::config::HookStage::Request);
     assert_eq!(
         resolved.len(),
         2,
         "only the two REQUEST-stage taps resolve; the gate and the completion-stage tap are excluded"
     );
 
-    let completion =
-        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Response);
+    let completion = tap_definitions(&hooks, &global, crate::config::HookStage::Response);
     assert_eq!(
         completion.len(),
         2,
@@ -1192,13 +1189,23 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
     );
 
     assert_eq!(
-        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Routing).len(),
+        tap_definitions(&hooks, &global, crate::config::HookStage::Routing).len(),
         1,
         "only the phase-unset tap observes the routing stage (omitted = the four core stages)"
     );
 
     assert!(
-        resolved.iter().all(|(_, send_prompt, _, _)| !*send_prompt),
+        resolved.iter().all(|(name, hook)| !access_from_intent(
+            name,
+            hook,
+            Needs {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro
+            },
+            &std::sync::Mutex::new(HashSet::new())
+        )
+        .0
+        .sends_prompt()),
         "a prompt:no tap must not carry the prompt-content grant"
     );
 }
@@ -1206,7 +1213,6 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
 #[test]
 fn resolve_tap_hooks_honors_phase_list() {
     use crate::config::HookStage;
-    let env = test_env();
     let mk = |phase: Vec<HookStage>| HookCfg {
         kind: HookKind::Tap,
         global: true,
@@ -1222,24 +1228,23 @@ fn resolve_tap_hooks_honors_phase_list() {
     let global = vec!["resp-only".to_string(), "req-and-resp".to_string()];
 
     assert_eq!(
-        resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Response).len(),
+        tap_definitions(&hooks, &global, HookStage::Response).len(),
         2,
         "both taps declare the response phase"
     );
 
     assert_eq!(
-        resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Request).len(),
+        tap_definitions(&hooks, &global, HookStage::Request).len(),
         1,
         "phase: [response] does not fire at the request stage"
     );
 
-    assert!(resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Candidate).is_empty());
-    assert!(resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Routing).is_empty());
+    assert!(tap_definitions(&hooks, &global, HookStage::Candidate).is_empty());
+    assert!(tap_definitions(&hooks, &global, HookStage::Routing).is_empty());
 }
 
 #[test]
 fn resolve_tap_hooks_carries_prompt_grant() {
-    let env = test_env();
     let mk = |prompt: PromptAccess| HookCfg {
         kind: HookKind::Tap,
         prompt,
@@ -1249,31 +1254,31 @@ fn resolve_tap_hooks_carries_prompt_grant() {
     let mut hooks = HashMap::new();
     hooks.insert("ro-tap".to_string(), mk(PromptAccess::Ro));
     hooks.insert("no-tap".to_string(), mk(PromptAccess::No));
-    let resolved = resolve_tap_hooks(
-        &hooks,
-        &["ro-tap".to_string(), "no-tap".to_string()],
-        &env,
-        0,
-        crate::config::HookStage::Request,
-    );
+    let names = ["ro-tap".to_string(), "no-tap".to_string()];
+    let resolved = tap_definitions(&hooks, &names, crate::config::HookStage::Request);
     assert_eq!(resolved.len(), 2);
 
-    let ro = resolve_tap_hooks(
-        &hooks,
-        &["ro-tap".to_string()],
-        &env,
-        0,
-        crate::config::HookStage::Request,
+    let ro_names = ["ro-tap".to_string()];
+    let ro = tap_definitions(&hooks, &ro_names, crate::config::HookStage::Request);
+    let no_names = ["no-tap".to_string()];
+    let no = tap_definitions(&hooks, &no_names, crate::config::HookStage::Request);
+    let needs = Needs {
+        prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+        user: busbar_contract::plugin_rows::NeedLevel::Ro,
+    };
+    let banners = std::sync::Mutex::new(HashSet::new());
+    assert!(
+        access_from_intent(ro[0].0, ro[0].1, needs, &banners)
+            .0
+            .sends_prompt(),
+        "prompt:ro tap carries send_prompt = true"
     );
-    let no = resolve_tap_hooks(
-        &hooks,
-        &["no-tap".to_string()],
-        &env,
-        0,
-        crate::config::HookStage::Request,
+    assert!(
+        !access_from_intent(no[0].0, no[0].1, needs, &banners)
+            .0
+            .sends_prompt(),
+        "prompt:no tap carries send_prompt = false"
     );
-    assert!(ro[0].1, "prompt:ro tap carries send_prompt = true");
-    assert!(!no[0].1, "prompt:no tap carries send_prompt = false");
 }
 
 #[test]

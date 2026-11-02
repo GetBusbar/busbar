@@ -392,18 +392,9 @@ pub fn resolve_pool_gates(
     env: &HookEnv,
     settings_version: u64,
 ) -> Vec<(u16, ResolvedPolicy)> {
-    let mut ranked: Vec<(u16, ResolvedPolicy)> = cfg
-        .gates
-        .iter()
-        .filter_map(|name| {
-            let hook = hooks.get(name)?;
-            if hook.kind != crate::config::HookKind::Gate {
-                return None;
-            }
-
-            if hook.prompt.can_rewrite() {
-                return None;
-            }
+    let mut ranked: Vec<(u16, ResolvedPolicy)> = decision_definitions(hooks, &cfg.gates)
+        .into_iter()
+        .filter_map(|(name, hook)| {
             resolve_gate_transport(name, hook, hooks, env, settings_version)
                 .map(|rp| (hook.priority, rp))
         })
@@ -697,6 +688,35 @@ fn access_from_intent(
 fn projection_grants(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> (bool, bool) {
     let (prompt, user) = effective_access(name, hook, env);
     (prompt.sends_prompt(), user.sends_user())
+}
+
+fn decision_definitions<'a>(
+    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    names: &'a [String],
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite())
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
+}
+
+fn tap_definitions<'a>(
+    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    names: &'a [String],
+    stage: crate::config::HookStage,
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Tap && hook.fires_at_stage(stage))
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
 }
 
 fn rewrite_definitions<'a>(
@@ -1229,18 +1249,7 @@ pub fn resolve_tap_hooks(
     stage: crate::config::HookStage,
 ) -> Vec<TapEntry> {
     let mut ranked: Vec<(u16, TapEntry)> = Vec::new();
-    for name in global_hooks {
-        let Some(hook) = hooks.get(name) else {
-            continue;
-        };
-        if hook.kind != crate::config::HookKind::Tap {
-            continue;
-        }
-
-        if !hook.fires_at_stage(stage) {
-            continue;
-        }
-
+    for (name, hook) in tap_definitions(hooks, global_hooks, stage) {
         if let Some(ResolvedPolicy::Policy {
             policy,
             timeout,
@@ -1265,14 +1274,7 @@ pub fn resolve_gate_hooks(
     settings_version: u64,
 ) -> Vec<(u16, ResolvedPolicy)> {
     let mut ranked: Vec<(u16, ResolvedPolicy)> = Vec::new();
-    for name in global_hooks {
-        let Some(hook) = hooks.get(name) else {
-            continue;
-        };
-
-        if hook.kind != crate::config::HookKind::Gate || hook.prompt.can_rewrite() {
-            continue;
-        }
+    for (name, hook) in decision_definitions(hooks, global_hooks) {
         if let Some(rp) = resolve_gate_transport(name, hook, hooks, env, settings_version) {
             ranked.push((hook.priority, rp));
         }
