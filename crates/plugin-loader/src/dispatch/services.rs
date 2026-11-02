@@ -274,8 +274,11 @@ impl ServiceStore {
             .filter(|held| held.epoch == epoch)
             .and_then(|held| held.entries.get_mut(&issue))
         {
-            Some((_, e)) if matches!(e, Entry::Running { invocation: current } if *current == invocation) =>
-            {
+            Some((_, e)) => {
+                if !matches!(&*e, Entry::Running { invocation: current } if *current == invocation)
+                {
+                    return false;
+                }
                 *e = Entry::Done {
                     invocation,
                     stored,

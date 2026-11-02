@@ -153,7 +153,8 @@ impl LoadablePlugin {
             return Ok(self.manifest.declares.clone());
         };
         let row = crate::dispatch::LinkedRow::of_raw(door).map_err(|e| e.to_string())?;
-        let stated = rendering::read(&row.statement).map_err(|e| e.to_string())?;
+        let stated = rendering::read(&row.statement)
+            .map_err(|e| format!("expected {} at statement byte {}", e.what, e.at))?;
         match extensions::get(&stated.extensions.bytes, extensions::EXT_DECLARES) {
             Some(bytes) => crate::sign::Declares::from_declares_json(bytes),
             None => Ok(self.manifest.declares.clone()),
