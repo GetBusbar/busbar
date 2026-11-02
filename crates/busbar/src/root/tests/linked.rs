@@ -229,8 +229,7 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
 #[test]
 fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     use busbar_contract::secret::SecretAxis;
-    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
-        .expect("the linked secret doors state");
+    let axis = super::secret_source_tests::linked_axis();
     assert!(axis.linked("env") && axis.linked("file") && !axis.answers("vault"));
     let env = axis.shared("env").expect("env opens");
     assert!(
@@ -287,6 +286,7 @@ fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
 #[cfg(linked_axis_export_doors)]
 #[test]
 fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
+    busbar_kernel_testkit::test_support::root::ensure();
     let module = busbar_kernel_testkit::test_support::export_axis::scrape_module();
     let registry = PluginRegistry::empty()
         .link(linked_exports(crate::LINKED.export_doors).expect("the linked export rows"))
@@ -299,16 +299,33 @@ fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
         registry.resolve(module).is_some(),
         "the linked export rows carry the scrape sink under `{module}`"
     );
-    let sink = crate::root::loader::export_axis::ExportRows::new(
-        &registry,
-        crate::root::dispatch::dispatcher(),
+    let dispatcher = crate::root::dispatch::dispatcher();
+    crate::root::connector::install_io(&dispatcher);
+    let settings = busbar_contract::transport::TransportSettings::default();
+    let connector = busbar_core_connector::process::build_with_secrets(
+        || {
+            crate::root::connector::entries_on(
+                &dispatcher,
+                crate::LINKED_TRANSPORT_DOORS,
+                &settings,
+            )
+        },
+        crate::root::connector::guard_for(&busbar_kernel::config::Destinations::default())
+            .expect("the destination judge"),
+        &[],
+        dispatcher.conn_waker(),
+        crate::root::connector::pool_posture(&settings),
+        crate::root::connector::spawn_secret_resolver(),
     )
-    .open(
-        module,
-        "export.metrics",
-        &serde_json::json!({"buffer_seconds": 60}),
-    )
-    .expect("the scrape sink opens");
+    .expect("the serving connector builds from the linked transport doors");
+    let sink = crate::root::loader::export_axis::ExportRows::new(&registry, dispatcher)
+        .with_conns(connector)
+        .open(
+            module,
+            "export.metrics",
+            &serde_json::json!({"buffer_seconds": 60}),
+        )
+        .expect("the scrape sink opens");
 
     let own = "# TYPE busbar_requests_total counter\n\
                busbar_requests_total{pool=\"a\\\"b\\\\c\\nd\",outcome=\"ok\"} 3\n\
