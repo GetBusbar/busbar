@@ -275,7 +275,10 @@ fn assert_a_fresh_connection_serves(backend: &Backend, host: &ConnHost) {
     );
     let mut facts = unwritten_facts();
     assert_eq!(facts_slot(host.ctx(), fresh, &mut facts), Ok(()));
-    assert_eq!(owner(host, fresh, facts.sni).as_deref(), Some("fresh.sni.test"));
+    assert_eq!(
+        owner(host, fresh, facts.sni).as_deref(),
+        Some("fresh.sni.test")
+    );
     assert_eq!(close_slot(host.ctx(), fresh), Ok(()));
     assert_eq!(entries(host), 0);
 }
@@ -447,7 +450,11 @@ fn overlapping_empty_operations_cannot_prune_a_shared_active_epoch() {
         parked.join().unwrap()
     });
 
-    assert_eq!(answer, Ok(()), "A lost its epoch to an overlapping operation");
+    assert_eq!(
+        answer,
+        Ok(()),
+        "A lost its epoch to an overlapping operation"
+    );
     assert_ne!(marker, UNWRITTEN, "A's answer was not published");
     assert_eq!(entries(&a), 0, "the last operation left its scaffolding");
 }
@@ -491,9 +498,15 @@ fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_not
 
     // Another instance's connection: refused, nothing kept in the refuser's table either.
     let mut piece = unwritten_piece();
-    assert_eq!(read_slot(b.ctx(), conn, &mut piece), Err(ConnError::NotOwner));
+    assert_eq!(
+        read_slot(b.ctx(), conn, &mut piece),
+        Err(ConnError::NotOwner)
+    );
     let mut facts = unwritten_facts();
-    assert_eq!(facts_slot(b.ctx(), conn, &mut facts), Err(ConnError::NotOwner));
+    assert_eq!(
+        facts_slot(b.ctx(), conn, &mut facts),
+        Err(ConnError::NotOwner)
+    );
     assert_eq!(entries(&b), 0);
 
     // Absent answers publish successfully and keep nothing.
@@ -512,7 +525,10 @@ fn the_last_operation_prunes_its_empty_entry_on_every_outcome_that_publishes_not
     let mut piece = unwritten_piece();
     assert_eq!(read_slot(a.ctx(), conn, &mut piece), Err(ConnError::Closed));
     let mut facts = unwritten_facts();
-    assert_eq!(facts_slot(a.ctx(), conn, &mut facts), Err(ConnError::Closed));
+    assert_eq!(
+        facts_slot(a.ctx(), conn, &mut facts),
+        Err(ConnError::Closed)
+    );
     assert_eq!(entries(&a), 0);
 }
 
@@ -577,7 +593,11 @@ fn a_null_out_slot_faults_before_any_backend_effect_and_valid_calls_still_work()
         open_slot(ctx, &descriptor(), std::ptr::null_mut()),
         Err(ConnError::Fault)
     );
-    assert_eq!(backend.opens.load(Ordering::SeqCst), 1, "a connection was opened");
+    assert_eq!(
+        backend.opens.load(Ordering::SeqCst),
+        1,
+        "a connection was opened"
+    );
 
     assert_eq!(
         write_slot(ctx, conn, std::ptr::null_mut()),
@@ -589,13 +609,21 @@ fn a_null_out_slot_faults_before_any_backend_effect_and_valid_calls_still_work()
         wait_slot(ctx, conn, std::ptr::null_mut()),
         Err(ConnError::Fault)
     );
-    assert_eq!(backend.waits.load(Ordering::SeqCst), 0, "interest was registered");
+    assert_eq!(
+        backend.waits.load(Ordering::SeqCst),
+        0,
+        "interest was registered"
+    );
 
     assert_eq!(
         facts_slot(ctx, conn, std::ptr::null_mut()),
         Err(ConnError::Fault)
     );
-    assert_eq!(backend.facts_calls.load(Ordering::SeqCst), 0, "facts were asked for");
+    assert_eq!(
+        backend.facts_calls.load(Ordering::SeqCst),
+        0,
+        "facts were asked for"
+    );
     assert_eq!(entries(&a), 0, "a held entry was made for a refused call");
 
     assert_eq!(
