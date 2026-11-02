@@ -204,7 +204,36 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
                 plain\n  slow:\n    members:\n      - model: patient\n";
     let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
-    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
+    crate::dist_root_install::install();
+    let empty = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+    )
+    .expect("the serving deployment parses");
+    let empty = busbar_kernel::config::resolve(&empty, &Default::default())
+        .expect("the serving deployment resolves");
+    let store = crate::root::real_store::store();
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::default());
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        empty,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+    )
+    .expect("the product builds the timeout sealing application");
+    limits.keep().expect("the serving limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
     let serving = crate::root::model_egress::ModelServing {
         pools: crate::root::model_egress::ModelPools::of(&cfg),
         lanes: [("patient".to_string(), 0), ("plain".to_string(), 1)]
@@ -408,19 +437,25 @@ fn latency_reservoir_p95_is_nearest_rank_and_bounded() {
     assert_eq!(ring.p95_ms(), Some(7));
 }
 
-fn scraped(family: &str, labels: &[&str]) -> f64 {
-    busbar_kernel_testkit::test_support::export_axis::render()
-        .lines()
-        .filter(|l| l.starts_with(family) && !l.starts_with('#'))
-        .filter(|l| labels.iter().all(|want| l.contains(want)))
-        .filter_map(|l| l.rsplit(' ').next()?.parse::<f64>().ok())
+fn scraped(family: &str, labels: &[(&str, &str)]) -> f64 {
+    busbar_kernel::snapshot::snapshot()
+        .expect("the actual host recorder is installed")
+        .iter()
+        .flat_map(|f| &f.samples)
+        .filter(|sample| sample.name == family)
+        .filter(|sample| {
+            labels
+                .iter()
+                .all(|(name, value)| sample.labels.iter().any(|(n, v)| n == name && v == value))
+        })
+        .filter_map(|sample| sample.value.parse::<f64>().ok())
         .sum()
 }
 
 #[test]
 fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
     use busbar_kernel_egress::ports::StatedLabels;
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(Duration::from_secs(60));
     let attempts = busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL;
     let refused = busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL;
     let bound = super::LabelBound::new(["declared-word".to_string()]).reaching(
@@ -447,13 +482,13 @@ fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
     assert!(
         scraped(
             attempts,
-            &["pool=\"entry-red-arm\"", "lane=\"own-red-arm\""]
+            &[("pool", "entry-red-arm"), ("lane", "own-red-arm")]
         ) >= 1.0,
-        "its lane fell back to the walk's own, its reachable pool was taken: {}",
-        busbar_kernel_testkit::test_support::export_axis::render()
+        "its lane fell back to the walk's own, its reachable pool was taken: {:?}",
+        busbar_kernel::snapshot::snapshot()
     );
     assert_eq!(
-        scraped(attempts, &["lane=\"undeclared-word\""]),
+        scraped(attempts, &[("lane", "undeclared-word")]),
         0.0,
         "the undeclared word was never emitted"
     );
@@ -472,7 +507,7 @@ fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
     assert!(
         scraped(
             busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
-            &["pool=\"walked-red-arm\"", "lane=\"declared-word\""]
+            &[("pool", "walked-red-arm"), ("lane", "declared-word")]
         ) >= 1.0,
         "its pool fell back to the walk's own, its declared lane word was taken"
     );
