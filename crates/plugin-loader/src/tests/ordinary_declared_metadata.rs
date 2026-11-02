@@ -36,7 +36,7 @@ fn restated(slot: &OnceLock<usize>, refs: &'static [AbiStr]) -> &'static Door {
 }
 extern "C" fn declaring() -> &'static Door {
     static SLOT: OnceLock<usize> = OnceLock::new();
-    static REFS: &[AbiStr] = &[abi_str("dsn"), abi_str("replicas.*.password")];
+    const REFS: &[AbiStr] = &[abi_str("dsn"), abi_str("replicas.*.password")];
     restated(&SLOT, REFS)
 }
 extern "C" fn silent() -> &'static Door {
