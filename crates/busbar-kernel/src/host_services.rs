@@ -569,12 +569,16 @@ pub const TICKET_NO_PRESS: &str = "this host mints no tickets";
 pub const TICKET_NOT_HELD: &str = "no ticket record is held for this unit";
 
 /// THE RECORD KINDS THE KERNEL KEEPS ITS OWN RECORDS UNDER, which no instance may declare: a minted
-/// ticket's record ([`crate::governance::TICKET_RECORD_KIND`]). An instance's declared kind names
+/// ticket's record, work handles and chain incarnation fences. An instance's declared kind names
 /// the rows its retention rule governs, so an instance declaring one of these would purge the
 /// kernel's own rows under its own rule. [`KernelServices::admit`] refuses it
 /// ([`AdmitRefused::KindReserved`]). (The admin record write never reaches a kernel kind's rows,
 /// declared or not: see [`crate::store::plane_view::KERNEL_RECORD_KINDS`].)
-pub const RESERVED_RECORD_KINDS: &[&str] = &[crate::governance::TICKET_RECORD_KIND];
+pub const RESERVED_RECORD_KINDS: &[&str] = &[
+    crate::governance::TICKET_RECORD_KIND,
+    crate::host_work::WORK_SCHEMA.as_str(),
+    crate::host_chains::CHAIN_LIFE_SCHEMA.as_str(),
+];
 
 /// Why an instance was not admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
