@@ -169,9 +169,10 @@ async fn send_past_one_receive_window(
     polled: &AtomicUsize,
     moved: &tokio::sync::Notify,
 ) {
-    // This exceeds the locked server's 1 MiB window and the client's 1 MiB send buffer.
-    // Polling every frame therefore requires server receive credit, not just a queued request.
-    const TOTAL: usize = 2 * 1024 * 1024 + 1;
+    // This exceeds the locked server's 1 MiB window, the client's 1 MiB send buffer,
+    // and the one 16 KiB frame Hyper can poll before awaiting send capacity.
+    // Polling every frame therefore requires server receive credit.
+    const TOTAL: usize = 3 * 1024 * 1024 + 1;
     let mut remaining = TOTAL;
     while remaining != 0 {
         let n = remaining.min(16 * 1024);
