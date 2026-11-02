@@ -571,9 +571,26 @@ pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
 }
 
 pub(crate) fn dropped(name: &str, alias: &str, kind: &str) -> busbar_contract::plugin_rows::Row {
-    let mut row = crate::test_support::rows::row(name, alias, kind);
-    row.key = name.to_string();
-    row
+    use busbar_contract::plugin_rows::{NeedLevel, Row, Trust};
+    // Inert metadata only: no plugin, door, registry, or registration is created.
+    Row {
+        file: format!("{name}.tar.gz"),
+        key: name.into(),
+        name: name.into(),
+        alias: alias.into(),
+        kind: kind.into(),
+        version: "1.0.0".into(),
+        abi_version: 1,
+        trust: Trust::Allowed {
+            reason: "unsigned metadata".into(),
+        },
+        ephemeral: false,
+        in_process: false,
+        linked: false,
+        needs_prompt: NeedLevel::No,
+        needs_user: NeedLevel::No,
+        settings_schema: None,
+    }
 }
 
 pub(crate) fn skipped_in(
@@ -582,9 +599,13 @@ pub(crate) fn skipped_in(
     alias: &str,
     reason: &str,
 ) -> busbar_contract::plugin_rows::Skipped {
-    let mut s = crate::test_support::rows::skipped(name, alias, reason);
-    s.file = file.to_string();
-    s
+    busbar_contract::plugin_rows::Skipped {
+        file: file.into(),
+        name: name.into(),
+        alias: alias.into(),
+        reason: reason.into(),
+        code: "unsigned",
+    }
 }
 
 pub(crate) const UNSIGNED_SKIPPED: &str = "manifest carries no signature; refusing to load an \
@@ -710,28 +731,28 @@ fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
 #[test]
 fn the_preflight_warns_about_a_malformed_floor() {
     use crate::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
-    use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
     let mut cfg = crate::config::PluginsCfg::default();
     cfg.min_versions.insert("p".into(), "v1".into());
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    tracing::subscriber::with_default(subscriber, || {
-        crate::plugins_preflight(
-            None,
-            None,
-            &Default::default(),
-            &Default::default(),
-            &cfg,
-            &Default::default(),
-        )
-        .expect("the preflight passes");
-    });
-    assert!(
-        cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
-        "{:?}",
-        cap.messages()
+    let directory = tmp_plugin_dir("malformed-floor-warning");
+    let path = directory.join("warnings.log");
+    let file = std::fs::File::create(&path).expect("warning capture file");
+    let subscriber = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::layer()
+            .without_time()
+            .with_level(false)
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(move || file.try_clone().expect("warning capture writer")),
     );
+    // The actual CLI/bootstrap caller invokes this production policy owner directly.
+    tracing::subscriber::with_default(subscriber, || cfg.warn_invalid_floors());
+    let captured = std::fs::read_to_string(&path).expect("actual diagnostic output");
+    assert!(
+        captured.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
+        "{captured}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]
@@ -1689,31 +1710,15 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-#[test]
-fn env_var_guard_restores_on_panic() {
-    const KEY: &str = "BUSBAR_TEST_ENV_GUARD_PANIC_PROBE";
-
-    std::env::set_var(KEY, "ambient-value");
-
-    let result = std::panic::catch_unwind(|| {
-        let _guard = EnvVarGuard::capture(KEY);
-        std::env::set_var(KEY, "clobbered-by-test-body");
-        panic!("simulated assertion failure mid-test");
-    });
-    assert!(result.is_err(), "the inner closure was expected to panic");
-
-    assert_eq!(
-        std::env::var(KEY).as_deref(),
-        Ok("ambient-value"),
-        "EnvVarGuard must restore the prior value even when the guarded scope unwinds via panic"
-    );
-    std::env::remove_var(KEY);
-}
+// ROOT pure-framework disposition: env_var_guard_restores_on_panic tested only
+// the deleted test kit's EnvVarGuard destructor, not product interpolation or policy.
+// Its two fake-helper bookkeeping assertions retire with that helper.
 
 #[test]
 fn is_real_auth_plugin_ref_exempts_keys_always_and_in_process_modules_only_where_answered() {
     let none: fn(&str) -> bool = |_| false;
-    let test_modules: fn(&str) -> bool = crate::test_support::auth_modules::answers;
+    // A pure classifier input, not an AuthModule/axis or a registration backend.
+    let test_modules: fn(&str) -> bool = |module| module == "test-groups-module";
     assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, test_modules));
     assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, none));
     assert!(
