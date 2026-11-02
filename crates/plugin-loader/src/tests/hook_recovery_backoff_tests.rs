@@ -5,9 +5,10 @@
 
 use super::super::{HookInstance, State, QUARANTINE_FIRST, QUARANTINE_MAX};
 use super::*;
+use crate::dispatch::call::Ticketed;
 use crate::dispatch::kinds::hook::Hook;
-use crate::dispatch::{Budgets, ConnTable, NoSink, Plugin};
-use busbar_contract::abi::mechanism::call::Outcome;
+use crate::dispatch::{now_ns, Budgets, ConnTable, Frame, NoSink, Plugin};
+use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::hook_calls::HookCalls;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -93,11 +94,41 @@ async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_c
     .into_iter()
     .enumerate()
     {
-        let answer = instance.decide(frame(2), BUDGET).await;
-        assert!(
-            matches!(&answer, Answered::Broken(why) if why.contains("FAULT")),
-            "the real watchdog-breaching DECIDE must fault, attempt {attempt}: {answer:?}"
+        let plugin = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
+        let before = plugin.inner.crossings.load(Ordering::SeqCst);
+        let request = frame(2);
+        let lent = Arc::new(request.try_lend().expect("the fresh request can be lent"));
+        // HookCalls::decide deliberately watches its caller budget. Compose the same real
+        // serving crossing with the dispatcher's default watch instead, leaving the caller's
+        // observation budget long enough to receive the watchdog's FAULT. No synthetic fault.
+        let mut call = Ticketed::mint(&instance.inner.dispatcher, 0).unwrap();
+        call.submit(
+            &*plugin,
+            busbar_contract::abi::hook::slot::DECIDE,
+            Frame::new(
+                lent.input(),
+                super::super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+            ),
+            DeadlineClass::Call,
+            now_ns().saturating_add(u64::try_from(BUDGET.as_nanos()).unwrap()),
+            Arc::clone(&lent) as crate::dispatch::Lent,
         );
+        let done = tokio::time::timeout(BUDGET, &mut call)
+            .await
+            .expect("the actual watchdog answers before the caller's observation budget");
+        assert_eq!(done.outcome, Outcome::Fault, "attempt {attempt}");
+        assert!(
+            plugin.is_faulted(),
+            "the watchdog quarantined this real instance"
+        );
+        assert_eq!(
+            plugin.inner.crossings.load(Ordering::SeqCst),
+            before + 1,
+            "one actual DECIDE crossing entered before the watchdog fault"
+        );
+        // This is the same transition invoked by HookCalls' FAULT arm. The orphaned crossing
+        // retains its Arc loan until retirement; never call complete() on its unfinished frame.
+        instance.inner.faulted(&plugin);
         assert!(instance.quarantined());
         assert_eq!(
             binds.load(Ordering::SeqCst),
