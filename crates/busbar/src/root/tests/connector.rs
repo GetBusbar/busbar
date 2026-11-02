@@ -211,6 +211,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
             records: store.clone(),
             calls: Some(store),
         }),
+        false,
     )
     .expect("the reload builds");
     limits.keep().expect("the reload commits its limits");
@@ -267,6 +268,7 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
             records: store.clone(),
             calls: Some(store),
         }),
+        false,
     )
     .expect("the reload builds");
     limits.keep().expect("the reload commits its limits");

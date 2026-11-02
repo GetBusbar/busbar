@@ -1218,6 +1218,7 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
             records: store.clone(),
             calls: Some(store),
         }),
+        false,
     )
     .expect("the product builds the admin-route deployment");
     limits.keep().expect("the admin-route limits commit");
