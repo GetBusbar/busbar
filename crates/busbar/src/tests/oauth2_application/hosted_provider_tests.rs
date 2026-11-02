@@ -281,7 +281,7 @@ async fn callback_nonce_mismatch_rejected() {
     handle.abort();
 }
 
-fn assert_branded_error_page(body: &str, heading: &str) {
+pub(super) fn assert_branded_error_page(body: &str, heading: &str) {
     assert!(
         body.starts_with("<!doctype html>"),
         "a browser-flow failure must be a full styled HTML document, not plain text: {body}"

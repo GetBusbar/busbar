@@ -15,7 +15,9 @@ mod plugins;
 
 mod browser;
 mod consent_tests;
+mod directory;
 mod fapi2_tests;
+mod hosted_credential_tests;
 mod hosted_provider_tests;
 mod hosted_routes_tests;
 mod issuer;
@@ -112,10 +114,10 @@ fn build_application(
     });
     let auth_name = auth_library.map(|path| {
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-            .expect("the actual OIDC statement reads")
-            .expect("the actual OIDC library states itself");
+            .expect("the actual auth statement reads")
+            .expect("the actual auth library states itself");
         let name = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual OIDC statement is valid")
+            .expect("the actual auth statement is valid")
             .name;
         let mut manifest = plugins::manifest(
             "auth",
@@ -123,10 +125,10 @@ fn build_application(
             busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
-        let library = std::fs::read(&path).expect("the actual OIDC library reads");
+        let library = std::fs::read(&path).expect("the actual auth library reads");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
-        std::fs::write(directory.join("oauth-resource.tar.gz"), archive)
-            .expect("stage the actual OIDC archive");
+        std::fs::write(directory.join("auth-product.tar.gz"), archive)
+            .expect("stage the actual auth archive");
         name
     });
     if resource_auth {

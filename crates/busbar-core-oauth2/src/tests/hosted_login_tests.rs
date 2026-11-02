@@ -271,20 +271,6 @@ fn assert_branded_error_page(body: &str, heading: &str) {
     );
 }
 
-#[tokio::test]
-async fn credential_reject_renders_branded_html() {
-    let app = cred_app();
-    let form = vec![
-        ("__state".to_string(), "csrf-1".to_string()),
-        ("username".to_string(), "alice".to_string()),
-        ("password".to_string(), "WRONG".to_string()),
-    ];
-    let resp =
-        credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
-    assert_eq!(resp.status().as_u16(), 401);
-    assert_branded_error_page(&body_of(resp), "Sign-in was declined");
-}
-
 fn cred_login() -> std::sync::Arc<DoorLogin> {
     std::sync::Arc::new(DoorLogin {
         kind: LoginKind::Credential,
@@ -404,67 +390,6 @@ fn extract_key(body: &str) -> String {
 }
 
 #[tokio::test]
-async fn credential_begin_renders_the_form() {
-    let app = cred_app();
-    let resp = begin(&app, "test-login-double", false).await;
-    assert_eq!(
-        resp.status().as_u16(),
-        200,
-        "credential begin renders a form, not a 302"
-    );
-    let body = body_of(resp);
-    assert!(body.contains("method=\"post\"") && body.contains("action=\"/auth/token\""));
-    assert!(body.contains("name=\"username\"") && body.contains("type=\"text\""));
-    assert!(
-        body.contains("name=\"password\"") && body.contains("type=\"password\""),
-        "the password field must be masked"
-    );
-    assert!(
-        body.contains("name=\"__state\""),
-        "a CSRF field must be present"
-    );
-}
-
-#[tokio::test]
-async fn credential_submit_issues_via_shared_seam() {
-    let app = cred_app();
-    let form = vec![
-        ("__state".to_string(), "csrf-1".to_string()),
-        ("username".to_string(), "alice".to_string()),
-        ("password".to_string(), "pw".to_string()),
-    ];
-    let resp =
-        credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
-    assert_eq!(resp.status().as_u16(), 200);
-    let body = body_of(resp);
-    assert!(
-        body.contains("test-login-double:alice"),
-        "the issued page shows the identity: {body}"
-    );
-
-    let key = extract_key(&body);
-    assert!(app
-        .governance
-        .as_ref()
-        .unwrap()
-        .verify_token(&key, busbar_kernel::store::now(), None)
-        .is_some());
-}
-
-#[tokio::test]
-async fn credential_submit_wrong_password_401() {
-    let app = cred_app();
-    let form = vec![
-        ("__state".to_string(), "csrf-1".to_string()),
-        ("username".to_string(), "alice".to_string()),
-        ("password".to_string(), "WRONG".to_string()),
-    ];
-    let resp =
-        credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
-    assert_eq!(resp.status().as_u16(), 401);
-}
-
-#[tokio::test]
 async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answered_it() {
     let door = cred_login();
     let app = busbar_kernel_testkit::test_support::TestApp::new()
@@ -507,54 +432,6 @@ async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answe
     assert!(
         seen[0].login.submitted.is_empty(),
         "no credentials ride a callback"
-    );
-}
-
-#[tokio::test]
-async fn credential_submit_state_mismatch_400() {
-    let app = cred_app();
-    let form = vec![
-        ("__state".to_string(), "WRONG".to_string()),
-        ("username".to_string(), "alice".to_string()),
-        ("password".to_string(), "pw".to_string()),
-    ];
-    let resp =
-        credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
-    assert_eq!(resp.status().as_u16(), 400);
-}
-
-#[tokio::test]
-async fn refresh_rotates_key_and_revokes_the_old_one() {
-    let app = cred_app();
-    let creds = || {
-        vec![
-            ("username".to_string(), "alice".to_string()),
-            ("password".to_string(), "pw".to_string()),
-        ]
-    };
-
-    let mut f1 = vec![("__state".to_string(), "s1".to_string())];
-    f1.extend(creds());
-    let body1 =
-        body_of(credential_submit(&app, &cred_handle(&app), cred_cookie("s1", false), f1).await);
-    let key1 = extract_key(&body1);
-
-    let mut f2 = vec![("__state".to_string(), "s2".to_string())];
-    f2.extend(creds());
-    let body2 =
-        body_of(credential_submit(&app, &cred_handle(&app), cred_cookie("s2", true), f2).await);
-    let key2 = extract_key(&body2);
-
-    assert_ne!(key1, key2, "Refresh must mint a DIFFERENT token");
-    let gov = app.governance.as_ref().unwrap();
-    let now = busbar_kernel::store::now();
-    assert!(
-        gov.verify_token(&key1, now, None).is_none(),
-        "the prior token must stop verifying after Refresh (rotation)"
-    );
-    assert!(
-        gov.verify_token(&key2, now, None).is_some(),
-        "the new token verifies"
     );
 }
 
