@@ -122,7 +122,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
+        "store": { "module": module.clone(), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -137,7 +137,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let running = tagged_limits(1);
     config.limits = running.clone();
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config.clone(),
         plugin_config.clone(),
         None,
@@ -146,20 +146,13 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         (None, None),
         None,
         &rules,
+        None,
+        true,
     )
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("actual Store calls"),
-        113,
-    );
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("actual rate history boots");
+    let book = crate::root::boot::book(&app, &module).expect("the actual Store boots rate history");
+    let _book = book;
     limits.keep().expect("actual rates and limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -232,7 +225,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         "the build's own view of its candidate ends with the build"
     );
 
-    let handle = busbar_kernel::state::AppHandle::new(app);
+    let handle = busbar_kernel::state::AppHandle::new(Arc::new(app));
     handle.swap(std::sync::Arc::new(next));
     let after = (
         Some(format!("{candidate:?}")),

@@ -58,6 +58,17 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         }
     }
     crate::dist_root_install::install();
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let captured = plugins::scratch("central2-handler-log").join("panic.log");
+    let log = std::fs::File::create(&captured).unwrap();
+    let _subscriber = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || log.try_clone().unwrap()),
+        ),
+    );
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
             .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -91,7 +102,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
+        "store": { "module": module.clone(), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -104,7 +115,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
     };
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -113,20 +124,13 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         (None, None),
         None,
         &rules,
+        None,
+        true,
     )
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("actual Store calls"),
-        113,
-    );
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("actual rate history boots");
+    let book = crate::root::boot::book(&app, &module).expect("the actual Store boots rate history");
+    let _book = book;
     limits.keep().expect("actual rates and limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -155,12 +159,32 @@ async fn a_panicking_handler_fails_only_its_own_request() {
             handler: Arc::new(|_: PlaneReqCtx| Box::pin(async { fine().await.into_response() })),
         },
     ];
-    let (router, _admin, _handle) =
-        busbar_kernel::build_split_routers_serving(app, routes, 1 << 20, 0, false);
+    let (router, admin, handle) =
+        busbar_kernel::build_split_routers_serving(Arc::new(app), routes, 1 << 20, 0, false);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    // Deliberately fault request dispatch inside the real administrative panic boundary.
+    // Application construction, auth configuration and refusal rendering remain production-owned.
+    let admin = admin
+        .layer(axum::middleware::from_fn(
+            |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                assert_ne!(
+                    req.headers()
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("Bearer boom"),
+                    "deliberate administrative request panic"
+                );
+                next.run(req).await
+            },
+        ))
+        .layer(busbar_kernel::router::CatchPanicLayer::new(handle));
+    let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let admin_addr = admin_listener.local_addr().unwrap();
+    let admin_server =
+        tokio::spawn(async move { axum::serve(admin_listener, admin).await.unwrap() });
     let client = reqwest::Client::new();
 
     let r = client
@@ -196,6 +220,44 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         assert_eq!(ok.status().as_u16(), 200);
         assert_eq!(ok.text().await.unwrap(), "fine");
     }
+    let response = client
+        .get(format!("http://{admin_addr}/api/v1/admin/keys"))
+        .bearer_auth("boom")
+        .send()
+        .await
+        .expect("the administrative panic answers");
+    assert_eq!(response.status().as_u16(), 500);
+    assert!(response.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("application/json"));
+    let envelope: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(envelope["error"]["code"], "internal");
+    let next = client
+        .get(format!("http://{admin_addr}/api/v1/admin/keys"))
+        .bearer_auth("not-boom")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(next.status().as_u16(), 500);
+    let health = client
+        .get(format!("http://{admin_addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(health.status().as_u16(), 500);
+    let logged = std::fs::read_to_string(captured).unwrap();
+    for path in ["/v1/chat/completions", "/api/v1/admin/keys"] {
+        assert_eq!(
+            logged
+                .lines()
+                .filter(|line| line.contains("a request handler panicked") && line.contains(path))
+                .count(),
+            1,
+            "{logged}"
+        );
+    }
+    admin_server.abort();
     server.abort();
     println!("{WITNESS}");
 }
