@@ -559,7 +559,12 @@ plugin-declared (`export`, like any kind that is not `hook`/`auth`, falls throug
 | `secret` | restart-required   |
 | `hook`   | hot-appliable      |
 | `auth`   | hot-appliable      |
-| `export` | Instance membership, module and streams/fields projection require restart for push delivery; existing same-module settings refresh live |
+| `export` | restart-required   |
+
+The export row is the setting-schema default. At runtime, settings of an existing instance of the
+same module are offered through live refresh; a refused refresh retains its prior settings. Export
+instance membership, module and streams/fields projections remain restart-to-apply for push delivery;
+the named-map admin response reports pending changes through `reload_to_apply` and `note`.
 
 A per-field `x-busbar-restart-required` overrides the kind default, but only in ONE direction
 without qualification: `true` (more restart-cautious than the kind default) is always honored. The
