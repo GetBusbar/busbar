@@ -126,9 +126,9 @@ impl FramedStream {
     ///
     /// The framer failed the stream (its bytes are no message of the claim's).
     pub fn ingest(&mut self, body: &[u8], end: bool) -> Result<Vec<Vec<u8>>, Refused> {
-        let y = self.framing.ingest(body, end)?;
+        let mut y = self.framing.ingest(body, end)?;
         let mut messages = Vec::new();
-        for piece in y.pieces {
+        for piece in std::mem::take(&mut y.pieces) {
             if piece.failed {
                 return Err(Refused {
                     outcome: Outcome::Failed,
@@ -154,7 +154,7 @@ impl FramedStream {
     pub fn emit(&mut self, message: &[u8], ends: bool) -> Result<Vec<u8>, Refused> {
         self.framing
             .emit(STREAM, message, ends, false)
-            .map(|y| y.wire)
+            .map(|mut y| std::mem::take(&mut y.wire))
     }
 
     /// End the stream refused: `bytes` and the refusal's neutral `status`; the closing field block.

@@ -91,6 +91,9 @@ mod loan_tests;
 #[path = "framer_more_tests.rs"]
 mod more_tests;
 
+#[path = "framer_wire_tests.rs"]
+mod wire_tests;
+
 #[test]
 fn sdk_sink_keeps_deferred_final_reason_with_its_first_piece_after_an_interim() {
     use std::collections::VecDeque;
@@ -1564,11 +1567,11 @@ fn split_informational_fields_keep_their_stream_state_and_original_reason_across
             .collect::<Vec<_>>(),
         b"x-sensitive-marker: retained\r\n"
     );
-    let (terminal, terminal_out) =
+    let (mut terminal, terminal_out) =
         reasoned_head_buffers(&[(7, 101, false, b"Switching Protocols")]);
-    buffers.frame = terminal.frame;
-    buffers.pieces = terminal.pieces;
-    buffers.heads = terminal.heads;
+    buffers.frame = std::mem::take(&mut terminal.frame);
+    buffers.pieces = std::mem::take(&mut terminal.pieces);
+    buffers.heads = std::mem::take(&mut terminal.heads);
     assert!(buffers.take(&terminal_out, &mut yielded).unwrap());
     assert_eq!(yielded.heads.len(), 1);
     assert_eq!(yielded.pieces[0].status_code, Some(101));

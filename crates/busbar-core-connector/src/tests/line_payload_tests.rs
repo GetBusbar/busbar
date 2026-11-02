@@ -277,9 +277,10 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
         pieces.push(failed(CALLER_LINE, b"peer reset the stream"));
         let batch = pairing.publish(
             Leg::Caller,
-            Yielded {
-                pieces,
-                ..Yielded::default()
+            {
+                let mut yielded = Yielded::default();
+                yielded.pieces = pieces;
+                yielded
             },
             Instant::now(),
         );
@@ -327,9 +328,10 @@ fn published_line_metadata_is_neither_accepted_queued_nor_handed_and_frames_are_
         pieces.push(failed(UPSTREAM_LINE, b"upstream reset the stream"));
         let batch = pairing.publish(
             Leg::Upstream,
-            Yielded {
-                pieces,
-                ..Yielded::default()
+            {
+                let mut yielded = Yielded::default();
+                yielded.pieces = pieces;
+                yielded
             },
             Instant::now(),
         );
@@ -368,9 +370,10 @@ fn a_close_after_metadata_only_pieces_has_nothing_accepted_handed_or_cancelled()
         pieces.push(ended(CALLER_ENDING));
         let batch = pairing.publish(
             Leg::Caller,
-            Yielded {
-                pieces,
-                ..Yielded::default()
+            {
+                let mut yielded = Yielded::default();
+                yielded.pieces = pieces;
+                yielded
             },
             Instant::now(),
         );
@@ -413,10 +416,11 @@ fn metadata_pieces_release_the_batch_custody_with_the_frames_that_did_cross() {
         pieces.push(failed(CALLER_LINE, b"peer reset the stream"));
         let batch = pairing.publish(
             Leg::Caller,
-            Yielded {
-                pieces,
-                custody,
-                ..Yielded::default()
+            {
+                let mut yielded = Yielded::default();
+                yielded.pieces = pieces;
+                yielded.custody = custody;
+                yielded
             },
             Instant::now(),
         );

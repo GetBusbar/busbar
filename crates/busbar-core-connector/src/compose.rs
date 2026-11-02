@@ -2392,7 +2392,7 @@ impl Connection {
                 self.early.retain(|early| early.stream != g.stream);
             }
         }
-        self.inbox.extend(y.pieces);
+        self.inbox.extend(std::mem::take(&mut y.pieces));
         self.framer_deadline = y.deadline_ns.map(framer::instant_of);
         if y.ended {
             self.phase = Phase::Ended;
