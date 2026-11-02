@@ -4,8 +4,24 @@ use crate::appbuild::{load_config_from_disk, load_config_from_disk_with_store, A
 use crate::config::overlay::{persist_root, RootSettings};
 use crate::test_support::TestOverlayStore;
 
-fn inputs() -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
+struct InputsDir(std::path::PathBuf);
+impl InputsDir {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+impl Drop for InputsDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+fn inputs() -> (InputsDir, std::path::PathBuf) {
+    let dir = InputsDir(std::env::temp_dir().join(format!(
+        "busbar-config-store-{}-{}",
+        std::process::id(),
+        hex::encode(crate::door::op_id().0)
+    )));
+    std::fs::create_dir_all(dir.path()).unwrap();
     let config = dir.path().join("config.yaml");
     std::fs::write(
         &config,
@@ -190,4 +206,52 @@ fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_
     let stored = backend.read_required().unwrap().unwrap();
     assert!(stored.groups.contains_key("remote_security_team"));
     assert!(!stored.groups.contains_key("local_candidate"));
+}
+
+#[test]
+fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_recover() {
+    crate::test_support::register_neutral_test_plane();
+    let _fixture = crate::test_support::TestApp::new();
+    let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::none());
+    cfg.hooks.insert(
+        "pinned_hook".into(),
+        serde_json::from_value(
+            serde_json::json!({"kind":"tap","module":"hook-resolved-after-overlay-pins"}),
+        )
+        .unwrap(),
+    );
+    let opened =
+        crate::appbuild::bootstrap_config_store(&cfg, &crate::config::PluginsCfg::default())
+            .unwrap();
+    assert!(opened.calls.is_some());
+    assert!(
+        crate::config_validate::check(
+            &cfg,
+            crate::config_validate::Check {
+                plugins: &crate::config::PluginsCfg::default(),
+                unset_env_vars: &[],
+                root: &|_| Ok(()),
+                fetch: None,
+                resolve_builtins: false
+            }
+        )
+        .is_err(),
+        "the complete generation still refuses a module that recovery did not make loadable"
+    );
+}
+
+#[test]
+fn bootstrap_dependency_closure_uses_declared_reference_paths_and_canonical_identities() {
+    use crate::test_support::rows::{row, Rows};
+    let rows = Rows::new()
+        .with_dropped_secret_slots(row("canonical-store", "store-alias", "store"), &["token"])
+        .with_dropped(row("canonical-secret", "secret-alias", "secret"))
+        .into_rows();
+    crate::test_support::register_neutral_test_plane();
+    let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::none());
+    cfg.store = Some(crate::config::StoreCfg { module: "store-alias".into(), settings: serde_json::from_value(serde_json::json!({"token":{"module":"secret-alias","settings":{}},"data":{"literal":{"module":"unrelated","settings":{}}}})).unwrap() });
+    assert_eq!(
+        crate::appbuild::bootstrap_dependency_names(&cfg, rows.as_ref()),
+        std::collections::BTreeSet::from(["canonical-store".into(), "canonical-secret".into()])
+    );
 }

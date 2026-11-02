@@ -632,33 +632,93 @@ pub fn bootstrap_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
 ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
-    let fetch = || fetch_config_plugins(plugins, cfg, true);
-    let registry = config_validate::check(
-        cfg,
-        config_validate::Check {
-            plugins,
-            unset_env_vars: &[],
-            root: &|_| Ok(()),
-            fetch: (plugins.enabled && !plugins.fetch.is_empty())
-                .then_some(&fetch as &dyn Fn() -> Result<(), String>),
-            resolve_builtins: false,
-        },
-    )
-    .map_err(|error| match error {
-        config_validate::Refusal::Config(errors) => errors.join("; "),
-        config_validate::Refusal::Root(error)
-        | config_validate::Refusal::Plugins(error)
-        | config_validate::Refusal::Unresolved(error) => error,
-    })?;
+    config_validate::validate(cfg).map_err(|errors| errors.join("; "))?;
+    if plugins.enabled && !plugins.fetch.is_empty() {
+        fetch_config_plugins(plugins, cfg, true)?;
+    }
+    // Only the anchor must resolve before its pins are recoverable. Other hook/auth/export
+    // modules may legitimately depend on those persisted pins; the complete recovered build
+    // validates them before opening or serving them.
+    let registry = crate::preflight::plugins_preflight(
+        cfg.store.as_ref(),
+        None,
+        &Default::default(),
+        &HashMap::new(),
+        plugins,
+        &Default::default(),
+    )?;
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
         admit(&registry)?;
     }
-    let resolver = build_secret_resolver(registry.clone(), &cfg.secrets)?;
+    let dependencies = bootstrap_dependency_names(cfg, registry.as_ref());
+    let bootstrap_secrets = cfg
+        .secrets
+        .iter()
+        .filter(|(module, _)| {
+            registry
+                .resolve(module)
+                .is_some_and(|row| row.kind == "secret" && dependencies.contains(&row.name))
+        })
+        .map(|(module, settings)| (module.clone(), settings.clone()))
+        .collect();
+    let resolver = build_secret_resolver(registry.clone(), &bootstrap_secrets)?;
     // The same trust/auth material must resolve before the anchor opens as before ordinary boot.
     let _admin = resolve_admin_token(cfg.auth.as_ref(), &resolver)?;
     let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
     let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
     open_config_store(cfg, &registry, &resolver)
+}
+
+/// Canonical modules required before an overlay can be read: its Store, the Store's declared
+/// setting references, and the base credentials bootstrap resolves. Other application modules
+/// are validated only after their persisted pins are recovered. No bytes are resolved here.
+pub fn bootstrap_dependency_names(
+    cfg: &config::RootCfg,
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
+) -> std::collections::BTreeSet<String> {
+    let mut modules = std::collections::BTreeSet::new();
+    let mut add = |module: &str| {
+        let name = registry
+            .resolve(module)
+            .map(|row| row.name)
+            .or_else(|| registry.unresolved_reason(module).map(|row| row.name))
+            .unwrap_or_else(|| module.to_string());
+        modules.insert(name);
+    };
+    if let Some(store) = &cfg.store {
+        add(&store.module);
+        let mut tree = serde_json::Value::Object(store.settings.clone());
+        let fields = registry
+            .secret_slots(&store.module)
+            .into_iter()
+            .chain(registry.reference_slots(&store.module));
+        for path in fields {
+            for at in busbar_contract::secret_fields::declared_references(&tree, &path) {
+                if let Some(value) = busbar_contract::secret_fields::value_at_mut(&mut tree, &at) {
+                    if let config::secret::SettingShape::Reference(reference) =
+                        config::secret::classify_setting(value)
+                    {
+                        add(&reference.module);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(auth) = &cfg.auth {
+        if let Some(reference) = auth.admin_token_ref() {
+            add(&reference.module);
+        }
+        if let Some(reference) = &auth.signing_key {
+            add(&reference.module);
+        }
+    }
+    if let Some(keys) = &cfg.credentials.at_rest {
+        add(&keys.key.module);
+        if let Some(previous) = &keys.previous {
+            add(&previous.module);
+        }
+    }
+    modules
 }
 
 fn open_config_store(

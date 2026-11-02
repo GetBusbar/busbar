@@ -690,7 +690,7 @@ async fn run(
 
     // The operator's base Store is the permanent overlay anchor. Bootstrap only its network
     // dependencies before recovery; no effective plane/export/hook is opened until security has
-    // been recovered. Connector transport settings remain the process's boot-only base settings.
+    // been recovered. The connector is finalized from the recovered configuration below.
     let base_cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errors| die(format!("base config errors: {}", errors.join("; "))));
     config_validate::validate(&base_cfg)
@@ -831,6 +831,16 @@ async fn run(
     // (composed below), and the connector dials by it. Its metadata lists are re-published at
     // every config commit, this boot's own build included, through the root's rules that hold it.
     dest.replace(root::connector::dest_judge(&cfg));
+    root::boot::note_provider_urls(
+        cfg.providers
+            .values()
+            .map(|provider| provider.base_url.clone()),
+    );
+    root::connector::finalize_boot(
+        &root::policy::client_settings(&cfg.limits),
+        &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
+    )
+    .unwrap_or_else(|error| die(format!("effective connector boot configuration: {error}")));
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     // `records.secret` reads the App's governance through its swap handle, which exists once the App
@@ -957,7 +967,7 @@ async fn run(
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_plan = Arc::new(root::serve::ListenerPlan::new(
         root::door_steps::listener_needs(&cfg).unwrap_or_else(|e| die(e)),
-        root::serve::transport_offers(LINKED.transports, dropped_doors),
+        root::serve::transport_offers(LINKED.transports, &dropped_doors),
         &|scheme| root::connector::the().framer_for(scheme),
     ));
     root_rules
@@ -1084,7 +1094,7 @@ async fn run(
         ),
         catalog: Some(&deploy.models),
         models: Some(&door_models),
-        upgrades: root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
+        upgrades: root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
     };
     let mut served = root::serve::compose_served_checked(
         app.governance.clone(),
@@ -1126,7 +1136,7 @@ async fn run(
             listener_plan.mount_planes(
                 served,
                 &app,
-                &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
+                &root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
             )?;
             Ok(listener_plan.binds().to_vec())
         },
@@ -1303,7 +1313,7 @@ async fn run(
             std::sync::Arc::clone(&door_auths),
             std::sync::Arc::clone(&door_live_handle),
         );
-        let upgrades = root::serve::upgrade_carriers(LINKED.transports, dropped_doors);
+        let upgrades = root::serve::upgrade_carriers(LINKED.transports, &dropped_doors);
         app_handle.on_apply(Box::new(move |next| {
             let Some(cfg) = next
                 .config_projection
