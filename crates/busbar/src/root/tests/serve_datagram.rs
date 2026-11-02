@@ -786,3 +786,63 @@ async fn shutdown_retires_a_blocked_accepted_drainer_and_wakes_the_later_writer(
     assert!(!lock(&control.pair.caller.leg.outbound).draining);
     assert_eq!(*control.pair.framer.emitted.lock().unwrap(), vec![8]);
 }
+
+struct ExhaustionDiagnostic(Arc<std::sync::atomic::AtomicUsize>);
+
+impl tracing::Subscriber for ExhaustionDiagnostic {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Reason<'a>(&'a std::sync::atomic::AtomicUsize);
+        impl tracing::field::Visit for Reason<'_> {
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "reason" && value == "resource_exhausted" {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+        event.record(&mut Reason(&self.0));
+    }
+}
+
+#[tokio::test]
+async fn configured_exhaustion_reports_one_clear_operator_error_and_takes_no_preaccept_bytes() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    let diagnostics = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dispatch = tracing::Dispatch::new(ExhaustionDiagnostic(Arc::clone(&diagnostics)));
+    let _subscriber = tracing::dispatcher::set_default(&dispatch);
+    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
+    let leg = CallerLeg::new(&door, Messages::new(8));
+    let pairing = Pairing::with_memory_limit(
+        Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
+        door.local(),
+        Some(1),
+    );
+    *lock(&leg.pairing) = Some(Arc::clone(&pairing));
+    let (head, _answer) = tokio::sync::oneshot::channel();
+    let caller = super::DatagramCaller {
+        leg,
+        from: Messages::new(8),
+        head: std::sync::Mutex::new(Some(head)),
+        stated: std::sync::atomic::AtomicU32::new(0),
+        opened: std::sync::atomic::AtomicBool::new(false),
+    };
+    assert!(!CallerEnd::write(&caller, b"unaccepted").await);
+    assert!(!CallerEnd::write(&caller, b"also unaccepted").await);
+    assert_eq!(diagnostics.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        pairing.publication_outcome().failure.as_deref(),
+        Some(busbar_core_connector::datagram::LINE_MEMORY_EXHAUSTED)
+    );
+    assert_eq!(pairing.publication_outcome().original_bytes, 0);
+    assert!(pairing.closed());
+}
