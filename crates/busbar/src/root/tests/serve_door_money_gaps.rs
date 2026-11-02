@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
 use super::super::hook_seat_tests::{
     far_end_answering, far_end_scripted, rig, word, DoorRig, RigOpts, Script, ANSWER,
@@ -16,15 +15,6 @@ use super::{frame, stream_pausing, streamed_chat, STREAM_HEAD};
 
 fn now() -> u64 {
     busbar_kernel::store::now()
-}
-
-async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
-    let state = Arc::new(MockServerState::new());
-    for reply in replies.into_iter().rev() {
-        state.push(reply);
-    }
-    let server = MockServer::new(Arc::clone(&state)).await;
-    (state, server)
 }
 
 fn limit(metric: LimitMetric, amount: u64, per: LimitWindow) -> LimitCfg {
@@ -141,21 +131,31 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
     const WIRE: &str = "m0-on-the-wire";
     let _one = PUBLISHING.lock().await;
     let instance = "door-gap-aliased-lane";
-    let answered = || MockResponse::Ok {
-        status: StatusCode::OK,
-        body: serde_json::json!({
-            "id": "chatcmpl-aliased", "object": "chat.completion", "created": 0, "model": WIRE,
-            "choices": [{"index": 0, "finish_reason": "stop",
-                         "message": {"role": "assistant", "content": "hello"}}],
-            "usage": {"prompt_tokens": 600, "completion_tokens": 400, "total_tokens": 1000}
-        }),
-    };
-    let (state, server) = mock((0..4).map(|_| answered()).collect()).await;
+    let received = Arc::new(std::sync::Mutex::new(None));
+    let recorded = Arc::clone(&received);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let endpoint = axum::Router::new().fallback(axum::routing::post(
+        move |axum::Json(body): axum::Json<serde_json::Value>| {
+            *recorded.lock().unwrap() = Some(body);
+            async {
+                axum::Json(serde_json::json!({
+                "id": "chatcmpl-aliased", "object": "chat.completion", "created": 0, "model": WIRE,
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "hello"}}],
+                "usage": {"prompt_tokens": 600, "completion_tokens": 400, "total_tokens": 1000}
+                }))
+            }
+        },
+    ));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, endpoint).await.unwrap();
+    });
     let card = card_of("{ input_utok: 1000, output_utok: 1000 }");
     let rig = rig(
         instance,
         RigOpts {
-            members: &[(server.address().port(), 1)],
+            members: &[(port, 1)],
             model_yaml: &["upstream_model: m0-on-the-wire"],
             budget_cents: Some(1_000_000_000),
             rate_card: Some(&card),
@@ -171,12 +171,11 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
         "the aliased lane served it: {}",
         String::from_utf8_lossy(&body)
     );
-    let sent: serde_json::Value = serde_json::from_slice(
-        &state
-            .get_last_request_body()
-            .expect("the upstream was dialled"),
-    )
-    .expect("the upstream was sent JSON");
+    let sent = received
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the upstream was dialled with JSON");
     assert_eq!(
         sent["model"], WIRE,
         "precondition: the lane is ALIASED, or the fault is masked"
@@ -197,6 +196,8 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
         derived.spend_cents, 100,
         "1,000 tokens at 1,000 micro-units each price at the card under the config name"
     );
+    server.abort();
+    let _ = server.await;
 }
 
 const FIRST_FRAME: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}"#;
@@ -468,17 +469,29 @@ async fn the_pools_door_keeps_the_fee_of_a_caller_that_hung_up_mid_dispatch() {
     let instance = "door-strong-hang-up";
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    let (_state, server) = mock(vec![MockResponse::Gated {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        body: serde_json::json!({"error": {"message": "still answering", "type": "server_error"}}),
-        started: Arc::clone(&started),
-        release: Arc::clone(&release),
-    }])
-    .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (announced, allowed) = (Arc::clone(&started), Arc::clone(&release));
+    let endpoint = axum::Router::new().fallback(axum::routing::post(move || {
+        let (announced, allowed) = (Arc::clone(&announced), Arc::clone(&allowed));
+        async move {
+            announced.notify_one();
+            allowed.notified().await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "error": {"message": "still answering", "type": "server_error"}
+                })),
+            )
+        }
+    }));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, endpoint).await.unwrap();
+    });
     let rig = rig(
         instance,
         RigOpts {
-            members: &[(server.address().port(), 1)],
+            members: &[(port, 1)],
             ..RigOpts::default()
         },
     )
@@ -500,6 +513,8 @@ async fn the_pools_door_keeps_the_fee_of_a_caller_that_hung_up_mid_dispatch() {
         spend, 1,
         "a caller that went away mid-dispatch is refunded nothing: the 1-cent fee stays charged"
     );
+    server.abort();
+    let _ = server.await;
 }
 
 async fn served_streamed(
