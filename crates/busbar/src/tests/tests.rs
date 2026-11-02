@@ -3,7 +3,29 @@ use crate::root::cli::{
     config_override_notice, providers_override_notice, resolve_config_path,
     signing_key_command_output, value_flag,
 };
-use busbar_kernel_testkit::test_support::EnvVarGuard;
+
+struct EnvVarGuard {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn capture(name: &'static str) -> Self {
+        Self {
+            name,
+            previous: std::env::var_os(name),
+        }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
 
 #[test]
 fn worker_threads_from_env_parses_valid_rejects_invalid() {
@@ -215,8 +237,7 @@ async fn serve_listener_actually_serves_real_http_traffic() {
     let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
     let addr = listener.local_addr();
     let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
-    let secret_resolver =
-        Arc::new(busbar_kernel_testkit::test_support::builtins_only_secret_resolver());
+    let secret_resolver = Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
     let serve_handle = tokio::spawn(serve_listener(
