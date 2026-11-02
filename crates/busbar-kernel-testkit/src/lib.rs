@@ -16,4 +16,3 @@ pub mod ingress;
 pub mod test_support;
 pub mod testkit;
 
-pub mod websocket;
