@@ -477,7 +477,7 @@ enum UpgradePhase {
 struct StagedUpgrade {
     phase: UpgradePhase,
     stream: u64,
-    yielded: Yielded,
+    yielded: Vec<Yielded>,
     incoming: Vec<u8>,
     bound: Pin<Box<tokio::time::Sleep>>,
 }
@@ -491,8 +491,8 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {
             let mut moved = false;
-            let abandoned = self.staged.as_ref().is_some_and(
-                |stage| matches!(&stage.phase, UpgradePhase::Adopting(reply) if reply.is_closed()),
+            let abandoned = self.staged.as_mut().is_some_and(
+                |stage| matches!(&mut stage.phase, UpgradePhase::Adopting(reply) if reply.poll_closed(cx).is_ready()),
             );
             if (self.stopping || abandoned) && self.staged.is_some() {
                 self.abandon_stage();
@@ -1153,18 +1153,32 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             let _ = reply.send(false);
             return;
         };
-        let Some(framing) = self.framing.take() else {
+        let Some(framing) = self.framing.as_mut() else {
             let _ = reply.send(false);
             return;
         };
-        let leftover = match framing.detach() {
+        let leftover = match framing.try_detach() {
             Ok(left) => left,
+            Err(e)
+                if e.outcome == busbar_contract::abi::mechanism::call::Outcome::Refused
+                    && framing.token() != 0 =>
+            {
+                // No protocol handover occurred. The original transport renders the refusal.
+                if let Some(inflow) = self.inflows.get_mut(&stream) {
+                    inflow.refused = true;
+                }
+                let refused = framing.refuse(Some(stream), &[], 400, false);
+                self.took(refused);
+                let _ = reply.send(false);
+                return;
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "data door: the framer would not release the opening");
                 self.failed = true;
                 return;
             }
         };
+        drop(self.framing.take());
         self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
         match Framing::adopt_detached_staged(door, SIDE_ACCEPT, leftover, &self.established) {
             Ok((framing, yielded)) => {
@@ -1173,7 +1187,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 self.staged = Some(StagedUpgrade {
                     phase: UpgradePhase::Adopting(reply),
                     stream,
-                    yielded: Yielded::default(),
+                    yielded: Vec::new(),
                     incoming: Vec::new(),
                     bound: Box::pin(tokio::time::sleep(self.timeout)),
                 });
@@ -1186,7 +1200,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    fn receive_stage(&mut self, mut yielded: Yielded) {
+    fn receive_stage(&mut self, yielded: Yielded) {
         let Some(stage) = self.staged.as_mut() else {
             return;
         };
@@ -1195,33 +1209,25 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 tokio::time::Instant::from_std(framer::instant_of(deadline)),
             )));
         }
-        stage.yielded.wire.append(&mut yielded.wire);
-        stage.yielded.pieces.append(&mut yielded.pieces);
-        stage.yielded.heads.append(&mut yielded.heads);
-        stage.yielded.flow.append(&mut yielded.flow);
-        stage.yielded.interim.append(&mut yielded.interim);
-        stage
-            .yielded
-            .piece_custody
-            .append(&mut yielded.piece_custody);
-        stage.yielded.ended |= yielded.ended;
-        if yielded.agreed != 0 {
-            stage.yielded.agreed = yielded.agreed;
-        }
-        stage.yielded.deadline_ns = yielded.deadline_ns;
+        // Keep each crossing's payload, zeroizing wire, container and producer custody together.
+        stage.yielded.push(yielded);
         if self.framing.as_ref().is_some_and(Framing::parked) {
             // PENDING may already carry bytes. Neither those nor a receipt authorize publication.
             return;
         }
-        let accepted = stage.yielded.pieces.iter().any(|piece| {
-            piece.stream == stage.stream
-                && piece.fields
-                && piece.end_of_frame
-                && piece.status_code == Some(u32::from(SWITCHING_PROTOCOLS))
-                && piece.status_class == busbar_contract::abi::transport::STATUS_SUCCESS
-                && !piece.failed
-        });
-        if stage.yielded.ended {
+        let accepted = stage
+            .yielded
+            .iter()
+            .flat_map(|batch| &batch.pieces)
+            .any(|piece| {
+                piece.stream == stage.stream
+                    && piece.fields
+                    && piece.end_of_frame
+                    && piece.status_code == Some(u32::from(SWITCHING_PROTOCOLS))
+                    && piece.status_class == busbar_contract::abi::transport::STATUS_SUCCESS
+                    && !piece.failed
+            });
+        if stage.yielded.iter().any(|batch| batch.ended) {
             if matches!(stage.phase, UpgradePhase::Adopting(_)) && !accepted {
                 let Some(stage) = self.staged.take() else {
                     return;
@@ -1233,7 +1239,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     let _ = reply.send(false);
                 }
                 // This is the transport's refusal, before any plane entry or handshake commit.
-                self.absorb(stage.yielded);
+                for batch in stage.yielded {
+                    self.absorb(batch);
+                }
             } else {
                 self.abandon_stage();
             }
@@ -1243,8 +1251,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             if !accepted {
                 return;
             }
-            stage.yielded.pieces.retain(|piece| !piece.fields);
-            stage.yielded.heads.clear();
+            for batch in &mut stage.yielded {
+                batch.pieces.retain(|piece| !piece.fields);
+                batch.heads.clear();
+            }
             let phase = std::mem::replace(&mut stage.phase, UpgradePhase::Admitted);
             if let UpgradePhase::Adopting(reply) = phase {
                 if reply.send(true).is_err() {
@@ -1267,7 +1277,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 session.body_limit = inflow.body_limit;
             }
             self.session = Some(session);
-            self.absorb(stage.yielded);
+            for batch in stage.yielded {
+                self.absorb(batch);
+            }
             if !stage.incoming.is_empty() {
                 if let Some(framing) = self.framing.as_mut() {
                     let received = framing.ingest(&stage.incoming, false);

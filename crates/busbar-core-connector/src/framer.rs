@@ -2487,7 +2487,14 @@ impl Framing {
     /// `detach`: the bytes the framer took and did not answer, and the framing is over.
 
     pub fn detach(mut self) -> Result<Detached, Refused> {
+        self.try_detach()
+    }
+
+    /// Attempt a handover without dropping an unchanged framing when its first crossing refuses.
+    /// Once any prefix was handed over, an error is a fault and cannot resume the old framing.
+    pub fn try_detach(&mut self) -> Result<Detached, Refused> {
         self.quiet()?;
+        let mut crossed = false;
         let mut left = Vec::new();
         let mut recalls = Recalls::default();
         loop {
@@ -2495,12 +2502,18 @@ impl Framing {
             i.framing = self.token;
             i.sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
-            ready(self.door.cross_scoped(
+            if let Err(mut error) = ready(self.door.cross_scoped(
                 self.context.as_ref(),
                 None,
                 false,
                 Call::Detach(&mut i, &mut o),
-            ))?;
+            )) {
+                if crossed {
+                    error.outcome = Outcome::Fault;
+                }
+                return Err(error);
+            }
+            crossed = true;
             let n = usize::try_from(o.yielded.frame_len).unwrap_or(usize::MAX);
             left.extend_from_slice(self.bufs.frame.get(..n).ok_or_else(|| Refused {
                 outcome: Outcome::Fault,
