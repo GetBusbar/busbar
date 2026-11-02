@@ -734,13 +734,14 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     use busbar_core_connector::framer::{Established, Framing, Got};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
     use busbar_kernel_testkit::test_support::TestApp;
-    use busbar_test_kit::root_door_fixtures::scoped_mux;
 
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     assert!(inbound::install(&dispatcher));
-    let plugin =
-        crate::root::test_plugins::linked_transport(scoped_mux::door, bind_on(&dispatcher));
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        bind_on(&dispatcher),
+    );
     let door: Arc<dyn FramerDoor> =
         Arc::new(Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher).unwrap());
     let framer = data_framer(Arc::new(move |scheme| {
@@ -990,6 +991,10 @@ fn actual_http_framer() -> DataFramer {
 // Counts carry no pointers or borrowed payload, and every crossing delegates exactly once.
 #[derive(Clone, Copy, Debug)]
 enum ObservedCall {
+    Begin {
+        side: u32,
+        lines: usize,
+    },
     Finish,
     Detach,
     Adopt,
@@ -1022,6 +1027,10 @@ impl ObservedDoor {
     fn record(&self, call: &busbar_core_connector::framer::Call<'_>) {
         use busbar_core_connector::framer::Call;
         let observed = match call {
+            Call::Begin(input, _) => Some(ObservedCall::Begin {
+                side: input.side,
+                lines: input.lines_len,
+            }),
             Call::Finish(..) => Some(ObservedCall::Finish),
             Call::Detach(..) => Some(ObservedCall::Detach),
             Call::Adopt(..) => Some(ObservedCall::Adopt),
@@ -1230,7 +1239,12 @@ async fn answer(s: &mut tokio::net::TcpStream) -> String {
 #[tokio::test]
 async fn the_data_listener_is_served_through_its_framers_accept_side() {
     let _publishing = anonymous_policy().await;
-    let framer = actual_http_framer();
+    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+    let door: Arc<dyn FramerDoor> = observed.clone();
+    let framer = data_framer(Arc::new(move |scheme| {
+        (scheme == DATA_SCHEME).then(|| door.clone())
+    }))
+    .unwrap();
     let declared = framer
         .guests()
         .expect("the listener publishes its guest lines");
@@ -1269,6 +1283,22 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
     assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "{got:?}");
     assert!(got.contains("content-length: 2\r\n"), "{got:?}");
     assert!(got.ends_with("\r\n\r\nhi"), "{got:?}");
+    assert_eq!(
+        observed.count(|call| matches!(call, ObservedCall::Emit { status: 200, .. })),
+        1,
+        "the response head went down through the actual framer exactly once"
+    );
+    assert_eq!(
+        observed.count(|call| matches!(
+            call,
+            ObservedCall::Begin {
+                side: busbar_contract::abi::transport::SIDE_ACCEPT,
+                lines: 1
+            }
+        )),
+        1,
+        "the actual framing begins on the accepting side lent the checked anonymous guest line"
+    );
     // Successful admission and a complete wire answer exercise the real transport's Begin,
     // host-issued guest authorization, response Head and body Emit through the root dispatcher.
     s.write_all(b"GET /hello HTTP/1.1\r\nhost: t\r\n\r\n")
