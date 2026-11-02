@@ -468,18 +468,18 @@ fn a_fake_host_lends_its_own_tables() {
     let fake = FakeHost::new();
     let tables = fake.lent();
     assert!(ptr::eq(tables.lent, fake.tables_for_tests()));
-    // The spelling a plugin moves to compiles before and after #1469: `of(&tables)`.
-    let host = Host::of(&tables);
+    // A sealed loan, passed by value, proves the nested tables.
+    let host = Host::of(tables);
     // SAFETY: the fake's own tables, alive while `fake` is.
     let raw = unsafe { Host::from_raw(fake.tables_for_tests()) };
     assert_eq!(format!("{host:?}"), format!("{raw:?}"));
     assert_eq!(
-        Services::of(&tables).is_some(),
+        Services::of(tables).is_some(),
         // SAFETY: as above.
         unsafe { Services::from_raw(fake.tables_for_tests()) }.is_some()
     );
     assert_eq!(
-        Wake::of(&tables).is_some(),
+        Wake::of(tables).is_some(),
         // SAFETY: as above.
         unsafe { Wake::from_raw(fake.tables_for_tests()) }.is_some()
     );
@@ -502,17 +502,17 @@ fn a_kept_handle_is_named_by_its_static_alias() {
     let fake = FakeHost::new();
     let tables = fake.lent();
     let kept = Kept {
-        host: Host::of(&tables),
-        services: Host::of(&tables).services(),
-        wake: crate::abi::sdk::services::Wake::of(&tables),
+        host: Host::of(tables),
+        services: Host::of(tables).services(),
+        wake: crate::abi::sdk::services::Wake::of(tables),
     };
     assert_eq!(
         format!("{:?}", kept.host),
-        format!("{:?}", Host::of(&tables))
+        format!("{:?}", Host::of(tables))
     );
     assert_eq!(
         kept.services.is_some(),
-        Host::of(&tables).services().is_some()
+        Host::of(tables).services().is_some()
     );
     assert_eq!(kept.wake.is_some(), fake.tables_for_tests().wake.is_some());
     let op: StaticVerifyOp = VerifyOp::new(kept.services, Ticket::NONE);
@@ -557,4 +557,42 @@ fn a_list_reader_reads_the_items_its_setter_named() {
         MetricFamily::new(AbiStr::ABSENT, AbiStr::ABSENT, AbiStr::ABSENT, 0).with_label_keys(keys);
     // SAFETY: as above.
     assert!(ptr::eq(unsafe { family.label_keys() }, &keys[..]));
+}
+
+#[test]
+fn lifecycle_host_loan_reads_an_outer_table_without_the_appended_io_field() {
+    use crate::abi::host::conn::connector::ConnectorSlots;
+    use crate::abi::host::service::HostSlots;
+    use crate::abi::mechanism::ticket::{HostCtx, HostTables, WakeFn};
+    use crate::abi::sdk::conn::Host;
+    #[repr(C)]
+    struct LegacyHostTables {
+        size: u32,
+        reserved: u32,
+        ctx: HostCtx,
+        wake: Option<WakeFn>,
+        conns: *const ConnectorSlots,
+        services: *const HostSlots,
+    }
+    let old = LegacyHostTables {
+        size: size_of::<LegacyHostTables>() as u32,
+        reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: ptr::null(),
+        services: ptr::null(),
+    };
+    let input = OpenIn {
+        host: ptr::from_ref(&old).cast::<HostTables>(),
+        ..crate::abi::sdk::test_support::zeroed()
+    };
+    // SAFETY: this initialized input lends precisely the advertised older host-table prefix.
+    // Its absent I/O field has no storage, and all other pointers are NULL.
+    let loan = unsafe { Lent::new(&input) }
+        .host()
+        .expect("the base table is complete");
+    let host = Host::of(loan);
+    assert!(!host.lends_connector());
+    assert!(host.services().is_none());
+    assert!(!host.io(crate::abi::mechanism::ticket::Ticket::NONE).armed());
 }

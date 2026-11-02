@@ -18,7 +18,7 @@
 
 use std::task::Poll;
 
-use super::lent::Lent;
+use super::lent::HostSource;
 use crate::abi::host::io::IoSlots;
 
 use crate::abi::host::conn::connector::{
@@ -170,25 +170,105 @@ macro_rules! snapshot_table {
     };
 }
 
-snapshot_table!(snapshot_connector, ConnectorSlots,
-    establish, reject_endpoint, side_stream, read, write, upgrade_secure, facts, checkout, checkin, close, random, identity, read_reply, write_request
+snapshot_table!(
+    snapshot_connector,
+    ConnectorSlots,
+    establish,
+    reject_endpoint,
+    side_stream,
+    read,
+    write,
+    upgrade_secure,
+    facts,
+    checkout,
+    checkin,
+    close,
+    random,
+    identity,
+    read_reply,
+    write_request
 );
 
-snapshot_table!(snapshot_services, HostSlots,
-    clock_now, records_get, records_list, records_claim, dest_judge, sign, unit_nest, work_open, work_find, work_settle, work_resume, trust_sight, trust_due, verify_lookup, verify_store, entitlement_check, content_scan, hook_call, random_fill, need_admit, trust_verify, records_secret, disk_append, snapshot_read, trust_sight_item, trust_serves, trust_decide, trust_state, session_emit, auth_call, unit_hand_in, unit_refuse, ticket_mint, ticket_take
+snapshot_table!(
+    snapshot_services,
+    HostSlots,
+    clock_now,
+    records_get,
+    records_list,
+    records_claim,
+    dest_judge,
+    sign,
+    unit_nest,
+    work_open,
+    work_find,
+    work_settle,
+    work_resume,
+    trust_sight,
+    trust_due,
+    verify_lookup,
+    verify_store,
+    entitlement_check,
+    content_scan,
+    hook_call,
+    random_fill,
+    need_admit,
+    trust_verify,
+    records_secret,
+    disk_append,
+    snapshot_read,
+    trust_sight_item,
+    trust_serves,
+    trust_decide,
+    trust_state,
+    session_emit,
+    auth_call,
+    unit_hand_in,
+    unit_refuse,
+    ticket_mint,
+    ticket_take
 );
 
-snapshot_table!(snapshot_io, IoSlots,
-    open, listen, accept, read, write, ready, shut, close, spawn, ends
+snapshot_table!(
+    snapshot_io,
+    IoSlots,
+    open,
+    listen,
+    accept,
+    read,
+    write,
+    ready,
+    shut,
+    close,
+    spawn,
+    ends
 );
 
 impl Host {
     /// Copy the tables lent by the SDK's typed lifecycle input. This consumes only the proof;
     /// the returned handle owns its function tables and may outlive their original allocation.
+    ///
+    /// A proven loan stays usable by a plugin that forbids unsafe code:
+    /// ```
+    /// #![forbid(unsafe_code)]
+    /// use busbar_contract::abi::{sdk::{Lent, conn::Host, services::{Services, Wake}},
+    ///     mechanism::ticket::HostTables};
+    /// fn proven(t: Lent<'_, HostTables>) {
+    ///     let _ = Host::of(t);
+    ///     let _ = Services::of(t);
+    ///     let _ = Wake::of(t);
+    /// }
+    /// ```
+    ///
+    /// A plain raw-pointer carrier supplies no proof, even when safe Rust can construct it.
+    /// ```compile_fail
+    /// use busbar_contract::abi::sdk::conn::Host;
+    /// use busbar_contract::abi::mechanism::ticket::HostTables;
+    /// fn forged(tables: &HostTables) { let _ = Host::of(tables); }
+    /// ```
     #[must_use]
-    pub fn of(tables: Lent<'_, HostTables>) -> Self {
+    pub fn of(tables: impl HostSource) -> Self {
         // SAFETY: the sealed loan proves every advertised nested table prefix readable.
-        unsafe { Self::from_raw(tables.get()) }
+        unsafe { Self::from_raw(tables.tables()) }
     }
 
     /// Copy raw host tables for a host or harness.
@@ -222,7 +302,9 @@ impl Host {
     pub fn io(&self, ticket: Ticket) -> super::io::Io<'_> {
         super::io::Io::new(
             self.ctx,
-            self.io.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
+            self.io
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref),
             ticket,
         )
     }
@@ -240,9 +322,8 @@ impl Host {
     /// wrappers; `None` when the host offers none.
     #[must_use]
     pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
-        self.services.map(|table| {
-            crate::abi::sdk::services::Services::from_snapshot(self.ctx, table)
-        })
+        self.services
+            .map(|table| crate::abi::sdk::services::Services::from_snapshot(self.ctx, table))
     }
 
     /// The connector for ONE entry of the op running on `ticket`.
@@ -459,9 +540,8 @@ impl Connector<'_> {
         };
         // SAFETY: this SDK-built input and its buffers remain live for the synchronous
         // crossing; the host must copy retained work before returning Pending.
-        let answered = unsafe {
-            f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out)
-        }.outcome();
+        let answered =
+            unsafe { f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out) }.outcome();
         (answered, out)
     }
 

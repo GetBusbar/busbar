@@ -1080,7 +1080,8 @@ fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
         services: &HOST_SLOTS,
         io: std::ptr::null(),
     };
-    busbar_contract::abi::sdk::Services::of(&tables).expect("the table is handed")
+    /* SAFETY: the harness owns these live tables and callback context. */
+    unsafe { busbar_contract::abi::sdk::Services::from_raw(&tables) }.expect("the table is handed")
 }
 
 /// The handle of a ticketed op's `seq`th service call.

@@ -1741,15 +1741,18 @@ fn need_admit_answers_the_tables_verdict_on_the_declared_need() {
 /// The instance's host tables as `open` hands them: its context and the connector slots.
 fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
     use busbar_contract::abi::mechanism::ticket::HostTables;
-    busbar_contract::abi::sdk::conn::Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: p.inner.ctx(),
-        wake: None,
-        conns: &CONN_SLOTS,
-        services: std::ptr::null(),
-        io: std::ptr::null(),
-    })
+    /* SAFETY: these harness tables and callbacks are live for the snapshot. */
+    unsafe {
+        busbar_contract::abi::sdk::conn::Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: p.inner.ctx(),
+            wake: None,
+            conns: &CONN_SLOTS,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        })
+    }
 }
 
 /// RED (Q-FC3): the plugin-facing path. Through the SDK's `Connector`, an op establishes a raw

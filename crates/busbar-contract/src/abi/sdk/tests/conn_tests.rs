@@ -122,15 +122,18 @@ fn services() -> &'static crate::abi::host::service::HostSlots {
 }
 
 fn host(conns: *const ConnectorSlots) -> Host {
-    Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: HostCtx::NONE,
-        wake: None,
-        conns,
-        services: services(),
-        io: std::ptr::null(),
-    })
+    /* SAFETY: these harness tables and callbacks are live for the snapshot. */
+    unsafe {
+        Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns,
+            services: services(),
+            io: std::ptr::null(),
+        })
+    }
 }
 
 const TICKET: Ticket = Ticket {
@@ -191,7 +194,7 @@ fn open_learns_the_hosts_verdict_on_a_need() {
     );
     assert_eq!(c.issued(), 0, "no handle drawn");
     // An instance handed no services table cannot ask.
-    let bare = Host::of(&HostTables {
+    let bare = /* SAFETY: these harness tables and callbacks are live for the snapshot. */ unsafe { Host::from_raw(&HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
         ctx: HostCtx::NONE,
@@ -199,7 +202,7 @@ fn open_learns_the_hosts_verdict_on_a_need() {
         conns: &SLOTS,
         services: std::ptr::null(),
         io: std::ptr::null(),
-    });
+    }) };
     assert_eq!(bare.connector(TICKET).admit(0), Err(ConnFailure::Unarmed));
 }
 
@@ -412,4 +415,51 @@ fn a_sealed_framed_body_checks_security_before_sending_any_credential_bytes() {
         *SEALED_REQUESTS.lock().unwrap(),
         vec![b"allowed-in-clear".to_vec()]
     );
+}
+
+#[test]
+fn snapshots_read_only_complete_advertised_function_fields() {
+    #[repr(C)]
+    struct Prefix {
+        size: u32,
+        slots: u32,
+        first: Option<ServiceFn>,
+    }
+    let mut prefix = Prefix {
+        size: std::mem::size_of::<Prefix>() as u32,
+        slots: u32::MAX,
+        first: Some(establish),
+    };
+    // SAFETY: only this complete prefix is advertised; its function obeys the service ABI.
+    let conn = unsafe { snapshot_connector(std::ptr::from_ref(&prefix).cast()) }.unwrap();
+    assert!(conn.establish.is_some());
+    assert!(conn.reject_endpoint.is_none());
+    assert_eq!(conn.slots, crate::abi::host::conn::connector::SERVICES);
+    // SAFETY: the same function representation occupies the first slot of all three tables.
+    let services = unsafe { snapshot_services(std::ptr::from_ref(&prefix).cast()) }.unwrap();
+    assert!(services.clock_now.is_some());
+    assert!(services.records_get.is_none());
+    // SAFETY: as above; these snapshots are inspected, never called as a different service.
+    let io = unsafe { snapshot_io(std::ptr::from_ref(&prefix).cast()) }.unwrap();
+    assert!(io.open.is_some());
+    assert!(io.listen.is_none());
+
+    prefix.size -= 1;
+    // SAFETY: the advertised prefix is still readable, but its final slot is incomplete.
+    let partial = unsafe { snapshot_connector(std::ptr::from_ref(&prefix).cast()) }.unwrap();
+    assert!(partial.establish.is_none());
+    prefix.size = std::mem::size_of::<Prefix>() as u32;
+    prefix.slots = 0;
+    // SAFETY: a complete allocation with an advertised zero slot count.
+    let absent = unsafe { snapshot_connector(std::ptr::from_ref(&prefix).cast()) }.unwrap();
+    assert!(absent.establish.is_none());
+
+    // A header-only allocation has no function-pointer storage to read.
+    let head = [8u32, u32::MAX];
+    // SAFETY: exactly the two advertised u32 words are allocated and readable.
+    let empty = unsafe { snapshot_services(head.as_ptr().cast()) }.unwrap();
+    assert!(empty.clock_now.is_none());
+    let too_short = 4u32;
+    // SAFETY: just the advertised size word is allocated; no slots word is read.
+    assert!(unsafe { snapshot_io(std::ptr::from_ref(&too_short).cast()) }.is_none());
 }

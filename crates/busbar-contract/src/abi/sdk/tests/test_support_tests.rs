@@ -493,7 +493,7 @@ fn a_fake_service_answers_the_sdks_own_calls_as_the_host_does() {
         .serve(fake::host::RECORDS_GET, Records);
     // The SDK's own wrapper, over the tables an `open` would be lent: it stamps every head and
     // judges every answer by the host's checks.
-    let services = Services::of(host.tables_for_tests()).expect("the host offers services");
+    let services = Services::of(host.lent()).expect("the host offers services");
     let handle = CompletionHandle {
         ticket: Ticket::NONE,
         seq: 0,
@@ -1495,4 +1495,29 @@ fn the_slot_table_maps_every_slot_of_every_kind_to_its_own_in() {
         super::kit::slot_in_type::<store::Ops>(store::slot::GET_KEY),
         in_of::<store::Ops, { store::slot::GET_KEY }>()
     );
+}
+
+#[test]
+fn safe_host_handles_own_tables_after_the_fake_host_is_dropped() {
+    use crate::abi::sdk::conn::Host;
+    use crate::abi::sdk::services::Services;
+    let (host, services) = {
+        let fake = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        (Host::of(fake.lent()), Services::of(fake.lent()).unwrap())
+    };
+    // Both constructors copied callable tables rather than erasing a borrow of their boxes.
+    let handle = CompletionHandle {
+        ticket: Ticket::NONE,
+        seq: 0,
+        _reserved: 0,
+    };
+    assert_eq!(services.clock_now(handle).unwrap().mono_ns, 9);
+    assert_eq!(
+        host.services().unwrap().clock_now(handle).unwrap().wall_ns,
+        7
+    );
+    assert!(
+        matches!(host.connector(Ticket::NONE).clock_now(), std::task::Poll::Ready(Ok(r)) if r.mono_ns == 9)
+    );
+    assert!(host.io(Ticket::NONE).armed());
 }
