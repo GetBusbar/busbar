@@ -123,3 +123,53 @@ async fn actual_replay_claim_is_once_per_admission_and_denied_after_exit_or_dead
         "expired replay admission cannot reuse a settled win"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_deadline_cancels_the_owned_pending_verification_and_leaves_the_reactor_live() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct PendingVerification {
+        polled: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl std::future::Future for PendingVerification {
+        type Output = ();
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<()> {
+            self.polled.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::Pending
+        }
+    }
+    impl Drop for PendingVerification {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let polled = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let reactor = tokio::spawn(async {
+        tokio::task::yield_now().await;
+        17
+    });
+    let result = until_deadline(
+        Some(std::time::Instant::now() + std::time::Duration::from_millis(10)),
+        PendingVerification {
+            polled: polled.clone(),
+            dropped: dropped.clone(),
+        },
+    )
+    .await;
+    assert!(result.is_none());
+    assert!(polled.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        1,
+        "the owned pending verification is released exactly once"
+    );
+    assert_eq!(
+        reactor.await.unwrap(),
+        17,
+        "the same-thread reactor remains live while verification waits"
+    );
+}
