@@ -1095,19 +1095,20 @@ impl AdminService {
     }
 
     pub(crate) async fn hook_health(&self, name: &str) -> Result<HookHealthView, AdminError> {
-        let cfg = self
-            .app
-            .hook_registry
-            .get(name)
-            .ok_or_else(|| AdminError::not_found(format!("hook `{name}`")))?;
-        let view = self.hook_view(name, cfg);
-        let (reachable, detail) = probe_transport(cfg, &self.app.hook_env).await;
-        Ok(HookHealthView {
-            name: name.to_string(),
-            transport: view.transport,
-            reachable,
-            detail,
-        })
+        let cfg = self.app.hook_registry.get(name);
+        let loadable = cfg.and_then(|cfg| self.app.hook_env.registry.resolve(&cfg.plugin));
+        let skipped = if loadable.is_none() {
+            cfg.and_then(|cfg| self.app.hook_env.registry.unresolved_reason(&cfg.plugin))
+        } else {
+            None
+        };
+        hook_health_projection(
+            name,
+            cfg,
+            &self.app.global_hooks,
+            loadable.as_ref().map(|row| row.kind.as_str()),
+            skipped.as_ref().map(|row| row.reason.as_str()),
+        )
     }
 
     fn hook_view(&self, name: &str, cfg: &HookCfg) -> HookView {

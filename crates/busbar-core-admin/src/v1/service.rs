@@ -489,31 +489,45 @@ fn validate_plugin_filename_with(
     Ok(file.to_string())
 }
 
-async fn probe_transport(
-    cfg: &HookCfg,
-    env: &busbar_kernel::hooks::HookEnv,
-) -> (Option<bool>, Option<String>) {
-    match env.registry.resolve(&cfg.plugin) {
-        Some(p) if p.kind == "hook" => (Some(true), None),
-        Some(p) => (
+fn hook_health_projection(
+    name: &str,
+    cfg: Option<&HookCfg>,
+    global_hooks: &[String],
+    resolved_kind: Option<&str>,
+    skipped_reason: Option<&str>,
+) -> Result<HookHealthView, AdminError> {
+    let cfg = cfg.ok_or_else(|| AdminError::not_found(format!("hook `{name}`")))?;
+    let view = project_hook_view(name, cfg, global_hooks);
+    let (reachable, detail) = match resolved_kind {
+        Some("hook") => (Some(true), None),
+        Some(kind) => (
             Some(false),
             Some(format!(
                 "plugin '{}' resolves to kind '{}', not 'hook'",
-                cfg.plugin, p.kind
+                cfg.plugin, kind
             )),
         ),
         None => (
             Some(false),
-            Some(match env.registry.unresolved_reason(&cfg.plugin) {
-                Some(sk) => format!(
-                    "plugin '{}' present but not loaded: {}",
-                    cfg.plugin, sk.reason
-                ),
+            Some(match skipped_reason {
+                Some(reason) => {
+                    format!("plugin '{}' present but not loaded: {}", cfg.plugin, reason)
+                }
                 None => format!("plugin '{}' is not installed", cfg.plugin),
             }),
         ),
-    }
+    };
+    Ok(HookHealthView {
+        name: name.to_string(),
+        transport: view.transport,
+        reachable,
+        detail,
+    })
 }
+
+#[cfg(test)]
+#[path = "tests/hook_health_projection.rs"]
+mod hook_health_projection_tests;
 
 pub(crate) const MAX_SETTINGS_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_SETTINGS_KEYS: usize = 256;
