@@ -873,6 +873,36 @@ pub fn dispatcher_serving(
     d
 }
 
+/// An owned fixture door whose entire referenced graph has immutable static storage.
+#[cfg(all(test, loader_self_tests))]
+pub(crate) struct StaticDoor(Door);
+
+#[cfg(all(test, loader_self_tests))]
+impl StaticDoor {
+    /// # Safety
+    /// The door must satisfy `Door::__from_parts` and every table, Statement, and nested range it
+    /// references must remain initialized and immutable for the process lifetime. Moving this
+    /// value must not invalidate any of those references; no backing range may point into `door`.
+    pub(crate) unsafe fn new(door: Door) -> Self {
+        Self(door)
+    }
+
+    pub(crate) fn get(&self) -> &Door {
+        &self.0
+    }
+}
+
+// SAFETY: construction requires immutable static backing independent of this owned door's address.
+#[cfg(all(test, loader_self_tests))]
+unsafe impl Send for StaticDoor {}
+// SAFETY: the owned door and its complete referenced graph are immutable after publication.
+#[cfg(all(test, loader_self_tests))]
+unsafe impl Sync for StaticDoor {}
+
+/// The retained-input transport fixture's reviewed raw slots; callers only receive its door.
+#[cfg(all(test, loader_self_tests))]
+pub(crate) mod transport_receive_fixture;
+
 /// A test's restated door, written in plain Rust; [`test_door`] is its [`RawDoorFn`].
 #[cfg(all(test, loader_self_tests))]
 pub(crate) trait TestDoor {

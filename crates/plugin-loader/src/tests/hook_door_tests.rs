@@ -262,7 +262,12 @@ async fn an_ack_racing_the_replay_is_restored_before_the_trial_is_published() {
     let (release, released) = std::sync::mpsc::channel();
     *checkpoint_plugin::BLOCK_CONFIGURE.lock().unwrap() = Some((entered, released));
     regenerate(&instance);
-    let trial = tokio::spawn(instance.decide(frame(2), BUDGET));
+    let deciding = instance.decide(frame(2), BUDGET);
+    let trial = tokio::spawn(async move {
+        // Consume the raw-frame answer on its task. Only this pointer-free judgment crosses
+        // the JoinHandle boundary; the raw frame answer is consumed in this task.
+        matches!(deciding.await, Answered::Answer {out, ..} if out.reject_status == REJECT_STATUS)
+    });
     tokio::task::spawn_blocking(move || entered_rx.recv_timeout(BUDGET).unwrap())
         .await
         .unwrap();
@@ -278,8 +283,7 @@ async fn an_ack_racing_the_replay_is_restored_before_the_trial_is_published() {
         )
         .unwrap();
     release.send(()).unwrap();
-    let answer = trial.await.unwrap();
-    assert!(matches!(answer, Answered::Answer {out, ..} if out.reject_status == REJECT_STATUS));
+    assert!(trial.await.unwrap());
     assert!(!instance.quarantined());
 }
 

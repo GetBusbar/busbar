@@ -297,7 +297,9 @@ mod observed {
         input: *const c_void,
         output: *mut c_void,
     ) -> RawOutcome {
-        let result = base().head.open.unwrap()(instance, input, output);
+        // SAFETY: OPEN permits the original NULL instance; the unchanged complete host frames and
+        // every nested loan remain live through this call to their original SDK slot.
+        let result = unsafe { base().head.open.unwrap()(instance, input, output) };
         if result.outcome() == Outcome::Ready {
             LIVE.fetch_add(1, Ordering::SeqCst);
             // SAFETY: OPEN supplies these live complete frames. Retain the real SDK lease;
@@ -326,7 +328,9 @@ mod observed {
             }
             return RawOutcome::of(Outcome::Pending);
         }
-        let result = base().head.refresh.unwrap()(instance, input, output);
+        // SAFETY: REFRESH receives the original live SDK instance; the unchanged complete host frames and
+        // every nested loan remain live through this call to their original SDK slot.
+        let result = unsafe { base().head.refresh.unwrap()(instance, input, output) };
         if result.outcome() == Outcome::Ready {
             // SAFETY: REFRESH supplies these live complete frames, as OPEN above.
             unsafe {
@@ -345,7 +349,9 @@ mod observed {
     ) -> RawOutcome {
         // SAFETY: RELEASE's input is a live ReleaseIn.
         let lease = unsafe { (*input.cast::<ReleaseIn>()).lease };
-        let result = base().head.release.unwrap()(instance, input, output);
+        // SAFETY: RELEASE receives the original live SDK instance; the unchanged complete host frames and
+        // every nested loan remain live through this call to their original SDK slot.
+        let result = unsafe { base().head.release.unwrap()(instance, input, output) };
         if lease != 0 && result.outcome() == Outcome::Ready {
             RELEASES.fetch_add(1, Ordering::SeqCst);
         }
@@ -359,7 +365,9 @@ mod observed {
     ) -> RawOutcome {
         CLOSES.fetch_add(1, Ordering::SeqCst);
         LIVE.fetch_sub(1, Ordering::SeqCst);
-        base().head.close.unwrap()(instance, input, output)
+        // SAFETY: this original SDK instance has no outstanding crossings; the unchanged CLOSE
+        // frames remain initialized and exclusive until the original slot finishes retiring it.
+        unsafe { base().head.close.unwrap()(instance, input, output) }
     }
 
     extern "C" fn refused_ready(
@@ -391,13 +399,25 @@ mod observed {
     }
 
     pub extern "C" fn door() -> &'static Door {
-        static DOOR: std::sync::OnceLock<Door> = std::sync::OnceLock::new();
-        DOOR.get_or_init(|| wrapped(false))
+        static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> =
+            std::sync::OnceLock::new();
+        DOOR.get_or_init(|| {
+            // SAFETY: wrapped leaks its immutable ops copy; its Statement and every nested range
+            // keep the original SDK door's static backing, independent of this owned door.
+            unsafe { crate::conformance::StaticDoor::new(wrapped(false)) }
+        })
+        .get()
     }
 
     pub extern "C" fn ready_failure_door() -> &'static Door {
-        static DOOR: std::sync::OnceLock<Door> = std::sync::OnceLock::new();
-        DOOR.get_or_init(|| wrapped(true))
+        static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> =
+            std::sync::OnceLock::new();
+        DOOR.get_or_init(|| {
+            // SAFETY: wrapped leaks its immutable ops copy; its Statement and every nested range
+            // keep the original SDK door's static backing, independent of this owned door.
+            unsafe { crate::conformance::StaticDoor::new(wrapped(true)) }
+        })
+        .get()
     }
 
     pub fn open(door: DoorFn, variant: &str) -> Result<AuthInstance, String> {

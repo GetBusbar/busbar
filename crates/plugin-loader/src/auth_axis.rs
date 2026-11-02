@@ -373,6 +373,27 @@ impl AuthRows {
         label: &str,
         settings: &serde_json::Value,
     ) -> Result<Arc<dyn AuthCalls>, String> {
+        self.open_instance(module, label, settings)
+            .map(|opened| opened as Arc<dyn AuthCalls>)
+    }
+
+    /// The same production opener, retaining its concrete type for loader lifecycle regressions.
+    #[cfg(test)]
+    pub(crate) fn open_for_test(
+        &self,
+        module: &str,
+        label: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Arc<AuthInstance>, String> {
+        self.open_instance(module, label, settings)
+    }
+
+    fn open_instance(
+        &self,
+        module: &str,
+        label: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Arc<AuthInstance>, String> {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;

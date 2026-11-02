@@ -207,16 +207,21 @@ mod plugin {
                     "auth.sealed_fields",
                     &[2],
                 )] = busbar_contract::abi::mechanism::extensions::entry("auth.sealed_fields", &[2]);
-                const DUPLICATE: [u8; 2 * busbar_contract::abi::mechanism::extensions::entry_len(
-                    "auth.sealed_fields",
-                    &[1],
-                )] = busbar_contract::abi::mechanism::extensions::concat(&[
-                    ("auth.sealed_fields", &[1]),
-                    ("auth.sealed_fields", &[1]),
-                ]);
+                // Deliberately malformed runtime output: Statement concat rejects duplicates
+                // at declaration time, while this witness must reach the answer validator.
+                static DUPLICATE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+                    busbar_contract::abi::mechanism::extensions::encode(&[
+                        ("auth.sealed_fields", &[1]),
+                        ("auth.sealed_fields", &[1]),
+                    ])
+                });
                 out.lent_blob(
                     |o| &o.head.extensions,
-                    if i.handle == 5 { &BAD } else { &DUPLICATE },
+                    if i.handle == 5 {
+                        &BAD
+                    } else {
+                        DUPLICATE.as_slice()
+                    },
                     BLOB_OCTETS,
                     &instance.generation(),
                 );
