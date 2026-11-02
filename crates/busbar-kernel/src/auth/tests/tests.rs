@@ -1012,13 +1012,22 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
 }
 
 #[test]
-fn the_operator_credential_opens_from_the_axis() {
-    use crate::auth::{open_operator, OperatorCredential};
+fn an_unanswered_operator_does_not_open_a_verifier() {
+    use crate::auth::{Operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
-
-    let linked = crate::preflight::linked().expect("the linked registry");
-    let none = Default::default();
-    let open = |digest| open_operator(&linked, digest, &none).expect("opens");
+    // Explicit constructor DATA for an unanswered provider, not a fabricated root registry.
+    // The root's actual operator/carrier controls separately exercise its real installed axis.
+    let open = |digest| {
+        Operator::open(
+            "operator-provider",
+            std::iter::empty(),
+            &|module| module == "operator-provider",
+            false,
+            digest,
+            |_| panic!("an unanswered operator must not invoke a verifier factory"),
+        )
+        .expect("an unanswered operator is represented explicitly")
+    };
     assert!(matches!(
         *open(Some(digest)),
         OperatorCredential::Unanswered
