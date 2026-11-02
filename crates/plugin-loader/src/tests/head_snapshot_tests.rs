@@ -40,6 +40,22 @@ fn lifecycle_head_is_owned_before_its_ffi_worker_returns_and_restored_after_cons
         }];
         out.outcome = RawOutcome::of(Outcome::Ready);
         out.error = AbiStr::over(&error);
+        // SAFETY: the only named range is the live error owner above. READY does not consume
+        // error text on this lifecycle path, so the snapshot must preserve that read order.
+        let ready = unsafe {
+            HeadSnapshot::capture(
+                &plugin.inner,
+                out.outcome,
+                &mut out,
+                size_of::<OutHead>() as u32,
+                Ticket::NONE,
+            )
+        }
+        .unwrap();
+        assert_eq!(out.error.ptr, error.as_ptr());
+        assert!(ready.bytes.is_empty());
+        drop(ready);
+        out.outcome = RawOutcome::of(Outcome::Failed);
         out.envelope.metrics = metrics.as_ptr();
         out.envelope.metrics_len = metrics.len();
         out.envelope.diags = diags.as_ptr();

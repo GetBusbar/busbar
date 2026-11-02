@@ -477,7 +477,12 @@ impl HeadSnapshot {
             metrics: Box::default(),
             diags: Box::default(),
         };
-        let error = snapshot.text(original.error);
+        let error = if matches!(raw.outcome(), Outcome::Failed | Outcome::Refused) {
+            snapshot.text(original.error)
+        } else {
+            // READY/PENDING error text is not consumed by this lifecycle path.
+            original.error
+        };
         let mut envelope = original.envelope;
         // SAFETY: the plugin's arrays remain live on this worker; array checks count and alignment.
         if let Some(metrics) = unsafe { array(envelope.metrics, envelope.metrics_len) } {
