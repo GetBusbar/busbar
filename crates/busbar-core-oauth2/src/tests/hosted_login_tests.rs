@@ -131,20 +131,6 @@ fn alice() -> LoginOutcome {
     LoginOutcome::Identify(p)
 }
 
-fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<busbar_kernel::state::App> {
-    let mut b = busbar_kernel_testkit::test_support::TestApp::new()
-        .public_url("https://busbar.example.com");
-    for (name, has_button) in methods {
-        b = b.login_method_door(
-            name,
-            DoorLogin::new(alice()),
-            LoginKind::Redirect,
-            has_button,
-        );
-    }
-    b.build()
-}
-
 #[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
     let row = busbar_kernel::config::migration_table::text("login_brands");
@@ -169,8 +155,10 @@ fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic(
             ((*label).to_string(), icon),
             "the issuer host matches as the name does"
         );
-        let app = test_app_with_methods(vec![(*token, true)]);
-        let body = body_of(chooser(&app));
+        let body = render_chooser(
+            &[((*token).to_string(), button_brand(token, None))],
+            "https://busbar.example.com",
+        );
         assert!(
             body.contains(&format!(
                 "aria-label=\"Continue with {label}\">{icon}<span class=\"plabel\">Continue with {label}</span>"
