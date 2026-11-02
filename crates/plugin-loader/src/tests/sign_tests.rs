@@ -104,6 +104,7 @@ fn policy(
         allow_unsigned,
         allow_third_party,
         min_versions: BTreeMap::new(),
+        ..TrustPolicy::default()
     }
 }
 
