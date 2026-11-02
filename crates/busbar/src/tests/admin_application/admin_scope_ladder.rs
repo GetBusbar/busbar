@@ -110,20 +110,6 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
-    let mut other_manifest = plugins::manifest(
-        "auth",
-        &oidc_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
-    other_manifest.alias = "other-module".to_string();
-    other_manifest.statement = Some(hex::encode(&oidc_statement));
-    let other_archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
-        other_manifest,
-        &std::fs::read(&oidc_path).expect("the actual OIDC product reads"),
-    );
-    std::fs::write(directory.join("other-oidc.tar.gz"), other_archive)
-        .expect("stage the separately named actual OIDC provider");
     let viewers_token = common::credentials::token_for("viewers", &["viewers"], AUDIENCE);
     let admins_token = common::credentials::token_for("admins", &["admins"], AUDIENCE);
     let strangers_token = common::credentials::token_for("strangers", &["strangers"], AUDIENCE);
