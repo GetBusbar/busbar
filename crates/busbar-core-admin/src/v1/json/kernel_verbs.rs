@@ -831,6 +831,39 @@ fn doc_for(
                 unavailable_503("the node could not take the unit"),
             ],
         },
+        KernelVerb::RecoveryList => VerbDoc {
+            summary: "Inspect retained raw ledger operations requiring recovery",
+            description: "An observation-only POST requiring full scope and the ordinary CRUD budget. The opaque cursor belongs to this list; default limit 200, maximum 1000. Rows contain immutable operation identities and recovery versions, never raw bodies or mutable dollar balances. Listing does not grant resolution authority; can_resolve describes only this node's current authority."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<crate::recovery::ListView>()),
+                "A bounded page of retained operations and an opaque continuation cursor",
+            ),
+            request: Some(schema_of(req_gen.subschema_for::<crate::recovery::ListRequest>())),
+            query: Vec::new(),
+            errors: vec![
+                ("400", "`invalid_request`: malformed body, unknown fields, invalid limit or a malformed or foreign cursor".into()),
+                gated_403(),
+                unavailable_503("the recovery Store or owned task is unavailable"),
+            ],
+        },
+        KernelVerb::RecoveryResolve => VerbDoc {
+            summary: "Record an explicit landed or not-landed verdict for an exact retained operation",
+            description: "Requires full scope, the original operation id and immutable body fingerprint, the inspected recovery version and nonempty evidence (at most 1024 bytes). The instance-bound recovery facade checks current authority and confirms a durable, attributed verdict before reposting or releasing dependent negative work. An expired receipt never proves not-landed. The same verdict, version, actor and reason replays its durable outcome; a conflicting retry is refused. The Store operation survives cancellation of the HTTP waiter. No raw payload, credential or mutable dollar balance is returned."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<crate::recovery::ItemView>()),
+                "The retained operation after the durable verdict was confirmed",
+            ),
+            request: Some(schema_of(req_gen.subschema_for::<crate::recovery::ResolveRequest>())),
+            query: Vec::new(),
+            errors: vec![
+                ("400", "`invalid_request`: malformed body, unknown fields, noncanonical operation id or fingerprint, missing verdict or invalid evidence".into()),
+                gated_403(),
+                ("409", "`conflict`: stale recovery version, mismatched operation fingerprint, conflicting verdict or absent resolution authority".into()),
+                unavailable_503("the durable verdict could not be confirmed, or the owned task is unavailable; retry the same request"),
+            ],
+        },
         KernelVerb::GetTrust => VerbDoc {
             summary: "Every trust key of the kernel's trust book and its state",
             description: "The counterparties every plane instance this node serves declares, and \

@@ -33,7 +33,7 @@ A role may instead (or as well) be granted admin verbs ONE BY ONE with `verbs:` 
 | Class | Budget | Covers |
 |---|---|---|
 | config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, `POST /restart`, and the named-definition-map writes `PUT /identity-providers/{name}`, `PATCH /identity-providers/{name}/settings`, `DELETE /identity-providers/{name}`, `PUT /export/{name}`, `PATCH /export/{name}/settings`, `DELETE /export/{name}`, `PUT /tools/{name}`, `PATCH /tools/{name}/settings`, `DELETE /tools/{name}`, `PUT /agents/{name}`, `PATCH /agents/{name}/settings`, `DELETE /agents/{name}`, plus the MCP trust verb `POST /tools/{name}/connect` and the A2A trust verbs `POST /agents/{name}/connect` and `POST /agents/{name}/approve` (the blast-radius set: each rebuilds and swaps the whole App. The trust verb does not rebuild it, but it reaches an operator-named endpoint on the estate and replaces the recorded observation, which can demote a server, so it takes the same 10/min budget rather than the 6x-looser CRUD one; the A2A pair is the same shape: the preview reaches the registered agent's card endpoint, and the approval moves a registration into service) |
-| CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, and the 1.6.0 mutating verbs (`adjust`, `ledger/amend-rate-history`, `plane-record-write`, `commit-upgrade`, `chain-break`, `store-restore`, `trust/approve`, `trust/revoke`), **and `/config/validate`** (a dry-run never contends with the config budget) |
+| CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, and the 1.6.0 mutating verbs (`adjust`, `ledger/amend-rate-history`, `ledger/recovery/list`, `ledger/recovery/resolve`, `plane-record-write`, `commit-upgrade`, `chain-break`, `store-restore`, `trust/approve`, `trust/revoke`), **and `/config/validate`** (a dry-run never contends with the config budget) |
 | plugin-inspect | 30/min | `POST /plugins/inspect` ONLY. It gets its own dedicated bucket, not the shared CRUD budget (decompressing + parsing an attacker-controlled archive is a heavier, mutation-like cost profile per call than an ordinary CRUD mutation, and a fleet-wide upgrade preview would otherwise burn the same 60/min an operator needs for real mutating work in that window) and not unmetered either, despite being `read-only` scope |
 
 Over-budget is `429 rate_limited` with a **`Retry-After: 60`** header, and the event is audited. Reads are unmetered.
@@ -106,7 +106,7 @@ There is one administrative OpenAPI document. It is generated from the code and 
 operation the build can serve — the 1.6.0 additions included. A node serves it at
 `GET /api/v1/admin/openapi.json` filtered to the planes that node configured, so a node running a
 1.5.5 config describes no `tools`/`agents` operation; the release asset is the full document. The
-full document describes 101 operations: the 66 carried from 1.5.5, the 20 the 1.6.0 closed verb
+full document describes 103 operations: the 66 carried from 1.5.5, the 22 the 1.6.0 closed verb
 table adds, and the 15 the MCP and A2A planes contribute. Two marks say what a reader cannot tell
 from the path alone (the document explains them itself, under `info.x-busbar-marks`):
 
@@ -114,8 +114,8 @@ from the path alone (the document explains them itself, under `info.x-busbar-mar
   mounted only on a node whose config carries that `<section>:` block. On any other node its path
   answers `404 not_found`, exactly as a path the surface has never had, and the document that node
   serves leaves the operation out (with every schema only it references).
-- **`x-busbar-since: 1.6.0`** — one of the 20 operations 1.6.0 adds to the closed verb table, answered
-  by the node's administrative loop: the 12 kernel verbs (nine money-governance verbs and three
+- **`x-busbar-since: 1.6.0`** — one of the 22 operations 1.6.0 adds to the closed verb table, answered
+  by the node's administrative loop: the 14 kernel verbs (eleven money-governance verbs and three
   trust verbs), the five ledger views and the three audit-chain reads.
 
 `GET /api/v1/admin/ledger/openapi.json` serves the full document, unfiltered.
@@ -128,6 +128,8 @@ The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the
 | `plane_facts` | `GET /api/v1/admin/plane-facts?plane=` | `read-only` | What a plane this node serves declares about itself (config sections, grant kinds, billable classes, record kinds, operation classes) |
 | `plane_record_write` | `POST /api/v1/admin/plane-record-write` | `full` | Upsert one record, by `(kind, id)`, of a kind the named plane declares. Honors `Idempotency-Key` |
 | `adjust` | `POST /api/v1/admin/adjust` | `full` | Correct a recorded unit's counts (below) |
+| `recovery_list` | `POST /api/v1/admin/ledger/recovery/list` | `full` | Inspect retained ledger operations whose landing outcome needs an operator verdict (below); observation only, spends the ordinary CRUD rate budget |
+| `recovery_resolve` | `POST /api/v1/admin/ledger/recovery/resolve` | `full` | Record an explicit landed or not-landed verdict for the exact retained operation and recovery version (below) |
 | `amend_rate_history` | `POST /api/v1/admin/ledger/amend-rate-history` | `full` | Append a signed, back-dated correction to the dated rate-card history (below) |
 | `commit_upgrade` | `POST /api/v1/admin/commit-upgrade` | `full` | Commit the fleet to the release this node runs; a release this node does not run is refused. Honors `Idempotency-Key` |
 | `chain_break` | `POST /api/v1/admin/chain-break` | `full` | Deliberately break the journal chain (disaster recovery). `204` |
@@ -135,6 +137,31 @@ The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the
 | `get_trust` | `GET /api/v1/admin/trust` | `read-only` | Every trust key in the kernel's trust book and its state: what it is approved at and what it was last sighted at |
 | `trust_approve` | `POST /api/v1/admin/trust/approve` | `full` | Approve one trust key at what it was last sighted at. Durable across restart; idempotent |
 | `trust_revoke` | `POST /api/v1/admin/trust/revoke` | `full` | Revoke one trust key: refused until approved again. Durable across restart; idempotent |
+
+### Retained ledger operation recovery
+
+`POST /api/v1/admin/ledger/recovery/list` observes operations retained by the configured Store when
+an operation was sent but its landing outcome could not be established within the Store's receipt
+retention window. The list contains identifiers, immutable body fingerprints and recovery versions;
+it does not expose the retained bodies or a mutable dollar balance. Listing an operation grants no
+resolution authority. Both recovery endpoints require `full` scope and spend the ordinary CRUD
+request budget, including the observation-only list.
+
+`POST /api/v1/admin/ledger/recovery/resolve` requires the exact `operation_id`, `body_fingerprint`
+and `recovery_version` inspected by the operator, an explicit `verdict` (`landed` or `not_landed`),
+and a nonempty `reason` (at most 1024 bytes). Unknown fields are rejected. A verdict must follow an
+independent check of the Store's authoritative records. An expired receipt is never evidence that
+an operation did not land. The node refuses a stale version, a different immutable body, conflicting
+verdicts and an operation it has no current authority to resolve. Cross-node or old-owner operations
+require explicit fencing; observing them in a list cannot bypass it.
+
+The Store confirms the durable, attributed verdict before the kernel can repost retained work or
+release a dependent negative correction. Retrying the same resolution returns its durable outcome;
+cancelling an HTTP request does not cancel a verdict already being recorded. No short-lived HTTP
+idempotency cache authorizes a second posting. Until an explicit verdict is durable, the original
+sent operation stays retained and is never automatically replayed with a fresh operation id. Fresh
+positive usage can continue; a dependent negative correction stays retained. Money continues to be
+the raw ledger counts priced against their historical rate cards.
 
 The ledger views and audit-chain reads:
 
