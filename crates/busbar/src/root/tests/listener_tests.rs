@@ -659,8 +659,6 @@ async fn server_posture_matches_the_1_5_5_defaults() {
             http_body_util::Empty::<bytes::Bytes>::new(),
         ))
     });
-    // Observe the exact deadline handed to the real Tokio adapter. Its millisecond timer wheel
-    // can wake one tick later; that does not change the configured header deadline.
     struct DeadlineTimer(std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>);
     impl hyper::rt::Timer for DeadlineTimer {
         fn sleep(&self, duration: Duration) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {

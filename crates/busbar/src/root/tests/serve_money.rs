@@ -619,8 +619,6 @@ async fn node_boot_hooks_arm() {
         "the root's install record carries neither half (holder, dater) of the rate seam"
     );
 
-    // The app fixture must retain the actual boot root's rate hooks rather than publish its
-    // independent stand-in record over them when its first build initializes the fixture root.
     busbar_kernel_testkit::test_support::install_test_root(rows);
     busbar_kernel_testkit::test_support::metrics::init();
 
@@ -636,8 +634,6 @@ async fn node_boot_hooks_arm() {
     for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_config) {
         step(&boot.limits);
     }
-    // Follow main's boot order: stage the card, open its configured Store/book, then confirm
-    // activation. The generic app fixture performs an apply and requires an already-bound Store.
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(busbar_kernel::appbuild::AcceptAll);
     let (app, _rotate, limits) = busbar_kernel::build_app_from_config(
