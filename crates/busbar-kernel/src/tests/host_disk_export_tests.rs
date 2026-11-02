@@ -614,9 +614,18 @@ impl PendingDiskDelivery {
         output.head = busbar_plugin_loader::dispatch::out_head();
         let mut frame = Frame::new(input, output);
         let called = self.sink.plugin().call(life::CANCEL, &mut frame);
-        if called.outcome == Outcome::Ready {
-            self.may_be_pending = false;
+        if called.outcome != Outcome::Ready {
+            // The unexpected answer may itself be PENDING: stop before even the
+            // cancellation frame, as well as the original delivery owners, drops.
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr(),
+                "actual exporter cancellation answered {:?}; stopping with both frames owned",
+                called.outcome
+            );
+            std::process::abort();
         }
+        self.may_be_pending = false;
         release(self.sink.plugin(), called.lease);
         called.outcome
     }
@@ -625,15 +634,8 @@ impl PendingDiskDelivery {
 impl Drop for PendingDiskDelivery {
     fn drop(&mut self) {
         if self.may_be_pending {
-            let outcome = self.cancel();
-            if outcome != Outcome::Ready {
-                // No unwind may free a loan whose retirement was not confirmed.
-                // This is a failing test process, with every owner still intact.
-                use std::io::Write as _;
-                let _ = writeln!(std::io::stderr(),
-                    "actual exporter cancellation answered {outcome:?}; stopping with its pending frame owned");
-                std::process::abort();
-            }
+            // cancel() either confirms retirement or stops with both frames live.
+            let _ = self.cancel();
         }
     }
 }
