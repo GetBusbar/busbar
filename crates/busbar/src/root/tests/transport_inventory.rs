@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::root::registry::{Dropped, DroppedDoor};
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
-use busbar_test_kit::root_door_fixtures::held_down;
 
 type Inventory = Mutex<Option<Dropped>>;
 
@@ -38,8 +37,10 @@ impl Drop for ClosingDoor {
 }
 
 fn opened(settings: &TransportSettings) -> Arc<dyn FramerDoor> {
-    let plugin =
-        crate::root::test_plugins::linked_transport(held_down::door, crate::root::doors::bind());
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        crate::root::doors::bind(),
+    );
     Arc::new(crate::root::doors::Dispatched::open(plugin, settings).unwrap())
 }
 

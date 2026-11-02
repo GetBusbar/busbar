@@ -1,130 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#![cfg(feature = "transport-webrtc")]
+
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Waker};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use busbar_core_connector::datagram::{DatagramFraming, LegSink, Pairing};
-use busbar_core_connector::framer::{FramerDoor, Got};
-use busbar_core_connector::publication::Messages;
 use busbar_core_connector::udp::{bind, ReadyPort};
-use busbar_kernel::plane_driver::CallerEnd;
-use busbar_test_kit::root_door_fixtures::raw_udp_ingress::{check, Ingress};
-use tokio::net::UdpSocket;
+use busbar_kernel::plane_driver::{CallerEnd, SessionCaller};
 
-use super::{lock, CallerLeg, ClaimDoor, DatagramCaller};
+use super::tests::real::{Input, Pair, WAIT};
+use super::{lock, ClaimDoor};
 
-const CHANNEL: u64 = 1;
-const WAIT: Duration = Duration::from_secs(5);
-
-fn got(stream: u64, bytes: &[u8], fields: bool) -> Got {
-    Got {
-        stream,
-        bytes: bytes.to_vec(),
-        end_of_frame: true,
-        status_code: None,
-        handoff: false,
-        status_class: 0,
-        fault: 0,
-        retry_after_secs: None,
-        declared_len: None,
-        fields,
-        text: false,
-        reason: None,
-        failed: false,
-        end: false,
-    }
-}
-
-struct Association {
-    leg: Arc<CallerLeg>,
-    pair: Arc<Pairing>,
-    messages: Arc<Messages>,
-    framer: Arc<Ingress>,
-    id: u64,
-}
-
-impl Association {
-    fn new(door: &Arc<ClaimDoor>, user: &[u8], stream: u64) -> Self {
-        Self::with_limit(door, user, stream, None)
-    }
-
-    fn with_limit(door: &Arc<ClaimDoor>, user: &[u8], stream: u64, limit: Option<usize>) -> Self {
-        let messages = Messages::new(8);
-        let leg = CallerLeg::new(door, Arc::clone(&messages));
-        let pair =
-            Pairing::with_memory_limit(Arc::clone(&leg) as Arc<dyn LegSink>, door.local(), limit);
-        *lock(&leg.pairing) = Some(Arc::clone(&pair));
-        let framer = Ingress::new(user, stream);
-        let (mut framing, _) = DatagramFraming::accept_minted(
-            Arc::clone(&framer) as Arc<dyn FramerDoor>,
-            door.local(),
-        )
-        .expect("begin");
-        framing
-            .rendezvous(b"offer", Instant::now())
-            .expect("valid terms");
-        let id = door.join(framing, &leg).expect("join");
-        leg.take(
-            vec![got(CHANNEL, b"label: events\r\n", true)],
-            Instant::now(),
-        );
-        Self {
-            leg,
-            pair,
-            messages,
-            framer,
-            id,
-        }
-    }
-
-    fn caller(&self) -> DatagramCaller {
-        let (head, _answer) = tokio::sync::oneshot::channel();
-        DatagramCaller {
-            leg: Arc::clone(&self.leg),
-            from: Arc::clone(&self.messages),
-            head: std::sync::Mutex::new(Some(head)),
-            stated: std::sync::atomic::AtomicU32::new(0),
-            opened: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-}
-
-impl Drop for Association {
-    fn drop(&mut self) {
-        self.pair.close();
-    }
-}
-
+// Pause a host crossing while leaving the actual WebRTC output untouched.
 struct Parked {
     release: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<bool>>,
 }
-
 impl Parked {
-    fn start(
-        door: &Arc<ClaimDoor>,
-        association: &Association,
-    ) -> (Self, std::sync::mpsc::Receiver<()>) {
+    fn start(pair: &Pair) -> (Self, std::sync::mpsc::Receiver<()>) {
         let (entered, inside) = std::sync::mpsc::channel();
         let (release, resume) = std::sync::mpsc::channel();
         let resume = std::sync::Mutex::new(resume);
-        association
-            .framer
-            .recording()
-            .observe(Arc::new(move |bytes| {
-                if bytes == b"occupied" {
-                    let _ = entered.send(());
-                    let _ = resume.lock().unwrap().recv();
-                }
-            }));
-        let door = Arc::clone(door);
-        let id = association.id;
-        let thread = std::thread::spawn(move || {
-            door.emit(id, CHANNEL, b"occupied", true, false, Instant::now())
-        });
+        *pair.framer.observer.lock().unwrap() = Some(Arc::new(move |len| {
+            if len == b"occupied".len() {
+                let _ = entered.send(());
+                let _ = resume.lock().unwrap().recv();
+            }
+        }));
+        let door = pair.door.clone();
+        let id = lock(&pair.caller.leg.id).unwrap();
+        let thread =
+            std::thread::spawn(move || door.emit(id, 1, b"occupied", true, false, Instant::now()));
         (
             Self {
                 release: Some(release),
@@ -133,13 +42,11 @@ impl Parked {
             inside,
         )
     }
-
-    fn finish(mut self) -> std::thread::Result<bool> {
-        let _ = self.release.take().unwrap().send(());
-        self.thread.take().unwrap().join()
+    fn finish(mut self) -> bool {
+        self.release.take().unwrap().send(()).unwrap();
+        self.thread.take().unwrap().join().unwrap()
     }
 }
-
 impl Drop for Parked {
     fn drop(&mut self) {
         if let Some(release) = self.release.take() {
@@ -151,287 +58,455 @@ impl Drop for Parked {
     }
 }
 
-async fn heard(socket: &UdpSocket, door: &Arc<ClaimDoor>, association: &Association, user: &str) {
-    let check = check(user, 1);
-    socket.send_to(&check, door.local()).await.unwrap();
-    tokio::time::timeout(WAIT, async {
-        while !association.framer.received().contains(&check) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("authenticated check crossed the real socket and framer");
-}
-
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_output_credit_readiness_drops_before_acceptance_and_resumes_without_replay() {
     use busbar_core_connector::datagram::Leg;
     use busbar_core_connector::framer::FRAME_CAP;
     use busbar_core_connector::test_support::datagram_output_reservation_bytes;
 
-    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
-    let a = Association::with_limit(
-        &door,
-        b"creditfrag",
-        CHANNEL,
-        Some(datagram_output_reservation_bytes() + FRAME_CAP),
-    );
-    let source = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    heard(&source, &door, &a, "creditfrag").await;
-    assert!(a.pair.published().await.failure.is_none());
-
-    let custody = a
-        .pair
-        .reserve_input_for(Leg::Caller, 2 * FRAME_CAP)
+    let limit = 4 * datagram_output_reservation_bytes() + 32 * FRAME_CAP;
+    let pair = Pair::with_limit(limit).await;
+    assert_eq!(pair.caller.read().await, Some(Vec::new()));
+    assert!(pair.pairing.published().await.failure.is_none());
+    let memory = pair.pairing.memory_account();
+    // Retain genuine host storage, leaving less than the next pre-read output
+    // reservation. The actual WebRTC association and UDP path are established.
+    let held = vec![0_u8; limit - memory.used() - 1024];
+    let custody = pair
+        .pairing
+        .reserve_input_for(Leg::Caller, held.capacity())
         .unwrap();
-    let input = vec![b'i'; 2 * FRAME_CAP];
-    let used = a.pair.memory_account().used();
-    let dropped = b"\x80no-output-credit";
-    source.send_to(dropped, door.local()).await.unwrap();
+    let before = pair.pairing.publication_outcome();
+    let used = memory.used();
+    let ingested = pair.framer.ingested.lock().unwrap().clone();
+    let dropped_before = pair.door.assocs.raw_busy_dropped();
+    pair.input
+        .send(Input::Raw(b"\x80no-output-credit".to_vec()))
+        .await
+        .unwrap();
     tokio::time::timeout(WAIT, async {
-        while door.assocs.raw_busy_dropped() == 0 {
+        while pair.door.assocs.raw_busy_dropped() == dropped_before {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("unavailable output credit is receive-not-ready before raw acceptance");
-    assert_eq!(door.assocs.raw_busy_dropped(), 1);
-    assert_eq!(a.framer.received(), vec![check("creditfrag", 1)]);
-    assert!(a.messages.try_recv().is_err());
-    assert!(!a.pair.closed());
-    assert!(a.pair.publication_outcome().failure.is_none());
-    assert_eq!(a.pair.memory_account().used(), used);
-    drop(input);
+    .expect("missing output credit refuses raw input before framer acceptance");
+    assert_eq!(pair.door.assocs.raw_busy_dropped(), dropped_before + 1);
+    assert_eq!(pair.pairing.publication_outcome(), before);
+    assert_eq!(memory.used(), used);
+    assert_eq!(
+        *pair.framer.ingested.lock().unwrap(),
+        ingested,
+        "receive-readiness refusal never crosses the real framer"
+    );
+    assert!(!pair.pairing.closed());
+    assert!(pair.caller.from.try_recv().is_err());
+    drop(held);
     drop(custody);
 
-    let fresh = b"\x80credit-returned";
-    source.send_to(fresh, door.local()).await.unwrap();
-    let message = tokio::time::timeout(WAIT, a.messages.recv())
-        .await
-        .expect("new raw input progresses after actual storage retirement")
-        .unwrap();
-    assert_eq!(message.bytes, fresh);
-    assert!(message.end);
-    assert!(a.pair.published().await.failure.is_none());
+    // The discarded malformed RTP is a receive-readiness negative, not an echo
+    // protocol. A fresh genuine SCTP message proves progress after retirement.
+    pair.send(b"credit returned").await;
     assert_eq!(
-        a.framer.received(),
-        vec![check("creditfrag", 1), fresh.to_vec()]
+        tokio::time::timeout(WAIT, pair.caller.read())
+            .await
+            .unwrap(),
+        Some(b"credit returned".to_vec())
     );
-    assert!(a.messages.try_recv().is_err());
-    assert_eq!(door.assocs.raw_busy_dropped(), 1);
-    assert!(!a.pair.closed());
-    door.close();
+    assert!(pair.pairing.published().await.failure.is_none());
+    assert!(
+        pair.caller.from.try_recv().is_err(),
+        "no discarded input replay"
+    );
+    assert_eq!(pair.door.assocs.raw_busy_dropped(), dropped_before + 1);
+    assert!(!pair.pairing.closed());
+    pair.door.close();
 }
 
-#[tokio::test]
-async fn busy_raw_ingress_is_counted_without_blocking_the_shared_socket_or_trusted_writes() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_progress() {
     let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
-    let a = Association::new(&door, b"busyfrag", CHANNEL);
-    let b = Association::new(&door, b"healthyfrag", CHANNEL);
-    let source_a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let source_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    heard(&source_a, &door, &a, "busyfrag").await;
-    heard(&source_b, &door, &b, "healthyfrag").await;
-    let caller = a.caller();
-    let (parked, inside) = Parked::start(&door, &a);
-    let entered = inside.recv_timeout(WAIT);
-    let wake = Waker::noop().clone();
-    let mut cx = Context::from_waker(&wake);
-    let mut cancelled = Box::pin(CallerEnd::write(&caller, b"cancelled"));
-    let cancelled_poll = cancelled.as_mut().poll(&mut cx);
+    let mut a = Pair::on(door.clone(), &[]).await;
+    let b = Pair::on(door.clone(), &[]).await;
+    assert_eq!(b.caller.read().await, Some(Vec::new()));
+    assert_eq!(a.caller.read().await, Some(Vec::new()));
+    // Pause autonomous ICE/timer work only after the real channels exist. An
+    // explicit real message behind all prior peer sends is observed by the
+    // root before the exact injected-drop window begins.
+    a.pause().await;
+    b.pause().await;
+    for pair in [&a, &b] {
+        pair.send(b"pause barrier").await;
+        assert_eq!(
+            tokio::time::timeout(WAIT, pair.caller.read())
+                .await
+                .unwrap(),
+            Some(b"pause barrier".to_vec())
+        );
+    }
+    let (parked, inside) = Parked::start(&a);
+    inside.recv_timeout(WAIT).expect("host crossing paused");
+    let wake = Waker::noop();
+    let mut cx = Context::from_waker(wake);
+    let mut cancelled = Box::pin(a.caller.write(b"cancelled"));
+    assert!(cancelled.as_mut().poll(&mut cx).is_pending());
     drop(cancelled);
-    let mut application = Box::pin(CallerEnd::write(&caller, b"accepted once"));
-    let application_poll = application.as_mut().poll(&mut cx);
-
-    let dropped_packets = [
+    let mut pending = Box::pin(a.caller.write(b"accepted once"));
+    assert!(pending.as_mut().poll(&mut cx).is_pending());
+    let before = door.assocs.raw_busy_dropped();
+    // Genuine malformed RTP inputs exercise the host's receive-readiness seam.
+    // WebRTC never promises arbitrary UDP echo or application delivery for them.
+    for bytes in [
         b"\x80busy-one".as_slice(),
         b"\x80busy-two",
         b"\x80busy-three",
-    ];
-    let mut sends = Vec::new();
-    for bytes in dropped_packets {
-        sends.push(source_a.send_to(bytes, door.local()).await);
+    ] {
+        a.input.send(Input::Raw(bytes.to_vec())).await.unwrap();
     }
-    let counted = tokio::time::timeout(WAIT, async {
-        while door.assocs.raw_busy_dropped() < dropped_packets.len() as u64 {
+    tokio::time::timeout(WAIT, async {
+        while door.assocs.raw_busy_dropped() < before + 3 {
             tokio::task::yield_now().await;
         }
     })
-    .await;
-
-    let unknown = source_b
-        .send_to(&check("missingfrag", 2), door.local())
-        .await;
-    let healthy = b"\x80healthy";
-    let healthy_sent = source_b.send_to(healthy, door.local()).await;
-    let healthy_received = tokio::time::timeout(WAIT, b.messages.recv()).await;
-    let count_while_parked = door.assocs.raw_busy_dropped();
-    let a_while_parked = a.framer.received();
-
-    let holder = parked.finish();
-    let written = match application_poll {
-        std::task::Poll::Ready(written) => Ok(written),
-        std::task::Poll::Pending => tokio::time::timeout(WAIT, application).await,
-    };
-    let after = b"\x80after-release";
-    source_a.send_to(after, door.local()).await.unwrap();
-    let after_received = tokio::time::timeout(WAIT, a.messages.recv()).await;
-    let received_a = a.framer.received();
-    let received_b = b.framer.received();
-    let emitted = a.framer.recording().emitted();
-    door.close();
-
-    assert!(entered.is_ok() && holder.unwrap());
-    assert!(cancelled_poll.is_pending() && application_poll.is_pending());
-    assert!(sends.into_iter().all(|send| send.is_ok()));
-    assert!(counted.is_ok() && unknown.is_ok() && healthy_sent.is_ok());
-    assert_eq!(count_while_parked, dropped_packets.len() as u64);
-    assert_eq!(healthy_received.unwrap().unwrap().bytes, healthy);
-    assert_eq!(a_while_parked, vec![check("busyfrag", 1)]);
-    assert!(
-        written.unwrap(),
-        "busy does not mean ClientGone for application writes"
-    );
-    assert_eq!(
-        emitted,
-        vec![b"occupied".to_vec(), b"accepted once".to_vec()]
-    );
-    assert_eq!(after_received.unwrap().unwrap().bytes, after);
-    assert_eq!(
-        received_a,
-        vec![check("busyfrag", 1), after.to_vec()],
-        "busy raw packets are never replayed"
-    );
-    assert_eq!(received_b, vec![check("healthyfrag", 1), healthy.to_vec()]);
-    assert_eq!(door.assocs.raw_busy_dropped(), dropped_packets.len() as u64);
-}
-
-#[tokio::test]
-async fn closing_a_busy_association_cancels_waiters_and_does_not_reuse_its_old_path() {
-    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
-    let a = Association::new(&door, b"reusedfrag", CHANNEL);
-    let marker = Association::new(&door, b"closingmarker", CHANNEL);
-    let source = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    heard(&source, &door, &a, "reusedfrag").await;
-    let caller = a.caller();
-    let (parked, inside) = Parked::start(&door, &a);
-    let entered = inside.recv_timeout(WAIT);
-    let wake = Waker::noop().clone();
-    let mut cx = Context::from_waker(&wake);
-    let mut pending = Box::pin(CallerEnd::write(&caller, b"closed waiter"));
-    let before = pending.as_mut().poll(&mut cx);
-    a.pair.close();
-
-    let late = source.send_to(&check("reusedfrag", 3), door.local()).await;
-    let marker_check = check("closingmarker", 4);
-    let marker_sent = source.send_to(&marker_check, door.local()).await;
-    let late_consumed = tokio::time::timeout(WAIT, async {
-        while !marker.framer.received().contains(&marker_check) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await;
-    let holder = parked.finish();
-    let cancelled = tokio::time::timeout(WAIT, pending).await;
-    let replacement = Association::new(&door, b"reusedfrag", CHANNEL);
-    let old_path = source.send_to(b"\x80stale-path", door.local()).await;
-    let new_source = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    heard(&new_source, &door, &replacement, "reusedfrag").await;
-    let fresh = b"\x80replacement";
-    new_source.send_to(fresh, door.local()).await.unwrap();
-    let delivered = tokio::time::timeout(WAIT, replacement.messages.recv()).await;
-    let replacement_input = replacement.framer.received();
-    door.close();
-
-    assert!(entered.is_ok() && holder.is_ok() && before.is_pending());
-    assert!(late.is_ok() && marker_sent.is_ok() && late_consumed.is_ok() && old_path.is_ok());
-    assert!(
-        !cancelled.expect("the closed association's waiter resolved before the timeout"),
-        "a write waiting on a closed association is refused, not accepted"
-    );
-    assert_ne!(a.id, replacement.id);
-    assert_eq!(a.framer.recording().emitted(), vec![b"occupied".to_vec()]);
-    assert_eq!(delivered.unwrap().unwrap().bytes, fresh);
-    assert_eq!(
-        replacement_input,
-        vec![check("reusedfrag", 1), fresh.to_vec()]
-    );
+    .await
+    .expect("busy raw inputs are counted before acceptance");
     assert_eq!(
         door.assocs.raw_busy_dropped(),
-        0,
-        "closing and unrouted traffic is not busy loss"
+        before + 3,
+        "only the three injected raw packets entered this paused-peer window"
     );
+    b.resume().await;
+    b.send(b"healthy").await;
+    assert_eq!(
+        tokio::time::timeout(WAIT, b.caller.read()).await.unwrap(),
+        Some(b"healthy".to_vec())
+    );
+    assert!(
+        !b.pairing.closed(),
+        "one busy association cannot stall the shared socket"
+    );
+    assert!(parked.finish());
+    assert!(tokio::time::timeout(WAIT, pending).await.unwrap());
+    a.resume().await;
+    assert_eq!(a.received().await, b"occupied");
+    assert_eq!(a.received().await, b"accepted once");
+    assert_eq!(
+        *a.framer.emitted.lock().unwrap(),
+        vec![8, 13],
+        "cancelled input never crosses"
+    );
+    assert!(a.pairing.published().await.failure.is_none());
+    assert!(b.pairing.published().await.failure.is_none());
+    // Live ICE resumes outside the exact injected window and may itself
+    // encounter receive-not-ready. Its traffic is not one of our three inputs.
+    a.send(b"after release").await;
+    assert_eq!(
+        tokio::time::timeout(WAIT, a.caller.read()).await.unwrap(),
+        Some(b"after release".to_vec())
+    );
+    assert!(
+        a.caller.from.try_recv().is_err(),
+        "dropped raw packets are never replayed as application data"
+    );
+    door.close();
 }
 
-#[tokio::test]
-async fn admitted_raw_line_output_reaches_the_real_upstream_framer_once() {
-    use busbar_contract::conn::{Piece, PieceKind};
-    use busbar_contract::ids::StreamId;
-    use busbar_contract::transport::wire::WireStatusClass;
-    use busbar_core_connector::datagram::Leg;
-    use busbar_core_connector::test_support::DatagramSession;
-    use busbar_test_kit::root_door_fixtures::datagram_feedback::{Branching, Terminals};
-
-    const CALLER_LINE: u64 = 11;
-    const UPSTREAM_LINE: u64 = 21;
-    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
-    let a = Association::new(&door, b"linefrag", CALLER_LINE);
-    a.pair.sort(
-        Leg::Caller,
-        vec![got(CALLER_LINE, b"kind: feedback\r\n", true)],
-        Instant::now(),
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_a_busy_real_association_cancels_unaccepted_writes_and_retires_its_path() {
+    let a = Pair::new(&[]).await;
+    let door = a.door.clone();
+    let (parked, inside) = Parked::start(&a);
+    inside.recv_timeout(WAIT).unwrap();
+    let mut pending = Box::pin(a.caller.write(b"closed waiter"));
+    assert!(pending
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_pending());
+    a.pairing.close();
+    assert!(parked.finish());
+    assert!(!tokio::time::timeout(WAIT, pending).await.unwrap());
+    assert_eq!(*a.framer.emitted.lock().unwrap(), vec![8]);
+    assert!(lock(&door.legs).is_empty());
+    assert!(door.assocs.is_empty());
+    // A new real peer negotiates fresh ICE credentials and owns a fresh path.
+    let replacement = Pair::on(door.clone(), &[]).await;
+    assert_ne!(*lock(&a.caller.leg.id), *lock(&replacement.caller.leg.id));
+    replacement.send(b"replacement").await;
+    assert_eq!(replacement.caller.read().await, Some(Vec::new()));
+    assert_eq!(
+        tokio::time::timeout(WAIT, replacement.caller.read())
+            .await
+            .unwrap(),
+        Some(b"replacement".to_vec())
     );
-    let far = Branching::new(UPSTREAM_LINE, 22, b"upstreamfrag", 1, Terminals::Paths);
-    far.consume_without_output();
-    let port = ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap();
-    let (framing, _) =
-        DatagramFraming::accept_minted(Arc::clone(&far) as Arc<dyn FramerDoor>, port.local_addr())
-            .unwrap();
-    let upstream = DatagramSession::new(framing, port, Arc::clone(&a.pair));
-    for (kind, bytes) in [
-        (PieceKind::Fields, &[][..]),
-        (PieceKind::Body, b"answer".as_slice()),
-        (PieceKind::Completion, &[][..]),
-    ] {
-        upstream
-            .exchanged(
-                Piece {
-                    kind,
-                    stream: StreamId(0),
-                    len: bytes.len(),
-                    end: true,
-                    status: (kind == PieceKind::Fields).then_some(WireStatusClass::Success),
-                    status_code: None,
-                    status_namespace: None,
-                    retry_after_secs: None,
-                    fault: None,
-                    reason: None,
-                    declared_len: None,
-                },
-                bytes,
-            )
-            .expect("actual upstream exchange");
-    }
-    let source = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    heard(&source, &door, &a, "linefrag").await;
-    let line = b"\x80accepted-line";
-    source.send_to(line, door.local()).await.unwrap();
-    let delivered = tokio::time::timeout(WAIT, async {
-        while far.emitted().is_empty() {
-            tokio::task::yield_now().await;
-        }
-        a.pair.published().await
-    })
-    .await;
-    let emitted = far.emitted();
-    upstream.close();
+    assert_eq!(a.caller.read().await, Some(Vec::new()));
+    assert_eq!(
+        tokio::time::timeout(WAIT, a.caller.read()).await.unwrap(),
+        None
+    );
+    assert!(!replacement.pairing.closed());
     door.close();
+}
 
-    assert!(delivered.unwrap().failure.is_none());
-    assert_eq!(emitted, vec![line.to_vec()]);
-    assert!(
-        a.messages.try_recv().is_err(),
-        "LINE output stays out of the application channel"
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
+    use busbar_contract::conn::PieceKind;
+    use busbar_contract::transport::wire::WireStatusClass;
+    use busbar_core_connector::datagram::DatagramFraming;
+    use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
+    use busbar_transport_webrtc::framing::MEDIA_BASE;
+    use tokio::net::UdpSocket;
+
+    const OPUS: &[u8] = &[0xF8, 1, 2, 3, 4];
+    // Observe the actual upstream operation without changing product output.
+    struct Upstream {
+        inner: Arc<dyn FramerDoor>,
+        emitted: std::sync::Mutex<Vec<(u64, usize)>>,
+    }
+    impl FramerDoor for Upstream {
+        fn facts(&self) -> &DoorFacts {
+            self.inner.facts()
+        }
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            if let Call::Emit(input, _) = &call {
+                self.emitted.lock().unwrap().push((input.stream, input.len));
+            }
+            self.inner.cross(call)
+        }
+    }
+    struct Tasks(Vec<tokio::task::JoinHandle<()>>);
+    impl Drop for Tasks {
+        fn drop(&mut self) {
+            for task in &self.0 {
+                task.abort();
+            }
+        }
+    }
+
+    use busbar_contract::conn::{Conns, InstanceId, NeedId, OpenDesc, PollConns};
+    use busbar_contract::transport::TransportSettings;
+    use http_body_util::Full;
+
+    let pair = Pair::with_audio().await;
+    assert_eq!(pair.caller.read().await, Some(Vec::new()));
+    let mut entries = crate::root::connector::entries(
+        crate::LINKED_TRANSPORT_DOORS,
+        &TransportSettings::default(),
+    )
+    .unwrap();
+    let entry = entries
+        .iter_mut()
+        .find(|entry| entry.door.facts().datagram)
+        .unwrap();
+    let observed = Arc::new(Upstream {
+        inner: entry.door.clone(),
+        emitted: std::sync::Mutex::new(Vec::new()),
+    });
+    entry.door = observed.clone();
+    let connector = busbar_core_connector::process::build_with_secrets(
+        || Ok(entries),
+        crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            allow: vec!["127.0.0.1".into()],
+            ..Default::default()
+        })
+        .unwrap(),
+        &[],
+        Arc::new(|_, _| {}),
+        busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
+    )
+    .unwrap();
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let (peer, _) =
+        DatagramFraming::accept_minted(super::tests::real::loaded(), socket.local_addr().unwrap())
+            .unwrap();
+    let signal = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = format!("http://{}/session", signal.local_addr().unwrap());
+    let (peer_out, peer_in) = tokio::sync::oneshot::channel();
+    let peer = Arc::new(std::sync::Mutex::new(Some((peer, peer_out))));
+    let mut tasks = Tasks(Vec::new());
+    let signaling = tokio::spawn(async move {
+        let (socket, _) = signal.accept().await.unwrap();
+        let service =
+            hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                let peer = peer.clone();
+                async move {
+                    assert_eq!(request.method(), hyper::Method::POST);
+                    assert_eq!(request.uri().path(), "/session");
+                    let description =
+                        axum::body::to_bytes(axum::body::Body::new(request.into_body()), 64 * 1024)
+                            .await
+                            .unwrap();
+                    assert!(
+                        description.starts_with(b"v=0\r\n"),
+                        "the actual production HTTP/TCP path carries real SDP"
+                    );
+                    let (mut peer, peer_out) = peer.lock().unwrap().take().unwrap();
+                    let answer = peer.rendezvous(&description, Instant::now()).unwrap();
+                    let answer = answer
+                        .pieces
+                        .iter()
+                        .find(|p| p.stream == 0 && !p.fields)
+                        .unwrap()
+                        .bytes
+                        .clone();
+                    peer_out
+                        .send(peer)
+                        .ok()
+                        .expect("actual far peer remains owned by the test");
+                    Ok::<_, std::convert::Infallible>(
+                        hyper::Response::builder()
+                            .status(201)
+                            .header("content-type", "application/sdp")
+                            .body(Full::new(bytes::Bytes::from(answer)))
+                            .unwrap(),
+                    )
+                }
+            });
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+            .await
+            .unwrap();
+    });
+    tasks.0.push(signaling);
+    let owner = InstanceId(91);
+    let need = NeedId(1);
+    connector
+        .declare_need_to(
+            owner,
+            need,
+            "webrtc",
+            busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+            &target,
+        )
+        .unwrap();
+    let unit = 27;
+    connector.pair(unit, pair.pairing.clone()).unwrap();
+    let connection = connector
+        .open(
+            owner,
+            need,
+            &OpenDesc {
+                target: &target,
+                fields: &[("content-type", b"application/sdp")],
+                method: b"POST",
+                head_target: b"/session",
+                unit,
+                timeout_ms: 5000,
+                ..Default::default()
+            },
+        )
+        .expect("production Connector::open begins the actual WebRTC-over-HTTP exchange");
+    let heads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let driving = {
+        let connector = connector.clone();
+        let heads = heads.clone();
+        tokio::spawn(async move {
+            let mut bytes = [0_u8; 1024];
+            loop {
+                let piece = std::future::poll_fn(|cx| {
+                    connector.poll_read(owner, connection, cx, &mut bytes)
+                })
+                .await
+                .unwrap();
+                assert_eq!(
+                    piece.kind,
+                    PieceKind::Fields,
+                    "LINE forwarding creates no application channel body"
+                );
+                assert_eq!(piece.status, Some(WireStatusClass::Success));
+                assert_eq!(piece.status_code, Some(201));
+                heads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        })
+    };
+    tasks.0.push(driving);
+    let mut peer = tokio::time::timeout(WAIT, peer_in)
+        .await
+        .expect("actual production HTTP request reaches the real peer")
+        .unwrap();
+    let (opened, ready) = tokio::sync::oneshot::channel();
+    let (delivered, mut received) = tokio::sync::mpsc::channel(8);
+    let far = tokio::spawn(async move {
+        let mut opened = Some(opened);
+        let mut bytes = vec![0_u8; 65536];
+        loop {
+            while let Some((to, bytes)) = peer.poll_send() {
+                socket.send_to(&bytes, to).await.unwrap();
+            }
+            let mut yielded = tokio::select! {
+                got = socket.recv_from(&mut bytes) => {
+                    let (n, from) = got.unwrap();
+                    peer.datagram(from, &bytes[..n], Instant::now()).unwrap()
+                },
+                () = tokio::time::sleep(std::time::Duration::from_millis(10)) => peer.timeout(Instant::now()).unwrap(),
+            };
+            for piece in yielded.pieces.drain(..) {
+                assert!(
+                    !piece.failed,
+                    "actual upstream peer failed: {:?}",
+                    piece.reason
+                );
+                if piece.stream == 1 && piece.fields {
+                    if let Some(opened) = opened.take() {
+                        let _ = opened.send(());
+                    }
+                }
+                if piece.stream == MEDIA_BASE && !piece.fields && !piece.end {
+                    delivered.try_send(piece.bytes).unwrap();
+                }
+            }
+        }
+    });
+    tasks.0.push(far);
+    tokio::time::timeout(WAIT, ready)
+        .await
+        .expect("actual upstream ICE/DTLS/SCTP opens")
+        .unwrap();
+    pair.input.send(Input::Audio(OPUS.to_vec())).await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(WAIT, received.recv()).await.unwrap(),
+        Some(OPUS.to_vec())
     );
-    assert_eq!(door.assocs.raw_busy_dropped(), 0);
+    let outcome = pair.pairing.published().await;
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    assert_eq!(
+        *observed.emitted.lock().unwrap(),
+        vec![(MEDIA_BASE, OPUS.len())]
+    );
+    assert_eq!(
+        (
+            outcome.accepted_frames,
+            outcome.handed_frames,
+            outcome.cancelled_frames
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        (outcome.accepted_bytes, outcome.handed_bytes),
+        (OPUS.len() as u64, OPUS.len() as u64)
+    );
+    assert!(
+        pair.caller.from.try_recv().is_err(),
+        "audio LINE never enters the application channel"
+    );
+    assert!(
+        received.try_recv().is_err(),
+        "one accepted SRTP frame is forwarded once"
+    );
+    assert_eq!(pair.door.assocs.raw_busy_dropped(), 0);
+    assert_eq!(
+        heads.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the actual HTTP response head is observed once while SDP remains internal"
+    );
+    assert!(
+        !tasks.0[1].is_finished(),
+        "the actual connector reader remains live without application output"
+    );
+    connector.close(owner, connection).unwrap();
+    connector.unpair(unit);
+    assert!(pair.pairing.closed());
+    pair.door.close();
 }

@@ -15,8 +15,6 @@ use busbar_contract::auth_calls::{
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::{Established, FramerDoor, Framing};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
-use busbar_kernel_testkit::test_support::TestApp;
-use busbar_test_kit::root_door_fixtures::scoped_mux;
 
 use crate::root::doors::{bind_on, Dispatched};
 use crate::root::inbound;
@@ -76,14 +74,44 @@ fn provider(name: &'static str) -> Arc<Provider> {
 
 fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let calls: Arc<dyn AuthCalls> = provider.clone();
-    TestApp::new()
-        .auth(Arc::new(
-            busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![(
-                provider.name.into(),
-                calls,
-            )]),
-        ))
-        .build()
+    crate::root::linked::register_stores(&crate::LINKED);
+    let store = crate::root::real_store::store();
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("the actual Store settings are JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": {"module": store.name(), "settings": settings},
+    }))
+    .expect("the ordinary reload deployment parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the ordinary reload deployment resolves");
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::default());
+    let (mut app, _rotation, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+    )
+    .expect("the production builder owns the supplied actual Store");
+    // Only the host policy value varies between these Apps. The HTTP product
+    // and listener still drive the actual admission and reload boundaries.
+    app.auth = Arc::new(busbar_kernel::auth::AuthMiddleware::from_calls_for_test(
+        vec![(provider.name.into(), calls)],
+        &[],
+    ));
+    Arc::new(app)
 }
 
 fn stage(provider: &Provider) {
@@ -119,16 +147,39 @@ fn identities(provider: &Provider) -> Vec<Option<String>> {
         .collect()
 }
 
+// A literal HTTP/2 HEADERS block: POST, http, and a non-Huffman path. Keeping
+// END_STREAM clear holds the real request open while later streams use a new policy.
+pub(super) fn request(stream: u32, path: &str, preface: bool) -> Vec<u8> {
+    assert!(path.len() < 127);
+    let mut bytes = Vec::new();
+    if preface {
+        bytes.extend_from_slice(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+        bytes.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0, 0]);
+    }
+    let mut fields = vec![0x83, 0x86, 0x04, path.len() as u8];
+    fields.extend_from_slice(path.as_bytes());
+    fields.extend_from_slice(&[0x01, 9]);
+    fields.extend_from_slice(b"localhost");
+    let len = fields.len() as u32;
+    bytes.extend_from_slice(&len.to_be_bytes()[1..]);
+    bytes.extend_from_slice(&[1, 4]);
+    bytes.extend_from_slice(&stream.to_be_bytes());
+    bytes.extend_from_slice(&fields);
+    bytes
+}
+
 #[tokio::test]
 async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     assert!(inbound::install(&dispatcher));
-    let plugin =
-        crate::root::test_plugins::linked_transport(scoped_mux::door, bind_on(&dispatcher));
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        bind_on(&dispatcher),
+    );
     let door: Arc<dyn FramerDoor> = Arc::new(
         Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher)
-            .expect("the real loaded fixture opens"),
+            .expect("the real HTTP transport opens"),
     );
     let resolver: FramerFor =
         Arc::new(move |scheme| (scheme == DATA_SCHEME).then(|| Arc::clone(&door)));
@@ -151,7 +202,7 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
         listener.guests(),
     )
     .expect("the production listener's list begins a connection");
-    let first = framing.ingest(&[5], false);
+    let first = framing.ingest(&request(1, "/tickets/first", true), false);
     let before_reload = identities(&before);
 
     let after = provider("after-reload");
@@ -160,7 +211,7 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     for _ in 0..3 {
         assert!(inbound::publish(&new_app).is_some());
     }
-    let second = framing.ingest(&[7], false);
+    let second = framing.ingest(&request(3, "/tickets/next", false), false);
     let after_reload = identities(&after);
     let retained_identity = identities(&before);
     let retained_app = old_app_weak.upgrade().is_some();
@@ -190,56 +241,13 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
 
 #[tokio::test]
 async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing_the_data_list() {
-    fn hand_in(
-        framing: &Framing,
-        listener: &listener_framed::DataFramer,
-        provider: &Provider,
-        yielded: busbar_core_connector::framer::Yielded,
-    ) -> u32 {
-        let piece = yielded
-            .pieces
-            .first()
-            .expect("fixture emitted its request ticket");
-        let slot = u32::from_le_bytes(piece.bytes[..4].try_into().unwrap());
-        let ticket_generation = u32::from_le_bytes(piece.bytes[4..8].try_into().unwrap());
-        let scope = framing.scope().unwrap();
-        let id = *provider.units.lock().unwrap().last().unwrap();
-        let (secret, generation, line) = inbound::host().unit_secret(scope.owner(), id).unwrap();
-        let unit = crate::root::loader::dispatch::auth_handle::mint_unit_ref(
-            secret,
-            generation,
-            scope.owner(),
-            line,
-            id,
-        )
-        .unwrap();
-        inbound::host()
-            .hand_in(busbar_kernel::inbound::HandIn {
-                owner: scope.owner(),
-                generation,
-                auth: listener.guests().unwrap().lines()[line as usize].auth.id,
-                unit,
-                line,
-                conn: scope.connection(),
-                stream: piece.stream,
-                framing: Some(scope.leg()),
-                head: busbar_kernel::inbound::Head {
-                    method: "POST".into(),
-                    target: format!("/tickets/{slot}/{ticket_generation}"),
-                    authority: "fixture".into(),
-                    query: None,
-                    fields: Vec::new(),
-                },
-            })
-            .unwrap()
-            .0
-    }
-
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     assert!(inbound::install(&dispatcher));
-    let plugin =
-        crate::root::test_plugins::linked_transport(scoped_mux::door, bind_on(&dispatcher));
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        bind_on(&dispatcher),
+    );
     let door: Arc<dyn FramerDoor> =
         Arc::new(Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher).unwrap());
     let resolver: FramerFor =
@@ -276,11 +284,9 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         selected.guests(),
     )
     .unwrap();
-    let yielded = framing.ingest(&[5], false).unwrap();
-    assert_eq!(
-        hand_in(&framing, &selected, &before, yielded),
-        busbar_contract::abi::host::service::FLOW_CONTINUE
-    );
+    framing
+        .ingest(&request(1, "/tickets/first", true), false)
+        .unwrap();
     let first = identities(&before);
     assert_eq!(first, vec![Some(before.name.into())]);
     let after = provider("need-after");
@@ -289,11 +295,9 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     for _ in 0..3 {
         inbound::publish(&next).unwrap();
     }
-    let yielded = framing.ingest(&[7], false).unwrap();
-    assert_eq!(
-        hand_in(&framing, &selected, &after, yielded),
-        busbar_contract::abi::host::service::FLOW_CONTINUE
-    );
+    framing
+        .ingest(&request(3, "/tickets/next", false), false)
+        .unwrap();
     assert_eq!(identities(&after), vec![Some(after.name.into())]);
     assert_eq!(identities(&before), first);
     assert!(old.upgrade().is_some());
@@ -308,11 +312,17 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         data.guests(),
     )
     .unwrap();
-    let yielded = ordinary.ingest(&[11], false).unwrap();
-    assert_eq!(
-        hand_in(&ordinary, &data, &after, yielded),
-        busbar_contract::abi::host::service::FLOW_STOP,
+    let yielded = ordinary
+        .ingest(&request(1, "/tickets/data-miss", true), false)
+        .unwrap();
+    assert!(
+        yielded.pieces.is_empty(),
         "the data listener does not acquire the other listener's route"
+    );
+    assert_eq!(
+        identities(&after),
+        vec![Some(after.name.into())],
+        "a route miss never invokes the selected listener's auth"
     );
     ordinary.finish(CLOSE_NORMAL);
     framing.finish(CLOSE_NORMAL);
