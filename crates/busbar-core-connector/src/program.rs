@@ -261,7 +261,7 @@ fn next_supervision_key(counter: &std::sync::atomic::AtomicU64) -> Result<u64, C
         .fetch_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
-            |next| next.checked_add(1),
+            |next| if next == 0 { None } else { next.checked_add(1) },
         )
         .map_err(|_| ConnError::Refused)
 }

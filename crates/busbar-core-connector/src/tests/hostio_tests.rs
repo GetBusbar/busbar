@@ -20,6 +20,111 @@ use super::*;
 const OWNER: u64 = 1;
 
 #[test]
+fn an_omitted_program_directory_inherits_and_a_missing_directory_spawns_nothing() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        let program = Program::from_settings(&serde_json::json!({"command": "/bin/pwd"})).unwrap();
+        io.admit_for(
+            ticket(91),
+            Admission::Spawn(program.clone(), crate::spawn_env::HeldEnv::written_only()),
+            Some(OWNER),
+        );
+        for wrong in [
+            Spawn {
+                program: "/bin/pwd",
+                args: &["unexpected"],
+                env: &[],
+            },
+            Spawn {
+                program: "/bin/pwd",
+                args: &[],
+                env: &[("UNDECLARED", "value")],
+            },
+        ] {
+            assert!(matches!(
+                io.spawn(OWNER, ticket(91), &wrong),
+                Err(IoRefusal::Refused(_))
+            ));
+            assert_eq!(
+                io.held(),
+                0,
+                "a changed private launch recipe spawned a child"
+            );
+        }
+        let handle = io
+            .spawn(
+                OWNER,
+                ticket(91),
+                &Spawn {
+                    program: "/bin/pwd",
+                    args: &[],
+                    env: &[],
+                },
+            )
+            .unwrap();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut output = Vec::new();
+            loop {
+                let mut bytes = [0; 256];
+                let n = poll_fn(|cx| io.read(OWNER, handle, &mut bytes, cx.waker()))
+                    .await
+                    .unwrap();
+                if n == 0 {
+                    break;
+                }
+                output.extend_from_slice(&bytes[..n]);
+            }
+            output
+        })
+        .await;
+        io.close(OWNER, handle).unwrap();
+        assert_eq!(
+            String::from_utf8(output.unwrap()).unwrap().trim_end(),
+            std::env::current_dir()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
+        let mut missing = program;
+        missing.cwd = Some(
+            std::env::temp_dir()
+                .join(format!(
+                    "busbar-absent-cwd-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ))
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        );
+        io.admit_for(
+            ticket(92),
+            Admission::Spawn(missing, crate::spawn_env::HeldEnv::written_only()),
+            Some(OWNER),
+        );
+        assert!(matches!(
+            io.spawn(
+                OWNER,
+                ticket(92),
+                &Spawn {
+                    program: "/bin/pwd",
+                    args: &[],
+                    env: &[]
+                }
+            ),
+            Err(IoRefusal::Failed(_))
+        ));
+        assert_eq!(io.settle(ticket(92)).0, None);
+        assert_eq!(io.held(), 0, "a failed chdir retained a program handle");
+    });
+}
+
+#[test]
 fn an_admitted_program_runs_in_its_configured_working_directory() {
     worker().block_on(async {
         let io = HostIo::new();

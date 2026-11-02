@@ -29,6 +29,10 @@ const NEED: NeedId = NeedId(1);
 fn member_incarnations_refuse_exhaustion_instead_of_reusing_an_identity() {
     use std::sync::atomic::{AtomicU64, Ordering};
     let counter = AtomicU64::new(u64::MAX - 1);
+    assert_eq!(
+        super::next_supervision_key(&AtomicU64::new(0)),
+        Err(ConnError::Refused)
+    );
     assert_eq!(super::next_supervision_key(&counter), Ok(u64::MAX - 1));
     assert_eq!(
         super::next_supervision_key(&counter),
