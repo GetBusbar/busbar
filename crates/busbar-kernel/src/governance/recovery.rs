@@ -263,18 +263,17 @@ impl RecoveryBook {
         let runner = {
             let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
             let entry = entries.entry(event.operation_id).or_default();
-            if entry.selected.as_ref() == Some(event) {
-                return Ok(());
-            }
-            event.follows(entry.selected.as_ref())?;
-            if let Some(pending) = &entry.pending {
-                if pending != event {
-                    return Err(RecoveryError::Conflict(
-                        "a different immutable recovery candidate awaits selection".into(),
-                    ));
+            if entry.selected.as_ref() != Some(event) {
+                event.follows(entry.selected.as_ref())?;
+                if let Some(pending) = &entry.pending {
+                    if pending != event {
+                        return Err(RecoveryError::Conflict(
+                            "a different immutable recovery candidate awaits selection".into(),
+                        ));
+                    }
+                } else {
+                    entry.pending = Some(event.clone());
                 }
-            } else {
-                entry.pending = Some(event.clone());
             }
             entry.runner.clone()
         };
@@ -645,6 +644,11 @@ mod tests {
         book.keep(&event).unwrap();
         assert_eq!(book.selected(event.operation_id), Some(event.clone()));
         book.keep(&event).unwrap();
+        sink.fail_after_write.store(true, Ordering::Relaxed);
+        assert!(
+            book.keep(&event).is_err(),
+            "cached selected events still require Store authority confirmation"
+        );
         assert_eq!(sink.selected.lock().unwrap().as_slice(), &[event]);
     }
 

@@ -193,6 +193,10 @@ impl GovState {
         {
             return Err(invalid("unselected parent cannot authorize a child"));
         }
+        let current = self
+            .recovery_event(parent.operation_id)
+            .ok_or_else(|| invalid("parent selection disappeared"))?;
+        self.keep_recovery_event(&current)?;
         let links: Links = decode(&parent.payload)?;
         for child in links.handoffs {
             if child.operation_id == parent.operation_id {
@@ -318,6 +322,7 @@ impl GovState {
         self.validate_recovery_origin(&event)?;
         self.restore_raw_recovery(&event)?;
         if event.state == RecoveryState::Intent {
+            self.keep_recovery_event(&event)?;
             if self.recovery_retention_expired(event.operation_id) != Some(false) {
                 let next = self
                     .new_recovery_event(
