@@ -9,6 +9,7 @@
 //! linked table (`crate::LINKED`).
 
 use super::*;
+use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 
 use busbar_kernel::ingress::arrival::ArrivalPayload;
 // The plane the node is handed, as the manifest's linked table names it (the `node` axis).

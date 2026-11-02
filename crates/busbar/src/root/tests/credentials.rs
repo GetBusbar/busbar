@@ -4,6 +4,7 @@
 //! The root's credential source: the read follows the App swap at once, and the kernel's
 //! `records.secret` serves it.
 
+use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{SECRET_LIVE, SECRET_NOT_LIVE};

@@ -12,6 +12,7 @@
 //! The composition root is the only crate entitled to name all five crates, which is why the proof
 //! lives here. Run with `-- --nocapture` to print the table.
 
+use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use std::collections::BTreeMap;
 
 use busbar_kernel_ledger::cost::{

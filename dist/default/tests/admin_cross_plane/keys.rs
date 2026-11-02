@@ -7,6 +7,7 @@
 
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::plane_driver::serve::ServeTables;
+use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC;
 use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use std::sync::Arc;
