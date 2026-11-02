@@ -359,6 +359,44 @@ pub struct LaneData {
     pub(crate) client_fault: u64,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl LaneData {
+    /// Inject explicit lane-state inputs for behavioral tests without exposing internal fields.
+    /// The external kit owns all fixture values and semaphore construction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_test_parts(
+        member: String,
+        route: String,
+        max: usize,
+        sem: Arc<Semaphore>,
+        limited: bool,
+        budget: i64,
+        cooldown_until: u64,
+        streak: u32,
+        dead: bool,
+        dead_reason: String,
+        ok: u64,
+        err: u64,
+        client_fault: u64,
+    ) -> Self {
+        Self {
+            member,
+            route,
+            max,
+            sem,
+            limited,
+            budget,
+            cooldown_until,
+            streak,
+            dead,
+            dead_reason,
+            ok,
+            err,
+            client_fault,
+        }
+    }
+}
+
 #[cfg(test)]
 impl LaneData {
     /// A minimal live lane (alive, unlimited budget, zero counters) with the given

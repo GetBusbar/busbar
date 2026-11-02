@@ -652,24 +652,23 @@ impl LaneSpec {
         }
     }
     fn to_lane_data(&self) -> crate::store::LaneData {
-        crate::store::LaneData {
-            member: self.model.clone(),
-            route: self.provider.clone(),
-            max: self.max,
-            sem: self
-                .sem
+        crate::store::LaneData::from_test_parts(
+            self.model.clone(),
+            self.provider.clone(),
+            self.max,
+            self.sem
                 .clone()
                 .unwrap_or_else(|| std::sync::Arc::new(tokio::sync::Semaphore::new(self.max))),
-            limited: self.limited,
-            budget: self.budget,
-            cooldown_until: self.cooldown_until,
-            streak: self.streak,
-            dead: self.dead,
-            dead_reason: self.dead_reason.clone(),
-            ok: self.ok,
-            err: self.err,
-            client_fault: self.client_fault,
-        }
+            self.limited,
+            self.budget,
+            self.cooldown_until,
+            self.streak,
+            self.dead,
+            self.dead_reason.clone(),
+            self.ok,
+            self.err,
+            self.client_fault,
+        )
     }
 }
 
@@ -1875,8 +1874,8 @@ pub mod auth_helpers;
 pub mod governance;
 pub mod hooks;
 pub mod inbound;
-pub mod migration;
 pub mod metrics;
+pub mod migration;
 pub use governance::GovStateFixtures;
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
 /// process. See [`hook_double`].
