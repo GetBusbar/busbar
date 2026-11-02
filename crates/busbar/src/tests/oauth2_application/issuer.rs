@@ -78,6 +78,13 @@ fn idp() -> &'static Idp {
                 if stream.read_exact(&mut content).is_err() { continue; }
                 let (status, body) = if request.starts_with(b"GET /jwks HTTP/1.1\r\n") {
                     ("200 OK", jwks.clone())
+                } else if request.starts_with(b"GET /pending/.well-known/openid-configuration HTTP/1.1\r\n") {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    ("200 OK",serde_json::json!({
+                        "issuer":format!("{issuer}/pending"),"jwks_uri":format!("{issuer}/jwks"),
+                        "authorization_endpoint":format!("{issuer}/authorize"),
+                        "token_endpoint":format!("{issuer}/token"),
+                    }).to_string())
                 } else if request.starts_with(b"POST /token HTTP/1.1\r\n") {
                     let form = String::from_utf8_lossy(&content);
                     let code = form.split('&').filter_map(|pair| pair.split_once('='))
@@ -137,4 +144,18 @@ pub fn exchanges_for(code: &str) -> usize {
         .get(code)
         .copied()
         .unwrap_or(0)
+}
+
+pub(super) fn pending_settings() -> serde_json::Map<String, serde_json::Value> {
+    let mut settings = settings("oauth-hosted");
+    settings.insert(
+        "issuer".into(),
+        serde_json::json!(format!(
+            "{}/pending",
+            idp().jwks_url.trim_end_matches("/jwks")
+        )),
+    );
+    settings.remove("authorization_endpoint");
+    settings.remove("token_endpoint");
+    settings
 }

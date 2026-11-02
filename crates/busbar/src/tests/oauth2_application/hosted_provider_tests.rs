@@ -19,6 +19,13 @@ fn cookie(raw: &str) -> serde_json::Value {
 }
 
 async fn hosted(methods: &[(&str, bool)]) -> (String, tokio::task::JoinHandle<()>) {
+    hosted_with_settings(methods, issuer::settings("oauth-hosted")).await
+}
+
+async fn hosted_with_settings(
+    methods: &[(&str, bool)],
+    settings: serde_json::Map<String, serde_json::Value>,
+) -> (String, tokio::task::JoinHandle<()>) {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let library =
         plugins::token_verifier_cdylib_path().expect("build the actual pinned OIDC plugin");
@@ -37,8 +44,7 @@ async fn hosted(methods: &[(&str, bool)]) -> (String, tokio::task::JoinHandle<()
         .expect("write confidential-client input");
     let mut definitions = serde_json::Map::new();
     for (name, button) in methods {
-        let mut provider =
-            serde_json::json!({"module":module,"settings":issuer::settings("oauth-hosted")});
+        let mut provider = serde_json::json!({"module":module,"settings":settings});
         if *button {
             provider["browser_login"] =
                 serde_json::json!({"client_id":"oauth-hosted","client_secret":{"file":secret}});
@@ -490,5 +496,36 @@ async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
         a, b,
         "one page for a state mismatch and a failed security check"
     );
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
+    let (base, handle) =
+        hosted_with_settings(&[("microsoft", true)], issuer::pending_settings()).await;
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            let base = base.clone();
+            tokio::spawn(async move {
+                client()
+                    .get(format!("{base}/auth/token?method=microsoft"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+            })
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::timeout(std::time::Duration::from_millis(750),tokio::spawn(async {})).await
+        .expect("the runtime stopped polling while four ANONYMOUS begins sat inside the actual OIDC plugin's discovery")
+        .expect("runtime canary completes");
+    for task in tasks {
+        assert_eq!(
+            task.await.unwrap(),
+            302,
+            "the real OIDC discovery eventually redirects"
+        );
+    }
     handle.abort();
 }

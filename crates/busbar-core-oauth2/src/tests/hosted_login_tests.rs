@@ -11,7 +11,6 @@ struct DoorLogin {
     kind: LoginKind,
     begin: LoginOutcome,
     complete: Box<dyn Fn(&LoginCallback) -> LoginOutcome + Send + Sync>,
-    park: Option<std::time::Duration>,
     faults: bool,
     seen: std::sync::Mutex<Vec<LoginCallback>>,
 }
@@ -24,7 +23,6 @@ impl DoorLogin {
             kind: LoginKind::Redirect,
             begin: LoginOutcome::Authorize("https://idp.example.com/authorize?x=1".into()),
             complete: Box::new(complete),
-            park: None,
             faults: false,
             seen: std::sync::Mutex::new(Vec::new()),
         }
@@ -38,15 +36,7 @@ impl DoorLogin {
         if self.faults {
             return Box::new(Faulted);
         }
-        let Some(park) = self.park else {
-            return Box::new(LoginSettled(Some(outcome)));
-        };
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        std::thread::spawn(move || {
-            std::thread::sleep(park);
-            let _ = tx.send(outcome);
-        });
-        Box::new(Parked(rx))
+        Box::new(LoginSettled(Some(outcome)))
     }
 }
 
@@ -68,25 +58,6 @@ impl LoginCall for Faulted {
     }
     fn faulted(&self) -> bool {
         true
-    }
-}
-
-struct Parked(tokio::sync::oneshot::Receiver<LoginOutcome>);
-
-impl std::future::Future for Parked {
-    type Output = LoginOutcome;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<LoginOutcome> {
-        std::future::Future::poll(std::pin::Pin::new(&mut self.0), cx)
-            .map(|answer| answer.unwrap_or(LoginOutcome::Reject))
-    }
-}
-
-impl LoginCall for Parked {
-    fn settled(&mut self) -> Option<LoginOutcome> {
-        self.0.try_recv().ok()
     }
 }
 
@@ -451,74 +422,6 @@ fn body_of(resp: Response) -> String {
             .unwrap()
     });
     String::from_utf8(bytes.to_vec()).unwrap()
-}
-
-fn parking_login(kind: LoginKind) -> std::sync::Arc<DoorLogin> {
-    std::sync::Arc::new(DoorLogin {
-        kind,
-        begin: LoginOutcome::Authorize("https://idp.example.com/authorize".into()),
-        park: Some(std::time::Duration::from_secs(3)),
-        ..DoorLogin::answering(|_| LoginOutcome::Reject)
-    })
-}
-
-fn two_worker_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("test runtime")
-}
-
-fn assert_runtime_still_polls(
-    rt: &tokio::runtime::Runtime,
-    budget: std::time::Duration,
-    msg: &str,
-) {
-    let canary = rt.spawn(async {});
-    let deadline = std::time::Instant::now() + budget;
-    while std::time::Instant::now() < deadline {
-        if canary.is_finished() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    panic!("{msg}");
-}
-
-#[test]
-fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
-    let rt = two_worker_runtime();
-    let app = rt.block_on(async {
-        busbar_kernel_testkit::test_support::TestApp::new()
-            .public_url("https://busbar.example.com")
-            .login_method_door(
-                "test-login-double",
-                parking_login(LoginKind::Redirect),
-                LoginKind::Redirect,
-                true,
-            )
-            .build()
-    });
-
-    let tasks: Vec<_> = (0..4)
-        .map(|_| {
-            let a = app.clone();
-            rt.spawn(async move { begin(&a, "test-login-double", false).await.status() })
-        })
-        .collect();
-
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert_runtime_still_polls(
-        &rt,
-        std::time::Duration::from_millis(750),
-        "the runtime stopped polling while four ANONYMOUS /auth/token begins sat inside the login \
-         plugin's begin_login: every Tokio worker is parked on the plugin, so nothing else in \
-         the process — other requests, the admin plane, /healthz — can run",
-    );
-    for t in tasks {
-        rt.block_on(async { t.await.ok() });
-    }
 }
 
 fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<busbar_kernel::state::App> {
