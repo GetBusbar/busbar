@@ -147,7 +147,7 @@ impl RecordSlots {
                 == Ok(1)
     }
 
-    fn before_put(&self) -> Result<(), StoreFailure> {
+    fn before_put(&self, transaction: Option<OpId>) -> Result<(), StoreFailure> {
         let probe = self
             .put_probe
             .lock()
@@ -156,7 +156,13 @@ impl RecordSlots {
         if let Some(why) = probe.and_then(|probe| probe()) {
             return Err(why);
         }
-        if self.refuses_put() {
+        let replay_observed = transaction.is_some_and(|op| {
+            self.observed_transactions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&op.0)
+        });
+        if !replay_observed && self.refuses_put() {
             return Err(StoreFailure::Refused(
                 "the test store refuses writes".into(),
             ));
@@ -244,15 +250,15 @@ impl StoreCalls for RecordSlots {
             if let Some(why) = probe.and_then(|probe| probe(request)) {
                 return Err(why);
             }
-            self.before_put()?;
+            self.before_put(Some(request.op_id))?;
             let decision = self.inner.record_transaction(request).await?;
             if decision == Decision::Applied {
-                if self
+                let first_observation = self
                     .observed_transactions
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .insert(request.op_id.0)
-                {
+                    .insert(request.op_id.0);
+                if first_observation {
                     self.puts.fetch_add(
                         request
                             .mutations
@@ -262,7 +268,7 @@ impl StoreCalls for RecordSlots {
                         Ordering::AcqRel,
                     );
                 }
-                if self.lost_acks.load(Ordering::Acquire)
+                if (first_observation && self.lost_acks.load(Ordering::Acquire))
                     || self.transaction_acks_lost.load(Ordering::Acquire)
                 {
                     return Err(StoreFailure::Failed(
@@ -298,7 +304,7 @@ impl StoreCalls for RecordSlots {
     ) -> StoreCall<'a, ()> {
         Box::pin(async move {
             self.ready().await;
-            self.before_put()?;
+            self.before_put(None)?;
             self.inner.record_put(schema, key, value).await?;
             self.puts.fetch_add(1, Ordering::AcqRel);
             if self.lost_acks.load(Ordering::Acquire) {
