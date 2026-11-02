@@ -1339,3 +1339,247 @@ fn legacy_refusal_and_cancel_do_not_guard_ordinary_service_state() {
     assert_eq!(ack_answer(wake, &input, &[], Outcome::Ready), Ok(false));
     assert_eq!(route.store.held(), 1);
 }
+
+fn ordinary_piece_answer(
+    wake: &'static InstanceWake,
+    input: &InHead,
+    unit: Option<u64>,
+    record_op: Option<u32>,
+    units: u32,
+    flags: u32,
+) -> Result<bool, ()> {
+    let mut records = [busbar_contract::abi::plane::RecordWrite {
+        kind: busbar_contract::abi::plane::AUDIT_APPLIED,
+        op: record_op.unwrap_or(busbar_contract::abi::plane::RECORD_AUDIT),
+        key: Default::default(),
+        value: Default::default(),
+    }];
+    let mut i: OnPieceIn = unsafe { std::mem::zeroed() };
+    i.head = *input;
+    i.records_buf = records.as_mut_ptr();
+    i.records_cap = records.len();
+    let mut o: OnPieceOut = unsafe { std::mem::zeroed() };
+    o.head = out_head();
+    o.reply_status = 200;
+    o.final_status = if flags & busbar_contract::abi::plane::EMIT_FINAL_STATUS != 0 {
+        13
+    } else {
+        0
+    };
+    o.records_written = u32::from(record_op.is_some());
+    o.units_written = units;
+    o.flags = flags;
+    let answer_frame = unsafe {
+        Answer::new(
+            busbar_contract::abi::plane::slot::ON_PIECE,
+            Outcome::Ready,
+            &i.head,
+            std::mem::size_of_val(&i),
+            &o.head,
+            std::mem::size_of_val(&o),
+        )
+    };
+    unsafe {
+        answer(
+            wake,
+            KindCode::Plane,
+            input.ticket,
+            unit,
+            &o.head,
+            &answer_frame,
+        )
+    }
+}
+
+fn observed_exchange(route: &Route, wake: &'static InstanceWake, input: &mut InHead, id: u64) {
+    let capability = request(wake, input, None, id).capability;
+    let observation = wire::Observation {
+        capability,
+        correlation: id,
+        kind: 0,
+        scope: b"scope".to_vec(),
+    };
+    let bytes = wire::encode_observation(&observation).unwrap();
+    let i = TickIn {
+        head: *input,
+        now_ns: 0,
+    };
+    let mut o = TickOut {
+        head: out_head(),
+        next_tick_ns: 0,
+    };
+    o.head.extensions = Blob {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    let frame = unsafe {
+        Answer::new(
+            slot::TICK,
+            Outcome::Pending,
+            &i.head,
+            std::mem::size_of_val(&i),
+            &o.head,
+            std::mem::size_of_val(&o),
+        )
+    };
+    assert_eq!(
+        unsafe { answer(wake, KindCode::Plane, input.ticket, None, &o.head, &frame) },
+        Ok(true)
+    );
+    assert!(!route
+        .store
+        .conditional_output_allowed(caller(wake), input.ticket, None));
+}
+
+fn lend_conditional_receipt(wake: &'static InstanceWake, input: &mut InHead) {
+    let loan = unsafe { prepare(wake, true, slot::TICK, input, None) }
+        .unwrap()
+        .unwrap();
+    drop(loan);
+}
+
+#[test]
+fn an_observed_receipt_restores_planning_and_accounting_without_publication_authority() {
+    use busbar_contract::abi::plane::{EMIT_DONE, EMIT_TO_FAR_END, RECORD_AUDIT, RECORD_PUT};
+    for (record, units, flags, allowed) in [
+        (None, 0, EMIT_DONE, true),
+        (Some(RECORD_AUDIT), 1, EMIT_DONE, true),
+        (None, 0, EMIT_TO_FAR_END, true),
+        (Some(RECORD_PUT), 0, EMIT_DONE, false),
+    ] {
+        let (route, wake, mut input) = rig();
+        observed_exchange(&route, wake, &mut input, 1);
+        assert_eq!(
+            ordinary_piece_answer(wake, &input, None, record, units, flags),
+            Err(()),
+            "unlent receipt"
+        );
+        lend_conditional_receipt(wake, &mut input);
+        assert!(
+            !route
+                .store
+                .conditional_output_allowed(caller(wake), input.ticket, None),
+            "observation is never Applied"
+        );
+        assert_eq!(
+            ordinary_piece_answer(wake, &input, None, record, units, flags),
+            if allowed { Ok(false) } else { Err(()) }
+        );
+    }
+}
+
+#[test]
+fn a_definitive_refusal_can_complete_a_caller_response_but_cannot_publish_effects() {
+    use busbar_contract::abi::plane::{
+        EMIT_DONE, EMIT_FINAL_STATUS, EMIT_TO_FAR_END, RECORD_AUDIT, RECORD_PUT,
+    };
+    for (record, units, flags, allowed) in [
+        (None, 0, EMIT_DONE, true),
+        (None, 0, EMIT_DONE | EMIT_FINAL_STATUS, true),
+        (Some(RECORD_AUDIT), 0, EMIT_DONE, false),
+        (Some(RECORD_PUT), 0, EMIT_DONE, false),
+        (None, 1, EMIT_DONE, false),
+        (None, 0, EMIT_TO_FAR_END, false),
+    ] {
+        let (route, wake, mut input) = rig();
+        let candidate = request(wake, &mut input, None, 1);
+        assert_eq!(
+            tick_answer(wake, &input, None, &candidate, Outcome::Pending),
+            Ok(true)
+        );
+        complete(
+            &route,
+            Err(ConditionalFailure::Refused("definite storage refusal")),
+        );
+        assert_eq!(
+            ordinary_piece_answer(wake, &input, None, record, units, flags),
+            Err(()),
+            "unlent refusal"
+        );
+        lend_conditional_receipt(wake, &mut input);
+        assert!(!route
+            .store
+            .conditional_output_allowed(caller(wake), input.ticket, None));
+        assert_eq!(
+            ordinary_piece_answer(wake, &input, None, record, units, flags),
+            if allowed { Ok(false) } else { Err(()) }
+        );
+    }
+}
+
+#[test]
+fn uncertain_or_conflicting_commits_never_gain_response_authority() {
+    for result in [
+        Err(ConditionalFailure::Indeterminate),
+        Err(ConditionalFailure::OpIdConflict),
+        Ok(Decision::ConditionConflict),
+    ] {
+        let (route, wake, mut input) = rig();
+        let candidate = request(wake, &mut input, None, 1);
+        assert_eq!(
+            tick_answer(wake, &input, None, &candidate, Outcome::Pending),
+            Ok(true)
+        );
+        assert_eq!(
+            ordinary_piece_answer(wake, &input, None, None, 0, 0),
+            Err(()),
+            "pending candidate"
+        );
+        complete(&route, result);
+        lend_conditional_receipt(wake, &mut input);
+        assert_eq!(
+            ordinary_piece_answer(wake, &input, None, None, 0, 0),
+            Err(())
+        );
+    }
+}
+
+#[test]
+fn observation_after_a_conflicted_commit_cannot_launder_its_publication_obligation() {
+    let (route, wake, mut input) = rig();
+    let first = request(wake, &mut input, None, 1);
+    assert_eq!(
+        tick_answer(wake, &input, None, &first, Outcome::Pending),
+        Ok(true)
+    );
+    complete(&route, Ok(Decision::ConditionConflict));
+    observed_exchange(&route, wake, &mut input, 2);
+    lend_conditional_receipt(wake, &mut input);
+    assert_eq!(
+        ordinary_piece_answer(wake, &input, None, None, 0, 0),
+        Err(())
+    );
+    let retry = request(wake, &mut input, None, 3);
+    assert_eq!(
+        tick_answer(wake, &input, None, &retry, Outcome::Pending),
+        Ok(true)
+    );
+    complete(&route, Ok(Decision::Applied));
+    lend_conditional_receipt(wake, &mut input);
+    assert!(route
+        .store
+        .conditional_output_allowed(caller(wake), input.ticket, None));
+    assert_eq!(
+        ordinary_piece_answer(wake, &input, None, None, 0, 0),
+        Ok(false)
+    );
+}
+
+#[test]
+fn observation_receipt_never_crosses_unit_or_cancellation() {
+    for mode in 0..2 {
+        let (route, wake, mut input) = rig();
+        observed_exchange(&route, wake, &mut input, 1);
+        lend_conditional_receipt(wake, &mut input);
+        let unit = if mode == 0 { Some(99) } else { None };
+        if mode == 1 {
+            route.store.conditional_cancel(caller(wake), input.ticket);
+        }
+        assert_eq!(
+            ordinary_piece_answer(wake, &input, unit, None, 0, 0),
+            Err(())
+        );
+    }
+}

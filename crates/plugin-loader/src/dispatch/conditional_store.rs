@@ -35,6 +35,8 @@ pub(super) struct Kept {
     lent: bool,
     cancelled: bool,
     applied: bool,
+    receipt_kind: Option<super::super::conditional::ReceiptKind>,
+    commit_owed: bool,
     advance: bool,
     finished: bool,
     settlement_lent: bool,
@@ -139,6 +141,11 @@ impl ServiceStore {
                     return Err(());
                 }
             }
+            // A later observation cannot erase an unapplied commit in this epoch.
+            let commit_owed = matches!(request, Exchange::Commit(_))
+                || h.conditionals
+                    .get(&(caller, h.epoch))
+                    .is_some_and(|k| k.commit_owed);
             h.conditionals.insert(
                 (caller, c.epoch),
                 Kept {
@@ -148,6 +155,8 @@ impl ServiceStore {
                     lent: false,
                     cancelled: false,
                     applied: false,
+                    receipt_kind: None,
+                    commit_owed,
                     advance: false,
                     finished: false,
                     settlement_lent: false,
@@ -186,7 +195,7 @@ impl ServiceStore {
         unit: Option<u64>,
         request: Exchange,
         receipt: Arc<[u8]>,
-        applied: bool,
+        receipt_kind: super::super::conditional::ReceiptKind,
         advance: bool,
     ) -> bool {
         let c = request.capability();
@@ -205,7 +214,11 @@ impl ServiceStore {
         {
             return false;
         }
-        k.applied = applied;
+        k.applied = receipt_kind == super::super::conditional::ReceiptKind::Applied;
+        k.receipt_kind = Some(receipt_kind);
+        if k.applied {
+            k.commit_owed = false;
+        }
         k.advance = advance;
         k.receipt = Some(receipt);
         true
@@ -226,10 +239,15 @@ impl ServiceStore {
             unit,
             Exchange::Commit(zeroize::Zeroizing::new(request.clone())),
             receipt,
-            matches!(
-                result.decision,
-                Ok(busbar_contract::abi::sdk::store::conditional::Decision::Applied)
-            ),
+            match &result.decision {
+                Ok(busbar_contract::abi::sdk::store::conditional::Decision::Applied) => {
+                    super::super::conditional::ReceiptKind::Applied
+                }
+                Err(
+                    busbar_contract::abi::sdk::plane::conditional::ConditionalFailure::Refused(_),
+                ) => super::super::conditional::ReceiptKind::Refused,
+                _ => super::super::conditional::ReceiptKind::Blocked,
+            },
             result.decision.is_ok(),
         )
     }
@@ -249,7 +267,13 @@ impl ServiceStore {
             unit,
             Exchange::Observe(request.clone()),
             receipt,
-            false,
+            match &result.result {
+                Ok(_) => super::super::conditional::ReceiptKind::Observed,
+                Err(
+                    busbar_contract::abi::sdk::plane::conditional::ConditionalFailure::Refused(_),
+                ) => super::super::conditional::ReceiptKind::Refused,
+                _ => super::super::conditional::ReceiptKind::Blocked,
+            },
             result.result.is_ok(),
         )
     }
@@ -274,6 +298,32 @@ impl ServiceStore {
             Some(k) => !k.cancelled && k.unit == unit && k.lent && k.applied,
         }
     }
+    pub(crate) fn conditional_reply_receipt(
+        &self,
+        caller: usize,
+        ticket: Ticket,
+        unit: Option<u64>,
+    ) -> Option<super::super::conditional::ReceiptKind> {
+        let map = self.lock(ticket);
+        let held = map.get(&ticket)?;
+        if held.conditional_units.get(&caller) != Some(&Ok(unit)) {
+            return None;
+        }
+        let kept = held.conditionals.get(&(caller, held.epoch))?;
+        if kept.cancelled || kept.unit != unit || !kept.lent {
+            return None;
+        }
+        match kept.receipt_kind? {
+            super::super::conditional::ReceiptKind::Observed if !kept.commit_owed => {
+                Some(super::super::conditional::ReceiptKind::Observed)
+            }
+            super::super::conditional::ReceiptKind::Refused => {
+                Some(super::super::conditional::ReceiptKind::Refused)
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn conditional_finished(&self, caller: usize, ticket: Ticket) {
         {
             let mut map = self.lock(ticket);

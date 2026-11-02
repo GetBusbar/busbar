@@ -13,6 +13,14 @@ use busbar_contract::abi::sdk::plane::conditional::{
 };
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReceiptKind {
+    Applied,
+    Observed,
+    Refused,
+    Blocked,
+}
+
 pub(crate) struct Input {
     input: *mut InHead,
     original: Blob,
@@ -263,6 +271,121 @@ fn isolated(a: &super::Answer) -> Result<(), ()> {
     }
 }
 
+fn nonapplied_output(answer: &super::Answer, receipt: ReceiptKind) -> Result<(), ()> {
+    use busbar_contract::abi::mechanism::check::reported;
+    use busbar_contract::abi::plane::{
+        self, OnPieceIn, OnPieceOut, PlaneDriveOut, ServeIn, ServeOut,
+    };
+    let observed = receipt == ReceiptKind::Observed;
+    match answer.slot {
+        plane::slot::ON_PIECE => {
+            let input = answer.input::<OnPieceIn>().map_err(|_| ())?;
+            let out = answer.out::<OnPieceOut>().map_err(|_| ())?;
+            if out.records_needed != 0 || out.fields_needed != 0 || out.arena_needed != 0 {
+                return Err(());
+            }
+            if observed {
+                // SAFETY: the host buffer belongs to this validated, still-leased answer;
+                // `reported` independently bounds the count before constructing the slice.
+                let records = unsafe {
+                    reported(
+                        input.records_buf.cast_const(),
+                        u64::from(out.records_written),
+                        input.records_cap as u64,
+                        "conditional.observed.records",
+                    )
+                }
+                .map_err(|_| ())?;
+                if records
+                    .iter()
+                    .any(|record| record.op != plane::RECORD_AUDIT)
+                {
+                    return Err(());
+                }
+            } else if out.records_written != 0
+                || out.units_written != 0
+                || out.units_needed != 0
+                || out.flags
+                    & !(plane::EMIT_DONE | plane::EMIT_MESSAGE_END | plane::EMIT_FINAL_STATUS)
+                    != 0
+                || out.verb.len != 0
+                || out.target.len != 0
+                || out.need != 0
+                || out.lane.len != 0
+                || out.metric_pool.len != 0
+                || out.metric_lane.len != 0
+                || out.fault != 0
+                || out.tap_fault != 0
+                || out.verdict != 0
+            {
+                return Err(());
+            }
+        }
+        plane::slot::SERVE => {
+            let input = answer.input::<ServeIn>().map_err(|_| ())?;
+            let out = answer.out::<ServeOut>().map_err(|_| ())?;
+            if out.records_needed != 0
+                || out.fields_needed != 0
+                || out.arena_needed != 0
+                || out.reply_needed != 0
+            {
+                return Err(());
+            }
+            if observed {
+                // SAFETY: as ON_PIECE: the host buffer is live and its count is checked here.
+                let records = unsafe {
+                    reported(
+                        input.records_buf.cast_const(),
+                        u64::from(out.records_written),
+                        input.records_cap as u64,
+                        "conditional.observed.records",
+                    )
+                }
+                .map_err(|_| ())?;
+                if records
+                    .iter()
+                    .any(|record| record.op != plane::RECORD_AUDIT)
+                {
+                    return Err(());
+                }
+            } else if out.records_written != 0 || out.audit != plane::AUDIT_NONE {
+                return Err(());
+            }
+        }
+        slot::DRIVE => {
+            let out = answer.out::<PlaneDriveOut>().map_err(|_| ())?;
+            if !observed && (out.sessions_written != 0 || out.sessions_needed != 0) {
+                return Err(());
+            }
+        }
+        slot::TICK => {}
+        _ => return Err(()),
+    }
+    Ok(())
+}
+
+fn output_allowed(
+    store: &super::services::ServiceStore,
+    wake: &'static InstanceWake,
+    ticket: Ticket,
+    unit: Option<u64>,
+    answer: &super::Answer,
+    extensions: &[u8],
+) -> bool {
+    store.conditional_output_allowed(caller(wake), ticket, unit)
+        || store
+            .conditional_reply_receipt(caller(wake), ticket, unit)
+            .is_some_and(|receipt| {
+                (receipt != ReceiptKind::Refused
+                    || busbar_contract::abi::mechanism::extensions::get(
+                        extensions,
+                        busbar_contract::abi::mechanism::inspection::EXT_REQUEST,
+                    )
+                    .is_none())
+                    && nonapplied_output(answer, receipt).is_ok()
+            })
+}
+
 /// # Safety
 /// The validated answer and every extension byte remain leased for this call.
 pub(crate) unsafe fn answer(
@@ -360,10 +483,9 @@ pub(crate) unsafe fn answer(
     if !wire::present(bytes) {
         if operation != slot::CANCEL
             && outcome == Outcome::Ready
-            && served.as_ref().is_some_and(|s| {
-                !s.store
-                    .conditional_output_allowed(caller(wake), ticket, unit)
-            })
+            && served
+                .as_ref()
+                .is_some_and(|s| !output_allowed(s.store, wake, ticket, unit, answer, bytes))
         {
             return Err(());
         }
