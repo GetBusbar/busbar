@@ -189,6 +189,7 @@ fn dropped_signed(
         allow_unsigned: false,
         allow_third_party: false,
         min_versions: Default::default(),
+        ..TrustPolicy::default()
     };
     let registry = crate::scan_and_validate(&dir, &policy)
         .unwrap_or_else(|e| panic!("the signed plugin scans: {e:?}"));
