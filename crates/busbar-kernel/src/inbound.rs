@@ -2108,13 +2108,19 @@ impl Inbound {
                 }
                 if let (Some(prefix), Some(token), Some(keys)) = (prefix, token, keys) {
                     if token.starts_with(prefix) && !connection_denied {
-                        let key = (!deadline.is_some_and(|d| std::time::Instant::now() >= d))
-                            .then(|| {
-                                table.listener.app.governance.as_ref().and_then(|gov| {
-                                    gov.peek_ticket(prefix, token, crate::store::now())
-                                })
-                            })
-                            .flatten();
+                        let key = match table.listener.app.governance.as_ref() {
+                            Some(gov)
+                                if !deadline.is_some_and(|d| std::time::Instant::now() >= d) =>
+                            {
+                                until_deadline(
+                                    deadline,
+                                    gov.peek_ticket_async(prefix, token, crate::store::now()),
+                                )
+                                .await
+                                .flatten()
+                            }
+                            _ => None,
+                        };
                         let flow = if key.is_some() {
                             FLOW_CONTINUE
                         } else {

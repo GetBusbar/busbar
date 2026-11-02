@@ -299,6 +299,38 @@ const AUTH_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(
 static AUTH_ADMISSION_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(AUTH_ADMISSION_MAX_INFLIGHT));
 
+struct TicketStoreTask<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for TicketStoreTask<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+pub(crate) async fn ticket_store<T: Send + 'static>(
+    run: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    ticket_store_on(&AUTH_ADMISSION_PERMITS, run).await
+}
+
+async fn ticket_store_on<T: Send + 'static>(
+    permits: &'static tokio::sync::Semaphore,
+    run: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return run();
+    }
+    let Ok(Ok(permit)) = tokio::time::timeout(AUTH_ADMISSION_WAIT, permits.acquire()).await else {
+        auth_saturated();
+        return None;
+    };
+    let mut task = TicketStoreTask(tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        run()
+    }));
+    (&mut task.0).await.ok().flatten()
+}
+
 const ADMIN_ADMISSION_MAX_INFLIGHT: usize = 16;
 
 const ADMIN_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -2074,10 +2106,13 @@ pub(crate) async fn auth_middleware(
         (true, Some(prefix), Some(token))
             if app.auth.keys_in_chain && token.starts_with(prefix) =>
         {
-            let admitted = app
-                .governance
-                .as_deref()
-                .and_then(|gov| gov.admit_ticket(prefix, token, busbar_kernel::store::now()));
+            let admitted = match app.governance.as_ref() {
+                Some(gov) => {
+                    gov.admit_ticket_async(prefix, token, busbar_kernel::store::now())
+                        .await
+                }
+                None => None,
+            };
             match admitted {
                 Some((key, record)) => {
                     consumed.ticket = Some(record);
@@ -2444,3 +2479,7 @@ fn fallback_test_metadata_fills_absence_and_keeps_existing_values() {
     );
     assert_eq!(middleware.issued_credential(), Some(expected));
 }
+
+#[cfg(test)]
+#[path = "tests/ticket_store_tests.rs"]
+mod ticket_store_tests;

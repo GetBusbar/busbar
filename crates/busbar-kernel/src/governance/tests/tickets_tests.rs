@@ -151,7 +151,7 @@ fn a_tickets_lifetime_is_held_under_the_ceiling_and_its_keys_expiry() {
     assert_eq!(exp, NOW + 300);
 }
 
-struct RuleCarryingOnly(Arc<MemoryStore>);
+struct RuleCarryingOnly(Arc<MemoryStore>, Option<Arc<offload_tests::PausedStore>>);
 
 mod rule_carrying_only {
     use super::RuleCarryingOnly;
@@ -240,6 +240,9 @@ mod rule_carrying_only {
             self.0.upsert_plane_record(record)
         }
         fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+            if let Some(pause) = &self.1 {
+                pause.wait("get");
+            }
             self.0.get_plane_record(kind, id)
         }
         fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
@@ -282,6 +285,9 @@ mod rule_carrying_only {
             expires_at: u64,
             now: u64,
         ) -> RecordStoreResult<bool> {
+            if let Some(pause) = &self.1 {
+                pause.wait("live");
+            }
             self.0.plane_token_live(kind, token, expires_at, now)
         }
     }
@@ -301,7 +307,7 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
     memory.pin_token_clock(NOW);
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let g = GovState::new_with_signer(
-        Arc::new(RuleCarryingOnly(Arc::clone(&memory))),
+        Arc::new(RuleCarryingOnly(Arc::clone(&memory), None)),
         None,
         Some(signer),
     )
@@ -400,3 +406,6 @@ fn ticket_preflight_and_first_admission_include_the_store_deadline_second() {
         "ordinary bearer expiry is unchanged"
     );
 }
+
+#[path = "ticket_offload_tests.rs"]
+mod offload_tests;
