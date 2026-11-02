@@ -316,6 +316,24 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
+fn write_begin_piece(
+    st: &mut St,
+    sink: &FramerSink,
+    lane: Option<&DatagramLane>,
+    out: &mut FramerOut,
+) -> bool {
+    let Some((stream, bytes, flags)) = st.begin.pop_front() else {
+        return false;
+    };
+    st.pieces.push((stream, bytes));
+    st.piece_flags = flags;
+    write_answer(st, sink, lane, out);
+    if !st.begin.is_empty() {
+        out.yielded.flags = busbar_contract::abi::transport::YIELD_MORE;
+    }
+    true
+}
+
 impl Scripted {
     /// Dialling: a check to every path this call told, and a bind request for the first while
     fn check_told(&self, st: &mut St, lane: &DatagramLane) {
@@ -364,16 +382,11 @@ impl FramerDoor for Scripted {
             Call::Begin(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
                 o.framing = 7;
-                let scripted = st.begin.pop_front();
-                if let Some((stream, bytes, flags)) = scripted {
-                    st.pieces.push((stream, bytes));
-                    st.piece_flags = flags;
-                } else if self.knobs.dial {
-                    st.pieces.push((0, b"offer".to_vec()));
-                }
-                write_answer(&mut st, &i.sink, lane, o);
-                if !st.begin.is_empty() {
-                    o.yielded.flags = busbar_contract::abi::transport::YIELD_MORE;
+                if !write_begin_piece(&mut st, &i.sink, lane, o) {
+                    if self.knobs.dial {
+                        st.pieces.push((0, b"offer".to_vec()));
+                    }
+                    write_answer(&mut st, &i.sink, lane, o);
                 }
             }
             Call::Ingest(i, o) => {
@@ -430,10 +443,12 @@ impl FramerDoor for Scripted {
             }
             Call::Timer(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
-                if let Some(l) = lane {
-                    self.check_told(&mut st, l);
+                if !write_begin_piece(&mut st, &i.sink, lane, o) {
+                    if let Some(l) = lane {
+                        self.check_told(&mut st, l);
+                    }
+                    write_answer(&mut st, &i.sink, lane, o);
                 }
-                write_answer(&mut st, &i.sink, lane, o);
             }
             Call::Finish(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
