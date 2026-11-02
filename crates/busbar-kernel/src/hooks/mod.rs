@@ -1536,71 +1536,39 @@ async fn gate_transport_offloaded(
     .await
 }
 
-/// THE READINESS SIGNAL for a hook's control-plane transport: block until the loader has PUBLISHED a
-/// resolution for this exact hook, then leave it published for the caller under test to consume.
-///
-/// This exists because a test that asserts on a `configure` ack must not also be asserting that a
-/// `dlopen` finished inside 5 s on whatever machine CI gave it. The honest way to stop that second,
-/// unintended assertion is NOT a bigger number — [`applied_deadline`] records what happened when
-/// that was tried — it is to wait on something observable. [`resolution::published`] is that
-/// something: it is true exactly when the load this test needs has actually completed.
-///
-/// It is a BOUNDED loop with a REAL predicate, and it never widens a deadline. Each attempt runs at
-/// the production 5 s; an attempt that overruns it does not restart the load, because the claim in
-/// [`resolution::admit`] is held across the load and the overrunning thread publishes when it lands
-/// — so the next attempt either finds the value published or waits on the one already in flight.
-/// The attempt count is a HANG DETECTOR, not a budget: if the loader genuinely never publishes,
-/// failing with a message that says so beats a test that never returns.
-///
-/// `false` means the hook resolved to nothing (an unloadable plugin) or is not eligible for
-/// publication at all — a hook carrying a `SecretRef` is resolved fresh every time by design, so
-/// there is no readiness to wait on and the caller should just proceed.
+/// Read publication and in-flight state for this exact hook's real control-plane resolution.
+/// `None` means its settings are ineligible for cached publication (for example a secret loan).
 #[cfg(any(test, feature = "test-support"))]
+pub fn transport_publication_for_test(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    env: &HookEnv,
+) -> Option<(bool, bool)> {
+    let key = resolution::key(name, hook, env)?;
+    Some((resolution::published(key), resolution::in_flight(key)))
+}
+
+/// Exercise one normal offloaded resolution, with its unchanged production deadline.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn resolve_transport_for_test(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    env: &HookEnv,
+    settings_version: u64,
+) -> bool {
+    gate_transport_offloaded(name, hook, env, settings_version)
+        .await
+        .is_some()
+}
+
+// Unit tests keep their local path; all waiting policy lives in the shared external kit source.
+#[cfg(test)]
 pub async fn await_transport_published(
     name: &str,
     hook: &crate::config::HookCfg,
     env: &HookEnv,
 ) -> bool {
-    /// Enough attempts that only a genuine hang exhausts them (each attempt is bounded by the
-    /// production resolve deadline).
-    const ATTEMPTS: usize = 24;
-    /// How many FAILED loads (not timeouts — failures) are re-tried before `false` is believed.
-    /// A failed load is deliberately NOT published (see [`resolution::Claim::publish`]) precisely
-    /// so the next caller retries it, and in production the next control-plane touch is that
-    /// caller. Under parallel-suite load the first load can fail TRANSIENTLY — staging I/O or
-    /// `dlopen` against an fd-starved, cache-thrashed host — and this helper used to convert that
-    /// single transient failure into a permanent-looking `false`, flaking every "the loader must
-    /// publish" assertion. Three failures in a row with the host given a beat to recover is an
-    /// unloadable plugin; one is weather.
-    const HARD_FAILURES: usize = 3;
-    let Some(key) = resolution::key(name, hook, env) else {
-        return false;
-    };
-    let mut failed = 0usize;
-    for _ in 0..ATTEMPTS {
-        if resolution::published(key) {
-            return true;
-        }
-        if gate_transport_offloaded(name, hook, env, 0).await.is_some() {
-            // Resolved inside the deadline; `gate_transport_named` published it on the way through.
-            return resolution::published(key);
-        }
-        // `None` is two different things and only one of them is worth waiting for: a load still
-        // running (the caller's deadline elapsed, the claim is still held) versus a load that
-        // FAILED (the claim was dropped unpublished). The failed arm retries a bounded number of
-        // times — see HARD_FAILURES above — before it is believed.
-        if !resolution::in_flight(key) {
-            failed += 1;
-            if failed >= HARD_FAILURES {
-                return false;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-    panic!(
-        "the loader never published a transport for hook '{name}' after {ATTEMPTS} resolve \
-         attempts; that is a HANG in plugin resolution, not a slow machine"
-    );
+    crate::test_support::hooks::await_transport_published(name, hook, env).await
 }
 
 /// Fetch a hook's self-reported STATUS (observed settings + metrics) over its transport — the
