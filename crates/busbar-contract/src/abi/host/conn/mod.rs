@@ -503,7 +503,7 @@ fn range(s: &str) -> DeclStr {
     }
 }
 
-extern "C" fn host_open(
+unsafe extern "C" fn host_open(
     ctx: ConnCtx,
     need: u32,
     desc: *const WireOpenDesc,
@@ -560,7 +560,7 @@ extern "C" fn host_open(
     })
 }
 
-extern "C" fn host_write(
+unsafe extern "C" fn host_write(
     ctx: ConnCtx,
     conn: u64,
     buf: *const u8,
@@ -587,7 +587,7 @@ extern "C" fn host_write(
     })
 }
 
-extern "C" fn host_read(
+unsafe extern "C" fn host_read(
     ctx: ConnCtx,
     conn: u64,
     ticket: u64,
@@ -667,7 +667,7 @@ extern "C" fn host_read(
     })
 }
 
-extern "C" fn host_wait(
+unsafe extern "C" fn host_wait(
     ctx: ConnCtx,
     set_ptr: *const u64,
     set_len: usize,
@@ -689,7 +689,7 @@ extern "C" fn host_wait(
     })
 }
 
-extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts) -> RawConnOutcome {
+unsafe extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts) -> RawConnOutcome {
     hosted(ctx, |host| {
         // The out-slot is required: checked before the backend is asked or anything is held.
         if out_facts.is_null() {
@@ -721,7 +721,7 @@ extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts)
     })
 }
 
-extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
+unsafe extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
     hosted(ctx, |host| {
         // The backend closes with no host lock held (it may re-enter any slot). A close that
         // succeeded, or that answers `Closed` (explicitly closed already, or never open), ends
@@ -821,7 +821,9 @@ impl HostConns {
             },
         };
         let mut conn = 0_u64;
-        f(self.ctx, need.0, &wire, &mut conn).result()?;
+        // SAFETY: new() proves the table/context live; wire borrows desc and fields for this
+        // synchronous call, and conn is our exclusive initialized output.
+        unsafe { f(self.ctx, need.0, &wire, &mut conn) }.result()?;
         Ok(ConnId(conn))
     }
 
@@ -839,14 +841,18 @@ impl HostConns {
     ) -> Result<usize, ConnError> {
         let f = self.slots.write.ok_or(ConnError::Fault)?;
         let mut n = 0_usize;
-        f(
-            self.ctx,
-            conn.0,
-            bytes.as_ptr(),
-            bytes.len(),
-            u8::from(end) | if text { WRITE_TEXT } else { 0 },
-            &mut n,
-        )
+        // SAFETY: new() proves the table/context live; bytes stays borrowed and n is an
+        // exclusive initialized output for the synchronous call.
+        unsafe {
+            f(
+                self.ctx,
+                conn.0,
+                bytes.as_ptr(),
+                bytes.len(),
+                u8::from(end) | if text { WRITE_TEXT } else { 0 },
+                &mut n,
+            )
+        }
         .result()?;
         Ok(n)
     }
@@ -859,14 +865,18 @@ impl HostConns {
     pub fn read(&self, conn: ConnId, ticket: Ticket, buf: &mut [u8]) -> Result<Piece, ConnError> {
         let f = self.slots.read.ok_or(ConnError::Fault)?;
         let mut p = core::mem::MaybeUninit::<WirePiece>::zeroed();
-        f(
-            self.ctx,
-            conn.0,
-            ticket,
-            buf.as_mut_ptr(),
-            buf.len(),
-            p.as_mut_ptr(),
-        )
+        // SAFETY: new() proves the table/context live; buf is exclusively borrowed at its
+        // full stated capacity, and p is an initialized exclusive WirePiece output.
+        unsafe {
+            f(
+                self.ctx,
+                conn.0,
+                ticket,
+                buf.as_mut_ptr(),
+                buf.len(),
+                p.as_mut_ptr(),
+            )
+        }
         .result()?;
         // SAFETY: an `Ok` answer wrote the piece; every field is valid zeroed besides.
         let p = unsafe { p.assume_init() };
@@ -909,7 +919,9 @@ impl HostConns {
         let f = self.slots.wait.ok_or(ConnError::Fault)?;
         let ids: Vec<u64> = set.iter().map(|c| c.0).collect();
         let mut ready = 0_usize;
-        f(self.ctx, ids.as_ptr(), ids.len(), ticket, &mut ready).result()?;
+        // SAFETY: new() proves the table/context live; ids is immutable for the call and ready
+        // is our exclusive initialized output.
+        unsafe { f(self.ctx, ids.as_ptr(), ids.len(), ticket, &mut ready) }.result()?;
         Ok(ready)
     }
 
@@ -921,7 +933,8 @@ impl HostConns {
     pub fn facts(&self, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let f = self.slots.facts.ok_or(ConnError::Fault)?;
         let mut w = core::mem::MaybeUninit::<WireConnFacts>::zeroed();
-        f(self.ctx, conn.0, w.as_mut_ptr()).result()?;
+        // SAFETY: new() proves the table/context live; w is an initialized, exclusive output.
+        unsafe { f(self.ctx, conn.0, w.as_mut_ptr()) }.result()?;
         // SAFETY: an `Ok` answer wrote the facts; every range borrows the host until close, and is
         // copied out now.
         unsafe {
@@ -954,7 +967,8 @@ impl HostConns {
     /// As [`Conns::close`].
     pub fn close(&self, conn: ConnId) -> Result<(), ConnError> {
         let f = self.slots.close.ok_or(ConnError::Fault)?;
-        f(self.ctx, conn.0).result()
+        // SAFETY: new() proves this copied table and its host context live for every call.
+        unsafe { f(self.ctx, conn.0) }.result()
     }
 }
 

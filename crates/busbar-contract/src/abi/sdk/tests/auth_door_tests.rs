@@ -229,8 +229,12 @@ fn out_head(size: usize) -> OutHead {
 }
 
 fn cross<I, O>(op: Option<Op>, instance: *mut std::ffi::c_void, i: &I, o: &mut O) -> Outcome {
-    op.expect("every slot is filled")(instance, ptr::from_ref(i).cast(), ptr::from_mut(o).cast())
-        .outcome()
+    // SAFETY: callers in this fixture hold the selected auth slot's initialized frames and
+    // nested ranges, and pass NULL for OPEN or the instance that its SDK OPEN returned.
+    unsafe {
+        op.expect("every slot is filled")(instance, ptr::from_ref(i).cast(), ptr::from_mut(o).cast())
+    }
+    .outcome()
 }
 
 fn open(settings: &[u8]) -> (Outcome, OpenOut) {

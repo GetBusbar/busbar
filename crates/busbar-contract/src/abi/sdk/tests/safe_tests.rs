@@ -262,11 +262,15 @@ fn out_head<T>() -> OutHead {
 }
 
 fn call<I, O>(op: Option<Op>, instance: *mut c_void, input: &I, out: &mut O) -> Outcome {
-    op.expect("every slot is filled")(
-        instance,
-        ptr::from_ref(input).cast(),
-        ptr::from_mut(out).cast(),
-    )
+    // SAFETY: this private fixture selects the matching SDK slot and keeps its initialized
+    // frames/nested ranges alive; instance is NULL for OPEN or its still-live SDK result.
+    unsafe {
+        op.expect("every slot is filled")(
+            instance,
+            ptr::from_ref(input).cast(),
+            ptr::from_mut(out).cast(),
+        )
+    }
     .outcome()
 }
 

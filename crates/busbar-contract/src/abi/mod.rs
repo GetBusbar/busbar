@@ -32,7 +32,8 @@
 /// Outcome`). The coverage witness (`tests/conn_slot_coverage.rs`) reads the list and holds it to
 /// the trait.
 ///
-/// Every slot is `extern "C"` (THE DESIGN, the signed kind-ABI design's finding M3: unwinding across
+/// Every slot is `unsafe extern "C"`: its raw ranges need a caller's ownership proof. The C ABI
+/// (THE DESIGN, the signed kind-ABI design's finding M3: unwinding across
 /// a foreign cdylib is undefined behaviour, so a slot catches its own panic and answers its fault
 /// byte, and a panic that escapes it aborts).
 macro_rules! slot_table {
@@ -48,7 +49,15 @@ macro_rules! slot_table {
     ) => {
         $(
             $(#[$sdoc])*
-            pub type $alias = extern "C" fn($($arg: $ty),*) -> $ret;
+            ///
+            /// # Safety
+            /// The context is this table's live host-minted context. Numeric handles are checked
+            /// by the host as the slot specifies; they do not authorize pointer dereferences. Input
+            /// pointers name initialized, live, immutable ranges of their stated lengths;
+            /// output pointers name live, exclusive writable ranges of their stated capacities.
+            /// Nested ranges and returned borrows obey this slot's documented lifetime. The
+            /// caller keeps these owners alive and upholds the method's concurrency contract.
+            pub type $alias = unsafe extern "C" fn($($arg: $ty),*) -> $ret;
         )*
         slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
     };

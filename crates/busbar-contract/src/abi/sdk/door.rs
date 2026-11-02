@@ -395,21 +395,20 @@ unsafe impl<S: RawSlot> Entry for S {
     }
 }
 
-/// THE OLD RAW SLOT, whose body is a SAFE fn over the host's raw pointers: safe code that names
-/// the type can call it with pointers it made up, so a body that reads them is unsound. Kept only
-/// so a plugin built against it still compiles until it moves: write [`RawSlot`] (the same
-/// body, `unsafe fn call`) or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot).
-#[deprecated(
-    note = "unsound: safe code can call the body with made-up pointers; implement `RawSlot` \
-            (`unsafe fn call`, same body) or `SafeSlot`"
-)]
+/// The deprecated raw slot spelling. Its body requires the same explicit caller proof as
+/// [`RawSlot::call`]; a safe function over arbitrary raw instance/input pointers cannot promise
+/// this contract. Implement [`RawSlot`] or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot).
+#[deprecated(note = "implement `RawSlot` (`unsafe fn call`, same body) or `SafeSlot`")]
 pub trait Slot {
     /// The slot's `in`.
     type In: AbiIn;
     /// The slot's `out`.
     type Out: AbiOut;
     /// The body, as [`RawSlot::call`]'s.
-    fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
+    ///
+    /// # Safety
+    /// The caller must uphold [`RawSlot::call`]'s complete instance and nested input contract.
+    unsafe fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
 }
 
 #[allow(deprecated)]
@@ -417,14 +416,19 @@ impl<S: Slot> RawSlot for S {
     type In = S::In;
     type Out = S::Out;
     unsafe fn call(instance: *mut c_void, input: &S::In, out: &mut S::Out) -> Outcome {
-        S::call(instance, input, out)
+        // SAFETY: the caller provides RawSlot::call's identical ownership contract.
+        unsafe { S::call(instance, input, out) }
     }
 }
 
 /// THE TRAMPOLINE every table entry is: `S`'s body behind the SDK's checks (the module doc), under
 /// the call capture `H` keeps. `INDEX` is the slot's index in its kind's table; an `in.op` naming
 /// another slot is a fault.
-extern "C" fn trampoline<S: Entry, H: CaptureHome, const INDEX: u32>(
+///
+/// # Safety
+/// The caller upholds [`Op`]'s contract for this entry's `S::In` and `S::Out`. NULL pointers and
+/// short advertised heads are accepted only to return FAULT before reading their missing bytes.
+unsafe extern "C" fn trampoline<S: Entry, H: CaptureHome, const INDEX: u32>(
     instance: *mut c_void,
     input: *const c_void,
     out: *mut c_void,

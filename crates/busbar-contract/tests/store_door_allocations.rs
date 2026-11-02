@@ -487,11 +487,15 @@ fn bytes_buf(buf: &mut [u8]) -> HostBuf {
 
 fn call<I, O>(op: Option<Op>, instance: *mut c_void, input: &I, out: &mut O) -> Outcome {
     let op = op.expect("the macro fills every slot");
-    op(
-        instance,
-        ptr::from_ref(input).cast(),
-        ptr::from_mut(out).cast(),
-    )
+    // SAFETY: this private fixture selects the matching store slot, owns its initialized
+    // frames/nested buffers, and passes NULL for OPEN or its still-live SDK instance.
+    unsafe {
+        op(
+            instance,
+            ptr::from_ref(input).cast(),
+            ptr::from_mut(out).cast(),
+        )
+    }
     .outcome()
 }
 
