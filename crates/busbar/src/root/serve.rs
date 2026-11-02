@@ -5177,6 +5177,7 @@ fn closed_before_body(
 
 fn closed_whole(h: Head, block: HeaderMap) -> Response {
     let mut response = stated(h, Body::empty());
+    response.headers_mut().remove(axum::http::header::TRAILER);
     response.headers_mut().extend(block);
     response
 }
