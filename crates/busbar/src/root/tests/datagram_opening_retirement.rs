@@ -4,7 +4,7 @@
 #![cfg(feature = "transport-webrtc")]
 
 use std::future::Future;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Instant;
@@ -26,6 +26,7 @@ type Callback = Arc<dyn Fn() + Send + Sync>;
 // the WebRTC door unchanged; the host-side callback checks its lock boundary.
 pub(crate) struct OpeningFramer {
     inner: Arc<dyn FramerDoor>,
+    fault: AtomicU8,
     pub(crate) finishes: AtomicUsize,
     pub(crate) on_finish: Mutex<Option<Callback>>,
 }
@@ -41,6 +42,7 @@ impl OpeningFramer {
                 crate::root::doors::Dispatched::open(plugin, &TransportSettings::default())
                     .expect("real WebRTC door opens"),
             ),
+            fault: AtomicU8::new(0),
             finishes: AtomicUsize::new(0),
             on_finish: Mutex::new(None),
         })
@@ -59,7 +61,26 @@ impl FramerDoor for OpeningFramer {
                 callback();
             }
         }
-        self.inner.cross(call)
+        if let Call::Ingest(input, out) = call {
+            let crossed = self.inner.cross(Call::Ingest(input, out));
+            // Bounded malformed ABI replies for irreducible host cleanup negatives.
+            // The product owns the actual resource in every case.
+            match self.fault.swap(0, Ordering::SeqCst) {
+                1 => out.yielded.pieces_len = 0,
+                2 => {
+                    return Crossed {
+                        outcome: busbar_contract::abi::mechanism::call::Outcome::Refused,
+                        error: None,
+                    }
+                }
+                3 => panic!("host cleanup probe after actual WebRTC preparation"),
+                4 => out.datagram.terms.local_user = out.datagram.terms.remote_user,
+                _ => {}
+            }
+            crossed
+        } else {
+            self.inner.cross(call)
+        }
     }
 }
 
@@ -220,6 +241,26 @@ async fn cancelling_before_or_after_first_poll_retires_the_accepted_opening() {
 }
 
 #[tokio::test]
+async fn missing_description_refusal_and_unwinding_retire_the_actual_product_once() {
+    for fault in [1, 2, 3] {
+        let door = door();
+        let framer = OpeningFramer::new();
+        framer.fault.store(fault, Ordering::SeqCst);
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open(&door, &framer)));
+        if fault == 3 {
+            assert!(result.is_err());
+        } else {
+            assert!(result.unwrap().is_err());
+        }
+        assert_eq!(framer.finishes.load(Ordering::SeqCst), 1);
+        assert!(lock(&door.legs).is_empty());
+        assert!(door.assocs.is_empty());
+        door.close();
+    }
+}
+
+#[tokio::test]
 async fn malformed_real_sdp_retires_the_actual_framing_once() {
     for description in [b"not SDP".as_slice(), b"v=0\r\n", b"\xff"] {
         let door = door();
@@ -286,18 +327,45 @@ async fn a_duplicate_book_key_retires_only_the_second_joined_opening() {
 }
 
 #[tokio::test]
-async fn a_closed_door_refuses_a_join_and_retires_its_opening() {
+async fn a_duplicate_local_user_refuses_only_the_second_real_opening() {
     let door = door();
     let connector = Connector::new();
-    let framer = OpeningFramer::new();
-    let opened = open(&door, &framer).unwrap();
-    let observed = Observed::new(&opened);
-    let joining = only_joining(opened);
+    let first_framer = OpeningFramer::new();
+    let first = open(&door, &first_framer).unwrap();
+    let first_observed = Observed::new(&first);
+    let first_user = std::str::from_utf8(&first.description.bytes)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("a=ice-ufrag:"))
+        .unwrap()
+        .to_owned();
+    only_joining(first).admit_into(1, &connector).unwrap();
+
+    // Deliberately collide one host-visible credential span. The second actual
+    // product still supplies all framing, SDP, terms and resource custody.
+    let second_framer = OpeningFramer::new();
+    second_framer.fault.store(4, Ordering::SeqCst);
+    let offered = String::from_utf8(offer()).unwrap();
+    let offered = offered
+        .split_inclusive("\r\n")
+        .map(|line| {
+            if line.starts_with("a=ice-ufrag:") {
+                format!("a=ice-ufrag:{first_user}\r\n")
+            } else {
+                line.into()
+            }
+        })
+        .collect::<String>();
+    let second = Opened::open(&door, second_framer.clone(), offered.as_bytes()).unwrap();
+    let second_observed = Observed::new(&second);
+    let refusal = only_joining(second).admit_into(2, &connector).unwrap_err();
+    assert!(refusal.starts_with("the claim door refused"), "{refusal}");
+    second_observed.retired(&second_framer);
+    assert!(!first_observed.pairing.upgrade().unwrap().closed());
+    assert_eq!(first_framer.finishes.load(Ordering::SeqCst), 0);
+    connector.unpair(1);
+    first_observed.retired(&first_framer);
     door.close();
-    assert!(joining.admit_into(2, &connector).is_err());
-    observed.retired(&framer);
-    assert!(lock(&door.legs).is_empty());
-    assert!(door.assocs.is_empty());
 }
 
 struct ReentrantWake(Callback);
