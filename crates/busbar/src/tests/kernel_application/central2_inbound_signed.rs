@@ -244,7 +244,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         fields,
         ..Head::default()
     };
-    let call = |head: Head, body: Option<Vec<u8>>, point, unit, stream| {
+    let call_result = |head: Head, body: Option<Vec<u8>>, point, unit, stream| {
         let inbound = Arc::clone(&inbound);
         async move {
             let (send, receive) = tokio::sync::oneshot::channel();
@@ -271,8 +271,11 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
                     .await
                     .expect("actual reader Store completion arrives"),
             }
-            .expect("actual signed auth call answers")
         }
+    };
+    let call = |head, body, point, unit, stream| {
+        let result = call_result(head, body, point, unit, stream);
+        async move { result.await.expect("actual signed auth call answers") }
     };
     let waiting = call(head.clone(), None, POINT_HEAD, UnitRef::NONE, 1).await;
     assert_eq!(waiting.flow, FLOW_CONTINUE);
@@ -390,6 +393,210 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         FLOW_CONTINUE,
         "the actual reader's Pass result falls through to the valid bearer"
     );
+    // A pending signed unit belongs to its exact original request, before any
+    // real reader verdict exists. A substitution must not consume that unit.
+    for (index, mutation) in [
+        "method",
+        "path",
+        "authority",
+        "field",
+        "query",
+        "credential",
+        "added",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let stream = 10 + index as u64;
+        let first = call(head.clone(), None, POINT_HEAD, UnitRef::NONE, stream).await;
+        assert_eq!(first.flow, FLOW_CONTINUE);
+        let mut changed = head.clone();
+        match mutation {
+            "method" => changed.method = "PUT".into(),
+            "path" => changed.target = "/other/messages".into(),
+            "authority" => changed.authority = "other.example".into(),
+            "field" => {
+                changed
+                    .fields
+                    .iter_mut()
+                    .find(|(name, _)| name == "host")
+                    .unwrap()
+                    .1 = b"other.example".to_vec()
+            }
+            "query" => changed.query = Some("scope=changed".into()),
+            "credential" => {
+                changed
+                    .fields
+                    .iter_mut()
+                    .find(|(name, _)| name == "authorization")
+                    .unwrap()
+                    .1 = b"changed signature".to_vec()
+            }
+            "added" => changed.fields.push(("x-added".into(), b"changed".to_vec())),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            call_result(
+                changed,
+                Some(body.clone()),
+                POINT_HEAD_BODY,
+                first.unit,
+                stream
+            )
+            .await,
+            Err(busbar_kernel::inbound::UNIT_FOREIGN),
+            "{mutation}"
+        );
+        assert!(
+            inbound.admitted(first.unit.id).is_none(),
+            "{mutation} must not admit before a genuine body verdict"
+        );
+        let premature = inbound
+            .hand_in(HandIn {
+                owner: 71,
+                generation: 3,
+                auth: handle,
+                unit: first.unit,
+                line: 0,
+                conn: 1,
+                stream,
+                framing: Some(1),
+                head: head.clone(),
+            })
+            .expect("pending hand-in answers without consuming the original unit");
+        assert_eq!(
+            premature.0, FLOW_STOP,
+            "{mutation}: a pending reader cannot be handed in"
+        );
+        let recovered = call(
+            head.clone(),
+            Some(body.clone()),
+            POINT_HEAD_BODY,
+            first.unit,
+            stream,
+        )
+        .await;
+        assert_eq!(
+            recovered.flow, FLOW_CONTINUE,
+            "{mutation}: original request remains recoverable"
+        );
+        let mut stripped = head.clone();
+        stripped
+            .fields
+            .retain(|(name, _)| !recovered.strips.contains(&Strip::field(name)));
+        assert_eq!(
+            inbound
+                .hand_in(HandIn {
+                    owner: 71,
+                    generation: 3,
+                    auth: handle,
+                    unit: first.unit,
+                    line: 0,
+                    conn: 1,
+                    stream,
+                    framing: Some(1),
+                    head: stripped,
+                })
+                .unwrap()
+                .0,
+            FLOW_CONTINUE,
+            "{mutation}"
+        );
+        inbound.exit(first.unit.id);
+    }
+    // SigV4 declares a credential FIELD strip, not query-key stripping. Test
+    // only its real declaration; no synthetic query-strip capability is added.
+    for (index, form) in ["original", "field", "case"].into_iter().enumerate() {
+        let stream = 30 + index as u64;
+        let first = call(head.clone(), None, POINT_HEAD, UnitRef::NONE, stream).await;
+        let verified = call(
+            head.clone(),
+            Some(body.clone()),
+            POINT_HEAD_BODY,
+            first.unit,
+            stream,
+        )
+        .await;
+        assert_eq!(verified.flow, FLOW_CONTINUE);
+        assert!(verified.strips.contains(&Strip::field("authorization")));
+        let mut continuation = head.clone();
+        match form {
+            "original" => {}
+            "field" => continuation
+                .fields
+                .retain(|(name, _)| !name.eq_ignore_ascii_case("authorization")),
+            "case" => {
+                for (name, _) in &mut continuation.fields {
+                    *name = name.to_ascii_uppercase();
+                }
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            call(
+                continuation,
+                Some(body.clone()),
+                POINT_HEAD_BODY,
+                first.unit,
+                stream
+            )
+            .await
+            .flow,
+            FLOW_CONTINUE,
+            "{form}: original bytes or genuinely declared field removal is accepted"
+        );
+        let mut changed_query = head.clone();
+        changed_query.query = Some("scope=unannounced".into());
+        assert_eq!(
+            call_result(
+                changed_query,
+                Some(body.clone()),
+                POINT_HEAD_BODY,
+                first.unit,
+                stream
+            )
+            .await,
+            Err(busbar_kernel::inbound::UNIT_FOREIGN),
+            "query stripping was never declared by this reader"
+        );
+        let mut stripped = head.clone();
+        stripped
+            .fields
+            .retain(|(name, _)| !verified.strips.contains(&Strip::field(name)));
+        assert_eq!(
+            inbound
+                .hand_in(HandIn {
+                    owner: 71,
+                    generation: 3,
+                    auth: handle,
+                    unit: first.unit,
+                    line: 0,
+                    conn: 1,
+                    stream,
+                    framing: Some(1),
+                    head: stripped,
+                })
+                .unwrap()
+                .0,
+            FLOW_CONTINUE
+        );
+        inbound.exit(first.unit.id);
+    }
+    let cancelled = call(head.clone(), None, POINT_HEAD, UnitRef::NONE, 40).await;
+    inbound.exit(cancelled.unit.id);
+    assert_eq!(
+        call_result(
+            head.clone(),
+            Some(body.clone()),
+            POINT_HEAD_BODY,
+            cancelled.unit,
+            40
+        )
+        .await,
+        Err(busbar_kernel::inbound::UNIT_FOREIGN),
+        "cancellation never revives the old unit"
+    );
+    assert!(inbound.admitted(cancelled.unit.id).is_none());
     gov.revoke(&key.id, "actual signed-reader revocation")
         .expect("actual Store revokes credential");
     let revoked = call(head.clone(), Some(body), POINT_HEAD_BODY, UnitRef::NONE, 4).await;
