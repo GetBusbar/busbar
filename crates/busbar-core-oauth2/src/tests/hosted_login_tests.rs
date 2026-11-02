@@ -154,8 +154,8 @@ fn alice() -> LoginOutcome {
 
 /// An app whose hosted-login methods are redirect plugins on the door, one per `(name, has_button)`.
 fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<busbar_kernel::state::App> {
-    let mut b =
-        busbar_kernel::test_support::TestApp::new().public_url("https://busbar.example.com");
+    let mut b = busbar_kernel_testkit::test_support::TestApp::new()
+        .public_url("https://busbar.example.com");
     for (name, has_button) in methods {
         b = b.login_method_door(
             name,
@@ -379,7 +379,7 @@ async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
         "https://idp.example.com/authorize?x=\u{0}",      // NUL
         "https://idp.example.com/authorize?x=\u{7f}",     // DEL
     ] {
-        let app = busbar_kernel::test_support::TestApp::new()
+        let app = busbar_kernel_testkit::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method_door(
                 "microsoft",
@@ -411,7 +411,7 @@ async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
 #[tokio::test]
 async fn callback_state_mismatch_400() {
     let door = DoorLogin::new(alice());
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door("microsoft", door.clone(), LoginKind::Redirect, true)
         .build();
@@ -465,7 +465,7 @@ async fn callback_nonce_mismatch_rejected() {
             LoginOutcome::SecurityCheckFailed
         }
     }));
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door("microsoft", door.clone(), LoginKind::Redirect, true)
         .build();
@@ -697,7 +697,9 @@ fn cred_login() -> std::sync::Arc<DoorLogin> {
 fn cred_gov() -> std::sync::Arc<busbar_kernel::governance::GovState> {
     std::sync::Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(
-            std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            std::sync::Arc::new(
+                busbar_kernel_testkit::test_support::store_double::MemoryStore::new(),
+            ),
             None,
             Some(
                 busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -737,7 +739,7 @@ fn cred_app() -> std::sync::Arc<busbar_kernel::state::App> {
             .expect("team group parses");
     let mut groups = std::collections::BTreeMap::new();
     groups.insert("team".to_string(), team);
-    busbar_kernel::test_support::TestApp::new()
+    busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .governance(cred_gov())
         .role_bindings(cred_bindings())
@@ -862,7 +864,7 @@ async fn credential_submit_wrong_password_401() {
 #[tokio::test]
 async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answered_it() {
     let door = cred_login();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door(
             "test-login-double",
@@ -1092,7 +1094,7 @@ async fn auth_token_bypasses_middleware_exact_match() {
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
     let auth = std::sync::Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(&cfg));
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .auth(auth)
         .public_url("https://busbar.example.com")
         .build();
@@ -1147,7 +1149,7 @@ async fn auth_token_bypasses_middleware_exact_match() {
 #[tokio::test]
 async fn auth_token_absent_from_admin_router() {
     busbar_kernel::snapshot::init();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![]) // open admin posture so a hit would reach a handler, not 401
         .public_url("https://busbar.example.com")
         .build();
@@ -1197,7 +1199,7 @@ async fn auth_token_absent_from_admin_router() {
 #[tokio::test]
 async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
     busbar_kernel::snapshot::init();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .keys_chain() // a CLOSED data-plane posture: no credential ⇒ 401
         .public_url("https://busbar.example.com")
         .build();
@@ -1254,7 +1256,7 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
     cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
     let auth = std::sync::Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(&cfg));
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .auth(auth)
         .public_url("https://busbar.example.com")
         .build();
@@ -1409,7 +1411,7 @@ fn assert_runtime_still_polls(
 fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     let rt = two_worker_runtime();
     let app = rt.block_on(async {
-        busbar_kernel::test_support::TestApp::new()
+        busbar_kernel_testkit::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method_door(
                 "test-login-double",
@@ -1448,7 +1450,7 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
 fn concurrent_credential_submit_does_not_starve_the_runtime() {
     let rt = two_worker_runtime();
     let (app, handle) = rt.block_on(async {
-        let app = busbar_kernel::test_support::TestApp::new()
+        let app = busbar_kernel_testkit::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method_door(
                 "test-login-double",
@@ -1505,7 +1507,7 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
 /// no-store), byte for byte the page a `state` mismatch renders, and clears the login cookie.
 #[tokio::test]
 async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door(
             "fails",
@@ -1568,7 +1570,7 @@ async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
 // cookie's state and nonce, and renders the plugin's answer as 1.5.5 rendered the same outcome.
 
 fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<busbar_kernel::state::App> {
-    busbar_kernel::test_support::TestApp::new()
+    busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door("idp", door, LoginKind::Redirect, true)
         .build()
@@ -1745,7 +1747,7 @@ async fn an_outage_sends_the_idps_retry_after_clamped() {
             kind: LoginKind::Credential,
             ..DoorLogin::answering(move |_| outcome.clone())
         });
-        let app = busbar_kernel::test_support::TestApp::new()
+        let app = busbar_kernel_testkit::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method_door("idp", door, LoginKind::Credential, true)
             .build();
@@ -1785,7 +1787,7 @@ fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_
                 ..DoorLogin::answering(|_| LoginOutcome::Reject)
             })
         };
-        let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+        let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         let statuses = tracing::subscriber::with_default(subscriber, || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -1793,7 +1795,7 @@ fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_
                 .build()
                 .expect("runtime");
             rt.block_on(async {
-                let app = busbar_kernel::test_support::TestApp::new()
+                let app = busbar_kernel_testkit::test_support::TestApp::new()
                     .public_url("https://busbar.example.com")
                     .login_method_door("idp", door(LoginKind::Redirect), LoginKind::Redirect, true)
                     .login_method_door(
@@ -1875,7 +1877,7 @@ fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_
 async fn the_client_secret_rides_nothing_the_flow_makes() {
     const SECRET: &str = "REAL-SECRET-XYZ";
     let door = DoorLogin::new(alice());
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door("idp", door.clone(), LoginKind::Redirect, true)
         .build();
@@ -1943,7 +1945,7 @@ fn golden_cell(name: &str) -> serde_json::Value {
 async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
     busbar_kernel::snapshot::init();
     let golden = golden_cell("http.crosscut__auth-token__GET-none.json");
-    let app = busbar_kernel::test_support::TestApp::new().build();
+    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
     let got = client

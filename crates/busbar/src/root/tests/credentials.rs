@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::services::{CredentialRead, HostServices, Ran, Stored};
-use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::host_services::{KernelServices, NOT_READABLE, NO_CREDENTIAL_SOURCE};
-use busbar_kernel::test_support::TestApp;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
+use busbar_kernel_testkit::test_support::TestApp;
 
 use super::AppCredentials;
 

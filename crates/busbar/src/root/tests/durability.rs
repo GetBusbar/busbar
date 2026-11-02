@@ -79,7 +79,7 @@ impl Drop for ScratchDir {
 }
 
 fn token() -> Grant<DurableWrite> {
-    busbar_kernel::test_support::tokens::grant::<DurableWrite>()
+    busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>()
 }
 
 /// A journal over `cfg` as node `node`, with no card holder to rebuild.
@@ -172,7 +172,7 @@ fn audit_inputs(unit: u64) -> AuditInputs {
         },
         wall: 1_700_000_000 + unit,
         mono: unit * 1_000,
-        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
+        origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
         outcome: OutcomeFacts {
             unit_end: Outcome::Completed,
             step: None,
@@ -199,7 +199,7 @@ fn audit_inputs(unit: u64) -> AuditInputs {
 
 /// A pass the audit step was lent, as the loop hands it back with the unit's facts.
 fn audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
-    busbar_kernel::test_support::tokens::pass()
+    busbar_kernel_testkit::test_support::tokens::pass()
 }
 
 /// A UNIT'S RECORD GOES ON THE JOURNAL WHOLE (`audit.v4`): the record read back off the chain is the
@@ -989,7 +989,7 @@ fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
     );
     assert_eq!(lane.pending(), 1, "the record is still the lane's");
 
-    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let chain =
         tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
             durability.chain()
@@ -1118,7 +1118,7 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
     let (lane, own, keys) = durability
         .stored_walk_inputs()
         .expect("a book over the store");
-    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let walk =
         tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
             walk_stored_chains(&lane, own, &keys)
@@ -1133,7 +1133,7 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
     // A part with no first part, past anything the node holds: torn, and said so.
     let stray = newest + 10;
     slots.put_row(JOURNAL_SCHEMA, &part_key(own, stray, 1), &[0, 2, 9]);
-    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let _ =
         tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
             walk_stored_chains(&lane, own, &keys)
@@ -1679,7 +1679,7 @@ fn a_malformed_registry_row_cannot_make_stored_verification_report_complete() {
         .findings
         .iter()
         .all(|why| !why.contains("private-invalid-id")));
-    let captured = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let captured = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let migrated = tracing::subscriber::with_default(
         tracing_subscriber::registry().with(captured.clone()),
         || store_identity::stored_chains(slots.calls().as_ref(), own),

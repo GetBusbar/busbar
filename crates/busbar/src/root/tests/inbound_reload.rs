@@ -15,7 +15,7 @@ use busbar_contract::auth_calls::{
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::{Established, FramerDoor, Framing};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
-use busbar_kernel::test_support::TestApp;
+use busbar_kernel_testkit::test_support::TestApp;
 use busbar_test_kit::root_door_fixtures::scoped_mux;
 
 use crate::root::doors::{bind_on, Dispatched};

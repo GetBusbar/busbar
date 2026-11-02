@@ -54,7 +54,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
             ..RateEntryCfg::default()
         },
     )]);
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .cost(busbar_kernel::cost::CostModel::resolve_parts(
             Some(&card),
             0,
@@ -109,7 +109,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             ..RateEntryCfg::default()
         };
         let card = BTreeMap::from([(super::plane_lane("p", "a"), entry)]);
-        busbar_kernel::test_support::TestApp::new()
+        busbar_kernel_testkit::test_support::TestApp::new()
             .cost(busbar_kernel::cost::CostModel::resolve_parts(
                 Some(&card),
                 0,
@@ -161,7 +161,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
                 .all(|t| t.price_per_unit.is_none()));
         }
     }
-    let no_card = steps(busbar_kernel::test_support::TestApp::new().build());
+    let no_card = steps(busbar_kernel_testkit::test_support::TestApp::new().build());
     let bag = no_card.route_cost(&super::plane_lane("p", "a"));
     assert!(decode(&bag)
         .unwrap()
@@ -712,7 +712,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
             &facts,
             &pools,
             std::sync::Arc::new(|_: &str| None),
-            busbar_kernel::test_support::TestApp::new().build(),
+            busbar_kernel_testkit::test_support::TestApp::new().build(),
             None,
             super::DoorCaller {
                 principal: PrincipalId::new("vk_one"),
@@ -768,7 +768,7 @@ fn downgrade_book(
     std::sync::Arc<busbar_kernel::state::App>,
     std::sync::Arc<busbar_contract::records::VirtualKey>,
 ) {
-    use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, CORE_ENGINE_KIT};
+    use busbar_kernel_testkit::test_support::engine_kit::{EngineTestKit as _, CORE_ENGINE_KIT};
     let gov = CORE_ENGINE_KIT
         .governance(CORE_ENGINE_KIT.scratch_store(), None, None)
         .expect("governance");
@@ -793,7 +793,7 @@ fn downgrade_book(
             1_700_000_000,
         )
         .expect("a key");
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance_kit(gov)
         .keys_chain()
         .cost_kit(cost)
@@ -2283,8 +2283,9 @@ pub(crate) mod tool_door {
     use busbar_contract::conn::{DeclaredConns, PollConns};
     use busbar_kernel::cost::CostModel;
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_kernel::governance::{GovState, NewKeySpec};
     use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use crate::root::loader::dispatch::kinds::plane::Plane;
@@ -2611,7 +2612,7 @@ pub(crate) mod tool_door {
         pub(crate) book: crate::root::durability::NodeBook,
         pub(crate) plane_key: String,
         /// The record store the kernel's services persist the plane's records in.
-        pub(crate) store: Arc<busbar_kernel::governance::MemoryStore>,
+        pub(crate) store: Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>,
         /// The token endpoint the auth plugins' own needs reach: each RFC 8693 exchange is answered
         /// `tok-<its scope, as the form carried it>`, and every request is recorded.
         pub(crate) tokens: Arc<super::TokenEndpoint>,
@@ -2655,8 +2656,8 @@ pub(crate) mod tool_door {
             tools: Option<serde_yaml::Value>,
             footing: Footing<'_>,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Self {
             Self::try_with(
                 instance,
@@ -2680,8 +2681,8 @@ pub(crate) mod tool_door {
             tools: Option<serde_yaml::Value>,
             footing: Footing<'_>,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Result<Self, String> {
             // THE CONNECTOR, over every linked transport door (the default distribution links the
             // http framer's door), its dials judged by a destination guard that admits loopback. The
@@ -2898,7 +2899,7 @@ pub(crate) mod tool_door {
             let plane_key = composed.facts.plane.clone();
             served.post = Some(Arc::clone(&post));
             let app = configure(
-                busbar_kernel::test_support::TestApp::new()
+                busbar_kernel_testkit::test_support::TestApp::new()
                     .keys_chain()
                     .governance(Arc::clone(&gov))
                     .serve_tables(tables.clone())
@@ -2970,8 +2971,8 @@ pub(crate) mod tool_door {
         port: u16,
         allowed_pools: Option<Vec<String>>,
         configure: &dyn Fn(
-            busbar_kernel::test_support::TestApp,
-        ) -> busbar_kernel::test_support::TestApp,
+            busbar_kernel_testkit::test_support::TestApp,
+        ) -> busbar_kernel_testkit::test_support::TestApp,
     ) -> Rig {
         Rig::with(
             instance,
@@ -3000,8 +3001,8 @@ pub(crate) mod tool_door {
         port: u16,
         tools: serde_yaml::Value,
         configure: &dyn Fn(
-            busbar_kernel::test_support::TestApp,
-        ) -> busbar_kernel::test_support::TestApp,
+            busbar_kernel_testkit::test_support::TestApp,
+        ) -> busbar_kernel_testkit::test_support::TestApp,
     ) -> Rig {
         Rig::with(
             instance,
@@ -3045,9 +3046,9 @@ pub(crate) mod tool_door {
         dest: Arc<dyn busbar_kernel::host_services::DestJudge>,
     ) -> (
         Arc<crate::root::serve::LateServices>,
-        Arc<busbar_kernel::governance::MemoryStore>,
+        Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>,
     ) {
-        let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+        let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
         let (origin, ahead) = (std::time::Instant::now(), Arc::clone(clock));
         let wall_ahead = Arc::clone(wall);
         let kernel = busbar_kernel::host_services::KernelServices::new()
@@ -3398,7 +3399,7 @@ pub(crate) mod tool_door {
 
     /// The rig's in-memory store's own typed record rows, for the records services: what a door
     /// writes through them (a chained kind's sealed records included) is read back off the store.
-    struct StoreRows(Arc<busbar_kernel::governance::MemoryStore>);
+    struct StoreRows(Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>);
 
     impl busbar_kernel::host_records::RecordRows for StoreRows {
         fn claim(
@@ -4761,7 +4762,7 @@ pub(crate) mod door_boundary {
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
-    use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use busbar_kernel_testkit::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
     use super::tool_door::{
         rig_tools, rig_with, section, tool_server, tool_server_listing, ADMIN_TOKEN, PUBLIC_URL,
@@ -4785,7 +4786,7 @@ pub(crate) mod door_boundary {
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
     pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::test_support::planes::register_test_plane(row);
+        busbar_kernel_testkit::test_support::planes::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
@@ -5023,7 +5024,7 @@ pub(crate) mod door_boundary {
                 app.lane(
                     LaneSpec::new(
                         "test-model",
-                        busbar_kernel::test_support::protocols::PROTO_ANTHROPIC,
+                        busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC,
                         &base_url,
                     )
                     .api_key("busbar-upstream-key"),
@@ -5316,7 +5317,9 @@ pub(crate) mod door_boundary {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        busbar_kernel_testkit::test_support::install_root_auth_axis(
+            crate::root::dispatch::auth_axis,
+        );
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let rig = rig_tools(instance, port, tools, &|app| {
             dispatched(app.admin_chain(chain.clone()), row, &slot)
@@ -5446,7 +5449,9 @@ pub(crate) mod door_boundary {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        busbar_kernel_testkit::test_support::install_root_auth_axis(
+            crate::root::dispatch::auth_axis,
+        );
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let row = row();
         registry(row);
@@ -5553,7 +5558,9 @@ pub(crate) mod door_boundary {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        busbar_kernel_testkit::test_support::install_root_auth_axis(
+            crate::root::dispatch::auth_axis,
+        );
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let row = row();
         registry(row);
@@ -5659,7 +5666,7 @@ pub(crate) mod door_boundary {
 /// fresh one on the same journal.
 #[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod spent_ledger {
-    use busbar_kernel::test_support::durable_store::{durable_cfg, open_durable};
+    use busbar_kernel_testkit::test_support::durable_store::{durable_cfg, open_durable};
 
     use super::tool_door::{protocol_version, rig_on, send_as, tool_server, Footing, Ledger, Rig};
     use crate::root::serve::planes_tests::PUBLISHING;
@@ -6854,9 +6861,9 @@ pub(crate) mod hook_parity {
     /// The env whose `test-hook` is the kernel's in-process hook double (`prompt: rw`, `user: ro`;
     /// no test plugin, OWNER 2026-10-03): its `settings:` choose its answer.
     pub(crate) fn hook_env() -> busbar_kernel::hooks::HookEnv {
-        busbar_kernel::test_support::test_hook_env(
+        busbar_kernel_testkit::test_support::test_hook_env(
             &["test-hook"],
-            busbar_kernel::test_support::HookNeeds {
+            busbar_kernel_testkit::test_support::HookNeeds {
                 prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
                 user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
@@ -8761,7 +8768,7 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
     let serving = ModelServing {
         pools: ModelPools::default(),
         lanes: Default::default(),
-        app: LiveApp::fixed(busbar_kernel::test_support::TestApp::new().build()),
+        app: LiveApp::fixed(busbar_kernel_testkit::test_support::TestApp::new().build()),
     };
     let build = || {
         let caller = busbar_contract::conn::InstanceId(7);
@@ -8915,7 +8922,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
     use busbar_contract::records::{ScopeRef, VirtualKey};
     use busbar_kernel::plane_driver::DriverSteps;
     use busbar_kernel::teller::UnitCtx;
-    use busbar_kernel::test_support::tokens;
+    use busbar_kernel_testkit::test_support::tokens;
     let facts = super::door_facts("p", &["seat"], &[], &[], "a", Vec::new());
     let p = pools("a: {}\nb: {}\npools:\n  both:\n    members: [a, b]\n    member_granted: true");
     let ctx = UnitCtx {
@@ -8933,7 +8940,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
             &facts,
             &p,
             std::sync::Arc::new(|_: &str| None),
-            busbar_kernel::test_support::TestApp::new().build(),
+            busbar_kernel_testkit::test_support::TestApp::new().build(),
             None,
             super::DoorCaller {
                 principal: principal.clone(),
@@ -9213,8 +9220,8 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
     use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
-    use busbar_kernel::test_support::planes::TestRegistryIsolation;
-    use busbar_kernel::test_support::NEUTRAL_FALLBACK;
+    use busbar_kernel_testkit::test_support::planes::TestRegistryIsolation;
+    use busbar_kernel_testkit::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {
             key: "requires-the-consumed-section",
@@ -9258,7 +9265,7 @@ fn a_required_section_written_empty_hands_the_plane_its_sections() {
 fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     use busbar_kernel::governance::SECS_PER_DAY;
-    use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, CORE_ENGINE_KIT};
+    use busbar_kernel_testkit::test_support::engine_kit::{EngineTestKit as _, CORE_ENGINE_KIT};
     // The original's `budget_per_day(FEE_CENTS)` at its `FEE_CENTS = 1` flat fee.
     let gov = CORE_ENGINE_KIT
         .governance(CORE_ENGINE_KIT.scratch_store(), None, None)
@@ -9292,7 +9299,7 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
             1_700_000_000,
         )
         .expect("a key");
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance_kit(gov)
         .keys_chain()
         .cost_kit(cost)
@@ -9364,7 +9371,7 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         yaml.push_str(&format!("  p{i}:\n    members: [m]\n"));
     }
     let p = pools(&yaml);
-    let app = busbar_kernel::test_support::TestApp::new().build();
+    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let view = super::DoorPoolView {
         pools: &p,
         key: None,

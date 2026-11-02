@@ -46,7 +46,7 @@ test-support = ["rcgen/pem"]
 [dev-dependencies]
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
-busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
 rcgen = { workspace = true, features = ["pem"] }
 busbar-stub-transport-plugin = { path = "../plugin-loader/stubs/transport/plugin" }
 busbar-test-kit = { path = "../busbar-test-kit" }

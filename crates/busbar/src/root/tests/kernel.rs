@@ -616,10 +616,10 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
             std::thread::park_timeout(std::time::Duration::from_millis(5));
         }
     }
-    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     busbar_kernel::snapshot::init();
-    busbar_kernel::test_support::rate_holders::install_rate_apply(&CardRepricer);
-    busbar_kernel::test_support::rate_holders::install_rate_epoch(&CardRepricer);
+    busbar_kernel_testkit::test_support::rate_holders::install_rate_apply(&CardRepricer);
+    busbar_kernel_testkit::test_support::rate_holders::install_rate_epoch(&CardRepricer);
     let slots = crate::root::store_double::RecordSlots::new();
     let boot = busbar_kernel::config::card::CardFields {
         per_request_fee: BOOT_FEE,
@@ -629,7 +629,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     ROOT_CARD.card_applied(&boot, "actual boot");
     ROOT_CARD.boot_in_store(None).unwrap();
     let build = |fee, prior: Option<&busbar_kernel::state::App>| {
-        let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
+        let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env(UNUSED_PROVIDER_KEY),
         );
         cfg.per_request_fee = fee;
@@ -1063,7 +1063,9 @@ fn a_restart_after_store_chunks_prices_every_posting_at_the_card_in_force_when_i
         .unwrap()
         .journal
         .append(
-            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+            &busbar_kernel_testkit::test_support::tokens::grant::<
+                busbar_contract::caps::DurableWrite,
+            >(),
             busbar_contract::caps::StepName::Meter,
             &[busbar_kernel_wal::Entry::new(
                 busbar_kernel_wal::RecordClass::Load,
@@ -1312,7 +1314,7 @@ fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirm
     failing.store(true, std::sync::atomic::Ordering::SeqCst);
     // The disk goes: the write in flight poisons the segment (retained, owed), and from here no
     // fresh segment opens; the log keeps every batch it is handed.
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     assert!(book
         .lock()
         .expect("the book")
@@ -1556,7 +1558,7 @@ fn a_back_dated_correction_survives_a_restart() {
         // (sealing the corrected card), then the append.
         let journal = crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&book),
-            busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+            busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
         );
         holder
             .amend(
@@ -1641,7 +1643,7 @@ fn seal_correction(
     use busbar_contract::caps::DurableWrite;
     let journal = crate::root::units_admin::AmendmentJournal::new(
         Arc::clone(book),
-        busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+        busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
     );
     let seq = holder
         .amend(
@@ -1938,7 +1940,7 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
         let book = boot_book_on_store(holder, &slots);
         let journal = crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&book),
-            busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+            busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
         );
         holder
             .amend(

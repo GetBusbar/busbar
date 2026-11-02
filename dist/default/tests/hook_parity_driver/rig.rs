@@ -377,7 +377,7 @@ impl CallerFacts for Callers {
         Vec::new()
     }
     fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
-        busbar_kernel::test_support::record_hook_read(
+        busbar_kernel_testkit::test_support::record_hook_read(
             &self.journal,
             hook,
             principal,

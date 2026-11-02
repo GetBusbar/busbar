@@ -19,7 +19,7 @@
 //! * [`policy`] — the DCR registration ceiling and the impersonation refusal.
 //! * [`signer`] — the plane's own ES256 key (distinct from `busbar_kernel::governance::signing`'s
 //!   token signer; this plane never touches busbar's own resource-server signing material).
-//! * [`testkit`] — the `TestAppOauthExt` extension trait, the plane's `busbar_kernel::test_support`
+//! * [`testkit`] — the `TestAppOauthExt` extension trait, the plane's `busbar_kernel_testkit::test_support`
 //!   fixture builder, kept here so the kernel names no plane type in its own fixtures.
 //!
 //! * [`config`] — the `oauth_as:` block (`OauthAsCfg`/`AsIdentity`), its boot refusals and its

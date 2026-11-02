@@ -61,7 +61,7 @@ impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
 /// MOVED to `crate::limits` (same lock, same rules) so that the `InstallGuard` tests living
 /// beside the static they mutate are serialized against these too — a lock only this file held
 /// protected these tests from each other but not from those, or those from these.
-use busbar_kernel::config::limits::LIMITS_TEST_LOCK;
+use busbar_kernel_testkit::limits::LIMITS_TEST_LOCK;
 
 /// THE ACCEPT-ERROR POLICY, asserted directly. Both listener loops route every `accept()` error
 /// through `AcceptBackoff`, so this covers the class rather than one loop.
@@ -1193,7 +1193,7 @@ async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
         tls_handshake_timeout_secs: 2,
         ..busbar_kernel::config::LimitsResolved::default()
     };
-    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(&limits);
+    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(&limits);
 
     let (cert_pem, key_pem) = gen_self_signed();
     let tls = busbar_kernel::config::sections::TlsCfg {
@@ -1242,7 +1242,7 @@ async fn a_stalled_tls_handshake_is_dropped_at_the_limit() {
 /// in the second and absent from the first.
 #[test]
 fn a_refused_handshake_logs_at_debug_only() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tracing_subscriber::layer::SubscriberExt as _;
 

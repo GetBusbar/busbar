@@ -6,7 +6,7 @@
 //! one dispatcher), the rows a shipped build resolves every `{ env: VAR }` / `{ file: PATH }`
 //! reference through. Moved here from the kernel's `config/tests/linked_secret_hardening_tests.rs`
 //! and `config/tests/secret_tests.rs` (ARCHITECT R-FIX3, 2026-09-26): the kernel's tests now
-//! resolve against its in-crate secret double (`busbar_kernel::test_support::secrets`), which
+//! resolve against its in-crate secret double (`busbar_kernel_testkit::test_support::secrets`), which
 //! reproduces the sources' refusal text for the refusals it makes and nothing more, so every
 //! assertion on a source's own decision (fail-closed on empty / blank / missing, the mis-encoding
 //! diagnosis, the regular-file and size-cap guards) and on its 1.5.5 refusal words also lives here,

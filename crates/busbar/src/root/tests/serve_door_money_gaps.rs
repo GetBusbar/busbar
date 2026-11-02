@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-use busbar_kernel::test_support::{MockResponse, MockServer, MockServerState};
+use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
 use super::super::hook_seat_tests::{
     far_end_answering, far_end_scripted, rig, word, DoorRig, RigOpts, Script, ANSWER,

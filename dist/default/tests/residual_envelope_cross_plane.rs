@@ -16,7 +16,7 @@
 
 mod linked;
 
-use busbar_kernel::test_support::{oversized_413_body, TestApp};
+use busbar_kernel_testkit::test_support::{oversized_413_body, TestApp};
 
 /// A PLANE CLAIMS A PATH ONLY WHEN THE OPERATOR MOUNTED IT. With none of a plane's sections in the
 /// configuration there is no such plane, so the path its key spells is an ordinary unclaimed path on

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE LINKED RANKING DOOR, PROVEN WHERE IT IS LINKED (R-FIX3). The kernel's test build no longer
-//! takes the ranking plugin: it links its in-crate double (`busbar_kernel::test_support::
+//! takes the ranking plugin: it links its in-crate double (`busbar_kernel_testkit::test_support::
 //! ranking_double`), and its own hook tests run against that. These are the twins of the kernel's
 //! ranking tests, run against the REAL door through the axis the shipped binary installs
 //! (`crate::root::hooks::axis` over `crate::LINKED.hook_doors`), never through the kernel's
@@ -23,7 +23,7 @@ use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, Routing
 use busbar_kernel::config::{
     is_strategy_name, DEFAULT_POLICY_TIMEOUT_MS, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
 };
-use busbar_kernel::test_support::ranking_double;
+use busbar_kernel_testkit::test_support::ranking_double;
 
 use crate::root::loader::hook_door::HookRows;
 use crate::root::loader::PluginRegistry;

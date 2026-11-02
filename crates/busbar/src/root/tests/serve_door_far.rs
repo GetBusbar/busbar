@@ -28,13 +28,13 @@ use busbar_kernel::plane_driver::{
     DriverSteps, Egress, FarEnd, MemberRoute, OutboundRequest, Pick, DEFAULT_ERROR_BODY_MAX,
 };
 use busbar_kernel::teller::UnitCtx;
-use busbar_kernel::test_support::tokens::{grant, pass};
 use busbar_kernel_egress::ports::{
     Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched, Disposition,
     DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry, Unavailable,
     UpstreamStatus,
 };
 use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool, WeightedFloor};
+use busbar_kernel_testkit::test_support::tokens::{grant, pass};
 
 use super::DoorFar;
 use crate::root::door_steps::{door_facts, egress_pool, DoorCaller, DoorPools, DoorSteps};
@@ -280,7 +280,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         &facts,
         &pools,
         Arc::new(|_: &str| None),
-        busbar_kernel::test_support::TestApp::new().build(),
+        busbar_kernel_testkit::test_support::TestApp::new().build(),
         None,
         DoorCaller {
             principal: PrincipalId::new("vk_one"),

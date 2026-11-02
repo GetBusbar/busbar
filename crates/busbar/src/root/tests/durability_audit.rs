@@ -62,7 +62,7 @@ pub(crate) fn inputs(unit: u64) -> AuditInputs {
         },
         wall: 1_700_000_000 + unit * 3_600,
         mono: unit,
-        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
+        origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
         outcome: OutcomeFacts {
             unit_end: Outcome::Completed,
             step: None,
@@ -88,12 +88,12 @@ pub(super) fn seal(
     book: &mut Durability,
     units: std::ops::RangeInclusive<u64>,
 ) -> Vec<AuditRecord> {
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     units
         .map(|unit| {
             book.seal_unit(
                 inputs(unit),
-                busbar_kernel::test_support::tokens::pass(),
+                busbar_kernel_testkit::test_support::tokens::pass(),
                 &token,
             )
             .expect("the record goes on the journal")
@@ -119,15 +119,15 @@ fn an_undecodable_audit_record_refuses_the_chain_window_without_reclassifying_th
     });
     book.seal_unit(
         next,
-        busbar_kernel::test_support::tokens::pass(),
-        &busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+        busbar_kernel_testkit::test_support::tokens::pass(),
+        &busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
     )
     .expect("the complete record is journalled");
     assert!(
         book.chain().expect("read chain").is_ok(),
         "the journal still verifies"
     );
-    let captured = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let captured = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let window = tracing::subscriber::with_default(
         tracing_subscriber::registry().with(captured.clone()),
         || book.chain_at().audit_window(1, 2),

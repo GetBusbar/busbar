@@ -14,7 +14,8 @@ use std::sync::Arc;
 use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 use busbar_kernel::auth::{AdminAuthChain, Operator};
 use busbar_kernel::config::{self, AuthCfg, AuthChainEntry, RoleBindingCfg, SecretRef};
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 /// The operator's token in every fixture here.
 const TOKEN: &str = "admintok";
@@ -27,12 +28,12 @@ fn link() {
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+    busbar_kernel_testkit::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
     for decls in crate::LINKED.protocols {
-        busbar_kernel::test_support::protocols::register_test_protocols(decls);
+        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel_testkit::test_support::register_neutral_test_plane();
 }
 
 /// The operator credential's provider key, read AFTER the root's words are handed in. Before the
@@ -50,7 +51,7 @@ fn app(chain: &[&str], extra: Vec<(&str, Box<dyn AuthModule>)>) -> Arc<busbar_ke
     link();
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some(TOKEN.to_string())).expect("governance"));
-    let mut app = busbar_kernel::test_support::TestApp::new()
+    let mut app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(gov)
         .admin_chain(chain.iter().map(|s| s.to_string()).collect());
     for (name, module) in extra {
@@ -340,7 +341,7 @@ fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
 #[test]
 fn a_role_shadowing_the_operator_principal_is_refused() {
     link();
-    let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(SecretRef::none());
+    let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(SecretRef::none());
     let mut auth = AuthCfg::default_none();
     auth.chain = vec![AuthChainEntry::bare(config::KEYS_MODULE)];
     let mut roles = HashMap::new();
@@ -367,7 +368,8 @@ fn a_role_shadowing_the_operator_principal_is_refused() {
 fn the_operator_token_ref_is_checked_by_shape_only() {
     link();
     let build = |token: SecretRef| -> Result<(), Vec<String>> {
-        let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(SecretRef::none());
+        let mut cfg =
+            busbar_kernel_testkit::test_support::cfg_with_provider_api_key(SecretRef::none());
         let mut auth = AuthCfg::default_none();
         let mut entry = AuthChainEntry::bare(config::operator_provider());
         entry.token = Some(token);
@@ -407,7 +409,7 @@ fn cfg_with_credentials(
 ) -> busbar_kernel::config::RootCfg {
     // `api_key: none` — this fixture's provider is never contacted, so it declares no credential
     // rather than naming a variable it knows is unset (which now refuses boot).
-    let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
+    let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
         busbar_kernel::config::SecretRef::none(),
     );
     let mut admin_entry =
@@ -1052,7 +1054,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let auth = Arc::new(AuthMiddleware::new_builtin(&AuthCfg::with_chain(vec![
         AuthChainEntry::bare(module),
     ])));
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .auth(Arc::clone(&auth))
         .role_bindings(role_bindings)
         .build();
@@ -1164,7 +1166,7 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
         )
         .expect("mint");
     let token = token.expose(&busbar_kernel::seal::lend()).clone();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .keys_chain()
         .governance(gov)
         .build();

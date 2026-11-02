@@ -12,7 +12,7 @@ use busbar_kernel_egress::ports::Disposition;
 /// production adapter above never mints one of its own — it forwards the borrow its caller
 /// lent it).
 fn route_token() -> Pass<Route> {
-    busbar_kernel::test_support::tokens::pass()
+    busbar_kernel_testkit::test_support::tokens::pass()
 }
 
 /// A transport's transient fault reading (its own fault table read the far end's answer as the

@@ -1686,9 +1686,9 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
 use busbar_contract::services::{Caller as Instance, HostServices, Ran, RecordsList, Stored};
-use busbar_kernel::governance::MemoryStore;
 use busbar_kernel::host_records::RecordRows;
 use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 /// The memory store's typed records.
 struct Rows(Arc<MemoryStore>);

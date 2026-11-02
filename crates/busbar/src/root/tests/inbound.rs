@@ -48,7 +48,7 @@ fn line(path: &str, methods: u32) -> Line {
 /// The kernel side over this build's protocols, the data listener holding `NATIVE` (POST only).
 fn side() -> (Arc<Inbound>, GuestList) {
     for decls in crate::LINKED.protocols {
-        busbar_kernel::test_support::protocols::register_test_protocols(decls);
+        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
     let guests = GuestList::seal(vec![line(NATIVE, METHOD_POST)]).expect("the list seals");
     let next = Arc::new(AtomicU64::new(1));
@@ -68,7 +68,7 @@ fn side() -> (Arc<Inbound>, GuestList) {
                 guests: guests.clone(),
                 auths: std::collections::HashMap::new(),
                 body_limit: 16,
-                app: busbar_kernel::test_support::TestApp::new().build(),
+                app: busbar_kernel_testkit::test_support::TestApp::new().build(),
                 door_refusals: Vec::new(),
                 ids: guests
                     .lines()

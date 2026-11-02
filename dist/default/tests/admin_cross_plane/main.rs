@@ -50,17 +50,17 @@ pub(crate) fn ensure_seam() {
         // (`root::linked::register_stores`), before anything renders the admin surface: the
         // document this binary renders lists the hooks the shipped binary lists (1.5.5's served
         // `build.hook_plugins` description), not a root-less test build's none.
-        busbar_kernel::test_support::install_root_hook_names(LINKED_HOOK_NAMES);
+        busbar_kernel_testkit::test_support::install_root_hook_names(LINKED_HOOK_NAMES);
         // The operator credential's test registry row, before anything resolves the auth axis, in
         // the root's own words.
         for_each_operator_auth_row!(install_operator_row);
-        fn install_operator_row(door: busbar_kernel::test_support::AuthDoor) {
-            const ROOT_WORDS: busbar_kernel::test_support::OperatorWords =
-                busbar_kernel::test_support::OperatorWords {
+        fn install_operator_row(door: busbar_kernel_testkit::test_support::AuthDoor) {
+            const ROOT_WORDS: busbar_kernel_testkit::test_support::OperatorWords =
+                busbar_kernel_testkit::test_support::OperatorWords {
                     provider: "admin-tokens",
                     principal_id: "admin",
                 };
-            busbar_kernel::test_support::install_operator_auth_row_as(ROOT_WORDS, door);
+            busbar_kernel_testkit::test_support::install_operator_auth_row_as(ROOT_WORDS, door);
         }
         linked::install();
         busbar_core_admin::install();
@@ -69,9 +69,9 @@ pub(crate) fn ensure_seam() {
 
 /// A `TestApp` after [`ensure_seam`], so the planes and the admin mount seam are in place before
 /// `.build()` resolves them.
-pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
+pub(crate) fn new_test_app() -> busbar_kernel_testkit::test_support::TestApp {
     ensure_seam();
-    busbar_kernel::test_support::TestApp::new().plugin_admission(&root_install::ADMISSION)
+    busbar_kernel_testkit::test_support::TestApp::new().plugin_admission(&root_install::ADMISSION)
 }
 
 /// The admin service's router over `app`, after [`ensure_seam`].

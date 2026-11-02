@@ -22,7 +22,7 @@
 #![allow(dead_code)]
 
 use busbar_kernel::plane_driver::registry::{plane_decls, PlaneDecl};
-use busbar_kernel::test_support::seam::{test_plane_seams, TestPlaneSeam};
+use busbar_kernel_testkit::test_support::seam::{test_plane_seams, TestPlaneSeam};
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 
@@ -36,11 +36,11 @@ pub fn install() {
         // The linked doors' own dialect declarations, as the root's `register_protocols` installs
         // them in production (the door row's `protocols` axis).
         for decls in TEST_LINKED_PROTOCOLS {
-            busbar_kernel::test_support::protocols::register_test_protocols(decls);
+            busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
         }
     });
     for &row in door_rows() {
-        busbar_kernel::test_support::planes::register_test_plane(row);
+        busbar_kernel_testkit::test_support::planes::register_test_plane(row);
     }
     for seam in test_plane_seams() {
         (seam.install)();

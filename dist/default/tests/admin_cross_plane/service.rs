@@ -39,7 +39,8 @@ fn hook(kind: HookKind, global: bool) -> HookCfg {
 /// fail-open for a plane-owned attach, using the tool plane as the concrete plane under test.
 #[test]
 fn build_with_hook_makes_a_plane_attach_live() {
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
+    let env =
+        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     // The ONLY thing this test reads of the `tools.fs` registration is its hook ATTACH
     // (`hooks: [screen]`), whose resolution lands in the plane's gate map. Drive that through core's
     // NEUTRAL container-hook seam, keyed by the plane the registry says owns the `tools:` section, so

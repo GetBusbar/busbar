@@ -369,9 +369,9 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
 /// over the hook double (which answers every `transform` with a rewrite), so the chain entry is the
 /// one a deployment's configuration produces, its `on_error` disposition and all.
 fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
-    let env = busbar_kernel::test_support::test_hook_env(
+    let env = busbar_kernel_testkit::test_support::test_hook_env(
         &["test-hook"],
-        busbar_kernel::test_support::HookNeeds {
+        busbar_kernel_testkit::test_support::HookNeeds {
             prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
             user: busbar_contract::plugin_rows::NeedLevel::Ro,
         },
@@ -579,11 +579,11 @@ const NOT_APPLICABLE_WARN: &str = "rewrite not applicable to this request; forwa
 /// A capture of the kernel's warnings for the life of the guard, on this test's thread (the
 /// `#[tokio::test]` runtime is current-thread, so the unit's whole drive runs here).
 fn capture_warnings() -> (
-    busbar_kernel::test_support::warn_capture::WarnCapture,
+    busbar_kernel_testkit::test_support::warn_capture::WarnCapture,
     tracing::subscriber::DefaultGuard,
 ) {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
     (cap, guard)
 }

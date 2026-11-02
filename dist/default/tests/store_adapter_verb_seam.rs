@@ -75,7 +75,7 @@ fn adapter_over_published_schema() -> StoreAdapter {
 /// The kernel's universal test double (the build's default store), as the published operations'
 /// backing.
 fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
-    Arc::new(busbar_kernel::governance::MemoryStore::new())
+    Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new())
 }
 
 /// A clock the test moves by hand, so the replay window can be watched closing without waiting it

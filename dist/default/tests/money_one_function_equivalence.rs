@@ -51,7 +51,8 @@ fn usage_lines(pairs: &[(&'static str, u64)]) -> Vec<busbar_contract::caps::Usag
 
 /// The same counts as a sealed usage report, for the settlement posting.
 fn usage_report(pairs: &[(&'static str, u64)]) -> busbar_contract::caps::Usage {
-    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::Consumption>();
+    let token =
+        busbar_kernel_testkit::test_support::tokens::grant::<busbar_contract::caps::Consumption>();
     busbar_contract::caps::Usage::report(&token, usage_lines(pairs))
         .expect("a report within the line bound")
 }
@@ -558,7 +559,8 @@ fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() 
     rule("D8  `busbar_*_spend_cents` — integer up to MONEY_EGRESS");
     let requests: u64 = (1u64 << 53) + 1;
     let kernel = kernel_cost_model(None, 1);
-    let store = std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let store =
+        std::sync::Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
     const BUCKET: &str = "fee-only-gauge";
     const NOW: u64 = 1_700_000_000;
     busbar_contract::records::RecordStore::put_usage(
@@ -831,7 +833,7 @@ fn accrued_on_the_book(
     units: &[(&str, u64)],
 ) -> (Result<i64, String>, BTreeMap<String, u64>) {
     let gov = busbar_kernel::governance::GovState::new(
-        std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new()),
+        std::sync::Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
         None,
     )
     .expect("a governance book over a memory store");

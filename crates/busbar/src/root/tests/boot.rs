@@ -720,7 +720,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         crate::root::loader::tarball::package(&manifest, "lib.so", artifact).expect("it packs"),
     )
     .expect("the tarball is written");
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .plugins_dir(dir.clone())
         .plugin_admission(&crate::root::admission::ADMISSION)
@@ -1068,7 +1068,7 @@ __attribute__((constructor)) static void mark_loaded(void) {
     let library = std::fs::read(image).unwrap();
     let key = crate::root::loader::sign::SigningKey::from_bytes(&[0x35; 32]);
     let stated = crate::root::loader::dispatch::rendering_of(
-        busbar_kernel::test_support::store_double::door,
+        busbar_kernel_testkit::test_support::store_double::door,
     )
     .unwrap();
     let facts = busbar_contract::abi::mechanism::rendering::read(&stated).unwrap();

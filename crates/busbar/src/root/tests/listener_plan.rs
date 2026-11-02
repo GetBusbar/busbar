@@ -105,7 +105,7 @@ fn app(
     routes: Vec<RouteDecl>,
     generation: u64,
 ) -> Arc<busbar_kernel::state::App> {
-    let mut app = busbar_kernel::test_support::TestApp::new().build();
+    let mut app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let candidate = Arc::get_mut(&mut app).unwrap();
     candidate.plugin_routes =
         Arc::new(build_route_table(routes).expect("valid endpoint declarations"));
@@ -555,7 +555,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
             )
         })
     };
-    let first = busbar_kernel::test_support::TestApp::new().build();
+    let first = busbar_kernel_testkit::test_support::TestApp::new().build();
     let (left, _, handle) = busbar_kernel::build_split_routers_serving_doors(
         first,
         vec![mounted("left")],
@@ -578,7 +578,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
         false,
     );
     for generation in 2..=4 {
-        let mut next = busbar_kernel::test_support::TestApp::new().build();
+        let mut next = busbar_kernel_testkit::test_support::TestApp::new().build();
         Arc::get_mut(&mut next).unwrap().config_version = generation;
         handle.swap(next);
         for (router, label) in [(&left, "left"), (&right, "right")] {
@@ -968,8 +968,9 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE, FLOW_STOP};
     use busbar_contract::auth_calls::StripPlace;
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_kernel::governance::{GovState, NewKeySpec};
     use busbar_kernel::inbound::{Call, HandIn, Head, Inbound, Listener, Seals};
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     const PATH: &str = "/exports/private/secured";
     const OWNER: u64 = 27;
     const LISTENER: u64 = 29;
@@ -995,7 +996,7 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
         .unwrap();
     let token_grant = busbar_kernel::seal::lend();
     let live_token = token.expose(&token_grant).as_str();
-    let enforcing = busbar_kernel::test_support::TestApp::new()
+    let enforcing = busbar_kernel_testkit::test_support::TestApp::new()
         .keys_chain()
         .governance(gov.clone())
         .build();

@@ -21,7 +21,7 @@ mod linked;
 
 use busbar_kernel::auth::{AuthMiddleware, UpstreamCreds};
 use busbar_kernel::config::AuthCfg;
-use busbar_kernel::test_support::TestApp;
+use busbar_kernel_testkit::test_support::TestApp;
 
 fn register_planes() {
     linked::install();

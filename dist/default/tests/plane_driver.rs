@@ -1228,7 +1228,7 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
     // test harness registers it, so the rows this test writes reach the seam's read model.
-    let _ = busbar_kernel::test_support::TestApp::new().build();
+    let _ = busbar_kernel_testkit::test_support::TestApp::new().build();
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");

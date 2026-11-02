@@ -32,7 +32,7 @@ use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
 
 use crate::config::OauthAsCfg;
-use busbar_kernel::test_support::TestApp;
+use busbar_kernel_testkit::test_support::TestApp;
 
 use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 
@@ -897,9 +897,9 @@ async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
 /// Retry the same screen after the store recovers, then approve and inspect the actual token.
 #[tokio::test]
 async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
-    let calls = busbar_kernel::test_support::store_axis_stand_in()
+    let calls = busbar_kernel_testkit::test_support::store_axis_stand_in()
         .open(
-            StoreDoor::Linked(busbar_kernel::test_support::store_double::door),
+            StoreDoor::Linked(busbar_kernel_testkit::test_support::store_double::door),
             "consent-lookup",
             b"{}",
         )

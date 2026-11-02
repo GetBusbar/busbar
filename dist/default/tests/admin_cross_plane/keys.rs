@@ -5,9 +5,10 @@
 //! busbar-core-admin's `src/tests/tests.rs`, assertions unchanged), with the error-surface
 //! drivers they share.
 
-use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::plane_driver::serve::ServeTables;
-use busbar_kernel::test_support::protocols::PROTO_ANTHROPIC;
+use busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use std::sync::Arc;
 
 // ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
@@ -2351,7 +2352,7 @@ async fn every_admin_error_surface_answers_its_declared_status() {
     drive_agent_door_verb_errors().await;
     drive_unpriced_usage_reads().await;
     crate::ensure_seam();
-    for drive in busbar_kernel::test_support::seam::test_plane_seams()
+    for drive in busbar_kernel_testkit::test_support::seam::test_plane_seams()
         .iter()
         .filter_map(|seam| seam.error_surface_driver)
     {

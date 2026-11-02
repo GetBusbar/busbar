@@ -66,6 +66,10 @@ default = ["root-admin"]
 root-admin = ["dep:tower"]
 test-harness = []
 
+[dev-dependencies]
+# External fixtures used by this source when the distribution runs its unit tests.
+busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }
+
 [lints.rust]
 # The default distribution's build script sets a `linked_section_<section>` cfg per linked plane door;
 # core's source gates a few tests on two of them, and core alone sets none.

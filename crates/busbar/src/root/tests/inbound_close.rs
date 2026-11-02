@@ -12,7 +12,7 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
-use busbar_kernel::test_support::{rows, TestApp};
+use busbar_kernel_testkit::test_support::{rows, TestApp};
 
 const NAME: &str = "inbound-retirement-hook";
 const WAIT: Duration = Duration::from_secs(5);

@@ -872,8 +872,8 @@ busbar-export-otlp-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-
 busbar-export-prometheus = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-prometheus", rev = "803cde7331f243647f67ea1b910575dbf57ce1d4" }
 busbar-export-prometheus-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-prometheus", rev = "803cde7331f243647f67ea1b910575dbf57ce1d4" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
-# crate's door on the secret axis; the kernel's test build answers the axis with its own in-crate
-# double (`busbar_kernel::test_support::secrets`), naming neither. One rev each.
+# crate's door on the secret axis; kernel tests answer the axis with the external testkit's
+# double (`busbar_kernel_testkit::test_support::secrets`), naming neither. One rev each.
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
@@ -930,8 +930,8 @@ busbar-auth-sigv4 = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-sig
 # `GET /api/v1/admin/info` `build.auth_modules` lists it, an `additive` accepted difference). One pin.
 busbar-auth-webhook-signature = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-webhook-signature", rev = "d6d3754a8df9e613ec001ac0bf4d8f7756808906" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
-# axis (feature `hooks-ranking`). The root alone takes it: the kernel's test build links its in-crate
-# R-FIX3 double (`busbar_kernel::test_support::ranking_double`) instead, and the root's
+# axis (feature `hooks-ranking`). The root alone takes it: kernel tests link the external testkit's
+# R-FIX3 double (`busbar_kernel_testkit::test_support::ranking_double`) instead, and the root's
 # `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://git.getbusbar.dev/GetBusbar/busbar-hook-ranking", rev = "d577aa269f15044a7f25f0603cc067e7f013d235" }
 # THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
@@ -946,8 +946,8 @@ busbar-transport-stdio = { git = "https://git.getbusbar.dev/GetBusbar/busbar-tra
 busbar-transport-webrtc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-webrtc", rev = "f674e3c737cef1a7a867169f94026c7d07f680e9" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
-# both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
-# double (`busbar_kernel::test_support::store_double`), and the root's `linked_store_double` tests
+# both-ways fixture. The kernel names it under no name: its tests link the external testkit's R-FIX3
+# double (`busbar_kernel_testkit::test_support::store_double`), and the root's `linked_store_double` tests
 # prove the double states what this door states.
 # 5927d5e (pin-1667-secret-fields) is fe9c618's 31-slot store table (#1667) on dist-v1.6.0 (076065f)
 # with `secret_refs: ["token"]` (busbar-store-memory #44): the undeclared-reference refusal reads only

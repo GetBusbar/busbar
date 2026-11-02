@@ -18,9 +18,11 @@ use self::node_plane::{proto_codec, testkit as plane};
 use axum::body::Bytes;
 use axum::http::HeaderMap;
 use busbar_kernel::teller::{Ended, Kernel};
-use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_kernel_testkit::test_support::{
+    LaneSpec, MockResponse, MockServer, MockServerState, TestApp,
+};
 // The mock far end's event-stream answers, whole and cut, by what they are.
-use busbar_kernel::test_support::MockResponse::{
+use busbar_kernel_testkit::test_support::MockResponse::{
     Sse as EventStream, SseTransportError as CutEventStream,
 };
 
@@ -219,7 +221,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
         );
     }
 
-    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
     if let Some(requests) = fixture.seeded_group_requests() {
         use busbar_contract::records::RecordStore as _;
         store
@@ -696,8 +698,9 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
     let who = PrincipalId::new("acct:node");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
-        let ledger_token =
-            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::WriteMoney>();
+        let ledger_token = busbar_kernel_testkit::test_support::tokens::grant::<
+            busbar_contract::caps::WriteMoney,
+        >();
         let accrual =
             busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
         let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
@@ -706,7 +709,9 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
             &who,
             arrived,
             None,
-            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+            &busbar_kernel_testkit::test_support::tokens::grant::<
+                busbar_contract::caps::DurableWrite,
+            >(),
             posted,
         )
         .expect("the memory-buffered journal takes it");
@@ -1075,7 +1080,8 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         &who,
         Arrived::at(EPOCH * 1_000, 0),
         None,
-        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+        &busbar_kernel_testkit::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(
+        ),
         posted,
     )
     .expect("the memory-buffered journal takes it");
@@ -1231,7 +1237,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     site.audited(
         UnitKey::new(51),
         facts,
-        busbar_kernel::test_support::tokens::pass(),
+        busbar_kernel_testkit::test_support::tokens::pass(),
     );
     let before = records();
     site.post(&ctx(51), ended);
@@ -4383,7 +4389,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         });
     }
     let server = MockServer::new(Arc::clone(&state)).await;
-    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let store = Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &SIGNING_SECRET,
         busbar_kernel::governance::signing::DEFAULT_KID,
@@ -5079,8 +5085,9 @@ async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
             )
             .expect("the store reads back"),
         ));
-        let token =
-            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+        let token = busbar_kernel_testkit::test_support::tokens::grant::<
+            busbar_contract::caps::DurableWrite,
+        >();
         for _ in 0..3 {
             let _lost = book.lock().unwrap().journal.append(
                 &token,
@@ -5133,7 +5140,7 @@ async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
 #[test]
 fn the_exit_arm_seals_no_money_figure_into_the_record() {
     use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
-    use busbar_kernel::test_support::tokens::{end, grant, origin, pass};
+    use busbar_kernel_testkit::test_support::tokens::{end, grant, origin, pass};
 
     let node = Node::new();
     let durability = crate::root::durability::build(
@@ -5226,7 +5233,7 @@ async fn rig_over(
     );
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             None,
             Some(signer),
         )
@@ -5699,7 +5706,7 @@ async fn serve_rerank(
     let server = MockServer::new(Arc::clone(&state)).await;
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             None,
         )
         .expect("governance"),

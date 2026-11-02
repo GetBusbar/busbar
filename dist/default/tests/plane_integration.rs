@@ -22,7 +22,7 @@ mod linked;
 
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
-use busbar_kernel::test_support::*;
+use busbar_kernel_testkit::test_support::*;
 use std::sync::Arc;
 
 /// The linked plane that owns the `tools:` section and serves the endpoint door.
@@ -554,7 +554,8 @@ const BODY_INGRESS_ROUTES: [&str; 2] = ["/{name}/v1/messages", "/{provider}/{mod
 #[tokio::test]
 async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::GovState;
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
     busbar_kernel::snapshot::init();
     let door = door_plane();
@@ -637,7 +638,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    busbar_kernel::test_support::protocols::PROTO_ANTHROPIC,
+                    busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC,
                     &server.base_url(),
                 )
                 .api_key("busbar-upstream-key"),

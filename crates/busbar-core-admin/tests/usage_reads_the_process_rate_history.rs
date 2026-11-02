@@ -19,9 +19,10 @@ use std::sync::Arc;
 
 use busbar_contract::records::{MeteringDelta, RecordStore};
 use busbar_kernel::cost::{CostModel, History, RateCard, TierRates};
-use busbar_kernel::governance::{GovState, MemoryStore, METERING_BUCKET_SECS};
+use busbar_kernel::governance::{GovState, METERING_BUCKET_SECS};
 use busbar_kernel::rate_apply::RateEpoch;
-use busbar_kernel::test_support::rate_holders::install_rate_epoch;
+use busbar_kernel_testkit::test_support::rate_holders::install_rate_epoch;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 /// The one priced lane: a metering row's `model` and the card's lane, spelled once.
 const LANE: &str = "m-dated-read";
@@ -108,7 +109,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let bucket = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now())
         - METERING_BUCKET_SECS;
     // An OPEN admin posture: the read reaches its handler rather than an authentication refusal.
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(governance(bucket))
         .cost(current_cost())
         .admin_chain(vec![])

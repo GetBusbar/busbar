@@ -1071,8 +1071,9 @@ async fn a_failed_over_unit_names_the_member_that_answered() {
 /// written; drop the money steps' metering and no row is written.
 #[tokio::test]
 async fn a_served_unit_writes_exactly_one_metering_row() {
-    use busbar_kernel::governance::{metering_bucket, GovState, MemoryStore};
+    use busbar_kernel::governance::{metering_bucket, GovState};
     use busbar_kernel::plane_driver::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     struct NoPost;
     impl EndPost for NoPost {
         fn post(&self, _: &UnitCtx, _: Ended) {}

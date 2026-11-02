@@ -111,10 +111,10 @@ async fn the_live_record_sink_writes_through_the_store_calls() {
     busbar_kernel::snapshot::init();
     use busbar_contract::records::{PlaneDisposition, PlaneRecord};
     use busbar_contract::store_calls::StoreDoor;
-    let opened = busbar_kernel::test_support::store_axis_stand_in()
+    let opened = busbar_kernel_testkit::test_support::store_axis_stand_in()
         .open(
-            StoreDoor::Linked(busbar_kernel::test_support::store_double::door),
-            busbar_kernel::test_support::store_double::NAME,
+            StoreDoor::Linked(busbar_kernel_testkit::test_support::store_double::door),
+            busbar_kernel_testkit::test_support::store_double::NAME,
             b"{}",
         )
         .expect("the store double opens through its door");
@@ -126,7 +126,7 @@ async fn the_live_record_sink_writes_through_the_store_calls() {
         busbar_kernel::governance::GovState::new(opened.records, None).expect("governance"),
     );
     assert!(gov.attach_store_calls(std::sync::Arc::clone(&calls)));
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(gov)
         .build();
     let sink = live_records(std::sync::Arc::new(busbar_kernel::state::AppHandle::new(
@@ -152,12 +152,14 @@ async fn the_live_record_sink_writes_through_the_store_calls() {
 
     let bare = std::sync::Arc::new(
         busbar_kernel::governance::GovState::new(
-            std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            std::sync::Arc::new(
+                busbar_kernel_testkit::test_support::store_double::MemoryStore::new(),
+            ),
             None,
         )
         .expect("governance"),
     );
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(bare)
         .build();
     let sink = live_records(std::sync::Arc::new(busbar_kernel::state::AppHandle::new(

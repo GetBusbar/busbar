@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use busbar_kernel::admission::{Judged, PluginAdmission as _, Refusal};
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 use crate::root::admission::ADMISSION;
 use crate::root::loader::sign::{sign, Manifest, SigningKey};
@@ -174,8 +175,8 @@ async fn serve_admission_with_inputs(
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
-    let mut app = busbar_kernel::test_support::TestApp::new()
+    busbar_kernel_testkit::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+    let mut app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(gov_with_signer(Some("admintok".to_string())))
         .admin_chain(vec![busbar_kernel::config::operator_provider().to_string()])
         .plugins_dir(dir)
@@ -291,7 +292,7 @@ fn file_of(row: &serde_json::Value) -> Option<String> {
 /// The key of the first store this build links: the store catalog's compiled-in head, read off the
 /// installed root rows (the root's table, or a test build's stand-in), never spelled here.
 fn linked_store_key() -> &'static str {
-    busbar_kernel::test_support::root::ensure();
+    busbar_kernel_testkit::test_support::root::ensure();
     busbar_kernel::preflight::root_rows()
         .stores
         .first()
@@ -571,7 +572,7 @@ async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
 /// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
 /// a copy of it dropped in must carry to be the same plugin at the same version.
 fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
-    busbar_kernel::test_support::root::ensure();
+    busbar_kernel_testkit::test_support::root::ensure();
     let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
         .stores
         .first()

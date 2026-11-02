@@ -814,7 +814,7 @@ const SIGNING_HOST: &str = "bedrock-runtime.us-east-1.amazonaws.com";
 /// Every line the main log took, DEBUG and above, while `f` ran.
 fn main_log(f: impl FnOnce()) -> Vec<String> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::capturing_debug();
+    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::capturing_debug();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(subscriber, f);
     cap.messages()
@@ -1067,7 +1067,7 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
         );
         let name = format!("BUSBAR-{code:04}");
         // A WARN-and-above capture: a line the sink demoted to debug or info is not in it.
-        let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+        let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         tracing::subscriber::with_default(subscriber, || {
             sink.diag(Diagnostic {

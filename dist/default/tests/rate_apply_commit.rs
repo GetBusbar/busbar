@@ -19,7 +19,7 @@ mod linked;
 use std::sync::Mutex;
 
 use busbar_kernel::rate_apply::{RateApply, RawRates};
-use busbar_kernel::test_support::rate_holders::install_rate_apply;
+use busbar_kernel_testkit::test_support::rate_holders::install_rate_apply;
 
 /// The holder, writing down the flat figure of every apply it hears — the only writer of the dated
 /// history and of the journal, so what it never hears neither of them holds.
@@ -38,7 +38,7 @@ fn build(
     Option<busbar_kernel::GovCredentialRotation>,
     busbar_kernel::InstalledLimits,
 ) {
-    let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
+    let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
         busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_RATE_APPLY_COMMIT"),
     );
     cfg.per_request_fee = per_request_fee;

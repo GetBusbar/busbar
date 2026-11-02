@@ -11,7 +11,8 @@ use busbar_contract::records::{
     UsageLedger, VirtualKey, UNIT_INPUT,
 };
 use busbar_kernel::cost::CostModel;
-use busbar_kernel::governance::{metering_bucket, MemoryStore};
+use busbar_kernel::governance::metering_bucket;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use busbar_kernel_wal::{Entry, Record, RecordClass};
 
 use super::*;
@@ -110,7 +111,7 @@ async fn the_shutdown_tail_hands_the_store_what_the_journal_held_back() {
     let (book, lane) = store_book_bounded(&slots, 4);
     assert!(lane.drain(WAIT), "the boot's records reach the store");
     slots.refuse(true);
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     let written = {
         let mut durability = book.lock().expect("the book");
         // Past the lane's bound: the lane holds four, the journal retains the rest.
@@ -364,7 +365,7 @@ async fn shutdown_flushes_allow_runtime_progress_and_wait_for_each_store_write()
 
 #[test]
 fn shutdown_tail_reports_terminal_budget_and_metering_store_failures() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
     let store = Arc::new(FlushStore::new(FlushOutcome::Fail));
     let (gov, bucket) = accrued_governance(store.clone());
@@ -413,7 +414,7 @@ fn shutdown_tail_reports_terminal_budget_and_metering_store_failures() {
 
 #[test]
 fn a_panicking_budget_flush_is_logged_and_metering_and_journal_still_drain() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
     let store = Arc::new(FlushStore::new(FlushOutcome::PanicBudget));
     let (gov, bucket) = accrued_governance(store.clone());

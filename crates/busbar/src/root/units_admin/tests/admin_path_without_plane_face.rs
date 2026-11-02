@@ -228,13 +228,13 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     );
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             None,
             Some(signer),
         )
         .expect("governance"),
     );
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .governance(gov)
         .build();
@@ -357,7 +357,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
         (Some(Verified::Reject), 401, "unauthorized", None),
         (Some(Verified::Overloaded), 401, "unauthorized", None),
     ] {
-        let snapshot = busbar_kernel::test_support::TestApp::new()
+        let snapshot = busbar_kernel_testkit::test_support::TestApp::new()
             .admin_chain(vec!["external".to_string()])
             .admin_door("external", Arc::new(ProbeDoor(verified)))
             .build();
@@ -630,7 +630,7 @@ async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(S
 async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none() {
     busbar_kernel::snapshot::init();
     busbar_core_admin::install();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
     let (_data, bare, _handle) =
@@ -711,13 +711,13 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     // boot) over the test's in-memory map.
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             None,
         )
         .expect("a governance over the memory store"),
     );
     gov.attach_store_calls(crate::root::store_double::RecordSlots::new().calls());
-    let booted = busbar_kernel::test_support::TestApp::new()
+    let booted = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(gov)
         .build();
     let book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
@@ -726,7 +726,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         "a node with a configured store carries it on its book"
     );
 
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
     let (_data, bare, _handle) =
@@ -806,7 +806,7 @@ const THE_REMOVED_VERBS: [(&str, &str); 9] = [
 async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing() {
     busbar_kernel::snapshot::init();
     busbar_core_admin::install();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
     let (_data, bare, _handle) =
@@ -999,7 +999,7 @@ fn a_q71_node_trusting(
 ) {
     busbar_kernel::snapshot::init();
     busbar_core_admin::install();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
     let (_data, bare, _handle) =

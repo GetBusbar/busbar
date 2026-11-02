@@ -190,8 +190,8 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     // Every app build reads the plane registry, so holding it isolated keeps every other test's
     // commit out of this one's window.
-    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
-        busbar_kernel::test_support::neutral_fallback_plane(),
+    let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
+        busbar_kernel_testkit::test_support::neutral_fallback_plane(),
     ]);
     let boot = deployment(
         &[],
@@ -226,8 +226,8 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
 #[test]
 fn a_reload_that_changes_the_allowlist_changes_nothing() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
-    let _registry = busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[
-        busbar_kernel::test_support::neutral_fallback_plane(),
+    let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
+        busbar_kernel_testkit::test_support::neutral_fallback_plane(),
     ]);
     let private_a = vec!["10.0.0.5".parse().unwrap()];
     let private_b = vec!["10.0.0.9".parse().unwrap()];
@@ -254,7 +254,7 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
         "the host the boot did not name is refused"
     );
     let reloaded = deployment(&[], "advanced:\n  allow_destinations: [model-b.internal]\n");
-    busbar_kernel::test_support::build_once_under(reloaded, None, &rules)
+    busbar_kernel_testkit::test_support::build_once_under(reloaded, None, &rules)
         .expect("the reload builds");
     assert_eq!(
         verdict(judge.as_ref(), "model-a.internal", &private_a),

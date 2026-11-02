@@ -209,7 +209,9 @@ fn read_json(path: std::path::PathBuf) -> serde_json::Value {
 fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState> {
     std::sync::Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(
-            std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            std::sync::Arc::new(
+                busbar_kernel_testkit::test_support::store_double::MemoryStore::new(),
+            ),
             Some(admin_token.to_string()),
             Some(
                 busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(

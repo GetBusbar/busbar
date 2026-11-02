@@ -14,9 +14,10 @@ use std::sync::Arc;
 use busbar_contract::records::VirtualKey;
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 use super::planes_tests::{bound, composed_services, PUBLISHING};
 use super::{compose_planes, compose_served, data_routes, door_routes};
@@ -95,18 +96,18 @@ fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
 /// The hook env the gate's `module` resolves in: the kernel's hook double, its manifest asking to
 /// read the prompt.
 fn screen_env() -> busbar_kernel::hooks::HookEnv {
-    let needs = busbar_kernel::test_support::HookNeeds {
+    let needs = busbar_kernel_testkit::test_support::HookNeeds {
         prompt: busbar_contract::plugin_rows::NeedLevel::Ro,
         ..Default::default()
     };
-    busbar_kernel::test_support::test_hook_env(&["test-hook"], needs)
+    busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], needs)
 }
 
 /// The deployment's App for `screen`: a pool gate is resolved through the one gate resolver the
 /// build uses for a configured gate, filed under the pool.
-fn screened(screen: Screen<'_>) -> busbar_kernel::test_support::TestApp {
+fn screened(screen: Screen<'_>) -> busbar_kernel_testkit::test_support::TestApp {
     match screen {
-        Screen::Nothing => busbar_kernel::test_support::TestApp::new(),
+        Screen::Nothing => busbar_kernel_testkit::test_support::TestApp::new(),
         Screen::Global(token) => screening_gate(token),
         Screen::Pool(token) => {
             let env = screen_env();
@@ -120,7 +121,7 @@ fn screened(screen: Screen<'_>) -> busbar_kernel::test_support::TestApp {
                 0,
             );
             assert_eq!(gates.len(), 1, "the configured gate resolves");
-            busbar_kernel::test_support::TestApp::new()
+            busbar_kernel_testkit::test_support::TestApp::new()
                 .hook_env(env)
                 .pool_gates_resolved("p", gates)
         }
@@ -130,8 +131,8 @@ fn screened(screen: Screen<'_>) -> busbar_kernel::test_support::TestApp {
 /// The deployment's `hooks:` as an operator writes it: one global `kind: gate` on the kernel's
 /// hook double (the 1.5.5 hook reply through the hook axis port), granted `prompt: ro`, rejecting
 /// any request whose projected text carries `token`.
-fn screening_gate(token: &str) -> busbar_kernel::test_support::TestApp {
-    busbar_kernel::test_support::TestApp::new()
+fn screening_gate(token: &str) -> busbar_kernel_testkit::test_support::TestApp {
+    busbar_kernel_testkit::test_support::TestApp::new()
         .hook_env(screen_env())
         .hook("screen", screen_cfg(token))
         .global_hook("screen")
@@ -725,7 +726,7 @@ async fn node_boot_hooks_arm() {
             .expect("a minimal deployment");
         let mut cfg =
             busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-        cfg.store = Some(busbar_kernel::test_support::stand_in_store());
+        cfg.store = Some(busbar_kernel_testkit::test_support::stand_in_store());
         cfg
     };
     let boot = cfg();
@@ -877,7 +878,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     assert_eq!(served.planes.len(), 1, "the dropped-in door plane composed");
     let post = Arc::clone(served.post.as_ref().expect("its units post on the node"));
     let routes = data_routes(served, &[], &[]).expect("its claims mount on the data listener");
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .keys_chain()
         .governance(Arc::clone(&gov))
         .cost(cost)

@@ -73,7 +73,7 @@ pub(super) use super::secret_source_tests::{
 /// config-fixture cells install it.
 pub(crate) fn register_linked_protocols() {
     for decls in crate::LINKED.protocols {
-        busbar_kernel::test_support::protocols::register_test_protocols(decls);
+        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
 }
 
@@ -164,7 +164,7 @@ pub(crate) fn folded_door(
 ///
 /// As [`folded_door`].
 pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
-    busbar_kernel::test_support::planes::register_test_plane(folded_door(door, instance)?);
+    busbar_kernel_testkit::test_support::planes::register_test_plane(folded_door(door, instance)?);
     Ok(())
 }
 
@@ -193,7 +193,7 @@ pub(crate) fn install_root_auth() {
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+    busbar_kernel_testkit::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
 }
 
 /// The kernel's host services judging every destination by `dest`, installed into a fresh
@@ -630,9 +630,9 @@ pub(crate) fn hook_env(
     prompt: NeedLevel,
     user: NeedLevel,
 ) -> busbar_kernel::hooks::HookEnv {
-    busbar_kernel::test_support::test_hook_env(
+    busbar_kernel_testkit::test_support::test_hook_env(
         aliases,
-        busbar_kernel::test_support::HookNeeds { prompt, user },
+        busbar_kernel_testkit::test_support::HookNeeds { prompt, user },
     )
 }
 

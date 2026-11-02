@@ -38,7 +38,7 @@
 use std::sync::Arc;
 
 use crate::config::{AsIdentity, OauthAsCfg};
-use busbar_kernel::test_support::TestApp;
+use busbar_kernel_testkit::test_support::TestApp;
 
 use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 

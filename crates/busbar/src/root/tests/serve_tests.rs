@@ -35,7 +35,7 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         &[],
     )
     .unwrap();
-    let app = busbar_kernel::test_support::TestApp::new().build();
+    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let generation =
         crate::root::inbound::publish(&app).expect("the no-plane listener is published");
     let specs = crate::root::inbound::host()
@@ -143,9 +143,10 @@ use busbar_kernel::cost::CostModel;
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 #[cfg(feature = "plane-decisions")]
-use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SEP};
+use busbar_kernel::governance::{GovState, NewKeySpec, PLANE_LANE_SEP};
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 #[cfg(feature = "plane-decisions")]
 use busbar_plane_decisions::door as decisions_door;
 #[cfg(feature = "plane-decisions")]
@@ -483,7 +484,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
     let money_steps = Arc::clone(&composed.money);
     served.post = Some(Arc::clone(&post));
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .keys_chain()
         .governance(Arc::clone(&gov))
         .cost(CostModel::flat(1))
@@ -571,7 +572,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door";
-    let app = busbar_kernel::test_support::TestApp::new().build();
+    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     // RED ARM: a data router built without the door's routes does not hand the claim to the plane.
     let (bare, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), Vec::new(), 1 << 20, 0, false);
@@ -662,7 +663,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
 async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-carriers";
-    let app = busbar_kernel::test_support::TestApp::new().build();
+    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
@@ -753,8 +754,9 @@ pub(super) mod session_door {
     use busbar_contract::conn::{DeclaredConns, PollConns};
     use busbar_kernel::cost::CostModel;
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_kernel::governance::{GovState, NewKeySpec};
     use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
@@ -935,9 +937,9 @@ pub(super) mod session_door {
     /// The env whose `test-hook` is the kernel's in-process hook double (`prompt: rw`, `user: ro`):
     /// its `settings:` choose its answer.
     fn hook_env() -> busbar_kernel::hooks::HookEnv {
-        busbar_kernel::test_support::test_hook_env(
+        busbar_kernel_testkit::test_support::test_hook_env(
             &["test-hook"],
-            busbar_kernel::test_support::HookNeeds {
+            busbar_kernel_testkit::test_support::HookNeeds {
                 prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
                 user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
@@ -1327,7 +1329,7 @@ pub(super) mod session_door {
         );
         let live = Arc::clone(&served.planes[0].live);
         served.post = Some(Arc::clone(&post));
-        let app = busbar_kernel::test_support::TestApp::new()
+        let app = busbar_kernel_testkit::test_support::TestApp::new()
             .keys_chain()
             .serve_tables(tables.clone());
         let app = groups
@@ -4444,7 +4446,9 @@ mod tools_door {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        busbar_kernel_testkit::test_support::install_root_auth_axis(
+            crate::root::dispatch::auth_axis,
+        );
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let rig = rig_tools(instance, port, tools, &|app| app.admin_chain(chain.clone()));
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
@@ -4997,7 +5001,7 @@ impl Serving {
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
-            &busbar_kernel::test_support::tokens::pass(),
+            &busbar_kernel_testkit::test_support::tokens::pass(),
         )
     }
 
@@ -5007,7 +5011,7 @@ impl Serving {
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
-            &busbar_kernel::test_support::tokens::pass(),
+            &busbar_kernel_testkit::test_support::tokens::pass(),
         )
     }
 
@@ -5293,7 +5297,7 @@ async fn serve_configured(
         .clone()
         .expect("the composition sealed its egress");
     let plane = composed.facts.plane.clone();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .keys_chain()
         .governance(Arc::clone(&gov))
         .groups_tree(groups)
@@ -5704,7 +5708,7 @@ async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
     )
     .await;
     let attempts = || {
-        busbar_kernel::test_support::metric_sum(
+        busbar_kernel_testkit::test_support::metric_sum(
             busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
             &[("pool", pool), ("lane", "m0")],
         )
@@ -6257,8 +6261,8 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
 /// served pools door's rehomed cells (the walk's and the money's) share this one spelling of the
 /// mock's stream answer rather than each naming the wire's variant.
 #[cfg(linked_driver_proofs)]
-fn event_stream(events: Vec<String>) -> busbar_kernel::test_support::MockResponse {
-    busbar_kernel::test_support::MockResponse::Sse {
+fn event_stream(events: Vec<String>) -> busbar_kernel_testkit::test_support::MockResponse {
+    busbar_kernel_testkit::test_support::MockResponse::Sse {
         events,
         abort_at_index: None,
     }
@@ -6277,7 +6281,7 @@ mod pools_door_walk_and_breaker {
     use std::sync::Arc;
 
     use axum::http::StatusCode;
-    use busbar_kernel::test_support::{MockResponse, MockServer, MockServerState};
+    use busbar_kernel_testkit::test_support::{MockResponse, MockServer, MockServerState};
 
     /// The store's clock.
     fn now() -> u64 {
@@ -8922,7 +8926,9 @@ mod pools_door_money {
 
     use axum::http::StatusCode;
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    use busbar_kernel::test_support::{metric_sum, MockResponse, MockServer, MockServerState};
+    use busbar_kernel_testkit::test_support::{
+        metric_sum, MockResponse, MockServer, MockServerState,
+    };
 
     use super::super::hook_seat_tests::DoorRig;
 
@@ -9327,7 +9333,7 @@ mod pools_door_money {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_keeps_the_budget_unit_of_an_over_cap_answer() {
         let _one = ONE_PUBLISHER.lock().await;
-        let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+        let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
         const CAP: usize = 4096;
         let _cap = busbar_kernel_testkit::limits::InstallGuard::install(
             &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
@@ -9955,7 +9961,9 @@ mod pools_door_counts_and_routes {
     use axum::http::StatusCode;
     use busbar_contract::Signal;
     use busbar_kernel::store::BreakerState;
-    use busbar_kernel::test_support::{metric_sum, MockResponse, MockServer, MockServerState};
+    use busbar_kernel_testkit::test_support::{
+        metric_sum, MockResponse, MockServer, MockServerState,
+    };
 
     use super::super::hook_seat_tests::DoorRig;
 
@@ -11719,7 +11727,7 @@ fn exposition_metric_name(line: &str) -> Option<&str> {
 #[cfg(linked_driver_proofs)]
 #[test]
 fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
     busbar_kernel::snapshot::init();
     let cap = WarnCapture::capturing_debug();
@@ -12013,11 +12021,15 @@ async fn a_model_plane_request_is_counted_exactly_once() {
     // The model plane's `busbar_requests_total` carries NO `plane` label (v1.5.4-identical); the
     // test runs in a process of its own, so the pool's label pins the delta.
     let labels = [("pool", "p")];
-    let before =
-        busbar_kernel::test_support::metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
+    let before = busbar_kernel_testkit::test_support::metric_sum(
+        busbar_kernel::snapshot::REQUESTS_TOTAL,
+        &labels,
+    );
     let _ = rig.chat().await;
-    let after =
-        busbar_kernel::test_support::metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
+    let after = busbar_kernel_testkit::test_support::metric_sum(
+        busbar_kernel::snapshot::REQUESTS_TOTAL,
+        &labels,
+    );
     assert_eq!(
         (after - before).round() as u64,
         1,
@@ -12059,11 +12071,11 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     );
     let counts = || {
         (
-            busbar_kernel::test_support::metric_sum(
+            busbar_kernel_testkit::test_support::metric_sum(
                 busbar_kernel::snapshot::REQUESTS_TOTAL,
                 &labels,
             ),
-            busbar_kernel::test_support::metric_sum(&duration_count, &labels),
+            busbar_kernel_testkit::test_support::metric_sum(&duration_count, &labels),
         )
     };
     let before = counts();

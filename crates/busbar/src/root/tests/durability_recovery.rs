@@ -169,7 +169,7 @@ fn the_v3_key_credential_and_denylist_ops_answer_as_the_op_set_did() {
 
 /// The verbs unit's admin token, as the kernel mints one for the length of an admin verb.
 fn admin() -> Grant<AdminVerb> {
-    busbar_kernel::test_support::tokens::grant::<AdminVerb>()
+    busbar_kernel_testkit::test_support::tokens::grant::<AdminVerb>()
 }
 
 /// One boot of node [`NODE`] over `store`: its book, resumed from the chain the store kept, and the
@@ -182,7 +182,7 @@ fn boot(store: &Opened) -> (Arc<Mutex<Durability>>, Arc<dyn VerbStore + Send + S
     ));
     let verbs = node_verb_store(
         Arc::clone(&book),
-        busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+        busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
         STORE,
     )
     .expect("a node over a configured store binds the verb store");

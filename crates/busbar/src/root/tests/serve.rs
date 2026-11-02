@@ -735,7 +735,7 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
 
     // No door, no slots: nothing is bound.
     let bare = busbar_kernel::governance::GovState::new(
-        Arc::new(busbar_kernel::governance::MemoryStore::new()),
+        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
         None,
     )
     .expect("governance");

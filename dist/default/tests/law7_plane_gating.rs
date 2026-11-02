@@ -15,7 +15,7 @@
 mod linked;
 
 use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
-use busbar_kernel::test_support::planes::TestRegistryIsolation;
+use busbar_kernel_testkit::test_support::planes::TestRegistryIsolation;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static HYDRATED: AtomicUsize = AtomicUsize::new(0);
@@ -91,7 +91,7 @@ fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
         HYDRATED.load(Ordering::SeqCst),
         STARTED.load(Ordering::SeqCst),
     );
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .plane_sections(sections)
         .build();
     busbar_kernel::boot::hydrate_all(&app).expect("hydrate");
@@ -132,7 +132,7 @@ fn only_a_configured_plane_builds_its_slot() {
     let fallback = linked::fallback();
     let _iso = TestRegistryIsolation::seeded(&[fallback, &PROBE]);
     let build = |sections: &[&'static str]| {
-        let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
+        let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::none(),
         );
         cfg.plane_sections = sections.iter().copied().collect();

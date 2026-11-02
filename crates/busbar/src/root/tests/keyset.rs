@@ -72,7 +72,7 @@ fn seal(durability: &mut Durability) -> AuditRecord {
         },
         wall: NOW + 1,
         mono: 1,
-        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
+        origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
         outcome: OutcomeFacts {
             unit_end: Outcome::Completed,
             step: None,
@@ -94,7 +94,7 @@ fn seal(durability: &mut Durability) -> AuditRecord {
     durability
         .seal_unit(
             inputs,
-            busbar_kernel::test_support::tokens::pass(),
+            busbar_kernel_testkit::test_support::tokens::pass(),
             &token(),
         )
         .expect("the node seals");

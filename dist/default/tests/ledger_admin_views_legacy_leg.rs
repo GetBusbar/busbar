@@ -80,7 +80,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
     // An OPEN admin posture, so that a path which DID exist would reach its handler rather than an
     // authentication refusal. Without this the test would pass on a surface that had grown all five
     // routes and simply refused the credential.
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
     let (_data, admin, _handle) =
@@ -131,7 +131,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
 async fn the_served_document_describes_the_ledger_views_as_the_loops() {
     busbar_kernel::snapshot::init();
     busbar_core_admin::install();
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
     let (_data, admin, _handle) =

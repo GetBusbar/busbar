@@ -21,8 +21,9 @@ use busbar_kernel::audit::auditlog::{
 };
 use busbar_kernel::audit_ring::OUTCOME_APPLIED;
 use busbar_kernel::config::{resolve_export, ExportDefCfg, ExportDefs};
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
 use busbar_kernel::preflight::{publish_root_rows, RootInstall};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use serde_json::Value;
 
 const MODULE: &str = "accepted-events-fixture";
@@ -263,7 +264,7 @@ fn accepted_events_project_once_and_async_export_failures_do_not_feed_back() {
     assert!(errors.is_empty(), "{errors:?}");
     busbar_kernel::export::plugin::open(&config).unwrap();
     let store = Arc::new(Durable::default());
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(Arc::new(GovState::new(store.clone(), None).unwrap()))
         .build();
     busbar_kernel::boot::hydrate_all(&app).unwrap();

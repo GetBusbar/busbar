@@ -698,7 +698,7 @@ async fn anonymous_policy() -> tokio::sync::MutexGuard<'static, ()> {
     }])
     .unwrap();
     crate::root::inbound::stage(guests, Vec::new());
-    let app = busbar_kernel::test_support::TestApp::new().build();
+    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     assert!(crate::root::inbound::publish(&app).is_some());
     publishing
 }
@@ -715,7 +715,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     use busbar_contract::transport::TransportSettings;
     use busbar_core_connector::framer::{Established, Framing, Got};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
-    use busbar_kernel::test_support::TestApp;
+    use busbar_kernel_testkit::test_support::TestApp;
     use busbar_test_kit::root_door_fixtures::scoped_mux;
 
     let _publishing = crate::root::PUBLISHING.lock().await;

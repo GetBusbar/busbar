@@ -355,7 +355,7 @@ fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
 #[cfg(linked_axis_export_doors)]
 #[test]
 fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
-    let module = busbar_kernel::test_support::export_axis::scrape_module();
+    let module = busbar_kernel_testkit::test_support::export_axis::scrape_module();
     let registry = PluginRegistry::empty()
         .link(linked_exports(crate::LINKED.export_doors).expect("the linked export rows"))
         .expect("the linked rows alone");

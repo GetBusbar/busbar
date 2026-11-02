@@ -202,7 +202,7 @@ fn a_linked_dialect() -> String {
 /// pool `slow` names `patient` with no override. Both models are also routable directly.
 fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     // The deployment names `models:`/`pools:`, which config resolution hands a plane.
-    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     let dialect = a_linked_dialect();
     let mut defs = std::collections::HashMap::new();
     defs.insert(
@@ -218,7 +218,7 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
                 plain\n  slow:\n    members:\n      - model: patient\n";
     let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
-    let app = busbar_kernel::test_support::TestApp::new().build();
+    let app = busbar_kernel_testkit::test_support::TestApp::new().build();
     let serving = crate::root::model_egress::ModelServing {
         pools: crate::root::model_egress::ModelPools::of(&cfg),
         lanes: [("patient".to_string(), 0), ("plain".to_string(), 1)]

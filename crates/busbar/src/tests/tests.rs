@@ -15,7 +15,7 @@ use crate::root::cli::{
     config_override_notice, providers_override_notice, resolve_config_path,
     signing_key_command_output, value_flag,
 };
-use busbar_kernel::test_support::EnvVarGuard;
+use busbar_kernel_testkit::test_support::EnvVarGuard;
 
 /// `worker_threads_from_env`: an unset var returns None (the normal default path, no warning); a
 /// valid positive integer returns Some(n); zero/negative/non-numeric returns None WITH a warning
@@ -275,7 +275,8 @@ async fn serve_listener_actually_serves_real_http_traffic() {
     let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
     let addr = listener.local_addr();
     let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
-    let secret_resolver = Arc::new(busbar_kernel::test_support::builtins_only_secret_resolver());
+    let secret_resolver =
+        Arc::new(busbar_kernel_testkit::test_support::builtins_only_secret_resolver());
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
     let serve_handle = tokio::spawn(serve_listener(
@@ -597,7 +598,7 @@ impl Drop for BookDir {
 #[test]
 fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
 
     // ORDER-INDEPENDENCE, not decoration. `cfg_with_provider_api_key` names the registry's
@@ -606,7 +607,7 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     // Every linked protocol declaration goes into the test registry, read off the linked table
     // the root registers from.
     for decls in crate::LINKED.protocols {
-        busbar_kernel::test_support::protocols::register_test_protocols(decls);
+        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
     busbar_kernel::snapshot::init();
     let dir = BookDir::new("real-path");
@@ -625,7 +626,7 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     // apply both run — so `app.governance` is the store this deployment actually resolved and
     // `app.cost` is the resolved cost model the read plan is derived from. Not a stand-in for one.
     let app = busbar_kernel_testkit::app::build_once(
-        busbar_kernel::test_support::cfg_with_provider_api_key(
+        busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_BOOT_BOOK"),
         ),
         None,
@@ -669,13 +670,13 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
 #[test]
 fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     for decls in crate::LINKED.protocols {
-        busbar_kernel::test_support::protocols::register_test_protocols(decls);
+        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
     busbar_kernel::snapshot::init();
     let app = busbar_kernel_testkit::app::build_once(
-        busbar_kernel::test_support::cfg_with_provider_api_key(
+        busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_NO_SLOTS"),
         ),
         None,
@@ -683,7 +684,7 @@ fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
     .expect("the app builds");
     let mut slotless = app.clone();
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
+        std::sync::Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
     slotless.governance = Some(std::sync::Arc::new(
         busbar_kernel::governance::GovState::new(store, None).expect("the state opens"),
     ));
@@ -887,17 +888,17 @@ fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
 #[test]
 fn one_seal_after_two_reloads() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
 
     for decls in crate::LINKED.protocols {
-        busbar_kernel::test_support::protocols::register_test_protocols(decls);
+        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
     busbar_kernel::snapshot::init();
     let dir = BookDir::new("two-reloads");
     let _env = data_dir_env(&dir.0);
     let cfg = || {
-        busbar_kernel::test_support::cfg_with_provider_api_key(
+        busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
             busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_ONE_SEAL"),
         )
     };

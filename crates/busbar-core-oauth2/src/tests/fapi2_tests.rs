@@ -30,7 +30,7 @@ use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNIN
 use serde_json::{json, Value};
 
 use crate::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
-use busbar_kernel::test_support::TestApp;
+use busbar_kernel_testkit::test_support::TestApp;
 
 use crate::flow_tests::{
     encode_component, location, path_of, percent_decode, query_param, send, Jar,

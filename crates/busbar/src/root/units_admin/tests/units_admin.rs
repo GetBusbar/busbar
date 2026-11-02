@@ -663,7 +663,7 @@ fn the_two_spellings_of_the_scope_split_agree() {
 #[test]
 fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
     let store: Arc<dyn busbar_contract::records::RecordStore> =
-        Arc::new(busbar_kernel::governance::MemoryStore::new());
+        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
     let request = AdminRequest {
@@ -1273,7 +1273,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     const WHO: &str = "operator-cifollow-one-entry";
     // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
     // test harness registers it, so the rows this test seals reach the seam's read model.
-    let _ = busbar_kernel::test_support::TestApp::new().build();
+    let _ = busbar_kernel_testkit::test_support::TestApp::new().build();
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
         let ring =
             busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
@@ -1782,7 +1782,7 @@ fn answer_over_counts(
     gov: Arc<busbar_kernel::governance::GovState>,
     path: &str,
 ) -> serde_json::Value {
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(gov)
         .cost(one_lane_card())
         .build();
@@ -1811,7 +1811,8 @@ fn answer_over_counts(
 #[test]
 fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
     use busbar_contract::records::RecordStore as _;
-    use busbar_kernel::governance::{GovState, MemoryStore, VirtualKey};
+    use busbar_kernel::governance::{GovState, VirtualKey};
+    use busbar_kernel_testkit::test_support::store_double::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let key = VirtualKey {
         id: "vk_one_ledger".to_string(),
@@ -1946,12 +1947,12 @@ fn real_admin_dispatch() -> RouterDispatch {
     busbar_core_admin::install();
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             Some("admin-token".into()),
         )
         .expect("governance"),
     );
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(gov)
         .build();
     RouterDispatch::new(
@@ -2369,7 +2370,7 @@ impl AuditView for SealedChain {
 /// The audit step's pass, as the loop lends it at that step — one mint for every chain test here.
 #[cfg(feature = "root-admin")]
 fn an_audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
-    busbar_kernel::test_support::tokens::pass()
+    busbar_kernel_testkit::test_support::tokens::pass()
 }
 
 /// Seal three records onto a signing chain, and publish the key's public half.
@@ -2406,7 +2407,7 @@ fn a_sealed_chain() -> SealedChain {
                 },
                 wall: 1_700_000_000 + unit,
                 mono: unit * 1_000,
-                origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
+                origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
                 outcome: OutcomeFacts {
                     unit_end: UnitOutcome::Completed,
                     step: None,
@@ -2810,7 +2811,7 @@ fn a_memory_book() -> Arc<Mutex<crate::root::durability::Durability>> {
 fn a_journal_over(book: &Arc<Mutex<crate::root::durability::Durability>>) -> AmendmentJournal {
     AmendmentJournal::new(
         Arc::clone(book),
-        busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+        busbar_kernel_testkit::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
     )
 }
 
@@ -4127,7 +4128,9 @@ fn append_the_next_record(book: &Arc<Mutex<crate::root::durability::Durability>>
         .unwrap()
         .journal
         .append(
-            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+            &busbar_kernel_testkit::test_support::tokens::grant::<
+                busbar_contract::caps::DurableWrite,
+            >(),
             busbar_contract::caps::StepName::Meter,
             &[
                 busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Load, vec![1])
@@ -4243,7 +4246,7 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
         .expect("healthy journal");
     journal.admit().expect("admitted before the store pends");
     let store: Arc<dyn busbar_contract::records::RecordStore> =
-        Arc::new(busbar_kernel::governance::MemoryStore::new());
+        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let mut request = a_request();
     request.method = "POST".into();
@@ -4344,7 +4347,7 @@ fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
     let book = a_memory_book();
     let journal = a_journal_over(&book);
     let store: Arc<dyn busbar_contract::records::RecordStore> =
-        Arc::new(busbar_kernel::governance::MemoryStore::new());
+        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let cache = bound::ReplayCache::new();
     let mut request = a_request();
@@ -4414,7 +4417,7 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
 #[test]
 fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
     let store: Arc<dyn busbar_contract::records::RecordStore> =
-        Arc::new(busbar_kernel::governance::MemoryStore::new());
+        Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
     let request = AdminRequest {

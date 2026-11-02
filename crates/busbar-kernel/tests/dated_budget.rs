@@ -25,12 +25,13 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::records::{ModelTokens, RecordStore, VirtualKey};
 use busbar_kernel::cost::CostModel;
-use busbar_kernel::governance::{budget_window, GovState, LimitBlocked, MemoryStore, WINDOW_TOTAL};
+use busbar_kernel::governance::{budget_window, GovState, LimitBlocked, WINDOW_TOTAL};
 use busbar_kernel::rate_apply::RateEpoch;
-use busbar_kernel::test_support::rate_holders::install_rate_epoch;
 use busbar_kernel_ledger::cost::{
     price_in_view, Author, CardEntryDraft, History, LaneClass, LedgerEntry, RateCard,
 };
+use busbar_kernel_testkit::test_support::rate_holders::install_rate_epoch;
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 /// The deployment's dated history, as the composition root holds it.
 struct Holder(Mutex<Arc<History>>, std::sync::atomic::AtomicBool);

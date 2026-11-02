@@ -9,7 +9,7 @@
 //! drives the kernel in process over a REAL dropped-in plugin (a signed tarball the loader scans, a
 //! cdylib the loader loads) installs this instead — the loader's own registry build and auth rows,
 //! as the root composes them — through the kernel's test seams
-//! (`busbar_kernel::test_support::{install_test_root, install_test_auth_axis}`, read ahead of the
+//! (`busbar_kernel_testkit::test_support::{install_test_root, install_test_auth_axis}`, read ahead of the
 //! stand-in). An integration test cannot call the root's code (the root is a binary), so this is the
 //! root's composition restated over the loader; the root's own unit tests prove the root's.
 //!
@@ -173,7 +173,7 @@ impl AuthAxis for LoaderAuth {
     fn carriers(&self, module: &str) -> Vec<String> {
         let rows = self.0.carriers(module);
         if rows.is_empty() && module == busbar_kernel::config::operator_provider() {
-            return busbar_kernel::test_support::outbound_auth::double_operator_carriers();
+            return busbar_kernel_testkit::test_support::outbound_auth::double_operator_carriers();
         }
         rows
     }
@@ -181,7 +181,7 @@ impl AuthAxis for LoaderAuth {
     fn default_inbound_style(&self) -> Result<Vec<String>, String> {
         let rows = self.0.default_inbound_style()?;
         if rows.is_empty() {
-            return Ok(busbar_kernel::test_support::outbound_auth::double_inbound_style());
+            return Ok(busbar_kernel_testkit::test_support::outbound_auth::double_inbound_style());
         }
         Ok(rows)
     }
@@ -191,7 +191,7 @@ impl AuthAxis for LoaderAuth {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<OutboundServing>, String> {
-        busbar_kernel::test_support::outbound_auth::axis().serving(style, settings)
+        busbar_kernel_testkit::test_support::outbound_auth::axis().serving(style, settings)
     }
 }
 
@@ -230,7 +230,7 @@ struct LoaderExports;
 
 /// The kit's stand-in export axis.
 fn kit() -> &'static dyn busbar_contract::export_calls::ExportAxis {
-    &busbar_kernel::test_support::export_axis::STAND_IN
+    &busbar_kernel_testkit::test_support::export_axis::STAND_IN
 }
 
 /// Whether a linked sink answers `module`.
@@ -322,16 +322,16 @@ static EXPORTS: LoaderExports = LoaderExports;
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        busbar_kernel::test_support::install_test_root(RootInstall {
+        busbar_kernel_testkit::test_support::install_test_root(RootInstall {
             registry_build: Some(registry_rows),
             export_axis: Some(&EXPORTS),
             auth_chain_module: Some(
                 busbar_plugin_loader::dispatch::kinds::auth::declares_chain_module,
             ),
             hook_answers: Some(hook_answers),
-            ..busbar_kernel::test_support::root::composed()
+            ..busbar_kernel_testkit::test_support::root::composed()
         });
-        busbar_kernel::test_support::install_test_auth_axis(auth_axis);
+        busbar_kernel_testkit::test_support::install_test_auth_axis(auth_axis);
     });
 }
 
@@ -344,7 +344,7 @@ pub fn install() {
 /// itself (`install_export_axis`).
 pub fn link_exports(exports: &'static [ExportDoor]) {
     install();
-    busbar_kernel::test_support::export_axis::install_export_axis();
+    busbar_kernel_testkit::test_support::export_axis::install_export_axis();
     let _ = EXPORT_REGISTRY.get_or_init(|| {
         let linked = exports
             .iter()

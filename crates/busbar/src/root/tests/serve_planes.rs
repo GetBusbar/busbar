@@ -10,9 +10,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::GovState;
 use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 use crate::root::plane_node::NodeEndPost;
 use crate::root::test_plugins::{missing, BUILD_BUSBAR_EXAMPLES};

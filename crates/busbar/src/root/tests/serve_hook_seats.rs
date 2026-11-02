@@ -31,9 +31,10 @@ use busbar_contract::hooks::{
 };
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::hooks::ResolvedPolicy;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
+use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, PUBLISHING};
@@ -100,7 +101,7 @@ pub(super) fn install_door_seams() {
     static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::registry::PlaneDecl> =
         std::sync::OnceLock::new();
     for decls in crate::LINKED.protocols {
-        busbar_kernel::test_support::protocols::register_test_protocols(decls);
+        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
     }
     let row = ROW.get_or_init(|| {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
@@ -108,7 +109,7 @@ pub(super) fn install_door_seams() {
             .expect("the door serving the `pools` map binds");
         busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
     });
-    busbar_kernel::test_support::planes::register_test_plane(row);
+    busbar_kernel_testkit::test_support::planes::register_test_plane(row);
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.
@@ -568,7 +569,8 @@ pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durabilit
         )
         .expect("the store reads back"),
     ));
-    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+    let token =
+        busbar_kernel_testkit::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
     for _ in 0..3 {
         let _lost = book.lock().unwrap().journal.append(
             &token,
@@ -1067,13 +1069,13 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     };
 
     // THE GENERATION: the lanes, the pool, the fee, and the four seats.
-    let mut builder = busbar_kernel::test_support::TestApp::new();
+    let mut builder = busbar_kernel_testkit::test_support::TestApp::new();
     if !opts.open_door {
         builder = builder.keys_chain();
     }
     let mut builder = builder.governance(Arc::clone(&gov)).cost(cost);
     for (i, (port, _)) in opts.members.iter().enumerate() {
-        let lane = busbar_kernel::test_support::LaneSpec::new(
+        let lane = busbar_kernel_testkit::test_support::LaneSpec::new(
             &format!("m{i}"),
             opts.dialect.unwrap_or(word("dialect")),
             &format!("http://127.0.0.1:{port}"),

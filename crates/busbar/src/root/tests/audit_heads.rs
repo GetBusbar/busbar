@@ -41,7 +41,7 @@ impl Sealed {
     fn append(&mut self, entry: Entry) -> JournalRecord {
         self.journal
             .append(
-                &busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+                &busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
                 StepName::Audit,
                 &[entry],
             )
@@ -55,7 +55,7 @@ impl Sealed {
         inputs.wall = wall;
         let record = self
             .audit
-            .seal(inputs, &busbar_kernel::test_support::tokens::pass());
+            .seal(inputs, &busbar_kernel_testkit::test_support::tokens::pass());
         self.append(super::super::audit_entry(&record).unwrap())
     }
 
@@ -497,7 +497,7 @@ fn historical_usage_class_absent_from_current_registry_keeps_its_signed_head() {
     });
     let audit = sealed
         .audit
-        .seal(inputs, &busbar_kernel::test_support::tokens::pass());
+        .seal(inputs, &busbar_kernel_testkit::test_support::tokens::pass());
     let expected = SignedHead::of(&audit);
     assert!(expected.signature.is_some());
     let record = sealed.append(super::super::audit_entry(&audit).unwrap());

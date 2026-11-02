@@ -414,7 +414,7 @@ pub fn dispatch_latched() -> bool {
 mod store_overlay_management {
     use busbar_kernel::config::overlay::{persist_root, resolve_backend_with_env, RootSettings};
     use busbar_kernel::config::{ConfigMgmtCfg, OverlayBackend, OverlayCfg};
-    use busbar_kernel::test_support::TestOverlayStore;
+    use busbar_kernel_testkit::test_support::TestOverlayStore;
     #[test]
     fn legacy_overlay_file_is_untouched_and_store_remains_writable() {
         let stamp = std::time::SystemTime::now()

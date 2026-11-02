@@ -148,7 +148,7 @@ fn the_audit_naming_is_derived_from_the_plane() {
     use busbar_kernel::audit::auditlog::AUDIT_LOG as AUDIT;
     // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
     // test harness registers it, so the rows this test writes reach the seam's read model.
-    let _ = busbar_kernel::test_support::TestApp::new().build();
+    let _ = busbar_kernel_testkit::test_support::TestApp::new().build();
     let principal = busbar_contract::auth::AuthPrincipal(None);
     for decl in verb_planes() {
         assert_eq!(

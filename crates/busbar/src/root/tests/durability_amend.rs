@@ -29,7 +29,7 @@ fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
         Box::new(busbar_kernel_wal::NullShipper::new()),
     )
     .unwrap();
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     let mut chain = amend::AmendChain::default();
     let valid = chain.append(
         amend::content_access(
@@ -40,7 +40,7 @@ fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
             Vec::new(),
             1,
         ),
-        &busbar_kernel::test_support::tokens::pass(),
+        &busbar_kernel_testkit::test_support::tokens::pass(),
     );
     let mut truncated = BodyWriter::new();
     truncated.text(AMENDMENT);
@@ -102,13 +102,13 @@ fn boot(
     );
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             None,
         )
         .expect("a governance over the memory store"),
     );
     gov.attach_store_calls(slots.calls());
-    let app = busbar_kernel::test_support::TestApp::new()
+    let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(gov)
         .build();
     let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
@@ -224,7 +224,7 @@ fn store_boot(
     let mut durability =
         build_on_store(&DurabilityConfig { data_dir: None }, STORE_NODE, lane, None)
             .expect("the store reads back");
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     durability
         .restore_amendments(journal, &token)
         .expect("the chain reads back");
@@ -252,9 +252,9 @@ fn store_drained(book: &Arc<Mutex<Durability>>) {
 /// access, and stops; the second boot over the same store must see both, with no restart finding.
 fn store_phase() {
     let slots = crate::root::store_double::RecordSlots::new();
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     {
-        let app = busbar_kernel::test_support::TestApp::new().build();
+        let app = busbar_kernel_testkit::test_support::TestApp::new().build();
         let book = store_boot(&slots, &app.amendments);
         access(&app, HOOK);
         let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
@@ -375,7 +375,7 @@ fn without_a_store_the_amendment_journal_is_neither_rebuilt_nor_bound() {
     )
     .expect("a memory-buffered journal cannot fail to open");
     let journal = NodeAmendments::new();
-    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
     durability
         .restore_amendments(&journal, &token)
         .expect("nothing is read back");

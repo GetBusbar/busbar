@@ -21,7 +21,7 @@ const NODE: u64 = 47;
 const NOW: u64 = 1_700_000_000;
 
 fn token() -> Grant<DurableWrite> {
-    busbar_kernel::test_support::tokens::grant::<DurableWrite>()
+    busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>()
 }
 
 /// A book with an unusable legacy data directory over `slots`, as the production boot builds it: the chain
@@ -128,7 +128,7 @@ fn an_audit_window_the_store_will_not_read_is_never_answered_empty() {
         durability
             .seal_unit(
                 inputs(unit),
-                busbar_kernel::test_support::tokens::pass(),
+                busbar_kernel_testkit::test_support::tokens::pass(),
                 &token,
             )
             .expect("sealed");
@@ -159,7 +159,7 @@ fn two_records(slots: &RecordSlots) {
         first
             .seal_unit(
                 inputs(unit),
-                busbar_kernel::test_support::tokens::pass(),
+                busbar_kernel_testkit::test_support::tokens::pass(),
                 &token,
             )
             .expect("sealed");

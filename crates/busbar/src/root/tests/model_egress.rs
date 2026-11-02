@@ -3,7 +3,7 @@
 //! sealed over).
 
 use super::*;
-use busbar_kernel::test_support::{LaneSpec, TestApp};
+use busbar_kernel_testkit::test_support::{LaneSpec, TestApp};
 
 #[test]
 fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
@@ -104,7 +104,7 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
         queued: crate::root::egress_ports::WalkTelemetry::default(),
         reservoirs: Arc::default(),
     };
-    let token = busbar_kernel::test_support::tokens::pass();
+    let token = busbar_kernel_testkit::test_support::tokens::pass();
     let destination = DestinationId::new(0);
     let now = wall_secs();
     handle.swap(Arc::clone(&second));
@@ -164,7 +164,7 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
     let destination = DestinationId::new(0);
     assert!(cells.spend_budget(destination));
     assert_eq!(first.store.lane_budget_remaining(0), Some(1));
-    let token = busbar_kernel::test_support::tokens::pass();
+    let token = busbar_kernel_testkit::test_support::tokens::pass();
     let now = wall_secs();
     cells.observe("p", destination, Outcome::HardDown, now, &token);
     let later = now + busbar_kernel_breaker::DEFAULT_HARD_DOWN_COOLDOWN_SECS + 1;
@@ -209,7 +209,7 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
         .build();
     let cells = cells_over(Arc::clone(&app), &pools);
     let dest = DestinationId::new(0);
-    let token = busbar_kernel::test_support::tokens::pass();
+    let token = busbar_kernel_testkit::test_support::tokens::pass();
     let now = wall_secs();
 
     // Every pool's cell exists before the probes, as a served request through each makes it.
@@ -243,7 +243,7 @@ fn a_success_is_recorded_on_the_walks_clock() {
         .build();
     let cells = cells_over(Arc::clone(&app), &["p"]);
     let dest = DestinationId::new(0);
-    let token = busbar_kernel::test_support::tokens::pass();
+    let token = busbar_kernel_testkit::test_support::tokens::pass();
     let now = wall_secs() + 3_600;
 
     for _ in 0..6 {
@@ -286,7 +286,7 @@ fn a_probe_success_joins_the_walks_window() {
         .build();
     let cells = cells_over(Arc::clone(&app), &["p"]);
     let dest = DestinationId::new(0);
-    let token = busbar_kernel::test_support::tokens::pass();
+    let token = busbar_kernel_testkit::test_support::tokens::pass();
     let now = wall_secs() + 3_600;
 
     // The pool's cell exists before the probes, as a served request through it makes it.
@@ -326,7 +326,7 @@ fn a_probe_success_joins_the_walks_window() {
 /// cooldown has already run out (it reads 0).
 #[test]
 fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
-    let token = busbar_kernel::test_support::tokens::pass();
+    let token = busbar_kernel_testkit::test_support::tokens::pass();
     let dest = DestinationId::new(0);
     let now = wall_secs() + 3_600;
     let fresh = || {
@@ -373,7 +373,7 @@ fn pools_of(section: &str) -> ModelPools {
     // The deployment names `models:`/`pools:`, which config resolution hands a plane: register the
     // kernel's neutral test plane first, as the timeout cells do (nextest runs each test in its
     // own process, so no other test has registered one).
-    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
         "providers: {{}}\nmodels: {{}}\npools:\n{section}"
     ))
@@ -427,7 +427,7 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
         .build();
     let cells = cells_routing(LiveApp::fixed(Arc::clone(&app)), &[], &["m0"]);
-    let token = busbar_kernel::test_support::tokens::pass();
+    let token = busbar_kernel_testkit::test_support::tokens::pass();
     let now = wall_secs();
 
     cells.observe(
@@ -479,7 +479,7 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let _ = live.set(Arc::downgrade(&handle));
     let cells = cells_routing(LiveApp::new(live, Arc::clone(&first)), &["p"], &[]);
     let dest = DestinationId::new(0);
-    let token = busbar_kernel::test_support::tokens::pass();
+    let token = busbar_kernel_testkit::test_support::tokens::pass();
     let now = wall_secs();
     let fault = Outcome::Transient { retry_after: None };
 
@@ -534,7 +534,7 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
 /// RED: the keyless lane's model is probed like any other.
 #[test]
 fn a_keyless_lane_is_not_probed() {
-    busbar_kernel::test_support::register_neutral_test_plane();
+    busbar_kernel_testkit::test_support::register_neutral_test_plane();
     let mut defs = std::collections::HashMap::new();
     for name in ["keyed", "local"] {
         let def: busbar_kernel::config::ProviderDef =

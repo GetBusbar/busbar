@@ -514,7 +514,7 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
 #[test]
 fn the_exit_arm_seals_no_money_figure_into_the_record() {
     use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
-    use busbar_kernel::test_support::tokens::{end, grant, origin, pass};
+    use busbar_kernel_testkit::test_support::tokens::{end, grant, origin, pass};
 
     let node = Node::new();
     let durability = crate::root::durability::build(
@@ -993,7 +993,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     site.audited(
         UnitKey::new(51),
         facts,
-        busbar_kernel::test_support::tokens::pass(),
+        busbar_kernel_testkit::test_support::tokens::pass(),
     );
     let before = records();
     site.post(&ctx(51), ended);
@@ -1147,8 +1147,9 @@ async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
             )
             .expect("the store reads back"),
         ));
-        let token =
-            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+        let token = busbar_kernel_testkit::test_support::tokens::grant::<
+            busbar_contract::caps::DurableWrite,
+        >();
         for _ in 0..3 {
             let _lost = book.lock().unwrap().journal.append(
                 &token,
@@ -1206,7 +1207,7 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
     let (node, post) = door_node(&book);
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new()),
             None,
         )
         .expect("governance builds"),

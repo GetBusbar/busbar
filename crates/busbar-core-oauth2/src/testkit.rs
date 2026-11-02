@@ -5,7 +5,7 @@
 //! kernel's neutral `test_support::TestApp` names none of it.
 //!
 //! The builder lives here, as an extension trait over `TestApp`'s public
-//! `oauth_as_plane` seam (`busbar_kernel::test_support::TestApp::oauth_as_plane`) — the same relation
+//! `oauth_as_plane` seam (`busbar_kernel_testkit::test_support::TestApp::oauth_as_plane`) — the same relation
 //! the CRUD-shaped planes' extension traits have to their `TestAppSeam`, sized down for a
 //! singleton plane with no scratch accumulation: one config in, one plane out, no finalizer needed.
 
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::config::{AsIdentity, OauthAsCfg};
 #[cfg(test)]
 use busbar_kernel::state::App;
-use busbar_kernel::test_support::TestApp;
+use busbar_kernel_testkit::test_support::TestApp;
 
 use crate::plane::AsPlane;
 

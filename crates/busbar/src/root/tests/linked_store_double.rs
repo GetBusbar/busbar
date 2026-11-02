@@ -3,7 +3,7 @@
 
 //! THE LINKED STORE DOOR, PROVEN WHERE IT IS LINKED (R-FIX3). The kernel's test build takes no store
 //! crate under any name (THE DESIGN Part 2 #2: the kernel reaches a store only through the store
-//! kind's door): it links its in-crate double (`busbar_kernel::test_support::store_double`), and
+//! kind's door): it links the external testkit double (`busbar_kernel_testkit::test_support::store_double`), and
 //! its own tests run against that. These prove the double copies the real door the root links
 //! (`crate::LINKED.stores`): the same Statement, and the same answers to one verb script, both
 //! stores opened through their doors on the store axis exactly as boot opens the configured store.
@@ -16,7 +16,7 @@ use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore, UsageDelta, VirtualKey,
 };
 use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
-use busbar_kernel::test_support::store_double;
+use busbar_kernel_testkit::test_support::store_double;
 
 fn read(door: DoorFn) -> rendering::Read {
     let stated = crate::root::loader::dispatch::rendering_of(door).expect("the door states");
