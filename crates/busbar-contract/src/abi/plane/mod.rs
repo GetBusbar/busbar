@@ -561,15 +561,15 @@ pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
 
 pub const ROUTE_SCOPE_LOCAL: u8 = 4;
 
-/// [`ArriveOut::route_flags`]: the unit's operation is performed at most once. A
+/// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4
 
 pub const ROUTE_ONCE: u8 = 1;
 
-/// [`ArriveOut::route_flags`]: the unit is served as a duplex session. Its route leg
+/// [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5
 
 pub const ROUTE_SESSION: u8 = 2;
 
-/// [`ArriveOut::route_flags`]: the caller asked for a streamed answer. The plane states
+/// [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut,
 
 pub const ROUTE_STREAM: u8 = 4;
 

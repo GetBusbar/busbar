@@ -81,7 +81,7 @@ pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
         .map(|(_, v)| v)
 }
 
-/// The `declares` document's key in a door's `Statement::extensions`.
+/// THE `declares` DOCUMENT'S KEY in a door's `Statement::extensions` (ARCHITECT ruling 2026-10-21
 
 pub const EXT_DECLARES: &str = "declares";
 
@@ -106,7 +106,7 @@ pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
-/// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions`. Its
+/// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions` (status row 173). Its
 
 pub const EXT_SPAN_RECORDS: &str = "span_records";
 

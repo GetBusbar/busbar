@@ -1,3 +1,4 @@
+//! A per-thread allocation counter, installed only by binaries that declare [`Counting`] as their
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -48,6 +49,7 @@ pub struct AllocationLifetimeProbe {
 }
 
 impl AllocationLifetimeProbe {
+    /// Observe allocations whose complete `Layout::size()` equals `size` on this thread.
     #[must_use]
     pub fn start_exact_size(size: usize) -> Self {
         assert!(
@@ -68,6 +70,7 @@ impl AllocationLifetimeProbe {
         }
     }
 
+    /// Disarm the observer and return only allocator metadata for this window.
     #[must_use]
     pub fn finish(self) -> AllocationLifetimeObservations {
         LIFETIME.with(|lifetime| lifetime.take().expect("active lifetime probe").observations)
@@ -156,6 +159,7 @@ pub struct Counting {
 }
 
 impl Counting {
+    /// The counter, for a `#[global_allocator]` static.
     #[must_use]
     pub const fn new() -> Self {
         Self { _private: () }
@@ -239,6 +243,7 @@ impl InitializedPayloadProbe {
         })
     }
 
+    /// End observation and return the registered payloads and their destruction results.
     #[must_use]
     pub fn finish(self) -> PayloadObservations {
         let state =
@@ -450,19 +455,23 @@ unsafe impl GlobalAlloc for Counting {
     }
 }
 
+/// Allocations counted on THIS thread since it started or last [`reset`].
 #[must_use]
 pub fn allocations() -> u64 {
     ALLOCS.with(Cell::get)
 }
 
+/// Zero this thread's counter, returning what it held.
 pub fn reset() -> u64 {
     ALLOCS.with(|c| c.replace(0))
 }
 
+/// How many allocations `f` made on this thread.
 pub fn allocations_of(f: impl FnOnce()) -> u64 {
     allocations_with(f).0
 }
 
+/// How many allocations `f` made on this thread, and what it returned.
 pub fn allocations_with<R>(f: impl FnOnce() -> R) -> (u64, R) {
     let before = allocations();
     let r = f();

@@ -700,7 +700,7 @@ pub struct TrustSightItemIn {
     pub digest: AbiStr,
 }
 
-/// [`op::TRUST_SERVES`]'s input queries the kernel's Approve step for a
+/// [`op::TRUST_SERVES`]'s `in`: the KERNEL'S APPROVE as a query (ARCHITECT 2026-10-06: trust is
 /// plane's route leg after its live re-fetch: whether the
 /// counterparty serves `item` at `digest` (absent = the item's last sighting). `value` =
 /// [`DISTRUST_NONE`] (it serves) or the `DISTRUST_*` that refuses it. Never pends.
@@ -948,7 +948,7 @@ pub const CONTENT_PASS: u64 = 0;
 /// `content.scan`: the gate blocked it.
 pub const CONTENT_BLOCK: u64 = 1;
 
-/// [`op::HOOK_CALL`]'s input runs the calling
+/// [`op::HOOK_CALL`]'s `in` (THE DESIGN, host services; ARCHITECT H2 ruling: op 17): run the calling
 /// unit's hook stage for an in-session sub-operation, over the hook kind's own
 /// [`PromptView`](crate::abi::hook::PromptView). The hooks that run are the ones the CALLING UNIT
 /// binds (its kernel-recorded plane and pool, never a field of the view), at the configuration

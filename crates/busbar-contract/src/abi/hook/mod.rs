@@ -627,7 +627,7 @@ pub const VERB_RESTRICT: u32 = 1 << 3;
 
 pub const VERB_HAS_REJECT_STATUS: u32 = 1 << 4;
 
-/// `decide`'s output sets exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`], or [`VERB_RESTRICT`]. The validator faults on zero or multiple bits.
+/// `decide`'s `out`. Exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`],
 ///
 ///
 #[repr(C)]
@@ -791,7 +791,7 @@ pub struct NotifyIn {
     pub _reserved: u32,
 }
 
-/// `configure`'s input
+/// `configure`'s `in`. ARCHITECT review ruling (fresh-Opus M3-SHAPES review, parity item):
 /// echoes the instance name, so the fresh management instance knows which
 /// instance it is configuring.
 #[repr(C)]
@@ -890,7 +890,7 @@ pub const ROUTE_AUTH_KEY: u32 = 1;
 /// [`Route::auth`]: admin auth required, reachable only on the admin listener.
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
-/// One HTTP route this instance serves via `serve`: `{path, method}`
+/// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus M3-SHAPES
 /// is the collision key the kernel checks at load;
 /// `auth` is enforced by the kernel BEFORE `serve` is ever called — none/key/admin auth cannot be
 /// read off a bare path string, which is why a route is this struct, not an [`AbiStr`].
