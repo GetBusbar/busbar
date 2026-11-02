@@ -197,6 +197,7 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
+zeroize = { workspace = true }
 tracing = { workspace = true }
 # Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
 idna_adapter = { workspace = true }

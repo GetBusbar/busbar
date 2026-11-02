@@ -47,6 +47,7 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
+zeroize = { workspace = true }
 tracing = { workspace = true }
 idna_adapter = { workspace = true }
 metrics = { workspace = true }
