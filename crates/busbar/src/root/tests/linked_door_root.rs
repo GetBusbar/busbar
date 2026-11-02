@@ -7,7 +7,28 @@ use crate::root::linked::linked_transport;
 use crate::root::registry::{compose, Dropped};
 use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 
-use busbar_test_kit::root_door_fixtures::{layered, misnamed};
+use busbar_test_kit::root_door_fixtures::layered;
+
+#[allow(unsafe_code)]
+extern "C" fn misnamed_tcp() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
+    use busbar_contract::abi::sdk::door::abi_str;
+
+    let actual = busbar_transport_tcp::door();
+    // SAFETY: the actual linked TCP product owns this immutable, process-lifetime Statement.
+    let statement = unsafe { *actual.statement() };
+    let statement = Box::leak(Box::new(Statement {
+        name: abi_str("tcp-misnamed"),
+        ..statement
+    }));
+    let mut parts = actual.parts();
+    parts.statement = statement;
+    // SAFETY: only the name's valid static string changes. Every list, tail and operation
+    // pointer remains the actual TCP product's process-lifetime data and implementation.
+    Box::leak(Box::new(unsafe {
+        Door::__from_parts(parts).__with_migrate(actual.migrate())
+    }))
+}
 
 #[test]
 fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() {
@@ -61,12 +82,45 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
 
 #[test]
 fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
-    let refused = stated_row(misnamed::door).expect_err("a misnamed door is refused");
+    let actual = busbar_transport_tcp::door();
+    let mutated = misnamed_tcp();
+    assert_eq!(stated_row(busbar_transport_tcp::door).unwrap().key, "tcp");
+    let original = actual.parts();
+    let restated = mutated.parts();
+    assert_eq!(restated.magic, original.magic);
+    assert_eq!(restated.mechanism_version, original.mechanism_version);
+    assert_eq!(restated.size, original.size);
+    assert_eq!(restated.kind, original.kind);
+    assert_eq!(restated.kind_abi, original.kind_abi);
+    assert_eq!(restated.ops, original.ops);
+    assert_eq!(
+        restated.ready.map(|op| op as usize),
+        original.ready.map(|op| op as usize)
+    );
+    assert_eq!(restated.layout, original.layout);
+    assert_eq!(
+        mutated.migrate().map(|op| op as usize),
+        actual.migrate().map(|op| op as usize)
+    );
+    let mut original = busbar_contract::abi::mechanism::rendering::read(
+        &crate::root::loader::dispatch::rendering_of(busbar_transport_tcp::door).unwrap(),
+    )
+    .unwrap();
+    original.name = "tcp-misnamed".into();
+    let restated = busbar_contract::abi::mechanism::rendering::read(
+        &crate::root::loader::dispatch::rendering_of(misnamed_tcp).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        restated, original,
+        "only the real TCP product's name is faulted"
+    );
+    let refused = stated_row(misnamed_tcp).expect_err("a misnamed door is refused");
     assert!(
-        refused.contains("`door-root-named`") && refused.contains("`door-root-claimed`"),
+        refused.contains("`tcp-misnamed`") && refused.contains("`tcp`"),
         "the refusal names both spellings: {refused}"
     );
-    let row = linked_transport!(misnamed::door);
+    let row = linked_transport!(misnamed_tcp);
     let boot = std::panic::catch_unwind(|| {
         compose(&[row], Dropped::NONE, &TransportSettings::default()).map(|built| built.len())
     })
