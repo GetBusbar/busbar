@@ -81,14 +81,26 @@ fn resolved(sections: &str) -> RootCfg {
         ))
         .expect("provider def"),
     );
-    busbar_kernel::config::resolve(&deploy, &defs)
-        .unwrap_or_else(|e| panic!("the document resolves: {e:?}"))
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &defs)
+        .unwrap_or_else(|e| panic!("the document resolves: {e:?}"));
+    let mut auth = busbar_kernel::config::AuthCfg::default_none();
+    auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
+    auth.signing_key = Some(busbar_kernel::config::SecretRef::template(hex::encode(
+        [9u8; 32],
+    )));
+    let operator = auth
+        .admin_auth
+        .iter_mut()
+        .find(|entry| busbar_kernel::config::names_operator(&entry.module))
+        .expect("the actual operator module");
+    operator.token = Some(busbar_kernel::config::SecretRef::template("admintok"));
+    cfg.auth = Some(auth);
+    cfg
 }
 
 fn bootable(sections: &str) -> RootCfg {
     let mut cfg = resolved(sections);
     cfg.public_url = Some("https://busbar.example".to_string());
-    cfg.auth = Some(busbar_kernel::config::AuthCfg::default_none());
     cfg
 }
 
@@ -809,7 +821,7 @@ mod metrics_scrape {
         }
         let app = Arc::new(app);
 
-        let router = plane_router(app, &sections, usize::MAX, &[]);
+        let router = plane_router(app, &sections, usize::MAX, &["keys"]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -997,12 +1009,6 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     );
 
     let mut cfg = resolved(&sections);
-    let mut auth = busbar_kernel::config::AuthCfg::default_none();
-    auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
-    auth.signing_key = Some(busbar_kernel::config::SecretRef::template(hex::encode(
-        [9u8; 32],
-    )));
-    cfg.auth = Some(auth);
     crate::dist_root_install::install();
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
@@ -1334,7 +1340,7 @@ async fn oversized_413_body(
     sections: &str,
     path: &str,
 ) -> serde_json::Value {
-    let router = plane_router(app, sections, 64, &[]);
+    let router = plane_router(app, sections, 64, &["keys"]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
