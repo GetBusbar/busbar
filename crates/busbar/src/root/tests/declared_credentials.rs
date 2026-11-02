@@ -232,7 +232,6 @@ fn each_twin_carries_the_fixture_scheme_of_its_dialect() {
     }
 }
 
-
 fn signed_refusal(key: &str) -> Option<&'static str> {
     match key {
         "AKID" | "not-a-valid-key" => {
@@ -884,7 +883,6 @@ fn lines_in(binding: &StyleBinding, key: &str, mode: UpstreamCreds) -> Vec<Strin
 fn lines(binding: &StyleBinding, key: &str) -> Vec<String> {
     lines_in(binding, key, UpstreamCreds::Own)
 }
-
 
 #[test]
 fn an_unsendable_session_token_is_refused_with_the_signers_own_reason() {
