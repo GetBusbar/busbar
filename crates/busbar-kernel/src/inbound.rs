@@ -496,22 +496,7 @@ impl RequestAdmission {
     }
 
     pub(crate) fn verdict(&self) -> crate::auth::ChainVerdict {
-        match &self.inner.admitted {
-            None => crate::auth::ChainVerdict::Open,
-            Some(admitted) => crate::auth::ChainVerdict::Identified {
-                module: admitted.provider.clone(),
-                principal: admitted.resolved.as_ref().map_or_else(
-                    || busbar_contract::auth::Principal {
-                        id: admitted.identity.subject.clone(),
-                        name: admitted.identity.name.clone(),
-                        roles: admitted.identity.groups.clone(),
-                        ttl_secs: admitted.identity.ttl_secs,
-                    },
-                    |key| crate::auth::principal_from_vkey(key),
-                ),
-                resolved: admitted.resolved.clone(),
-            },
-        }
+        admission_verdict(self.inner.admitted.as_ref())
     }
 
     pub(crate) async fn claim_replay(&self) -> bool {
@@ -521,6 +506,41 @@ impl RequestAdmission {
             self.inner.deadline,
         )
         .await
+    }
+}
+
+fn admitted_identity(
+    provider: String,
+    mut identity: VerifiedIdentity,
+    resolved: Option<Arc<crate::governance::VirtualKey>>,
+) -> (Admitted, Option<Secret<String>>) {
+    let credential = identity.credential.take();
+    (
+        Admitted {
+            provider,
+            identity,
+            resolved,
+        },
+        credential,
+    )
+}
+
+fn admission_verdict(admitted: Option<&Admitted>) -> crate::auth::ChainVerdict {
+    match admitted {
+        None => crate::auth::ChainVerdict::Open,
+        Some(admitted) => crate::auth::ChainVerdict::Identified {
+            module: admitted.provider.clone(),
+            principal: admitted.resolved.as_ref().map_or_else(
+                || busbar_contract::auth::Principal {
+                    id: admitted.identity.subject.clone(),
+                    name: admitted.identity.name.clone(),
+                    roles: admitted.identity.groups.clone(),
+                    ttl_secs: admitted.identity.ttl_secs,
+                },
+                |key| crate::auth::principal_from_vkey(key),
+            ),
+            resolved: admitted.resolved.clone(),
+        },
     }
 }
 
@@ -721,20 +741,17 @@ impl UnitState {
     fn settle(&mut self) {
         match self.fixed() {
             Some(Fixed::Admitted(i)) if self.admitted.is_none() => {
-                if let Some(mut id) = self.identities.get_mut(i).and_then(Option::take) {
+                if let Some(id) = self.identities.get_mut(i).and_then(Option::take) {
                     self.replay = self.replays.get_mut(i).and_then(Option::take);
-                    self.credential = id.credential.take();
                     let provider = self.providers.get(i).cloned().unwrap_or_default();
                     let resolved = if provider == crate::config::KEYS_MODULE {
                         self.resolved.take()
                     } else {
                         None
                     };
-                    self.admitted = Some(Admitted {
-                        provider,
-                        identity: id,
-                        resolved,
-                    });
+                    let (admitted, credential) = admitted_identity(provider, id, resolved);
+                    self.credential = credential;
+                    self.admitted = Some(admitted);
                 }
                 self.identities.clear();
                 self.replays.clear();

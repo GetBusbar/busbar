@@ -288,3 +288,48 @@ fn authenticated_framing_fields_remain_exact_at_the_claim_boundary() {
     assert!(!still_present(&strips, &admitted));
     assert!(still_present(&strips, &original));
 }
+
+#[test]
+fn host_admission_keeps_credential_separate_from_the_principal_and_wire_answer() {
+    let secret = "opaque-owner-custody-value";
+    let identity = VerifiedIdentity {
+        subject: "actual-principal".into(),
+        name: Some("display".into()),
+        groups: vec!["reader".into(), "writer".into()],
+        ttl_secs: Some(37),
+        credential: Some(Secret::new(secret.to_owned())),
+        ..Default::default()
+    };
+    let (admitted, credential) = admitted_identity("provider".into(), identity, None);
+    assert!(admitted.identity.credential.is_none());
+    assert_eq!(
+        credential.as_ref().unwrap().expose(&crate::seal::lend()),
+        secret
+    );
+    assert!(!format!("{admitted:?}").contains(secret));
+    let crate::auth::ChainVerdict::Identified {
+        module,
+        principal,
+        resolved,
+    } = admission_verdict(Some(&admitted))
+    else {
+        panic!("identity remains identified");
+    };
+    assert_eq!(module, "provider");
+    assert_eq!(principal.id, "actual-principal");
+    assert_eq!(principal.name.as_deref(), Some("display"));
+    assert_eq!(principal.roles, ["reader", "writer"]);
+    assert_eq!(principal.ttl_secs, Some(37));
+    assert!(resolved.is_none());
+    assert!(matches!(
+        admission_verdict(None),
+        crate::auth::ChainVerdict::Open
+    ));
+    let answer = inbound_answer(
+        Some(Fixed::Admitted(0)),
+        UnitRef { id: 1, mac: 2 },
+        false,
+        &[],
+    );
+    assert!(!format!("{answer:?}").contains(secret));
+}
