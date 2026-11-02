@@ -1486,3 +1486,7 @@ where
 #[cfg(test)]
 #[path = "tests/state_tests.rs"]
 mod state_tests;
+
+#[cfg(test)]
+#[path = "tests/app_parts_tests.rs"]
+mod app_parts_tests;
