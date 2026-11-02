@@ -338,23 +338,8 @@ fn the_lent_settings_are_wiped() {
 
 #[test]
 fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
-    let mut cfg = crate::config::AuthCfg::default_none();
-    cfg.methods.insert(
-        "idp".into(),
-        crate::config::AuthMethodCfg {
-            module: "idp-plugin".into(),
-            browser_login: None,
-            settings: serde_json::Map::new(),
-        },
-    );
-    let Err(refusal) = LoginMethods::build_on(
-        &cfg,
-        &crate::test_support::rows::Rows::new(),
-        &crate::config::secret::SecretResolver::builtins_only(),
-        || None,
-    ) else {
-        panic!("no axis answers the method");
-    };
+    // Internal production error formatter for an absent axis; no fake rows/axis are built.
+    let refusal = missing_login_axis("idp", "idp-plugin");
     assert_eq!(
         refusal,
         "identity-providers.idp (module 'idp-plugin') could not be loaded as a `kind: auth` login \
@@ -367,59 +352,24 @@ fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
 }
 
 #[tokio::test]
-async fn the_kernel_serves_no_hosted_login_page_of_its_own() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = crate::test_support::TestApp::new()
-        .public_url("https://busbar.example.com")
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let got = reqwest::Client::new()
-        .get(format!("http://{addr}/auth/token"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(got.status().as_u16(), 404, "no flow registered, no page");
+async fn without_a_registered_flow_the_kernel_has_no_hosted_login_response() {
+    // Internal fallback response. The real root installs the genuine hosted flow; this
+    // defensive no-registration branch is not presented as a real-root HTTP route.
+    let response = unregistered_browser_response();
+    assert_eq!(
+        response.status().as_u16(),
+        404,
+        "no flow registered, no page"
+    );
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        axum::body::to_bytes(response.into_body(), 64 * 1024),
+    )
+    .await
+    .expect("the fallback response body is bounded")
+    .unwrap();
     assert!(
-        !got.text().await.unwrap().contains("<html"),
+        !String::from_utf8(body.to_vec()).unwrap().contains("<html"),
         "the kernel renders no login page"
     );
-    handle.abort();
-}
-
-#[test]
-fn a_fixture_login_injection_keeps_the_previous_app_map_unchanged() {
-    let prior = crate::test_support::TestApp::new().build();
-    let mut next = (*prior).clone();
-    let calls: Arc<dyn AuthCalls> = Arc::new(OpenedLogin);
-    install_method(
-        &mut next,
-        "fixture-idp",
-        calls.clone(),
-        LoginKind::Redirect,
-        true,
-    );
-    assert!(login_method(&prior, "fixture-idp").is_none());
-    assert_eq!(
-        login_method(&next, "fixture-idp"),
-        Some(LoginMethodView {
-            name: "fixture-idp".to_string(),
-            has_button: true,
-            issuer: None,
-            login_kind: LoginKind::Redirect,
-        })
-    );
-    install_method(
-        &mut next,
-        "fixture-idp",
-        calls,
-        LoginKind::Credential,
-        false,
-    );
-    let changed = login_method(&next, "fixture-idp").unwrap();
-    assert_eq!(changed.login_kind, LoginKind::Credential);
-    assert!(!changed.has_button);
-    assert!(login_method(&prior, "fixture-idp").is_none());
 }

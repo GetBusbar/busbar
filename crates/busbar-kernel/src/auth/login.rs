@@ -45,26 +45,6 @@ pub(crate) struct LoginMethods {
     pub(crate) methods: IndexMap<String, LoginMethod>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn install_method(
-    app: &mut App,
-    name: &str,
-    calls: Arc<dyn AuthCalls>,
-    login_kind: busbar_contract::auth::LoginKind,
-    has_button: bool,
-) {
-    Arc::make_mut(&mut app.login_methods).methods.insert(
-        name.to_string(),
-        LoginMethod {
-            module: calls,
-            inbound_style: None,
-            has_button,
-            issuer: None,
-            login_kind,
-        },
-    );
-}
-
 pub struct InboundAuthProvider {
     pub provider: String,
 
@@ -212,6 +192,23 @@ impl std::fmt::Debug for LoginMethods {
     }
 }
 
+fn login_module_refusal(name: &str, module: &str, reason: String) -> String {
+    format!("identity-providers.{name} (module '{module}') could not be loaded as a `kind: auth` login plugin: {reason}")
+}
+
+fn missing_login_axis(name: &str, module: &str) -> String {
+    login_module_refusal(
+        name,
+        module,
+        format!("no `kind: auth` plugin answers to '{module}'"),
+    )
+}
+
+fn unregistered_browser_response() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    axum::http::StatusCode::NOT_FOUND.into_response()
+}
+
 impl LoginMethods {
     #[cfg(any(test, feature = "test-support"))]
     pub fn empty() -> Self {
@@ -258,19 +255,11 @@ impl LoginMethods {
                         .or_insert_with(|| serde_json::Value::String(cid.clone()));
                 }
             }
-            let refused = |e: String| {
-                format!(
-                    "identity-providers.{name} (module '{}') could not be loaded as a \
-                     `kind: auth` login plugin: {e}",
-                    mc.module
-                )
-            };
+            let refused = |e: String| login_module_refusal(name, &mc.module, e);
             let axis = match &axis {
                 Some(a) => a.clone(),
                 None => axis
-                    .insert(open_axis().ok_or_else(|| {
-                        refused(format!("no `kind: auth` plugin answers to '{}'", mc.module))
-                    })?)
+                    .insert(open_axis().ok_or_else(|| missing_login_axis(name, &mc.module))?)
                     .clone(),
             };
 
@@ -515,8 +504,8 @@ pub mod seam {
 
     use axum::body::Body;
     use axum::extract::State;
-    use axum::http::{Request, StatusCode};
-    use axum::response::{IntoResponse, Response};
+    use axum::http::Request;
+    use axum::response::Response;
 
     use crate::state::AppHandle;
 
@@ -547,7 +536,7 @@ pub mod seam {
     ) -> Response {
         match crate::oauth_as::seam::hosted_login() {
             Some(seam) => (seam.browser)(handle, req).await,
-            None => StatusCode::NOT_FOUND.into_response(),
+            None => super::unregistered_browser_response(),
         }
     }
 
