@@ -750,11 +750,6 @@ fn agreed_on_the_listener(door: TestDoor, registered: Vec<Vec<u8>>) -> Option<Ve
     })
 }
 
-
-
-
-
-
 #[test]
 fn an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_offer() {
     use crate::support::Knobs;

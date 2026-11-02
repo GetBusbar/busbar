@@ -246,10 +246,6 @@ fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
     );
 }
 
-
-
-
-
 #[test]
 fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
     let mut o: ArriveOut = z();
@@ -1098,9 +1094,6 @@ fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     );
 }
 
-
-
-
 #[test]
 fn a_snapshots_arrival_spans_are_none_or_one_per_claim() {
     use crate::abi::plane::check::check_arrival_spans;
@@ -1311,10 +1304,6 @@ fn a_pattern_claims_one_level_only() {
     assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/"));
     assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
 }
-
-
-
-
 
 #[test]
 fn a_plus_placeholder_spans_one_or_more_segments() {
@@ -1540,9 +1529,6 @@ fn dialect_auth_names_a_dialect_and_a_style() {
         f(Rule::NullWithCount, "dialect_auth.params")
     );
 }
-
-
-
 
 #[test]
 fn dialect_auth_flags_are_provider_and_nothing_else() {
@@ -1993,10 +1979,6 @@ fn a_verdict_is_known() {
     );
 }
 
-
-
-
-
 #[test]
 fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
     use crate::abi::transport::{
@@ -2035,9 +2017,6 @@ fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
         f(Rule::Contradiction, "on_piece.fault_reserved")
     );
 }
-
-
-
 
 #[test]
 fn a_usage_tap_fault_rides_only_a_ready_answer() {
@@ -2107,8 +2086,6 @@ fn an_attempt_answer_names_its_verb_and_target_in_the_arena() {
         f(Rule::SpanOutOfBounds, "on_piece.target")
     );
 }
-
-
 
 #[test]
 fn a_named_need_rides_only_a_far_request() {
@@ -2468,8 +2445,6 @@ fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
         f(Rule::Contradiction, "trust_key.duration_mechanisms")
     );
 }
-
-
 
 #[test]
 fn an_item_approvals_key_names_its_digest_field() {
@@ -3014,8 +2989,6 @@ fn projected_strings_lie_inside_the_arena_written() {
     );
 }
 
-
-
 #[test]
 fn a_projected_session_is_absent_or_octets_inside_the_arena_written() {
     use crate::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
@@ -3326,9 +3299,6 @@ fn pending_drive_names_ready_sessions_while_other_work_waits() {
     );
 }
 
-
-
-
 #[test]
 fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
     for reason in [ReasonCode::OverdraftCeiling, ReasonCode::StaleSlice] {
@@ -3347,9 +3317,6 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
         );
     }
 }
-
-
-
 
 #[test]
 fn an_arrivals_route_flags_are_once_and_session() {
@@ -3400,10 +3367,6 @@ fn an_arrivals_route_flags_are_once_and_session() {
         "a refused arrival opens no session"
     );
 }
-
-
-
-
 
 #[test]
 fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
@@ -3471,9 +3434,6 @@ fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
     );
 }
 
-
-
-
 #[test]
 fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
     let key = b"session-7";
@@ -3528,10 +3488,6 @@ fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
         "a refused arrival routes nowhere"
     );
 }
-
-
-
-
 
 #[test]
 fn an_arrivals_route_class_is_pool_or_direct() {
@@ -3612,10 +3568,6 @@ fn a_unit_answered_at_its_scopes_one_entry_is_a_route_of_its_own() {
         "a refusal about an entry names it directly or as a pool"
     );
 }
-
-
-
-
 
 #[test]
 fn a_refused_arrival_may_name_the_entry_it_is_about() {
@@ -3724,8 +3676,6 @@ fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
         "a ready answer carrying the bit is a fault"
     );
 }
-
-
 
 #[test]
 fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
@@ -3869,9 +3819,6 @@ fn a_cut_and_a_final_mark_ride_only_the_far_ends_own_pieces() {
     }
 }
 
-
-
-
 #[test]
 fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
     assert_eq!(
@@ -3951,10 +3898,6 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     );
 }
 
-
-
-
-
 #[test]
 fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments() {
     use crate::abi::plane::check::EntryPredicate::{Field, Path};
@@ -4000,9 +3943,6 @@ fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments(
         f(Rule::Contradiction, "claim.entry")
     );
 }
-
-
-
 
 #[test]
 fn a_signed_claim_is_a_raw_affix_and_a_raw_affix_is_no_catalog() {

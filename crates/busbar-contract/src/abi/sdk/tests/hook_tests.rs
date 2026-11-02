@@ -892,10 +892,6 @@ fn validate_refuses_what_open_refuses() {
     assert_eq!(validated::<OpenPicky>(b""), (Outcome::Ready, String::new()));
 }
 
-
-
-
-
 #[test]
 fn red_the_content_body_a_hook_sees_is_the_hosts_own_bytes() {
     std::thread_local! {
@@ -1040,10 +1036,6 @@ const TICKET: Ticket = Ticket {
     slot: 5,
     generation: 1,
 };
-
-
-
-
 
 #[test]
 fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
@@ -1244,9 +1236,6 @@ fn cancel_a_pending_decide(conns: &'static ConnectorSlots) {
     closed::<OpenForward>(p);
 }
 
-
-
-
 #[test]
 fn a_cancelled_exchange_closes_the_stream_it_established() {
     cancel_a_pending_decide(&CLOSING_SLOTS);
@@ -1296,9 +1285,6 @@ impl HookOpen for OpenRecording {
     }
 }
 
-
-
-
 #[test]
 fn red_open_hands_the_plugin_its_settings_verbatim_an_empty_blob_stays_empty() {
     let empty = opened_with::<OpenRecording>(&zeroed());
@@ -1318,9 +1304,6 @@ fn red_open_hands_the_plugin_its_settings_verbatim_an_empty_blob_stays_empty() {
     closed::<OpenRecording>(empty);
     closed::<OpenRecording>(present);
 }
-
-
-
 
 #[test]
 fn a_hook_reads_the_session_and_the_1_5_5_projection_does_not_carry_it() {

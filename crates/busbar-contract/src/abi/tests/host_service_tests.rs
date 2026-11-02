@@ -1044,9 +1044,6 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     assert!(may_pend(op::DISK_APPEND));
 }
 
-
-
-
 #[test]
 fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
     let i = TrustDecideIn {

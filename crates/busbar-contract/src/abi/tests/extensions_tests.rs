@@ -133,8 +133,6 @@ fn reference_fields_read_from_the_statement_extensions() {
     }
 }
 
-
-
 #[test]
 fn span_records_read_from_the_statement_extensions() {
     use super::{span_records, EXT_DECLARES, EXT_SPAN_RECORDS};

@@ -568,11 +568,6 @@ fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
     );
 }
 
-
-
-
-
-
 #[test]
 fn dest_judge_answers_the_judged_addresses_as_the_set_a_dial_lands_within() {
     let t = HostSlots {
@@ -2140,13 +2135,6 @@ fn secret_table(slot: Option<ServiceFn>) -> HostSlots {
         ..table(None)
     }
 }
-
-
-
-
-
-
-
 
 #[test]
 fn records_secret_answers_the_secret_and_its_liveness_and_pends_on_a_ticket() {

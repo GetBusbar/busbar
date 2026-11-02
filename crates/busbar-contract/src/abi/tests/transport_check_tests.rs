@@ -614,9 +614,6 @@ fn an_interim_head_and_a_handshake_code_are_heads_with_codes() {
     );
 }
 
-
-
-
 #[test]
 fn an_empty_piece_is_a_message_and_the_end_is_its_own_flag() {
     let mut o: FramerOut = z();
@@ -1085,9 +1082,6 @@ fn a_route_view_with_no_method_or_no_known_form_is_refused() {
         f(Rule::UnknownCode, "route.path_form")
     );
 }
-
-
-
 
 #[test]
 fn a_streams_final_status_is_judged_against_its_claims_numbering() {
@@ -1624,9 +1618,6 @@ fn a_begin_scheme_is_declared() {
         }
     }
 }
-
-
-
 
 #[test]
 fn an_agreed_protocol_past_the_offer_is_refused() {

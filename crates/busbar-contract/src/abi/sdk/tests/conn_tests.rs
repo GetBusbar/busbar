@@ -206,8 +206,6 @@ fn open_learns_the_hosts_verdict_on_a_need() {
     assert_eq!(bare.connector(TICKET).admit(0), Err(ConnFailure::Unarmed));
 }
 
-
-
 #[test]
 fn establish_hands_the_host_the_set_its_dial_lands_within() {
     let _g = SERIAL

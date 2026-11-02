@@ -566,10 +566,6 @@ fn a_transport_that_never_acks_is_a_conformance_failure() {
     );
 }
 
-
-
-
-
 #[test]
 fn an_observing_exchange_reads_its_streams_facts_before_the_close() {
     let _g = SERIAL
@@ -786,8 +782,6 @@ fn ran<T>(r: &Run<T>, op: u32) -> usize {
     r.ops.iter().filter(|&&o| o == op).count()
 }
 
-
-
 #[test]
 fn a_failed_reply_read_closes_its_stream() {
     let _g = SERIAL
@@ -814,8 +808,6 @@ fn a_failed_reply_read_closes_its_stream() {
     assert_eq!(r.state.stream(), None);
     assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
 }
-
-
 
 #[test]
 fn a_reply_over_the_limit_closes_its_stream() {
@@ -850,8 +842,6 @@ fn a_reply_over_the_limit_closes_its_stream() {
     );
     assert_eq!(r.state.stream(), None);
 }
-
-
 
 #[test]
 fn a_refused_send_closes_its_stream() {
@@ -1350,11 +1340,6 @@ fn an_ops_exchange_takes_its_reply_limit() {
         100
     );
 }
-
-
-
-
-
 
 #[test]
 fn a_raw_exchange_dropped_while_it_pends_closes_its_stream() {

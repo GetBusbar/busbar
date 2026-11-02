@@ -151,9 +151,6 @@ fn a_tap_view_carries_signals_and_the_prompt_only_when_projected() {
     );
 }
 
-
-
-
 #[test]
 fn red_an_ungranted_tap_never_sees_the_prompt_the_request_carries() {
     let tap = NotifyFrame::build(&req(true), None, false).input();
@@ -171,9 +168,6 @@ fn red_an_ungranted_tap_never_sees_the_prompt_the_request_carries() {
     // The signals are not grant-gated: they still ride.
     assert_eq!(tap.signals_len, 1);
 }
-
-
-
 
 #[test]
 fn a_decide_view_carries_the_request_session_as_octets() {

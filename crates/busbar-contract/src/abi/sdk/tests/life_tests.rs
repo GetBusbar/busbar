@@ -456,9 +456,6 @@ fn an_unknown_lease_is_refused_in_words() {
     assert_eq!(close(inst), Outcome::Ready);
 }
 
-
-
-
 #[test]
 fn a_resolved_secret_takes_no_lease_and_a_leased_answer_is_held_until_release() {
     let secret = blob(b"s3cret");
