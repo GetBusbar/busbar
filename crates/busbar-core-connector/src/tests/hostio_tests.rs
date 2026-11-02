@@ -191,6 +191,7 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
         let io = HostIo::new();
         let program = Program {
             command: "/bin/cat".into(),
+            cwd: None,
             args: Vec::new(),
             env: Vec::new(),
             env_refs: Vec::new(),
@@ -237,6 +238,7 @@ fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output()
         let args = ["-c".to_owned(), "sleep 5 & exit 3".to_owned()];
         let program = Program {
             command: "/bin/sh".into(),
+            cwd: None,
             args: args.to_vec(),
             env: Vec::new(),
             env_refs: Vec::new(),
@@ -329,6 +331,7 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
         let io = HostIo::new();
         let program = Program {
             command: "/usr/bin/env".into(),
+            cwd: None,
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
             env_refs: vec![(
@@ -396,6 +399,7 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
         let io = HostIo::new();
         let program = Program {
             command: "/usr/bin/env".into(),
+            cwd: None,
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
             env_refs: vec![(

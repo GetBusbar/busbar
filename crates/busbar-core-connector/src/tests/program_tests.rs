@@ -69,6 +69,7 @@ fn need(class: u32) -> ReadNeed {
 fn sh(script: &str, env: &[(&str, &str)]) -> Program {
     Program {
         command: "/bin/sh".to_owned(),
+        cwd: None,
         args: vec!["-c".to_owned(), script.to_owned()],
         env: env
             .iter()
@@ -386,6 +387,7 @@ fn a_members_program_inherits_only_its_stated_environment() {
         let c = connector();
         let env = Program {
             command: "/usr/bin/env".to_owned(),
+            cwd: None,
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
             env_refs: Vec::new(),
@@ -415,6 +417,7 @@ fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_sp
         let c = connector().resolving_spawn_secrets(crate::spawn_env::counting_env);
         let env = Program {
             command: "/usr/bin/env".to_owned(),
+            cwd: None,
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
             env_refs: vec![
@@ -468,6 +471,7 @@ fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
         let c = connector().resolving_spawn_secrets(crate::spawn_env::counting_env);
         let env = Program {
             command: "/usr/bin/env".to_owned(),
+            cwd: None,
             args: Vec::new(),
             env: Vec::new(),
             env_refs: vec![(
@@ -508,6 +512,7 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
             "one".to_owned(),
             Program {
                 command: "sh".into(),
+                cwd: None,
                 args: Vec::new(),
                 env: Vec::new(),
                 env_refs: Vec::new(),
@@ -824,6 +829,7 @@ fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     worker().block_on(async {
         let program = Program {
             command: "/usr/bin/env".to_owned(),
+            cwd: None,
             args: Vec::new(),
             env: Vec::new(),
             env_refs: vec![(

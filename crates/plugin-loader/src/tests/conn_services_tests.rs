@@ -919,6 +919,7 @@ fn a_config_program_is_declared_as_a_program() {
             NeedId(0),
             busbar_contract::conn::Program {
                 command: "/usr/bin/server".into(),
+                cwd: None,
                 args: vec!["--serve".into()],
                 env: vec![("T".into(), "v".into())],
                 env_refs: Vec::new(),
@@ -2094,6 +2095,7 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                 "one".to_owned(),
                 Program {
                     command: "/usr/bin/one".into(),
+                    cwd: None,
                     args: vec!["--serve".into()],
                     env: vec![("PLAIN".into(), "v".into())],
                     env_refs: vec![(
@@ -2123,6 +2125,7 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
             "two".to_owned(),
             Program {
                 command: "/usr/bin/two".into(),
+                cwd: None,
                 args: Vec::new(),
                 env: Vec::new(),
                 env_refs: Vec::new(),

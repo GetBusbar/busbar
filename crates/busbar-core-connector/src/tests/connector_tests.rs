@@ -2180,6 +2180,7 @@ fn program_need(class: u32, auth: &str) -> ReadNeed {
 fn program(command: &str, args: &[&str], env: &[(&str, &str)]) -> busbar_contract::conn::Program {
     busbar_contract::conn::Program {
         command: command.to_owned(),
+        cwd: None,
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         env: env
             .iter()

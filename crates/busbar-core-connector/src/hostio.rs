@@ -719,12 +719,14 @@ impl IoHost for HostIo {
         // The admitted program's environment REFERENCES: never in the destination the carrier was
         // handed (it carries the written values only), held since config time resolved them.
         let mut held = None;
+        let mut cwd = None;
         self.admits(ticket, |a| {
             let admitted = matches!(a, Admission::Spawn(p, _) if p.command == spawn.program
                 && p.args.iter().map(String::as_str).eq(spawn.args.iter().copied())
                 && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()));
-            if let (true, Admission::Spawn(_, env)) = (admitted, a) {
+            if let (true, Admission::Spawn(program, env)) = (admitted, a) {
                 held = Some(env.clone());
+                cwd.clone_from(&program.cwd);
             }
             admitted
         })?;
@@ -755,7 +757,11 @@ impl IoHost for HostIo {
         // revealed into the child's environment under the kernel's seal: the one place a program's
         // secret leaves the host's records.
         let seal = busbar_kernel::seal::lend();
-        let child = tokio::process::Command::new(spawn.program)
+        let mut command = tokio::process::Command::new(spawn.program);
+        if let Some(directory) = cwd {
+            command.current_dir(directory);
+        }
+        let child = command
             .args(spawn.args)
             .env_clear()
             .envs(spawn.env.iter().copied())

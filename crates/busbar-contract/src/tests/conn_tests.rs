@@ -195,6 +195,7 @@ fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_
         })),
         Ok(Program {
             command: "/usr/bin/server".into(),
+            cwd: None,
             args: vec!["--serve".into(), "-v".into()],
             env: vec![("TOKEN".into(), "s3cr3t".into())],
             env_refs: Vec::new(),
@@ -204,6 +205,7 @@ fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_
         read(serde_json::json!({"command": "/bin/cat"})),
         Ok(Program {
             command: "/bin/cat".into(),
+            cwd: None,
             args: Vec::new(),
             env: Vec::new(),
             env_refs: Vec::new(),
@@ -254,6 +256,7 @@ fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_
 fn a_programs_environment_never_prints() {
     let p = super::Program {
         command: "/usr/bin/server".into(),
+        cwd: None,
         args: vec!["--serve".into()],
         env: vec![("TOKEN".into(), "s3cr3t-value".into())],
         env_refs: Vec::new(),
@@ -263,9 +266,36 @@ fn a_programs_environment_never_prints() {
     assert!(!printed.contains("s3cr3t-value"), "{printed}");
 }
 
-
-
-
+#[test]
+fn a_program_working_directory_is_explicit_absolute_and_part_of_its_identity() {
+    use super::{Program, ProgramRefused};
+    let base = Program::from_settings(&serde_json::json!({"command": "/bin/pwd"})).unwrap();
+    assert_eq!(base.cwd, None);
+    assert_eq!(
+        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": null})),
+        Ok(base.clone())
+    );
+    let at =
+        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": "/srv"})).unwrap();
+    assert_eq!(at.cwd.as_deref(), Some("/srv"));
+    assert_ne!(at, base);
+    for cwd in [
+        serde_json::json!(false),
+        serde_json::json!(""),
+        serde_json::json!("relative"),
+        serde_json::json!(" /srv"),
+        serde_json::json!("/srv "),
+    ] {
+        assert_eq!(
+            Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": cwd})),
+            Err(ProgramRefused::Cwd)
+        );
+    }
+    assert_eq!(
+        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": "/srv\0bad"})),
+        Err(ProgramRefused::Nul)
+    );
+}
 
 #[test]
 fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
@@ -282,6 +312,7 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
         })),
         Some(Ok(Program {
             command: "/usr/bin/server".into(),
+            cwd: Some("/srv".into()),
             args: vec!["--serve".into()],
             env: vec![("LEVEL".into(), "debug".into())],
             env_refs: Vec::new(),

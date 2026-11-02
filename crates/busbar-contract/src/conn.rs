@@ -706,17 +706,18 @@ pub const PROGRAM_GENERATION_FIELD: &str = "generation";
 pub const PROGRAM_ENV_KEY: &str = "env";
 
 /// The registration keys a member's program is read from ([`Program::of_member`]).
-pub const PROGRAM_KEYS: [&str; 3] = ["command", "args", PROGRAM_ENV_KEY];
+pub const PROGRAM_KEYS: [&str; 4] = ["command", "args", PROGRAM_ENV_KEY, "cwd"];
 
 /// A PROGRAM a need dials (its `transport` a byte-stream framer the program's pipes carry): the
-/// three things a spawn needs that one target string cannot spell — the absolute path
-/// of the executable, its argument vector and its environment — read from the instance's settings.
+/// executable path, arguments, environment and optional working directory read from settings.
 /// No shell; the child inherits no environment the settings did not write down. An environment
 /// value may be secret, so it never prints ([`std::fmt::Debug`] shows names and byte counts).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Program {
     /// The executable's absolute path.
     pub command: String,
+    /// The child's absolute working directory, or the host's inherited directory when omitted.
+    pub cwd: Option<String>,
     /// Its arguments, in order (not including the command).
     pub args: Vec<String>,
     /// Its environment entries written as values, name and value, in the settings' order.
@@ -742,6 +743,7 @@ impl std::fmt::Debug for Program {
             .collect();
         f.debug_struct("Program")
             .field("command", &self.command)
+            .field("cwd", &self.cwd)
             .field("args", &self.args)
             .field("env", &env)
             .field("env_refs", &env_refs)
@@ -758,9 +760,11 @@ pub enum ProgramRefused {
     NotAbsolute,
     /// `args` is not a list of strings.
     Args,
+    /// `cwd` is not an unpadded absolute directory path.
+    Cwd,
     /// `env` is not a map of strings and secret references.
     Env,
-    /// A key other than `command`, `args` and `env`.
+    /// A key other than `command`, `args`, `env` and `cwd`.
     UnknownKey,
     /// A NUL byte in the command, an argument, or an environment name or value; or an environment
     /// name that is empty or holds `=`: none of them can be handed to a process.
@@ -768,14 +772,14 @@ pub enum ProgramRefused {
 }
 
 impl Program {
-    /// A REGISTRATION's program ([`crate::section::MEMBER_PROGRAM`]): its `command`, `args` and
-    /// `env` keys read as [`Program::from_settings`] reads them; every other key of the
+    /// A REGISTRATION's program ([`crate::section::MEMBER_PROGRAM`]): its `command`, `args`, `cwd`
+    /// and `env` keys read as [`Program::from_settings`] reads them; every other key of the
     /// registration is its own, not the program's. `None` for a registration that names no
     /// `command` (or is not a map): it is not a member of a program need.
     ///
     /// # Errors
     ///
-    /// The [`ProgramRefused`] naming what the three keys break.
+    /// The [`ProgramRefused`] naming what the program keys break.
     pub fn of_member(registration: &serde_json::Value) -> Option<Result<Self, ProgramRefused>> {
         let map = registration.as_object()?;
         map.get("command")?;
@@ -787,7 +791,7 @@ impl Program {
         Some(Self::from_settings(&serde_json::Value::Object(picked)))
     }
 
-    /// The settings' spelling of a program: `{command, args?, env?}` — `command` an absolute path,
+    /// The settings' spelling of a program: `{command, args?, env?, cwd?}` — paths are absolute,
     /// `args` a list of strings, `env` a map of string to a string or a secret reference; any other key, type or a NUL byte
     /// is refused.
     ///
@@ -798,7 +802,7 @@ impl Program {
         let map = value.as_object().ok_or(ProgramRefused::NoCommand)?;
         if map
             .keys()
-            .any(|k| !matches!(k.as_str(), "command" | "args" | "env"))
+            .any(|k| !matches!(k.as_str(), "command" | "args" | "env" | "cwd"))
         {
             return Err(ProgramRefused::UnknownKey);
         }
@@ -809,6 +813,16 @@ impl Program {
         if !command.starts_with('/') {
             return Err(ProgramRefused::NotAbsolute);
         }
+        let cwd = match map.get("cwd") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                let directory = value.as_str().ok_or(ProgramRefused::Cwd)?;
+                if !directory.starts_with('/') || directory.trim() != directory {
+                    return Err(ProgramRefused::Cwd);
+                }
+                Some(directory.to_owned())
+            }
+        };
         let args = match map.get("args") {
             None => Vec::new(),
             Some(v) => v
@@ -836,6 +850,7 @@ impl Program {
         }
         let nul = |s: &str| s.contains('\0');
         if nul(command)
+            || cwd.as_deref().is_some_and(nul)
             || args.iter().any(|a| nul(a))
             || env
                 .iter()
@@ -848,6 +863,7 @@ impl Program {
         }
         Ok(Self {
             command: command.to_owned(),
+            cwd,
             args,
             env,
             env_refs,
