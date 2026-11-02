@@ -248,6 +248,7 @@ fn the_payload_probe_checks_only_registered_prefixes_and_records_complete_reads(
         #[cfg(not(target_os = "linux"))]
         {
             assert_eq!(record.read_error, Some(std::io::ErrorKind::Unsupported));
+            assert!(!record.wiped, "unsupported OS reads cannot prove a wipe");
             assert!(!record.complete_read);
             assert_eq!(record.bytes_read, 0);
         }
@@ -310,6 +311,7 @@ fn growing_a_registered_vec_observes_its_actual_old_allocation() {
     #[cfg(not(target_os = "linux"))]
     {
         assert_eq!(record.read_error, Some(std::io::ErrorKind::Unsupported));
+        assert!(!record.wiped, "unsupported OS reads cannot prove a wipe");
         assert!(!record.complete_read);
         eprintln!("Vec growth and old allocation free checked; memory proof requires Linux /proc/self/mem");
     }
