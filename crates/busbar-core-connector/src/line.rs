@@ -835,3 +835,7 @@ fn wake(missed: Vec<Waker>) {
 #[cfg(test)]
 #[path = "tests/line_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/line_callback_tests.rs"]
+mod callback_tests;

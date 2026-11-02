@@ -3688,6 +3688,15 @@ impl PollConns for Connector {
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/callback_waker.rs"]
+#[allow(unsafe_code)]
+mod callback_waker;
+
+#[cfg(test)]
+#[path = "tests/rest_callback_tests.rs"]
+mod rest_callback_tests;
+
+#[cfg(test)]
 #[path = "tests/settled_dial_error_tests.rs"]
 mod settled_dial_error_tests;
 
