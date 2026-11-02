@@ -152,7 +152,9 @@ pub fn fetch_plugins(
                 record_problem(
                     &mut errors,
                     &mut outcomes,
-                    format!("plugin archive refused: {error} (not written; any installed copy is kept)"),
+                    format!(
+                        "plugin archive refused: {error} (not written; any installed copy is kept)"
+                    ),
                 );
                 continue;
             }

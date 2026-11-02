@@ -307,13 +307,18 @@ fn an_unpinned_fetch_of_changed_bytes_with_an_expired_seal_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 #[test]
 fn invalid_successful_downloads_never_replace_an_installed_archive() {
     let installed = sealed_tarball(crate::release_trust::now() + 86_400);
     let truncated = installed[..installed.len() / 2].to_vec();
-    for body in [b"<html>upstream error served as HTTP 200</html>".to_vec(), truncated] {
-        assert!(crate::tarball::unpack(&body).is_err(), "the RED body is not an archive");
+    for body in [
+        b"<html>upstream error served as HTTP 200</html>".to_vec(),
+        truncated,
+    ] {
+        assert!(
+            crate::tarball::unpack(&body).is_err(),
+            "the RED body is not an archive"
+        );
         for fatal in [true, false] {
             let dir = tmpdir();
             let target = dir.join("p.tar.gz");
@@ -330,11 +335,22 @@ fn invalid_successful_downloads_never_replace_an_installed_archive() {
                 assert!(errors[0].contains("plugin archive refused"), "{errors:?}");
             } else {
                 let outcomes = answer.expect("reload warns and keeps the installed archive");
-                assert!(matches!(outcomes.as_slice(), [FetchOutcome::Warned { error, .. }]
-                    if error.contains("plugin archive refused")), "{outcomes:?}");
+                assert!(
+                    matches!(outcomes.as_slice(), [FetchOutcome::Warned { error, .. }]
+                    if error.contains("plugin archive refused")),
+                    "{outcomes:?}"
+                );
             }
-            assert_eq!(std::fs::read(&target).unwrap(), installed, "the installed artifact is byte-identical");
-            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no replacement temp file remains");
+            assert_eq!(
+                std::fs::read(&target).unwrap(),
+                installed,
+                "the installed artifact is byte-identical"
+            );
+            assert_eq!(
+                std::fs::read_dir(&dir).unwrap().count(),
+                1,
+                "no replacement temp file remains"
+            );
             std::fs::remove_dir_all(dir).unwrap();
         }
     }
@@ -352,9 +368,14 @@ fn invalid_first_download_is_refused_even_when_its_checksum_matches() {
             &[spec("https://x/p.tar.gz", pin, "p.tar.gz")],
             true,
             &download,
-        ).expect_err("integrity alone cannot make an unreadable archive installable");
+        )
+        .expect_err("integrity alone cannot make an unreadable archive installable");
         assert!(errors[0].contains("plugin archive refused"), "{errors:?}");
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the first install writes nothing");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "the first install writes nothing"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
@@ -372,9 +393,13 @@ fn a_checksum_mismatch_keeps_the_installed_archive_before_archive_validation() {
         &[spec("https://x/p.tar.gz", Some(&pin), "p.tar.gz")],
         true,
         &download,
-    ).unwrap_err();
+    )
+    .unwrap_err();
     assert!(errors[0].contains("sha256 mismatch"), "{errors:?}");
-    assert!(!errors[0].contains("plugin archive refused"), "the checksum gate stays first");
+    assert!(
+        !errors[0].contains("plugin archive refused"),
+        "the checksum gate stays first"
+    );
     assert_eq!(std::fs::read(&target).unwrap(), installed);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -393,8 +418,14 @@ fn a_valid_changed_archive_replaces_the_installed_archive() {
         &[spec("https://x/p.tar.gz", None, "p.tar.gz")],
         false,
         &download,
-    ).expect("a readable fresh archive can still replace an installed artifact");
-    assert_eq!(outcomes, vec![FetchOutcome::Fetched { filename: "p.tar.gz".into() }]);
+    )
+    .expect("a readable fresh archive can still replace an installed artifact");
+    assert_eq!(
+        outcomes,
+        vec![FetchOutcome::Fetched {
+            filename: "p.tar.gz".into()
+        }]
+    );
     assert_eq!(std::fs::read(&target).unwrap(), replacement);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -414,11 +445,23 @@ fn a_fetched_third_party_archive_still_requires_the_publishers_trust() {
         &[spec("https://x/p.tar.gz", None, "p.tar.gz")],
         true,
         &download,
-    ).expect("fetch validates archive shape without changing the third-party admission policy");
+    )
+    .expect("fetch validates archive shape without changing the third-party admission policy");
     let installed = crate::tarball::unpack(&std::fs::read(dir.join("p.tar.gz")).unwrap()).unwrap();
     let mut policy = TrustPolicy::default();
-    assert_eq!(evaluate(&installed.lib_bytes, &installed.manifest, &policy).unwrap_err().kind, RejectKind::UnknownPublisher);
+    assert_eq!(
+        evaluate(&installed.lib_bytes, &installed.manifest, &policy)
+            .unwrap_err()
+            .kind,
+        RejectKind::UnknownPublisher
+    );
     policy.publishers.insert("acme".into(), key.verifying_key());
-    assert!(matches!(evaluate(&installed.lib_bytes, &installed.manifest, &policy).unwrap(), Verdict::Trusted { first_party: false, .. }));
+    assert!(matches!(
+        evaluate(&installed.lib_bytes, &installed.manifest, &policy).unwrap(),
+        Verdict::Trusted {
+            first_party: false,
+            ..
+        }
+    ));
     std::fs::remove_dir_all(dir).unwrap();
 }
