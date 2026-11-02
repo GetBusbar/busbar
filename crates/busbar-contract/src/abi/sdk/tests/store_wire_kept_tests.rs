@@ -69,6 +69,454 @@ fn a_session_that_does_not_open_answers_its_failure_and_runs_nothing() {
     assert_eq!(done.load(Ordering::Relaxed), 0);
 }
 
+mod replay_handles {
+    use super::*;
+    use crate::abi::host::conn::connector::{
+        EstablishIn, IdentityIn, IoIn, ProcessIdentity, StreamIn,
+    };
+    use crate::abi::host::service::{ClockNowIn, ClockReading};
+    use crate::abi::mechanism::call::Outcome;
+    use crate::abi::mechanism::ticket::{CompletionHandle, Ticket};
+    use crate::abi::sdk::conn::{ConnFailure, Host};
+    use crate::abi::sdk::door::abi_str;
+    use crate::abi::sdk::store::op::Parked;
+    use crate::abi::sdk::store::wire::{drive_kept, Body};
+    use crate::abi::sdk::test_support::fake::{self, FakeHost, FakeService, ServiceCall};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::mem::size_of;
+
+    const TICKET: Ticket = Ticket {
+        slot: 31,
+        generation: 1,
+    };
+    const HOLDER: Ticket = Ticket {
+        slot: 32,
+        generation: 1,
+    };
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Kind {
+        Establish,
+        Identity,
+        Write,
+        Read,
+        Close,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    enum Mode {
+        #[default]
+        RepeatedPending,
+        CancelRead,
+        ZeroWrite,
+        PoolWait,
+    }
+
+    struct Held {
+        kind: Kind,
+        bytes: Vec<u8>,
+        attempts: usize,
+        pending: usize,
+        value: usize,
+        completed: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Call {
+        kind: Kind,
+        handle: CompletionHandle,
+        bytes: Vec<u8>,
+        ready: bool,
+        value: usize,
+    }
+
+    #[derive(Default)]
+    struct Script {
+        mode: Mode,
+        held: HashMap<CompletionHandle, Held>,
+        calls: Vec<Call>,
+        accepted: Vec<u8>,
+        clocks: Vec<CompletionHandle>,
+        bodies: usize,
+        streams: usize,
+        zero_used: bool,
+        now: u64,
+    }
+
+    thread_local! { static SCRIPT: RefCell<Script> = RefCell::new(Script::default()); }
+
+    fn script<R>(f: impl FnOnce(&mut Script) -> R) -> R {
+        SCRIPT.with(|state| f(&mut state.borrow_mut()))
+    }
+
+    // Model the real host's handle binding and stored result: a completed request on the same
+    // handle returns its original answer, including a successful zero-byte write.
+    fn cross(kind: Kind, handle: CompletionHandle, bytes: &[u8]) -> (Outcome, usize) {
+        script(|s| {
+            if !s.held.contains_key(&handle) {
+                let pending = match (s.mode, kind) {
+                    (Mode::RepeatedPending, Kind::Establish | Kind::Read) => 2,
+                    (Mode::RepeatedPending, Kind::Write) if bytes == b"A" => 2,
+                    (Mode::CancelRead, Kind::Read) => usize::MAX,
+                    (Mode::PoolWait, Kind::Read) if handle.ticket == HOLDER => usize::MAX,
+                    _ => 0,
+                };
+                let value = match kind {
+                    Kind::Establish => {
+                        s.streams += 1;
+                        s.streams
+                    }
+                    Kind::Write if matches!(s.mode, Mode::ZeroWrite) && !s.zero_used => {
+                        s.zero_used = true;
+                        0
+                    }
+                    Kind::Write => bytes.len(),
+                    Kind::Read => b"reply".len(),
+                    _ => 0,
+                };
+                s.held.insert(
+                    handle,
+                    Held {
+                        kind,
+                        bytes: bytes.to_vec(),
+                        attempts: 0,
+                        pending,
+                        value,
+                        completed: false,
+                    },
+                );
+            }
+            let held = s.held.get_mut(&handle).unwrap();
+            assert_eq!(
+                held.kind, kind,
+                "a completion handle was rebound to another operation"
+            );
+            assert_eq!(
+                held.bytes, bytes,
+                "a completion handle was rebound to another request"
+            );
+            held.attempts += 1;
+            let ready = held.attempts > held.pending;
+            if ready && !held.completed {
+                held.completed = true;
+                if kind == Kind::Write {
+                    s.accepted.extend_from_slice(&bytes[..held.value]);
+                }
+            }
+            let value = held.value;
+            s.calls.push(Call {
+                kind,
+                handle,
+                bytes: bytes.to_vec(),
+                ready,
+                value,
+            });
+            (
+                if ready {
+                    Outcome::Ready
+                } else {
+                    Outcome::Pending
+                },
+                value,
+            )
+        })
+    }
+
+    struct Establish;
+    impl FakeService for Establish {
+        type In = EstablishIn;
+        fn serve(call: &mut ServiceCall<EstablishIn>) -> Outcome {
+            let (outcome, stream) = cross(Kind::Establish, call.input().head.handle, &[]);
+            if outcome == Outcome::Ready {
+                call.set_value(stream as u64);
+            }
+            outcome
+        }
+    }
+
+    struct Write;
+    impl FakeService for Write {
+        type In = IoIn;
+        fn serve(call: &mut ServiceCall<IoIn>) -> Outcome {
+            let bytes = call.lent(|i| &i.buf).to_vec();
+            let (outcome, written) = cross(Kind::Write, call.input().head.handle, &bytes);
+            if outcome == Outcome::Ready {
+                call.set_len(written as u64);
+            }
+            outcome
+        }
+    }
+
+    struct Read;
+    impl FakeService for Read {
+        type In = IoIn;
+        fn serve(call: &mut ServiceCall<IoIn>) -> Outcome {
+            let (outcome, _) = cross(Kind::Read, call.input().head.handle, &[]);
+            if outcome == Outcome::Ready {
+                assert!(call.fill_lent(|i| &i.buf, b"reply"));
+            }
+            outcome
+        }
+    }
+
+    struct Close;
+    impl FakeService for Close {
+        type In = StreamIn;
+        fn serve(call: &mut ServiceCall<StreamIn>) -> Outcome {
+            cross(Kind::Close, call.input().head.handle, &[]).0
+        }
+    }
+
+    struct Identity;
+    impl FakeService for Identity {
+        type In = IdentityIn;
+        fn serve(call: &mut ServiceCall<IdentityIn>) -> Outcome {
+            let outcome = cross(Kind::Identity, call.input().head.handle, &[]).0;
+            call.put(
+                |i| &i.identity,
+                ProcessIdentity {
+                    size: size_of::<ProcessIdentity>() as u32,
+                    _reserved: 0,
+                    pid: 7,
+                    os_user: abi_str("tester"),
+                    program: abi_str("fixture"),
+                },
+            );
+            outcome
+        }
+    }
+
+    struct Clock;
+    impl FakeService for Clock {
+        type In = ClockNowIn;
+        fn serve(call: &mut ServiceCall<ClockNowIn>) -> Outcome {
+            let now = script(|s| {
+                s.clocks.push(call.input().head.handle);
+                s.now
+            });
+            call.put(
+                |i| &i.reading,
+                ClockReading {
+                    size: size_of::<ClockReading>() as u32,
+                    _reserved: 0,
+                    mono_ns: now,
+                    wall_ns: 0,
+                },
+            );
+            Outcome::Ready
+        }
+    }
+
+    fn host(mode: Mode) -> (FakeHost, Host) {
+        script(|s| {
+            *s = Script {
+                mode,
+                ..Script::default()
+            }
+        });
+        let fake = FakeHost::new()
+            .serve(fake::conn::ESTABLISH, Establish)
+            .serve(fake::conn::WRITE, Write)
+            .serve(fake::conn::READ, Read)
+            .serve(fake::conn::CLOSE, Close)
+            .serve(fake::conn::IDENTITY, Identity)
+            .serve(fake::host::CLOCK_NOW, Clock);
+        let host = Host::of(fake.lent());
+        (fake, host)
+    }
+
+    type Start = fn(Wire) -> Body<Result<(), ConnFailure>>;
+
+    fn enter(
+        host: &Host,
+        pool: &Arc<Pool>,
+        ticket: Ticket,
+        parked: Option<Parked>,
+        start: Start,
+    ) -> (Step<Result<(), ConnFailure>>, Parked, bool) {
+        let mut op = Op::enter(ticket, Some(host), parked, None);
+        let answer = drive_kept(&mut op, pool, move |wire| {
+            script(|s| s.bodies += 1);
+            start(wire)
+        });
+        let attempted = op.made_a_service();
+        (answer, op.into_parked(), attempted)
+    }
+
+    fn finish(
+        host: &Host,
+        pool: &Arc<Pool>,
+        ticket: Ticket,
+        mut parked: Option<Parked>,
+        start: Start,
+    ) {
+        for _ in 0..16 {
+            let (answer, held, attempted) = enter(host, pool, ticket, parked, start);
+            match answer {
+                Step::Ready(result) => {
+                    result.unwrap();
+                    drop(held);
+                    return;
+                }
+                Step::Pending { wake_at_ns } => {
+                    if wake_at_ns == 0 {
+                        assert!(
+                            attempted,
+                            "replayed Pending is still a real service attempt"
+                        );
+                    }
+                    script(|s| s.now = s.now.max(wake_at_ns));
+                    parked = Some(held);
+                }
+            }
+        }
+        panic!("the actual wire op did not finish after its scripted completions");
+    }
+
+    fn exchange(wire: Wire) -> Body<Result<(), ConnFailure>> {
+        Box::pin(async move {
+            wire.connect(0, None).await?;
+            wire.write_all(b"A").await?;
+            wire.write_all(b"B").await?;
+            assert_eq!(wire.fill().await?, b"reply".len());
+            wire.input(|bytes| assert_eq!(bytes, b"reply"));
+            wire.close().await;
+            Ok(())
+        })
+    }
+
+    fn calls(kind: Kind) -> Vec<Call> {
+        script(|s| s.calls.iter().filter(|c| c.kind == kind).cloned().collect())
+    }
+
+    #[test]
+    fn repeated_pending_replays_one_handle_and_never_restarts_completed_wire_requests() {
+        let (_fake, host) = host(Mode::RepeatedPending);
+        let pool = Pool::new(1);
+        finish(&host, &pool, TICKET, None, exchange);
+        let establish = calls(Kind::Establish);
+        assert_eq!(establish.len(), 3);
+        assert!(establish
+            .iter()
+            .all(|call| call.handle == establish[0].handle));
+        let writes = calls(Kind::Write);
+        assert_eq!(
+            writes.len(),
+            4,
+            "A pends twice; the distinct B request runs once"
+        );
+        assert!(writes[..3]
+            .iter()
+            .all(|call| call.handle == writes[0].handle && call.bytes == b"A"));
+        assert!(!writes[0].ready && !writes[1].ready && writes[2].ready);
+        assert_eq!(writes[3].bytes, b"B");
+        assert!(writes[3].handle.seq > writes[2].handle.seq);
+        let reads = calls(Kind::Read);
+        assert_eq!(reads.len(), 3);
+        assert!(reads.iter().all(|call| call.handle == reads[0].handle));
+        assert!(reads[0].handle.seq > writes[3].handle.seq);
+        assert_eq!(script(|s| s.accepted.clone()), b"AB");
+        assert_eq!(
+            script(|s| s.bodies),
+            1,
+            "the async body is never rebuilt on resume"
+        );
+    }
+
+    fn hold_read(wire: Wire) -> Body<Result<(), ConnFailure>> {
+        Box::pin(async move {
+            wire.connect(0, Some("holder")).await?;
+            wire.fill().await?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn cancelling_a_replayed_read_closes_with_a_fresh_handle_above_every_attempt() {
+        let (_fake, host) = host(Mode::CancelRead);
+        let pool = Pool::new(1);
+        let (answer, held, attempted) = enter(&host, &pool, TICKET, None, hold_read);
+        assert!(matches!(answer, Step::Pending { wake_at_ns: 0 }) && attempted);
+        let (answer, held, attempted) = enter(&host, &pool, TICKET, Some(held), hold_read);
+        assert!(matches!(answer, Step::Pending { wake_at_ns: 0 }) && attempted);
+        let reads = calls(Kind::Read);
+        assert_eq!(reads.len(), 2);
+        assert_eq!(reads[0].handle, reads[1].handle);
+        drop(held);
+        let closed = calls(Kind::Close);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].handle.ticket, TICKET);
+        assert!(
+            closed[0].handle.seq > reads[0].handle.seq,
+            "cleanup cannot reuse the pending read's handle"
+        );
+    }
+
+    fn write_once(wire: Wire) -> Body<Result<(), ConnFailure>> {
+        Box::pin(async move {
+            wire.connect(0, None).await?;
+            wire.write_all(b"A").await?;
+            wire.close().await;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn a_successful_zero_byte_write_retries_on_a_new_handle_after_its_timer_wait() {
+        let (_fake, host) = host(Mode::ZeroWrite);
+        let pool = Pool::new(1);
+        finish(&host, &pool, TICKET, None, write_once);
+        let writes = calls(Kind::Write);
+        assert_eq!(writes.len(), 2);
+        assert!(writes.iter().all(|call| call.ready && call.bytes == b"A"));
+        assert_eq!((writes[0].value, writes[1].value), (0, 1));
+        assert!(writes[1].handle.seq > writes[0].handle.seq);
+        assert_eq!(script(|s| s.accepted.clone()), b"A");
+        assert!(!script(|s| s.clocks.is_empty()));
+        assert!(script(|s| s
+            .clocks
+            .iter()
+            .all(|handle| handle.ticket.is_none())));
+    }
+
+    fn wait_then_connect(wire: Wire) -> Body<Result<(), ConnFailure>> {
+        Box::pin(async move {
+            assert_eq!(wire.os_user().await?, "tester");
+            wire.connect(0, Some("waiter")).await?;
+            wire.close().await;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn a_pool_wait_does_not_replay_the_completed_request_that_preceded_it() {
+        let (_fake, host) = host(Mode::PoolWait);
+        let pool = Pool::new(1);
+        let (answer, holder, _) = enter(&host, &pool, HOLDER, None, hold_read);
+        assert!(matches!(answer, Step::Pending { wake_at_ns: 0 }));
+        let (answer, waiting, _) = enter(&host, &pool, TICKET, None, wait_then_connect);
+        assert!(matches!(answer, Step::Pending { wake_at_ns } if wake_at_ns != 0));
+        let (answer, waiting, _) = enter(&host, &pool, TICKET, Some(waiting), wait_then_connect);
+        assert!(matches!(answer, Step::Pending { wake_at_ns } if wake_at_ns != 0));
+        assert_eq!(
+            calls(Kind::Identity).len(),
+            1,
+            "pool retries do not rerun the prior completed Ask"
+        );
+        drop(holder);
+        finish(&host, &pool, TICKET, Some(waiting), wait_then_connect);
+        let identity = calls(Kind::Identity);
+        let establish: Vec<_> = calls(Kind::Establish)
+            .into_iter()
+            .filter(|c| c.handle.ticket == TICKET)
+            .collect();
+        assert_eq!(establish.len(), 1);
+        assert!(establish[0].handle.seq > identity[0].handle.seq);
+        assert_eq!(script(|s| s.bodies), 2, "one body per original ticket");
+    }
+}
+
 mod waiting {
     use std::ffi::c_void;
     use std::sync::{Mutex, MutexGuard, PoisonError, Weak};
