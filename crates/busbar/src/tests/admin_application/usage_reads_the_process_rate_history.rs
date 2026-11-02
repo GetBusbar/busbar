@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use busbar_contract::records::MeteringDelta;
-use busbar_kernel::cost::{RateCard, TierRates};
 use busbar_kernel::governance::METERING_BUCKET_SECS;
 
 #[path = "../../root/tests/test_plugins.rs"]
@@ -75,19 +74,6 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         crate::root::kernel::ROOT_CARD.history().is_none(),
         "the isolated product process starts without a dated card"
     );
-    crate::root::kernel::ROOT_CARD.apply(
-        RateCard::from_config(
-            Some([(
-                LANE,
-                TierRates {
-                    input: Some(10 * 1_000),
-                    ..Default::default()
-                },
-            )]),
-            0,
-        ),
-        0,
-    );
 
     let store_library = PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
@@ -127,14 +113,20 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         "store": { "module": module, "settings": settings },
         "rate_card": BTreeMap::from([(
             LANE,
-            busbar_kernel::config::RateEntryCfg { input_utok: 1.0, ..Default::default() },
+            busbar_kernel::config::RateEntryCfg { input_utok: 10.0, ..Default::default() },
         )]),
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
+    let mut current_document = document.clone();
+    current_document["rate_card"][LANE]["input_utok"] = serde_json::json!(1.0);
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
+    let current_deploy = busbar_kernel::config::deploy_from_deserializer(current_document)
+        .expect("the current lower-rate deployment parses");
+    let current_config = busbar_kernel::config::resolve(&current_deploy, &Default::default())
+        .expect("the current lower-rate deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = busbar_kernel::config::PluginsCfg {
@@ -154,21 +146,55 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        plugin_config,
-        Some(overlay),
+        plugin_config.clone(),
+        Some(overlay.clone()),
         HashSet::new(),
         HashSet::new(),
         (None, None),
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
-    limits.keep().expect("the actual limits commit");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the opening rate and usage recovery");
+    limits
+        .keep()
+        .expect("the historical boot card activates in its Store");
+    let dated_key = crate::root::kernel::ROOT_CARD
+        .history()
+        .expect("the actual Store-backed dated history is loaded")
+        .head_key()
+        .expect("the historical boot card has a stable entry key");
     if let Some(rotate) = rotate {
         rotate();
     }
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        current_config,
+        plugin_config,
+        Some(overlay),
+        HashSet::new(),
+        HashSet::new(),
+        (None, None),
+        Some(&app),
+        &rules,
+        None,
+        false,
+    )
+    .expect("the normal reload builds the current lower rate on the same actual Store");
+    limits
+        .keep()
+        .expect("the current card activates after the historical card");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    assert_ne!(
+        crate::root::kernel::ROOT_CARD.history().unwrap().head_key(),
+        Some(dated_key),
+        "the current rate has its own entry; the old bucket must still price through the earlier card"
+    );
     let bucket = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now())
         - METERING_BUCKET_SECS;
     app.governance
@@ -212,10 +238,10 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     );
     assert_eq!(
         body["rate_card_version"],
-        serde_json::json!(crate::root::kernel::ROOT_CARD.history().unwrap().entries()[0].key().hex()),
+        serde_json::json!(dated_key.hex()),
         "the response names the history entry that priced it: {body}"
     );
-    let key = crate::root::kernel::ROOT_CARD.history().unwrap().entries()[0].key().hex();
+    let key = dated_key.hex();
     let replay = reqwest::get(format!(
         "http://{addr}/api/v1/admin/usage?window={bucket}&as_of={key}"
     ))

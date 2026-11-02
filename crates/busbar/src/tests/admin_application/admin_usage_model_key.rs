@@ -158,9 +158,12 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         None,
         &rules,
         Some(anchor),
-        false,
+        true,
     )
     .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the process rate-card history and usage recovery");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();
