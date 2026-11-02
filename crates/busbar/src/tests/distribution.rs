@@ -415,3 +415,9 @@ mod kernel_application_central2_generation_limits;
 
 #[path = "admin_application/admin_hook_replacement.rs"]
 mod admin_application_admin_hook_replacement;
+
+#[path = "kernel_application/export_scrape_crossings.rs"]
+mod kernel_application_export_scrape_crossings;
+
+#[path = "kernel_application/external_preflight.rs"]
+mod kernel_application_external_preflight;
