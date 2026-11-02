@@ -26,6 +26,14 @@ async fn hosted_with_settings(
     methods: &[(&str, bool)],
     settings: serde_json::Map<String, serde_json::Value>,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    hosted_with_secret(methods, settings, "oauth-hosted-test-client-secret").await
+}
+
+async fn hosted_with_secret(
+    methods: &[(&str, bool)],
+    settings: serde_json::Map<String, serde_json::Value>,
+    client_secret: &str,
+) -> (String, tokio::task::JoinHandle<()>) {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let library =
         plugins::token_verifier_cdylib_path().expect("build the actual pinned OIDC plugin");
@@ -40,8 +48,7 @@ async fn hosted_with_settings(
         busbar_kernel::door::op_id().counter()
     ));
     let secret = secrets.join("client-secret");
-    std::fs::write(&secret, "oauth-hosted-test-client-secret")
-        .expect("write confidential-client input");
+    std::fs::write(&secret, client_secret).expect("write confidential-client input");
     let mut definitions = serde_json::Map::new();
     for (name, button) in methods {
         let mut provider = serde_json::json!({"module":module,"settings":settings});
@@ -547,6 +554,60 @@ async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
         issuer::exchanges_for(&code),
         0,
         "the actual plugin makes no token exchange on a foreign state"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn the_real_confidential_client_secret_is_absent_from_browser_flow_artifacts() {
+    const SECRET: &str = "REAL-SECRET-XYZ";
+    let (base, handle) = hosted_with_secret(
+        &[("microsoft", true)],
+        issuer::settings("oauth-hosted"),
+        SECRET,
+    )
+    .await;
+    let begun = client()
+        .get(format!("{base}/auth/token?method=microsoft"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(begun.status(), 302);
+    let location = begun.headers()[reqwest::header::LOCATION].to_str().unwrap();
+    assert!(!location.contains(SECRET), "not on the authorize redirect");
+    let set = begun.headers()[reqwest::header::SET_COOKIE]
+        .to_str()
+        .unwrap();
+    let raw = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("busbar_login=")
+        .unwrap();
+    let decoded = String::from_utf8(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(raw)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !decoded.contains(SECRET) && !set.contains(SECRET),
+        "not in the login cookie: {decoded}"
+    );
+    let cookie = cookie(raw);
+    let called = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[
+            ("code", cookie["nonce"].as_str().unwrap()),
+            ("state", cookie["state"].as_str().unwrap()),
+        ])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !called.text().await.unwrap().contains(SECRET),
+        "not on the page rendered"
     );
     handle.abort();
 }
