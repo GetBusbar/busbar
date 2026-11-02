@@ -608,8 +608,10 @@ fn reap_releases_every_handle_of_its_owner_and_no_other() {
     });
 }
 
-/// A fork can hold a close-on-exec listener until the child reaches exec. Retiring the host's
-/// handle must stop that same socket from listening before the copied descriptor closes.
+/// Linux can stop a listening socket while a fork holds its close-on-exec descriptor before
+/// exec. Other kernels can refuse listener shutdown; their ordinary descriptor close remains
+/// covered by the unconditional reap test above, without claiming revocation of copied handles.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_open() {
     worker().block_on(async {

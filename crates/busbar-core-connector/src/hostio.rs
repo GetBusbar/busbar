@@ -493,8 +493,9 @@ fn ended(e: &Entry) {
     match &e.kind {
         Kind::Listener(listener) => {
             // A concurrent fork can hold a copy of this close-on-exec descriptor until exec.
-            // Dropping our descriptor alone leaves that socket listening in the interval. Stop
-            // the shared socket first, so close/reap/retirement takes effect before returning.
+            // Dropping our descriptor alone leaves that socket listening in the interval. Linux
+            // can stop the shared socket first. Kernels that refuse shutdown of a listener keep
+            // their ordinary descriptor-close behavior; this does not revoke arbitrary copies.
             let _ = socket2::SockRef::from(listener.get_ref()).shutdown(Shutdown::Both);
         }
         Kind::Program(p) => {
