@@ -36,6 +36,8 @@ enum Defect {
     Owner,
     Nonce,
     Cancel,
+    PendingOverflow,
+    PendingNeeded,
 }
 static NEXT: AtomicU8 = AtomicU8::new(0);
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -90,7 +92,9 @@ extern "C" fn open(
             4 => Defect::Malformed,
             5 => Defect::Owner,
             6 => Defect::Nonce,
-            _ => Defect::Cancel,
+            7 => Defect::Cancel,
+            8 => Defect::PendingOverflow,
+            _ => Defect::PendingNeeded,
         };
         states().lock().unwrap().insert(
             input.open.head.host.handle,
@@ -142,6 +146,7 @@ extern "C" fn drive(
         {
             return RawOutcome::of(Outcome::Fault);
         }
+        let mut service_pending = false;
         if !state.completed {
             let handle = CompletionHandle {
                 ticket: input.drive.driver,
@@ -166,6 +171,14 @@ extern "C" fn drive(
                         return RawOutcome::of(Outcome::Fault);
                     }
                 }
+                Poll::Pending
+                    if matches!(
+                        state.defect,
+                        Defect::PendingOverflow | Defect::PendingNeeded
+                    ) =>
+                {
+                    service_pending = true
+                }
                 _ => return RawOutcome::of(Outcome::Fault),
             }
         }
@@ -189,6 +202,7 @@ extern "C" fn drive(
             .unwrap_or_else(|| b"answer-owner".to_vec())
             .into_boxed_slice();
         let outcome = match state.defect {
+            _ if service_pending => Outcome::Pending,
             Defect::Ready => Outcome::Ready,
             Defect::Failed | Defect::Short => Outcome::Failed,
             _ if state.retirement.queued() => Outcome::Pending,
@@ -214,12 +228,13 @@ extern "C" fn drive(
         }
         output.head.lease = lease;
         output.head.outcome = RawOutcome::of(outcome);
-        output.sessions_written = if state.defect == Defect::Malformed {
-            input.sessions_cap as u32 + 1
-        } else {
-            0
-        };
-        output.sessions_needed = if state.defect == Defect::Short {
+        output.sessions_written =
+            if matches!(state.defect, Defect::Malformed | Defect::PendingOverflow) {
+                input.sessions_cap as u32 + 1
+            } else {
+                0
+            };
+        output.sessions_needed = if matches!(state.defect, Defect::Short | Defect::PendingNeeded) {
             input.sessions_cap as u32 + 1
         } else {
             0
@@ -363,6 +378,8 @@ extern "C" fn door() -> &'static Door {
 #[derive(Default)]
 struct Provider {
     calls: AtomicUsize,
+    defer: bool,
+    waiting: Mutex<Vec<busbar_contract::services::Later>>,
 }
 impl crate::services_double::ServicesDouble for Arc<Provider> {
     fn records_get(
@@ -370,10 +387,14 @@ impl crate::services_double::ServicesDouble for Arc<Provider> {
         _: &busbar_contract::services::Caller,
         kind: &str,
         key: &[u8],
-        _: busbar_contract::services::Later,
+        later: busbar_contract::services::Later,
     ) -> busbar_contract::services::Ran {
         assert_eq!((kind, key), ("last", b"drive".as_slice()));
         self.calls.fetch_add(1, SeqCst);
+        if self.defer {
+            self.waiting.lock().unwrap().push(later);
+            return busbar_contract::services::Ran::Later;
+        }
         let mut result = crate::dispatch::Stored::ready(busbar_contract::abi::host::service::FOUND);
         result.bytes = b"completed".to_vec();
         result
@@ -403,9 +424,14 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
         Defect::Malformed,
         Defect::Owner,
         Defect::Nonce,
+        Defect::PendingOverflow,
+        Defect::PendingNeeded,
     ] {
         NEXT.store(defect as u8, SeqCst);
-        let provider = Arc::<Provider>::default();
+        let provider = Arc::new(Provider {
+            defer: matches!(defect, Defect::PendingOverflow | Defect::PendingNeeded),
+            ..Provider::default()
+        });
         let dispatcher = Dispatcher::with_services(
             DispatchConfig::default(),
             Arc::new(crate::services_double::Double(provider.clone())),
