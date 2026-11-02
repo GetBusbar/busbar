@@ -92,9 +92,10 @@ async fn an_unaccepted_write_waits_for_upstream_reader_credit_and_cancelled_byte
         .pairing
         .reserve_input_for(Leg::Upstream, bytes.capacity())
         .unwrap()
-        .reader();
+        .reader_on(Leg::Upstream);
     let before = pair.pairing.publication_outcome();
-    let mut cancelled = Box::pin(pair.caller.write(b"cancelled"));
+    let cancelled_bytes = vec![b'c'; FRAME_CAP];
+    let mut cancelled = Box::pin(pair.caller.write(&cancelled_bytes));
     let mut cx = Context::from_waker(Waker::noop());
     assert!(cancelled.as_mut().poll(&mut cx).is_pending());
     assert!(cancelled.as_mut().poll(&mut cx).is_pending());
@@ -108,16 +109,45 @@ async fn an_unaccepted_write_waits_for_upstream_reader_credit_and_cancelled_byte
         "no ABI Emit before actual storage credit"
     );
     drop(cancelled);
+    #[derive(Default)]
+    struct CreditWake(std::sync::atomic::AtomicUsize);
+    impl std::task::Wake for CreditWake {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &std::sync::Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let wake = std::sync::Arc::new(CreditWake::default());
+    let waker = Waker::from(wake.clone());
+    let fresh = vec![b'f'; FRAME_CAP];
+    let mut writing = Box::pin(pair.caller.write(&fresh));
+    assert!(writing
+        .as_mut()
+        .poll(&mut Context::from_waker(&waker))
+        .is_pending());
+    assert_eq!(pair.pairing.publication_outcome(), before);
+    let registered = wake.0.load(std::sync::atomic::Ordering::SeqCst);
     drop(bytes);
     drop(custody);
-    assert!(tokio::time::timeout(WAIT, pair.caller.write(b"fresh"))
-        .await
-        .unwrap());
-    assert_eq!(pair.received().await, b"fresh");
-    assert_eq!(*pair.framer.emitted.lock().unwrap(), vec![5]);
+    assert!(
+        wake.0.load(std::sync::atomic::Ordering::SeqCst) > registered,
+        "actual upstream reader retirement wakes the same unaccepted write"
+    );
+    assert!(tokio::time::timeout(WAIT, writing).await.unwrap());
+    assert_eq!(pair.received().await, fresh);
+    assert_eq!(*pair.framer.emitted.lock().unwrap(), vec![FRAME_CAP]);
     let outcome = pair.pairing.published().await;
     assert!(outcome.failure.is_none());
-    assert_eq!(outcome.original_bytes - before.original_bytes, 5);
+    assert_eq!(
+        outcome.original_bytes - before.original_bytes,
+        FRAME_CAP as u64
+    );
+    assert_eq!(
+        outcome.original_handed_bytes - before.original_handed_bytes,
+        FRAME_CAP as u64
+    );
     assert_eq!(
         outcome.original_cancelled_bytes,
         before.original_cancelled_bytes
@@ -167,9 +197,10 @@ async fn shutdown_wakes_a_credit_waiter_without_crossing_or_accepting_its_input(
         .pairing
         .reserve_input_for(Leg::Upstream, bytes.capacity())
         .unwrap()
-        .reader();
+        .reader_on(Leg::Upstream);
     let before = pair.pairing.publication_outcome();
-    let mut writing = Box::pin(pair.caller.write(b"never accepted"));
+    let input = vec![b'i'; FRAME_CAP];
+    let mut writing = Box::pin(pair.caller.write(&input));
     assert!(writing
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))
