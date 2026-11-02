@@ -2375,6 +2375,7 @@ mod dated_rate_card_history {
                     pool: "",
                     model: LANE,
                     entry_era: era,
+                    entry_id: None,
                     card_epoch_ms: served_at * 1_000,
                     delta: &delta,
                     now: busbar_kernel::store::now(),
