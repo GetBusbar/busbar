@@ -139,8 +139,11 @@ pub fn from_journal_body(
 /// The independently retained head fields of one journalled audit record.
 /// This copies the published claim; full body/digest verification remains the audit verifier's job.
 pub struct JournalHead {
+    /// The original record's published position, digest, signature, key identifier and wall clock.
     pub head: crate::heads::SignedHead,
+    /// That record's claimed predecessor digest, for checking sequence/link continuity.
     pub prev_hash: String,
+    /// The node that sealed the original audit record.
     pub node: u64,
 }
 
