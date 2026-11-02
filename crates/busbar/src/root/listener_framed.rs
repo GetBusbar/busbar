@@ -468,7 +468,14 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     first_byte: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
+enum UpgradePhase {
+    Adopting(oneshot::Sender<bool>),
+    Admitted,
+    Committing(busbar_kernel::plane_routes::SessionPipe),
+}
+
 struct StagedUpgrade {
+    phase: UpgradePhase,
     stream: u64,
     yielded: Yielded,
     incoming: Vec<u8>,
@@ -484,7 +491,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {
             let mut moved = false;
-            if self.stopping && self.staged.is_some() {
+            let abandoned = self.staged.as_ref().is_some_and(
+                |stage| matches!(&stage.phase, UpgradePhase::Adopting(reply) if reply.is_closed()),
+            );
+            if (self.stopping || abandoned) && self.staged.is_some() {
                 self.abandon_stage();
             }
             while let Poll::Ready(Some(admission)) = self.admissions.poll_recv(cx) {
@@ -613,10 +623,17 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     fn took(&mut self, r: Result<Yielded, framer::Refused>) -> bool {
         match r {
             Ok(y) => {
-                self.absorb(y);
+                if self.staged.is_some() {
+                    self.receive_stage(y);
+                } else {
+                    self.absorb(y);
+                }
                 true
             }
             Err(e) => {
+                if self.staged.is_some() {
+                    self.abandon_stage();
+                }
                 tracing::debug!(error = %e, "data door: the framing failed");
                 self.failed = true;
                 false
@@ -678,6 +695,25 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     }
 
     fn read_staged(&mut self, cx: &mut Context<'_>) -> bool {
+        let adopting = self
+            .staged
+            .as_ref()
+            .is_some_and(|stage| matches!(stage.phase, UpgradePhase::Adopting(_)));
+        let writable = !self.framing.as_ref().is_some_and(Framing::parked);
+        if adopting && writable {
+            let incoming = self
+                .staged
+                .as_mut()
+                .map(|stage| std::mem::take(&mut stage.incoming))
+                .unwrap_or_default();
+            if !incoming.is_empty() {
+                if let Some(framing) = self.framing.as_mut() {
+                    let received = framing.ingest(&incoming, false);
+                    self.took(received);
+                }
+                return true;
+            }
+        }
         if self
             .staged
             .as_ref()
@@ -701,6 +737,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 if let Some(stage) = self.staged.as_mut() {
                     stage.incoming.extend_from_slice(buffer.filled());
                 }
+                // Return progress so buffered input reaches a non-parked admission next poll.
                 true
             }
             Poll::Ready(Err(_)) => {
@@ -757,7 +794,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 self.abandon_stage();
                 return true;
             }
-            return false;
+            if self.framing.as_ref().is_some_and(Framing::parked) {
+                return false;
+            }
         }
         let Some(sleep) = self.deadline.as_mut() else {
             return false;
@@ -1038,10 +1077,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
         }
         if let Op::Admit { reply } = op {
-            let admitted = self.stage_upgrade(stream);
-            if reply.send(admitted).is_err() && admitted {
-                self.abandon_stage();
-            }
+            self.stage_upgrade(stream, reply);
             return Step::Done;
         }
         if matches!(op, Op::Head { .. } | Op::Refuse { .. }) {
@@ -1107,99 +1143,154 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         Step::Done
     }
 
-    fn stage_upgrade(&mut self, stream: u64) -> bool {
+    fn stage_upgrade(&mut self, stream: u64, reply: oneshot::Sender<bool>) {
         if self.staged.is_some() || self.session.is_some() {
-            return false;
+            let _ = reply.send(false);
+            return;
         }
         let claim = UPGRADE_CLAIMS[usize::from(self.secured)];
         let Some(door) = (self.framer.upgrade)(claim) else {
-            return false;
+            let _ = reply.send(false);
+            return;
         };
         let Some(framing) = self.framing.take() else {
-            return false;
+            let _ = reply.send(false);
+            return;
         };
         let leftover = match framing.detach() {
             Ok(left) => left,
             Err(e) => {
                 tracing::debug!(error = %e, "data door: the framer would not release the opening");
                 self.failed = true;
-                return false;
+                return;
             }
         };
         self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
         match Framing::adopt_detached_staged(door, SIDE_ACCEPT, leftover, &self.established) {
-            Ok((framing, mut yielded)) => {
+            Ok((framing, yielded)) => {
                 self.framing = Some(framing);
-                let accepted = !yielded.ended
-                    && yielded.pieces.iter().any(|piece| {
-                        piece.stream == stream
-                            && piece.fields
-                            && piece.status_code == Some(u32::from(SWITCHING_PROTOCOLS))
-                            && piece.status_class == busbar_contract::abi::transport::STATUS_SUCCESS
-                            && !piece.failed
-                    });
-                if !accepted {
-                    // The transport owns malformed-opening responses. No plane is entered.
-                    if let Some(inflow) = self.inflows.get_mut(&stream) {
-                        inflow.refused = true;
-                    }
-                    if yielded.ended {
-                        self.absorb(yielded);
-                    } else {
-                        self.failed = true;
-                    }
-                    return false;
-                }
-                // This head is the transport's admission receipt, not an application message.
-                yielded.pieces.retain(|piece| !piece.fields);
-                yielded.heads.clear();
                 self.deadline = None;
                 self.staged = Some(StagedUpgrade {
+                    phase: UpgradePhase::Adopting(reply),
                     stream,
-                    yielded,
+                    yielded: Yielded::default(),
                     incoming: Vec::new(),
                     bound: Box::pin(tokio::time::sleep(self.timeout)),
                 });
-                true
+                self.receive_stage(yielded);
             }
             Err(e) => {
                 tracing::debug!(error = %e, "data door: the session opening was refused");
                 self.failed = true;
-                false
+            }
+        }
+    }
+
+    fn receive_stage(&mut self, mut yielded: Yielded) {
+        let Some(stage) = self.staged.as_mut() else {
+            return;
+        };
+        if let Some(deadline) = yielded.deadline_ns {
+            self.deadline = Some(Box::pin(tokio::time::sleep_until(
+                tokio::time::Instant::from_std(framer::instant_of(deadline)),
+            )));
+        }
+        stage.yielded.wire.append(&mut yielded.wire);
+        stage.yielded.pieces.append(&mut yielded.pieces);
+        stage.yielded.heads.append(&mut yielded.heads);
+        stage.yielded.flow.append(&mut yielded.flow);
+        stage.yielded.interim.append(&mut yielded.interim);
+        stage
+            .yielded
+            .piece_custody
+            .append(&mut yielded.piece_custody);
+        stage.yielded.ended |= yielded.ended;
+        if yielded.agreed != 0 {
+            stage.yielded.agreed = yielded.agreed;
+        }
+        stage.yielded.deadline_ns = yielded.deadline_ns;
+        if self.framing.as_ref().is_some_and(Framing::parked) {
+            // PENDING may already carry bytes. Neither those nor a receipt authorize publication.
+            return;
+        }
+        let accepted = stage.yielded.pieces.iter().any(|piece| {
+            piece.stream == stage.stream
+                && piece.fields
+                && piece.end_of_frame
+                && piece.status_code == Some(u32::from(SWITCHING_PROTOCOLS))
+                && piece.status_class == busbar_contract::abi::transport::STATUS_SUCCESS
+                && !piece.failed
+        });
+        if stage.yielded.ended {
+            if matches!(stage.phase, UpgradePhase::Adopting(_)) && !accepted {
+                let Some(stage) = self.staged.take() else {
+                    return;
+                };
+                if let Some(inflow) = self.inflows.get_mut(&stage.stream) {
+                    inflow.refused = true;
+                }
+                if let UpgradePhase::Adopting(reply) = stage.phase {
+                    let _ = reply.send(false);
+                }
+                // This is the transport's refusal, before any plane entry or handshake commit.
+                self.absorb(stage.yielded);
+            } else {
+                self.abandon_stage();
+            }
+            return;
+        }
+        if matches!(stage.phase, UpgradePhase::Adopting(_)) {
+            if !accepted {
+                return;
+            }
+            stage.yielded.pieces.retain(|piece| !piece.fields);
+            stage.yielded.heads.clear();
+            let phase = std::mem::replace(&mut stage.phase, UpgradePhase::Admitted);
+            if let UpgradePhase::Adopting(reply) = phase {
+                if reply.send(true).is_err() {
+                    self.abandon_stage();
+                }
+            }
+            return;
+        }
+        if matches!(stage.phase, UpgradePhase::Committing(_)) {
+            let Some(stage) = self.staged.take() else {
+                return;
+            };
+            let UpgradePhase::Committing(pipe) = stage.phase else {
+                return;
+            };
+            self.heads.clear();
+            self.full.clear();
+            let mut session = Session::over(stage.stream, pipe);
+            if let Some(inflow) = self.inflows.get(&stage.stream) {
+                session.body_limit = inflow.body_limit;
+            }
+            self.session = Some(session);
+            self.absorb(stage.yielded);
+            if !stage.incoming.is_empty() {
+                if let Some(framing) = self.framing.as_mut() {
+                    let received = framing.ingest(&stage.incoming, false);
+                    self.took(received);
+                }
             }
         }
     }
 
     fn switch(&mut self, stream: u64, pipe: busbar_kernel::plane_routes::SessionPipe) {
-        let Some(staged) = self.staged.take().filter(|staged| staged.stream == stream) else {
-            // Only a route that awaited this request's admission may publish a session.
+        let Some(stage) = self.staged.as_mut().filter(|stage| {
+            stage.stream == stream && matches!(stage.phase, UpgradePhase::Admitted)
+        }) else {
             self.failed = true;
             return;
         };
+        stage.phase = UpgradePhase::Committing(pipe);
         let Some(framing) = self.framing.as_mut() else {
-            self.failed = true;
+            self.abandon_stage();
             return;
         };
         let committed = framing.emit_head(stream, &[], true, u32::from(SWITCHING_PROTOCOLS));
-        let Ok(committed) = committed else {
-            self.failed = true;
-            return;
-        };
-        self.heads.clear();
-        self.full.clear();
-        let mut session = Session::over(stream, pipe);
-        if let Some(inflow) = self.inflows.get(&stream) {
-            session.body_limit = inflow.body_limit;
-        }
-        self.session = Some(session);
-        self.absorb(staged.yielded);
-        self.absorb(committed);
-        if !staged.incoming.is_empty() {
-            if let Some(framing) = self.framing.as_mut() {
-                let received = framing.ingest(&staged.incoming, false);
-                self.took(received);
-            }
-        }
+        self.took(committed);
     }
 
     fn pump_session(&mut self, cx: &mut Context<'_>) -> Option<bool> {
