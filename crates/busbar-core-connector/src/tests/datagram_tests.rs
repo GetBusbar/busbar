@@ -429,7 +429,7 @@ impl FramerDoor for Scripted {
             }
             Call::Finish(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
-                let seen = lane.and_then(|_| st.seen.last().cloned());
+                let seen = lane.and_then(|_| st.seen.pop());
                 st.finished.push(seen);
                 write_answer(&mut st, &i.sink, lane, o);
             }
