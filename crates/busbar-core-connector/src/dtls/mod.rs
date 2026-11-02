@@ -528,7 +528,11 @@ impl Association {
     /// The next instant [`Self::handle_timeout`] is owed.
     #[must_use]
     pub fn next_timeout(&self) -> Option<Instant> {
-        [self.timeout, self.next_consent]
+        let expiry = self
+            .bound
+            .and_then(|path| self.proven.get(&path))
+            .map(|proved| *proved + CONSENT_TIMEOUT);
+        [self.timeout, self.next_consent, expiry]
             .into_iter()
             .flatten()
             .min()
@@ -636,8 +640,26 @@ impl Association {
     }
 
     fn apply_bind(&mut self, path: SocketAddr, now: Instant) {
+        let proved = self.proven.get(&path).copied();
+        if proved.is_some_and(|proved| now.saturating_duration_since(proved) >= CONSENT_TIMEOUT) {
+            self.fail(Failure::ConsentExpired);
+            return;
+        }
         self.bound = Some(path);
-        self.next_consent = Some(now + CONSENT_INTERVAL);
+        let mut due = proved.map_or(now + CONSENT_INTERVAL, |proved| proved + CONSENT_INTERVAL);
+        if let Some(sent) = self
+            .probes
+            .values()
+            .filter_map(|(to, sent)| (*to == path).then_some(*sent))
+            .max()
+        {
+            due = due.max(sent + CONSENT_INTERVAL);
+        }
+        if due <= now {
+            self.send_probe(path, now);
+            due = now + CONSENT_INTERVAL;
+        }
+        self.next_consent = Some(due);
         if self.dtls.is_none() {
             let config = match dimpl::Config::builder()
                 .with_crypto_provider(ring::provider())
