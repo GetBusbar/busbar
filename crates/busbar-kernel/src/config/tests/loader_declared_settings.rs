@@ -8,12 +8,19 @@ use super::*;
 fn settings(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     value.as_object().expect("settings object").clone()
 }
-fn resolver() -> SecretResolver {
-    SecretResolver::with_plugin(Box::new(|module, settings| {
+struct DeclaredValue;
+impl busbar_contract::secret::SecretResolve for DeclaredValue {
+    fn resolve(&self, reference: &SecretRef) -> Result<Held, String> {
         Ok(Held::new(
-            format!("resolved:{module}:{settings}").into_bytes(),
+            format!("resolved:{}", reference.describe()).into_bytes(),
         ))
-    }))
+    }
+    fn resolve_string(&self, reference: &SecretRef) -> Result<HeldText, String> {
+        Ok(HeldText::new(format!("resolved:{}", reference.describe())))
+    }
+}
+fn resolver() -> DeclaredValue {
+    DeclaredValue
 }
 fn scope() -> busbar_contract::config_time::ConfigScope {
     busbar_contract::config_time::ConfigScope::config_time()
