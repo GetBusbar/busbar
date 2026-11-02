@@ -678,3 +678,96 @@ fn an_admitted_candidate_takes_checks_only_and_binds_only_once_proven() {
     t.s.ingest(cand, &answer(&probe, C_ICE.1), t.now);
     assert_eq!(t.s.bound_path(), Some(cand));
 }
+
+fn prove_unselected(t: &mut Pair, path: SocketAddr) {
+    let inbound = check(&creds(S_ICE.0, S_ICE.1), C_ICE.0, S_ICE.1);
+    assert_eq!(t.s.ingest(path, &inbound, t.now), Verdict::Raw);
+    let (to, probe) = t.s.poll_wire().expect("ownership probe");
+    assert_eq!(to, path);
+    assert!(is_probe(&probe));
+    t.s.ingest(path, &answer(&probe, C_ICE.1), t.now);
+    assert_eq!(t.s.proven.get(&path), Some(&t.now));
+}
+
+fn select_old_proof(rebind: bool) -> (Pair, SocketAddr, Instant) {
+    let mut t = pair(false);
+    if rebind {
+        let old = t.c_path;
+        prove_unselected(&mut t, old);
+        assert_eq!(t.s.bind_path(old, t.now), Ok(Bind::Now));
+        while t.s.poll_wire().is_some() {}
+    }
+    let path = if rebind {
+        p("203.0.113.10:50001")
+    } else {
+        t.c_path
+    };
+    prove_unselected(&mut t, path);
+    let proved = t.now;
+    t.now += Duration::from_secs(28);
+    let selected = if rebind {
+        t.s.rebind_path(t.c_path, path, t.now)
+    } else {
+        t.s.bind_path(path, t.now)
+    };
+    assert_eq!(selected, Ok(Bind::Now));
+    assert_eq!(t.s.bound_path(), Some(path));
+    assert_eq!(t.s.proven.get(&path), Some(&proved));
+    (t, path, proved)
+}
+
+#[test]
+fn late_bind_and_rebind_probe_before_the_old_proof_expires() {
+    for rebind in [false, true] {
+        let (mut t, path, proved) = select_old_proof(rebind);
+        let probes: Vec<_> = std::iter::from_fn(|| t.s.poll_wire())
+            .filter(|(_, bytes)| is_probe(bytes))
+            .collect();
+        assert_eq!(probes.len(), 1, "late selection immediately probes");
+        assert_eq!(probes[0].0, path);
+        t.s.ingest(path, &answer(&probes[0].1, C_ICE.1), t.now);
+        assert_eq!(t.s.proven.get(&path), Some(&t.now));
+        t.s.handle_timeout(proved + CONSENT_TIMEOUT);
+        assert_eq!(t.s.failure(), None);
+    }
+}
+
+#[test]
+fn late_selection_without_an_answer_keeps_the_original_consent_expiry() {
+    for rebind in [false, true] {
+        let (mut t, path, proved) = select_old_proof(rebind);
+        let expiry = proved + CONSENT_TIMEOUT;
+        assert!(t
+            .s
+            .next_timeout()
+            .is_some_and(|deadline| deadline <= expiry));
+        assert_eq!(t.s.proven.get(&path), Some(&proved));
+        t.s.handle_timeout(expiry);
+        assert_eq!(t.s.failure(), Some(&Failure::ConsentExpired));
+    }
+}
+
+#[test]
+fn selection_preserves_fresh_proof_and_recent_probe_cadence() {
+    let mut t = pair(false);
+    let path = t.c_path;
+    prove_unselected(&mut t, path);
+    let proved = t.now;
+    assert_eq!(t.s.bind_path(path, t.now), Ok(Bind::Now));
+    assert_eq!(t.s.next_consent, Some(proved + CONSENT_INTERVAL));
+    assert!(!std::iter::from_fn(|| t.s.poll_wire()).any(|(_, bytes)| is_probe(&bytes)));
+
+    let mut t = pair(false);
+    prove_unselected(&mut t, path);
+    let proved = t.now;
+    t.now += Duration::from_secs(27);
+    t.s.probe(path, t.now);
+    let (_, recent) = t.s.poll_wire().expect("recent outstanding probe");
+    assert!(is_probe(&recent));
+    let sent = t.now;
+    t.now += Duration::from_secs(1);
+    assert_eq!(t.s.bind_path(path, t.now), Ok(Bind::Now));
+    assert_eq!(t.s.proven.get(&path), Some(&proved));
+    assert!(!std::iter::from_fn(|| t.s.poll_wire()).any(|(_, bytes)| is_probe(&bytes)));
+    assert_eq!(t.s.next_consent, Some(sent + CONSENT_INTERVAL));
+}

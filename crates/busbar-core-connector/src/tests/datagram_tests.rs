@@ -90,6 +90,9 @@ struct Seen {
     bound: u32,
     verified: bool,
     keying: Option<(u32, Vec<u8>)>,
+    local: String,
+    routes_cap: usize,
+    size: u32,
     told: Vec<(u32, String)>,
 }
 
@@ -110,6 +113,7 @@ struct Knobs {
 #[derive(Default)]
 struct St {
     seen: Vec<Seen>,
+    finished: Vec<Option<Seen>>,
     addrs: HashMap<u32, String>,
     remote: Option<(String, String, Vec<u8>)>,
     secured: Vec<Vec<u8>>,
@@ -194,6 +198,9 @@ fn read_lane(st: &mut St, lane: *const DatagramLane) -> Option<&'static Datagram
         path: l.path,
         bound: l.bound,
         verified: l.verified == 1,
+        local: String::from_utf8_lossy(raw(l.local_addr.ptr, l.local_addr.len)).into_owned(),
+        routes_cap: l.routes_cap,
+        size: l.size,
         ..Seen::default()
     };
     if !l.keying.is_null() {
@@ -420,7 +427,12 @@ impl FramerDoor for Scripted {
                 }
                 write_answer(&mut st, &i.sink, lane, o);
             }
-            Call::Finish(..) => {}
+            Call::Finish(i, o) => {
+                let lane = read_lane(&mut st, i.lane);
+                let seen = lane.and_then(|_| st.seen.last().cloned());
+                st.finished.push(seen);
+                write_answer(&mut st, &i.sink, lane, o);
+            }
             _ => {
                 return Crossed {
                     outcome: Outcome::Refused,
@@ -2360,4 +2372,43 @@ fn unwinding_association_publication_finishes_after_unlocking() {
     let unwound = owner.join().unwrap().is_err();
     assert!(reached_finish && unlocked && unwound);
     assert!(port.is_empty(), "a failed publisher exposes no association");
+}
+
+#[test]
+fn datagram_finish_lends_the_current_lane_and_retires_once() {
+    for connected in [false, true] {
+        let mut rig = rig(Knobs::default());
+        if connected {
+            rig.first_check();
+            rig.pump(200);
+            assert!(rig.host.presented());
+        }
+        let bound = rig.host.bound_path();
+        let verified = rig.host.verified();
+        let door = Arc::clone(&rig.door);
+        if connected {
+            door.st
+                .lock()
+                .unwrap()
+                .routes
+                .push((bound, LANE_SECURED, b"terminal".to_vec()));
+        }
+        drop(rig.host);
+        let st = door.st.lock().unwrap();
+        assert_eq!(st.finished.len(), 1);
+        let lane = st.finished[0]
+            .as_ref()
+            .expect("Finish receives a datagram lane");
+        assert_eq!(lane.size as usize, std::mem::size_of::<DatagramLane>());
+        assert_eq!(lane.lane, 0);
+        assert_eq!(lane.path, 0);
+        assert_eq!(lane.bound, bound);
+        assert_eq!(lane.verified, verified);
+        assert_eq!(lane.local, rig.host_addr.to_string());
+        assert!(lane.routes_cap > 0);
+        assert!(
+            st.routes.is_empty(),
+            "the final route fits the lent output buffers"
+        );
+    }
 }
