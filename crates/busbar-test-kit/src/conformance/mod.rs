@@ -2573,7 +2573,7 @@ pub fn profile(debug: bool) {
     );
 }
 
-/// THE DOOR A SUITE NAMES, as either form a plugin states it (status rows 159 and 194): its
+/// THE DOOR A SUITE NAMES, as either form a plugin states it: its
 /// `door` function, or the `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone; a plugin moves to `door:
 /// plugin::MACRO_DOOR` first, and the same line compiles before and after.
 ///

@@ -127,7 +127,7 @@ impl LinkedRow {
     }
 }
 
-/// A DOOR THE LOADER MAY ENTER (status rows 159 and 194): a [`MacroDoor`] the contract's macro
+/// A DOOR THE LOADER MAY ENTER: a [`MacroDoor`] the contract's macro
 /// built, or a door a test or harness restates by hand through the `unsafe`
 /// [`LoadedDoor::from_raw`]. #1469 makes [`LinkedRow::of`] take the `MacroDoor` alone and keeps
 /// this type for the rest; a hand-built door reaches a row through `LinkedRow::of_loaded(unsafe {

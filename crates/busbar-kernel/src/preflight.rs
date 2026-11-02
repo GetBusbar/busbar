@@ -63,7 +63,7 @@ pub type LinkedStoreDoor = (
     &'static str,
 );
 
-/// ONE STORE-AXIS ROW as the store crate states it (status rows 159 and 194): its `linked::STORE`
+/// ONE STORE-AXIS ROW as the store crate states it: its `linked::STORE`
 /// in either shape, a [`LinkedStore`] or a [`LinkedStoreDoor`], read as the [`LinkedStore`] the
 /// root's install carries. The composition root's generated table wraps every `STORE` in it.
 #[derive(Debug, Clone, Copy)]
