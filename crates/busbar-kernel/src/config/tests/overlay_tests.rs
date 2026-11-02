@@ -604,10 +604,121 @@ fn overlays_larger_than_record_bound_round_trip_without_a_content_cap() {
 
 #[test]
 fn required_store_read_failure_is_not_mistaken_for_absence() {
-    let fixture = TestOverlayStore::new();
-    let backend = fixture.backend();
+    use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+    use busbar_contract::abi::store::OpId;
+    use busbar_contract::kinds::RecordBytes;
+    use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+    use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct FailReads {
+        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+        fail: AtomicBool,
+    }
+    impl StoreCalls for FailReads {
+        fn supports_record_transaction(&self) -> bool {
+            self.inner.supports_record_transaction()
+        }
+        fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+            self.inner.record_transaction(request)
+        }
+        fn record_get<'a>(
+            &'a self,
+            schema: &'a str,
+            key: &'a [u8],
+        ) -> StoreCall<'a, Option<RecordBytes>> {
+            if self.fail.load(Ordering::SeqCst) {
+                Box::pin(std::future::ready(Err(StoreFailure::Failed(
+                    "planted read failure".into(),
+                ))))
+            } else {
+                self.inner.record_get(schema, key)
+            }
+        }
+        fn add_usage_batch<'a>(
+            &'a self,
+            op: OpId,
+            cells: &'a [(&'a str, u64, UsageDelta)],
+        ) -> StoreCall<'a, ()> {
+            self.inner.add_usage_batch(op, cells)
+        }
+        fn add_metering_batch<'a>(
+            &'a self,
+            op: OpId,
+            deltas: &'a [MeteringDelta],
+        ) -> StoreCall<'a, ()> {
+            self.inner.add_metering_batch(op, deltas)
+        }
+        fn record_put<'a>(
+            &'a self,
+            schema: &'a str,
+            key: &'a [u8],
+            value: &'a RecordBytes,
+        ) -> StoreCall<'a, ()> {
+            self.inner.record_put(schema, key, value)
+        }
+        fn record_scan<'a>(
+            &'a self,
+            schema: &'a str,
+            prefix: &'a [u8],
+            limit: u32,
+        ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+            self.inner.record_scan(schema, prefix, limit)
+        }
+        fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+            self.inner.upsert_plane_record(record)
+        }
+        fn get_plane_record<'a>(
+            &'a self,
+            kind: &'a str,
+            id: &'a str,
+        ) -> StoreCall<'a, Option<Vec<u8>>> {
+            self.inner.get_plane_record(kind, id)
+        }
+        fn append_plane_record<'a>(
+            &'a self,
+            op: OpId,
+            record: PlaneRecordRef<'a>,
+        ) -> StoreCall<'a, ()> {
+            self.inner.append_plane_record(op, record)
+        }
+        fn list_plane_records<'a>(
+            &'a self,
+            kind: &'a str,
+            selector: &'a PlaneSelector<'a>,
+        ) -> StoreCall<'a, Vec<Vec<u8>>> {
+            self.inner.list_plane_records(kind, selector)
+        }
+        fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+            self.inner.delete_plane_record(kind, id)
+        }
+        fn redeem_plane_token<'a>(
+            &'a self,
+            kind: &'a str,
+            token: &'a str,
+            expires_at: u64,
+            now: u64,
+        ) -> StoreCall<'a, bool> {
+            self.inner.redeem_plane_token(kind, token, expires_at, now)
+        }
+        fn plane_token_live<'a>(
+            &'a self,
+            kind: &'a str,
+            token: &'a str,
+            expires_at: u64,
+            now: u64,
+        ) -> StoreCall<'a, bool> {
+            self.inner.plane_token_live(kind, token, expires_at, now)
+        }
+    }
+    let calls = Arc::new(FailReads {
+        inner: crate::real_store::store(),
+        fail: AtomicBool::new(false),
+    });
+    let backend = OverlayStore::new(calls.clone()).unwrap();
     assert!(backend.read_required().unwrap().is_none());
-    fixture.fail_reads(true);
+    calls.fail.store(true, Ordering::SeqCst);
     assert!(backend.read_required().is_err());
     assert!(persist_root(Some(&backend), &sample_root()).is_err());
 }
