@@ -294,6 +294,7 @@ fn authenticated_request(stream: u32, path: &str, preface: bool, provider: &Prov
 
 #[tokio::test]
 async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
+    crate::dist_root_install::install();
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let units = Arc::new(Mutex::new(Vec::new()));
@@ -389,6 +390,7 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
 
 #[tokio::test]
 async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing_the_data_list() {
+    crate::dist_root_install::install();
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let units = Arc::new(Mutex::new(Vec::new()));
