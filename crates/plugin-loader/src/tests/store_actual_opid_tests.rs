@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::actual_store;
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
@@ -8,8 +9,6 @@ use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{RecordStore, UsageDelta};
 use busbar_contract::store_calls::{OpIdMint, StoreCalls};
 use std::sync::Arc;
-#[path = "actual_store.rs"]
-mod actual_store;
 
 fn settings_for(db: &str) -> String {
     static DATABASES: std::sync::OnceLock<

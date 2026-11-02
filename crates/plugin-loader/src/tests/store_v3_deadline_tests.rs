@@ -33,8 +33,7 @@ impl RawSlot for HangsCall {
     }
 }
 
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 
 mod hung {
     use super::*;

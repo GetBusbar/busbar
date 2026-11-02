@@ -76,8 +76,7 @@ impl RawSlot for WedgedPlaneGet {
     }
 }
 
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 
 mod wedged {
     use super::*;
