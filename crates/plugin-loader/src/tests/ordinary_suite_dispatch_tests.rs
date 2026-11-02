@@ -97,7 +97,9 @@ fn bound(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) ->
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: ConnTable::NoNeeds,
+            // This is a component probe over empty MCP settings; no server
+            // registrations are served. MCP declares HTTP and stdio needs.
+            conns: ConnTable::Probe,
         },
     )
     .expect("actual MCP binds");
