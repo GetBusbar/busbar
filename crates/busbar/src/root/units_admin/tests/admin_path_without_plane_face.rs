@@ -321,6 +321,83 @@ async fn send(
 
 // ── the cells ──────────────────────────────────────────────────────────────────────────────────
 
+/// Use main's actual mount_node/live_admin_door path. Inner middleware cannot repair a refusal
+/// already made by root: a verifier outage must be 503 here, while a rejected credential stays401.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials() {
+    use busbar_contract::auth_calls::{
+        AuthCalls, Verified, VerifyAnswer, VerifyRequest, Verifying,
+    };
+
+    struct ProbeDoor(Option<Verified>);
+    impl AuthCalls for ProbeDoor {
+        fn name(&self) -> &str {
+            "root-admin-probe"
+        }
+        fn facts(&self) -> u32 {
+            0
+        }
+        fn verify_now(&self, _: &VerifyRequest) -> Option<VerifyAnswer> {
+            self.0.clone().map(Into::into)
+        }
+        fn verify(&self, _: VerifyRequest) -> Box<dyn Verifying> {
+            panic!("the root refusal must precede the inner awaited middleware")
+        }
+        fn refresh(&self) -> Result<u64, String> {
+            Ok(0)
+        }
+    }
+
+    busbar_kernel::snapshot::init();
+    busbar_core_admin::install();
+    for (verified, expected_status, expected_code, expected_retry) in [
+        (Some(Verified::Failed), 503, "unavailable", Some("1")),
+        (None, 503, "unavailable", Some("1")),
+        (Some(Verified::Reject), 401, "unauthorized", None),
+        (Some(Verified::Overloaded), 401, "unauthorized", None),
+    ] {
+        let snapshot = busbar_kernel::test_support::TestApp::new()
+            .admin_chain(vec!["external".to_string()])
+            .admin_door("external", Arc::new(ProbeDoor(verified)))
+            .build();
+        let app = Arc::new(busbar_kernel::state::AppHandle::new(snapshot));
+        let surface = Arc::new(SurfaceLog::default());
+        let book = crate::root::durability::node_book();
+        let late = crate::root::serve::LateServices::new();
+        let router = mount_node(
+            a_recording_surface(surface.clone()),
+            64 * 1024,
+            &app,
+            &book,
+            None,
+            &late,
+            crate::root::adapters::BreakerPolicy::new(),
+        );
+        let (status, body, headers) = send(
+            &router,
+            "POST",
+            "/api/v1/admin/keys",
+            br#"{"name":"must-not-run"}"#.to_vec(),
+            Some("presented"),
+            None,
+        )
+        .await;
+        assert_eq!(status, expected_status);
+        let answer: serde_json::Value = serde_json::from_slice(&body).expect("admin envelope");
+        assert_eq!(answer["error"]["code"], expected_code);
+        let retry = headers
+            .iter()
+            .find(|(name, _)| name == "retry-after")
+            .map(|(_, value)| value.as_str());
+        assert_eq!(retry, expected_retry);
+        assert!(
+            surface.seen().is_empty(),
+            "a refused request executes no mutation"
+        );
+    }
+}
+
 /// A REAL VERB STILL TRAVELS THE WHOLE CHAIN AND COMES BACK WITH THE SURFACE'S OWN BYTES.
 ///
 /// `GET /api/v1/admin/audit` is row `get_audit` of the closed 1.5.5 table, read-only. It goes in at

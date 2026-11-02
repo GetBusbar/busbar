@@ -2025,6 +2025,45 @@ fn the_sync_admin_door_probe_fails_closed_when_the_operator_verifier_is_overload
     assert_eq!(admin_door(&app, "GET", "/", &headers), AdminDoor::Denied);
 }
 
+/// The root's synchronous path must keep verifier failure apart from bad credentials. Both the
+/// operator and an external module use this same typed door before root's mounted middleware.
+#[test]
+fn the_sync_admin_door_keeps_no_verdict_for_the_root_http_projection() {
+    use busbar_contract::auth_calls::Verified;
+    let headers = admin_headers(Some("tok"), None);
+    for verified in [Verified::Failed, Verified::Reject, Verified::Overloaded] {
+        let expected = if matches!(verified, Verified::Failed) {
+            AdminDoor::Unavailable(VerifierUnavailable::NoVerdict)
+        } else {
+            AdminDoor::Denied
+        };
+        for app in [
+            operator_app(verified.clone()),
+            crate::test_support::TestApp::new()
+                .admin_chain(vec!["ext".to_string()])
+                .admin_door("ext", std::sync::Arc::new(AnswersOnly(verified.clone())))
+                .build(),
+        ] {
+            let judged = admin_verdict(&app, "GET", "/api/v1/admin/keys", &headers);
+            assert_eq!(judged.door, expected, "{verified:?}");
+            assert!(
+                judged.claim.is_none(),
+                "an unidentified request claims nothing"
+            );
+            assert!(!admin_door_admits(
+                &judged.door,
+                "GET",
+                "/api/v1/admin/keys"
+            ));
+            assert_eq!(
+                dry_run_admin_scope(&app, &headers),
+                busbar_contract::authz::Grants::default(),
+                "an unavailable or rejecting verifier grants nothing"
+            );
+        }
+    }
+}
+
 /// The operator credential's door reads the request's head: its method, its path and query apart,
 /// its authority off the `host` line, and every field line as presented.
 #[test]

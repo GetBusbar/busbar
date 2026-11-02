@@ -10689,7 +10689,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: an id or name exceeds its length cap"
+            "description": "`invalid_request`: an id or name exceeds its length cap, bad `expires_in` / `expires_at`"
           },
           "401": {
             "content": {

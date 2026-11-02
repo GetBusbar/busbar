@@ -113,12 +113,11 @@ fn replay_expires_after_the_ttl_and_a_fresh_mint_is_then_allowed() {
 
 #[test]
 fn create_and_rotate_scoped_keys_never_replay_each_other() {
-    // A create's cache key is (actor, header); a rotate's is (actor, "rotate:{id}:{k}"). The same
-    // header value presented to both verbs must never collide, or one verb replays the other's
-    // cached response — and a rotate's response carries secret material.
+    use crate::idempotency::{create_replay_key, rotate_replay_key};
+    // Even a create header spelling the complete rotate key belongs to the create namespace.
     let cache: IdempotencyCache<String> = IdempotencyCache::new();
-    let create_key = key("alice", "shared-header");
-    let rotate_key = key("alice", "rotate:key-42:shared-header");
+    let rotate_key = key("alice", &rotate_replay_key("key-42", "shared-header"));
+    let create_key = key("alice", &create_replay_key(&rotate_key.1));
 
     let r = match cache.probe(create_key, 1_000) {
         Probe::Reserved(r) => r,
@@ -126,7 +125,7 @@ fn create_and_rotate_scoped_keys_never_replay_each_other() {
     };
     r.commit("created".to_string(), 1_000);
 
-    // The rotate-scoped key, despite sharing the header string, must be a fresh reservation.
+    // The rotate must reserve independently of the adversarial create header.
     match cache.probe(rotate_key, 1_000) {
         Probe::Reserved(_) => {}
         _ => panic!("a rotate's scoped key must not see the create's committed slot"),
@@ -141,13 +140,46 @@ mod sentinel_tests;
 /// create and a rotate sharing a header value never share one.
 #[test]
 fn the_rotate_replay_key_is_framed_so_no_two_pairs_share_a_slot() {
-    use crate::idempotency::rotate_replay_key;
+    use crate::idempotency::{create_replay_key, rotate_replay_key};
     assert_eq!(rotate_replay_key("a:b", "c"), "rotate:3:a:b:1:c");
     assert_eq!(rotate_replay_key("a", "b:c"), "rotate:1:a:3:b:c");
     assert_ne!(rotate_replay_key("a:b", "c"), rotate_replay_key("a", "b:c"));
-    assert_ne!(rotate_replay_key("x", "shared"), "shared");
+    assert_ne!(
+        rotate_replay_key("x", "shared"),
+        create_replay_key("shared")
+    );
+    assert_ne!(
+        rotate_replay_key("x", "h"),
+        create_replay_key("rotate:1:x:1:h")
+    );
+    assert_eq!(create_replay_key("é"), "create:2:é");
     // The length is of BYTES, so a multi-byte id puts its boundary where the reader finds it.
     assert_eq!(rotate_replay_key("é", "h"), "rotate:2:é:1:h");
+}
+
+/// Cache loss or another node still uses disjoint Store claims in both operation orders.
+#[test]
+fn create_and_rotate_claims_are_disjoint_after_cache_loss() {
+    use crate::idempotency::{create_replay_key, rotate_replay_key};
+    let rotate = key("alice", &rotate_replay_key("x", "h"));
+    let create = key("alice", &create_replay_key("rotate:1:x:1:h"));
+    for (first, second) in [(&create, &rotate), (&rotate, &create)] {
+        let store = MemoryStore::new();
+        let claim = durable::claim(&store, first, 1_000).expect("first operation claims");
+        durable::settle(&store, &claim, 1_001, &Settled::Applied("key".into()))
+            .expect("first operation settles");
+        assert!(
+            durable::claim(&store, second, 1_002).is_ok(),
+            "other operation must claim independently"
+        );
+        assert!(
+            matches!(
+                durable::claim(&store, first, 1_002),
+                Err(Refused::Applied(_))
+            ),
+            "the original operation remains protected"
+        );
+    }
 }
 
 /// A reservation handed to an uncancellable path stays finishable: after `in_flight` a drop leaves

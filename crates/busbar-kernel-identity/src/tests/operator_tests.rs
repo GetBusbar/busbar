@@ -208,7 +208,12 @@ fn the_identity_becomes_the_principal() {
 #[test]
 fn a_probe_the_plugin_cannot_answer_on_the_spot_is_a_refusal() {
     let credential = OperatorCredential::Module(Double::new(Verified::Pass, false));
-    assert_eq!(kind(credential.probe(&request())), "reject");
+    let judged = credential.probe(&request()).expect("the operator answered");
+    assert!(
+        judged.no_verdict,
+        "an unanswered probe is not a credential rejection"
+    );
+    assert_eq!(judged.verdict, AuthVerdict::Reject);
 }
 
 #[test]
