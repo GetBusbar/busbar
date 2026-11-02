@@ -639,15 +639,15 @@ pub(super) struct RecoveryOrigin {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::governance) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
-    struct Journal {
-        selected: Mutex<Vec<RecoveryEvent>>,
-        fail_after_write: AtomicBool,
+    pub(in crate::governance) struct Journal {
+        pub(in crate::governance) selected: Mutex<Vec<RecoveryEvent>>,
+        pub(in crate::governance) fail_after_write: AtomicBool,
     }
     impl RecoverySink for Journal {
         fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
