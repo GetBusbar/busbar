@@ -447,6 +447,191 @@ pub fn call_in<'h, I: AbiIn, O: Reply>(
     )
 }
 
+/// The scalar fields of one plane `on_piece` answer, copied without its pointer-bearing head.
+/// Spans refer to the caller's arena; this value owns no lease or plugin memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PieceOutput {
+    pub emitted: u64,
+    pub more: u32,
+    pub flags: u32,
+    pub reply_status: u32,
+    pub fields_written: u32,
+    pub fields_needed: u32,
+    pub units_written: u32,
+    pub units_needed: u32,
+    pub records_written: u32,
+    pub records_needed: u32,
+    pub verdict: u32,
+    pub arena_written: u64,
+    pub arena_needed: u64,
+    pub verb: busbar_contract::abi::mechanism::call::Span,
+    pub target: busbar_contract::abi::mechanism::call::Span,
+    pub need: u32,
+    pub fault: u8,
+    pub tap_fault: u8,
+    pub lane: busbar_contract::abi::mechanism::call::Span,
+    pub final_status: u32,
+    pub final_message: busbar_contract::abi::mechanism::call::Span,
+    pub final_details: busbar_contract::abi::mechanism::call::Span,
+    pub metric_pool: busbar_contract::abi::mechanism::call::Span,
+    pub metric_lane: busbar_contract::abi::mechanism::call::Span,
+    pub wait_member: busbar_contract::abi::mechanism::call::Span,
+    pub fault_reason: busbar_contract::abi::mechanism::call::Span,
+}
+
+/// One concrete plane `on_piece` crossing. Output bytes remain in the buffers the input lends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PieceCalled {
+    pub outcome: Outcome,
+    pub out: PieceOutput,
+}
+
+/// Enter the actual plane `on_piece` slot with checked input loans and its door's live instance.
+/// Copies only scalar output fields; it neither reads nor returns the reply's head pointers.
+/// The caller retains ownership of every initialized output buffer through `TestIn`'s borrows.
+/// Written counts and spans must fit the lent buffers. Protocol semantics, including declared
+/// billable classes and record kinds, remain the test's responsibility.
+/// Any lease the answer carries is returned to this door's `release` before the capture returns.
+pub fn call_piece_in<'h>(
+    op: super::ViewOp,
+    instance: Option<&Instance<'h>>,
+    input: &TestIn<'h, busbar_contract::abi::plane::OnPieceIn>,
+) -> PieceCalled {
+    use busbar_contract::abi::plane::{OnPieceIn, OnPieceOut};
+
+    input.check();
+    op.check_in::<OnPieceIn>();
+    let (raw, door, index) = op.parts();
+    assert_eq!(
+        door.kind(),
+        busbar_contract::abi::mechanism::KindCode::Plane as u32,
+        "reply::call_piece_in: expected a plane door"
+    );
+    assert_eq!(
+        index,
+        busbar_contract::abi::plane::slot::ON_PIECE,
+        "reply::call_piece_in: expected ON_PIECE"
+    );
+    let at = on(op, instance);
+    let mut frame = input.input;
+    frame.head.size = size_of::<OnPieceIn>() as u32;
+    let mut out: OnPieceOut = super::zeroed();
+    out.head.size = size_of::<OnPieceOut>() as u32;
+    // SAFETY: ViewOp proves the exact plane ON_PIECE slot; on checks the live instance belongs
+    // to this door. TestIn checks every input pointer/capacity against its retained loans, which
+    // keep the initialized host buffers exclusively borrowed for this synchronous crossing.
+    // Both exact typed frames remain live, and no output pointer is read or returned below.
+    let outcome = unsafe {
+        raw(
+            at,
+            ptr::from_ref(&frame).cast(),
+            ptr::from_mut(&mut out).cast(),
+        )
+    }
+    .outcome();
+    let captured = PieceCalled {
+        outcome,
+        out: PieceOutput {
+            emitted: out.emitted,
+            more: out.more,
+            flags: out.flags,
+            reply_status: out.reply_status,
+            fields_written: out.fields_written,
+            fields_needed: out.fields_needed,
+            units_written: out.units_written,
+            units_needed: out.units_needed,
+            records_written: out.records_written,
+            records_needed: out.records_needed,
+            verdict: out.verdict,
+            arena_written: out.arena_written,
+            arena_needed: out.arena_needed,
+            verb: out.verb,
+            target: out.target,
+            need: out.need,
+            fault: out.fault,
+            tap_fault: out.tap_fault,
+            lane: out.lane,
+            final_status: out.final_status,
+            final_message: out.final_message,
+            final_details: out.final_details,
+            metric_pool: out.metric_pool,
+            metric_lane: out.metric_lane,
+            wait_member: out.wait_member,
+            fault_reason: out.fault_reason,
+        },
+    };
+    if out.head.lease != 0 {
+        // SAFETY: ViewOp came from this live immutable door's complete plane table, whose
+        // leading OpsHead supplies this same instance's lifecycle RELEASE slot.
+        let release = unsafe { (*door.ops()).release }
+            .expect("reply::call_piece_in: a leased answer requires RELEASE");
+        let mut input: busbar_contract::abi::mechanism::lifecycle::ReleaseIn = super::zeroed();
+        input.head.op = slot::RELEASE;
+        input.lease = out.head.lease;
+        let released = run_op(release, None, at, input, super::zeroed::<OutHead>());
+        assert_eq!(
+            released.outcome,
+            Outcome::Ready,
+            "reply::call_piece_in: RELEASE did not complete"
+        );
+    }
+    for (written, cap, field) in [
+        (out.emitted, frame.reply_cap, "on_piece.emitted"),
+        (
+            u64::from(out.units_written),
+            frame.units_cap,
+            "on_piece.units",
+        ),
+        (
+            u64::from(out.records_written),
+            frame.records_cap,
+            "on_piece.records",
+        ),
+        (
+            u64::from(out.fields_written),
+            frame.fields_cap,
+            "on_piece.fields",
+        ),
+        (out.arena_written, frame.arena_cap, "on_piece.arena"),
+    ] {
+        assert!(
+            written <= cap as u64,
+            "{field}: wrote {written} into capacity {cap}"
+        );
+    }
+    let check_span = |s: busbar_contract::abi::mechanism::call::Span, field| {
+        busbar_contract::abi::mechanism::check::span(s.offset, s.len, out.arena_written, field)
+            .unwrap_or_else(|fault| panic!("reply::call_piece_in: {fault:?}"));
+    };
+    for (span, field) in [
+        (out.verb, "on_piece.verb"),
+        (out.target, "on_piece.target"),
+        (out.lane, "on_piece.lane"),
+        (out.final_message, "on_piece.final_message"),
+        (out.final_details, "on_piece.final_details"),
+        (out.metric_pool, "on_piece.metric_pool"),
+        (out.metric_lane, "on_piece.metric_lane"),
+        (out.wait_member, "on_piece.wait_member"),
+        (out.fault_reason, "on_piece.fault_reason"),
+    ] {
+        check_span(span, field);
+    }
+    for index in 0..out.fields_written as usize {
+        // SAFETY: TestIn retains this initialized exclusive host buffer, and its written count
+        // was checked against that exact loan's capacity above. An empty/null buffer is not read.
+        let field = unsafe { frame.fields_buf.add(index).read() };
+        check_span(field.name, "on_piece.field.name");
+        check_span(field.value, "on_piece.field.value");
+    }
+    for index in 0..out.records_written as usize {
+        // SAFETY: the same checked initialized TestIn loan and bounded count as for fields.
+        let record = unsafe { frame.records_buf.add(index).read() };
+        check_span(record.key, "on_piece.record.key");
+        check_span(record.value, "on_piece.record.value");
+    }
+    captured
+}
+
 /// [`call_in`] over an open input whose tables are lent by a [`FakeHost`](super::fake::FakeHost) through [`FakeHost::lend_in`](super::fake::FakeHost::lend_in). Both the host borrow and every input-byte borrow last for the entire call.
 ///
 ///

@@ -744,8 +744,60 @@ fn a_plane_open_reply_yields_an_instance_proof_that_close_consumes() {
         // SAFETY: close_in consumes the proof for the one live allocation this OPEN returned;
         // its exclusive output is a complete OutHead.
         unsafe {
-            assert_eq!(*Box::from_raw(instance.cast::<u8>()), 37);
+            assert_eq!(*Box::from_raw(instance.cast::<u8>()), 40);
             (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready);
+        }
+        RawOutcome::of(Outcome::Ready)
+    }
+    extern "C" fn piece(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: call_piece_in verifies the exact slot, live instance and complete initialized
+        // frames, while TestIn retains the exclusive initialized reply and arena buffers.
+        unsafe {
+            assert!((37..40).contains(&*instance.cast::<u8>()));
+            let input = &*input.cast::<crate::abi::plane::OnPieceIn>();
+            let out = &mut *out.cast::<crate::abi::plane::OnPieceOut>();
+            assert_eq!(
+                input.head.size as usize,
+                size_of::<crate::abi::plane::OnPieceIn>()
+            );
+            assert_eq!(
+                out.head.size as usize,
+                size_of::<crate::abi::plane::OnPieceOut>()
+            );
+            assert_eq!(input.bytes.len, 4);
+            assert!(input.reply_cap >= 2 && input.arena_cap >= 4);
+            ptr::copy_nonoverlapping(b"ok".as_ptr(), input.reply_buf, 2);
+            ptr::copy_nonoverlapping(b"lane".as_ptr(), input.arena_buf, 4);
+            out.head.lease = 19;
+            out.emitted = if input.flags == 1 { 3 } else { 2 };
+            out.arena_written = 4;
+            out.reply_status = 201;
+            out.lane = crate::abi::mechanism::call::Span {
+                offset: 0,
+                len: if input.flags == 2 { 5 } else { 4 },
+            };
+            out.need = 3;
+            out.fault = crate::abi::transport::FAULT_HEALTHY;
+        }
+        RawOutcome::of(Outcome::Ready)
+    }
+    extern "C" fn release(
+        instance: *mut c_void,
+        input: *const c_void,
+        _: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: the capture returns this same door's live lease and exact ReleaseIn, before
+        // CLOSE consumes the instance. The changed instance proves RELEASE actually ran.
+        unsafe {
+            let input = &*input.cast::<crate::abi::mechanism::lifecycle::ReleaseIn>();
+            assert_eq!(input.head.op, slot::RELEASE);
+            assert_eq!(input.lease, 19);
+            assert!((37..40).contains(&*instance.cast::<u8>()));
+            *instance.cast::<u8>() += 1;
         }
         RawOutcome::of(Outcome::Ready)
     }
@@ -758,9 +810,10 @@ fn a_plane_open_reply_yields_an_instance_proof_that_close_consumes() {
             None,
             None,
             None,
-            None,
+            Some(release),
             Some(close),
         ),
+        on_piece: Some(piece),
         ..crate::abi::sdk::door::absent_table::<crate::abi::plane::Ops>()
     };
     // SAFETY: both table slots and the existing Statement/tail have immutable static backing.
@@ -784,6 +837,67 @@ fn a_plane_open_reply_yields_an_instance_proof_that_close_consumes() {
     assert!(opened.owned.is_none(), "the absent snapshot stays absent");
     let instance = opened.take_instance().expect("the plane OPEN proof");
     assert!(opened.take_instance().is_none(), "the proof transfers once");
+    let mut body = [0; 2];
+    let mut arena = [0; 4];
+    let captured = {
+        let input = TestIn::<crate::abi::plane::OnPieceIn>::new()
+            .blob(
+                |i| &i.bytes,
+                b"ping",
+                crate::abi::mechanism::call::BLOB_OCTETS,
+            )
+            .buffer(|i| &i.reply_buf, |i| &i.reply_cap, &mut body)
+            .buffer(|i| &i.arena_buf, |i| &i.arena_cap, &mut arena);
+        let wrong_slot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::reply::call_piece_in(
+                view.op::<crate::abi::plane::Ops>(|ops| &ops.head.open)
+                    .unwrap(),
+                Some(&instance),
+                &input,
+            )
+        }));
+        assert!(wrong_slot.is_err(), "an OPEN cannot receive an OnPieceOut");
+        super::reply::call_piece_in(
+            view.op::<crate::abi::plane::Ops>(|ops| &ops.on_piece)
+                .unwrap(),
+            Some(&instance),
+            &input,
+        )
+    };
+    assert_eq!(captured.outcome, Outcome::Ready);
+    assert_eq!(captured.out.emitted, 2);
+    assert_eq!(captured.out.reply_status, 201);
+    assert_eq!(
+        captured.out.lane,
+        crate::abi::mechanism::call::Span { offset: 0, len: 4 }
+    );
+    assert_eq!(captured.out.need, 3);
+    assert_eq!(captured.out.fault, crate::abi::transport::FAULT_HEALTHY);
+    assert_eq!(&body, b"ok");
+    assert_eq!(&arena, b"lane");
+    for mode in [1, 2] {
+        let input = TestIn::<crate::abi::plane::OnPieceIn>::new()
+            .blob(
+                |i| &i.bytes,
+                b"ping",
+                crate::abi::mechanism::call::BLOB_OCTETS,
+            )
+            .set(|i| &i.flags, mode)
+            .buffer(|i| &i.reply_buf, |i| &i.reply_cap, &mut body)
+            .buffer(|i| &i.arena_buf, |i| &i.arena_cap, &mut arena);
+        let malformed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::reply::call_piece_in(
+                view.op::<crate::abi::plane::Ops>(|ops| &ops.on_piece)
+                    .unwrap(),
+                Some(&instance),
+                &input,
+            )
+        }));
+        assert!(
+            malformed.is_err(),
+            "oversized written counts and spans are refused"
+        );
+    }
     let closed = super::reply::close_in(
         view.op::<crate::abi::plane::Ops>(|ops| &ops.head.close)
             .unwrap(),
