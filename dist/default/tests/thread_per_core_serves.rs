@@ -99,20 +99,22 @@ fn thread_per_core_boots_and_serves_healthz() {
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
 
-    let mut child = Command::new(common::boot::exe())
-        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("MOCK_KEY", "x")
-        // DEBUG, not the default INFO: the per-worker "thread-per-core data plane" / "busbar
-        // listening" facts below are DEBUG-level (a 1.5.5-shaped config must see no new line at INFO
-        // — the neutrality binding, qa/parity-bindings.md); this test still wants to
-        // observe them, so it opts in explicitly rather than asserting on what an operator sees by
-        // default.
-        .env("RUST_LOG", "debug")
-        .stdout(log)
-        .stderr(log_err)
-        .spawn()
-        .expect("spawn busbar");
+    let mut child = common::boot::Reap(
+        Command::new(common::boot::exe())
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            // DEBUG, not the default INFO: the per-worker "thread-per-core data plane" / "busbar
+            // listening" facts below are DEBUG-level (a 1.5.5-shaped config must see no new line at INFO
+            // — the neutrality binding, qa/parity-bindings.md); this test still wants to
+            // observe them, so it opts in explicitly rather than asserting on what an operator sees by
+            // default.
+            .env("RUST_LOG", "debug")
+            .stdout(log)
+            .stderr(log_err)
+            .spawn()
+            .expect("spawn busbar"),
+    );
 
     // Boot marker: the data listener logs "busbar listening" from inside a per-core runtime. Fail loud
     // if the process dies first, so a boot failure cannot masquerade as a green result.
