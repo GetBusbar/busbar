@@ -754,8 +754,29 @@ dependencies = [
 name = "busbar-kernel-testkit"
 version = "1.6.0"
 dependencies = [
+ "axum",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-egress",
+ "busbar-kernel-identity",
+ "bytes",
+ "crc32fast",
+ "futures",
+ "getrandom 0.3.4",
+ "hex",
+ "http",
+ "http-body-util",
+ "indexmap",
+ "metrics",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -769,7 +790,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a?rev=8feb28a381f0ed8e0903f7bef7fa8c75944b5864#8feb28a381f0ed8e0903f7bef7fa8c75944b5864"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a?rev=f0cc0bedb4768b22743d4d468b50b6b660c97c6e#f0cc0bedb4768b22743d4d468b50b6b660c97c6e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -791,7 +812,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-decisions?rev=aa1a026ddc94a6758dbf8f10636e4d2162b440a7#aa1a026ddc94a6758dbf8f10636e4d2162b440a7"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-decisions?rev=fae66f7a253271f355a5fd157187ddac91bf77ea#fae66f7a253271f355a5fd157187ddac91bf77ea"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -803,7 +824,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-llm?rev=08a5eca582c19649b22ddcec9c1ac6ac9845e7de#08a5eca582c19649b22ddcec9c1ac6ac9845e7de"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-llm?rev=18f43b68370e46adcd75e3dc75989a7de366f13e#18f43b68370e46adcd75e3dc75989a7de366f13e"
 dependencies = [
  "busbar-contract",
  "bytes",
