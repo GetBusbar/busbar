@@ -159,16 +159,23 @@ impl PlaneCalls for PlaneInstance {
     }
 
     fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled> {
-        use super::CancelFrame as _;
-        // The plane's own `cancel` frame, its record buffers lent (SEAM-L(r)), naming the unit.
-        let mut cancel = super::PlaneCancel::new();
-        let _ = cancel.prepare(ticket, 0);
-        cancel.frame().input.unit = unit;
-        let called = self.plugin.call(life::CANCEL, cancel.frame());
-        (called.outcome == Outcome::Ready).then(|| Cancelled {
-            disposition: cancel.disposition(),
-            writes: cancel.writes(),
-        })
+        // Legacy synchronous test-double seam. Production cancellation must be ordered with
+        // every sibling crossing; callers use `cancel_unit` and retain its completion instead.
+        let _ = (ticket, unit);
+        None
+    }
+
+    fn bind_unit(&self, ticket: Ticket, unit: u64) {
+        self.dispatcher.bind_plane_unit(&self.plugin, ticket, unit);
+    }
+
+    fn cancel_unit(
+        &self,
+        ticket: Ticket,
+        unit: u64,
+    ) -> Pin<Box<dyn Future<Output = Option<Cancelled>> + Send>> {
+        self.dispatcher
+            .cancel_plane_unit(&self.plugin, ticket, unit)
     }
 
     fn mint(&self) -> Option<Ticket> {
