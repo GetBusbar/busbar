@@ -66,21 +66,33 @@ enum Dest {
     Endpoint,
     OauthAs,
     /// A declaring section its plane owns the grammar of: parsed by that plane into the map carrier.
-    Declared,
+    Declared(PlaneMetadata),
     /// A declaring section no carrier holds: carried RAW, for its plane to read over the ABI.
-    Raw,
+    Raw(PlaneMetadata),
     AuthPolicy,
     Credentials,
 }
 
+#[derive(Clone, Copy)]
+struct PlaneMetadata {
+    key: &'static str,
+    noun: &'static str,
+}
+
 impl Dest {
     fn for_declared(decl: &PlaneDeclaration, key: &'static str) -> Dest {
+        let metadata = crate::plane_driver::registry::plane_decl_for_config_section(key)
+            .map(|d| PlaneMetadata {
+                key: d.key,
+                noun: d.subject_noun,
+            })
+            .unwrap_or(PlaneMetadata { key, noun: "entry" });
         let carried = if key == decl.config_section {
-            DeclaredSections::holds(decl).then_some(Dest::Declared)
+            DeclaredSections::holds(decl).then_some(Dest::Declared(metadata))
         } else {
             (decl.config_section == EndpointSection::OWNER).then_some(Dest::Endpoint)
         };
-        carried.unwrap_or(Dest::Raw)
+        carried.unwrap_or(Dest::Raw(metadata))
     }
 }
 
@@ -156,14 +168,14 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
                     EndpointSection::deserialize(section).map_err(D::Error::custom)?;
             }
             Dest::OauthAs => lifted.oauth_as = Option::deserialize(de)?,
-            Dest::Declared => {
-                let section = plane_remainder::<D>(key, de, lifted)?;
+            Dest::Declared(metadata) => {
+                let section = plane_remainder_in(key, metadata.key, metadata.noun, de, lifted)?;
                 lifted.declared_raw.insert(key, section.clone());
                 let parsed = DeclaredSections::parse(key, section).map_err(D::Error::custom)?;
                 lifted.declared.0.extend(parsed.0);
             }
-            Dest::Raw => {
-                let section = plane_remainder::<D>(key, de, lifted)?;
+            Dest::Raw(metadata) => {
+                let section = plane_remainder_in(key, metadata.key, metadata.noun, de, lifted)?;
                 lifted.plane_raw.insert(key, section);
             }
             Dest::AuthPolicy => lifted.auth_policy = Some(Deserialize::deserialize(de)?),
@@ -175,21 +187,6 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
 }
 
 pub(crate) const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
-
-fn plane_remainder<'de, D: Deserializer<'de>>(
-    section_key: &'static str,
-    de: D,
-    lifted: &mut Lifted,
-) -> Result<serde_yaml::Value, D::Error> {
-    let decl = crate::plane_driver::registry::plane_decl_for_config_section(section_key);
-    plane_remainder_in(
-        section_key,
-        decl.map_or(section_key, |d| d.key),
-        decl.map_or("entry", |d| d.subject_noun),
-        de,
-        lifted,
-    )
-}
 
 fn plane_remainder_in<'de, D: Deserializer<'de>>(
     section_key: &'static str,
@@ -382,24 +379,36 @@ impl<'de> Visitor<'de> for DocumentVisitor {
     }
 
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-        let mut lifted = Lifted::default();
-        for d in crate::plane_driver::registry::plane_decls() {
-            lifted.watch.extend(d.required_config_sections);
-        }
+        let watch = crate::plane_driver::registry::plane_decls()
+            .iter()
+            .flat_map(|d| d.required_config_sections.iter().copied())
+            .collect();
         let table = lift_table();
-        let mut deploy = DeployCfg::deserialize(MapAccessDeserializer::new(LiftingMap {
-            inner: map,
-            lift: &table,
-            lifted: &mut lifted,
-            seen_lifted: Vec::new(),
-        }))?;
-
-        if let Some(s) = lifted.watch.iter().find(|k| **k != "auth") {
-            return Err(M::Error::missing_field(s));
-        }
+        let (mut deploy, lifted) = read_document::<_, DeployCfg>(map, watch, &table)?;
         lifted.install(&mut deploy);
         Ok(SplitDocument(deploy))
     }
+}
+
+fn read_document<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
+    map: M,
+    watch: Vec<&'static str>,
+    table: &[(&'static str, Dest)],
+) -> Result<(T, Lifted), M::Error> {
+    let mut lifted = Lifted {
+        watch,
+        ..Lifted::default()
+    };
+    let deploy = T::deserialize(MapAccessDeserializer::new(LiftingMap {
+        inner: map,
+        lift: table,
+        lifted: &mut lifted,
+        seen_lifted: Vec::new(),
+    }))?;
+    if let Some(s) = lifted.watch.iter().find(|k| **k != "auth") {
+        return Err(M::Error::missing_field(s));
+    }
+    Ok((deploy, lifted))
 }
 
 pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, serde_yaml::Error> {
@@ -417,3 +426,7 @@ pub fn deploy_from_yaml_value(value: serde_yaml::Value) -> Result<DeployCfg, ser
 #[cfg(test)]
 #[path = "tests/plane_remainder_tests.rs"]
 mod plane_remainder_tests;
+
+#[cfg(test)]
+#[path = "tests/document_metadata_tests.rs"]
+mod document_metadata_tests;
