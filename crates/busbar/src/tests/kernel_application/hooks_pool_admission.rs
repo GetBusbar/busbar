@@ -234,5 +234,50 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         4,
         "all four calls crossed actual HTTP"
     );
+    // Replace fixture-only test_notifies_total with observed real HTTP dispatches.
+    let notify_count = || {
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|body| body["op"] == "notify")
+            .count()
+    };
+    assert_eq!(notify_count(), 0, "no tap dispatched yet");
+    let tap =
+        || busbar_contract::abi::host::hook::NotifyFrame::build(&request("hello"), None, false);
+    policy.notify(tap(), budget).await;
+    assert_eq!(
+        notify_count(),
+        1,
+        "a tap view must reach the actual product over the ABI and HTTP"
+    );
+    policy.notify(tap(), budget).await;
+    assert_eq!(notify_count(), 2, "each tap is one dispatch");
+    match policy.transform(&request("hello"), budget).await {
+        TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
+        other => panic!("seam unusable after notify: expected Rewrite, got {other:?}"),
+    }
+
+    // The product reports actual target state and its published schema; fake
+    // test_decides_total instrumentation is deliberately not a product contract.
+    let status = policy.status(budget).await.expect("status");
+    assert_eq!(
+        status.metrics.expect("metrics"),
+        Vec::<serde_json::Value>::new()
+    );
+    assert_eq!(
+        status.settings.expect("settings")["target_host"],
+        "127.0.0.1"
+    );
+    let schema = policy.describe(budget).await.expect("schema");
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["required"], serde_json::json!(["url"]));
+    assert!(schema["properties"]["timeout_ms"].is_object());
+    assert_eq!(
+        received.lock().unwrap().len(),
+        7,
+        "management reads are local product state, not forwarded HTTP"
+    );
     server.abort();
 }
