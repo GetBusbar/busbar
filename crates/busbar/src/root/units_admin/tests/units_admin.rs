@@ -1013,7 +1013,73 @@ fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::Audi
 fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
     const WHO: &str = "operator-cifollow-one-entry";
 
-    let _ = busbar_kernel_testkit::test_support::TestApp::new().build();
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual Store statement reads")
+        .expect("the actual Store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual Store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual Store library reads");
+    let directory = crate::root::test_plugins::scratch(&format!(
+        "admin-unit-{}",
+        busbar_kernel::door::op_id().counter(),
+    ));
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("actual Store settings are JSON");
+    assert!(
+        settings.is_object(),
+        "the actual Store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {},
+        "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": settings},
+        "advanced": {"allow_destinations": ["127.0.0.1"]},
+    }))
+    .expect("the real admin deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the real admin deployment resolves");
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (built, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the product builds the actual admin application");
+    limits.keep().expect("the real application limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let _app = std::sync::Arc::new(built);
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
         let ring =
             busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
@@ -1445,10 +1511,75 @@ fn answer_over_counts(
     gov: Arc<busbar_kernel::governance::GovState>,
     path: &str,
 ) -> serde_json::Value {
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .governance(gov)
-        .cost(one_lane_card())
-        .build();
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual Store statement reads")
+        .expect("the actual Store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual Store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual Store library reads");
+    let directory = crate::root::test_plugins::scratch(&format!(
+        "admin-unit-{}",
+        busbar_kernel::door::op_id().counter(),
+    ));
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("actual Store settings are JSON");
+    assert!(
+        settings.is_object(),
+        "the actual Store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {},
+        "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": settings},
+        "advanced": {"allow_destinations": ["127.0.0.1"]},
+    }))
+    .expect("the real admin deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the real admin deployment resolves");
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the product builds the actual admin application");
+    limits.keep().expect("the real application limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    built.governance = Some(gov);
+    built.cost = std::sync::Arc::new(one_lane_card());
+    let app = std::sync::Arc::new(built);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
     let mut units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
@@ -1586,7 +1717,7 @@ fn each_view_serves_the_figures_the_ledger_holds() {
 
 #[cfg(feature = "root-admin")]
 fn real_admin_dispatch() -> RouterDispatch {
-    busbar_kernel_testkit::test_support::operator_double::install();
+    crate::dist_root_install::install();
     busbar_core_admin::install();
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
@@ -1595,9 +1726,85 @@ fn real_admin_dispatch() -> RouterDispatch {
         )
         .expect("governance"),
     );
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .governance(gov)
-        .build();
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual Store statement reads")
+        .expect("the actual Store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual Store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual Store library reads");
+    let directory = crate::root::test_plugins::scratch(&format!(
+        "admin-unit-{}",
+        busbar_kernel::door::op_id().counter(),
+    ));
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("actual Store settings are JSON");
+    assert!(
+        settings.is_object(),
+        "the actual Store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {},
+        "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": settings},
+        "advanced": {"allow_destinations": ["127.0.0.1"]},
+    }))
+    .expect("the real admin deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the real admin deployment resolves");
+    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the product builds the actual admin application");
+    limits.keep().expect("the real application limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let digest = gov.admin_token_hash();
+    built.governance = Some(gov);
+    built.admin_chain = vec![busbar_kernel::config::operator_provider().to_string()];
+    let operator = busbar_kernel::auth::open_operator(
+        &built.hook_env.registry,
+        digest,
+        &built.identity_providers,
+    )
+    .expect("the actual operator auth plugin opens with the configured digest");
+    std::sync::Arc::get_mut(&mut built.admin_modules)
+        .expect("the newly built admin chain has one owner")
+        .operator = operator;
+    let app = std::sync::Arc::new(built);
     RouterDispatch::new(
         busbar_kernel::build_router(app),
         &tokio::runtime::Handle::current(),
@@ -1951,7 +2158,7 @@ impl AuditView for SealedChain {
 
 #[cfg(feature = "root-admin")]
 fn an_audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
-    busbar_kernel_testkit::test_support::tokens::pass()
+    busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel())
 }
 
 #[cfg(feature = "root-admin")]
@@ -1987,7 +2194,7 @@ fn a_sealed_chain() -> SealedChain {
                 },
                 wall: 1_700_000_000 + unit,
                 mono: unit * 1_000,
-                origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
+                origin: crate::root::kernel::new_kernel().origin(OriginKind::Client),
                 outcome: OutcomeFacts {
                     unit_end: UnitOutcome::Completed,
                     step: None,
@@ -2325,7 +2532,7 @@ fn a_memory_book() -> Arc<Mutex<crate::root::durability::Durability>> {
 fn a_journal_over(book: &Arc<Mutex<crate::root::durability::Durability>>) -> AmendmentJournal {
     AmendmentJournal::new(
         Arc::clone(book),
-        busbar_kernel_testkit::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+        crate::root::kernel::new_kernel().durability_token(),
     )
 }
 
@@ -3471,9 +3678,7 @@ fn append_the_next_record(book: &Arc<Mutex<crate::root::durability::Durability>>
         .unwrap()
         .journal
         .append(
-            &busbar_kernel_testkit::test_support::tokens::grant::<
-                busbar_contract::caps::DurableWrite,
-            >(),
+            &crate::root::kernel::new_kernel().durability_token(),
             busbar_contract::caps::StepName::Meter,
             &[
                 busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Load, vec![1])
