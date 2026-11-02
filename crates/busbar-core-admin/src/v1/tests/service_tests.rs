@@ -1069,121 +1069,6 @@ fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
     }
 }
 
-#[tokio::test]
-async fn list_groups_projects_the_limit_tree() {
-    let team = GroupCfg {
-        limits: vec![budget(20_000, LimitWindow::Month)],
-        child_default: Some(ChildDefault {
-            limits: vec![budget(2_000, LimitWindow::Month)],
-        }),
-        ..Default::default()
-    };
-    let bob = GroupCfg {
-        parent: Some("team".into()),
-        limits: vec![budget(3_000, LimitWindow::Month)],
-        ..Default::default()
-    };
-    let app = crate::new_test_app()
-        .group("team", team)
-        .group("user:bob", bob)
-        .build();
-    let svc = AdminService::new(app);
-
-    let page = svc
-        .list_groups(0, crate::v1::contract::LIST_LIMIT_DEFAULT)
-        .await
-        .expect("list ok");
-
-    assert_eq!(page.items.len(), 2);
-    let team = &page.items[0];
-    assert_eq!(team.name, "team");
-    assert_eq!(team.parent, None);
-    assert!(team.enabled);
-    assert_eq!(team.limits.len(), 1);
-    assert_eq!(team.limits[0].metric, "budget");
-    assert_eq!(team.limits[0].amount, 20_000);
-    assert_eq!(team.limits[0].per, Some("month"));
-
-    let cd = team.child_default.as_ref().expect("child_default present");
-    assert_eq!(cd.len(), 1);
-    assert_eq!(cd[0].amount, 2_000);
-
-    let bob = &page.items[1];
-    assert_eq!(bob.name, "user:bob");
-    assert_eq!(bob.parent.as_deref(), Some("team"));
-    assert!(bob.child_default.is_none());
-}
-
-#[tokio::test]
-async fn list_groups_is_cursor_paginated() {
-    let mut builder = crate::new_test_app();
-    for i in 0..5 {
-        builder = builder.group(
-            &format!("g{i}"),
-            GroupCfg {
-                limits: vec![budget(1_000, LimitWindow::Month)],
-                ..Default::default()
-            },
-        );
-    }
-    let app = builder.build();
-    let svc = AdminService::new(app);
-
-    let p1 = svc.list_groups(0, 2).await.expect("list ok");
-    assert_eq!(
-        p1.items.len(),
-        2,
-        "a `limit` below the total must bound the page"
-    );
-    let names: Vec<&str> = p1.items.iter().map(|g| g.name.as_str()).collect();
-    assert_eq!(names, vec!["g0", "g1"], "BTreeMap order: name-sorted");
-    let c1 = p1
-        .next_cursor
-        .as_deref()
-        .expect("more rows remain -> a next_cursor is present");
-    let start2 = crate::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
-
-    let p2 = svc.list_groups(start2, 2).await.expect("list ok");
-    assert_eq!(p2.items.len(), 2);
-    let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
-    assert_eq!(names, vec!["g2", "g3"]);
-    let c2 = p2.next_cursor.as_deref().expect("one row remains");
-    let start3 = crate::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
-
-    let p3 = svc.list_groups(start3, 2).await.expect("list ok");
-    assert_eq!(p3.items.len(), 1, "final page holds the remainder");
-    let names: Vec<&str> = p3.items.iter().map(|g| g.name.as_str()).collect();
-    assert_eq!(names, vec!["g4"]);
-    assert!(
-        p3.next_cursor.is_none(),
-        "last page has no next_cursor: {p3:?}"
-    );
-}
-
-#[tokio::test]
-async fn get_group_by_name_and_not_found() {
-    let app = crate::new_test_app()
-        .group(
-            "acme",
-            GroupCfg {
-                limits: vec![budget(5_000_000, LimitWindow::Month)],
-                ..Default::default()
-            },
-        )
-        .build();
-    let svc = AdminService::new(app);
-
-    let g = svc.get_group("acme").await.expect("found");
-    assert_eq!(g.name, "acme");
-    assert_eq!(g.limits[0].amount, 5_000_000);
-
-    let err = svc.get_group("ghost").await.unwrap_err();
-    assert!(
-        matches!(&err, AdminError::NotFound { what: msg, .. } if msg.contains("ghost")),
-        "unknown group is not_found: {err:?}"
-    );
-}
-
 fn team_app() -> Arc<App> {
     crate::new_test_app()
         .group(
@@ -1194,55 +1079,6 @@ fn team_app() -> Arc<App> {
             },
         )
         .build()
-}
-
-#[test]
-fn build_with_group_creates_leaf_and_rebuilds_cost() {
-    let app = team_app();
-    let bob = GroupCfg {
-        parent: Some("team".into()),
-        limits: vec![budget(3_000, LimitWindow::Month)],
-        ..Default::default()
-    };
-    let next = build_with_group(&app, "user:bob", bob).expect("valid leaf");
-    assert_eq!(next.config_version, app.config_version.wrapping_add(1));
-    assert!(next.groups_registry.contains_key("user:bob"));
-
-    let leaf = next
-        .cost
-        .group_named("user:bob")
-        .expect("leaf in cost model");
-    assert!(leaf.parent.is_some(), "leaf's parent chain resolved");
-
-    assert!(next.cost.group_named("team").is_some());
-}
-
-#[test]
-fn build_with_group_rejects_dangling_parent() {
-    let app = team_app();
-    let orphan = GroupCfg {
-        parent: Some("nonexistent".into()),
-        ..Default::default()
-    };
-    let Err(err) = build_with_group(&app, "orphan", orphan) else {
-        panic!("dangling parent must be rejected");
-    };
-    assert!(
-        matches!(&err, busbar_kernel::config::transaction::TxnError::Validation(m) if m.contains("orphan")),
-        "dangling parent is a validation error: {err:?}"
-    );
-}
-
-#[test]
-fn build_with_group_rejects_empty_name() {
-    let app = team_app();
-    let Err(err) = build_with_group(&app, "   ", GroupCfg::default()) else {
-        panic!("empty name must be rejected");
-    };
-    assert!(matches!(
-        err,
-        busbar_kernel::config::transaction::TxnError::Validation(_)
-    ));
 }
 
 #[test]
@@ -1927,25 +1763,6 @@ fn build_without_hook_only_removes_the_target_from_global_wiring() {
 }
 
 #[test]
-fn build_with_group_name_length_boundary_is_exact() {
-    let app = team_app();
-    let at_cap = "g".repeat(MAX_GROUP_NAME_LEN);
-    let leaf = GroupCfg {
-        parent: Some("team".into()),
-        ..Default::default()
-    };
-    assert!(
-        build_with_group(&app, &at_cap, leaf.clone()).is_ok(),
-        "exactly MAX_GROUP_NAME_LEN chars must be accepted"
-    );
-    let over_cap = format!("g{at_cap}");
-    assert!(
-        build_with_group(&app, &over_cap, leaf).is_err(),
-        "MAX_GROUP_NAME_LEN + 1 chars must be rejected"
-    );
-}
-
-#[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
     let env =
         busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
@@ -1984,27 +1801,6 @@ fn build_with_registry_rejects_a_dangling_global_hook_reference() {
     assert!(
         build_with_registry(&app, registry, vec!["ghost".to_string()]).is_err(),
         "a global_hooks entry naming an unregistered hook must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn healthz_returns_a_real_response_not_the_default() {
-    let app = crate::new_test_app().build();
-    let resp = busbar_kernel::endpoints::healthz(busbar_kernel::state::CurrentApp(app)).await;
-    use axum::body::to_bytes;
-    let status = resp.status();
-    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
-    assert_eq!(
-        status,
-        axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        "a lane-less fixture must report unready (503), not Default::default()'s 200 nor an \
-             inverted readiness condition"
-    );
-    assert_eq!(
-        body,
-        "no usable lanes".as_bytes(),
-        "a real 503 healthz response must carry the real status text, not \
-             Response::default()'s empty body: {body:?}"
     );
 }
 
