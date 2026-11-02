@@ -83,6 +83,7 @@ struct Table {
     bytes: Mutex<HashMap<u64, VecDeque<Vec<u8>>>>,
     next: AtomicU64,
     closed: AtomicU64,
+    on_close: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// The need every open was made on.
     needs: Mutex<Vec<u32>>,
     /// Whether each write was a text message.
@@ -258,6 +259,10 @@ impl Conns for Table {
     }
     fn close(&self, _: InstanceId, _: ConnId) -> Result<(), ConnError> {
         self.closed.fetch_add(1, Ordering::SeqCst);
+        let callback = self.on_close.lock().unwrap().clone();
+        if let Some(callback) = callback {
+            callback();
+        }
         Ok(())
     }
 }
@@ -321,6 +326,7 @@ struct Book {
     cooldown: Mutex<HashMap<DestinationId, u64>>,
     spent: AtomicU64,
     refunded: AtomicU64,
+    on_refund: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Breaker for Book {
@@ -388,8 +394,16 @@ impl Breaker for Book {
     }
     fn refund_budget(&self, _: DestinationId) {
         self.refunded.fetch_add(1, Ordering::SeqCst);
+        let callback = self.on_refund.lock().unwrap().clone();
+        if let Some(callback) = callback {
+            callback();
+        }
     }
 }
+
+#[allow(unsafe_code)]
+#[path = "retirement_tests.rs"]
+mod retirement_tests;
 
 #[derive(Debug)]
 struct Slot(DestinationId);
