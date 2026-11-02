@@ -13,6 +13,16 @@ async fn application() -> (
     String,
     tokio::task::JoinHandle<()>,
 ) {
+    application_with_directory(directory::settings()).await
+}
+
+async fn application_with_directory(
+    settings: serde_json::Value,
+) -> (
+    Arc<busbar_kernel::state::App>,
+    String,
+    tokio::task::JoinHandle<()>,
+) {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let library =
         std::path::PathBuf::from(std::env::var_os("BUSBAR_TEST_LDAP_PLUGIN").expect(
@@ -33,7 +43,7 @@ async fn application() -> (
     let app = application_with_auth_plugin(
         serde_json::json!({
             "providers":{},"models":{},"public_url":"https://busbar.example.com",
-            "identity-providers":{"directory":{"module":module,"settings":directory::settings(),"browser_login":{}}},
+            "identity-providers":{"directory":{"module":module,"settings":settings,"browser_login":{}}},
             "auth":{"chain":[],"admin_auth":[],"signing_key":{"file":signing_key},
                 "role_bindings":{"directory":{"members":{"group":"team"}}}},
             "groups":{"team":{"child_default":{"limits":[{"budget":500,"per":"month"}]}}},
@@ -191,5 +201,33 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
         gov.verify_token(&key2, now, None).is_some(),
         "the new token verifies"
     );
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_credential_submit_does_not_starve_the_runtime() {
+    let (_app, base, handle) = application_with_directory(directory::pending_settings()).await;
+    let (raw, cookie, _body) = form(&base, false).await;
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            let (base, raw, state) = (
+                base.clone(),
+                raw.clone(),
+                cookie["state"].as_str().unwrap().to_owned(),
+            );
+            tokio::spawn(async move { submit(&base, &raw, &state, "hunter2").await.status() })
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::timeout(std::time::Duration::from_millis(750),tokio::spawn(async {})).await
+        .expect("the runtime stopped polling while four ANONYMOUS credential POSTs sat inside the actual LDAP plugin's complete_login")
+        .expect("runtime canary completes");
+    for task in tasks {
+        assert_eq!(
+            task.await.unwrap(),
+            401,
+            "the delayed real directory refuses the password"
+        );
+    }
     handle.abort();
 }

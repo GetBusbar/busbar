@@ -76,7 +76,7 @@ fn result(code: u8) -> Vec<u8> {
     .concat()
 }
 
-fn conversation(mut socket: std::net::TcpStream) {
+fn conversation(mut socket: std::net::TcpStream, delay: std::time::Duration) {
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
@@ -102,6 +102,7 @@ fn conversation(mut socket: std::net::TcpStream) {
                 let Some((0x80, password, _)) = take(body) else {
                     return;
                 };
+                std::thread::sleep(delay);
                 bound = dn == USER && password == b"pw";
                 let code = if bound { 0 } else { 49 };
                 if socket.write_all(&message(id, 0x61, &result(code))).is_err() {
@@ -138,13 +139,25 @@ fn conversation(mut socket: std::net::TcpStream) {
 
 pub(super) fn settings() -> serde_json::Value {
     static ADDRESS: std::sync::OnceLock<std::net::SocketAddr> = std::sync::OnceLock::new();
-    let address = ADDRESS.get_or_init(|| {
+    settings_for(&ADDRESS, std::time::Duration::ZERO)
+}
+
+pub(super) fn pending_settings() -> serde_json::Value {
+    static ADDRESS: std::sync::OnceLock<std::net::SocketAddr> = std::sync::OnceLock::new();
+    settings_for(&ADDRESS, std::time::Duration::from_secs(3))
+}
+
+fn settings_for(
+    address: &'static std::sync::OnceLock<std::net::SocketAddr>,
+    delay: std::time::Duration,
+) -> serde_json::Value {
+    let address = address.get_or_init(|| {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("local LDAP endpoint");
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             for socket in listener.incoming() {
                 let socket = socket.expect("local LDAP connection");
-                std::thread::spawn(move || conversation(socket));
+                std::thread::spawn(move || conversation(socket, delay));
             }
         });
         address

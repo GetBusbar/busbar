@@ -521,61 +521,6 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     }
 }
 
-#[test]
-fn concurrent_credential_submit_does_not_starve_the_runtime() {
-    let rt = two_worker_runtime();
-    let (app, handle) = rt.block_on(async {
-        let app = busbar_kernel_testkit::test_support::TestApp::new()
-            .public_url("https://busbar.example.com")
-            .login_method_door(
-                "test-login-double",
-                parking_login(LoginKind::Credential),
-                LoginKind::Credential,
-                true,
-            )
-            .build();
-        let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
-        (app, handle)
-    });
-
-    let cookie = LoginCookie {
-        method: "test-login-double".to_string(),
-        code_verifier: String::new(),
-        state: "S".to_string(),
-        nonce: String::new(),
-        refresh: false,
-    }
-    .encode();
-    let tasks: Vec<_> = (0..4)
-        .map(|_| {
-            let (a, h, c) = (app.clone(), handle.clone(), cookie.clone());
-            rt.spawn(async move {
-                credential_submit(
-                    &a,
-                    &h,
-                    c,
-                    vec![
-                        (FORM_STATE_FIELD.to_string(), "S".to_string()),
-                        ("password".to_string(), "hunter2".to_string()),
-                    ],
-                )
-                .await
-                .status()
-            })
-        })
-        .collect();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert_runtime_still_polls(
-        &rt,
-        std::time::Duration::from_millis(750),
-        "the runtime stopped polling while four ANONYMOUS credential POSTs sat inside the login \
-         plugin's complete_login",
-    );
-    for t in tasks {
-        rt.block_on(async { t.await.ok() });
-    }
-}
-
 fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<busbar_kernel::state::App> {
     busbar_kernel_testkit::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
