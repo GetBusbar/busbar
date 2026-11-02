@@ -667,39 +667,9 @@ pub fn write_rewrite(
 /// wiped here; the JSON parser's private scratch is not this owner's allocation.
 struct JsonValue(serde_json::Value);
 
-impl JsonValue {
-    fn new(value: serde_json::Value) -> Self {
-        #[cfg(test)]
-        {
-            fn watch(value: &serde_json::Value) {
-                match value {
-                    serde_json::Value::String(text) => {
-                        // SAFETY: this guard exclusively owns the initialized allocation until
-                        // it is wiped and dropped on the current synchronous test thread.
-                        unsafe { crate::alloc_counter::watch_initialized_payload(text.as_bytes()) };
-                    }
-                    serde_json::Value::Array(items) => items.iter().for_each(watch),
-                    serde_json::Value::Object(items) => {
-                        for (key, value) in items {
-                            // SAFETY: the owned key's initialized prefix remains with this guard.
-                            unsafe {
-                                crate::alloc_counter::watch_initialized_payload(key.as_bytes())
-                            };
-                            watch(value);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            watch(&value);
-        }
-        Self(value)
-    }
-}
-
 impl<'de> serde::Deserialize<'de> for JsonValue {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        <serde_json::Value as serde::Deserialize>::deserialize(de).map(Self::new)
+        <serde_json::Value as serde::Deserialize>::deserialize(de).map(Self)
     }
 }
 
@@ -774,7 +744,7 @@ fn verb(v: &Option<JsonValue>) -> Option<&serde_json::Value> {
 #[must_use]
 pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     let v = match reply {
-        Ok(v) => JsonValue::new(v),
+        Ok(v) => JsonValue(v),
         Err(message) => return Verdict::Failed(message),
     };
     let Ok(parsed) = <Reply155 as serde::Deserialize>::deserialize(&v.0) else {
@@ -809,7 +779,7 @@ pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
 #[must_use]
 pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> RewriteVerdict {
     let v = match reply {
-        Ok(v) => JsonValue::new(v),
+        Ok(v) => JsonValue(v),
         Err(message) => return RewriteVerdict::Failed(message),
     };
     let Ok(parsed) = <Reply155 as serde::Deserialize>::deserialize(&v.0) else {

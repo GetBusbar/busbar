@@ -350,28 +350,74 @@ fn a_pending_connect_expires_without_renewal_and_a_timely_whole_body_succeeds() 
 }
 
 #[cfg(target_os = "linux")]
+fn watch_json(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            // SAFETY: each caller keeps this complete initialized owned tree on this thread
+            // through the synchronous production call and its deallocation.
+            unsafe { crate::alloc_counter::watch_initialized_payload(text.as_bytes()) };
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(watch_json),
+        serde_json::Value::Object(items) => watch_settings(items),
+        _ => {}
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn watch_settings(settings: &serde_json::Map<String, serde_json::Value>) {
+    for (key, value) in settings {
+        // SAFETY: this borrowed key belongs to the actual live SDK-owned configure/reply tree;
+        // only the initialized allocation prefix at its base is registered, never parser scratch.
+        unsafe { crate::alloc_counter::watch_initialized_payload(key.as_bytes()) };
+        watch_json(value);
+    }
+}
+
+#[cfg(target_os = "linux")]
 #[test]
-fn configure_owned_dom_is_wiped_on_ack_nack_and_nonobject_refusal() {
+fn configure_owned_dom_is_wiped_on_ack_and_nack_from_the_actual_hook_callback() {
     use crate::alloc_counter::InitializedPayloadProbe;
-    for raw in [
-        &br#"{"url":"https://u:URLCANARY@receiver.example/key","unknown":{"NESTEDKEYCANARY":["ARRAYCANARY",{"inner":"INNERCANARY"}]}}"#[..],
-        &br#"{"bad":true,"url":"https://u:NACKCANARY@receiver.example/key","unknown":["NESTEDNACKCANARY"]}"#[..],
-        &br#"[{"ARRAYKEYCANARY":"NONOBJECTCANARY"}]"#[..],
+    struct WatchConfigure;
+    impl Hook for WatchConfigure {
+        fn configure(
+            &self,
+            settings: &serde_json::Map<String, serde_json::Value>,
+            _: u64,
+        ) -> Result<(), String> {
+            // Registration is in the consumer of the actual adapter-owned map, so the same test
+            // observes the old unguarded adapter as well as its fixed owner.
+            watch_settings(settings);
+            if settings.contains_key("bad") {
+                Err("refused settings.bad".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    struct OpenWatchConfigure;
+    impl HookOpen for OpenWatchConfigure {
+        fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+            Ok(Box::new(WatchConfigure))
+        }
+    }
+    for (raw, expected) in [
+        (&br#"{"url":"https://u:URLCANARY@receiver.example/key","unknown":{"NESTEDKEYCANARY":["ARRAYCANARY",{"inner":"INNERCANARY"}]}}"#[..], Outcome::Ready),
+        (&br#"{"bad":true,"url":"https://u:NACKCANARY@receiver.example/key","unknown":["NESTEDNACKCANARY"]}"#[..], Outcome::Failed),
     ] {
-        let instance = opened_with::<OpenPickyConfigure>(&zeroed());
-        // SAFETY: the real CONFIGURE call constructs all instrumented strings/keys, invokes the
-        // hook synchronously, and destroys them on this thread before the observer ends.
+        let instance = opened_with::<OpenWatchConfigure>(&zeroed());
+        // SAFETY: the actual CONFIGURE adapter owns all registered strings/keys; the callback
+        // only borrows them and their owners return/drop on this thread before observation ends.
         let probe = unsafe { InitializedPayloadProbe::start().expect("Linux memory observer") };
-        let result = configured::<OpenPickyConfigure>(instance, raw, 2);
+        let result = configured::<OpenWatchConfigure>(instance, raw, 2);
         let seen = probe.finish();
-        assert_eq!(result.0, if raw == &br#"{"url":"https://u:URLCANARY@receiver.example/key","unknown":{"NESTEDKEYCANARY":["ARRAYCANARY",{"inner":"INNERCANARY"}]}}"#[..] { Outcome::Ready } else { Outcome::Failed });
+        assert_eq!(result.0, expected);
         assert!(!seen.reentered);
-        assert!(!seen.payloads.is_empty(), "the actual configure tree was not observed");
+        assert!(!seen.payloads.is_empty(), "the actual configure callback received no observed tree");
         for payload in seen.payloads {
             assert!(payload.freed && payload.complete_read && payload.wiped, "{payload:?}");
             assert!(!payload.reallocated && payload.read_error.is_none(), "{payload:?}");
         }
-        closed::<OpenPickyConfigure>(instance);
+        closed::<OpenWatchConfigure>(instance);
     }
 }
 
@@ -379,8 +425,8 @@ fn configure_owned_dom_is_wiped_on_ack_nack_and_nonobject_refusal() {
 #[test]
 fn reply_trees_wipe_unknown_and_typed_refusal_fields_with_an_unwiped_control() {
     use crate::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
-    // Construct the input before observation; JsonValue registers only the initialized owned
-    // tree once the actual production lowerer takes custody of it.
+    // Register the complete caller-owned input before handing it to the actual production
+    // lowerer. The old consuming decoder frees unknown strings/keys without wiping them.
     for raw in [
         r#"{"unknown":{"KEYCANARY":["VALUECANARY"]},"abstain":true}"#,
         r#"{"reject":{"message":"MESSAGECANARY"},"restrict":{"FIELDKEYCANARY":"FIELDCANARY"},"rewrite":1,"abstain":"WRONGTYPECANARY"}"#,
@@ -388,6 +434,7 @@ fn reply_trees_wipe_unknown_and_typed_refusal_fields_with_an_unwiped_control() {
         let reply = serde_json::from_str(raw).unwrap();
         // SAFETY: production lowering owns, wipes and drops these initialized trees on this thread.
         let probe = unsafe { InitializedPayloadProbe::start().expect("Linux memory observer") };
+        watch_json(&reply);
         assert_eq!(lower_decide_reply(Ok(reply)), Verdict::Abstain);
         let seen = probe.finish();
         assert!(!seen.reentered && !seen.payloads.is_empty());
@@ -622,5 +669,20 @@ fn configure_refuses_invalid_utf8_instead_of_allocating_a_lossy_credential_copy(
     assert_eq!(outcome, Outcome::Failed);
     assert_eq!(why, "settings: must be a JSON object");
     assert!(!why.contains("CANARY"));
+    closed::<OpenPickyConfigure>(instance);
+}
+
+#[test]
+fn configure_refuses_nonobject_shapes_without_calling_the_hook() {
+    let instance = opened_with::<OpenPickyConfigure>(&zeroed());
+    for raw in [
+        &br#"[{"ARRAYKEYCANARY":"NONOBJECTCANARY"}]"#[..],
+        &br#""SCALARCANARY""#[..],
+    ] {
+        let (outcome, _, why) = configured::<OpenPickyConfigure>(instance, raw, 2);
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(why, "settings: must be a JSON object");
+        assert!(!why.contains("CANARY"));
+    }
     closed::<OpenPickyConfigure>(instance);
 }
