@@ -72,7 +72,7 @@ fn paused(
     Release,
     tokio::sync::oneshot::Receiver<()>,
 ) {
-    paused_at(op, NOW)
+    paused_at(op, crate::store::now())
 }
 
 impl GovState {
@@ -100,8 +100,7 @@ fn paused_at(
     Release,
     tokio::sync::oneshot::Receiver<()>,
 ) {
-    let memory = Arc::new(MemoryStore::new());
-    memory.pin_token_clock(now);
+    let memory = crate::real_store::store();
     let (entered, heard) = tokio::sync::oneshot::channel();
     let pause = Arc::new(PausedStore {
         op,
@@ -144,11 +143,11 @@ async fn ticket_store_waits_leave_the_scheduler_live_and_admission_is_one_shot()
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
                 if op == "live" {
-                    gov.peek_ticket_async(PREFIX, &ticket, NOW + 1)
+                    gov.peek_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                         .await
                         .map(|key| (key.id.clone(), Vec::new()))
                 } else {
-                    gov.admit_ticket_async(PREFIX, &ticket, NOW + 1)
+                    gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                         .await
                         .map(|(key, record)| (key.id.clone(), record))
                 }
@@ -173,12 +172,12 @@ async fn ticket_store_waits_leave_the_scheduler_live_and_admission_is_one_shot()
         );
         if op == "live" {
             assert!(gov
-                .admit_ticket_async(PREFIX, &ticket, NOW + 1)
+                .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                 .await
                 .is_some());
         }
         assert!(gov
-            .admit_ticket_async(PREFIX, &ticket, NOW + 1)
+            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
             .await
             .is_none());
     }
@@ -192,11 +191,11 @@ async fn revocation_while_ticket_store_waits_is_checked_before_accepting_identit
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
                 if op == "live" {
-                    gov.peek_ticket_async(PREFIX, &ticket, NOW + 1)
+                    gov.peek_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                         .await
                         .is_some()
                 } else {
-                    gov.admit_ticket_async(PREFIX, &ticket, NOW + 1)
+                    gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                         .await
                         .is_some()
                 }
@@ -206,7 +205,9 @@ async fn revocation_while_ticket_store_waits_is_checked_before_accepting_identit
         gov.revoke(&id, "revoked while the Store answered").unwrap();
         release.0.release();
         assert!(!running.await.unwrap());
-        assert!(gov.admit_ticket(PREFIX, &ticket, NOW + 1).is_none());
+        assert!(gov
+            .admit_ticket(PREFIX, &ticket, crate::store::now() + 1)
+            .is_none());
     }
 }
 
@@ -218,11 +219,11 @@ async fn cancelling_a_started_ticket_store_wait_does_not_reopen_redemption() {
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
                 if op == "live" {
-                    gov.peek_ticket_async(PREFIX, &ticket, NOW + 1)
+                    gov.peek_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                         .await
                         .is_some()
                 } else {
-                    gov.admit_ticket_async(PREFIX, &ticket, NOW + 1)
+                    gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                         .await
                         .is_some()
                 }
@@ -234,13 +235,13 @@ async fn cancelling_a_started_ticket_store_wait_does_not_reopen_redemption() {
         assert!(release.0.busy.load(Ordering::SeqCst));
         release.0.release();
         assert_eq!(
-            gov.admit_ticket_async(PREFIX, &ticket, NOW + 1)
+            gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                 .await
                 .is_some(),
             op == "live"
         );
         assert!(gov
-            .admit_ticket_async(PREFIX, &ticket, NOW + 1)
+            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
             .await
             .is_none());
     }
@@ -254,7 +255,7 @@ async fn an_expired_ticket_peek_wait_cannot_accept_the_late_store_answer() {
         async move {
             tokio::time::timeout(
                 Duration::from_millis(1),
-                gov.peek_ticket_async(PREFIX, &ticket, NOW + 1),
+                gov.peek_ticket_async(PREFIX, &ticket, crate::store::now() + 1),
             )
             .await
         }
@@ -264,7 +265,7 @@ async fn an_expired_ticket_peek_wait_cannot_accept_the_late_store_answer() {
     assert!(release.0.busy.load(Ordering::SeqCst));
     release.0.release();
     assert!(gov
-        .admit_ticket_async(PREFIX, &ticket, NOW + 1)
+        .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
         .await
         .is_some());
 }

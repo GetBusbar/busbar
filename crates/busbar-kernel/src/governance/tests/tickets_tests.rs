@@ -5,14 +5,28 @@ use std::sync::Arc;
 
 use super::TicketRefusal;
 use crate::governance::signing::{TokenSigner, DEFAULT_KID};
-use crate::governance::{GovState, MemoryStore, NewKeySpec};
+use crate::governance::{GovState, NewKeySpec};
 
 const PREFIX: &str = "tk_";
-const NOW: u64 = 1_000;
+
+fn at_store_second(second: u64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
+    loop {
+        let now = crate::store::now();
+        if now >= second {
+            assert_eq!(now, second, "the backend clock is at the required second");
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the backend deadline arrives within the bounded wait"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
 
 fn gov_with(seed: u8) -> Arc<GovState> {
-    let store = Arc::new(MemoryStore::new());
-    store.pin_token_clock(NOW);
+    let store = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[seed; 32], DEFAULT_KID);
     Arc::new(GovState::new_with_signer(store, None, Some(signer)).expect("gov"))
 }
@@ -29,7 +43,7 @@ fn key(g: &GovState, exp: u64) -> (String, String) {
                 ..Default::default()
             },
             exp,
-            NOW,
+            crate::store::now(),
         )
         .expect("mint key");
     (binding.id, token.expose(&crate::seal::lend()).to_string())
@@ -37,121 +51,127 @@ fn key(g: &GovState, exp: u64) -> (String, String) {
 
 #[test]
 fn a_ticket_admits_its_key_once_with_its_record() {
+    let now = crate::store::now();
     let g = gov();
-    let (id, _) = key(&g, NOW + 86_400);
+    let (id, _) = key(&g, now + 86_400);
     let (ticket, exp) = g
-        .mint_ticket(&id, PREFIX, 600, None, b"{\"locked\":1}", NOW)
+        .mint_ticket(&id, PREFIX, 600, None, b"{\"locked\":1}", now)
         .expect("mint");
     assert!(
         ticket.starts_with(PREFIX),
         "the plane's prefix leads: {ticket}"
     );
     assert!(!ticket.contains("bbk_"), "a ticket carries no key prefix");
-    assert_eq!(exp, NOW + 600);
-    let (admitted, record) = g.admit_ticket(PREFIX, &ticket, NOW + 1).expect("admit");
+    assert_eq!(exp, now + 600);
+    let (admitted, record) = g.admit_ticket(PREFIX, &ticket, now + 1).expect("admit");
     assert_eq!(admitted.id, id);
     assert_eq!(record, b"{\"locked\":1}");
 
     assert!(
-        g.admit_ticket(PREFIX, &ticket, NOW + 2).is_none(),
+        g.admit_ticket(PREFIX, &ticket, now + 2).is_none(),
         "a spent ticket is refused"
     );
 }
 
 #[test]
 fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
-    let memory = Arc::new(MemoryStore::new());
-    memory.pin_token_clock(NOW);
+    let now = crate::store::now();
+    let memory = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let g = GovState::new_with_signer(memory.clone(), None, Some(signer)).unwrap();
-    let (id, _) = key(&g, NOW + 86_400);
+    let (id, _) = key(&g, now + 86_400);
 
     let other = gov_with(7);
-    let (other_id, _) = key(&other, NOW + 86_400);
+    let (other_id, _) = key(&other, now + 86_400);
     let (foreign, _) = other
-        .mint_ticket(&other_id, PREFIX, 600, None, b"{}", NOW)
+        .mint_ticket(&other_id, PREFIX, 600, None, b"{}", now)
         .expect("mint");
-    assert!(g.admit_ticket(PREFIX, &foreign, NOW + 1).is_none());
+    assert!(g.admit_ticket(PREFIX, &foreign, now + 1).is_none());
 
     let (expired, exp) = g
-        .mint_ticket(&id, PREFIX, 10, None, b"{}", NOW)
+        .mint_ticket(&id, PREFIX, 10, None, b"{}", now - 11)
         .expect("mint");
-    memory.pin_token_clock(exp + 1);
     assert!(g.admit_ticket(PREFIX, &expired, exp).is_none());
 
     let (ticket, _) = g
-        .mint_ticket(&id, PREFIX, 600, None, b"{}", NOW)
+        .mint_ticket(&id, PREFIX, 600, None, b"{}", now)
         .expect("mint");
-    assert!(g.admit_ticket("other_", &ticket, NOW + 1).is_none());
-    assert!(g.admit_ticket("", &ticket, NOW + 1).is_none());
+    assert!(g.admit_ticket("other_", &ticket, now + 1).is_none());
+    assert!(g.admit_ticket("", &ticket, now + 1).is_none());
 
-    assert!(g.admit_ticket(PREFIX, &ticket, NOW + 1).is_some());
+    assert!(g.admit_ticket(PREFIX, &ticket, now + 1).is_some());
 }
 
 #[test]
 fn a_ticket_is_never_a_key_and_a_key_is_never_a_ticket() {
+    let now = crate::store::now();
     let g = gov();
-    let (id, key_token) = key(&g, NOW + 86_400);
+    let (id, key_token) = key(&g, now + 86_400);
     let (ticket, _) = g
-        .mint_ticket(&id, PREFIX, 600, None, b"{}", NOW)
+        .mint_ticket(&id, PREFIX, 600, None, b"{}", now)
         .expect("mint");
 
-    assert!(g.verify_token(&ticket, NOW + 1, None).is_none());
+    assert!(g.verify_token(&ticket, now + 1, None).is_none());
     let body = ticket.strip_prefix(PREFIX).expect("prefixed");
     assert!(g
-        .verify_token(&format!("bbk_{body}"), NOW + 1, None)
+        .verify_token(&format!("bbk_{body}"), now + 1, None)
         .is_none());
 
     let key_body = key_token.strip_prefix("bbk_").expect("a key");
     assert!(g
-        .admit_ticket(PREFIX, &format!("{PREFIX}{key_body}"), NOW + 1)
+        .admit_ticket(PREFIX, &format!("{PREFIX}{key_body}"), now + 1)
         .is_none());
 
-    assert!(g.verify_token(&key_token, NOW + 1, None).is_some());
+    assert!(g.verify_token(&key_token, now + 1, None).is_some());
 }
 
 #[test]
 fn a_ticket_stands_only_while_its_key_does() {
+    let now = crate::store::now();
     let g = gov();
-    let (id, _) = key(&g, NOW + 86_400);
+    let (id, _) = key(&g, now + 86_400);
     let (ticket, _) = g
-        .mint_ticket(&id, PREFIX, 600, None, b"{}", NOW)
+        .mint_ticket(&id, PREFIX, 600, None, b"{}", now)
         .expect("mint");
     g.revoke(&id, "test").expect("revoke");
 
-    assert!(g.admit_ticket(PREFIX, &ticket, NOW + 1).is_none());
+    assert!(g.admit_ticket(PREFIX, &ticket, now + 1).is_none());
 
     assert_eq!(
-        g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW),
+        g.mint_ticket(&id, PREFIX, 600, None, b"{}", now),
         Err(TicketRefusal::NoStanding)
     );
     assert_eq!(
-        g.mint_ticket("vk_unknown", PREFIX, 600, None, b"{}", NOW),
+        g.mint_ticket("vk_unknown", PREFIX, 600, None, b"{}", now),
         Err(TicketRefusal::NoStanding)
     );
 }
 
 #[test]
 fn a_tickets_lifetime_is_held_under_the_ceiling_and_its_keys_expiry() {
+    let now = crate::store::now();
     let g = gov();
-    let (id, _) = key(&g, NOW + 86_400);
+    let (id, _) = key(&g, now + 86_400);
 
     let (_, exp) = g
-        .mint_ticket(&id, PREFIX, 7_200, Some(120), b"{}", NOW)
+        .mint_ticket(&id, PREFIX, 7_200, Some(120), b"{}", now)
         .expect("mint");
-    assert_eq!(exp, NOW + 120);
+    assert_eq!(exp, now + 120);
 
     let mut binding = (*g.lookup_by_sub(&id).expect("bound")).clone();
-    binding.expires_at = Some(NOW + 300);
+    binding.expires_at = Some(now + 300);
     g.store().put_key(&binding).expect("put");
     g.refresh().expect("refresh");
     let (_, exp) = g
-        .mint_ticket(&id, PREFIX, 7_200, None, b"{}", NOW)
+        .mint_ticket(&id, PREFIX, 7_200, None, b"{}", now)
         .expect("mint");
-    assert_eq!(exp, NOW + 300);
+    assert_eq!(exp, now + 300);
 }
 
-struct RuleCarryingOnly(Arc<MemoryStore>, Option<Arc<offload_tests::PausedStore>>);
+struct RuleCarryingOnly(
+    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    Option<Arc<offload_tests::PausedStore>>,
+);
 
 mod rule_carrying_only {
     use super::RuleCarryingOnly;
@@ -293,7 +313,7 @@ mod rule_carrying_only {
     }
 }
 
-fn ticket_records(store: &MemoryStore) -> usize {
+fn ticket_records(store: &busbar_plugin_loader::store_v3::LoadedStore) -> usize {
     use busbar_contract::records::{PlaneSelector, RecordStore};
     store
         .list_plane_records(super::TICKET_RECORD_KIND, &PlaneSelector::All)
@@ -303,8 +323,8 @@ fn ticket_records(store: &MemoryStore) -> usize {
 
 #[test]
 fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint() {
-    let memory = Arc::new(MemoryStore::new());
-    memory.pin_token_clock(NOW);
+    let now = crate::store::now();
+    let memory = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let g = GovState::new_with_signer(
         Arc::new(RuleCarryingOnly(Arc::clone(&memory), None)),
@@ -312,16 +332,16 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
         Some(signer),
     )
     .expect("gov");
-    let (id, _) = key(&g, NOW + 86_400);
+    let (id, _) = key(&g, now + 86_400);
 
-    g.mint_ticket(&id, PREFIX, 10, None, b"{}", NOW)
+    g.mint_ticket(&id, PREFIX, 10, None, b"{}", now)
         .expect("mint");
-    g.mint_ticket(&id, PREFIX, 20, None, b"{}", NOW)
+    g.mint_ticket(&id, PREFIX, 20, None, b"{}", now)
         .expect("mint");
     assert_eq!(ticket_records(&memory), 2);
 
-    memory.pin_token_clock(NOW + 20);
-    g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW + 20)
+    at_store_second(now + 20);
+    g.mint_ticket(&id, PREFIX, 600, None, b"{}", now + 20)
         .expect("mint");
     assert_eq!(
         ticket_records(&memory),
@@ -329,13 +349,23 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
         "the record of the ticket lapsed before the mint goes; the one lapsing at it stays"
     );
 
-    memory.pin_token_clock(NOW + 21);
-    g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW + 21)
+    assert_eq!(
+        crate::store::now(),
+        now + 20,
+        "the purge checked the exact deadline second"
+    );
+    at_store_second(now + 21);
+    g.mint_ticket(&id, PREFIX, 600, None, b"{}", now + 21)
         .expect("mint");
     assert_eq!(
         ticket_records(&memory),
         2,
         "only the two live tickets' records stay"
+    );
+    assert_eq!(
+        crate::store::now(),
+        now + 21,
+        "the purge checked the second after the deadline"
     );
 }
 
@@ -348,7 +378,7 @@ fn ticket_deadline_and_record_follow_store_clock_despite_node_skew() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let memory = Arc::new(MemoryStore::new());
+    let memory = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let g = GovState::new_with_signer(memory, None, Some(signer)).unwrap();
     let (id, _) = key(&g, store_now + KEY_TTL_SECS);
@@ -387,22 +417,27 @@ fn ticket_deadline_and_record_follow_store_clock_despite_node_skew() {
 
 #[test]
 fn ticket_preflight_and_first_admission_include_the_store_deadline_second() {
+    let now = crate::store::now();
     const TICKET_TTL_SECS: u64 = 10;
-    let store = Arc::new(MemoryStore::new());
-    store.pin_token_clock(NOW);
+    let store = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let g = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
-    let (id, key_token) = key(&g, NOW + 86_400);
+    let (id, key_token) = key(&g, now + 86_400);
     let (ticket, exp) = g
-        .mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"record", NOW)
+        .mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"record", now)
         .unwrap();
-    store.pin_token_clock(exp);
+    at_store_second(exp);
     assert!(g.peek_ticket(PREFIX, &ticket, exp + 1).is_some());
     assert!(g.peek_ticket(PREFIX, &ticket, exp - 1).is_some());
     assert!(g.admit_ticket(PREFIX, &ticket, exp + 1).is_some());
     assert!(g.admit_ticket(PREFIX, &ticket, exp - 1).is_none());
+    assert_eq!(
+        crate::store::now(),
+        exp,
+        "the deadline checks finished within the store second"
+    );
     assert!(
-        g.verify_token(&key_token, NOW + 86_400, None).is_none(),
+        g.verify_token(&key_token, now + 86_400, None).is_none(),
         "ordinary bearer expiry is unchanged"
     );
 }
