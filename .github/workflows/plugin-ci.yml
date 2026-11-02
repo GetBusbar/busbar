@@ -300,7 +300,13 @@ jobs:
         working-directory: plugin
         # needless_update allowed: `T { .., ..T::ZERO }` is the mandated forward-compat idiom, made
         # safe by the zero-spread gate (coordinator ruling).
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -A clippy::needless_update
+        env:
+          TEST_FEATURES: ${{ inputs.test_features }}
+        run: |
+          set -euo pipefail
+          features=()
+          [ -z "$TEST_FEATURES" ] || features=(--features "$TEST_FEATURES")
+          cargo clippy --workspace --all-targets --locked "${features[@]}" -- -D warnings -A clippy::needless_update
       - name: build (the rlib a busbar build links, and the cdylib a signed tarball carries)
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
