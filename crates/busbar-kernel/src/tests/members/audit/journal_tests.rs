@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::test_support::tokens::pass;
+use busbar_contract::caps::Pass;
 use busbar_contract::caps::{Audit as AuditStep, MeterClassId};
 
 use busbar_kernel_audit::journal::{from_journal_body, journal_body, JOURNAL_TAG};
@@ -27,7 +27,11 @@ fn sealed(n: u64) -> Vec<busbar_kernel_audit::record::AuditRecord> {
         .map(|unit| {
             let mut inputs = super::sign_tests::rich_inputs(unit);
             inputs.what.incarnation = 3;
-            busbar_kernel_audit::record::Audit::seal(&mut chain, inputs, &pass::<AuditStep>())
+            busbar_kernel_audit::record::Audit::seal(
+                &mut chain,
+                inputs,
+                &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+            )
         })
         .collect()
 }

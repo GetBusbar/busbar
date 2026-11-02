@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::test_support::tokens::pass;
+use busbar_contract::caps::Pass;
 use busbar_contract::caps::{
     Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, ReasonCode, StepName, UnitKey,
 };
@@ -79,7 +79,10 @@ fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
     with_payloads.outcome.step = Some(StepName::Admit);
     with_payloads.outcome.finish = FinishClass::Error;
     with_payloads.what.incarnation = 3;
-    chain.seal(with_payloads, &pass::<AuditStep>())
+    chain.seal(
+        with_payloads,
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    )
 }
 
 const FROZEN_NODE: u64 = 9;
@@ -159,7 +162,7 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_inc
 fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
     let seal = |node: u64| {
         let mut chain = AuditChain::new().sealing_as(node);
-        let record = chain.seal(inputs(1), &pass::<AuditStep>());
+        let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
         (chain, record)
     };
     let ((chain_a, a), (_, b)) = (seal(11), seal(12));
@@ -192,7 +195,7 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
         let mut chain = AuditChain::new();
         let mut i = inputs(1);
         i.what.incarnation = incarnation;
-        chain.seal(i, &pass::<AuditStep>())
+        chain.seal(i, &Pass::<AuditStep>::mint(&crate::seal::acquire()))
     };
     let (first, second) = (seal(1), seal(2));
     assert_eq!(first.what.unit_key, second.what.unit_key);
@@ -290,7 +293,7 @@ fn the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record() {
 fn a_record_links_to_the_one_before_it_and_the_run_verifies() {
     let mut chain = AuditChain::new();
     let records: Vec<_> = (1..=4)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
     assert_eq!(records[0].prev_hash, "");
     for pair in records.windows(2) {
@@ -304,7 +307,7 @@ fn a_record_links_to_the_one_before_it_and_the_run_verifies() {
 #[test]
 fn the_correlation_label_is_hashed_and_the_label_itself_is_gone() {
     let mut chain = AuditChain::new();
-    let record = chain.seal(inputs(1), &pass::<AuditStep>());
+    let record = chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let hash = record.correlation_hash.clone().unwrap();
     assert_eq!(
         hash,
@@ -324,7 +327,7 @@ fn a_record_with_no_correlation_label_carries_no_hash() {
     let mut chain = AuditChain::new();
     let mut without = inputs(1);
     without.correlation_label = None;
-    let record = chain.seal(without, &pass::<AuditStep>());
+    let record = chain.seal(without, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     assert!(record.correlation_hash.is_none());
 }
 
@@ -332,7 +335,7 @@ fn a_record_with_no_correlation_label_carries_no_hash() {
 fn editing_any_recorded_fact_is_caught() {
     let mut chain = AuditChain::new();
     let mut records: Vec<_> = (1..=3)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     let edits: Vec<(&str, Edit)> = vec![
@@ -406,11 +409,11 @@ fn two_nodes_do_not_digest_the_same() {
     let mut chain = AuditChain::new();
     let mut a = inputs(1);
     a.subject = Subject::Node(1);
-    let first = chain.seal(a, &pass::<AuditStep>());
+    let first = chain.seal(a, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let mut chain = AuditChain::new();
     let mut b = inputs(1);
     b.subject = Subject::Node(2);
-    let second = chain.seal(b, &pass::<AuditStep>());
+    let second = chain.seal(b, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     assert_ne!(first.hash, second.hash);
 }
 
@@ -420,7 +423,10 @@ fn a_plane_contributes_exactly_two_identifiers() {
     let mut other_plane = inputs(1);
     other_plane.what.op_class = OpClassId::new("tool.call");
     other_plane.outcome.finish = FinishClass::TurnComplete;
-    let record = chain.seal(other_plane, &pass::<AuditStep>());
+    let record = chain.seal(
+        other_plane,
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
 
     assert_eq!(record.what.op_class.as_str(), "tool.call");
     assert_eq!(record.outcome.finish, FinishClass::TurnComplete);
@@ -432,11 +438,11 @@ fn a_plane_contributes_exactly_two_identifiers() {
 fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     let mut chain = AuditChain::new();
     let first: Vec<_> = (1..=2)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     let mut resumed = AuditChain::resume(&first);
-    let third = resumed.seal(inputs(3), &pass::<AuditStep>());
+    let third = resumed.seal(inputs(3), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     assert_eq!(third.prev_hash, first[1].hash);
 
     let mut all = first;
@@ -448,7 +454,7 @@ fn a_chain_resumed_from_a_persisted_tail_continues_it() {
 fn a_record_carries_its_position_and_the_position_is_digested() {
     let mut chain = AuditChain::new();
     let records: Vec<_> = (1..=3)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
     assert_eq!(
         records.iter().map(|r| r.seq).collect::<Vec<_>>(),
@@ -475,7 +481,7 @@ fn a_record_carries_its_position_and_the_position_is_digested() {
 fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
     let mut chain = AuditChain::new();
     let records: Vec<_> = (1..=4)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     let brk = AuditChain::verify_chain(&records[1..]).unwrap_err();
@@ -492,7 +498,7 @@ fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
 fn a_window_verifies_a_contiguous_middle_run_and_not_a_gapped_one() {
     let mut chain = AuditChain::new();
     let records: Vec<_> = (1..=6)
-        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .map(|i| chain.seal(inputs(i), &Pass::<AuditStep>::mint(&crate::seal::acquire())))
         .collect();
 
     assert!(AuditChain::verify_window(&records[2..5]).is_ok());
