@@ -120,7 +120,7 @@ fn identities(provider: &Provider) -> Vec<Option<String>> {
 
 // A literal HTTP/2 HEADERS block: POST, http, and a non-Huffman path. Keeping
 // END_STREAM clear holds the real request open while later streams use a new policy.
-fn request(stream: u32, path: &str, preface: bool) -> Vec<u8> {
+pub(super) fn request(stream: u32, path: &str, preface: bool) -> Vec<u8> {
     assert!(path.len() < 127);
     let mut bytes = Vec::new();
     if preface {
@@ -144,8 +144,10 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     assert!(inbound::install(&dispatcher));
-    let plugin =
-        crate::root::test_plugins::linked_transport(busbar_transport_http::door::door, bind_on(&dispatcher));
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        bind_on(&dispatcher),
+    );
     let door: Arc<dyn FramerDoor> = Arc::new(
         Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher)
             .expect("the real HTTP transport opens"),
@@ -213,8 +215,10 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     assert!(inbound::install(&dispatcher));
-    let plugin =
-        crate::root::test_plugins::linked_transport(busbar_transport_http::door::door, bind_on(&dispatcher));
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        bind_on(&dispatcher),
+    );
     let door: Arc<dyn FramerDoor> =
         Arc::new(Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher).unwrap());
     let resolver: FramerFor =
@@ -251,7 +255,9 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         selected.guests(),
     )
     .unwrap();
-    framing.ingest(&request(1, "/tickets/first", true), false).unwrap();
+    framing
+        .ingest(&request(1, "/tickets/first", true), false)
+        .unwrap();
     let first = identities(&before);
     assert_eq!(first, vec![Some(before.name.into())]);
     let after = provider("need-after");
@@ -260,7 +266,9 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     for _ in 0..3 {
         inbound::publish(&next).unwrap();
     }
-    framing.ingest(&request(3, "/tickets/next", false), false).unwrap();
+    framing
+        .ingest(&request(3, "/tickets/next", false), false)
+        .unwrap();
     assert_eq!(identities(&after), vec![Some(after.name.into())]);
     assert_eq!(identities(&before), first);
     assert!(old.upgrade().is_some());
@@ -275,9 +283,18 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         data.guests(),
     )
     .unwrap();
-    let yielded = ordinary.ingest(&request(1, "/tickets/data-miss", true), false).unwrap();
-    assert!(yielded.pieces.is_empty(), "the data listener does not acquire the other listener's route");
-    assert_eq!(identities(&after), vec![Some(after.name.into())], "a route miss never invokes the selected listener's auth");
+    let yielded = ordinary
+        .ingest(&request(1, "/tickets/data-miss", true), false)
+        .unwrap();
+    assert!(
+        yielded.pieces.is_empty(),
+        "the data listener does not acquire the other listener's route"
+    );
+    assert_eq!(
+        identities(&after),
+        vec![Some(after.name.into())],
+        "a route miss never invokes the selected listener's auth"
+    );
     ordinary.finish(CLOSE_NORMAL);
     framing.finish(CLOSE_NORMAL);
     assert!(old.upgrade().is_none());

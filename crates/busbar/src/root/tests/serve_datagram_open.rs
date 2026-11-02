@@ -1,43 +1,49 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#![cfg(feature = "transport-webrtc")]
+
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
+use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::blank_in;
-use busbar_contract::abi::transport::EmitIn;
+use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::datagram::{Across, LegSink, Pairing};
 use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
 use busbar_core_connector::udp::{bind, ReadyPort};
-use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
 
 use super::super::{self as serving, serve_datagram};
 use super::{governed, session_custody_request, session_custody_routes, Governed, PUBLISHING};
 
 const HEAD_PENDING: &str = "/open?head=pending";
 const HEAD_READY: &str = "/open?head=ready";
-const CARRIER: &str = "datagram-order";
-const DESCRIPTION: &[u8] = b"hostfrag";
+const CARRIER: &str = "webrtc";
 
-type Finished = Arc<dyn Fn() + Send + Sync>;
+type Callback = Arc<dyn Fn() + Send + Sync>;
 
+// Observe retirement of an actual loaded product. Every input and output crosses
+// the WebRTC door unchanged; the host-side callback checks its lock boundary.
 struct OpeningFramer {
-    recording: Arc<Recording>,
-    settled: AtomicBool,
+    inner: Arc<dyn FramerDoor>,
     finishes: AtomicUsize,
-    on_finish: Mutex<Option<Finished>>,
+    on_finish: Mutex<Option<Callback>>,
 }
 
 impl OpeningFramer {
     fn new() -> Arc<Self> {
-        let recording = Recording::new();
-        recording.echo_emits();
+        let plugin = crate::root::test_plugins::linked_transport(
+            busbar_transport_webrtc::door,
+            crate::root::doors::bind(),
+        );
         Arc::new(Self {
-            recording,
-            settled: AtomicBool::new(false),
+            inner: Arc::new(
+                crate::root::doors::Dispatched::open(plugin, &TransportSettings::default())
+                    .expect("real WebRTC door opens"),
+            ),
             finishes: AtomicUsize::new(0),
             on_finish: Mutex::new(None),
         })
@@ -46,35 +52,48 @@ impl OpeningFramer {
 
 impl FramerDoor for OpeningFramer {
     fn facts(&self) -> &DoorFacts {
-        self.recording.facts()
+        self.inner.facts()
     }
-
     fn cross(&self, call: Call<'_>) -> Crossed {
-        match call {
-            Call::Ingest(input, out) if !self.settled.swap(true, Ordering::SeqCst) => {
-                let crossed = self.recording.cross(Call::Ingest(&mut *input, &mut *out));
-                let frame_len = out.yielded.frame_len;
-
-                let mut echo: EmitIn = blank_in();
-                echo.framing = input.framing;
-                echo.bytes = DESCRIPTION.as_ptr();
-                echo.len = DESCRIPTION.len();
-                echo.end_of_frame = 1;
-                echo.sink = input.sink;
-                self.recording.cross(Call::Emit(&mut echo, &mut *out));
-                out.yielded.frame_len = frame_len;
-                crossed
+        if matches!(&call, Call::Finish(..)) {
+            self.finishes.fetch_add(1, Ordering::SeqCst);
+            let callback = self.on_finish.lock().unwrap().clone();
+            if let Some(callback) = callback {
+                callback();
             }
-            Call::Finish(input, out) => {
-                self.finishes.fetch_add(1, Ordering::SeqCst);
-                let callback = self.on_finish.lock().expect("unpoisoned").clone();
-                if let Some(callback) = callback {
-                    callback();
-                }
-                self.recording.cross(Call::Finish(input, out))
-            }
-            call => self.recording.cross(call),
         }
+        self.inner.cross(call)
+    }
+}
+
+fn offer() -> Vec<u8> {
+    use busbar_transport_webrtc::framing::{Framing, Opening, Side};
+    let certificate = busbar_core_connector::dtls::SessionCert::mint().unwrap();
+    let mut peer = Framing::begin(
+        Side::Dial,
+        certificate.public_der(),
+        Some("127.0.0.1:40000".parse().unwrap()),
+        &Opening {
+            channels: vec!["events".into()],
+            audio: false,
+        },
+        Instant::now(),
+    )
+    .expect("the real WebRTC peer offers a data channel");
+    peer.next_piece().expect("the real peer's SDP offer").bytes
+}
+
+fn assert_description(bytes: &[u8]) {
+    let sdp = std::str::from_utf8(bytes).expect("SDP answer is text");
+    assert!(sdp.starts_with("v=0\r\n"), "{sdp}");
+    for field in [
+        "a=ice-ufrag:",
+        "a=ice-pwd:",
+        "a=fingerprint:",
+        "a=candidate:",
+        "m=application",
+    ] {
+        assert!(sdp.contains(field), "missing {field}: {sdp}");
     }
 }
 
@@ -97,6 +116,7 @@ fn arrival(
     target: &str,
 ) -> (serving::SessionDoor, busbar_kernel::plane_driver::Arrival) {
     let mut req = session_custody_request(g, target);
+    req.body = bytes::Bytes::from(offer());
     req.gov.key = Some(Arc::new(g.key.clone()));
     let (door, arrival, _) = routes.arrived(0, 1, req);
     (door, arrival)
@@ -261,7 +281,7 @@ async fn abandonment_during_a_join_retires_the_late_pair_without_holding_the_sta
         caller,
         head,
         joining,
-    } = serve_datagram::Opened::open(&claim, framer.clone(), b"offer").expect("the real opening");
+    } = serve_datagram::Opened::open(&claim, framer.clone(), &offer()).expect("the real opening");
     let opening = serving::DatagramOpening::new(joining);
     let state = Arc::clone(&opening.state);
     let weak = Arc::downgrade(&state);
@@ -327,7 +347,7 @@ async fn abandoning_an_unjoined_opening_drops_its_pairing_outside_the_state_mute
         caller,
         head,
         joining,
-    } = serve_datagram::Opened::open(&claim, framer.clone(), b"offer").expect("opening");
+    } = serve_datagram::Opened::open(&claim, framer.clone(), &offer()).expect("opening");
     let opening = serving::DatagramOpening::new(joining);
     let state = Arc::clone(&opening.state);
     let observed = Arc::clone(&state);
@@ -377,10 +397,10 @@ async fn a_datagram_head_timeout_retires_its_session_but_a_ready_response_transf
                 .next()
                 .expect("live session frame");
             assert_book(unit, true);
-            let body = axum::body::to_bytes(response.into_body(), DESCRIPTION.len())
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
                 .await
                 .expect("description");
-            assert_eq!(body.as_ref(), DESCRIPTION);
+            assert_description(&body);
             assert_book(unit, true);
             crate::root::connector::the().unpair(unit);
             assert_eq!(cleaned(&g, &routes, &framer).await, unit);

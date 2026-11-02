@@ -37,8 +37,10 @@ impl Drop for ClosingDoor {
 }
 
 fn opened(settings: &TransportSettings) -> Arc<dyn FramerDoor> {
-    let plugin =
-        crate::root::test_plugins::linked_transport(busbar_transport_http::door::door, crate::root::doors::bind());
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        crate::root::doors::bind(),
+    );
     Arc::new(crate::root::doors::Dispatched::open(plugin, settings).unwrap())
 }
 

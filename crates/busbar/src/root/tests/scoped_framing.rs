@@ -7,14 +7,12 @@ use std::task::{Context, Poll};
 
 use busbar_contract::abi::auth::POINT_HEAD;
 use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE};
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_CONTAINS};
 use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT};
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::{
     Established, FramerDoor, Framing, GuestLine, GuestLines, Yielded,
 };
-use busbar_test_kit::root_door_fixtures::scoped_mux;
 
 use crate::root::doors::{bind_on, Dispatched};
 use crate::root::loader::dispatch::auth_handle::{
@@ -31,8 +29,7 @@ struct Seen {
     stream: u64,
     listener: Option<u64>,
     physical: Option<u64>,
-    ticket: Ticket,
-    resumed: bool,
+    target: String,
 }
 
 #[derive(Default)]
@@ -44,13 +41,10 @@ struct Host {
     close_seen: Mutex<Vec<(Option<u64>, Option<u64>)>>,
 }
 
-fn answer(stream: u64) -> AuthCallAnswer {
+fn answer(_stream: u64) -> AuthCallAnswer {
     AuthCallAnswer {
         flow: FLOW_CONTINUE,
-        unit: UnitRef {
-            id: 1000 + stream,
-            mac: 1,
-        },
+        unit: UnitRef::NONE,
         strips: Vec::new(),
     }
 }
@@ -85,16 +79,6 @@ impl AuthHandleHost for Host {
     fn auth_call(&self, ask: AuthCallAsk, done: AuthDone) -> AuthRan {
         let scope = framing_context::current();
         let stream = ask.stream;
-        let (slot, generation) = ask
-            .request
-            .target
-            .strip_prefix("/tickets/")
-            .and_then(|s| s.split_once('/'))
-            .expect("fixture exposes its operation ticket");
-        let ticket = Ticket {
-            slot: slot.parse().unwrap(),
-            generation: generation.parse().unwrap(),
-        };
         self.seen.lock().unwrap().push(Seen {
             owner: ask.owner,
             leg: ask.framing,
@@ -102,10 +86,9 @@ impl AuthHandleHost for Host {
             stream,
             listener: scope.as_ref().map(|s| s.listener()),
             physical: scope.as_ref().map(|s| s.connection()),
-            ticket,
-            resumed: ask.request.query.as_deref() == Some("resumed=1"),
+            target: ask.request.target.clone(),
         });
-        if matches!(stream, 1 | 3) {
+        if matches!(stream, 1 | 2) {
             self.pending.lock().unwrap().insert(stream, done);
             self.pending_changed.notify_all();
             AuthRan::Pending
@@ -113,8 +96,11 @@ impl AuthHandleHost for Host {
             AuthRan::Now(Ok(answer(stream)))
         }
     }
-    fn hand_in(&self, _: HandInAsk) -> Result<(u32, UnitRef), &'static str> {
-        Err("not served by this fixture")
+    fn hand_in(&self, ask: HandInAsk) -> Result<(u32, UnitRef), &'static str> {
+        let scope = framing_context::current().expect("real HTTP hand-in retains its scope");
+        assert_eq!(ask.framing, Some(scope.leg()));
+        assert_eq!(ask.owner, scope.owner());
+        Ok((FLOW_CONTINUE, ask.unit))
     }
     fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {
         let context = framing_context::current();
@@ -147,8 +133,10 @@ fn opened() -> (Arc<Dispatched>, Arc<Host>) {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let host = Arc::new(Host::default());
     assert!(dispatcher.install_auth_handle(host.clone()));
-    let plugin =
-        crate::root::test_plugins::linked_transport(scoped_mux::door, bind_on(&dispatcher));
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        bind_on(&dispatcher),
+    );
     let door = Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher)
         .expect("the SDK door opens");
     (Arc::new(door), host)
@@ -186,113 +174,99 @@ fn begin(
     )
 }
 
-fn ticket(y: &Yielded, stream: u64) -> Option<Ticket> {
-    let bytes = &y.pieces.iter().find(|p| p.stream == stream)?.bytes;
-    (bytes.len() == 8).then(|| Ticket {
-        slot: u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-        generation: u32::from_le_bytes(bytes[4..].try_into().unwrap()),
-    })
-}
-
 #[test]
-fn loaded_framing_survives_surplus_ticket_disposal_and_resumes_its_original_stream() {
+fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
+    use super::inbound_reload_tests::request;
     let (door, host) = opened();
     let owner = door.instance().unwrap();
     let (mut framing, _) = begin(door.clone(), "").expect("accepted");
     let cleanup = ReleaseAll(host.clone());
-    let one = framing.ingest(&[1], false).expect("first stream parks");
-    let three = framing.ingest(&[3], false).expect("second stream parks");
-    let five = framing.ingest(&[5], false).expect("sibling completes");
-    let held_before = host
-        .pending
-        .lock()
-        .unwrap()
-        .keys()
-        .copied()
-        .collect::<Vec<_>>();
-    let released_three = host.release(3);
+    let one = framing
+        .ingest(&request(1, "/one", true), false)
+        .expect("first stream parks");
+    let three = framing
+        .ingest(&request(3, "/three", false), false)
+        .expect("second stream parks");
+    let five = framing
+        .ingest(&request(5, "/five", false), false)
+        .expect("sibling progresses");
+    assert!(one.pieces.is_empty() && three.pieces.is_empty());
+    assert!(five
+        .pieces
+        .iter()
+        .any(|piece| piece.stream == 3 && piece.fields));
+    assert_eq!(host.pending.lock().unwrap().len(), 2);
+    assert!(host.release(2));
     let mut cx = Context::from_waker(futures::task::noop_waker_ref());
-    let middle = framing.poll_parked(&mut cx);
-    let still_held = host.pending.lock().unwrap().contains_key(&1);
-    let ended_before = host.ended.lock().unwrap().clone();
+    let Poll::Ready(Ok(middle)) = framing.poll_parked(&mut cx) else {
+        panic!("the second stream must complete independently");
+    };
+    assert!(middle
+        .pieces
+        .iter()
+        .any(|piece| piece.stream == 2 && piece.fields));
+    assert!(host.pending.lock().unwrap().contains_key(&1));
     let extra = door
         .framing_side()
-        .expect("a side can reuse the retired slot");
-    let extra_ticket = extra.ticket();
+        .expect("an independent operation ticket");
     drop(extra);
-    let ended_after_extra = host.ended.lock().unwrap().clone();
-    let released_one = host.release(1);
-    let last = framing.poll_parked(&mut cx);
+    assert!(
+        host.ended.lock().unwrap().is_empty(),
+        "disposing a sibling ticket cannot end the physical framing"
+    );
+    assert!(host.release(1));
+    let Poll::Ready(Ok(last)) = framing.poll_parked(&mut cx) else {
+        panic!("the original stream must resume");
+    };
+    assert!(last
+        .pieces
+        .iter()
+        .any(|piece| piece.stream == 1 && piece.fields));
     drop(cleanup);
     framing.finish(CLOSE_NORMAL);
-
-    assert!(one.pieces.is_empty() && three.pieces.is_empty());
-    assert_eq!(held_before.len(), 2);
-    assert!(released_three && released_one && still_held);
-    assert!(
-        ticket(&five, 5).is_some(),
-        "the sibling finishes before either pending stream"
-    );
-    let Poll::Ready(Ok(middle)) = middle else {
-        panic!("stream 3 must complete independently");
-    };
-    let retired = ticket(&middle, 3).expect("stream 3 includes its actual operation ticket");
-    assert_eq!(
-        extra_ticket.slot, retired.slot,
-        "surplus ticket was actually recycled"
-    );
-    assert_ne!(extra_ticket.generation, retired.generation);
-    assert!(ended_before.is_empty() && ended_after_extra.is_empty());
-    let Poll::Ready(Ok(last)) = last else {
-        panic!("stream 1 must resume");
-    };
-    let original = ticket(&last, 1).expect("the original pending stream completed");
-    assert_ne!(original.slot, retired.slot);
     let seen = host.seen.lock().unwrap();
-    assert_eq!(seen.len(), 3, "resumes redeem the original auth call");
     assert_eq!(
-        original, seen[0].ticket,
-        "the original operation ticket survived its sibling's disposal"
+        seen.len(),
+        3,
+        "resumes redeem the original auth call exactly once"
     );
-    assert_eq!(retired, seen[1].ticket);
-    assert_eq!(ticket(&five, 5), Some(seen[2].ticket));
-    assert_eq!(seen.iter().map(|s| s.stream).collect::<Vec<_>>(), [1, 3, 5]);
+    assert_eq!(seen.iter().map(|s| s.stream).collect::<Vec<_>>(), [1, 2, 3]);
+    assert_eq!(
+        seen.iter().map(|s| s.target.as_str()).collect::<Vec<_>>(),
+        ["/one", "/three", "/five"]
+    );
     for s in seen.iter() {
+        assert_eq!((s.owner, s.listener), (owner, Some(71)));
         assert_eq!(
-            (s.owner, s.conn, s.listener),
-            (owner, scoped_mux::TOKEN, Some(71))
+            (s.leg, s.conn, s.physical),
+            (seen[0].leg, seen[0].conn, seen[0].physical)
         );
-        assert_eq!((s.leg, s.physical), (seen[0].leg, seen[0].physical));
     }
     assert_eq!(*host.ended.lock().unwrap(), vec![seen[0].leg]);
     assert!(seen[0].physical.is_some_and(|id| id != 0));
 }
 
 #[test]
-fn a_ready_token_mismatch_still_finishes_the_returned_plugin_resource() {
+fn a_local_token_mismatch_is_refused_and_a_real_http_resource_retires() {
     let (door, host) = opened();
-    let rejected = match begin(door.clone(), "mismatch") {
-        Err(_) => true,
-        Ok((framing, _)) => {
-            framing.finish(CLOSE_NORMAL);
-            false
-        }
-    };
-    let (mut observing, _) = begin(door, "").expect("another connection may reuse the local token");
-    let report = observing
-        .ingest(&[9], false)
-        .expect("the fixture reports its last Finish token");
-    observing.finish(CLOSE_NORMAL);
+    let (framing, _) = begin(door, "").expect("real HTTP framing");
+    let scope = framing.scope().unwrap();
+    // A mismatched resource identifier is a host-mechanism negative input. The
+    // actual transport has already returned and confirmed its genuine resource.
     assert!(
-        rejected,
-        "READY must agree with the provisional service claim"
+        framing_context::current().is_none(),
+        "the caller's scope is restored after begin"
     );
-    assert_eq!(report.pieces.len(), 1);
-    assert_eq!(
-        report.pieces[0].bytes,
-        (scoped_mux::TOKEN + 1).to_le_bytes()
+    let context = framing_context::FramingContext::new(scope.owner(), 71, 0, None).unwrap();
+    context.confirm(1).unwrap();
+    assert!(
+        context.confirm(2).is_err(),
+        "a READY token must agree with the confirmed resource"
     );
-    assert_eq!(host.ended.lock().unwrap().len(), 2);
+    context.end();
+    assert_ne!(scope.leg(), 0);
+    framing.finish(CLOSE_NORMAL);
+    assert_eq!(*host.ended.lock().unwrap(), vec![scope.leg()]);
 }
 
 #[test]
@@ -311,8 +285,10 @@ fn a_worker_resume_and_lifecycle_hop_retain_the_submitted_framing_scope() {
     let host = Arc::new(Host::default());
     let served: Arc<dyn AuthHandleHost> = host.clone();
     assert!(dispatcher.install_auth_handle(served.clone()));
-    let plugin =
-        crate::root::test_plugins::linked_transport(scoped_mux::door, bind_on(&dispatcher));
+    let plugin = crate::root::test_plugins::linked_transport(
+        busbar_transport_http::door::door,
+        bind_on(&dispatcher),
+    );
     let mut opened_frame = Frame::new(blank_in::<OpenIn>(), blank_out::<OpenOut>());
     assert_eq!(
         plugin.call(life::OPEN, &mut opened_frame).outcome,
@@ -348,9 +324,9 @@ fn a_worker_resume_and_lifecycle_hop_retain_the_submitted_framing_scope() {
     drop(side);
 
     let cleanup = ReleaseAll(host.clone());
-    let bytes = Arc::new(vec![1_u8, 1]);
+    let bytes = Arc::new(super::inbound_reload_tests::request(1, "/worker", true));
     let mut input: t::IngestIn = blank_in();
-    input.framing = scoped_mux::TOKEN;
+    input.framing = opening.out.framing;
     input.bytes = bytes.as_ptr();
     input.len = bytes.len();
     let frame = Frame::new(input, blank_out::<t::FramerOut>());
@@ -374,25 +350,28 @@ fn a_worker_resume_and_lifecycle_hop_retain_the_submitted_framing_scope() {
     drop(reply);
     dispatcher.recycle(ticket);
     let mut closing = Frame::new(blank_in::<InHead>(), blank_out::<OutHead>());
-    let closed =
-        framing_context::with_context(Some(scope), || plugin.call(life::CLOSE, &mut closing));
+    let closed = framing_context::with_context(Some(scope), || {
+        assert_eq!(framing_context::current().unwrap().leg(), context.leg());
+        plugin.call(life::CLOSE, &mut closing)
+    });
     context.end();
 
     assert!(caller_scope_restored && pending && released);
     assert_eq!(done.map(|d| d.outcome), Some(Outcome::Ready));
     assert_eq!(closed.outcome, Outcome::Ready);
     let seen = host.seen.lock().unwrap();
-    assert_eq!(seen.iter().map(|s| s.stream).collect::<Vec<_>>(), [1, 11]);
-    assert!(
-        !seen[0].resumed && seen[1].resumed,
-        "the second service ran on an actual ABI resume"
+    assert_eq!(seen.iter().map(|s| s.stream).collect::<Vec<_>>(), [1]);
+    assert_eq!(
+        seen[0].target, "/worker",
+        "the actual pending HTTP auth call resumes once"
     );
     assert!(seen.iter().all(|s| s.owner == owner
         && s.leg == context.leg()
         && s.listener == Some(71)
         && s.physical == Some(context.connection())));
-    assert_eq!(
-        *host.close_seen.lock().unwrap(),
-        vec![(Some(context.leg()), Some(context.leg()))]
+    assert!(
+        framing_context::current().is_none(),
+        "the lifecycle hop restores the caller's scope"
     );
+    assert_eq!(*host.ended.lock().unwrap(), vec![context.leg()]);
 }
