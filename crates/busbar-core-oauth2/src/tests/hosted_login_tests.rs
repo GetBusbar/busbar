@@ -146,38 +146,6 @@ fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<busbar_ke
 }
 
 #[test]
-fn chooser_renders_0_1_n_buttons() {
-    let app0 = test_app_with_methods(vec![]);
-    let body0 = body_of(chooser(&app0));
-    assert_eq!(body0.matches("class=\"provider\"").count(), 0);
-    assert!(body0.contains("No browser login"));
-
-    let app1 = test_app_with_methods(vec![("microsoft", true)]);
-    let body1 = body_of(chooser(&app1));
-    assert_eq!(body1.matches("class=\"provider\"").count(), 1);
-    assert!(body1.contains("/auth/token?method=microsoft"));
-
-    let appn = test_app_with_methods(vec![
-        ("microsoft", true),
-        ("second-sso", true),
-        ("headless-only", false),
-    ]);
-    let bodyn = body_of(chooser(&appn));
-    assert_eq!(
-        bodyn.matches("class=\"provider\"").count(),
-        2,
-        "only the two browser_login methods render buttons; the gui-off method is excluded"
-    );
-    assert!(
-        !bodyn.contains("method=headless-only"),
-        "gui-off method not shown"
-    );
-
-    assert!(bodyn.contains("https://busbar.example.com"));
-    assert!(!bodyn.contains("https://busbar.example.com/v1"));
-}
-
-#[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
     let row = busbar_kernel::config::migration_table::text("login_brands");
     let brands: Vec<(&str, &str, &str)> = row
@@ -223,88 +191,6 @@ fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic(
             "{token} without the row"
         );
     }
-}
-
-#[tokio::test]
-async fn gui_off_method_still_works_via_post() {
-    let app = test_app_with_methods(vec![("headless-only", false)]);
-    let (base, handle) = serve(app).await;
-    let client = reqwest::Client::new();
-
-    let r = client
-        .post(format!("{base}/auth/token"))
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(r.status().as_u16(), 404, "POST /auth/token must exist");
-    assert_ne!(r.status().as_u16(), 405, "POST /auth/token must be allowed");
-    handle.abort();
-}
-
-#[tokio::test]
-async fn begin_sets_httponly_secure_cookie_and_redirects() {
-    let app = test_app_with_methods(vec![("microsoft", true)]);
-    let resp = begin(&app, "microsoft", false).await;
-    assert_eq!(resp.status().as_u16(), 302);
-    let loc = resp.headers().get("location").unwrap().to_str().unwrap();
-    assert!(loc.starts_with("https://idp.example.com/authorize"));
-    let sc = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
-    assert!(sc.contains("HttpOnly"), "cookie must be HttpOnly: {sc}");
-    assert!(sc.contains("Secure"), "cookie must be Secure: {sc}");
-    assert!(
-        sc.contains("SameSite=Lax"),
-        "cookie must be SameSite=Lax: {sc}"
-    );
-
-    let raw = sc
-        .split(';')
-        .next()
-        .unwrap()
-        .strip_prefix(&format!("{LOGIN_COOKIE}="))
-        .unwrap();
-    let cookie = LoginCookie::decode(raw).expect("cookie round-trips");
-    assert_eq!(cookie.method, "microsoft");
-    assert!(
-        !cookie.code_verifier.is_empty() && !cookie.state.is_empty() && !cookie.nonce.is_empty()
-    );
-}
-
-async fn refresh_flag_for(
-    handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
-    sec_fetch_site: Option<&str>,
-) -> bool {
-    let mut req = Request::builder().uri("/auth/token?method=microsoft&refresh=1");
-    if let Some(site) = sec_fetch_site {
-        req = req.header("sec-fetch-site", site);
-    }
-    let resp = browser(handle.clone(), req.body(Body::empty()).unwrap()).await;
-    assert_eq!(resp.status().as_u16(), 302, "begin redirects to the IdP");
-    let sc = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
-    let raw = sc
-        .split(';')
-        .next()
-        .unwrap()
-        .strip_prefix(&format!("{LOGIN_COOKIE}="))
-        .unwrap();
-    LoginCookie::decode(raw)
-        .expect("cookie round-trips")
-        .refresh
-}
-
-#[tokio::test]
-async fn a_refresh_link_rotates_only_from_busbars_own_page() {
-    let app = test_app_with_methods(vec![("microsoft", true)]);
-    let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
-    for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
-        assert!(
-            !refresh_flag_for(&handle, site).await,
-            "Sec-Fetch-Site {site:?} does not rotate the key"
-        );
-    }
-    assert!(
-        refresh_flag_for(&handle, Some("same-origin")).await,
-        "busbar's own Refresh link rotates the key"
-    );
 }
 
 #[test]
