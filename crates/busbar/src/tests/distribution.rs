@@ -439,3 +439,6 @@ mod kernel_application_auth_login_tests;
 
 #[path = "kernel_application/central2_config_export.rs"]
 mod kernel_application_central2_config_export;
+
+#[path = "admin_application/admin_custody_outcomes.rs"]
+mod admin_application_admin_custody_outcomes;
