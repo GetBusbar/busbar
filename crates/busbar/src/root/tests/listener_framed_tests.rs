@@ -876,7 +876,7 @@ async fn anonymous_policy_with_upgrade(
         &rules,
     )
     .expect("the actual product builds the listener-policy deployment");
-    limits.keep().expect("the product limits commit");
+    drop(limits);
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -988,7 +988,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         &rules,
     )
     .expect("the actual product builds the listener-policy deployment");
-    limits.keep().expect("the product limits commit");
+    drop(limits);
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -1081,7 +1081,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         &rules,
     )
     .expect("the actual product builds the listener-policy deployment");
-    limits.keep().expect("the product limits commit");
+    drop(limits);
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -1261,7 +1261,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         &rules,
     )
     .expect("the actual product builds the listener-policy deployment");
-    limits.keep().expect("the product limits commit");
+    drop(limits);
     if let Some(rotate) = rotate {
         rotate();
     }
