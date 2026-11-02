@@ -300,7 +300,7 @@ fn a_short_piece_is_recalled_with_room_on_the_same_session_ticket() {
             .unwrap();
         assert_eq!(first.outcome, Outcome::Failed);
         assert!(first.short);
-        let mut recalled = *first.frame.unwrap();
+        let mut recalled = first.frame.unwrap();
         assert_eq!(recalled.out.units_needed, 1);
         // SAFETY: UnitCount consists of zero-valid scalar ABI fields; the callback writes none.
         let mut room: [busbar_contract::abi::plane::UnitCount; 1] = unsafe { std::mem::zeroed() };
