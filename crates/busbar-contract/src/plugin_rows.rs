@@ -122,6 +122,13 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     /// The admitted row `name_or_alias` resolves to (canonical name first, then alias).
     fn resolve(&self, name_or_alias: &str) -> Option<Row>;
 
+    /// SHA-256 of the exact admitted archive from which the retained native image was read.
+    /// Host metadata, not a plugin assertion or a fresh filesystem read. Linked rows need no
+    /// archive; a registry that cannot supply this proof returns `None`.
+    fn archive_sha256(&self, _name_or_alias: &str) -> Option<String> {
+        None
+    }
+
     /// Why `name_or_alias` resolves to nothing, when a SKIPPED plugin matches it.
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped>;
 

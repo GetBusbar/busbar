@@ -68,6 +68,9 @@ pub struct LoadablePlugin {
     /// The verified library bytes, shared (never copied) with every boot row it becomes
     /// ([`Self::candidate`]).
     pub lib_bytes: std::sync::Arc<Vec<u8>>,
+    /// Digest of the exact capped archive whose verified image `lib_bytes` retains. Never
+    /// recomputed from the path, which may have been replaced after discovery.
+    pub archive_sha256: Option<String>,
     /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
     /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
     pub ephemeral: bool,
@@ -591,6 +594,7 @@ impl PluginRegistry {
                 },
                 manifest,
                 lib_bytes: std::sync::Arc::default(),
+                archive_sha256: None,
                 ephemeral,
                 entry: Some(entry),
                 keyed_by_alias,
@@ -1194,6 +1198,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 manifest: unpacked.manifest,
                 verdict,
                 lib_bytes: std::sync::Arc::new(unpacked.lib_bytes),
+                archive_sha256: Some(crate::sign::sha256_hex(&bytes)),
                 ephemeral: false,
                 entry: None,
                 keyed_by_alias: false,

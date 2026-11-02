@@ -57,6 +57,7 @@ pub struct Rows {
     linked: Vec<Entry>,
     dropped: Vec<Entry>,
     skipped: Vec<Skipped>,
+    archives: std::collections::BTreeMap<String, String>,
 }
 
 /// A dropped-in row named `name`, aliased `alias`, of `kind`: unsigned, admitted under an explicit
@@ -240,6 +241,13 @@ impl Rows {
         self
     }
 
+    /// Give an admitted test row the host-owned digest of its retained archive.
+    #[must_use]
+    pub fn with_archive_sha256(mut self, canonical_name: &str, digest: &str) -> Self {
+        self.archives.insert(canonical_name.into(), digest.into());
+        self
+    }
+
     /// The rows, as the kernel reads a registry.
     #[must_use]
     pub fn into_rows(self) -> Arc<dyn PluginRows> {
@@ -316,6 +324,11 @@ impl std::fmt::Debug for Rows {
 impl PluginRows for Rows {
     fn resolve(&self, name_or_alias: &str) -> Option<Row> {
         self.entry(name_or_alias).map(|e| e.row.clone())
+    }
+
+    fn archive_sha256(&self, name_or_alias: &str) -> Option<String> {
+        let row = self.resolve(name_or_alias)?;
+        self.archives.get(&row.name).cloned()
     }
 
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped> {

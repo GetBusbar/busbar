@@ -4,13 +4,11 @@
 //! THE FIRST-PARTY ANTI-DOWNGRADE FLOOR IN THE STORE, per host (`docs/plugins.md` security-model
 //! item 3).
 //!
-//! The plugin scan floors a dropped-in first-party plugin at the highest version of its name this
-//! deployment has loaded, from the marks kept beside a data directory
-//! (`crate::root::loader::HighWaterMarks`). Without a data directory those marks lived in memory,
-//! so a restart forgot them and a genuine but OLD signed release dropped into `plugins.dir` loaded
-//! again with no warning. The store opens after the scan, so the floor the store keeps is held here,
-//! once the store is open: every loadable dropped-in first-party plugin is checked against the mark
-//! the store keeps for its name on this host, and the marks rise to what loaded.
+//! Application registry scans check the already-opened bootstrap Store's marks before any
+//! subsequent native load. Real admission raises the marks atomically; a dry run only checks.
+//! Bootstrap Store/secret/transport code is independently authorized by an immutable archive
+//! hash in the operator's base configuration, because the Store cannot judge its own unread
+//! contents before it opens. No application floor is kept in a local data-directory file.
 //!
 //! Keyed per HOST, so one upgraded node never refuses its siblings' boots during a rolling rollback.
 //! An explicit rollback pin (`POST /plugins/rollback`, kept in the overlay's `plugin_versions`) replaces a name's mark, as it does

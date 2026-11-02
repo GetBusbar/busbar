@@ -709,6 +709,8 @@ async fn run(
             .values()
             .map(|provider| provider.base_url.clone()),
     );
+    root::boot::check_bootstrap_transports(&deploy.plugins)
+        .unwrap_or_else(|error| die(format!("bootstrap transport archive admission: {error}")));
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
         &root::policy::client_settings(&base_cfg.limits),

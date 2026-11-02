@@ -659,12 +659,30 @@ get code executed, and a compromised or replayed plugin must not load.
    audited `plugins.rollback` admin action). The pin it persists replaces the automatic floor for
    that plugin name and no other, so rolling one plugin back never admits a stale copy of another.
 
-   With a fleet data directory configured, the marks persist beneath it as `plugin-highwater.json`
-   and the floor survives restarts. Without one busbar writes no file at all (a deployment with no
-   data directory creates no data-directory files) and the floor is held in memory for the life of
-   the process — which still refuses a swap performed against a running node, the window an attacker
-   with write access to the plugins directory actually operates in, but is re-established from
-   scratch at the next boot.
+   The marks belong to the configured Store, keyed by host and canonical plugin name. Ordinary
+   registry validation checks them without changing them; real boot and rebuild admission raises
+   them atomically before later native plugin loading. Busbar does not read or write
+   `plugin-highwater.json`, including when `BUSBAR_DATA_DIR` is set. A durable Store preserves
+   the floor across restarts; an ephemeral memory Store loses its contents on restart.
+
+   **Bootstrap artifacts need an operator archive pin.** The Store cannot authorize its own native
+   code using a floor that cannot be read until that code opens it. Before Store recovery, every
+   selected dropped-in Store, required secret plugin, and transport therefore needs an exact
+   `plugins.fetch[].sha256` in the operator's base `config.yaml`, matching its archive filename.
+   This is the SHA-256 of the complete signed `.tar.gz` archive, rather than the library digest
+   inside its manifest. The pin is checked against the exact archive bytes retained by discovery;
+   replacing the file after the scan cannot substitute another image. The existing signature,
+   publisher, and `min_versions` checks still apply. Linked bootstrap plugins are bound to the
+   binary and need no archive pin. Unused dropped plugins need no bootstrap pin.
+
+   This is an explicit operator authorization for bootstrap code before the Store is readable;
+   the Store floor is then checked before subsequent native loads. A Store-owned rollback pin
+   cannot authorize execution needed to read that same Store. To upgrade or roll back a bootstrap
+   dependency, install the intended signed archive and update its base fetch hash together before
+   restarting; an admin install or rollback that disagrees with the base archive pin is refused
+   before publication. Previously unpinned dropped bootstrap configurations must add these hashes
+   when upgrading to 1.6.0. No new configuration key is required.
+
 4. **Structural fail-closed.** Before trust is even consulted, every tarball must unpack cleanly
    (bounded sizes, exactly two members, no path tricks), the manifest must be complete and
    well-formed, `sha256(lib)` must match, and the `abi_version` must be one this binary speaks.

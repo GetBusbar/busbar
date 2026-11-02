@@ -1286,7 +1286,29 @@ impl AdminService {
             ))
         })?;
         let dependencies = busbar_kernel::appbuild::bootstrap_dependency_names(&cfg, rows.as_ref());
-        if dependencies.contains(&manifest.name) || dependencies.contains(&manifest.alias) {
+        let selected_transport = manifest.kind == "transport"
+            && admission
+                .bootstrap_transport_selected(
+                    bytes,
+                    config_path,
+                    &cfg.providers
+                        .values()
+                        .map(|provider| provider.base_url.clone())
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(refused)?;
+        if dependencies.contains(&manifest.name)
+            || dependencies.contains(&manifest.alias)
+            || selected_transport
+        {
+            let archive_hash = hex::encode(busbar_contract::abi::sdk::digest::sha256(bytes));
+            busbar_kernel::appbuild::validate_bootstrap_archive(
+                &manifest.name,
+                file,
+                Some(&archive_hash),
+                &loaded.deploy.plugins,
+            )
+            .map_err(AdminError::Conflict)?;
             let (_, verdict) = admission
                 .inspect(bytes, &loaded.deploy.plugins)
                 .map_err(refused)?;

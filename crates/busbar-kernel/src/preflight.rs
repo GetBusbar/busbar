@@ -780,17 +780,16 @@ pub fn plugins_preflight(
     //    (boot / config reload / config apply / admin plugin reload) runs through this one build,
     //    and a malformed floor is warned about here first.
     plugins_cfg.warn_invalid_floors();
-    let data_dir = fleet_data_dir();
+    // Security application state is Store-owned; no registry scan reads/writes a local floor.
     // 3. Disabled: the registry is the linked rows and NOTHING in the directory is even read
     //    (drop-is-inert). Enabled: the three-phase scan over the plugins directory, fail-closed on
     //    invalid/conflict, the linked rows registered ahead of the directory's through the same
-    //    admission; then the floor RISES to what the scan proved loadable (only a VERIFIED
-    //    first-party verdict counts, and the mark only ever rises). A failure to persist is NOT
-    //    fatal: the in-memory marks still floor this process.
+    //    admission. The root checks its recovered Store floor before returning these bytes;
+    //    actual application admission raises marks separately, never during a dry-run scan.
     let build = RegistryIn {
         linked: linked_rows(),
         plugins: Some(plugins_cfg),
-        data_dir: data_dir.as_deref(),
+        data_dir: None,
     };
     let registry_build = root_rows()
         .registry_build

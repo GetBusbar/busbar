@@ -94,7 +94,7 @@ pub fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
 pub fn registry(
     linked: Vec<LinkedPlugin>,
     plugins: Option<&PluginsCfg>,
-    data_dir: Option<&std::path::Path>,
+    _data_dir: Option<&std::path::Path>,
     note: &mut dyn FnMut(Note<'_>),
 ) -> Result<PluginRegistry, String> {
     let scan = match plugins {
@@ -102,7 +102,9 @@ pub fn registry(
         Some(p) => Some(Scan {
             policy: trust_policy(p, env!("CARGO_PKG_VERSION"))
                 .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
-            data_dir,
+            // Application security state belongs to the Store. Before it is readable,
+            // exact operator archive pins authorize only the required bootstrap images.
+            data_dir: None,
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
@@ -1139,7 +1141,11 @@ pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
 /// that key (two transports claiming one scheme refuse boot).
 fn transport_uses() -> Uses {
     let urls = PROVIDER_URLS.read().expect("provider URLs").clone();
-    let mut uses = plan(&config_path()).reaching(urls.iter().map(String::as_str));
+    transport_uses_for(&config_path(), &urls)
+}
+
+pub(crate) fn transport_uses_for(path: &std::path::Path, urls: &[String]) -> Uses {
+    let mut uses = plan(path).reaching(urls.iter().map(String::as_str));
     uses.schemes.extend(
         crate::LINKED_TRANSPORT_DOORS
             .iter()
@@ -1147,6 +1153,30 @@ fn transport_uses() -> Uses {
             .flat_map(|c| c.schemes),
     );
     uses
+}
+
+/// Check the exact transport selection that the bootstrap connector will open. An unused
+/// dropped transport needs no bootstrap pin; every selected native image does, including
+/// transports selected by a provider scheme or by a conflicting linked claim.
+pub fn check_bootstrap_transports(plugins: &PluginsCfg) -> Result<(), String> {
+    let Some(registry) = REGISTRY.get() else {
+        return Ok(());
+    };
+    let uses = transport_uses();
+    let mut selected = std::collections::BTreeSet::new();
+    for row in registry
+        .loadable()
+        .iter()
+        .filter(|row| row.manifest.kind == "transport")
+    {
+        if row
+            .candidate()?
+            .is_some_and(|candidate| candidate.serves(&uses))
+        {
+            selected.insert(row.manifest.name.clone());
+        }
+    }
+    busbar_kernel::appbuild::validate_bootstrap_artifacts(registry, &selected, plugins)
 }
 
 /// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
