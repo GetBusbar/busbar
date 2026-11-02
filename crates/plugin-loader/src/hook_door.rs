@@ -1307,17 +1307,25 @@ impl HookAxis for HookRows {
         let Some(candidate) = self.find(module) else {
             return Ok(Vec::new());
         };
-        let plugin = Self::bind(
-            candidate,
-            &self.dispatcher,
-            instance,
-            Arc::new(NoSink),
-            ConnTable::Probe,
-        )?;
-        let routes = plugin
-            .context::<HookContext>()
-            .map_or_else(Vec::new, |context| context.routes.clone());
+        let refused = |e| format!("hook plugin '{}': {e}", candidate.name);
+        let image = match &candidate.origin {
+            Origin::Linked(row) => crate::dispatch::load::prepare_linked::<Hook>(row),
+            Origin::Dropped { file, bytes } => {
+                crate::dispatch::load::prepare_dropped_bytes::<Hook>(bytes, file, &candidate.stated)
+            }
+        }
+        .map_err(refused)?;
+        let routes = image.routes().map_err(refused)?;
         if !routes.is_empty() {
+            let plugin = image
+                .bind(Bind {
+                    instance: Arc::from(instance),
+                    max_inflight_cap: MAX_INFLIGHT_CAP,
+                    sink: Arc::new(NoSink),
+                    dispatcher: self.dispatcher.adopter(),
+                    conns: ConnTable::Probe,
+                })
+                .map_err(refused)?;
             let text = zeroize::Zeroizing::new(settings.to_string());
             validate(&plugin, text.as_bytes())?;
         }
