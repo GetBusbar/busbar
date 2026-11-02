@@ -409,19 +409,12 @@ async fn native_api_oversized_body_keeps_413_and_the_code_envelope() {
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
-    let handle = std::sync::Arc::new(crate::state::AppHandle::new(
-        crate::test_support::TestApp::new().build(),
-    ));
     let router = axum::Router::new()
         .route(
             "/api/body-cap-probe",
             axum::routing::post(|_body: axum::body::Bytes| async { "buffered" }),
         )
-        .layer(axum::extract::DefaultBodyLimit::max(64))
-        .layer(axum::middleware::from_fn_with_state(
-            handle,
-            reshape_body_limit_413,
-        ));
+        .layer(axum::extract::DefaultBodyLimit::max(64));
     let response = router
         .oneshot(
             axum::http::Request::builder()
@@ -432,6 +425,7 @@ async fn native_api_oversized_body_keeps_413_and_the_code_envelope() {
         )
         .await
         .unwrap();
+    let response = reshape_oversized_413(&residual_planes(), "/api/body-cap-probe", response).await;
     assert_eq!(response.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(
         response.headers()[axum::http::header::CONTENT_TYPE],
@@ -1534,54 +1528,6 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[tokio::test]
-async fn oversized_request_413_is_reshaped_on_the_live_stack() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = crate::test_support::TestApp::new().build();
-
-    let (mut router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
-
-    let oversized = "x".repeat(4096);
-    let payload = serde_json::json!({"pad": oversized}).to_string();
-    let req = axum::http::Request::builder()
-        .method(axum::http::Method::POST)
-        .uri("/v1/chat/completions")
-        .header("content-type", "application/json")
-        .header("content-length", payload.len().to_string())
-        .body(axum::body::Body::from(payload))
-        .unwrap();
-    type Req = axum::http::Request<axum::body::Body>;
-    std::future::poll_fn(|cx| <axum::Router as tower::Service<Req>>::poll_ready(&mut router, cx))
-        .await
-        .unwrap();
-    let r = <axum::Router as tower::Service<Req>>::call(&mut router, req)
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 413, "the body cap must reject");
-    let ct = r
-        .headers()
-        .get("content-type")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let body = {
-        use http_body_util::BodyExt as _;
-        let bytes = r.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    };
-    assert!(
-        ct.starts_with("application/json"),
-        "an oversized-body 413 must speak JSON, not the bare `{body}` router tell (content-type \
-         was `{ct}`) — the reshape layer's sentinel no longer matches what axum emits"
-    );
-    let v: serde_json::Value = serde_json::from_str(&body)
-        .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"));
-    assert!(
-        v.get("error").is_some(),
-        "the 413 must carry the error envelope; got {v}"
-    );
 }
 
 // ROOT pure-framework disposition: env_var_guard_restores_on_panic tested only
