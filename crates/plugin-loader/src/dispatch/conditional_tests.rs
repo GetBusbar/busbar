@@ -544,7 +544,7 @@ fn actual_dispatch_serve_waits_for_applied_releases_pending_lease_and_retains_sh
         o.head = out_head();
         Frame::new(i, o)
     };
-    let mut reply = dispatcher.submit(
+    let reply = dispatcher.submit(
         &plugin,
         ticket,
         busbar_contract::abi::plane::slot::SERVE,
@@ -1187,7 +1187,7 @@ fn actual_canceled_serve_settles_on_idle_driver_without_new_tick_or_resubmission
     let mut output: ServeOut = unsafe { std::mem::zeroed() };
     input.head = in_head();
     output.head = out_head();
-    let mut reply = dispatcher.submit(
+    let reply = dispatcher.submit(
         &plugin,
         origin,
         busbar_contract::abi::plane::slot::SERVE,

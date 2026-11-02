@@ -25,6 +25,8 @@ impl Exchange {
         }
     }
 }
+type Input = (Capability, Option<Arc<[u8]>>);
+
 #[derive(Debug)]
 pub(super) struct Kept {
     request: Exchange,
@@ -62,7 +64,7 @@ impl ServiceStore {
         caller: usize,
         ticket: Ticket,
         unit: Option<u64>,
-    ) -> Result<(Capability, Option<Arc<[u8]>>), ()> {
+    ) -> Result<Input, ()> {
         if ticket.is_none() {
             return Err(());
         }

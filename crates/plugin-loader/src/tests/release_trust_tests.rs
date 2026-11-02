@@ -353,7 +353,7 @@ fn a_forged_retired_root_keyid_is_not_authenticated_as_a_retired_signature() {
     let forged = serde_json::to_vec(&envelope).unwrap();
     assert!(matches!(
         verify_release(
-            &[retired.clone()],
+            std::slice::from_ref(&retired),
             Seal {
                 keys: &forged,
                 targets: &targets
