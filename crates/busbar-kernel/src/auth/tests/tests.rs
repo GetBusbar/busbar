@@ -1353,85 +1353,58 @@ impl busbar_contract::auth_calls::AuthCalls for AnswersOnly {
     }
 }
 
-fn door_then_identifier(verified: busbar_contract::auth_calls::Verified) -> AuthMiddleware {
-    let identifier = crate::auth::stand_in::InProcessAuth::new(
-        crate::test_support::auth_modules::open(
-            crate::test_support::auth_modules::TEST_GROUPS_MODULE,
-        )
-        .expect("the test groups module"),
-    );
-    AuthMiddleware::from_doors_for_test(vec![
-        (
-            "door".to_string(),
-            std::sync::Arc::new(AnswersOnly(verified)) as std::sync::Arc<dyn AuthCalls>,
-        ),
-        (
-            "test-groups-module".to_string(),
-            std::sync::Arc::new(identifier),
-        ),
-    ])
-}
-
-#[tokio::test]
-async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
+#[test]
+fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
     use busbar_contract::auth_calls::Verified;
+    // Internal outcome→public chain-result continuation. An error is terminal before any
+    // later provider; actual OIDC identity/verification is qualified separately at the root.
     for verified in [Verified::Overloaded, Verified::Failed] {
-        let auth = std::sync::Arc::new(door_then_identifier(verified.clone()));
-        let verdict = AuthMiddleware::run_chain_on_request_path(
-            &auth,
-            Some("grp:admins".into()),
-            ChainHead::default(),
-            None,
-            None,
-        )
-        .await;
+        let judged = data_verdict_of("door", verified.clone().into(), false).map(|judged| {
+            chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
+        });
         assert_eq!(
-            verdict,
+            deny_unavailable_chain(judged),
             ChainVerdict::Denied,
             "{verified:?} must deny, not pass"
         );
     }
 }
 
-#[tokio::test]
-async fn the_data_plane_walk_hands_an_overloaded_or_verdict_less_door_back_apart() {
-    use busbar_contract::auth_calls::Verified;
-    let judged = |verified: Verified| async move {
-        let auth = std::sync::Arc::new(door_then_identifier(verified));
-        AuthMiddleware::judge_chain_on_request_path(
-            &auth,
-            Some("grp:admins".into()),
-            ChainHead::default(),
-            None,
-            None,
-        )
-        .await
+#[test]
+fn the_data_plane_walk_hands_an_overloaded_or_verdict_less_door_back_apart() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    let judged = |verified: Verified| {
+        data_verdict_of("door", verified.into(), false).map(|judged| {
+            chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
+        })
     };
     assert_eq!(
-        judged(Verified::Overloaded).await,
+        judged(Verified::Overloaded),
         Err(VerifierUnavailable::Overloaded),
         "an overloaded door is handed back apart, never a reject or a pass"
     );
     assert_eq!(
-        judged(Verified::Failed).await,
+        judged(Verified::Failed),
         Err(VerifierUnavailable::NoVerdict),
         "a door with no verdict is handed back apart (SIGN-auth-kind 2026-10-30)"
     );
     assert_eq!(
-        judged(Verified::Reject).await,
+        judged(Verified::Reject),
         Ok(ChainVerdict::Denied),
         "a REJECT is the denial"
     );
-    let auth = std::sync::Arc::new(faulting_door_then_identifier());
+    let faulted = data_verdict_of(
+        "door",
+        Verified::Identity(VerifiedIdentity {
+            subject: "faulted".into(),
+            ..Default::default()
+        })
+        .into(),
+        true,
+    )
+    .map(|judged| chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied));
     assert_eq!(
-        AuthMiddleware::judge_chain_on_request_path(
-            &auth,
-            Some("grp:admins".into()),
-            ChainHead::default(),
-            None,
-            None,
-        )
-        .await,
+        faulted,
         Err(VerifierUnavailable::NoVerdict),
         "a FAULTED door is handed back apart, never admitted on its answer"
     );
@@ -1491,25 +1464,6 @@ impl busbar_contract::auth_calls::AuthCalls for FaultingDoor {
     }
 }
 
-fn faulting_door_then_identifier() -> AuthMiddleware {
-    let identifier = crate::auth::stand_in::InProcessAuth::new(
-        crate::test_support::auth_modules::open(
-            crate::test_support::auth_modules::TEST_GROUPS_MODULE,
-        )
-        .expect("the test groups module"),
-    );
-    AuthMiddleware::from_doors_for_test(vec![
-        (
-            "door".to_string(),
-            std::sync::Arc::new(FaultingDoor) as std::sync::Arc<dyn AuthCalls>,
-        ),
-        (
-            "test-groups-module".to_string(),
-            std::sync::Arc::new(identifier),
-        ),
-    ])
-}
-
 fn at_capacity_503() -> (u16, Option<String>, Option<String>, String) {
     (
         503,
@@ -1521,81 +1475,88 @@ fn at_capacity_503() -> (u16, Option<String>, Option<String>, String) {
 }
 
 #[tokio::test]
-async fn a_data_plane_door_without_a_verdict_answers_503_like_an_overloaded_one_and_a_reject_401() {
-    use crate::test_support::{LaneSpec, MockServer, TestApp};
-    use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let server = MockServer::new(dp_ok_state()).await;
-    let ask = |auth: AuthMiddleware, path: &'static str| {
-        let app = TestApp::new()
-            .lane(LaneSpec::new("m", LANE_PROTOCOL, &server.base_url()).api_key("up"))
-            .pool("pa", &[(0, 1)])
-            .auth(std::sync::Arc::new(auth))
-            .build();
-        async move {
-            let (addr, handle) = dp_serve(app).await;
-            let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
-            let r = reqwest::Client::new()
-                .post(format!("http://{addr}{path}"))
-                .bearer_auth("grp:admins")
-                .body(body)
-                .send()
-                .await
-                .unwrap();
-            let status = r.status().as_u16();
-            let header = |name: &str| {
-                r.headers()
-                    .get(name)
-                    .map(|v| v.to_str().unwrap_or_default().to_string())
-            };
-            let (content_type, retry_after) = (header("content-type"), header("retry-after"));
-            let text = r.text().await.unwrap();
-            handle.abort();
-            (status, content_type, retry_after, text)
-        }
-    };
-
-    let all_pass = ask(
-        AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"])),
-        "/pa/v1/messages",
+async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    async fn inspect(response: Response) -> (u16, Option<String>, Option<String>, String) {
+        let status = response.status().as_u16();
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().unwrap().to_string())
+        };
+        let (content_type, retry_after) = (header("content-type"), header("retry-after"));
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (
+            status,
+            content_type,
+            retry_after,
+            String::from_utf8(body.to_vec()).unwrap(),
+        )
+    }
+    // Internal outcome/identity→response continuation. Both production callers use these
+    // exact factories; actual HTTP delivery and genuine credentials have separate root controls.
+    let no_grant = resolve_identity_from_bindings(
+        &Default::default(),
+        ChainVerdict::Identified {
+            module: "test-groups-module".into(),
+            principal: grp_principal("test:admins", &["admins"]),
+            resolved: None,
+        },
     )
+    .expect_err("an identified unbound principal has no grant");
+    let all_pass = inspect(identity_refusal_response(no_grant, None, true, || {
+        unauthorized_ingress_response(crate::plane_driver::dispatch::Ingress::Fallback(None))
+    }))
     .await;
-    assert_eq!(all_pass.0, 401, "the all-pass refusal: {all_pass:?}");
-    let rejected = ask(door_then_identifier(Verified::Reject), "/pa/v1/messages").await;
-    assert_eq!(rejected, all_pass, "a REJECT: the 1.5.5 401, byte for byte");
-
-    let overloaded = ask(
-        door_then_identifier(Verified::Overloaded),
-        "/pa/v1/messages",
-    )
-    .await;
-    assert_eq!(overloaded, at_capacity_503(), "an overloaded door (Q134)");
-    let failed = ask(door_then_identifier(Verified::Failed), "/pa/v1/messages").await;
     assert_eq!(
-        failed,
+        all_pass.0, 401,
+        "the unbound-identity refusal: {all_pass:?}"
+    );
+    let rejected = inspect(identity_refusal_response(
+        IdentityRefusal::Denied,
+        None,
+        true,
+        || unauthorized_ingress_response(crate::plane_driver::dispatch::Ingress::Fallback(None)),
+    ))
+    .await;
+    assert_eq!(rejected, all_pass, "a REJECT: the 1.5.5 401, byte for byte");
+    let overloaded = data_verdict_of("door", Verified::Overloaded.into(), false)
+        .err()
+        .expect("overload stays apart");
+    assert_eq!(
+        inspect(data_verifier_error_response(overloaded)).await,
+        at_capacity_503(),
+        "an overloaded door (Q134)"
+    );
+    let failed = data_verdict_of("door", Verified::Failed.into(), false)
+        .err()
+        .expect("no verdict stays apart");
+    assert_eq!(
+        inspect(data_verifier_error_response(failed)).await,
         at_capacity_503(),
         "a FAILED door: 503 + Retry-After, refused (SIGN-auth-kind 2026-10-30)"
     );
-    let faulted = ask(faulting_door_then_identifier(), "/pa/v1/messages").await;
+    let faulted = data_verdict_of(
+        "door",
+        Verified::Identity(VerifiedIdentity {
+            subject: "faulted".into(),
+            ..Default::default()
+        })
+        .into(),
+        true,
+    )
+    .err()
+    .expect("a fault overrides its purported identity");
     assert_eq!(
-        faulted,
+        inspect(data_verifier_error_response(faulted)).await,
         at_capacity_503(),
         "a FAULTED door: 503 + Retry-After, refused (SIGN-auth-kind 2026-10-30)"
     );
-
-    let exchanged = ask(door_then_identifier(Verified::Failed), "/auth/token").await;
-    assert_eq!(
-        (exchanged.0, exchanged.2.as_deref()),
-        (503, Some("1")),
-        "the exchange behind a FAILED door: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {exchanged:?}"
-    );
-    let exchanged = ask(faulting_door_then_identifier(), "/auth/token").await;
-    assert_eq!(
-        (exchanged.0, exchanged.2.as_deref()),
-        (503, Some("1")),
-        "the exchange behind a FAULTED door: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {exchanged:?}"
-    );
-    server.shutdown().await;
+    // The two exchange NoVerdict status/header oracles are retained in
+    // exchange_verifier_outcome_projection_preserves_failed_and_faulted_503.
 }
 
 struct LentCredentialDoor(busbar_contract::auth_calls::Verified);

@@ -1827,6 +1827,43 @@ pub(crate) fn verifier_unavailable_response() -> Response {
     crate::limits::admission::inbound_overloaded_response()
 }
 
+fn data_verifier_error_response(error: VerifierUnavailable) -> Response {
+    match error {
+        VerifierUnavailable::Overloaded | VerifierUnavailable::NoVerdict => {
+            verifier_unavailable_response()
+        }
+    }
+}
+
+fn identity_refusal_response(
+    refusal: IdentityRefusal,
+    admission: Option<&crate::plane_driver::dispatch::PlaneAdmission>,
+    client_token_present: bool,
+    legacy: impl FnOnce() -> Response,
+) -> Response {
+    if let Some(admission) = admission {
+        return match refusal {
+            IdentityRefusal::Denied => challenge::refuse(
+                if client_token_present {
+                    challenge::ChallengeError::InvalidToken
+                } else {
+                    challenge::ChallengeError::Absent
+                },
+                &admission.resource_metadata,
+                "Authentication is required for this resource.",
+                None,
+            ),
+            IdentityRefusal::NoGrant => challenge::refuse(
+                challenge::ChallengeError::InsufficientScope,
+                &admission.resource_metadata,
+                "The authenticated principal carries no grant on this resource.",
+                None,
+            ),
+        };
+    }
+    legacy()
+}
+
 pub const ADMIN_AUTH_UNAVAILABLE_MESSAGE: &str =
     "admin authentication is unavailable (the auth module answered no verdict); retry shortly";
 
@@ -2237,9 +2274,7 @@ pub(crate) async fn auth_middleware(
                 verdict
             }
 
-            Err(VerifierUnavailable::Overloaded | VerifierUnavailable::NoVerdict) => {
-                return Err(verifier_unavailable_response())
-            }
+            Err(error) => return Err(data_verifier_error_response(error)),
         }
     };
 
@@ -2262,40 +2297,13 @@ pub(crate) async fn auth_middleware(
             strike_named(&mut req, &mut consumed, &strips);
             req.extensions_mut().insert(consumed);
         }
-        Err(IdentityRefusal::Denied) => {
-            if let Some(adm) = admission.as_ref() {
-                let kind = if client_token.is_none() {
-                    challenge::ChallengeError::Absent
-                } else {
-                    challenge::ChallengeError::InvalidToken
-                };
-                return Err(challenge::refuse(
-                    kind,
-                    &adm.resource_metadata,
-                    "Authentication is required for this resource.",
-                    None,
-                ));
-            }
-            return Err(unauthorized_with_completion_taps(
-                &app,
-                &path,
-                door.as_ref(),
-            ));
-        }
-        Err(IdentityRefusal::NoGrant) => {
-            if let Some(adm) = admission.as_ref() {
-                return Err(challenge::refuse(
-                    challenge::ChallengeError::InsufficientScope,
-                    &adm.resource_metadata,
-                    "The authenticated principal carries no grant on this resource.",
-                    None,
-                ));
-            }
-            return Err(unauthorized_with_completion_taps(
-                &app,
-                &path,
-                door.as_ref(),
-            ));
+        Err(refusal) => {
+            return Err(identity_refusal_response(
+                refusal,
+                admission.as_ref(),
+                client_token.is_some(),
+                || unauthorized_with_completion_taps(&app, &path, door.as_ref()),
+            ))
         }
     }
 
