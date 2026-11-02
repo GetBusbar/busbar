@@ -63,39 +63,59 @@ impl App {
 
 impl LoginMethods {
     fn inbound_default_auth(&self, style: &str) -> Result<Option<InboundAuthProvider>, String> {
-        if style.is_empty() {
+        let Some(provider) = select_inbound_provider(
+            style,
+            self.methods.iter().filter_map(|(provider, method)| {
+                Some((provider.as_str(), method.inbound_style.as_ref()?))
+            }),
+        )?
+        else {
             return Ok(None);
-        }
-        let mut matching = self.methods.iter().filter_map(|(provider, method)| {
-            let declared = method.inbound_style.as_ref()?;
-            declared
-                .names
-                .iter()
-                .any(|name| name == style)
-                .then_some((provider, method, declared))
-        });
-        let Some((provider, method, declared)) = matching.next() else {
-            return Err(format!(
-                "inbound auth style '{style}' has no configured ordinary identity provider"
-            ));
         };
-        if let Some((other, _, _)) = matching.next() {
-            return Err(format!(
-                "inbound auth style '{style}' is ambiguous between identity providers '{provider}' and '{other}'"
-            ));
-        }
-        if crate::config::is_builtin_identity_module(provider) {
-            return Err(format!(
-                "inbound auth style '{style}' selects identity provider '{provider}', whose name is reserved for a configured host auth position"
-            ));
-        }
+        let method = &self.methods[provider];
+        let declared = method
+            .inbound_style
+            .as_ref()
+            .expect("selected declared style");
         Ok(Some(InboundAuthProvider {
-            provider: provider.clone(),
+            provider: provider.to_string(),
             module: declared.module.clone(),
             calls: Arc::clone(&method.module),
             points: declared.points,
         }))
     }
+}
+
+fn select_inbound_provider<'a>(
+    style: &str,
+    declarations: impl Iterator<Item = (&'a str, &'a busbar_contract::auth_calls::InboundStyle)>,
+) -> Result<Option<&'a str>, String> {
+    if style.is_empty() {
+        return Ok(None);
+    }
+    let mut matching = declarations.filter_map(|(provider, declared)| {
+        declared
+            .names
+            .iter()
+            .any(|name| name == style)
+            .then_some(provider)
+    });
+    let Some(provider) = matching.next() else {
+        return Err(format!(
+            "inbound auth style '{style}' has no configured ordinary identity provider"
+        ));
+    };
+    if let Some(other) = matching.next() {
+        return Err(format!(
+            "inbound auth style '{style}' is ambiguous between identity providers '{provider}' and '{other}'"
+        ));
+    }
+    if crate::config::is_builtin_identity_module(provider) {
+        return Err(format!(
+            "inbound auth style '{style}' selects identity provider '{provider}', whose name is reserved for a configured host auth position"
+        ));
+    }
+    Ok(Some(provider))
 }
 
 const LOGIN_OFFLOAD_MAX_INFLIGHT: usize = 16;
@@ -274,33 +294,14 @@ impl LoginMethods {
                 .map(str::to_string);
             let has_button = mc.browser_login.is_some();
 
-            if let Some(sref) = mc
-                .browser_login
-                .as_ref()
-                .and_then(|bl| bl.client_secret.as_ref())
-            {
-                if !states_secret_slot(registry, &mc.module, CLIENT_SECRET_SLOT) {
-                    return Err(format!(
-                        "identity-providers.{name} browser_login.client_secret: the login plugin \
-                         '{}' states no `{CLIENT_SECRET_SLOT}` secret reference, so it cannot be \
-                         lent the client secret as a secret",
-                        mc.module
-                    ));
-                }
-                let secret = secret_resolver
-                    .resolve_string_at_config(
-                        sref,
-                        &busbar_contract::config_time::ConfigScope::config_time(),
-                    )
-                    .map_err(|e| {
-                        format!("identity-providers.{name} browser_login.client_secret: {e}")
-                    })?;
-
-                resolved.map_mut().insert(
-                    CLIENT_SECRET_SLOT.to_string(),
-                    serde_json::Value::String(secret.expose(&crate::seal::lend()).clone()),
-                );
-            }
+            lend_browser_login_secret(
+                name,
+                &mc.module,
+                mc.browser_login.as_ref(),
+                &registry.secret_slots(&mc.module),
+                secret_resolver,
+                resolved.map_mut(),
+            )?;
 
             let opened = axis.open(&mc.module, &login_label(name), resolved.as_value());
 
@@ -351,12 +352,35 @@ impl LoginMethods {
 
 const CLIENT_SECRET_SLOT: &str = "client_secret";
 
-fn states_secret_slot(
-    registry: &dyn busbar_contract::plugin_rows::PluginRows,
+fn lend_browser_login_secret(
+    name: &str,
     module: &str,
-    key: &str,
-) -> bool {
-    registry.secret_slots(module).iter().any(|k| k == key)
+    browser: Option<&crate::config::BrowserLoginCfg>,
+    secret_slots: &[String],
+    secret_resolver: &crate::config::secret::SecretResolver,
+    resolved: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let Some(sref) = browser.and_then(|bl| bl.client_secret.as_ref()) else {
+        return Ok(());
+    };
+    if !secret_slots.iter().any(|key| key == CLIENT_SECRET_SLOT) {
+        return Err(format!(
+            "identity-providers.{name} browser_login.client_secret: the login plugin \
+             '{module}' states no `{CLIENT_SECRET_SLOT}` secret reference, so it cannot be \
+             lent the client secret as a secret"
+        ));
+    }
+    let secret = secret_resolver
+        .resolve_string_at_config(
+            sref,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|e| format!("identity-providers.{name} browser_login.client_secret: {e}"))?;
+    resolved.insert(
+        CLIENT_SECRET_SLOT.to_string(),
+        serde_json::Value::String(secret.expose(&crate::seal::lend()).clone()),
+    );
+    Ok(())
 }
 
 fn login_label(name: &str) -> String {
