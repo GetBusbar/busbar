@@ -3316,3 +3316,7 @@ mod unix_target_tests;
 #[allow(unsafe_code, dead_code)]
 #[path = "tests/support.rs"]
 mod support;
+
+#[cfg(test)]
+#[path = "tests/refresh_binding_tests.rs"]
+mod refresh_binding_tests;
