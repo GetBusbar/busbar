@@ -10,25 +10,25 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
-    DIAG_LOG, DIAG_LOG_DROPPED, FLAG_RESUME, METRIC_ADD, METRIC_OBSERVE, METRIC_SET,
-    SEVERITY_ERROR, SEVERITY_TRACE,
+    AbiStr, Blob, DIAG_LOG, DIAG_LOG_DROPPED, DeadlineClass, Diag, FLAG_RESUME, InHead, METRIC_ADD,
+    METRIC_OBSERVE, METRIC_SET, MetricEntry, Op, OutHead, Outcome, RawOutcome, SEVERITY_ERROR,
+    SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, ValidateIn,
+    OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, ValidateIn, slot,
 };
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::plane::{PlaneOpenIn, EXT_OWNED};
+use busbar_contract::abi::plane::{EXT_OWNED, PlaneOpenIn};
 use busbar_contract::conn::{InstanceId, NeedId};
 
 use super::answer::Answer;
 use super::load::{Lib, LoadError, Validated};
-use super::ticket::{host_wake, InstanceWake};
-use super::{validate, Frame, InFrame, Kind, OutFrame};
+use super::ticket::{InstanceWake, host_wake};
+use super::{Frame, InFrame, Kind, OutFrame, validate};
 use busbar_contract::abi::mechanism::check::Fault;
 
 pub const MAX_ENVELOPE_ENTRIES: usize = busbar_contract::abi::mechanism::call::MAX_ENVELOPE_ENTRIES;
@@ -576,6 +576,52 @@ struct FramingFailure {
     ticket: Ticket,
 }
 
+struct RefreshBinding<'a> {
+    instance: &'a Instance,
+    ticket: Ticket,
+    generation: Option<Arc<super::export_bindings::Generation>>,
+    pending: bool,
+}
+
+impl RefreshBinding<'_> {
+    fn stage(&mut self, generation: Arc<super::export_bindings::Generation>) {
+        let prior = self
+            .instance
+            .wake
+            .exports
+            .stage(self.ticket, generation.clone());
+        self.generation = Some(generation);
+        if let Some(prior) = prior {
+            let closes = self.instance.wake.conn_state.retire_binding(&prior);
+            super::worker::drop_after_lock(Box::new((closes, prior)));
+        }
+    }
+    fn retain(&mut self) {
+        self.pending = true;
+    }
+
+    fn commit(&mut self) {
+        if let Some(generation) = self.generation.take() {
+            self.instance.wake.exports.publish(generation);
+            let staged = self.instance.wake.exports.take_staged(self.ticket);
+            super::worker::drop_after_lock(Box::new(staged));
+        }
+    }
+}
+
+impl Drop for RefreshBinding<'_> {
+    fn drop(&mut self) {
+        if self.pending {
+            return;
+        }
+        if let Some(generation) = self.generation.take() {
+            let staged = self.instance.wake.exports.take_staged(self.ticket);
+            let closes = self.instance.wake.conn_state.retire_binding(&generation);
+            super::worker::drop_after_lock(Box::new((closes, staged, generation)));
+        }
+    }
+}
+
 impl Drop for FramingFailure {
     fn drop(&mut self) {
         if let Some(scope) = &self.scope {
@@ -971,7 +1017,7 @@ impl Instance {
         op: u32,
         ticket: Ticket,
     ) -> Result<Option<super::export_bindings::Admission>, ()> {
-        if self.kind != KindCode::Export
+        if !self.uses_bindings()
             || self.faulted.load(Ordering::Acquire)
             || matches!(op, slot::CANCEL | slot::CLOSE | slot::RELEASE)
         {
@@ -982,6 +1028,29 @@ impl Instance {
             .admit(self.wake, op, ticket)
             .map(Some)
             .ok_or(())
+    }
+
+    pub(crate) fn binding_resume_admission(
+        &self,
+        op: u32,
+        ticket: Ticket,
+    ) -> Result<Option<super::export_bindings::Admission>, ()> {
+        // Export's Pending refresh gates new entries, while already admitted work may finish.
+        if self.kind == KindCode::Export {
+            Ok(None)
+        } else {
+            self.export_admission(op, ticket)
+        }
+    }
+
+    fn uses_bindings(&self) -> bool {
+        self.kind == KindCode::Export
+            || self.needs.iter().any(from_settings)
+            || self
+                .wake
+                .destinations
+                .get()
+                .is_some_and(|keys| !keys.is_empty())
     }
 
     fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) -> Option<String> {
@@ -1165,9 +1234,10 @@ impl Instance {
             .collect()
     }
 
-    fn export_generation(
+    fn binding_generation(
         &self,
         settings: Blob,
+        owned: Option<&[u8]>,
         initial: bool,
     ) -> Result<Arc<super::export_bindings::Generation>, String> {
         let conn = match self.wake.conn.get() {
@@ -1179,6 +1249,9 @@ impl Instance {
                         .map(super::handle::instance_id)
                         .map_err(|error| error.to_string())?
                 };
+                if self.kind == KindCode::Auth {
+                    table.hold_authority(owner);
+                }
                 Some((owner, table.clone()))
             }
             None => None,
@@ -1202,7 +1275,7 @@ impl Instance {
                 }
             }
         }
-        if let Some(error) = self.declare_targeted_on(settings, None, generation.conn.as_ref()) {
+        if let Some(error) = self.declare_targeted_on(settings, owned, generation.conn.as_ref()) {
             return Err(error);
         }
         Ok(generation)
@@ -1346,7 +1419,9 @@ impl Instance {
             self.ptr.store(std::ptr::null_mut(), Ordering::Release);
         }
         self.leave_gate(s, shut);
-        if shut && self.kind == KindCode::Export {
+        if shut && self.uses_bindings() {
+            let closes = self.wake.conn_state.retire_all();
+            super::worker::drop_after_lock(Box::new(closes));
             self.wake.exports.clear();
             self.wake.exports.wake_waiters(self.wake);
         }
@@ -1422,7 +1497,9 @@ impl Instance {
                 crossed
             })
         });
-        drop(self.wake.exports.forget(self.wake, ticket));
+        let id = super::handle::instance_id(self.ctx());
+        let (_, forgotten) = super::conn_services::forget(id, ticket);
+        super::worker::drop_after_lock(Box::new(forgotten));
         crossed.unwrap_or_else(|_| Crossed::host(Outcome::Fault))
     }
 
@@ -1461,6 +1538,14 @@ impl Instance {
         out_size: u32,
     ) -> Crossed {
         let instance_free = self.instance_free(s);
+        // SAFETY: the caller owns a frame whose leading input head is live throughout the call.
+        let ticket = unsafe { (*input).ticket };
+        let mut refresh_binding = RefreshBinding {
+            instance: self,
+            ticket,
+            generation: None,
+            pending: false,
+        };
         let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN) && !instance_free;
 
         let crossable =
@@ -1555,7 +1640,7 @@ impl Instance {
             .then(|| unsafe { blob_bytes((*input.cast::<PlaneOpenIn>()).owned) });
             if self.kind == KindCode::Export {
                 if !resumed {
-                    match self.export_generation(settings, true) {
+                    match self.binding_generation(settings, None, true) {
                         Ok(binding) => proposed_binding = Some(binding),
                         Err(error) => trust_refused = Some(error),
                     }
@@ -1581,18 +1666,17 @@ impl Instance {
             // SAFETY: the host's own extensions blob, live for the crossing it is handed to.
             let owned = unsafe { blob_bytes(extensions) };
             let owned = busbar_contract::abi::mechanism::extensions::get(owned, EXT_OWNED);
-            if self.kind == KindCode::Export {
+            if self.uses_bindings() {
                 if resumed {
                     proposed_binding = self.wake.exports.staged(ticket);
                     if proposed_binding.is_none() {
                         return Crossed::host(Outcome::Fault);
                     }
+                    refresh_binding.generation = proposed_binding.clone();
                 } else {
-                    match self.export_generation(settings, false) {
+                    match self.binding_generation(settings, owned, false) {
                         Ok(binding) => {
-                            if !ticket.is_none() {
-                                self.wake.exports.stage(ticket, binding.clone());
-                            }
+                            refresh_binding.stage(binding.clone());
                             proposed_binding = Some(binding);
                         }
                         Err(error) => trust_refused = Some(error),
@@ -1673,7 +1757,7 @@ impl Instance {
             ticket
         };
         let binding = proposed_binding.clone().or_else(|| {
-            (self.kind == KindCode::Export)
+            self.uses_bindings()
                 .then(|| self.wake.exports.pin(binding_ticket))
                 .flatten()
         });
@@ -1829,7 +1913,7 @@ impl Instance {
         }
         if self.kind == KindCode::Transport {
             use busbar_contract::abi::mechanism::{call::BLOB_OCTETS, extensions};
-            use busbar_contract::abi::transport::{guest_policy, FramerOut, YIELD_MORE};
+            use busbar_contract::abi::transport::{FramerOut, YIELD_MORE, guest_policy};
             if outcome != Outcome::Pending {
                 if let Some(scope) = &scope {
                     scope.operation_done(ticket);
@@ -1976,9 +2060,32 @@ impl Instance {
         {
             return Crossed::host(Outcome::Fault).unread(head.lease);
         }
-        if outcome == Outcome::Ready || (s == slot::OPEN && outcome == Outcome::Pending) {
+        if s == slot::REFRESH {
+            if outcome == Outcome::Ready {
+                refresh_binding.commit();
+            } else if outcome == Outcome::Pending {
+                refresh_binding.retain();
+            }
+        } else if outcome == Outcome::Ready || (s == slot::OPEN && outcome == Outcome::Pending) {
             if let Some(binding) = proposed_binding {
                 self.wake.exports.publish(binding);
+            } else if s == slot::OPEN
+                && self.uses_bindings()
+                && self.wake.exports.pin(Ticket::NONE).is_none()
+            {
+                // Non-export OPEN already declared its original authority. Keep that same
+                // authority alive while later accepted refreshes publish isolated generations.
+                self.wake
+                    .exports
+                    .publish(Arc::new(super::export_bindings::Generation {
+                        conn: self.wake.conn.get().cloned(),
+                        destinations: self
+                            .wake
+                            .bound
+                            .read()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone(),
+                    }));
             }
         }
 
@@ -2585,7 +2692,7 @@ impl<K: Kind> Plugin<K> {
             return Called::from(Crossed::host(Outcome::Refused));
         }
         let admission = if resume {
-            Ok(None)
+            inst.binding_resume_admission(s, ticket)
         } else {
             inst.export_admission(s, ticket)
         };

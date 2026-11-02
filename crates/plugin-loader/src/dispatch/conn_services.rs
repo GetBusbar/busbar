@@ -5,30 +5,30 @@ use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::net::IpAddr;
 use std::os::raw::c_void;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use futures::FutureExt as _;
 
 use busbar_contract::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
-    CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END,
-    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
-    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
+    CAUSE_AUTH_FAILED, CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE,
+    ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, REPLY_ACK, REPLY_BODY,
+    REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, ReplyIn, ReplyPiece, RequestIn,
+    RequestPiece, SERVICES, StreamFacts, StreamIn, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
+    UpgradeIn, WITHIN_SEPARATOR, service,
 };
-use busbar_contract::abi::host::service::{lent_out, ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{ServiceHead, ServiceOut, lent_out};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
-use busbar_contract::abi::transport::{fields, FrameSpan};
+use busbar_contract::abi::transport::{FrameSpan, fields};
 use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{
     ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind,
 };
 use std::future::Future as _;
 
-use super::services::{service, write_out, Answered};
+use super::services::{Answered, service, write_out};
 use super::ticket::InstanceWake;
 
 pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
@@ -447,6 +447,15 @@ impl ConnState {
             streams: Vec::new(),
             waits,
         }
+    }
+
+    /// Detach an instance's resources after CLOSE, leaving transport calls to the deferred owner.
+    pub(crate) fn retire_all(&self) -> Closes {
+        let mut closes = self.take_dialling(None, |_| true);
+        closes.streams = std::mem::take(&mut *self.streams()).into_values().collect();
+        lock(&self.facts).clear();
+        lock(&self.kept).clear();
+        closes
     }
 
     fn stream_authority(&self, stream: u64) -> Option<Authority> {
@@ -1167,6 +1176,7 @@ fn replay_raw(input: *const c_void, answer: Answered, kept: &[u8]) -> Answered {
 
 pub(crate) struct Forgotten {
     _closes: Closes,
+    _rollback: Option<Closes>,
     _binding: Option<super::export_bindings::Forgotten>,
 }
 
@@ -1177,11 +1187,16 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Forgotten) {
                 0,
                 Forgotten {
                     _closes: Closes::default(),
+                    _rollback: None,
                     _binding: None,
                 },
             )
         },
         |w| {
+            let rollback = w
+                .exports
+                .staged(ticket)
+                .map(|binding| w.conn_state.retire_binding(&binding));
             let binding = w.exports.forget(w, ticket);
             let conn = binding
                 .binding()
@@ -1192,6 +1207,7 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Forgotten) {
                 kept,
                 Forgotten {
                     _closes: closes,
+                    _rollback: rollback,
                     _binding: Some(binding),
                 },
             )
@@ -1201,9 +1217,12 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Forgotten) {
 
 pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
     let gone = |t: &Ticket| super::ticket::decode(t.slot).0 == worker;
-    for w in ids.iter().filter_map(|id| super::handle::supplier_of(*id)) {
-        for (ticket, binding) in w.exports.worker_pins(worker) {
-            drop(w.conn_state.forget(binding.conn.as_ref(), ticket));
+    for (id, w) in ids
+        .iter()
+        .filter_map(|id| super::handle::supplier_of(*id).map(|w| (*id, w)))
+    {
+        for (ticket, _) in w.exports.worker_pins(worker) {
+            drop(forget(id, ticket));
         }
         w.conn_state.drop_dialling(w.conn.get(), gone);
         lock(&w.conn_state.kept).retain(|t, _| !gone(t));
@@ -2454,9 +2473,11 @@ mod creating_authority_tests {
         );
         drop(wake.conn_state.retire_binding(&old));
         assert_eq!(lock(&actual.closed).len(), 3);
-        assert!(lock(&actual.closed)
-            .iter()
-            .all(|(owner, _)| *owner == old_owner));
+        assert!(
+            lock(&actual.closed)
+                .iter()
+                .all(|(owner, _)| *owner == old_owner)
+        );
         drop(wake.conn_state.retire_binding(&new));
         wake.exports.clear();
     }
@@ -2525,6 +2546,87 @@ mod creating_authority_tests {
         );
         assert_eq!(*lock(&actual.forgotten), vec![owners[1]]);
         assert!(actual.slab.get(owners[0], raw[0]).is_ok());
-        drop(state.retire_binding(&old));
+        let closes = state.retire_all();
+        assert!(state.streams().is_empty());
+        assert!(lock(&state.waits).is_empty());
+        assert!(lock(&state.facts).is_empty());
+        assert!(actual.slab.get(owners[0], raw[0]).is_ok());
+        drop(closes);
+        assert!(actual.slab.get(owners[0], raw[0]).is_err());
+    }
+
+    #[test]
+    fn staged_refresh_keeps_committed_operations_and_serializes_candidates() {
+        use super::super::export_bindings::Generation;
+        use busbar_contract::abi::mechanism::lifecycle::slot;
+        let wake = Box::leak(Box::<InstanceWake>::default());
+        let old = Arc::new(Generation {
+            conn: None,
+            destinations: Vec::new(),
+        });
+        let candidate = Arc::new(Generation {
+            conn: None,
+            destinations: Vec::new(),
+        });
+        let refresh = Ticket {
+            slot: 17,
+            generation: 1,
+        };
+        let operation = Ticket {
+            slot: 18,
+            generation: 1,
+        };
+        let second = Ticket {
+            slot: 19,
+            generation: 1,
+        };
+        wake.exports.publish(old.clone());
+        let admission = wake.exports.admit(wake, slot::REFRESH, refresh).unwrap();
+        assert!(wake.exports.stage(refresh, candidate.clone()).is_none());
+        assert!(wake.exports.admit(wake, slot::DRIVE, operation).is_none());
+        drop(admission);
+        let operation_admission = wake.exports.admit(wake, slot::DRIVE, operation).unwrap();
+        assert!(Arc::ptr_eq(&wake.exports.pin(operation).unwrap(), &old));
+        assert!(Arc::ptr_eq(&wake.exports.pin(refresh).unwrap(), &candidate));
+        assert!(wake.exports.admit(wake, slot::REFRESH, second).is_none());
+        drop(operation_admission);
+        drop(wake.exports.forget(wake, refresh));
+        assert!(Arc::ptr_eq(&wake.exports.pin(Ticket::NONE).unwrap(), &old));
+        assert!(wake.exports.admit(wake, slot::REFRESH, second).is_some());
+        wake.exports.clear();
+    }
+
+    #[test]
+    fn accepted_refresh_preserves_pending_pin_and_next_cycle_uses_committed_generation() {
+        use super::super::export_bindings::Generation;
+        let wake = Box::leak(Box::<InstanceWake>::default());
+        let old = Arc::new(Generation {
+            conn: None,
+            destinations: Vec::new(),
+        });
+        let candidate = Arc::new(Generation {
+            conn: None,
+            destinations: Vec::new(),
+        });
+        let operation = Ticket {
+            slot: 18,
+            generation: 1,
+        };
+        let refresh = Ticket {
+            slot: 17,
+            generation: 1,
+        };
+        wake.exports.publish(old.clone());
+        assert!(Arc::ptr_eq(&wake.exports.pin(operation).unwrap(), &old));
+        assert!(wake.exports.stage(refresh, candidate.clone()).is_none());
+        wake.exports.publish(candidate.clone());
+        drop(wake.exports.take_staged(refresh));
+        assert!(Arc::ptr_eq(&wake.exports.pin(operation).unwrap(), &old));
+        drop(wake.exports.forget(wake, operation));
+        assert!(Arc::ptr_eq(
+            &wake.exports.pin(operation).unwrap(),
+            &candidate
+        ));
+        wake.exports.clear();
     }
 }

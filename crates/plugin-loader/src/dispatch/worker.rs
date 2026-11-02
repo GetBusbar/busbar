@@ -6,20 +6,20 @@ use std::future::Future;
 use std::mem::size_of;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
-use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
+use busbar_contract::abi::mechanism::call::{DeadlineClass, FLAG_RESUME, InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::lifecycle::{TickIn, TickOut, slot};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::InstanceId;
 
-use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
+use super::plugin::{Crossed, Instance, Plugin, is_lifecycle};
 use super::services::{HostServices, Served, ServiceStore, ServicesSlot};
-use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
-use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
+use super::ticket::{MAX_INDEX, MAX_WORKERS, WakeRoute, decode, encode};
+use super::{DriveFrame, Frame, InFrame, Kind, OutFrame, in_head, now_ns, out_head, watchdog};
 
 #[path = "worker_unit_cancel.rs"]
 mod unit_cancel;
@@ -633,7 +633,7 @@ std::thread_local! {
 
 type Late = Box<dyn std::any::Any>;
 
-fn drop_after_lock(value: Late) {
+pub(crate) fn drop_after_lock(value: Late) {
     let mut value = Some(value);
     let _ = LET_GO.try_with(|list| {
         if let Some(held) = list.borrow_mut().as_mut() {
@@ -1567,6 +1567,16 @@ impl Worker {
                 let Some(cur) = e.current.as_mut().filter(|c| c.pending && !c.parked) else {
                     return Some(st);
                 };
+                let admission = cur
+                    .meta
+                    .instance
+                    .binding_resume_admission(cur.meta.slot, ticket);
+                let Ok(admission) = admission else {
+                    return Some(st);
+                };
+                if let Some(admission) = admission {
+                    drop_after_lock(Box::new(admission));
+                }
                 cur.pending = false;
                 let inst = cur.meta.instance.clone();
                 let (s, budget) = (
@@ -1656,9 +1666,24 @@ impl Worker {
             }
             Action::Drive => {
                 let framing = e.current.as_ref().and_then(|c| c.meta.framing.clone());
+                let idle = e.current.is_none();
                 let Some(d) = e.driver.as_mut() else {
                     return Some(st);
                 };
+                if idle && !d.pending && d.ticks_held == 0 && env.services.held.held(ticket) == 0 {
+                    // An autonomous wake can start a new cycle without Action::Start.
+                    // Only a custody-empty cycle may release its preceding generation pin.
+                    env.services.forget(ticket);
+                    forget_conns(d.instance.instance, ticket);
+                    env.services.held.forget(ticket);
+                }
+                let admission = d.instance.binding_resume_admission(slot::DRIVE, ticket);
+                let Ok(admission) = admission else {
+                    return Some(st);
+                };
+                if let Some(admission) = admission {
+                    drop_after_lock(Box::new(admission));
+                }
                 let inst = d.instance.clone();
                 if inst.faulted.load(Ordering::Acquire) || !inst.is_open() {
                     self.unpark(&mut st, idx, env);
