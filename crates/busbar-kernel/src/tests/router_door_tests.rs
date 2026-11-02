@@ -71,11 +71,10 @@ async fn without_the_install_the_same_path_is_the_fallbacks() {
 
 #[test]
 fn a_door_route_is_recorded_at_the_bar_it_declares() {
-    let app = crate::test_support::TestApp::new().build();
     let table = crate::router::base_data_router(
-        &app.plugin_routes,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
+        &crate::plugin_routes::PluginRouteTable::default(),
+        &Default::default(),
+        None,
         vec![door(RouteAuth::Key)],
         Vec::new(),
     )
