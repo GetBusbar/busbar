@@ -1031,12 +1031,27 @@ pub(in crate::governance) mod tests {
     pub(in crate::governance) struct Journal {
         pub(in crate::governance) selected: Mutex<Vec<RecoveryEvent>>,
         pub(in crate::governance) fail_after_write: AtomicBool,
+        foreign: Mutex<std::collections::BTreeMap<[u8; 16], (u64, Vec<RecoveryEvent>)>>,
+        adoption_attempts: Mutex<Vec<(RecoveryResolution, Vec<RecoveryEvent>)>>,
+        confirmed_adoptions:
+            Mutex<std::collections::BTreeMap<[u8; 16], (RecoveryResolution, Vec<RecoveryEvent>)>>,
+        lose_adoption_reply: AtomicBool,
     }
     impl RecoverySink for Journal {
         fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
             Ok(self.selected.lock().unwrap().clone())
         }
         fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+            if self
+                .foreign
+                .lock()
+                .unwrap()
+                .contains_key(&event.operation_id)
+            {
+                return Err(RecoveryError::Conflict(
+                    "foreign operation is readonly".into(),
+                ));
+            }
             let mut selected = self.selected.lock().unwrap();
             if !selected.contains(event) {
                 selected.push(event.clone());
@@ -1049,7 +1064,151 @@ pub(in crate::governance) mod tests {
                 Ok(())
             }
         }
+        fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
+            Ok(self
+                .foreign
+                .lock()
+                .unwrap()
+                .values()
+                .map(|(owner_node, events)| RecoveryInspection {
+                    owner_node: *owner_node,
+                    event: events.last().unwrap().clone(),
+                })
+                .collect())
+        }
+        fn adopt_verdict(
+            &self,
+            resolution: &RecoveryResolution,
+            transitions: &[RecoveryEvent],
+        ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+            resolution.validate_quiescence()?;
+            self.adoption_attempts
+                .lock()
+                .unwrap()
+                .push((resolution.clone(), transitions.to_vec()));
+            if let Some((previous, events)) = self
+                .confirmed_adoptions
+                .lock()
+                .unwrap()
+                .get(&resolution.operation_id)
+            {
+                if previous != resolution || events.as_slice() != transitions {
+                    return Err(RecoveryError::Conflict(
+                        "adoption differs from confirmed immutable candidate".into(),
+                    ));
+                }
+                return Ok(self
+                    .selected
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event.operation_id == resolution.operation_id)
+                    .cloned()
+                    .collect());
+            }
+            let mut foreign = self.foreign.lock().unwrap();
+            let (_, original) = foreign
+                .get(&resolution.operation_id)
+                .ok_or_else(|| RecoveryError::Conflict("foreign head disappeared".into()))?;
+            let head = original.last().unwrap();
+            if head.revision != resolution.expected_revision
+                || head.body_fingerprint != resolution.body_fingerprint
+            {
+                return Err(RecoveryError::Conflict("foreign head changed".into()));
+            }
+            let mut chain = original.clone();
+            for event in transitions {
+                event.follows(chain.last())?;
+                chain.push(event.clone());
+            }
+            foreign.remove(&resolution.operation_id);
+            drop(foreign);
+            self.selected.lock().unwrap().extend(chain.clone());
+            self.confirmed_adoptions.lock().unwrap().insert(
+                resolution.operation_id,
+                (resolution.clone(), transitions.to_vec()),
+            );
+            if self.lose_adoption_reply.swap(false, Ordering::Relaxed) {
+                return Err(RecoveryError::Unavailable(
+                    "adoption selected but reply lost".into(),
+                ));
+            }
+            Ok(chain)
+        }
+        fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+            let owned: Vec<_> = self
+                .selected
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|selected| selected.operation_id == event.operation_id)
+                .cloned()
+                .collect();
+            let genesis = owned
+                .first()
+                .cloned()
+                .or_else(|| {
+                    self.foreign
+                        .lock()
+                        .unwrap()
+                        .get(&event.operation_id)
+                        .and_then(|(_, events)| events.first().cloned())
+                })
+                .unwrap_or_else(|| event.clone());
+            if event.origin_reference()? != genesis.origin_reference()?
+                || event.kind != genesis.kind
+                || event.body_fingerprint != genesis.body_fingerprint
+                || event.first_sent_at_ms != genesis.first_sent_at_ms
+            {
+                return Err(RecoveryError::Conflict("child identity changed".into()));
+            }
+            let Some(origin) = genesis.origin_reference()? else {
+                return Ok(());
+            };
+            let parent = self
+                .selected
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|parent| {
+                    parent.operation_id == origin.operation_id
+                        && parent.fingerprint().ok() == Some(origin.event_fingerprint)
+                })
+                .cloned()
+                .or_else(|| {
+                    self.foreign
+                        .lock()
+                        .unwrap()
+                        .get(&origin.operation_id)
+                        .and_then(|(_, events)| {
+                            events
+                                .iter()
+                                .find(|parent| {
+                                    parent.fingerprint().ok() == Some(origin.event_fingerprint)
+                                })
+                                .cloned()
+                        })
+                })
+                .ok_or_else(|| RecoveryError::Invalid("origin is not selected".into()))?;
+            parent.authorizes_child(&genesis)
+        }
     }
+    impl Journal {
+        fn make_foreign(&self, operation_id: [u8; 16], owner_node: u64) {
+            let mut selected = self.selected.lock().unwrap();
+            let chain = selected
+                .iter()
+                .filter(|event| event.operation_id == operation_id)
+                .cloned()
+                .collect();
+            selected.retain(|event| event.operation_id != operation_id);
+            self.foreign
+                .lock()
+                .unwrap()
+                .insert(operation_id, (owner_node, chain));
+        }
+    }
+
     fn intent() -> RecoveryEvent {
         RecoveryEvent {
             operation_id: [1; 16],
@@ -1566,5 +1725,117 @@ pub(in crate::governance) mod tests {
                 .unwrap(),
         )
         .unwrap();
+    }
+    #[test]
+    fn foreign_adoption_lost_reply_retains_exact_children_and_sends_only_after_confirmation() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(store.clone(), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&original, 7);
+        sink.make_foreign(intent.operation_id, 17);
+        drop(original);
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink.clone()).unwrap();
+        assert!(
+            gov.recovery_event(intent.operation_id).is_none(),
+            "inspection grants no writable custody"
+        );
+        let listed = gov.recovery().list(None, 10).unwrap().pop().unwrap();
+        assert_eq!(listed.owner_node, Some(17));
+        assert!(!listed.can_resolve);
+        let resolution = RecoveryResolution {
+            operation_id: intent.operation_id,
+            body_fingerprint: intent.body_fingerprint,
+            expected_revision: intent.revision,
+            verdict: RecoveryVerdict::NotLanded,
+            sender_quiesced: true,
+            backend_quiesced: true,
+            actor: "adopter".into(),
+            reason: "all old senders disarmed and backend mutations settled".into(),
+        };
+        let cost = crate::cost::CostModel::flat(0);
+        sink.lose_adoption_reply.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            gov.recovery().resolve(&cost, resolution.clone()),
+            Err(RecoveryError::Unavailable(_))
+        ));
+        assert_eq!(
+            store.get_usage("recovery-bucket", 0).unwrap().requests,
+            0,
+            "a selected adoption with an unknown reply cannot authorize local backend effects yet"
+        );
+        assert!(sink.inspect_foreign().unwrap().is_empty());
+        let settled = gov.recovery().resolve(&cost, resolution.clone()).unwrap();
+        assert_eq!(settled.state, RecoveryState::Settled);
+        assert_eq!(settled.owner_node, None);
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
+        let attempts = sink.adoption_attempts.lock().unwrap().clone();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0], attempts[1],
+            "retry must retain exact child IDs and raw candidate bytes"
+        );
+        gov.recovery().resolve(&cost, resolution).unwrap();
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
+    }
+
+    #[test]
+    fn foreign_reaffirmation_preserves_original_decision_audit_and_rejects_opposite_choice() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(store.clone(), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&original, 7);
+        let unknown = intent
+            .checkpoint(RecoveryState::LandedUnknown, intent.payload.clone())
+            .unwrap();
+        original.keep_recovery_event(&unknown).unwrap();
+        let old_resolution = RecoveryResolution {
+            operation_id: intent.operation_id,
+            body_fingerprint: intent.body_fingerprint,
+            expected_revision: unknown.revision,
+            verdict: RecoveryVerdict::NotLanded,
+            sender_quiesced: true,
+            backend_quiesced: true,
+            actor: "original-operator".into(),
+            reason: "original not-landed verdict".into(),
+        };
+        let verdict = GovState::stage_foreign_raw_verdict(&unknown, &old_resolution)
+            .unwrap()
+            .pop()
+            .unwrap();
+        original.keep_recovery_event(&verdict).unwrap();
+        sink.make_foreign(intent.operation_id, 23);
+        drop(original);
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink.clone()).unwrap();
+        let mut adoption = RecoveryResolution {
+            expected_revision: verdict.revision,
+            actor: "new-operator".into(),
+            reason: "new ownership attestation".into(),
+            ..old_resolution
+        };
+        let cost = crate::cost::CostModel::flat(0);
+        adoption.verdict = RecoveryVerdict::Landed;
+        assert!(matches!(
+            gov.recovery().resolve(&cost, adoption.clone()),
+            Err(RecoveryError::Conflict(_))
+        ));
+        assert!(sink.adoption_attempts.lock().unwrap().is_empty());
+        adoption.verdict = RecoveryVerdict::NotLanded;
+        gov.recovery().resolve(&cost, adoption.clone()).unwrap();
+        let selected = gov.recovery_event(intent.operation_id).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&selected.payload).unwrap();
+        assert_eq!(raw["verdict"]["actor"], "original-operator");
+        assert_eq!(raw["verdict"]["reason"], "original not-landed verdict");
+        assert_eq!(
+            sink.adoption_attempts.lock().unwrap()[0].0.actor,
+            "new-operator"
+        );
+        gov.recovery().resolve(&cost, adoption).unwrap();
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
     }
 }
