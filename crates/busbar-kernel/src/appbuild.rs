@@ -8,12 +8,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::{open_operator, AuthMiddleware};
+use crate::auth::{AuthMiddleware, open_operator};
 use crate::diagnostics::{
-    diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
-    GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
-    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
-    STORE_SECRET_REF_UNRESOLVED,
+    DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH,
+    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
+    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED, diag_error, diag_warn,
 };
 use crate::preflight::{
     build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
@@ -746,7 +745,7 @@ pub fn bootstrap_config_store(
     let _admin = resolve_admin_token(cfg.auth.as_ref(), &resolver)?;
     let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
     let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
-    open_config_store(cfg, &registry, &resolver)
+    open_config_store(cfg.store.as_ref(), &registry, &resolver)
 }
 
 /// Canonical modules required before an overlay can be read: its Store, the Store's declared
@@ -802,11 +801,11 @@ pub fn bootstrap_dependency_names(
 }
 
 fn open_config_store(
-    cfg: &config::RootCfg,
+    store: Option<&config::StoreCfg>,
     registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     resolver: &config::secret::SecretResolver,
 ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
-    let store = cfg.store.as_ref().ok_or_else(config::store_required)?;
+    let store = store.ok_or_else(config::store_required)?;
     let row = registry.resolve(&store.module);
     let resolved = if row.as_ref().is_some_and(|row| row.in_process) {
         Default::default()
@@ -1536,7 +1535,11 @@ pub fn build_app_from_config_with_store(
         }
         let opened = match boot_store {
             Some(opened) => opened,
-            None => open_config_store(&cfg, &plugin_registry, secret_resolver.as_ref())?,
+            None => open_config_store(
+                cfg.store.as_ref(),
+                &plugin_registry,
+                secret_resolver.as_ref(),
+            )?,
         };
         let store: Arc<dyn governance::RecordStore> = opened.records;
         let store_calls = opened.calls;

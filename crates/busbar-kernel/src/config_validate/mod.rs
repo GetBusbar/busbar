@@ -7,13 +7,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
-    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
+    CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY,
+    CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO, diag_warn,
 };
 use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
-    flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
+    PER_REQUEST, PER_SESSION, PLANE_LANE_SEP, flat_card_present, split_plane_lane,
 };
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
@@ -76,6 +76,14 @@ pub fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(), Vec<String>> {
+    validate_with_plugins(cfg, unset_env_vars, false)
+}
+
+pub(super) fn validate_with_plugins(
+    cfg: &RootCfg,
+    unset_env_vars: &[String],
+    plugins_enabled: bool,
+) -> Result<(), Vec<String>> {
     // A URL value that contains an unset env-var NAME is a not-yet-resolved `${VAR}` placeholder in this
     // Lenient load (unset `${VAR}` is spliced in as the bare name, which has NO url scheme). Require the
     // value to LACK a `://` scheme before treating a var-name substring match as a placeholder, so a REAL
@@ -1060,7 +1068,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     for (pool_name, pool_cfg) in &cfg.pools {
         let name = pool_cfg.policy.native_name();
         if !matches!(pool_cfg.policy, crate::config::PoolPolicy::Named(_))
-            && !cfg.plugins.enabled
+            && !plugins_enabled
             && name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n))
         {
             errors.push(format!(
@@ -2370,7 +2378,7 @@ pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_r
 pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 /// The one validator every caller runs.
 mod check;
-pub use check::{check, no_root_rules, Check, Refusal};
+pub use check::{Check, Refusal, check, no_root_rules};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way
