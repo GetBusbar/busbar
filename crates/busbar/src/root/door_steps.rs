@@ -971,6 +971,19 @@ impl DriverSteps for DoorSteps<'_> {
         let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
         let counterparty = self.lock().counterparty.clone();
 
+        if class == ROUTE_SCOPE_LOCAL
+            && counterparty.as_deref().is_some_and(|counterparty| {
+                !self.pools.granted(
+                    self.facts.scope_kind.as_deref(),
+                    self.key.as_deref(),
+                    ROUTE_DIRECT,
+                    Some(counterparty),
+                )
+            })
+        {
+            return Err(Refusal::new(ReasonCode::ScopeDenied));
+        }
+
         if class == ROUTE_SCOPE
             || class == ROUTE_SCOPE_LOCAL
             || self.pools.granted_to(
