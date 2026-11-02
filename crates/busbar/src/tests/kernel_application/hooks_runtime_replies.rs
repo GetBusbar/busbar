@@ -631,5 +631,36 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
             }
         }
     }
+    // Native ranking construction belongs to the distribution's actual linked product axis.
+    for (strategy, name) in [
+        (busbar_kernel::config::PoolPolicy::Cheapest, "cheapest"),
+        (busbar_kernel::config::PoolPolicy::Fastest, "fastest"),
+        (busbar_kernel::config::PoolPolicy::LeastBusy, "least_busy"),
+        (busbar_kernel::config::PoolPolicy::Usage, "usage"),
+    ] {
+        let pool = busbar_kernel::config::PoolCfg {
+            policy: strategy,
+            ..Default::default()
+        };
+        match busbar_kernel::hooks::resolve_policy(&pool) {
+            Some(ResolvedPolicy::Policy {
+                policy,
+                send_prompt,
+                send_user,
+                ..
+            }) => {
+                assert_eq!(
+                    policy.name(),
+                    name,
+                    "resolved native policy name must round-trip"
+                );
+                if name == "cheapest" {
+                    assert!(!send_prompt, "native must force send_prompt off");
+                    assert!(!send_user, "native must force send_user off");
+                }
+            }
+            None => panic!("policy: {name} must resolve to a Policy, got none=true"),
+        }
+    }
     server.abort();
 }
