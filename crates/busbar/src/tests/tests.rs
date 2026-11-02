@@ -53,12 +53,21 @@ fn worker_threads_from_config_reads_a_real_file() {
             module_path!(),
             "::worker_threads_from_config_reads_a_real_file"
         );
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", name.split_once("::").unwrap().1])
+        let test_name = name.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name])
             .env(CHILD, "1")
-            .status()
+            .output()
             .expect("run the config environment case in a fresh process");
-        assert!(status.success(), "the config environment case passes");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("test {test_name} ... ok")),
+            "{stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "the config environment case passes: {stdout}"
+        );
         return;
     }
     let dir = std::env::temp_dir().join(format!(
@@ -452,12 +461,21 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
             module_path!(),
             "::the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory"
         );
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", name.split_once("::").unwrap().1])
+        let test_name = name.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name])
             .env(CHILD, "1")
-            .status()
+            .output()
             .expect("run the journal directory case in a fresh process");
-        assert!(status.success(), "the journal directory case passes");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("test {test_name} ... ok")),
+            "{stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "the journal directory case passes: {stdout}"
+        );
         return;
     }
     crate::dist_root_install::install();
@@ -751,12 +769,21 @@ fn one_seal_after_two_reloads() {
     const CHILD: &str = "BUSBAR_JOURNAL_RELOAD_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let name = concat!(module_path!(), "::one_seal_after_two_reloads");
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", name.split_once("::").unwrap().1])
+        let test_name = name.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name])
             .env(CHILD, "1")
-            .status()
+            .output()
             .expect("run the journal reload case in a fresh process");
-        assert!(status.success(), "the journal reload case passes");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("test {test_name} ... ok")),
+            "{stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "the journal reload case passes: {stdout}"
+        );
         return;
     }
     crate::dist_root_install::install();
