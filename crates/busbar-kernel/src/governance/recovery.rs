@@ -2128,4 +2128,88 @@ pub(in crate::governance) mod tests {
         assert!(sink.adoption_attempts.lock().unwrap().is_empty());
         assert_eq!(store.get_usage("receipt-child", 0).unwrap().requests, 7);
     }
+    #[test]
+    fn many_selected_revisions_keep_endpoints_and_verify_old_checkpoints_cold() {
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
+        let sink = Arc::new(Journal::default());
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink.clone()).unwrap();
+        let initial = raw_intent(&gov, 7);
+        let mut current = initial.clone();
+        let mut old = None;
+        for revision in 1..=256 {
+            current = gov
+                .new_recovery_event(
+                    current.operation_id,
+                    current.kind,
+                    current.body_fingerprint,
+                    RecoveryState::Intent,
+                    current.first_sent_at_ms,
+                    current.payload.clone(),
+                )
+                .unwrap();
+            gov.keep_recovery_event(&current).unwrap();
+            if revision == 64 {
+                old = Some(current.clone());
+            }
+        }
+        let old = old.unwrap();
+        assert_eq!(
+            gov.recovery_initial_event(initial.operation_id),
+            Some(initial.clone())
+        );
+        assert_eq!(gov.recovery_event(initial.operation_id), Some(current));
+        assert!(
+            gov.recovery_ancestor(initial.operation_id, old.fingerprint().unwrap())
+                .is_none(),
+            "historical payloads are not retained in the live per-operation Book"
+        );
+        gov.verify_recovery_checkpoint(&old).unwrap();
+        let owned = gov.recovery_book.entries.lock().unwrap();
+        let entry = owned.get(&initial.operation_id).unwrap();
+        assert!(entry.pending.is_none() && entry.adoption.is_none());
+        assert_eq!(entry.initial.as_ref(), Some(&initial));
+        drop(owned);
+        assert_eq!(
+            store.get_usage("recovery-bucket", 0).unwrap().requests,
+            0,
+            "ancestry verification performs no usage effect"
+        );
+    }
+
+    #[test]
+    fn compatibility_selection_and_checkpoint_proofs_reject_unselected_forks_and_gaps() {
+        let sink = Journal::default();
+        let initial = intent();
+        let applied = successor(&initial, RecoveryState::Applied);
+        let settled = successor(&applied, RecoveryState::Settled);
+        *sink.selected.lock().unwrap() = vec![initial.clone(), applied.clone(), settled.clone()];
+        let selections = sink.replay_selections().unwrap();
+        assert_eq!(
+            selections,
+            vec![RecoverySelection {
+                initial: initial.clone(),
+                selected: settled
+            }]
+        );
+        sink.verify_checkpoint(&applied).unwrap();
+        let unselected = successor(&initial, RecoveryState::LandedUnknown);
+        assert!(
+            matches!(
+                sink.verify_checkpoint(&unselected),
+                Err(RecoveryError::Conflict(_))
+            ),
+            "an otherwise legal journal candidate is not current selected ancestry"
+        );
+        let gap = RecoveryEvent {
+            revision: 2,
+            ..applied
+        };
+        *sink.selected.lock().unwrap() = vec![initial, gap];
+        assert!(
+            matches!(sink.replay_selections(), Err(RecoveryError::Invalid(_))),
+            "matching initial/current identity cannot replace full legal predecessor verification"
+        );
+    }
 }
