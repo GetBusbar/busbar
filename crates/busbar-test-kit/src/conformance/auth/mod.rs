@@ -50,6 +50,7 @@
 //!         "body": "<the body, as text>",   (optional, HeadBody doors only, default none)
 //!         "verdict": "identity:<subject>" | "reject" | "pass" }, ... ],
 //!     "never_echoed": ["<text no answer may carry: the token, the raw settings>", ...],
+//!     "short_reply": "retained" | "static",         (optional, default retained; static holds no lease)
 //!     "login": {                                   // required when the tail states CAP_LOGIN
 //!       "begin": { "redirect_uri": "..", "state": "..", "code_challenge": "..", "nonce": ".." },
 //!       "authorize_prefix": "<the authorize URL starts with this>",   // a redirect login
@@ -89,12 +90,14 @@
 //! covers all three; but a door that judges no bearer credential (every case PASS, its identity
 //! is its login's) is compared over its login, which must then reach an identity and a refused
 //! credential (`complete_rejected`). The verdict semantics are the kind's (`abi/auth/mod.rs`): VERDICTS ARE ALWAYS
-//! READY, never leased; an identity names its subject in the host's buffer.
+//! READY, never leased; an identity names its subject in the host's buffer. A retained SHORT
+//! negotiation holds the SDK's immutable decision under a private lease until recall cleanup.
 //!
 //! Every step is one ticket-less crossing of the auth table (or one ticketed crossing, for the
 //! submitted `verify`), but: `verify` on an UNOPENED instance and after `close` (the host refuses
 //! an op on an instance that is not open before any crossing: 0); the short-buffer `verify` (the
-//! ONE re-call is +1: 2); and `ready` ([`super::ready_step`]).
+//! ONE re-call is +1, and retained-reply RELEASE is +1: 3). An explicitly declared static SHORT
+//! reply holds no lease and crosses twice. `ready` is counted by [`super::ready_step`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -529,10 +532,51 @@ fn verify_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) -> Strin
     submitted_answer(&lend, &done)
 }
 
+/// The SHORT storage contract is declared before the call; it never follows observed counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShortReply {
+    Retained,
+    Static,
+}
+
+impl ShortReply {
+    fn of(inputs: &serde_json::Value) -> Self {
+        match inputs.get("short_reply") {
+            None => Self::Retained,
+            Some(serde_json::Value::String(value)) if value == "retained" => Self::Retained,
+            Some(serde_json::Value::String(value)) if value == "static" => Self::Static,
+            _ => panic!("conformance.json: auth.short_reply must be retained (default) or static"),
+        }
+    }
+
+    const fn crossings(self) -> u64 {
+        match self {
+            // Two VERIFY crossings, plus cleanup of the retained decision's private lease.
+            Self::Retained => 3,
+            Self::Static => 2,
+        }
+    }
+
+    fn check_lease(self, short: bool, lease: u64) {
+        if short {
+            assert_eq!(
+                lease != 0,
+                self == Self::Retained,
+                "auth.short_reply={self:?} must match the SHORT answer's lease ownership"
+            );
+        }
+    }
+}
+
 /// [`verify_short`] SUBMITTED, for a door that reads host credentials (its ticket-less `verify`
 /// may not read them): the short answer, then the ONE re-call on the SAME ticket with the buffers
 /// it named. Both submits lend the same afresh-presented case.
-fn verify_short_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) -> String {
+fn verify_short_submitted(
+    p: &Plugin<Auth>,
+    d: &Dispatcher,
+    case: &Presented,
+    storage: ShortReply,
+) -> String {
     let mut lend = case.again();
     let f = lend.frame(false);
     let full = lend.buf(true);
@@ -540,6 +584,18 @@ fn verify_short_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) ->
     let ticket = d.mint(0).expect("a ticket is free");
     let first = submit_verify(p, d, ticket, f, &lend);
     let short = first.short;
+    if short {
+        storage.check_lease(
+            true,
+            first
+                .frame
+                .as_ref()
+                .expect("SHORT returned its frame")
+                .out
+                .head
+                .lease,
+        );
+    }
     let answer = match first {
         Done {
             frame: Some(mut f),
@@ -558,9 +614,10 @@ fn verify_short_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) ->
 
 /// `verify` with NO buffer: the identity does not fit, the answer is short, and the host re-calls
 /// ONCE, as a fresh call, with the buffers it named.
-fn verify_short(p: &Plugin<Auth>, case: &mut Presented) -> String {
+fn verify_short(p: &Plugin<Auth>, case: &mut Presented, storage: ShortReply) -> String {
     let mut f = case.frame(false);
     let first = p.call(slot::VERIFY, &mut f);
+    storage.check_lease(first.recall.is_some(), f.out.head.lease);
     let short = format!("short={}", first.recall.is_some());
     let Some(token) = first.recall else {
         return format!(
@@ -1178,12 +1235,14 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
             });
         }
         if let Some(at) = identity_at {
-            // 2: the short answer, then the ONE re-call with the buffers it named.
-            r.line("verify short, re-called", 2, || {
+            // Retained: VERIFY + one recall VERIFY + mandatory RELEASE. A declared static
+            // answer has no retained decision lease and owes only the two VERIFY crossings.
+            let storage = ShortReply::of(k);
+            r.line("verify short, re-called", storage.crossings(), || {
                 if reads {
-                    verify_short_submitted(&p, &d, &cases[at])
+                    verify_short_submitted(&p, &d, &cases[at], storage)
                 } else {
-                    verify_short(&p, &mut cases[at])
+                    verify_short(&p, &mut cases[at], storage)
                 }
             });
         }
@@ -1510,3 +1569,7 @@ mod form_tests;
 #[cfg(all(test, loader_self_tests))]
 #[path = "../../tests/conformance_auth_unjudged_tests.rs"]
 mod unjudged_tests;
+
+#[cfg(all(test, loader_self_tests))]
+#[path = "../../tests/conformance_auth_short_tests.rs"]
+mod short_tests;
