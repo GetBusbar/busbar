@@ -10,6 +10,28 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn the_process_has_one_connector_and_every_path_takes_it() {
+    const CHILD: &str = "BUSBAR_TEST_CONNECTOR_SINGLETON_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Other boot tests legitimately install the process connector. Exercise first-install
+        // ownership in a fresh process, with only this test running against the real singleton.
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args([
+                "--exact",
+                "root::connector::tests::the_process_has_one_connector_and_every_path_takes_it",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("the isolated connector test starts");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed; 0 failed"),
+            "the isolated singleton test must run and pass: {}\n{stdout}\n{stderr}",
+            output.status
+        );
+        return;
+    }
     let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
     let built = process::build_with_secrets(
