@@ -1107,3 +1107,84 @@ fn a_refused_handshake_logs_at_debug_only() {
         "a log line echoed the server key"
     );
 }
+
+#[tokio::test]
+async fn shutdown_retires_the_listening_socket_before_an_accepted_request_finishes_draining() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = busbar_core_connector::listen::Listening::bind_stream(
+        None,
+        "127.0.0.1:0",
+        busbar_core_connector::listen::AcceptLimits::default(),
+    )
+    .unwrap();
+    let addr = listener.local_addr();
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let router = Router::new().route(
+        "/held",
+        get({
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                let entered = entered.clone();
+                let release = release.clone();
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    "finished"
+                }
+            }
+        }),
+    );
+    let (stop, stopped) = oneshot::channel::<()>();
+    let (observed, shutdown_observed) = oneshot::channel::<()>();
+    let serving = tokio::spawn(super::serve_admitted(
+        listener,
+        router,
+        None,
+        async move {
+            let _ = stopped.await;
+            let _ = observed.send(());
+        },
+        None,
+    ));
+    let mut existing = tokio::net::TcpStream::connect(addr).await.unwrap();
+    existing
+        .write_all(b"GET /held HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), entered.notified())
+        .await
+        .expect("the accepted request reached its held handler");
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), shutdown_observed)
+        .await
+        .expect("the accept loop polled shutdown")
+        .unwrap();
+    let was_draining = !serving.is_finished();
+    let new_connection =
+        tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(addr))
+            .await
+            .expect("a new TCP handshake resolves while the accepted request is held");
+    let still_accepting = new_connection.is_ok();
+    drop(new_connection);
+    release.notify_one();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), existing.read_to_end(&mut response))
+        .await
+        .expect("the accepted request completes during drain")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), serving)
+        .await
+        .expect("drain completes after the held request finishes")
+        .unwrap()
+        .unwrap();
+    assert!(was_draining, "shutdown waited for the accepted request");
+    assert!(
+        !still_accepting,
+        "shutdown kept the listener open and completed a new TCP handshake during drain"
+    );
+    assert!(response.starts_with(b"HTTP/1.1 200"), "{response:?}");
+    assert!(response.windows(8).any(|bytes| bytes == b"finished"));
+}
