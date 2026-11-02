@@ -936,6 +936,17 @@ struct FailClientRead {
 }
 
 impl StoreCalls for FailClientRead {
+    fn supports_record_transaction(&self) -> bool {
+        self.inner.supports_record_transaction()
+    }
+
+    fn record_transaction<'a>(
+        &'a self,
+        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
+    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
+        self.inner.record_transaction(request)
+    }
+
     fn add_usage_batch<'a>(
         &'a self,
         op: OpId,
@@ -966,6 +977,15 @@ impl StoreCalls for FailClientRead {
         schema: &'a str,
         key: &'a [u8],
     ) -> StoreCall<'a, Option<RecordBytes>> {
+        if schema == format!("{}bucket.atomic.v1", crate::shared::LABEL)
+            && self.fail_next.swap(false, Ordering::SeqCst)
+        {
+            return Box::pin(async {
+                Err(StoreFailure::Failed(
+                    "client lookup unavailable".to_string(),
+                ))
+            });
+        }
         self.inner.record_get(schema, key)
     }
 
