@@ -338,7 +338,6 @@ pub fn trust_policy(
     cfg: &PluginsCfg,
     binary_version: &str,
 ) -> Result<super::loader::sign::TrustPolicy, String> {
-    #[allow(unused_mut)] // assigned only in a `test-harness` build
     let mut policy =
         super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
             publishers: &cfg.publisher_keys(),

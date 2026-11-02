@@ -13,6 +13,8 @@
 //! Keyed per HOST, so one upgraded node never refuses its siblings' boots during a rolling rollback.
 //! An explicit rollback pin (`POST /plugins/rollback`, kept in the overlay's `plugin_versions`) replaces a name's mark, as it does
 //! in the scan. A compiled-in row is the binary's own and is never floored.
+//! Authenticated release keys-document versions have their own Store high-water mark. Plugin
+//! rollback pins never relax it; the exact retained native image is checked again before opening.
 
 use std::collections::BTreeMap;
 
