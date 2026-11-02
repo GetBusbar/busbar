@@ -3133,7 +3133,7 @@ mod signed_token {
         let err = g
             .mint_signed(spec("bob", None, None), 2_000, 1_000)
             .unwrap_err();
-        assert!(err.0.contains("no signing key"), "got {}", err.0);
+        assert!(err.to_string().contains("no signing key"), "got {err}");
     }
 
     #[test]
