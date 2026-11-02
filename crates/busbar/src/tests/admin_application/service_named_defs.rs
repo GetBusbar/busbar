@@ -222,7 +222,10 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-named-defs");
+    let directory = plugins::scratch(&format!(
+        "admin-service-named-defs-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -350,7 +353,10 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-named-defs");
+    let directory = plugins::scratch(&format!(
+        "admin-service-named-defs-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -478,7 +484,10 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-named-defs");
+    let directory = plugins::scratch(&format!(
+        "admin-service-named-defs-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -610,7 +619,10 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("admin-service-named-defs");
+    let directory = plugins::scratch(&format!(
+        "admin-service-named-defs-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");

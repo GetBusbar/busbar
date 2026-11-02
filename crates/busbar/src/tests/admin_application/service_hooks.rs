@@ -35,7 +35,10 @@ fn hook(module: &str, kind: HookKind, global: bool) -> HookCfg {
 #[tokio::test]
 async fn build_with_hook_registers_and_wires_global_tap() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
@@ -133,7 +136,10 @@ async fn build_with_hook_registers_and_wires_global_tap() {
 #[tokio::test]
 async fn build_with_hook_demotes_global_false_removes_wiring() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
@@ -238,7 +244,10 @@ async fn build_with_hook_demotes_global_false_removes_wiring() {
 #[tokio::test]
 async fn build_with_hook_caps_oversized_name() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
@@ -329,7 +338,10 @@ async fn build_with_hook_caps_oversized_name() {
 #[tokio::test]
 async fn build_with_hook_rejects_invalid_definitions() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
@@ -428,7 +440,10 @@ async fn build_with_hook_rejects_invalid_definitions() {
 #[tokio::test]
 async fn build_with_hook_enforces_grant_immutability() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
@@ -526,7 +541,10 @@ async fn build_with_hook_enforces_grant_immutability() {
 #[tokio::test]
 async fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
@@ -620,7 +638,10 @@ async fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
 #[tokio::test]
 async fn build_with_hook_demote_only_removes_the_target_hook() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
@@ -721,7 +742,10 @@ async fn build_with_hook_demote_only_removes_the_target_hook() {
 #[tokio::test]
 async fn build_without_hook_only_removes_the_target_from_global_wiring() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
@@ -817,7 +841,10 @@ async fn build_without_hook_only_removes_the_target_from_global_wiring() {
 #[tokio::test]
 async fn build_with_hook_caps_oversized_settings() {
     crate::dist_root_install::install();
-    let directory = plugins::scratch("admin-service-hooks");
+    let directory = plugins::scratch(&format!(
+        "admin-service-hooks-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
