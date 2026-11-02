@@ -404,6 +404,10 @@ fn a_called_op_keeps_a_copy_of_its_envelope() {
         .outcome(),
         Outcome::Ready
     );
+    assert_eq!(output.envelope.diags_len, 1);
+    assert!(!output.envelope.diags.is_null());
+    assert_eq!(output.envelope.metrics_len, 1);
+    assert!(!output.envelope.metrics.is_null());
     // SAFETY: the actual answer's live envelope owns both counted initialized arrays and texts.
     let diags =
         unsafe { std::slice::from_raw_parts(output.envelope.diags, output.envelope.diags_len) }
@@ -431,6 +435,9 @@ fn a_called_op_keeps_a_copy_of_its_envelope() {
             })
             .collect::<Vec<_>>();
     release(table, instance, output.lease);
+    // The SDK keeps this envelope until the next crossing or instance destruction, separately
+    // from leased payloads. Retire its actual owner before checking our concrete owned copies.
+    close(table, instance);
     assert_eq!(
         diags,
         vec![(
@@ -443,7 +450,6 @@ fn a_called_op_keeps_a_copy_of_its_envelope() {
         metrics,
         vec![(0, crate::abi::mechanism::call::METRIC_ADD, 1.0, Vec::new())]
     );
-    close(table, instance);
 }
 
 /// A held operation with no instance returns the SDK's refusal.
