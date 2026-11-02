@@ -889,3 +889,965 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn list_plugins_store_single_flights_concurrent_misses() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "admin-service-plugin-policy-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest.clone(),
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), &archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "groups": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let observed = Box::leak(Box::new(InventoryReads {
+        actual: app
+            .plugin_admission
+            .expect("the actual root installs its admission"),
+        scans: AtomicUsize::new(0),
+        panic: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
+        entered: tokio::sync::Notify::new(),
+    }));
+    let observed: &'static InventoryReads = observed;
+    app.plugin_admission = Some(observed);
+    let router = busbar_kernel::build_router(Arc::new(app));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap();
+
+    let mut requests = Vec::new();
+    for _ in 0..10 {
+        let client = client.clone();
+        requests.push(tokio::spawn(async move {
+            let response = client
+                .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+                .header("x-admin-token", "admintok")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 200);
+            response.json::<serde_json::Value>().await.unwrap()
+        }));
+    }
+    for request in requests {
+        let page = request.await.unwrap();
+        assert!(
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["loader"] == "dynamic-library" && p["name"] == module),
+            "each of ten concurrent callers sees the actual complete Store catalog"
+        );
+    }
+    assert_eq!(
+        observed.scans.load(Ordering::SeqCst),
+        1,
+        "ten concurrent misses cost exactly one actual inventory"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "admin-service-plugin-policy-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest.clone(),
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), &archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "groups": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let observed = Box::leak(Box::new(InventoryReads {
+        actual: app
+            .plugin_admission
+            .expect("the actual root installs its admission"),
+        scans: AtomicUsize::new(0),
+        panic: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
+        entered: tokio::sync::Notify::new(),
+    }));
+    let observed: &'static InventoryReads = observed;
+    app.plugin_admission = Some(observed);
+    observed.panic.store(true, Ordering::SeqCst);
+    let router = busbar_kernel::build_router(Arc::new(app));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "a panicking blocking scan falls back gracefully"
+    );
+    let view: serde_json::Value = response.json().await.unwrap();
+    let rows = view["items"].as_array().unwrap();
+    let stores = busbar_kernel::preflight::root_rows().stores;
+    assert_eq!(
+        rows.len(),
+        stores.len(),
+        "fallback contains exactly the actual linked Store rows"
+    );
+    for (row, store) in rows.iter().zip(stores) {
+        assert_eq!(row["name"], store.0);
+        assert_eq!(row["loader"], "compiled-in");
+    }
+    assert_eq!(observed.scans.load(Ordering::SeqCst), 1);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn list_plugins_store_scan_does_not_park_the_reactor() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "admin-service-plugin-policy-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest.clone(),
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), &archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "groups": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    for i in 0..2000 {
+        std::fs::write(
+            directory.join(format!("p{i}.tar.gz")),
+            b"a deliberately malformed archive",
+        )
+        .unwrap();
+    }
+    let observed = Box::leak(Box::new(InventoryReads {
+        actual: app
+            .plugin_admission
+            .expect("the actual root installs its admission"),
+        scans: AtomicUsize::new(0),
+        panic: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
+        entered: tokio::sync::Notify::new(),
+    }));
+    let observed: &'static InventoryReads = observed;
+    app.plugin_admission = Some(observed);
+    let (release, blocked) = std::sync::mpsc::channel();
+    *observed.gate.lock().unwrap() = Some(blocked);
+    let router = busbar_kernel::build_router(Arc::new(app));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap();
+
+    let scanner_client = client.clone();
+    let scanner = tokio::spawn(async move {
+        let response = scanner_client
+            .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        response.json::<serde_json::Value>().await.unwrap()
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        observed.entered.notified(),
+    )
+    .await
+    .expect("the actual scan enters on its blocking worker");
+    let start = std::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let elapsed = start.elapsed();
+    release.send(()).unwrap();
+    assert!(
+        elapsed < std::time::Duration::from_millis(300),
+        "a 50ms sibling timer took {elapsed:?} while the real inventory was blocked"
+    );
+    let page = scanner.await.unwrap();
+    assert!(
+        page["items"].as_array().unwrap().len() > 2000,
+        "the actual inventory returned all rows"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "admin-service-plugin-policy-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest.clone(),
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), &archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "groups": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let observed = Box::leak(Box::new(InventoryReads {
+        actual: app
+            .plugin_admission
+            .expect("the actual root installs its admission"),
+        scans: AtomicUsize::new(0),
+        panic: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
+        entered: tokio::sync::Notify::new(),
+    }));
+    let observed: &'static InventoryReads = observed;
+    app.plugin_admission = Some(observed);
+    let (release, blocked) = std::sync::mpsc::channel();
+    *observed.gate.lock().unwrap() = Some(blocked);
+    let request_entered = Arc::new(tokio::sync::Notify::new());
+    let entering = request_entered.clone();
+    let router = busbar_kernel::build_router(Arc::new(app)).layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let entering = entering.clone();
+            async move {
+                entering.notify_one();
+                next.run(request).await
+            }
+        },
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap();
+
+    let first_client = client.clone();
+    let first = tokio::spawn(async move {
+        first_client
+            .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        observed.entered.notified(),
+    )
+    .await
+    .expect("the genuine scan owns the production gate");
+    request_entered.notified().await;
+    let waiting_client = client.clone();
+    let waiting = tokio::spawn(async move {
+        waiting_client
+            .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        request_entered.notified(),
+    )
+    .await
+    .expect("the second real HTTP handler enters and waits behind the scan");
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(5) + std::time::Duration::from_millis(1))
+        .await;
+    tokio::time::resume();
+    let response = waiting.await.expect("the caller must not panic");
+    assert_eq!(
+        response.status().as_u16(),
+        503,
+        "the genuine shared scan gate returns a bounded retryable refusal"
+    );
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "unavailable");
+    release.send(()).unwrap();
+    assert_eq!(first.await.unwrap().status().as_u16(), 200);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn the_store_catalog_heads_with_the_linked_store_rows() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "admin-service-plugin-policy-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest.clone(),
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), &archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "groups": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let router = busbar_kernel::build_router(Arc::new(app));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let view: serde_json::Value = response.json().await.unwrap();
+    let catalog = view["items"].as_array().unwrap();
+    let linked = busbar_kernel::preflight::root_rows().stores;
+    assert!(
+        !linked.is_empty(),
+        "the assembled distribution links a Store row"
+    );
+    let head: Vec<_> = catalog[..linked.len()]
+        .iter()
+        .map(|p| {
+            (
+                p["name"].as_str().unwrap(),
+                p["type"].as_str().unwrap(),
+                p["loader"].as_str().unwrap(),
+                p.get("active").and_then(serde_json::Value::as_bool),
+            )
+        })
+        .collect();
+    let want: Vec<_> = linked
+        .iter()
+        .map(|s| (s.0, "store", "compiled-in", None))
+        .collect();
+    assert_eq!(head, want);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "admin-service-plugin-policy-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest.clone(),
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), &archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "groups": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let evil_dir = directory.join("evil");
+    std::fs::create_dir(&evil_dir).unwrap();
+    std::fs::write(evil_dir.join("probe.tar.gz"), b"not a real tarball").unwrap();
+    let router = busbar_kernel::build_router(Arc::new(app));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap();
+
+    let mut candidate = document;
+    candidate["plugins"] = serde_json::json!({"enabled":true, "dir":evil_dir});
+    let response = client
+        .post(format!("http://{addr}/api/v1/admin/config/validate"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"config":candidate}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let view: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        view["ok"], true,
+        "the caller's garbage plugins.dir must not be scanned; errors: {:?}",
+        view["errors"]
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "admin-service-plugin-policy-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest.clone(),
+        &library,
+    );
+    std::fs::write(directory.join("store.tar.gz"), &archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator_token = directory.join("operator-token");
+    let signing_key = directory.join("signing-key");
+    std::fs::write(&operator_token, "admintok").unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "groups": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["identity-providers"][operator] =
+        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
+        .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the swap deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let observed = Box::leak(Box::new(InventoryReads {
+        actual: app
+            .plugin_admission
+            .expect("the actual root installs its admission"),
+        scans: AtomicUsize::new(0),
+        panic: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
+        entered: tokio::sync::Notify::new(),
+    }));
+    let observed: &'static InventoryReads = observed;
+    app.plugin_admission = Some(observed);
+    let (release, blocked) = std::sync::mpsc::channel();
+    *observed.gate.lock().unwrap() = Some(blocked);
+    let router = busbar_kernel::build_router(Arc::new(app));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap();
+
+    let scanner_client = client.clone();
+    let scanner = tokio::spawn(async move {
+        scanner_client
+            .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        observed.entered.notified(),
+    )
+    .await
+    .expect("the genuine scan owns the production gate");
+    let validator_client = client.clone();
+    let mut candidate = document;
+    candidate["plugins"] = serde_json::json!({"enabled":true, "dir":directory});
+    let validator = tokio::spawn(async move {
+        validator_client
+            .post(format!("http://{addr}/api/v1/admin/config/validate"))
+            .header("x-admin-token", "admintok")
+            .json(&serde_json::json!({"config":candidate}))
+            .send()
+            .await
+            .unwrap()
+    });
+    let started = std::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(300),
+        "the reactor remains free while both real calls await the scan"
+    );
+    assert!(
+        !validator.is_finished(),
+        "validate must wait behind the actual production plugin scan gate"
+    );
+    release.send(()).unwrap();
+    assert_eq!(scanner.await.unwrap().status().as_u16(), 200);
+    let response = validator.await.expect("the caller must not panic");
+    assert_eq!(response.status().as_u16(), 200);
+    let view: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        view["ok"], true,
+        "the verdict is unchanged: {:?}",
+        view["errors"]
+    );
+
+    server.abort();
+}
