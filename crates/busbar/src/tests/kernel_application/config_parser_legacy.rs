@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::*;
+use busbar_kernel::config::migrate::*;
+
+#[path = "../../../../busbar-kernel/src/config/legacy_markers.rs"]
+mod legacy_markers;
+use legacy_markers::{detect_legacy_markers, legacy_config_error};
 
 const LEGACY_14X: &str = r#"
 listen: "0.0.0.0:8080"
@@ -62,6 +66,8 @@ observability:
 
 #[test]
 fn legacy_markers_detected_and_named() {
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let doc: serde_yaml::Value = serde_yaml::from_str(LEGACY_14X).unwrap();
     let markers = detect_legacy_markers(&doc);
     let joined = markers.join("\n");
@@ -101,6 +107,8 @@ fn legacy_markers_detected_and_named() {
 
 #[test]
 fn auth_mode_marker_detected() {
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let doc: serde_yaml::Value =
         serde_yaml::from_str("auth:\n  mode: token\nproviders: {}\nmodels: {}\n").unwrap();
     let markers = detect_legacy_markers(&doc);
@@ -112,7 +120,8 @@ fn auth_mode_marker_detected() {
 
 #[test]
 fn migrate_14x_round_trips_into_deploy_cfg() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let out = migrate_config(LEGACY_14X).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
@@ -155,7 +164,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     );
     assert_eq!(get(&["groups", "growth", "parent"]).as_str(), Some("acme"));
 
-    let op = crate::config::operator_provider();
+    let op = busbar_kernel::config::operator_provider();
     let admin_auth = get(&["auth", "admin_auth"]);
     assert_eq!(
         admin_auth.as_sequence().unwrap()[0].as_str(),
@@ -291,8 +300,8 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     assert!(out.yaml.contains("# WARNING(migrate):"));
 
     assert!(detect_legacy_markers(&doc).is_empty());
-    let deploy: Result<crate::config::DeployCfg, _> =
-        crate::config::deploy_from_yaml_str(&out.yaml);
+    let deploy: Result<busbar_kernel::config::DeployCfg, _> =
+        busbar_kernel::config::deploy_from_yaml_str(&out.yaml);
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -316,6 +325,8 @@ fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::
 
 #[test]
 fn detect_real_14x_top_level_and_on_exhausted_markers() {
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = r#"
 auth:
   chain: [tokens]
@@ -347,6 +358,8 @@ pools:
 
 #[test]
 fn migrate_realistic_14x_governance_preserves_the_real_db_path() {
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = r#"
 governance:
   enabled: true
@@ -371,7 +384,16 @@ pools: {}
     };
     assert_eq!(
         get(&["store", "module"]).as_str(),
-        Some(crate::tests::frozen_str("legacy_backend_1_4").as_str()),
+        Some(
+            serde_yaml::from_str::<serde_yaml::Value>(include_str!(
+                "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
+            ))
+            .expect("the frozen customer text")["legacy_backend_1_4"]
+                .as_str()
+                .expect("the frozen string")
+                .to_string()
+                .as_str()
+        ),
         "1.4.x's only durable backend -- migration must select it, not default to memory"
     );
     assert_eq!(
@@ -383,6 +405,8 @@ pools: {}
 
 #[test]
 fn migrate_14x_governance_with_no_explicit_db_path_uses_the_14x_default() {
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = r#"
 governance:
   enabled: true
@@ -401,7 +425,16 @@ pools: {}
         store
             .get(serde_yaml::Value::from("module"))
             .and_then(|v| v.as_str()),
-        Some(crate::tests::frozen_str("legacy_backend_1_4").as_str())
+        Some(
+            serde_yaml::from_str::<serde_yaml::Value>(include_str!(
+                "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
+            ))
+            .expect("the frozen customer text")["legacy_backend_1_4"]
+                .as_str()
+                .expect("the frozen string")
+                .to_string()
+                .as_str()
+        )
     );
     assert_eq!(
         store
@@ -416,6 +449,8 @@ pools: {}
 
 #[test]
 fn detect_retired_observability_export_keys_loud_fail() {
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = r#"
 observability:
   request_log_webhook_url: "https://logs.example.com/busbar"
@@ -446,7 +481,8 @@ pools: {}
 
 #[test]
 fn migrate_1_5_x_inline_hooks_converge_and_are_idempotent() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = r#"
 providers: {}
 models: {}
@@ -466,15 +502,16 @@ global_hooks:
         detect_legacy_markers(&doc).is_empty(),
         "no residual 1.x marker"
     );
-    let deploy: crate::config::DeployCfg =
-        crate::config::deploy_from_yaml_str(&out1.yaml).expect("migrated config boot-parses");
+    let deploy: busbar_kernel::config::DeployCfg =
+        busbar_kernel::config::deploy_from_yaml_str(&out1.yaml)
+            .expect("migrated config boot-parses");
 
     assert!(
         !deploy.hooks.is_empty(),
         "named hooks: definition map present"
     );
     let fast = &deploy.pools.pools["fast"];
-    assert_eq!(fast.policy, crate::config::PoolPolicy::Cheapest);
+    assert_eq!(fast.policy, busbar_kernel::config::PoolPolicy::Cheapest);
     assert_eq!(
         fast.gates.len(),
         1,
@@ -495,7 +532,10 @@ global_hooks:
     );
 
     let audit = &deploy.hooks[&deploy.pools.all_pool_hooks[0]];
-    assert_eq!(audit.phase, vec![crate::config::HookStage::Response]);
+    assert_eq!(
+        audit.phase,
+        vec![busbar_kernel::config::HookStage::Response]
+    );
 
     let out2 = migrate_config(&out1.yaml).expect("re-migrates");
     let v1: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).unwrap();
@@ -513,17 +553,22 @@ fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
         markers.iter().any(|m| m.contains(needle)),
         "the retired key '{needle}' must trip the boot detector; got {markers:?}"
     );
-    let err = crate::config::migrate::legacy_config_error(&markers);
+    let err = legacy_config_error(&markers);
     assert!(
         err.contains("busbar --migrate-config"),
         "the refusal must point at the migrator: {err}"
     );
 }
 
-fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_yaml::Value) {
+fn migrate_golden(
+    raw: &str,
+) -> (
+    busbar_kernel::config::migrate::MigrateOutput,
+    serde_yaml::Value,
+) {
     let (out, doc) = migrate_to_value(raw);
     let yaml = serde_yaml::to_string(&doc).expect("serializable");
-    let _: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&yaml)
+    let _: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_yaml_str(&yaml)
         .expect("the migrated config must boot-parse as 1.5.3");
     let (_out2, doc2) = migrate_to_value(&yaml);
     assert_eq!(
@@ -535,7 +580,8 @@ fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_ya
 
 #[test]
 fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "admin_insecure");
 
@@ -564,7 +610,8 @@ fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
 
 #[test]
 fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = "auth:\n  chain: [keys]\n  upstream_credentials: passthrough\n\
                providers: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "auth.upstream_credentials");
@@ -590,7 +637,8 @@ fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
 
 #[test]
 fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = "observability:\n  otlp_url: \"http://otel:4318/v1/traces\"\n\
                providers: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "observability");
@@ -627,8 +675,8 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
 
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
-    crate::export::scrape::tests::installed_axis();
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = "export:\n\
                \x20 prometheus: { settings: { buffer_seconds: 60 } }\n\
                \x20 request-log-webhook: { settings: { url: \"https://logs.example.com/a\" } }\n\
@@ -659,11 +707,11 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         Some("Authorization")
     );
 
-    let deploy: crate::config::DeployCfg =
-        crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
+    let deploy: busbar_kernel::config::DeployCfg =
+        busbar_kernel::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
+    let export = busbar_kernel::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 2);
     assert!(export.recorder.is_some());
@@ -671,9 +719,10 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
 
 #[test]
 fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
 
-    let op = crate::config::operator_provider();
+    let op = busbar_kernel::config::operator_provider();
     let raw = format!(
         "auth:\n\
          \x20 chain:\n\
@@ -791,11 +840,11 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         out.changes
     );
 
-    let deploy: crate::config::DeployCfg =
-        crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
+    let deploy: busbar_kernel::config::DeployCfg =
+        busbar_kernel::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
-    let auth = crate::config::resolve_auth(
+    let auth = busbar_kernel::config::resolve_auth(
         deploy.auth.as_ref().expect("auth"),
         &deploy.identity_providers,
         &mut errs,
@@ -806,7 +855,8 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
 
 #[test]
 fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = "global_hooks:\n  - { module: busbar-audit-hook, kind: tap }\n\
                providers: {}\nmodels: {}\npools: {}\n";
     let (_, doc) = migrate_golden(raw);
@@ -864,8 +914,20 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
 /// `redis` and `detect_legacy_markers` returned nothing for it.
 #[test]
 fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
-    let renamed = crate::tests::frozen_str("renamed_module_1_5_3");
-    let retired = crate::tests::frozen_text("retired_modules_1_5_3");
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
+    let renamed = serde_yaml::from_str::<serde_yaml::Value>(include_str!(
+        "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
+    ))
+    .expect("the frozen customer text")["renamed_module_1_5_3"]
+        .as_str()
+        .expect("the frozen string")
+        .to_string();
+    let retired = serde_yaml::from_str::<serde_yaml::Value>(include_str!(
+        "../../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
+    ))
+    .expect("the frozen customer text")["retired_modules_1_5_3"]
+        .clone();
     let retired: Vec<&str> = retired
         .as_sequence()
         .unwrap()
@@ -935,13 +997,13 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
     );
 }
 
-fn webhooks(defs: &crate::config::ExportDefs) -> usize {
+fn webhooks(defs: &busbar_kernel::config::ExportDefs) -> usize {
     defs.values()
         .filter(|d| d.module.trim() == "request-log-webhook")
         .count()
 }
 
-fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
+fn built_ins(defs: &busbar_kernel::config::ExportDefs) -> busbar_kernel::config::ExportDefs {
     defs.iter()
         .filter(|(_, d)| d.module.trim() != "request-log-webhook")
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -950,7 +1012,8 @@ fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
 
 #[test]
 fn golden_migrate_terraform_acceptance_admin_insecure_inline_admin_auth() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
+    crate::root::migration_table::install();
     let raw = r#"admin_listen: "0.0.0.0:8081"
 admin_insecure: true
 models:
