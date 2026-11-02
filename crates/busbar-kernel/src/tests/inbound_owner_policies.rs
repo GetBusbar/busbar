@@ -211,8 +211,8 @@ fn continuation_bytes_preserve_the_original_request_except_declared_partial_stri
         ..Default::default()
     };
     let strips = [
-        Strip::field("authorization".into()),
-        Strip::query("token".into()),
+        Strip::field("authorization".to_string()),
+        Strip::query("token".to_string()),
     ];
     for mutation in [
         "method",
@@ -273,7 +273,7 @@ fn authenticated_framing_fields_remain_exact_at_the_claim_boundary() {
         query: Some("x=1".into()),
         ..Default::default()
     };
-    let strips = [Strip::field("authorization".into())];
+    let strips = [Strip::field("authorization".to_string())];
     let admitted = original.stripped(&strips).unwrap();
     for removed in ["connection", "content-length", "x-signed"] {
         let mut changed = admitted.clone();
