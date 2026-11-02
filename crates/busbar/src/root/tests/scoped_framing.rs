@@ -290,10 +290,20 @@ fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
         .ingest(&request(5, "/five", false), false)
         .expect("sibling progresses");
     assert!(one.pieces.is_empty() && three.pieces.is_empty());
-    assert!(five
-        .pieces
-        .iter()
-        .any(|piece| piece.stream == 3 && piece.fields));
+    assert!(
+        five.pieces
+            .iter()
+            .any(|piece| piece.stream == 3 && piece.fields),
+        "third HTTP stream yield={five:?}; host calls={:?}; pending={:?}; operations={:?}",
+        *host.seen.lock().unwrap(),
+        host.pending
+            .lock()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        *door.ingests.lock().unwrap()
+    );
     assert_eq!(host.pending.lock().unwrap().len(), 2);
     let original_tickets = door
         .ingests
