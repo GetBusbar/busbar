@@ -530,3 +530,259 @@ async fn boot_binds_a_claim_door_for_the_actual_datagram_product_and_no_stream_l
     .unwrap_err()
     .contains("a second claim door"));
 }
+
+#[cfg(feature = "transport-webrtc")]
+struct ControlledDoor {
+    pair: real::Pair,
+    tracker: Arc<busbar_kernel::detached::DetachedTasks>,
+    shutdown: tokio::sync::watch::Sender<bool>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(feature = "transport-webrtc")]
+impl ControlledDoor {
+    fn new(poll_tasks: bool) -> Self {
+        let tracker = busbar_kernel::detached::DetachedTasks::new();
+        let serving_tracker = tracker.clone();
+        let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let (ready, receive) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            busbar_kernel::detached::set_worker_detached(serving_tracker);
+            busbar_kernel::detached::set_worker_shutdown(shutdown_rx);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let pair = runtime.block_on(real::Pair::new(&[]));
+            // The real product channel is established. Control only the host's
+            // notification boundary to exercise early-drainer scheduling.
+            lock(&pair.caller.leg.outbound).channel = None;
+            ready
+                .send(pair)
+                .ok()
+                .expect("host runtime is held by the test");
+            if poll_tasks {
+                runtime.block_on(async {
+                    let _ = stopped.await;
+                });
+            } else {
+                let _ = stopped.blocking_recv();
+            }
+            drop(runtime);
+        });
+        let pair = receive
+            .recv_timeout(real::WAIT)
+            .expect("actual root and peer established");
+        Self {
+            pair,
+            tracker,
+            shutdown,
+            stop: Some(stop),
+            thread: Some(thread),
+        }
+    }
+    fn publish_channel(&self) {
+        let leg = self.pair.caller.leg.clone();
+        std::thread::spawn(move || {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            assert!(busbar_kernel::detached::worker_detached().is_none());
+            assert!(busbar_kernel::detached::worker_shutdown().is_none());
+            leg.take(vec![got(1, b"label: events\r\n", true)], Instant::now());
+        })
+        .join()
+        .unwrap();
+    }
+    fn assert_tracked(&self) {
+        use std::future::Future;
+        assert!(Box::pin(self.tracker.drained())
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            .is_pending());
+    }
+    fn stop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+#[cfg(feature = "transport-webrtc")]
+impl Drop for ControlledDoor {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn ordinary_thread_publication_uses_the_serving_tracker_and_reactor_in_fifo_order() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    let mut control = ControlledDoor::new(true);
+    control.assert_tracked();
+    assert!(control.pair.caller.write(b"first").await);
+    assert!(control.pair.caller.write_text(b"second").await);
+    control.publish_channel();
+    assert!(
+        tokio::time::timeout(real::WAIT, control.pair.caller.write(b"last"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(control.pair.received().await, b"first");
+    assert_eq!(control.pair.received().await, b"second");
+    assert_eq!(control.pair.received().await, b"last");
+    control.shutdown.send(true).unwrap();
+    tokio::time::timeout(real::WAIT, control.tracker.drained())
+        .await
+        .expect("tracked port and drainer retired");
+    control.stop();
+    assert_eq!(*control.pair.framer.emitted.lock().unwrap(), vec![5, 6, 4]);
+    assert!(control.pair.pairing.closed());
+    assert!(!control.pair.caller.write(b"after shutdown").await);
+}
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn unpolled_runtime_cancellation_releases_accepted_drainer_custody() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    let mut control = ControlledDoor::new(false);
+    assert!(control.pair.caller.write(b"first").await);
+    assert!(control.pair.caller.write(b"second").await);
+    control.publish_channel();
+    control.assert_tracked();
+    assert!(lock(&control.pair.caller.leg.outbound).draining);
+    assert_eq!(lock(&control.pair.caller.leg.outbound).held.len(), 2);
+    control.stop();
+    tokio::time::timeout(real::WAIT, control.tracker.drained())
+        .await
+        .expect("unpolled task reservations released");
+    assert!(control.pair.pairing.closed());
+    assert!(lock(&control.pair.caller.leg.outbound).held.is_empty());
+    assert!(!lock(&control.pair.caller.leg.outbound).draining);
+    assert!(control.pair.framer.emitted.lock().unwrap().is_empty());
+    assert!(!control.pair.caller.write(b"after cancellation").await);
+}
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn admission_finishing_after_shutdown_retires_its_new_pairing_and_association() {
+    use busbar_core_connector::datagram::DatagramFraming;
+    let mut control = ControlledDoor::new(true);
+    control.shutdown.send(true).unwrap();
+    tokio::time::timeout(real::WAIT, control.tracker.drained())
+        .await
+        .unwrap();
+    let messages = Messages::new(8);
+    let leg = CallerLeg::new(&control.pair.door, messages.clone());
+    let pairing = Pairing::new(
+        leg.clone() as Arc<dyn busbar_core_connector::datagram::LegSink>,
+        control.pair.door.local(),
+    );
+    *lock(&leg.pairing) = Some(pairing.clone());
+    let (mut framing, _) =
+        DatagramFraming::accept_minted(real::loaded(), control.pair.door.local()).unwrap();
+    framing
+        .rendezvous(&super::opening_retirement_tests::offer(), Instant::now())
+        .unwrap();
+    control.pair.door.join(framing, &leg).unwrap();
+    control.stop();
+    assert!(pairing.closed());
+    assert!(control.pair.door.assocs.is_empty());
+    assert!(lock(&control.pair.door.legs).is_empty());
+    assert!(!leg.write(b"after shutdown", false).await);
+    assert!(messages.recv().await.is_none());
+}
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn an_unknown_actual_caller_crossing_records_uncertainty_without_replaying_input() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    let pair = real::Pair::new(&[]).await;
+    *pair.framer.observer.lock().unwrap() =
+        Some(Arc::new(|_| panic!("bounded host crossing unwind probe")));
+    let bytes = b"accepted before unwinding";
+    assert!(!tokio::time::timeout(real::WAIT, pair.caller.write(bytes))
+        .await
+        .unwrap());
+    let outcome = pair.pairing.published().await;
+    assert!(outcome.failure.is_some());
+    assert_eq!(outcome.original_bytes, bytes.len() as u64);
+    assert_eq!(outcome.original_handed_bytes, 0);
+    assert_eq!(outcome.original_cancelled_bytes, bytes.len() as u64);
+    assert_eq!(outcome.original_uncertain_bytes, bytes.len() as u64);
+    assert_eq!(*pair.framer.emitted.lock().unwrap(), vec![bytes.len()]);
+    assert!(pair.pairing.closed());
+}
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn shutdown_retires_a_blocked_accepted_drainer_and_wakes_the_later_writer() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    #[derive(Default)]
+    struct WriteWake(AtomicUsize);
+    impl Wake for WriteWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let mut control = ControlledDoor::new(true);
+    assert!(control.pair.caller.write(b"first").await);
+    assert!(control.pair.caller.write(b"second").await);
+    let (entered, inside) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let resume = std::sync::Mutex::new(resume);
+    *control.pair.framer.observer.lock().unwrap() = Some(Arc::new(move |len| {
+        if len == 8 {
+            entered.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+    }));
+    let holder = {
+        let door = control.pair.door.clone();
+        let id = lock(&control.pair.caller.leg.id).unwrap();
+        std::thread::spawn(move || door.emit(id, 1, b"occupied", true, false, Instant::now()))
+    };
+    inside
+        .recv_timeout(real::WAIT)
+        .expect("actual product crossing borrowed");
+    control.publish_channel();
+    tokio::time::timeout(real::WAIT, async {
+        while lock(&control.pair.caller.leg.outbound).held.len() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first accepted message waits for the borrowed real product");
+    let wake = Arc::new(WriteWake::default());
+    let waker = Waker::from(wake.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut later = Box::pin(control.pair.caller.write(b"never accepted"));
+    assert!(later.as_mut().poll(&mut cx).is_pending());
+    control.shutdown.send(true).unwrap();
+    let drained = tokio::time::timeout(real::WAIT, control.tracker.drained()).await;
+    let after = later.as_mut().poll(&mut cx);
+    drop(later);
+    let notified = wake.0.load(Ordering::SeqCst);
+    release.send(()).unwrap();
+    let _ = holder.join().unwrap();
+    control.stop();
+    assert!(
+        drained.is_ok(),
+        "accepted drainer is tracked and shutdown aware"
+    );
+    assert!(notified > 0);
+    assert_eq!(after, Poll::Ready(false));
+    assert!(control.pair.pairing.closed());
+    assert!(lock(&control.pair.caller.leg.outbound).held.is_empty());
+    assert!(!lock(&control.pair.caller.leg.outbound).draining);
+    assert_eq!(*control.pair.framer.emitted.lock().unwrap(), vec![8]);
+}
