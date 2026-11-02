@@ -402,6 +402,7 @@ impl GovState {
                     | RecoveryState::ConditionConflict
                     | RecoveryState::VerdictLanded
                     | RecoveryState::VerdictNotLanded
+                    | RecoveryState::LandedUnknown
             ) || (event.state == RecoveryState::Intent
                 && self
                     .recovery_retention_expired(event.operation_id)
@@ -460,9 +461,13 @@ impl GovState {
                             .unwrap_or_else(|p| p.into_inner()) = Some(next);
                     }
                 }
+                self.resume_quarantined_common_positives(operation_id)
+                    .map_err(unavailable)?;
                 Ok(())
             }
-            RecoveryState::LandedUnknown => Ok(()),
+            RecoveryState::LandedUnknown => self
+                .resume_quarantined_common_positives(operation_id)
+                .map_err(unavailable),
             RecoveryState::VerdictLanded | RecoveryState::VerdictNotLanded => {
                 let resolution = custody.retained_resolution(&event).map_err(unavailable)?;
                 self.recovery().resolve(cost, resolution).map(|_| ())
@@ -512,6 +517,49 @@ impl GovState {
             }
             RecoveryState::Settled => self.resume_recovery_children(&event).map_err(unavailable),
         }
+    }
+
+    fn resume_quarantined_common_positives(&self, operation_id: [u8; 16]) -> RecordStoreResult<()> {
+        let pending = self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .find(|pending| pending.request.op_id.0 == operation_id && pending.quarantined)
+            .cloned();
+        let Some(pending) = pending else {
+            return Ok(());
+        };
+        let _running = self
+            .hold_foreign_correction_recovery(operation_id)
+            .map_err(|error| unresolved(&error.to_string()))?;
+        self.confirm_pending_recovery(operation_id)?;
+        let mut selected = self
+            .recovery_event(operation_id)
+            .ok_or_else(|| unresolved("quarantined common positive has no selected owner"))?;
+        if selected.state != RecoveryState::LandedUnknown {
+            return Ok(());
+        }
+        let mut custody = recovery::Custody::decode(&selected.payload)?;
+        if custody.release_common_positives()? {
+            let next = self
+                .new_recovery_event(
+                    selected.operation_id,
+                    selected.kind,
+                    selected.body_fingerprint,
+                    selected.state,
+                    selected.first_sent_at_ms,
+                    custody.encode()?,
+                )
+                .map_err(|error| unresolved(&error.to_string()))?;
+            *pending
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(next.clone());
+            self.keep_recovery_event(&next)?;
+            selected = next;
+        }
+        self.resume_recovery_children(&selected)
     }
 
     pub(in crate::governance) fn resolve_correction_recovery(

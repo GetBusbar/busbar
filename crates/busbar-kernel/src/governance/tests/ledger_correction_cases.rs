@@ -969,3 +969,141 @@ fn a_known_correction_receipt_survives_a_lost_recovery_ack_without_backend_repla
         RecoveryState::Settled
     );
 }
+
+#[test]
+fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_verdict() {
+    const FOREIGN_INPUT: u64 = 13;
+    let faulting = Arc::new(FlakyStore::new());
+    let journal = Arc::new(Journal::default());
+    let first = Arc::new(GovState::new(faulting.clone(), None).unwrap());
+    first.attach_recovery_sink(journal.clone()).unwrap();
+    let key = key("vk_correction_checkpointed_common", None);
+    faulting.put_key(&key).unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    let grant = first.try_admit(&cm, &key, "", now).unwrap();
+    first.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
+    metered(&first, &key.id, MODEL, INITIAL_INPUT, now);
+    let (mutator, mutated_key, refund) = (first.clone(), key.clone(), grant.charge().clone());
+    *faulting.before_add.lock().unwrap() = Some(Box::new(move || {
+        mutator.record_usage(
+            &model(&[]),
+            &mutated_key,
+            "",
+            MODEL,
+            &toks(CONCURRENT_INPUT, 0),
+            now,
+        );
+        mutator.refund_charge(&refund);
+    }));
+    faulting
+        .lose_correction_reply
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(first
+        .adjust_usage(&cm, &correction(&key, &delta(), now))
+        .is_err());
+    assert_eq!(faulting.correction_calls.lock().unwrap().len(), 1);
+    let original = journal
+        .selected
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.kind == RecoveryKind::Correction)
+        .unwrap()
+        .clone();
+    drop(grant);
+    drop(first);
+    // Remove only the existing fault-injection wrapper; the physical MemoryStore, including
+    // its original conditional receipt and raw rows, survives both runtime restarts.
+    let backend = Arc::new(
+        Arc::try_unwrap(faulting)
+            .ok()
+            .expect("faulting runtime released")
+            .inner,
+    );
+    backend
+        .add_usage(
+            &key.id,
+            0,
+            &UsageDelta {
+                models: vec![busbar_contract::records::ModelTokensDelta {
+                    model: MODEL.into(),
+                    usage_units: BTreeMap::from([(
+                        busbar_contract::records::UNIT_INPUT.into(),
+                        FOREIGN_INPUT as i64,
+                    )]),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let second = GovState::new(backend.clone(), None).unwrap();
+    second.attach_recovery_sink(journal.clone()).unwrap();
+    second.hydrate_budgets(&cm, now).unwrap();
+    let hydrated = CORRECTED_INPUT + FOREIGN_INPUT;
+    assert_eq!(
+        second.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        hydrated
+    );
+    second.flush_budgets();
+    journal
+        .fail_after_write
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(second.resume_correction_verdicts(&cm).is_err());
+    assert_eq!(
+        input(&backend.get_usage(&key.id, 0).unwrap()),
+        hydrated,
+        "the common child cannot send before its exact parent checkpoint is confirmed"
+    );
+    let checkpoint = journal.selected.lock().unwrap().last().unwrap().clone();
+    let payload: serde_json::Value = serde_json::from_slice(&checkpoint.payload).unwrap();
+    let child_id: [u8; 16] =
+        serde_json::from_value(payload["handoffs"][0]["operation_id"].clone()).unwrap();
+    assert_eq!(payload["targets"][0]["accepted"]["billable_requests"], 0);
+    assert_eq!(
+        payload["targets"][0]["accepted"]["flushed_billable_requests"], 1,
+        "dependent negative fee custody is not released with the common positive"
+    );
+    assert!(!journal
+        .selected
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.operation_id == child_id));
+    drop(second);
+    journal
+        .fail_after_write
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let third = GovState::new(backend.clone(), None).unwrap();
+    third.attach_recovery_sink(journal.clone()).unwrap();
+    third.hydrate_budgets(&cm, now).unwrap();
+    third.resume_correction_verdicts(&cm).unwrap();
+    let row = backend.get_usage(&key.id, 0).unwrap();
+    assert_eq!(
+        (input(&row), row.billable_requests),
+        (hydrated + CONCURRENT_INPUT, 1)
+    );
+    assert_eq!(third.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens, hydrated,
+        "posting common raw work never installs the old whole before/accepted aggregates into hydrated RAM");
+    assert_eq!(
+        third.recovery_event(original.operation_id).unwrap().state,
+        RecoveryState::LandedUnknown
+    );
+    assert_eq!(
+        third.recovery_event(child_id).unwrap().state,
+        RecoveryState::Settled
+    );
+    third.resume_correction_verdicts(&cm).unwrap();
+    assert_eq!(backend.get_usage(&key.id, 0).unwrap(), row);
+    assert_eq!(
+        journal
+            .selected
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.operation_id == child_id && event.revision == 0)
+            .count(),
+        1,
+        "lost checkpoint acknowledgement and restart reuse the same authorized child"
+    );
+}

@@ -80,6 +80,14 @@ pub(super) fn take_positives(
     cell: &mut BudgetCell,
     window: u64,
 ) -> RecordStoreResult<Option<(ExactUsageDelta, ExactUsageDelta)>> {
+    take_positives_mode(cell, window, false)
+}
+
+fn take_positives_mode(
+    cell: &mut BudgetCell,
+    window: u64,
+    common_only: bool,
+) -> RecordStoreResult<Option<(ExactUsageDelta, ExactUsageDelta)>> {
     let Some(branch) = cell
         .correction
         .as_ref()
@@ -98,12 +106,25 @@ pub(super) fn take_positives(
         {
             return Err(unresolved("current common debt overlaps a rolled window"));
         }
-        positive_current(&mut before, &mut accepted)?
+        positive_current(&mut before, &mut accepted, common_only)?
     } else {
-        let (plain, dated) = positive_rolled(
+        let (mut plain, mut dated) = positive_rolled(
             &window_debt(&accepted, window, false),
             &window_debt(&accepted, window, true),
         )?;
+        if common_only {
+            use crate::governance::exact_debt::SegmentedUsage;
+            let (before_plain, before_dated) = positive_rolled(
+                &window_debt(&before, window, false),
+                &window_debt(&before, window, true),
+            )?;
+            let mut negative_before =
+                SegmentedUsage::of(&negate(before_plain), &negate(before_dated))?;
+            let common = negative_before.take_negatives(Some(&SegmentedUsage::of(&plain, &dated)?));
+            let (common_plain, common_dated) = common.deltas();
+            plain = negate(common_plain);
+            dated = negate(common_dated);
+        }
         for branch in [&mut before, &mut accepted] {
             for (dated_kind, sent) in [(false, &plain), (true, &dated)] {
                 let mut remaining = window_debt(branch, window, dated_kind);
@@ -139,6 +160,7 @@ pub(super) fn take_positives(
 fn positive_current(
     before: &mut BudgetCell,
     accepted: &mut BudgetCell,
+    common_only: bool,
 ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
     let mut plain = ExactUsageDelta::default();
     let mut dated = ExactUsageDelta::default();
@@ -149,7 +171,22 @@ fn positive_current(
         }
         for (unit, current) in &model.cur {
             let flushed = model.flushed.get(unit).copied().unwrap_or(0);
-            let amount = current.saturating_sub(flushed);
+            let mut amount = current.saturating_sub(flushed);
+            if common_only {
+                amount = amount.min(
+                    before
+                        .models
+                        .iter()
+                        .find(|raw| raw.model == model.model && raw.era == model.era)
+                        .map_or(0, |raw| {
+                            raw.cur
+                                .get(unit)
+                                .copied()
+                                .unwrap_or(0)
+                                .saturating_sub(raw.flushed.get(unit).copied().unwrap_or(0))
+                        }),
+                );
+            }
             if amount == 0 {
                 continue;
             }
@@ -166,11 +203,28 @@ fn positive_current(
         }
     }
     plain.requests = i128::from(accepted.requests.saturating_sub(accepted.flushed_requests));
+    if common_only {
+        plain.requests = plain.requests.min(i128::from(
+            before.requests.saturating_sub(before.flushed_requests),
+        ));
+    }
     let fees: BTreeMap<_, _> = accepted.fee_eras.dated().iter().copied().collect();
     let flushed: BTreeMap<_, _> = accepted.flushed_fee_eras.dated().iter().copied().collect();
     let mut legacy_fee =
         i128::from(accepted.billable_requests) - i128::from(accepted.flushed_billable_requests);
     let mut fee_transfers = BTreeMap::new();
+    let before_fees: BTreeMap<_, _> = before.fee_eras.dated().iter().copied().collect();
+    let before_flushed: BTreeMap<_, _> = before.flushed_fee_eras.dated().iter().copied().collect();
+    let before_legacy_fee = i128::from(before.billable_requests)
+        - i128::from(before.flushed_billable_requests)
+        - before_fees
+            .values()
+            .map(|count| i128::from(*count))
+            .sum::<i128>()
+        + before_flushed
+            .values()
+            .map(|count| i128::from(*count))
+            .sum::<i128>();
     for era in fees
         .keys()
         .chain(flushed.keys())
@@ -180,13 +234,25 @@ fn positive_current(
         let count = i128::from(fees.get(&era).copied().unwrap_or(0))
             - i128::from(flushed.get(&era).copied().unwrap_or(0));
         legacy_fee -= count;
-        if count > 0 {
-            plain.billable_requests += count;
-            change_unit(&mut dated, &era_tag(era), ERA_FEE_UNIT, count);
-            fee_transfers.insert(era, count);
+        let common_count = if common_only {
+            count.min(
+                i128::from(before_fees.get(&era).copied().unwrap_or(0))
+                    - i128::from(before_flushed.get(&era).copied().unwrap_or(0)),
+            )
+        } else {
+            count
+        };
+        if common_count > 0 {
+            plain.billable_requests += common_count;
+            change_unit(&mut dated, &era_tag(era), ERA_FEE_UNIT, common_count);
+            fee_transfers.insert(era, common_count);
         }
     }
-    plain.billable_requests += legacy_fee.max(0);
+    plain.billable_requests += if common_only {
+        legacy_fee.min(before_legacy_fee).max(0)
+    } else {
+        legacy_fee.max(0)
+    };
     for branch in [before, accepted] {
         branch.flushed_requests = exact(checked_move(branch.flushed_requests, plain.requests))?;
         branch.flushed_billable_requests = exact(checked_move(
@@ -515,6 +581,43 @@ impl From<RawDecision> for Decision {
 }
 
 impl Custody {
+    pub(super) fn release_common_positives(&mut self) -> RecordStoreResult<bool> {
+        if self.terminal || self.decision.is_some() {
+            return Ok(false);
+        }
+        let mut changed = false;
+        for target in &mut self.targets {
+            let mut before = target.before.clone_raw()?;
+            before.correction = Some(Box::new(CorrectionBranch {
+                op_id: self.request.op_id,
+                window: target.window,
+                accepted: target.accepted.clone_raw()?,
+            }));
+            let Some((plain, dated)) = take_positives_mode(&mut before, target.window, true)?
+            else {
+                return Err(unresolved(
+                    "stored common positive has no exact branch custody",
+                ));
+            };
+            let Some(child) =
+                GovState::usage_recovery_child(&target.bucket, target.window, plain, dated)?
+            else {
+                continue;
+            };
+            target.accepted = RawCell::capture(
+                &before
+                    .correction
+                    .as_ref()
+                    .expect("temporary branch retained")
+                    .accepted,
+            )?;
+            target.before = RawCell::capture(&before)?;
+            self.handoffs.push(child);
+            changed = true;
+        }
+        Ok(changed)
+    }
+
     pub(super) fn mark_age_unknown(&mut self) {
         self.age_unknown = true;
     }
