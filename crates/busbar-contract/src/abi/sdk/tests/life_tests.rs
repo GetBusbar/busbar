@@ -533,9 +533,13 @@ fn a_refresh_reports_its_count_in_the_envelope_or_fails_with_its_text() {
 }
 
 /// `resolve` on the probe instance `inst`: its outcome and its `out`.
-fn probe(inst: *mut c_void) -> (Outcome, ResolveOut) {
+fn probe(inst: *mut c_void, slot: u32) -> (Outcome, ResolveOut) {
     let mut input: ResolveIn = zeroed();
     input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
+    input.head.ticket = Ticket {
+        slot,
+        generation: 1,
+    };
     let mut out: ResolveOut = zeroed();
     out.head = out_head::<ResolveOut>();
     let o = call(table().resolve, inst, &input, &mut out);
@@ -548,7 +552,7 @@ fn metrics(out: &ResolveOut) -> Vec<(u32, f64)> {
     if env.metrics.is_null() {
         return Vec::new();
     }
-    // SAFETY: the answering instance still owns this reply and has not begun its next crossing.
+    // SAFETY: the answering instance still owns this reply and its ticket slot was not recycled.
     unsafe { std::slice::from_raw_parts(env.metrics, env.metrics_len) }
         .iter()
         .map(|m| (m.family_idx, m.value))
@@ -563,9 +567,11 @@ fn metrics(out: &ResolveOut) -> Vec<(u32, f64)> {
 fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
     let (_, alpha, _) = open(b"probe:alpha", &[]);
     let (_, bravo, _) = open(b"probe:bravo-bravo", &[]);
-    let (oa, a) = probe(alpha);
-    let (ob, b) = probe(bravo);
-    let (oa2, a2) = probe(alpha);
+    // Distinct live ticket slots retain all three replies until their instances close. An
+    // unticketed call's previous answer expires at its next crossing on this thread.
+    let (oa, a) = probe(alpha, 11);
+    let (ob, b) = probe(bravo, 17);
+    let (oa2, a2) = probe(alpha, 12);
     assert_eq!(
         (oa, ob, oa2),
         (Outcome::Failed, Outcome::Failed, Outcome::Failed)

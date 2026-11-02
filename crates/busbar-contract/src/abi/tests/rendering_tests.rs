@@ -458,6 +458,7 @@ fn retention_lists_keep_names_counts_order_and_modes_distinct() {
                 need.with_deny_response_headers(names)
             };
             let st = Statement {
+                kind: KindCode::Transport as u32,
                 needs: &need,
                 needs_len: 1,
                 ..full()
