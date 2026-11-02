@@ -1196,8 +1196,10 @@ fn unauthorized_response(
     if let Some(door) = door {
         return refuse_door(door);
     }
-    let ingress = ingress_for_path(app, path);
+    unauthorized_ingress_response(ingress_for_path(app, path))
+}
 
+fn unauthorized_ingress_response(ingress: crate::plane_driver::dispatch::Ingress) -> Response {
     let dialect = crate::ingress::native::envelope_dialect(ingress);
     let message = vendor_auth_failure_message(dialect);
     let (status, kind) = auth_failure_status_and_kind(dialect);

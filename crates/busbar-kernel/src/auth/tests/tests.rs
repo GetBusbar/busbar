@@ -418,10 +418,6 @@ fn test_synth_key_reserved_id_prefixes_refused() {
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
-fn residual_app() -> std::sync::Arc<crate::state::App> {
-    crate::test_support::TestApp::new().build()
-}
-
 fn decode_body(resp: Response) -> serde_json::Value {
     let bytes = futures::executor::block_on(async {
         axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -490,7 +486,14 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/totally/unknown/path",
     ];
     for path in paths {
-        let body = decode_body(unauthorized_response(&residual_app(), path, None));
+        // This is the fallback formatter continuation. Actual mounted-door routing is
+        // exercised by root product tests; no application or invented plane table is needed.
+        let ingress = crate::plane_driver::dispatch::Ingress::Fallback(
+            crate::ingress::protocols::residual_dialect_for_path(path),
+        );
+        let response = unauthorized_ingress_response(ingress);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = decode_body(response);
         let mut strings = Vec::new();
         collect_strings(&body, &mut strings);
         for s in &strings {
