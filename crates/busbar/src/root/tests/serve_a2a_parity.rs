@@ -7,12 +7,15 @@
 //! card and the operator approves it through the real administrative routes.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
+use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, FLAG_RESUME,
+    AbiStr, Blob, DeadlineClass, Field, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS,
+    FLAG_RESUME,
 };
 use busbar_contract::abi::mechanism::lifecycle::{self as life, GenIn, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -233,6 +236,11 @@ fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin
     }
 }
 
+fn first_crossings(plane: &Plugin<Plane>) -> u64 {
+    let resumes = plane.inner.resumes.load(Ordering::SeqCst);
+    plane.inner.crossings.load(Ordering::SeqCst) - resumes
+}
+
 struct RawA2aUnits {
     records: Arc<busbar_kernel::host_units::UnitRecords>,
     owned: Vec<u64>,
@@ -355,6 +363,7 @@ fn piece(
     input.arena_cap = b.arena.len();
     let mut out: OnPieceOut = blank_out();
     out.head = dispatch::out_head();
+    let before = first_crossings(plane);
     let done = dispatcher
         .submit_lent(
             plane,
@@ -367,6 +376,11 @@ fn piece(
         )
         .wait(Duration::from_secs(20))
         .expect("the actual A2A crossing settles within its deadline");
+    assert_eq!(
+        first_crossings(plane) - before,
+        1,
+        "one initial ON_PIECE invocation"
+    );
     PieceAnswer {
         done,
         bytes: buffers,
@@ -379,6 +393,7 @@ fn arrive(
     claim: u32,
     method: &[u8],
     target: &[u8],
+    expected_crossings: u64,
 ) -> (dispatch::Called, ArriveOut) {
     let mut units = [UnitCount::ZERO; CAP];
     let mut input: ArriveIn = blank_in();
@@ -393,7 +408,10 @@ fn arrive(
     let mut out: ArriveOut = blank_out();
     out.head = dispatch::out_head();
     let mut frame = Frame::new(input, out);
-    (plane.call(slot::ARRIVE, &mut frame), frame.out)
+    let before = first_crossings(plane);
+    let answer = plane.call(slot::ARRIVE, &mut frame);
+    assert_eq!(first_crossings(plane) - before, expected_crossings);
+    (answer, frame.out)
 }
 
 fn caller_body(
@@ -404,7 +422,7 @@ fn caller_body(
     cap: usize,
 ) {
     assert_eq!(
-        arrive(plane, unit, 14, b"POST", b"/a2a").0.outcome,
+        arrive(plane, unit, 14, b"POST", b"/a2a", 1).0.outcome,
         Outcome::Ready
     );
     let attempt = piece(
@@ -429,20 +447,135 @@ fn caller_body(
     assert_ne!(body.out().flags & EMIT_TO_FAR_END, 0);
 }
 
+// Only the old SERVE/PROJECT output capacities and observed fields for this actual A2A case.
+struct A2aAuxBuffers {
+    reply: Vec<u8>,
+    fields: Vec<OutField>,
+    arena: Vec<u8>,
+    signals: Vec<u128>,
+}
+
+fn serve_and_project(plane: &Plugin<Plane>, dispatcher: &Dispatcher) -> [String; 2] {
+    let mut serve_bytes = Arc::new(A2aAuxBuffers {
+        reply: vec![0; 512],
+        fields: vec![OutField::ZERO; 2],
+        arena: vec![0; 256],
+        signals: Vec::new(),
+    });
+    let b = Arc::get_mut(&mut serve_bytes).unwrap();
+    let mut input: ServeIn = blank_in();
+    input.head = dispatch::in_head();
+    input.reply_buf = b.reply.as_mut_ptr();
+    input.reply_cap = b.reply.len();
+    input.fields_buf = b.fields.as_mut_ptr();
+    input.fields_cap = b.fields.len();
+    input.arena_buf = b.arena.as_mut_ptr();
+    input.arena_cap = b.arena.len();
+    let ticket = dispatcher.mint(0).expect("the actual SERVE ticket");
+    let before = first_crossings(plane);
+    let done = dispatcher
+        .submit_lent(
+            plane,
+            ticket,
+            slot::SERVE,
+            Frame::new(input, blank_out::<ServeOut>()),
+            DeadlineClass::Call,
+            dispatch::now_ns().saturating_add(15_000_000_000),
+            serve_bytes.clone() as Lent,
+        )
+        .wait(Duration::from_secs(20))
+        .expect("the real SERVE finishes within its bound");
+    assert_ne!(
+        done.outcome,
+        Outcome::Fault,
+        "the old SERVE positive never faulted"
+    );
+    assert_eq!(first_crossings(plane) - before, 1);
+    let out = &done
+        .frame
+        .as_ref()
+        .expect("the actual SERVE returns its owned frame")
+        .out;
+    assert!(out.reply_written as usize <= serve_bytes.reply.len());
+    let serve = format!(
+        "{:?} lease={} error={} status={} reply_written={}",
+        done.outcome,
+        done.lease != 0,
+        String::from_utf8_lossy(done.error.as_deref().unwrap_or_default()),
+        out.status,
+        out.reply_written
+    );
+    dispatcher.recycle(ticket);
+
+    // u128 backing is aligned for SignalEntry and owns its exact output extent without putting
+    // pointer-bearing signal values in a Send/Sync loan. Only the returned count is observed,
+    // matching the old PROJECT predicate; no signal pointer is dereferenced by this test.
+    assert_eq!(
+        std::mem::align_of::<u128>() % std::mem::align_of::<SignalEntry>(),
+        0
+    );
+    let mut project_bytes = Arc::new(A2aAuxBuffers {
+        reply: Vec::new(),
+        fields: Vec::new(),
+        arena: vec![0; 256],
+        signals: vec![
+            0;
+            (4 * std::mem::size_of::<SignalEntry>()).div_ceil(std::mem::size_of::<u128>())
+        ],
+    });
+    let b = Arc::get_mut(&mut project_bytes).unwrap();
+    let mut input: ProjectIn = blank_in();
+    input.head = dispatch::in_head();
+    input.claim = 14;
+    input.target = abi(b"/a2a");
+    input.body = blob(REQUEST, BLOB_OCTETS);
+    input.signals_buf = b.signals.as_mut_ptr().cast();
+    input.signals_cap = 4;
+    input.arena_buf = b.arena.as_mut_ptr();
+    input.arena_cap = b.arena.len();
+    let mut frame = Frame::new(input, blank_out::<ProjectOut>());
+    let before = first_crossings(plane);
+    // PROJECT is the production pure/ticketless crossing. Pending is therefore Fault; giving
+    // it a fresh ticket here would weaken the original non-FAULT predicate.
+    let called = plane.call(slot::PROJECT, &mut frame);
+    assert_ne!(
+        called.outcome,
+        Outcome::Fault,
+        "the old PROJECT positive never faulted"
+    );
+    assert_eq!(first_crossings(plane) - before, 1);
+    assert!(frame.out.view.signals_len <= 4);
+    let project = format!(
+        "{:?} lease={} error={} signals={}",
+        called.outcome,
+        called.lease != 0,
+        String::from_utf8_lossy(called.error.as_deref().unwrap_or_default()),
+        frame.out.view.signals_len
+    );
+    [serve, project]
+}
+
 fn raw_relay_and_lifecycle(
     plane: &Plugin<Plane>,
     dispatcher: &Dispatcher,
     entry: &serde_json::Value,
-) {
+) -> [String; 2] {
+    assert_eq!(
+        first_crossings(plane),
+        0,
+        "metadata facts and admission cross no lifecycle slot"
+    );
     let settings = serde_json::to_vec(&serde_json::json!({"agents": {"vendor": entry}})).unwrap();
     let mut validate: Frame<life::ValidateIn, OutHead> = Frame::new(blank_in(), blank_out());
     validate.input.settings = blob(&settings, BLOB_JSON);
+    let before = first_crossings(plane);
     assert_eq!(
         plane.call(life::slot::VALIDATE, &mut validate).outcome,
         Outcome::Ready
     );
+    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(
-        arrive(plane, 7, 14, b"POST", b"/a2a").0.outcome,
+        arrive(plane, 7, 14, b"POST", b"/a2a", 0).0.outcome,
         Outcome::Refused
     );
 
@@ -450,7 +583,9 @@ fn raw_relay_and_lifecycle(
     opened.input.open.generation = 1;
     opened.input.open.settings = blob(&settings, BLOB_JSON);
     opened.input.public_url = abi(b"https://gw.example");
+    let before = first_crossings(plane);
     let (answer, snapshot) = plane.open(&mut opened);
+    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(answer.outcome, Outcome::Ready, "{:?}", answer.error);
     let snapshot = snapshot.expect("the actual first snapshot is owned by the host");
     assert_eq!(snapshot.generation, 1);
@@ -466,17 +601,21 @@ fn raw_relay_and_lifecycle(
     let driver = dispatcher
         .driver(plane, 0)
         .expect("the actual lifecycle driver ticket");
+    let before = first_crossings(plane);
     assert_eq!(
         plane.open(&mut opened).0.outcome,
         Outcome::Refused,
         "one OPEN per actual instance"
     );
+    assert_eq!(first_crossings(plane) - before, 0);
     for slot in [slot::HYDRATE, slot::START] {
         let mut frame: Frame<GenIn, OutHead> = Frame::new(blank_in(), blank_out());
         frame.input.generation = 1;
+        let before = first_crossings(plane);
         assert_eq!(plane.call(slot, &mut frame).outcome, Outcome::Ready);
+        assert_eq!(first_crossings(plane) - before, 1);
     }
-    let (unclaimed, out) = arrive(plane, 8, 99, b"GET", b"/a2a/unclaimed");
+    let (unclaimed, out) = arrive(plane, 8, 99, b"GET", b"/a2a/unclaimed", 1);
     assert_eq!(unclaimed.outcome, Outcome::Refused);
     assert_eq!(out.refusal_status, 404);
 
@@ -535,6 +674,7 @@ fn raw_relay_and_lifecycle(
 
     let short = dispatcher.mint(0).expect("the real short-answer ticket");
     caller_body(plane, dispatcher, short, 11, 1024);
+    let short_before = first_crossings(plane);
     let first = piece(
         plane,
         dispatcher,
@@ -579,6 +719,11 @@ fn raw_relay_and_lifecycle(
         bytes: first.bytes,
     };
     again.final_answer();
+    assert_eq!(
+        first_crossings(plane) - short_before,
+        2,
+        "SHORT plus exactly one fresh recall"
+    );
     dispatcher.recycle(short);
 
     let mut reply = [0; 1024];
@@ -594,6 +739,7 @@ fn raw_relay_and_lifecycle(
     refusal.input.fields_cap = fields.len();
     refusal.input.arena_buf = arena.as_mut_ptr();
     refusal.input.arena_cap = arena.len();
+    let before = first_crossings(plane);
     assert_eq!(
         plane.call(slot::REFUSAL, &mut refusal).outcome,
         Outcome::Ready
@@ -601,26 +747,36 @@ fn raw_relay_and_lifecycle(
     assert_eq!(refusal.out.status, 403);
     assert_eq!(&reply[..refusal.out.reply_written as usize], REFUSAL);
 
+    assert_eq!(first_crossings(plane) - before, 1);
+    let auxiliary = serve_and_project(plane, dispatcher);
     let driven = &plane.inner.driven;
     let seen = driven.answers();
+    let before = first_crossings(plane);
     dispatch::ticket::host_wake(plane.inner.ctx(), driver);
     assert_eq!(
         driven.answered_after(seen, Duration::from_secs(15)),
         Some(Outcome::Ready)
     );
+    assert_eq!(first_crossings(plane) - before, 1);
     let _ = driven.drain();
+    let before = first_crossings(plane);
     let tick = dispatcher
         .tick(plane, driver, 1000)
         .wait(Duration::from_secs(20))
         .expect("the real lifecycle tick settles");
     assert_eq!(tick.outcome, Outcome::Ready);
+    assert_eq!(first_crossings(plane) - before, 1);
     let mut cancel: Frame<PlaneCancelIn, PlaneCancelOut> = Frame::new(blank_in(), blank_out());
+    let before = first_crossings(plane);
     assert_eq!(
         plane.call(life::slot::CANCEL, &mut cancel).outcome,
         Outcome::Ready
     );
+    assert_eq!(first_crossings(plane) - before, 1);
     let mut release: Frame<ReleaseIn, OutHead> = Frame::new(blank_in(), blank_out());
+    let before = first_crossings(plane);
     let released = plane.call(life::slot::RELEASE, &mut release);
+    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(released.lease, 0);
     assert!(
         released.outcome == Outcome::Ready
@@ -634,7 +790,9 @@ fn raw_relay_and_lifecycle(
     let mut refresh: Frame<life::RefreshIn, PlaneRefreshOut> = Frame::new(blank_in(), blank_out());
     refresh.input.generation = 2;
     refresh.input.settings = blob(&settings, BLOB_JSON);
+    let before = first_crossings(plane);
     let (answer, snapshot) = plane.refresh(&mut refresh);
+    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(answer.outcome, Outcome::Ready);
     let snapshot = snapshot.expect("the actual refreshed snapshot is owned by the host");
     assert_eq!(snapshot.generation, 2);
@@ -649,21 +807,26 @@ fn raw_relay_and_lifecycle(
     );
     let mut retire: Frame<GenIn, OutHead> = Frame::new(blank_in(), blank_out());
     retire.input.generation = 1;
+    let before = first_crossings(plane);
     assert_eq!(
         plane.call(life::slot::RETIRE, &mut retire).outcome,
         Outcome::Ready
     );
+    assert_eq!(first_crossings(plane) - before, 1);
     let mut close: Frame<InHead, OutHead> = Frame::new(blank_in(), blank_out());
+    let before = first_crossings(plane);
     assert_eq!(
         plane.call(life::slot::CLOSE, &mut close).outcome,
         Outcome::Ready
     );
+    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(
-        arrive(plane, 7, 14, b"POST", b"/a2a").0.outcome,
+        arrive(plane, 7, 14, b"POST", b"/a2a", 0).0.outcome,
         Outcome::Fault
     );
     // The after-CLOSE payload is deliberately never inspected.
     dispatcher.recycle(driver);
+    auxiliary
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -840,6 +1003,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         axum::serve(listener, peer_routes).await.unwrap();
     });
 
+    let mut auxiliary_parity = None;
     for origin in [Origin::Linked, Origin::Dropped] {
         let instance = format!("actual-a2a-{origin:?}");
         let services = crate::root::serve::LateServices::new();
@@ -1014,7 +1178,15 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             assert!(kernel.entitled(&caller, Some(unit), "agent:vendor"));
             assert!(!kernel.entitled(&caller, Some(unit), "agent:other"));
         }
-        raw_relay_and_lifecycle(&raw, &dispatcher, &entry);
+        let observed = raw_relay_and_lifecycle(&raw, &dispatcher, &entry);
+        if let Some(expected) = &auxiliary_parity {
+            assert_eq!(
+                &observed, expected,
+                "SERVE and PROJECT preserve actual linked/dropped parity"
+            );
+        } else {
+            auxiliary_parity = Some(observed);
+        }
         drop(units);
         for unit in [7, 9, 11] {
             assert!(kernel.units().get(unit).is_none());
