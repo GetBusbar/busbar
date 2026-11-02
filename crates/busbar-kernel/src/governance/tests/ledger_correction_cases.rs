@@ -1089,6 +1089,8 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         third.recovery_event(child_id).unwrap().state,
         RecoveryState::Settled
     );
+    assert_eq!(third.quarantined_correction_negative_capacity(&key.id, 0).unwrap().0.billable_requests, 0,
+        "the fee negative already selected in the accepted branch consumes its original positive exposure");
     third.resume_correction_verdicts(&cm).unwrap();
     assert_eq!(backend.get_usage(&key.id, 0).unwrap(), row);
     assert_eq!(
