@@ -61,10 +61,9 @@ impl Drop for CorrectionRecoveryRun {
 }
 
 impl PendingCorrection {
-    fn receipt_retention_expired(&self, now: u64) -> bool {
-        now < self.sent_at
-            || now - self.sent_at >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
-            || self.started.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
+    fn receipt_retention_expired(&self) -> bool {
+        // The wall timestamp is durable evidence; only the original monotonic clock proves age.
+        self.started.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
     }
 
     pub(super) fn unresolved_day(&self) -> Option<u64> {
@@ -1023,9 +1022,9 @@ impl GovState {
         let age = if self.recovery_enabled() {
             self.recovery_retention_expired(pending.request.op_id.0)
         } else {
-            Some(pending.receipt_retention_expired(crate::store::now()))
+            Some(pending.receipt_retention_expired())
         };
-        if age != Some(false) || pending.receipt_retention_expired(crate::store::now()) {
+        if age != Some(false) || pending.receipt_retention_expired() {
             self.keep_correction_recovery(pending, RecoveryState::LandedUnknown)?;
             return Err(unresolved(if age.is_none() {
                 "receipt age is unknown after restart; landed-unknown operation requires an audited verdict"
