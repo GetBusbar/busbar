@@ -600,6 +600,8 @@ fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
 
 #[test]
 fn a_door_refusal_retains_its_exact_query_in_a_wiping_target() {
+    use std::sync::Arc;
+
     fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
 
     let seen = Arc::new(std::sync::Mutex::new(None));
