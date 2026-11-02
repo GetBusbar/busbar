@@ -470,6 +470,10 @@ pub(super) struct Custody {
     #[serde(default)]
     age_unknown: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    repost_operation_id: Option<[u8; 16]>,
+    #[serde(default)]
+    intent_applied: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     audit: Option<OperatorAudit>,
     targets: Vec<RawTarget>,
 }
@@ -481,6 +485,8 @@ pub(super) struct OperatorAudit {
     pub(super) reason: String,
     pub(super) expected_revision: u64,
     pub(super) landed: bool,
+    pub(super) sender_quiesced: bool,
+    pub(super) backend_quiesced: bool,
 }
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -519,7 +525,19 @@ impl Custody {
         decision: Decision,
     ) -> RecordStoreResult<Self> {
         let mut custody = Self::capture(gov, pending)?;
-        for target in &custody.targets {
+        custody.transfer_selected(decision, true)?;
+        Ok(custody)
+    }
+
+    pub(super) fn transfer_selected(
+        &mut self,
+        decision: Decision,
+        include_absorbed: bool,
+    ) -> RecordStoreResult<()> {
+        if self.terminal {
+            return Ok(());
+        }
+        for target in &mut self.targets {
             let selected = if decision == Decision::Applied {
                 &target.accepted
             } else {
@@ -533,15 +551,111 @@ impl Custody {
                 plain.merge(&ExactUsageDelta::of(&selected, false));
                 dated.merge(&ExactUsageDelta::of(&selected, true));
             }
+            if include_absorbed {
+                if let Some(held) = target.absorbed_plain.take() {
+                    plain.merge(&held.restore()?);
+                }
+                if let Some(held) = target.absorbed_dated.take() {
+                    dated.merge(&held.restore()?);
+                }
+            }
             if let Some(child) =
                 GovState::usage_recovery_child(&target.bucket, window, plain, dated)?
             {
-                custody.handoffs.push(child);
+                self.handoffs.push(child);
             }
         }
-        custody.decision = Some(decision.into());
-        custody.terminal = true;
-        Ok(custody)
+        self.decision = Some(decision.into());
+        self.intent_applied = decision == Decision::Applied;
+        self.terminal = true;
+        Ok(())
+    }
+
+    pub(super) fn attach_repost(&mut self, child: RecoveryChild) -> RecordStoreResult<()> {
+        if !self.terminal || child.kind != RecoveryKind::Correction || self.intent_applied {
+            return Err(unresolved(
+                "conditional successor does not follow an unlanded raw cut",
+            ));
+        }
+        self.repost_operation_id = Some(child.operation_id);
+        self.handoffs.push(child);
+        Ok(())
+    }
+
+    pub(super) fn repost_operation_id(&self) -> Option<[u8; 16]> {
+        self.repost_operation_id
+    }
+
+    pub(super) fn intent_applied(&self) -> bool {
+        self.intent_applied
+    }
+
+    pub(super) fn finish_repost(&mut self) -> RecordStoreResult<()> {
+        if !self.terminal || self.repost_operation_id.is_none() {
+            return Err(unresolved(
+                "no conditional successor owns the revalidated correction",
+            ));
+        }
+        for target in &mut self.targets {
+            let plain = target
+                .absorbed_plain
+                .take()
+                .map(RawDebt::restore)
+                .transpose()?
+                .unwrap_or_default();
+            let dated = target
+                .absorbed_dated
+                .take()
+                .map(RawDebt::restore)
+                .transpose()?
+                .unwrap_or_default();
+            if let Some(child) =
+                GovState::usage_recovery_child(&target.bucket, target.window, plain, dated)?
+            {
+                self.handoffs.push(child);
+            }
+        }
+        self.intent_applied = true;
+        Ok(())
+    }
+
+    pub(super) fn verdict_matches(&self, resolution: &RecoveryResolution) -> bool {
+        self.audit.as_ref().is_some_and(|audit| {
+            audit.actor == resolution.actor
+                && audit.reason == resolution.reason
+                && audit.landed == (resolution.verdict == RecoveryVerdict::Landed)
+                && audit.sender_quiesced == resolution.sender_quiesced
+                && audit.backend_quiesced == resolution.backend_quiesced
+        })
+    }
+
+    pub(super) fn retained_resolution(
+        &self,
+        event: &RecoveryEvent,
+    ) -> RecordStoreResult<RecoveryResolution> {
+        let audit = self
+            .audit
+            .as_ref()
+            .ok_or_else(|| unresolved("audited correction has no operator provenance"))?;
+        if !audit.sender_quiesced || !audit.backend_quiesced {
+            return Err(unresolved(
+                "audited correction has no explicit quiescence attestations",
+            ));
+        }
+        Ok(RecoveryResolution {
+            operation_id: event.operation_id,
+            body_fingerprint: event.body_fingerprint,
+            expected_revision: audit.expected_revision,
+            verdict: if audit.landed {
+                RecoveryVerdict::Landed
+            } else {
+                RecoveryVerdict::NotLanded
+            },
+            actor: audit.actor.clone(),
+            reason: audit.reason.clone(),
+            sender_quiesced: audit.sender_quiesced,
+            backend_quiesced: audit.backend_quiesced,
+        })
     }
 
     pub(super) fn validate_event(&self, event: &RecoveryEvent) -> RecordStoreResult<()> {
@@ -552,7 +666,42 @@ impl Custody {
         {
             return Err(unresolved("raw correction custody event identity mismatch"));
         }
+        let decision: Option<Decision> = self.decision.map(Into::into);
+        let valid = match event.state {
+            RecoveryState::Intent | RecoveryState::LandedUnknown => {
+                decision.is_none() && !self.terminal
+            }
+            RecoveryState::Applied => decision == Some(Decision::Applied) && !self.terminal,
+            RecoveryState::ConditionConflict => {
+                decision == Some(Decision::ConditionConflict) && !self.terminal
+            }
+            RecoveryState::VerdictLanded | RecoveryState::VerdictNotLanded => {
+                let landed = event.state == RecoveryState::VerdictLanded;
+                self.audit.as_ref().is_some_and(|audit| {
+                    audit.landed == landed && audit.sender_quiesced && audit.backend_quiesced
+                }) && decision
+                    == Some(if landed {
+                        Decision::Applied
+                    } else {
+                        Decision::ConditionConflict
+                    })
+            }
+            RecoveryState::Settled => self.terminal && decision.is_some(),
+        };
+        if !valid {
+            return Err(unresolved(
+                "raw correction custody contradicts its selected state",
+            ));
+        }
         Ok(())
+    }
+
+    pub(super) fn owns_quarantined_target(&self, bucket: &str, window: u64) -> bool {
+        !self.intent_applied
+            && self
+                .targets
+                .iter()
+                .any(|target| target.bucket == bucket && target.window == window)
     }
 
     pub(super) fn record_verdict(&mut self, resolution: &RecoveryResolution) {
@@ -565,6 +714,8 @@ impl Custody {
             reason: resolution.reason.clone(),
             expected_revision: resolution.expected_revision,
             landed: resolution.verdict == RecoveryVerdict::Landed,
+            sender_quiesced: resolution.sender_quiesced,
+            backend_quiesced: resolution.backend_quiesced,
         });
     }
 
@@ -660,6 +811,10 @@ impl Custody {
                 .unwrap_or_default(),
             terminal: false,
             age_unknown: false,
+            repost_operation_id: previous
+                .as_ref()
+                .and_then(|custody| custody.repost_operation_id),
+            intent_applied: false,
             audit: previous.and_then(|custody| custody.audit),
             targets,
         })
@@ -823,8 +978,8 @@ impl Custody {
         Ok(Some((remaining_plain, remaining_dated)))
     }
 
-    /// Reconstitute raw branches before hydration. The caller owns durable event ordering and
-    /// must not merge this baseline with an aggregate Store read as proof of the old outcome.
+    /// Validate immutable raw evidence and register quarantine, without installing old aggregate
+    /// snapshots over the fresh Store-backed admission state.
     pub(super) fn restore(
         self,
         _gov: &GovState,
@@ -855,6 +1010,12 @@ impl Custody {
             settled: Arc::new(std::sync::Mutex::new(None)),
             recovery_event: Arc::new(std::sync::Mutex::new(Some(event.clone()))),
             quarantined: true,
+            parent_operation_id: None,
+            authorization: Arc::new(std::sync::Mutex::new(None)),
+            verdict_pending: Arc::new(std::sync::atomic::AtomicBool::new(matches!(
+                event.state,
+                RecoveryState::VerdictLanded | RecoveryState::VerdictNotLanded
+            ))),
         })
     }
 }
