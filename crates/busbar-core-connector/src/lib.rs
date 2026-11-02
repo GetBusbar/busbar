@@ -101,6 +101,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
+use futures::FutureExt as _;
+
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
@@ -680,6 +682,8 @@ struct Held {
     /// THE REQUEST'S WHOLE BOUND until its answer (`OpenDesc::timeout_ms`; `None` = unbounded
     /// here): see [`Due`].
     due: Mutex<Option<Due>>,
+    /// The dial's original bound, including a pended judgement, independent of the request.
+    dial_due: Mutex<Option<Due>>,
     /// A held session's UPSTREAM LEG over a datagram framer's need ([`dialled`]): its exchange
     /// rides this connection's line, then its reads and writes are the leg's.
     dialled: Option<dialled::Dialled>,
@@ -704,9 +708,56 @@ fn due_at(now: std::time::Instant, timeout_ms: u64) -> Option<std::time::Instant
 /// it. Once an answer has begun the bound is spent: what bounds a streamed answer is its own class,
 /// as its reader keeps it, never this one (an answer cut mid-stream by a time-to-answer bound would
 /// be a different outcome from the one the reader chose).
+#[derive(Clone)]
 struct Due {
     at: std::time::Instant,
-    timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    timer: Arc<std::sync::OnceLock<DeadlineTimer>>,
+    /// Keep the polled Shared clone alive: dropping it would unregister its pending waker.
+    registered: Arc<Mutex<Option<DeadlineTimer>>>,
+}
+
+type DeadlineTimer = futures::future::Shared<std::pin::Pin<Box<tokio::time::Sleep>>>;
+
+impl Due {
+    fn new(at: std::time::Instant) -> Self {
+        Self {
+            at,
+            timer: Arc::default(),
+            registered: Arc::default(),
+        }
+    }
+
+    /// Poll the shared timer outside every host guard. Copies retain one clock across polls.
+    fn check(&self, waker: &Waker) -> Result<(), ConnError> {
+        if std::time::Instant::now() >= self.at {
+            return Err(ConnError::Timeout);
+        }
+        let _entered = crate::io::enter_process_runtime();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let mut timer = self
+                .timer
+                .get_or_init(|| {
+                    Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                        self.at,
+                    )))
+                    .shared()
+                })
+                .clone();
+            let ready = std::pin::Pin::new(&mut timer)
+                .poll(&mut Context::from_waker(waker))
+                .is_ready();
+            let previous = self
+                .registered
+                .lock()
+                .expect("deadline waiter")
+                .replace(timer);
+            drop(previous);
+            if ready {
+                return Err(ConnError::Timeout);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Held {
@@ -727,6 +778,7 @@ impl Held {
             redial: Mutex::new(None),
             lease: None,
             due: Mutex::new(None),
+            dial_due: Mutex::new(None),
             dialled: None,
         }
     }
@@ -745,47 +797,39 @@ impl Held {
     /// hold, = no bound of its own ([`due_at`]).
     fn bounded(self, timeout_ms: u64) -> Self {
         if let Some(at) = due_at(std::time::Instant::now(), timeout_ms) {
-            *self.due.lock().expect("due") = Some(Due { at, timer: None });
+            *self.due.lock().expect("due") = Some(Due::new(at));
         }
         self
     }
 
     /// [`ConnError::Timeout`] once the bound has passed; otherwise `waker` is woken when it passes.
     fn within_due(&self, waker: &Waker) -> Result<(), ConnError> {
-        let mut due = self.due.lock().expect("due");
-        let Some(d) = due.as_mut() else {
-            return Ok(());
-        };
-        if std::time::Instant::now() >= d.at {
-            return Err(ConnError::Timeout);
+        let due = self.due.lock().expect("due").clone();
+        due.map_or(Ok(()), |d| d.check(waker))
+    }
+
+    fn dial_bounded(self, timeout: Duration) -> Self {
+        if let Some(at) = std::time::Instant::now().checked_add(timeout) {
+            *self.dial_due.lock().expect("dial due") = Some(Due::new(at));
         }
-        if d.timer.is_none() {
-            // A conn read from a dispatcher worker arms its bound on the process's runtime timer,
-            // as its socket is on that runtime's reactor; with no runtime to arm it on, the bound
-            // is still held at every read.
-            let _entered = crate::io::enter_process_runtime();
-            if tokio::runtime::Handle::try_current().is_ok() {
-                d.timer = Some(Box::pin(tokio::time::sleep_until(
-                    tokio::time::Instant::from_std(d.at),
-                )));
-            }
-        }
-        if let Some(timer) = d.timer.as_mut() {
-            if timer
-                .as_mut()
-                .poll(&mut Context::from_waker(waker))
-                .is_ready()
-            {
-                return Err(ConnError::Timeout);
-            }
-        }
-        Ok(())
+        self
+    }
+
+    fn within_dial_due(&self, waker: &Waker) -> Result<(), ConnError> {
+        let due = self.dial_due.lock().expect("dial due").clone();
+        due.map_or(Ok(()), |d| d.check(waker))
+    }
+
+    fn landed(&self) {
+        let due = self.dial_due.lock().expect("dial due").take();
+        drop(due);
     }
 
     /// The answer began: the bound is spent.
     fn answered(&self) {
         let due = self.due.lock().expect("due").take();
         drop(due);
+        self.landed();
     }
 
     /// A terminal judgement, dial or replay spends the bound too: a later deadline cannot
@@ -1646,6 +1690,22 @@ impl Connector {
     /// Dial a held connection whose judgement has answered and replay its accepted writes.
     /// `Ok(false)`: still judging, crossing or replaying; `waker` is registered for progress.
     fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+        let ready = self.settle_dial(held, waker)?;
+        // A backpressured replay can already be connected. Its remaining accepted writes are
+        // bounded by the request/reply operation, never by a dial timer left running until drain.
+        if self.observe_landing(held, waker.unwrap_or_else(|| Waker::noop()))? && !ready {
+            if let Some(waker) = waker {
+                waker.wake_by_ref();
+            }
+        }
+        Ok(ready)
+    }
+
+    fn settle_dial(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+        if held.retired.load(Ordering::Acquire) {
+            return Err(ConnError::Closed);
+        }
+        held.within_dial_due(waker.unwrap_or_else(|| Waker::noop()))?;
         let mut wake = waker.cloned();
         let mut judging = held.judging.lock().expect("judging");
         if held.retired.load(Ordering::Acquire) {
@@ -1863,7 +1923,16 @@ impl Connector {
 
     /// `held` rides `conn`, just dialled, as its first exchange; a pooled exchange's line is held
     /// in its shard's pool from now on (shared once it multiplexes).
-    fn ride(&self, held: &Held, conn: Connection) -> Result<Arc<Line>, ConnError> {
+    fn ride(&self, held: &Held, mut conn: Connection) -> Result<Arc<Line>, ConnError> {
+        let at = held
+            .dial_due
+            .lock()
+            .expect("dial due")
+            .as_ref()
+            .map(|due| due.at);
+        if let Some(at) = at {
+            conn.bound_open(at);
+        }
         let line = Line::new(conn);
         let mut home = held.line.lock().expect("line");
         if held.retired.load(Ordering::Acquire) {
@@ -2014,6 +2083,11 @@ impl Connector {
         drop(home);
         drop(kept);
         self.let_go(held, &line, stream, false);
+        let at = std::time::Instant::now()
+            .checked_add(r.dial.open_timeout)
+            .map(Due::new);
+        let previous = std::mem::replace(&mut *held.dial_due.lock().expect("dial due"), at);
+        drop(previous);
         let planned = self.plan(&r.door, r.dial).map_err(|f| map(&f))?;
         if r.require_secure && !planned.secure() {
             return Err(ConnError::AuthRefused);
@@ -2054,10 +2128,17 @@ impl Connector {
         // THE WHOLE REQUEST'S BOUND, held before anything is read: past it the read is a timeout,
         // and short of it the reader is woken when it passes.
         held.within_due(waker)?;
-        let read = match &held.dialled {
+        let mut read = match &held.dialled {
             Some(d) => self.read_dialled(&held, d, waker, buf),
             None => self.read_held(&held, waker, buf),
         };
+        if matches!(read, Err(ConnError::Pending)) {
+            match self.observe_landing(&held, waker) {
+                Ok(true) => waker.wake_by_ref(),
+                Ok(false) => {}
+                Err(error) => read = Err(error),
+            }
+        }
         // A LEASE'S HEAD is the host's own (the generation of the program it reaches), served the
         // instant the lease opens: the far end's answer begins with the program's first bytes.
         if read
@@ -2067,6 +2148,28 @@ impl Connector {
             held.answered();
         }
         read
+    }
+
+    /// A read may finish the connect before any reply arrives. Retire its dial bound then,
+    /// leaving the independent whole-request bound and the loader's reply wait untouched.
+    fn observe_landing(&self, held: &Held, waker: &Waker) -> Result<bool, ConnError> {
+        if held.dial_due.lock().expect("dial due").is_none() {
+            return Ok(false);
+        }
+        let Some((line, stream)) = held.line() else {
+            return Ok(false);
+        };
+        match line.poll_landed(stream, &mut Context::from_waker(waker)) {
+            Poll::Ready(Ok(())) => {
+                held.landed();
+                Ok(true)
+            }
+            Poll::Ready(Err(f)) => {
+                held.answered();
+                Err(map(&f))
+            }
+            Poll::Pending => Ok(false),
+        }
     }
 
     /// One read of a held session's upstream leg: its exchange's pieces, judged (the far end's
@@ -2271,6 +2374,17 @@ fn without_userinfo(target: &str) -> Option<String> {
 }
 
 impl DeclaredConns for Connector {
+    fn open_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        self.open_timed(caller, need, desc, require_secure, Some(dial_timeout_ms))
+    }
+
     fn hold_authority(&self, owner: InstanceId) {
         self.authority_held
             .lock()
@@ -2465,7 +2579,10 @@ impl DeclaredConns for Connector {
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         match line.poll_landed(stream, &mut Context::from_waker(&waker)) {
-            Poll::Ready(Ok(())) => Ok(()),
+            Poll::Ready(Ok(())) => {
+                held.landed();
+                Ok(())
+            }
             Poll::Ready(Err(f)) => Err(map(&f)),
             Poll::Pending => Err(ConnError::Pending),
         }
@@ -2921,7 +3038,9 @@ impl Connector {
         }
         let (conn, judging) =
             self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
-        let held = Held::over(None, judging, pooled).bounded(desc.timeout_ms);
+        let held = Held::over(None, judging, pooled)
+            .bounded(desc.timeout_ms)
+            .dial_bounded(open_timeout);
         if let Some(conn) = conn {
             self.ride(&held, conn)?;
         }
@@ -2929,24 +3048,33 @@ impl Connector {
     }
 }
 
-impl Conns for Connector {
-    fn open(
-        &self,
-        caller: InstanceId,
-        need: NeedId,
-        desc: &OpenDesc<'_>,
-    ) -> Result<ConnId, ConnError> {
-        self.open_with_security(caller, need, desc, false)
-    }
-
-    fn open_with_security(
+impl Connector {
+    fn open_timed(
         &self,
         caller: InstanceId,
         need: NeedId,
         desc: &OpenDesc<'_>,
         require_secure: bool,
+        dial_timeout_ms: Option<u64>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
+        let declared_timeout_ms = self
+            .declared
+            .lock()
+            .expect("declared needs")
+            .get(&(caller, need))
+            .map_or(0, |(spec, _)| spec.timeout_ms);
+        let dial_timeout_ms = dial_timeout_ms.unwrap_or(desc.timeout_ms);
+        let dial_timeout_ms = if dial_timeout_ms == 0 {
+            declared_timeout_ms
+        } else {
+            dial_timeout_ms
+        };
+        let open_timeout = if dial_timeout_ms == 0 {
+            DEFAULT_OPEN_TIMEOUT
+        } else {
+            Duration::from_millis(dial_timeout_ms)
+        };
         let authority_held = self
             .authority_held
             .lock()
@@ -3005,7 +3133,7 @@ impl Conns for Connector {
                 target: program.command.clone(),
                 tls: None,
                 alpn,
-                open_timeout: DEFAULT_OPEN_TIMEOUT,
+                open_timeout,
                 opening: Some((
                     desc.fields
                         .iter()
@@ -3027,7 +3155,9 @@ impl Conns for Connector {
             return self.slab.insert(
                 caller,
                 need,
-                Held::over(Some((line, EXCHANGE_STREAM)), None, None).bounded(desc.timeout_ms),
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None)
+                    .bounded(desc.timeout_ms)
+                    .dial_bounded(open_timeout),
             );
         }
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
@@ -3038,11 +3168,6 @@ impl Conns for Connector {
         }
         .to_owned();
         let target = named.as_str();
-        let open_timeout = if desc.timeout_ms == 0 {
-            DEFAULT_OPEN_TIMEOUT
-        } else {
-            Duration::from_millis(desc.timeout_ms)
-        };
         // A DATAGRAM FRAMER'S NEED: the composed open of a held session's upstream leg.
         if door.facts().datagram {
             let held = self.open_dialled(
@@ -3093,7 +3218,9 @@ impl Conns for Connector {
             return self.slab.insert(
                 caller,
                 need,
-                Held::over(Some((line, EXCHANGE_STREAM)), None, None).bounded(desc.timeout_ms),
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None)
+                    .bounded(desc.timeout_ms)
+                    .dial_bounded(open_timeout),
             );
         }
         let held = self.dial_exchange(
@@ -3121,6 +3248,27 @@ impl Conns for Connector {
             }
         }
         inserted
+    }
+}
+
+impl Conns for Connector {
+    fn open(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        self.open_with_security(caller, need, desc, false)
+    }
+
+    fn open_with_security(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<ConnId, ConnError> {
+        self.open_timed(caller, need, desc, require_secure, None)
     }
 
     /// A write is taken whole, short, or (no room under
@@ -3172,7 +3320,13 @@ impl Conns for Connector {
             return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
-        match line.emit(stream, bytes, end, text) {
+        let got = line.emit(stream, bytes, end, text);
+        if got.is_ok() {
+            // Bytes already accepted keep their count even if observing landing finds a later
+            // failure; the line retains that failure for the reader, with no replay.
+            let _ = self.observe_landing(&held, Waker::noop());
+        }
+        match got {
             Ok(0) if !bytes.is_empty() => Err(ConnError::Pending),
             got => got.map_err(|f| map(&f)),
         }
@@ -3221,7 +3375,13 @@ impl Conns for Connector {
                 return Ok(at);
             };
             if line.poll_ready(stream, &mut cx).is_ready() {
+                let _ = self.observe_landing(&held, &waker);
                 return Ok(at);
+            }
+            match self.observe_landing(&held, &waker) {
+                Ok(true) => waker.wake_by_ref(),
+                Err(_) => return Ok(at),
+                Ok(false) => {}
             }
         }
         Err(ConnError::Pending)

@@ -599,13 +599,9 @@ fn due(c: &Connector, id: ConnId) -> Option<std::time::Instant> {
 
 /// The test's own hand on lease `id`'s bound: moved to `at`, as the clock would bring it there.
 fn set_due(c: &Connector, id: ConnId, at: std::time::Instant) {
-    *c.slab
-        .get(OWNER, id)
-        .expect("a live lease")
-        .1
-        .due
-        .lock()
-        .expect("due") = Some(crate::Due { at, timer: None });
+    let held = c.slab.get(OWNER, id).expect("a live lease").1;
+    let previous = held.due.lock().expect("due").replace(crate::Due::new(at));
+    drop(previous);
 }
 
 fn open_bounded(c: &Connector, target: &str) -> ConnId {

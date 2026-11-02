@@ -58,6 +58,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
+use futures::FutureExt as _;
+
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
     ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
@@ -367,6 +369,12 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 return Answered::fault();
             };
             let member = String::from_utf8_lossy(member).into_owned();
+            let need_timeout_ms = st.need_timeout(NeedId(i.need));
+            let dial_timeout_ms = if i.timeout_ms == 0 {
+                need_timeout_ms
+            } else {
+                u64::from(i.timeout_ms)
+            };
             if table.framed(id, NeedId(i.need)) {
                 // A FRAMED need opens when its request is whole (`WRITE_REQUEST`'s end): its
                 // request is the connection's opening message.
@@ -379,11 +387,13 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                             target: target.into_owned(),
                             within,
                             member,
+                            dial_timeout_ms,
                             head: None,
                             body: Vec::new(),
                         },
                         headed: false,
                         ended: false,
+                        reply_timeout_ms: need_timeout_ms,
                     },
                 );
                 return Answered::ready(stream, 0);
@@ -395,18 +405,23 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             // it connects the call is PENDING on the caller's ticket, and its re-call (a new
             // handle, the same ticket) answers the same dial: nothing is dialled twice.
             let ticket = head.handle.ticket;
-            let wanted = (NeedId(i.need), target.into_owned(), within, member);
+            let wanted = (
+                NeedId(i.need),
+                target.into_owned(),
+                within,
+                member,
+                dial_timeout_ms,
+            );
             let conn = match st.dialling(id, table, ticket, &wanted) {
                 Some(conn) => conn,
                 None => {
                     let desc = OpenDesc {
                         target: &wanted.1,
                         within: &wanted.2,
-                        timeout_ms: u64::from(i.timeout_ms),
                         member: &wanted.3,
                         ..OpenDesc::default()
                     };
-                    match table.open(id, wanted.0, &desc) {
+                    match table.open_request(id, wanted.0, &desc, false, dial_timeout_ms) {
                         Ok(conn) => conn,
                         Err(e) => return refusal(e),
                     }
@@ -414,10 +429,14 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             };
             // A call on no ticket may not pend: its stream is answered with the dial in flight.
             if ticket.is_none() {
+                st.record_raw(conn, need_timeout_ms);
                 return Answered::ready(conn.0, 0);
             }
             match table.landed(id, conn, conn_ticket(ticket)) {
-                Ok(()) => Answered::ready(conn.0, 0),
+                Ok(()) => {
+                    st.record_raw(conn, need_timeout_ms);
+                    Answered::ready(conn.0, 0)
+                }
                 Err(ConnError::Pending) => {
                     lock(&st.dialling).insert(ticket, (wanted, conn));
                     refusal(ConnError::Pending)
@@ -434,8 +453,8 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
 }
 
 /// What a pending `ESTABLISH` asked for: the need, the target, the `within` set and the
-/// registration.
-type Wanted = (NeedId, String, Vec<IpAddr>, String);
+/// registration, with its effective dial bound.
+type Wanted = (NeedId, String, Vec<IpAddr>, String, u64);
 
 impl ConnState {
     /// The dial a pending `ESTABLISH` on `ticket` left in flight, taken, when the re-call asks for
@@ -474,14 +493,15 @@ impl ConnState {
                 .filter_map(|k| all.remove(k).map(|(_, conn)| conn))
                 .collect()
         };
-        Closes(table.filter(|_| !left.is_empty()).cloned(), left)
+        let waits = self.take_waits(|handle, _| gone(&handle.ticket));
+        Closes(table.filter(|_| !left.is_empty()).cloned(), left, waits)
     }
 }
 
-/// DIALS TO CLOSE ON A TABLE, closed when this drops. A close may cross into a transport door
+/// DIALS TO CLOSE ON A TABLE and pending reply timers to retire when this drops. A close may cross into a transport door
 /// (THE DESIGN §11.13 M1), so a caller under a lock keeps this until it has let the lock go.
 #[must_use = "dropped, it closes its dials at once"]
-pub(crate) struct Closes(Option<ArmedConns>, Vec<ConnId>);
+pub(crate) struct Closes(Option<ArmedConns>, Vec<ConnId>, Vec<ReplyWait>);
 
 impl Drop for Closes {
     fn drop(&mut self) {
@@ -490,6 +510,8 @@ impl Drop for Closes {
                 let _ = table.close(*id, conn);
             }
         }
+        let waits = std::mem::take(&mut self.2);
+        drop(waits);
     }
 }
 
@@ -516,6 +538,9 @@ service!(read, slot, service::READ, IoIn, |id, table, st, head, i| {
         Ok(c) => c,
         Err(e) => return refusal(e).into(),
     };
+    if let Err(error) = st.wait_reply(head.handle, i.stream) {
+        return refusal(error).into();
+    }
     match table.read(id, conn, ticket, buf) {
         Ok(piece) => {
             let n = piece.len.min(buf.len());
@@ -563,6 +588,8 @@ service!(
     |id, table, st, _, i| {
         lock(&st.facts).remove(&i.stream);
         let held = st.streams().remove(&i.stream);
+        let waits = st.take_waits(|_, wait| wait.stream == i.stream);
+        drop(waits);
         let conn = match held.map(|s| s.conn) {
             // Never opened, or refused: nothing on the table to close.
             // (A request waiting on its auth call drops the call: a client drop.)
@@ -764,6 +791,10 @@ type ArmedConns = (InstanceId, Arc<dyn DeclaredConns>);
 /// its own thread.
 #[derive(Default)]
 pub(crate) struct ConnState {
+    /// The ticket supplier's context, even when a borrowed table binding names another owner.
+    context: OnceLock<HostCtx>,
+    /// Statement metadata, fixed at bind; open/refresh redeclare that same signed need.
+    need_timeouts: OnceLock<Box<[u64]>>,
     /// The instance's streams the host holds ([`Stream`]), by stream id.
     streams: Mutex<HashMap<u64, Stream>>,
     /// The facts strings its streams were answered ([`HeldFacts`]).
@@ -773,6 +804,47 @@ pub(crate) struct ConnState {
     dialling: Mutex<HashMap<Ticket, (Wanted, ConnId)>>,
     /// Every ticketed service's answer ([`Kept`]), by ticket, then by the handle's issue order.
     kept: Mutex<HashMap<Ticket, HashMap<u32, Kept>>>,
+    /// Each pending read's original bound, by full completion identity, never restarted by poll.
+    waits: Mutex<HashMap<CompletionHandle, ReplyWait>>,
+}
+
+#[derive(Clone)]
+struct ReplyWait {
+    stream: u64,
+    at: std::time::Instant,
+    timer: Arc<OnceLock<ReplyTimer>>,
+    /// Shared unregisters a clone's waker when that clone drops; retain the polled registration.
+    registered: Arc<Mutex<Option<ReplyTimer>>>,
+}
+
+type ReplyTimer = futures::future::Shared<std::pin::Pin<Box<tokio::time::Sleep>>>;
+
+impl ReplyWait {
+    fn check(&self, waker: Option<&std::task::Waker>) -> Result<(), ConnError> {
+        if std::time::Instant::now() >= self.at {
+            return Err(ConnError::Timeout);
+        }
+        if let Some(waker) = waker.filter(|_| tokio::runtime::Handle::try_current().is_ok()) {
+            let mut timer = self
+                .timer
+                .get_or_init(|| {
+                    Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                        self.at,
+                    )))
+                    .shared()
+                })
+                .clone();
+            let ready = std::pin::Pin::new(&mut timer)
+                .poll(&mut std::task::Context::from_waker(waker))
+                .is_ready();
+            let previous = lock(&self.registered).replace(timer);
+            drop(previous);
+            if ready {
+                return Err(ConnError::Timeout);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `m`, locked; a poisoned lock is still the state it guards.
@@ -826,6 +898,79 @@ impl From<Answered> for Kept {
 }
 
 impl ConnState {
+    pub(crate) fn declare_needs(
+        &self,
+        ctx: HostCtx,
+        needs: &[busbar_contract::abi::mechanism::rendering::ReadNeed],
+    ) {
+        let _ = self.context.set(ctx);
+        let _ = self
+            .need_timeouts
+            .set(needs.iter().map(|n| n.timeout_ms).collect());
+    }
+
+    fn need_timeout(&self, need: NeedId) -> u64 {
+        self.need_timeouts
+            .get()
+            .and_then(|needs| needs.get(need.0 as usize))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn record_raw(&self, conn: ConnId, reply_timeout_ms: u64) {
+        self.streams().entry(conn.0).or_insert(Stream {
+            conn: Conn::Open(conn),
+            headed: false,
+            ended: false,
+            reply_timeout_ms,
+        });
+    }
+
+    fn wait_reply(&self, mut handle: CompletionHandle, stream: u64) -> Result<(), ConnError> {
+        if handle.ticket.is_none() {
+            return Ok(());
+        }
+        let streams = self.streams();
+        let timeout_ms = streams.get(&stream).map_or(0, |s| s.reply_timeout_ms);
+        if timeout_ms == 0 {
+            return Ok(());
+        }
+        let Some(at) =
+            std::time::Instant::now().checked_add(std::time::Duration::from_millis(timeout_ms))
+        else {
+            return Ok(());
+        };
+        handle._reserved = 0;
+        let wait = lock(&self.waits)
+            .entry(handle)
+            .or_insert_with(|| ReplyWait {
+                stream,
+                at,
+                timer: Arc::default(),
+                registered: Arc::default(),
+            })
+            .clone();
+        drop(streams);
+        if wait.stream != stream {
+            return Err(ConnError::Refused);
+        }
+        let waker = self
+            .context
+            .get()
+            .and_then(|ctx| ticket_waker(*ctx, handle.ticket));
+        wait.check(waker.as_ref())
+    }
+
+    fn take_waits(&self, gone: impl Fn(&CompletionHandle, &ReplyWait) -> bool) -> Vec<ReplyWait> {
+        let mut all = lock(&self.waits);
+        let keys: Vec<_> = all
+            .iter()
+            .filter(|(h, w)| gone(h, w))
+            .map(|(h, _)| *h)
+            .collect();
+        keys.iter().filter_map(|h| all.remove(h)).collect()
+    }
+
     /// The instance's held streams, locked.
     fn streams(&self) -> MutexGuard<'_, HashMap<u64, Stream>> {
         lock(&self.streams)
@@ -864,6 +1009,9 @@ impl ConnState {
         let mut k = run();
         let a = k.answer;
         if a.outcome != Outcome::Pending {
+            let waits =
+                self.take_waits(|handle, _| handle.ticket == h.ticket && handle.seq == h.seq);
+            drop(waits);
             k.delivered = a.needed_bytes == 0 && a.needed_items == 0;
             lock(&self.kept)
                 .entry(h.ticket)
@@ -1015,7 +1163,7 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Forgotten) {
             (
                 0,
                 Forgotten {
-                    _closes: Closes(None, Vec::new()),
+                    _closes: Closes(None, Vec::new(), Vec::new()),
                     _binding: None,
                 },
             )
@@ -1091,6 +1239,7 @@ struct Head {
     target: Vec<u8>,
     fields: Vec<(String, Vec<u8>)>,
     timeout_ms: u64,
+    dial_timeout_ms: u64,
 }
 
 /// Where a stream is.
@@ -1105,6 +1254,7 @@ enum Conn {
         within: Vec<IpAddr>,
         /// The registration the stream names (`EstablishIn::member`); empty = none.
         member: String,
+        dial_timeout_ms: u64,
         head: Option<Head>,
         body: Vec<u8>,
     },
@@ -1146,6 +1296,7 @@ impl std::fmt::Debug for Authing {
 #[derive(Debug)]
 struct Stream {
     conn: Conn,
+    reply_timeout_ms: u64,
     /// The reply's head was read.
     headed: bool,
     /// The reply's terminal piece was read.
@@ -1197,7 +1348,7 @@ fn resolve(
     if stream & HELD == 0 {
         return Ok(ConnId(stream));
     }
-    let (need, target, within, member) = {
+    let (need, target, within, member, dial_timeout_ms) = {
         let mut all = st.streams();
         let s = all.get_mut(&stream).ok_or(ConnError::Closed)?;
         match &mut s.conn {
@@ -1211,6 +1362,7 @@ fn resolve(
                 target,
                 within,
                 member,
+                dial_timeout_ms,
                 ..
             } => {
                 let taken = (
@@ -1218,6 +1370,7 @@ fn resolve(
                     std::mem::take(target),
                     std::mem::take(within),
                     std::mem::take(member),
+                    *dial_timeout_ms,
                 );
                 s.conn = Conn::Opening;
                 taken
@@ -1231,7 +1384,7 @@ fn resolve(
         member: &member,
         ..OpenDesc::default()
     };
-    let opened = table.open(id, need, &desc);
+    let opened = table.open_request(id, need, &desc, false, dial_timeout_ms);
     install(
         st,
         id,
@@ -1302,6 +1455,7 @@ extern "C" fn write_request(
                 target,
                 within,
                 member,
+                dial_timeout_ms,
                 head,
                 body,
             } = &mut s.conn
@@ -1329,6 +1483,7 @@ extern "C" fn write_request(
                         target: words.to_vec(),
                         fields: lines,
                         timeout_ms: piece.timeout_ms,
+                        dial_timeout_ms: *dial_timeout_ms,
                     });
                     Answered::ready(0, bytes.len() as u64)
                 }
@@ -1523,7 +1678,13 @@ fn open_with(
         unit: 0,
     };
     table
-        .open_with_security(id, need, &desc, auth.iter().any(|f| f.require_secure))
+        .open_request(
+            id,
+            need,
+            &desc,
+            auth.iter().any(|f| f.require_secure),
+            h.dial_timeout_ms,
+        )
         .map_or_else(Conn::Failed, Conn::Open)
 }
 
@@ -1676,6 +1837,12 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
                 return Kept::from(Answered::fault());
             };
+            if let Err(error) = st.wait_reply(head.handle, i.stream) {
+                if let Some(stream) = st.streams().get_mut(&i.stream) {
+                    stream.ended = true;
+                }
+                return Kept::from(refusal(error));
+            }
             let (piece, answer) = reply(ctx, st, id, table, head, i.stream, buf);
             let mut read = None;
             if let Some(p) = piece {
@@ -1762,6 +1929,7 @@ fn reply(
         let mut all = st.streams();
         let s = all.entry(stream).or_insert(Stream {
             conn: Conn::Open(ConnId(stream)),
+            reply_timeout_ms: 0,
             headed: false,
             ended: false,
         });

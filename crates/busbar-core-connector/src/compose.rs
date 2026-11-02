@@ -447,6 +447,14 @@ fn agreed_was_offered(offer: &[u8], agreed: Option<&[u8]>) -> Result<(), Failure
 }
 
 impl Connection {
+    /// Keep the original dial bound after a pended judgement; the TLS clock cannot restart at
+    /// the later carrier dial. A connection's earlier bound, if any, remains authoritative.
+    pub(crate) fn bound_open(&mut self, at: Instant) {
+        if let Some(existing) = self.open_deadline {
+            self.open_deadline = Some(existing.min(at));
+        }
+    }
+
     /// Dial `dial.target` through `door`, an IP literal dialled as written and judged by no
     /// destination judge: the whole endpoint check ([`endpoint::check`]: no cloud metadata or
     /// link-local host), the entry's `locate`, the whole endpoint check on the authority it named,
