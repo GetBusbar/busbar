@@ -1591,11 +1591,8 @@ impl KernelServices {
                 | ChainMutation::Check { kind, scope, life } => (*kind, scope, life),
             };
             let schema = schema_at(kind, true)?;
-            let mut scope = zeroize::Zeroizing::new(
-                crate::host_chains::scope_of(scope)
-                    .ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?
-                    .to_string(),
-            );
+            let scope =
+                crate::host_chains::scope_of(scope).ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?;
             let mut life = zeroize::Zeroizing::new(life.clone());
             let mut action = zeroize::Zeroizing::new(match chain {
                 ChainMutation::Append { content, .. } => {
@@ -1604,7 +1601,9 @@ impl KernelServices {
                 ChainMutation::Drop { .. } => ConditionalChainAction::Drop,
                 ChainMutation::Check { .. } => ConditionalChainAction::Check,
             });
-            let address = (schema.as_str(), scope.to_string());
+            // The candidate's wiping owner outlives this temporary lookup table. Borrow its
+            // scope instead of creating another raw scope allocation in the map.
+            let address = (schema.as_str(), scope);
             if let Some(&index) = chain_scopes.get(&address) {
                 let previous: &mut crate::host_chains::ConditionalChain = &mut chains[index];
                 if previous.life != *life {
@@ -1624,7 +1623,7 @@ impl KernelServices {
             chains.reserve(1);
             chains.push(crate::host_chains::ConditionalChain {
                 schema,
-                scope: std::mem::take(&mut *scope),
+                scope: scope.to_string(),
                 framing,
                 life: std::mem::replace(
                     &mut *life,
