@@ -335,9 +335,16 @@ fn ranking_settings(
     name: &str,
 ) -> Result<serde_json::Value, String> {
     let settings = serde_json::json!({ "policy": name });
-    let (facts, problems) = axis
-        .probe(name, name, &settings)
-        .ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
+    ranking_settings_from(name, axis.probe(name, name, &settings))
+}
+
+pub(crate) fn ranking_settings_from(
+    name: &str,
+    probed: Option<busbar_contract::hook_calls::Probed>,
+) -> Result<serde_json::Value, String> {
+    let settings = serde_json::json!({"policy":name});
+    let (facts, problems) =
+        probed.ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
     let facts = facts.ok_or_else(|| format!("ranking strategy '{name}' has no hook metadata"))?;
     if facts.class != busbar_contract::abi::hook::CLASS_GATE
         || !facts.words.iter().any(|word| word == name)
@@ -367,11 +374,25 @@ pub(crate) fn ranking_on_axis(
 > {
     let settings = ranking_settings(axis, name)?;
     let budget = axis.call_budget();
-    let calls = axis.open(name, name, &settings, budget)?;
+    let (calls, _) = open_ranked(
+        name,
+        &settings,
+        budget,
+        |module, label, settings, budget| axis.open(module, label, settings, budget),
+    )?;
     Ok((
         crate::plane_driver::hooks::policy::HookPolicy::policy(calls, name),
         budget,
     ))
+}
+
+pub(crate) fn open_ranked<T>(
+    name: &str,
+    settings: &serde_json::Value,
+    budget: std::time::Duration,
+    open: impl FnOnce(&str, &str, &serde_json::Value, std::time::Duration) -> Result<T, String>,
+) -> Result<(T, std::time::Duration), String> {
+    open(name, name, settings, budget).map(|opened| (opened, budget))
 }
 
 pub(crate) fn validate_pool_strategies(

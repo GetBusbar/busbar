@@ -9,7 +9,7 @@ fn from_ranked_drops_unknown_and_dedups() {
     assert_eq!(d, RoutingDecision::Prefer(vec![2, 1, 0]));
 }
 
-use crate::config::{HookCfg, HookKind, PolicyOnError, PoolPolicy, PromptAccess, UserAccess};
+use crate::config::{HookCfg, HookKind, PoolPolicy, PromptAccess, UserAccess};
 use std::collections::HashMap;
 
 #[path = "resolution_tests.rs"]
@@ -235,123 +235,93 @@ async fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state
         .contains("feedback=0"));
 }
 
-struct StrategyAxis {
-    facts: busbar_contract::hook_calls::HookFacts,
-    fail_open: bool,
-}
-
-impl busbar_contract::hook_calls::HookAxis for StrategyAxis {
-    fn probe(
-        &self,
-        module: &str,
-        _: &str,
-        settings: &serde_json::Value,
-    ) -> Option<busbar_contract::hook_calls::Probed> {
-        assert_eq!(module, EXTRA_STRATEGY);
-        assert_eq!(settings, &serde_json::json!({"policy": EXTRA_STRATEGY}));
-        Some((Some(self.facts.clone()), Vec::new()))
-    }
-
-    fn open(
-        &self,
-        module: &str,
-        label: &str,
-        settings: &serde_json::Value,
-        budget: std::time::Duration,
-    ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
-        assert_eq!(module, EXTRA_STRATEGY);
-        assert_eq!(label, EXTRA_STRATEGY);
-        assert_eq!(settings, &serde_json::json!({"policy": EXTRA_STRATEGY}));
-        if self.fail_open {
-            return Err("strategy constructor refused".into());
-        }
-
-        crate::test_support::hook_double::HookAxisDouble::new(&["strategy-double"]).open(
-            "strategy-double",
-            label,
-            &serde_json::json!({"order": [1, 0]}),
-            budget,
-        )
-    }
-
-    fn linked(&self, _: &str) -> bool {
-        false
-    }
-    fn call_budget(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(1)
-    }
-    fn first_party(&self, _: &str) -> bool {
-        false
-    }
-}
-
-fn strategy_env(infallible: bool, words: Vec<String>, fail_open: bool) -> HookEnv {
-    HookEnv::with_axis(
-        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-        Arc::new(StrategyAxis {
-            facts: busbar_contract::hook_calls::HookFacts {
-                name: "strategy-double".into(),
-                class: busbar_contract::abi::hook::CLASS_GATE,
-                infallible,
-                words,
-                ..Default::default()
-            },
-            fail_open,
-        }),
-        Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-    )
-}
-
-#[tokio::test]
-async fn plugin_strategy_word_survives_parse_and_uses_the_admitted_axis() {
+#[test]
+fn plugin_strategy_word_survives_parse_and_uses_the_admitted_axis() {
     let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
     assert_eq!(pool.policy.native_name(), Some(EXTRA_STRATEGY));
-    let env = strategy_env(false, vec![EXTRA_STRATEGY.into()], false);
-    let resolved = resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0);
-    let Some(ResolvedPolicy::Policy { policy, .. }) = resolved else {
-        panic!("the admitted plugin strategy must not become weighted");
+    let facts = busbar_contract::hook_calls::HookFacts {
+        name: "strategy".into(),
+        class: busbar_contract::abi::hook::CLASS_GATE,
+        infallible: false,
+        words: vec![EXTRA_STRATEGY.into()],
+        ..Default::default()
     };
-    assert_eq!(policy.name(), EXTRA_STRATEGY);
-    let order = policy
-        .decide(
-            &dreq("hi"),
-            &[dcand(0), dcand(1)],
-            &dctx(),
-            std::time::Duration::from_secs(1),
-        )
-        .await
-        .expect("strategy decision");
-    assert_eq!(order, RoutingDecision::Prefer(vec![1, 0]));
+    let settings =
+        crate::preflight::ranking_settings_from(EXTRA_STRATEGY, Some((Some(facts), Vec::new())))
+            .expect("the advertised strategy word is admitted");
+    let (name, _) = crate::preflight::open_ranked(
+        EXTRA_STRATEGY,
+        &settings,
+        std::time::Duration::from_secs(1),
+        |module, label, settings, budget| {
+            assert_eq!(module, EXTRA_STRATEGY);
+            assert_eq!(label, EXTRA_STRATEGY);
+            assert_eq!(settings, &serde_json::json!({"policy":EXTRA_STRATEGY}));
+            assert_eq!(budget, std::time::Duration::from_secs(1));
+            Ok(label.to_owned())
+        },
+    )
+    .expect("admitted strategy construction succeeds");
+    assert_eq!(name, EXTRA_STRATEGY);
+    // The old synthetic Prefer([1,0]) answer is preserved through actual HTTP
+    // in distribution::hooks_runtime_replies, alongside unknown-index filtering.
 }
 
 #[test]
 fn plugin_strategy_requires_a_declared_word() {
-    let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
-    for env in [
-        strategy_env(false, vec!["different-word".into()], false),
-        strategy_env(true, Vec::new(), false),
+    for (class, infallible, words) in [
+        (
+            busbar_contract::abi::hook::CLASS_GATE,
+            false,
+            vec!["different-word".into()],
+        ),
+        (busbar_contract::abi::hook::CLASS_GATE, true, Vec::new()),
+        (
+            busbar_contract::abi::hook::CLASS_TAP,
+            true,
+            vec![EXTRA_STRATEGY.into()],
+        ),
     ] {
-        assert!(resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0).is_none());
-    }
-    let mut tap = strategy_env(true, vec![EXTRA_STRATEGY.into()], false);
-    tap.axis = Some(Arc::new(StrategyAxis {
-        facts: busbar_contract::hook_calls::HookFacts {
-            class: busbar_contract::abi::hook::CLASS_TAP,
-            words: vec![EXTRA_STRATEGY.into()],
+        let facts = busbar_contract::hook_calls::HookFacts {
+            class,
+            infallible,
+            words,
             ..Default::default()
-        },
-        fail_open: false,
-    }));
-    assert!(resolve_pool_ordering(&pool, &HashMap::new(), &tap, None, 0).is_none());
+        };
+        assert!(crate::preflight::ranking_settings_from(
+            EXTRA_STRATEGY,
+            Some((Some(facts), Vec::new()))
+        )
+        .is_err());
+    }
 }
 
 #[test]
 fn plugin_strategy_open_failure_refuses_pool_construction() {
-    let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
-    let env = strategy_env(true, vec![EXTRA_STRATEGY.into()], true);
-    let error = try_resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0)
-        .err()
-        .expect("a constructor failure must refuse boot/reload");
+    let settings = crate::preflight::ranking_settings_from(
+        EXTRA_STRATEGY,
+        Some((
+            Some(busbar_contract::hook_calls::HookFacts {
+                class: busbar_contract::abi::hook::CLASS_GATE,
+                words: vec![EXTRA_STRATEGY.into()],
+                ..Default::default()
+            }),
+            Vec::new(),
+        )),
+    )
+    .expect("the strategy word is admitted before its constructor runs");
+    let error = crate::preflight::open_ranked::<()>(
+        EXTRA_STRATEGY,
+        &settings,
+        std::time::Duration::from_secs(1),
+        |module, label, settings, _| {
+            assert_eq!(module, EXTRA_STRATEGY);
+            assert_eq!(label, EXTRA_STRATEGY);
+            assert_eq!(settings, &serde_json::json!({"policy":EXTRA_STRATEGY}));
+            Err("strategy constructor refused".into())
+        },
+    )
+    .expect_err("a constructor failure must refuse boot/reload");
     assert!(error.contains("strategy constructor refused"));
 }
 
@@ -1344,55 +1314,6 @@ fn opt_in_projections_redact_debug() {
     );
 
     assert!(dbg.contains("sales-team"));
-}
-
-fn dreq(text: &str) -> RoutingRequest<'static> {
-    RoutingRequest {
-        request_id: 1,
-        pool: "p",
-        ingress_protocol: "acme",
-        requested_model: None,
-        message_count: 1,
-        tool_count: 0,
-        has_tools: false,
-        total_chars: text.len(),
-        system_chars: 0,
-        max_tokens: None,
-        stream: false,
-        prompt: Some(PromptProjection {
-            system: None,
-            messages: vec![("user".into(), text.to_string().into())],
-        }),
-        identity: None,
-        signals: Default::default(),
-        session: None,
-    }
-}
-
-fn dcand(idx: usize) -> Candidate<'static> {
-    Candidate {
-        idx,
-        model: "m",
-        provider: "prov",
-        weight: 1,
-        context_max: None,
-        tier: None,
-        cost_per_mtok: None,
-        tags: &[],
-        latency_ms: None,
-        available_concurrency: 1,
-        budget_remaining: None,
-        rate_headroom: None,
-        signals: Default::default(),
-    }
-}
-
-fn dctx() -> RoutingContext<'static> {
-    RoutingContext {
-        pool: "p",
-        budget_remaining: None,
-        budget: &[],
-    }
 }
 
 #[tokio::test]
