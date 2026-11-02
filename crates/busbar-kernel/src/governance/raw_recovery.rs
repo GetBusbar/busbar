@@ -305,6 +305,7 @@ impl GovState {
     }
 
     pub(super) fn resume_raw_recovery(&self) -> RecordStoreResult<()> {
+        let mut first_error = None;
         loop {
             let before: Vec<_> = self
                 .selected_recovery_events()
@@ -312,9 +313,14 @@ impl GovState {
                 .map(|event| (event.operation_id, event.revision))
                 .collect();
             for event in self.selected_recovery_events() {
-                self.select_recovery_children(&event, true)?;
+                if let Err(error) = self.select_recovery_children(&event, true) {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
                 if event.kind != RecoveryKind::Correction && event.state != RecoveryState::Settled {
-                    self.drive_raw_recovery(event.operation_id)?;
+                    if let Err(error) = self.drive_raw_recovery(event.operation_id) {
+                        first_error.get_or_insert(error);
+                    }
                 }
             }
             let after: Vec<_> = self
@@ -323,7 +329,7 @@ impl GovState {
                 .map(|event| (event.operation_id, event.revision))
                 .collect();
             if before == after {
-                return Ok(());
+                return first_error.map_or(Ok(()), Err);
             }
         }
     }
