@@ -291,3 +291,215 @@ fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
         [row(&chain_key(b"task-a", 1), "again")]
     );
 }
+
+// The removed simulator accepted any offered digest from a fixed tuple. Actual
+// approvals are digest-bound; the production owner is deliberately exercised here.
+fn trust_host() -> Host {
+    let h = Host::new();
+    h.admit(
+        "plane",
+        InstanceFacts {
+            trust: vec![(
+                "fs".into(),
+                busbar_kernel::trust::section::TrustEntry {
+                    pin: None,
+                    policy: busbar_kernel::trust::reverify::Policy {
+                        ttl_ms: 0,
+                        recovery_backoff_ms: 0,
+                    },
+                    approved: std::collections::BTreeMap::from([("read".into(), "one".into())]),
+                },
+            )],
+            ..InstanceFacts::default()
+        },
+    )
+    .expect("actual host admits explicit digest-bound item approval");
+    h
+}
+#[test]
+fn configured_item_approval_is_bound_to_its_actual_digest() {
+    use busbar_contract::abi::host::service::{
+        DISTRUST_CHANGED, DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM,
+    };
+    let h = trust_host();
+    let c = caller("plane");
+    assert_eq!(
+        h.trust_serves(&c, "fs", Some("read"), Some("one")).value,
+        DISTRUST_NONE
+    );
+    assert_eq!(
+        h.trust_serves(&c, "fs", Some("read"), Some("two")).value,
+        DISTRUST_CHANGED
+    );
+    assert_eq!(
+        h.trust_serves(&c, "fs", Some("unknown"), None).value,
+        DISTRUST_UNKNOWN_ITEM
+    );
+    assert_eq!(
+        h.trust_sight_item(&c, "fs", "read", "one").outcome,
+        Outcome::Ready
+    );
+    assert_eq!(
+        h.trust_serves(&c, "fs", Some("read"), Some("one")).value,
+        DISTRUST_NONE
+    );
+}
+#[test]
+fn item_sightings_refuse_wrong_owners_and_invalid_evidence_without_changing_approval() {
+    use busbar_contract::abi::host::service::DISTRUST_NONE;
+    let h = trust_host();
+    let c = caller("plane");
+    assert_eq!(
+        h.trust_sight_item(&c, "fs", "read", "one").outcome,
+        Outcome::Ready
+    );
+    assert_eq!(
+        h.trust_serves(&c, "fs", Some("read"), None).value,
+        DISTRUST_NONE
+    );
+    for who in [caller("never-admitted"), caller("another-instance")] {
+        let s = h.trust_sight_item(&who, "fs", "read", "");
+        assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+    }
+    for evidence in ["", " \t\n", "before\0after"] {
+        assert_eq!(
+            h.trust_sight_item(&c, "fs", "read", evidence).outcome,
+            Outcome::Refused
+        );
+    }
+    assert_eq!(
+        h.trust_sight_item(&c, "unknown", "read", "one").outcome,
+        Outcome::Refused
+    );
+    assert_eq!(
+        h.trust_serves(&c, "fs", Some("read"), None).value,
+        DISTRUST_NONE
+    );
+    assert_eq!(
+        h.trust_sight_item(&c, "unknown", "read", "").error,
+        busbar_kernel::host_services::NOT_A_COUNTERPARTY
+    );
+}
+
+#[test]
+fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
+    use busbar_contract::abi::host::service::{
+        DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_UNKNOWN, DISTRUST_UNKNOWN_ITEM,
+    };
+    use busbar_kernel::trust::{
+        book::Ruling,
+        reverify::Policy,
+        section::{DeclaredPin, TrustEntry},
+    };
+    let entry = || TrustEntry {
+        pin: Some(DeclaredPin {
+            mechanism: "fingerprint".into(),
+            root: false,
+            peer_key: false,
+            key: None,
+            fingerprint: Some("one".into()),
+        }),
+        policy: Policy {
+            ttl_ms: 0,
+            recovery_backoff_ms: 0,
+        },
+        approved: std::collections::BTreeMap::from([("tool".into(), "one".into())]),
+    };
+    let h = Host::new();
+    h.admit(
+        "plane",
+        InstanceFacts {
+            trust: vec![("agent".into(), entry()), ("pending".into(), entry())],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    h.trust_rule("plane/agent", Ruling::Approve)
+        .expect("actual authority approves declared fingerprint");
+    h.trust_rule("plane/agent/tool", Ruling::Revoke)
+        .expect("actual authority revokes declared item");
+    let c = caller("plane");
+    let verdict = |cp: &str, item: Option<&str>| h.trust_serves(&c, cp, item, None).value;
+    assert_eq!(verdict("agent", None), DISTRUST_NONE);
+    assert_eq!(verdict("agent", Some("tool")), DISTRUST_NOT_APPROVED);
+    assert_eq!(verdict("agent", Some("other")), DISTRUST_UNKNOWN_ITEM);
+    assert_eq!(verdict("pending", None), DISTRUST_NOT_APPROVED);
+    assert_eq!(verdict("stranger", None), DISTRUST_UNKNOWN);
+}
+
+#[test]
+fn sightings_never_rewrite_the_actual_configured_item_approval() {
+    use busbar_contract::abi::host::service::{DISTRUST_NONE, DISTRUST_NOT_APPROVED};
+    let h = trust_host();
+    let c = caller("plane");
+    for evidence in ["one", "one", "two"] {
+        assert_eq!(
+            h.trust_sight_item(&c, "fs", "read", evidence).outcome,
+            Outcome::Ready
+        );
+        assert_eq!(
+            h.trust_sight_item(&c, "fs", "draft", evidence).outcome,
+            Outcome::Ready
+        );
+        let rows = h.trust_rows();
+        let read = rows
+            .iter()
+            .find(|r| r.counterparty == "fs" && r.item.as_deref() == Some("read"))
+            .expect("actual observed item row");
+        assert_eq!(
+            read.approved.as_deref(),
+            Some("one"),
+            "a sighting carries no authority to rewrite configured approval"
+        );
+        assert_eq!(read.seen.as_deref(), Some(evidence));
+        assert_eq!(
+            h.trust_serves(&c, "fs", Some("draft"), Some(evidence))
+                .value,
+            DISTRUST_NOT_APPROVED,
+            "observing a new item never grants it"
+        );
+    }
+    assert_ne!(
+        h.trust_serves(&c, "fs", Some("read"), Some("two")).value,
+        DISTRUST_NONE,
+        "changed evidence does not become its own approval"
+    );
+}
+
+#[test]
+fn counterparty_sightings_refuse_invalid_evidence_without_mutating_seen() {
+    let h = trust_host();
+    let c = caller("plane");
+    let sight = |who: &Caller, cp: &str, evidence: &str| {
+        let (l, rx) = later();
+        answer(h.trust_sight(who, cp, evidence, l), &rx)
+    };
+    assert_eq!(sight(&c, "fs", "one").outcome, Outcome::Ready);
+    for evidence in ["", " \t\n", "before\0after"] {
+        assert_eq!(sight(&c, "fs", evidence).outcome, Outcome::Refused);
+        let rows = h.trust_rows();
+        let row = rows
+            .iter()
+            .find(|r| r.counterparty == "fs" && r.item.is_none())
+            .unwrap();
+        assert_eq!(
+            row.seen.as_deref(),
+            Some("one"),
+            "invalid evidence changes no retained observation"
+        );
+    }
+    let unadmitted = sight(&caller("unadmitted"), "fs", "");
+    assert_eq!(
+        (unadmitted.outcome, unadmitted.error),
+        (Outcome::Refused, NOT_ADMITTED)
+    );
+    assert_eq!(
+        sight(&c, "unknown", "").error,
+        busbar_kernel::host_services::NOT_A_COUNTERPARTY
+    );
+    assert_eq!(
+        sight(&c, "fs", "interior space").outcome,
+        Outcome::Ready,
+        "only blank and NUL are invalid; no extra digest grammar"
+    );
+}

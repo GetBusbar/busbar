@@ -1624,6 +1624,12 @@ pub const STORE_FAILED: &str = "the store did not answer";
 
 pub const DECISION_UNKEPT: &str = "the trust decision could not be kept";
 
+const INVALID_TRUST_EVIDENCE: &str = "a trust sighting carries nonblank evidence without NUL";
+
+fn valid_trust_evidence(evidence: &str) -> bool {
+    !evidence.trim().is_empty() && !evidence.contains('\0')
+}
+
 pub const NO_CREDENTIAL_SOURCE: &str = "no credential source";
 
 pub const NOT_READABLE: &str = "the credential read is not installed yet";
@@ -1980,6 +1986,9 @@ impl HostServices for KernelServices {
             }
             Err(_) => return Ran::Now(Stored::refused(DECISION_UNKEPT)),
         };
+        if !valid_trust_evidence(hash) {
+            return Ran::Now(Stored::refused(INVALID_TRUST_EVIDENCE));
+        }
         let (sight, effect) =
             match self
                 .trust
@@ -2243,6 +2252,9 @@ impl HostServices for KernelServices {
             }
             Err(_) => return Stored::refused(DECISION_UNKEPT),
         };
+        if !valid_trust_evidence(digest) {
+            return Stored::refused(INVALID_TRUST_EVIDENCE);
+        }
         match self
             .trust
             .sight_item_kept(&caller.instance, counterparty, item, digest)
