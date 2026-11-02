@@ -256,23 +256,21 @@ fn wrapped(door: DoorFn, verify: busbar_contract::abi::mechanism::call::Op) -> D
 }
 
 extern "C" fn selected_door() -> &'static Door {
-    static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> = std::sync::OnceLock::new();
-    DOOR.get_or_init(|| {
-        // SAFETY: wrapped leaks its immutable ops copy; its Statement and every nested range
-        // keep the original SDK door's static backing, independent of this owned door.
-        unsafe { crate::conformance::StaticDoor::new(wrapped(selected::door, selected_verify)) }
-    })
-    .get()
+    static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let address = *DOOR
+        .get_or_init(|| Box::into_raw(Box::new(wrapped(selected::door, selected_verify))) as usize);
+    // SAFETY: this immutable SDK-backed descriptor and its copied tables are retained
+    // permanently by the one-time allocation; all nested SDK ranges are static.
+    unsafe { &*(address as *const Door) }
 }
 
 extern "C" fn all_door() -> &'static Door {
-    static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> = std::sync::OnceLock::new();
-    DOOR.get_or_init(|| {
-        // SAFETY: wrapped leaks its immutable ops copy; its Statement and every nested range
-        // keep the original SDK door's static backing, independent of this owned door.
-        unsafe { crate::conformance::StaticDoor::new(wrapped(all::door, all_verify)) }
-    })
-    .get()
+    static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let address =
+        *DOOR.get_or_init(|| Box::into_raw(Box::new(wrapped(all::door, all_verify))) as usize);
+    // SAFETY: this immutable SDK-backed descriptor and its copied tables are retained
+    // permanently by the one-time allocation; all nested SDK ranges are static.
+    unsafe { &*(address as *const Door) }
 }
 
 fn open(door: DoorFn, second: bool) -> AuthInstance {

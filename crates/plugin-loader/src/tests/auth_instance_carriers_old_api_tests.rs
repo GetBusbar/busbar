@@ -82,8 +82,8 @@ extern "C" fn selected_open(
 }
 
 extern "C" fn selected_door() -> &'static Door {
-    static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> = std::sync::OnceLock::new();
-    DOOR.get_or_init(|| {
+    static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let address = *DOOR.get_or_init(|| {
         let mut ops = *base_ops();
         ops.head.open = Some(selected_open);
         // SAFETY: the existing SDK door is static; the copied table keeps its SDK instance and
@@ -92,10 +92,11 @@ extern "C" fn selected_door() -> &'static Door {
             let mut parts = Door::read_parts(base::door());
             parts.ops = std::ptr::from_ref(Box::leak(Box::new(ops))).cast();
 
-            crate::conformance::StaticDoor::new(Door::__from_parts(parts))
+            Box::into_raw(Box::new(Door::__from_parts(parts))) as usize
         }
-    })
-    .get()
+    });
+    // SAFETY: the immutable SDK descriptor and copied static table were permanently retained.
+    unsafe { &*(address as *const Door) }
 }
 
 #[test]
