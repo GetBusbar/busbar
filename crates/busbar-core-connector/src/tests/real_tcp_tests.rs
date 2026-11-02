@@ -4,6 +4,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -45,6 +46,7 @@ fn dispatcher() -> &'static Arc<Dispatcher> {
 }
 
 fn actual_transport(variable: &str) -> Entry {
+    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
     let path = PathBuf::from(std::env::var_os(variable).expect(variable));
     let statement = rendering_of_library(&path)
         .expect("the actual transport image renders")
@@ -54,7 +56,10 @@ fn actual_transport(variable: &str) -> Entry {
         &path,
         &statement,
         Bind {
-            instance: Arc::from(variable),
+            instance: Arc::from(format!(
+                "{variable}-{}",
+                NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)
+            )),
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
@@ -118,8 +123,14 @@ fn need(transport: &str, class: u32) -> ReadNeed {
     }
 }
 
-fn settle<T>(mut call: impl FnMut() -> Result<T, ConnError>) -> Result<T, ConnError> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+fn settle<T>(call: impl FnMut() -> Result<T, ConnError>) -> Result<T, ConnError> {
+    settle_until(Instant::now() + Duration::from_secs(10), call)
+}
+
+fn settle_until<T>(
+    deadline: Instant,
+    mut call: impl FnMut() -> Result<T, ConnError>,
+) -> Result<T, ConnError> {
     loop {
         match call() {
             Err(ConnError::Pending) if Instant::now() < deadline => {
@@ -218,20 +229,39 @@ fn upgraded_echo(connector: &Connector, target: &str) -> Result<Vec<u8>, ConnErr
     })?;
     let answer = (|| {
         settle(|| connector.upgrade_secure(OWNER, id, Some("localhost"), None, false, NO_TICKET))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
         let mut at = 0;
         while at < 5 {
-            let written = settle(|| connector.write(OWNER, id, &b"hello"[at..], false, false))?;
+            assert!(Instant::now() < deadline, "the complete TLS write finishes");
+            let written = settle_until(deadline, || {
+                connector.write(OWNER, id, &b"hello"[at..], false, false)
+            })?;
             assert_ne!(written, 0, "a TLS write makes progress");
+            assert!(
+                written <= 5 - at,
+                "the transport reports only written bytes"
+            );
             at += written;
         }
         let mut body = Vec::new();
+        let mut heads = 0;
         let mut buffer = [0_u8; 256];
         while body.len() < 5 {
-            let piece = settle(|| connector.read(OWNER, id, NO_TICKET, &mut buffer))?;
+            assert!(Instant::now() < deadline, "the complete TLS body arrives");
+            let piece = settle_until(deadline, || {
+                connector.read(OWNER, id, NO_TICKET, &mut buffer)
+            })?;
             match piece.kind {
-                PieceKind::Body => body.extend_from_slice(&buffer[..piece.len]),
+                PieceKind::Body => {
+                    assert!(body.len() + piece.len <= 5, "the peer sends only hello");
+                    body.extend_from_slice(&buffer[..piece.len]);
+                }
                 PieceKind::Completion => break,
-                PieceKind::Fields | PieceKind::HookReply => {}
+                PieceKind::Fields => {
+                    heads += 1;
+                    assert!(heads <= 1, "the peer cannot send repeated heads");
+                }
+                PieceKind::HookReply => panic!("a TLS stream became a hook reply"),
             }
         }
         Ok(body)
@@ -302,8 +332,9 @@ fn the_real_tcp_carrier_obeys_the_production_destination_guard() {
         open(EGRESS_OPERATOR_INFRASTRUCTURE, "169.254.169.254:80"),
         Err(ConnError::Refused)
     );
-    assert!(
-        listener.accept().is_err(),
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
         "a refused destination was dialled"
     );
     let id = open(EGRESS_OPERATOR_INFRASTRUCTURE, &address).unwrap();
@@ -318,17 +349,29 @@ fn the_real_http_framer_delivers_one_head_and_the_exact_body() {
     let address = listener.local_addr().unwrap();
     let far = std::thread::spawn(move || {
         let mut socket = accept(&listener).unwrap();
-        let mut seen = Vec::new();
-        let mut buffer = [0_u8; 512];
-        while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
-            let read = socket.read(&mut buffer).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut seen = [0_u8; 512];
+        let mut used = 0;
+        while !seen[..used].windows(4).any(|w| w == b"\r\n\r\n") {
+            assert!(
+                Instant::now() < deadline,
+                "the complete request head arrives"
+            );
+            assert!(
+                used < seen.len(),
+                "the short fixture GET fits its head buffer"
+            );
+            socket
+                .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))
+                .unwrap();
+            let read = socket.read(&mut seen[used..]).unwrap();
             assert_ne!(read, 0, "the request must have its complete head");
-            seen.extend_from_slice(&buffer[..read]);
+            used += read;
         }
         socket
             .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello")
             .unwrap();
-        seen
+        seen[..used].to_vec()
     });
     let connector = connector(
         &[],
@@ -365,12 +408,23 @@ fn the_real_http_framer_delivers_one_head_and_the_exact_body() {
     .unwrap();
     let mut heads = 0;
     let mut body = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
     let mut buffer = [0_u8; 512];
     while body.len() < 5 {
-        let piece = settle(|| connector.read(OWNER, id, NO_TICKET, &mut buffer)).unwrap();
+        assert!(Instant::now() < deadline, "the complete HTTP reply arrives");
+        let piece = settle_until(deadline, || {
+            connector.read(OWNER, id, NO_TICKET, &mut buffer)
+        })
+        .unwrap();
         match piece.kind {
-            PieceKind::Fields => heads += 1,
-            PieceKind::Body => body.extend_from_slice(&buffer[..piece.len]),
+            PieceKind::Fields => {
+                heads += 1;
+                assert!(heads <= 1, "one response head");
+            }
+            PieceKind::Body => {
+                assert!(body.len() + piece.len <= 5, "the peer sends only hello");
+                body.extend_from_slice(&buffer[..piece.len]);
+            }
             PieceKind::Completion => break,
             PieceKind::HookReply => panic!("an HTTP reply became a hook reply"),
         }
