@@ -7,11 +7,11 @@
 //! connections of its own instance). Each arm drives the plugin's own door into the misbehaviour
 //! and requires the host to refuse it, and each keeps an honest twin that must pass beside it:
 //!
-//! * [`red_statement`]: the door under a row or manifest stating another Statement (one byte off),
+//! * [`red_statement`]: the door under a row or manifest stating another valid Statement,
 //!   and the door restated with another version under its honest row, are refused
 //!   ([`LoadError::StatementMismatch`]), linked and dropped in;
-//! * [`red_wrong_kind`]: the door asked for as every other kind is refused, linked
-//!   ([`LoadError::WrongKind`]) and dropped in, before `dlopen` ([`LoadError::ManifestKind`]);
+//! * [`red_wrong_kind`]: the door asked for as every other kind is refused at the stated rendering's
+//!   admission check ([`LoadError::ManifestKind`]), linked and dropped in before `dlopen`;
 //! * [`red_undeclared_need`]: the door's instance, bound over a connection table, establishing a
 //!   connection over a need its Statement never declared is refused (`UndeclaredNeed`), as its
 //!   declared need opens;
@@ -87,7 +87,7 @@ fn with_another_version(real: DoorParts) -> DoorParts {
 }
 
 /// **RED: a door whose Statement is not the one its row or signed manifest states is refused, both
-/// ways.** The honest door loads linked and dropped in; under a rendering one byte off it is
+/// ways.** The honest door loads linked and dropped in; under another valid rendering it is
 /// refused linked and dropped in; the door restated with another version is refused under its
 /// honest row. Every refusal is [`LoadError::StatementMismatch`].
 ///
@@ -95,10 +95,15 @@ fn with_another_version(real: DoorParts) -> DoorParts {
 /// When a mismatched door loads, or the honest one does not.
 pub fn red_statement(s: &Subject) {
     let stated = s.stated();
-    let mut lying = stated.clone();
-    let last = lying.len() - 1;
-    lying[last] ^= 1;
     let _held = VERSIONED.hold(with_another_version(real_door(s)));
+    let lying = rendering_of_raw(VERSIONED_DOOR)
+        .expect("the door with another version still renders a valid Statement");
+    busbar_contract::abi::mechanism::rendering::read(&lying)
+        .expect("the mismatched Statement must pass rendering validation");
+    assert_ne!(
+        lying, stated,
+        "the other version changes the stated rendering"
+    );
     by_kind!(s.kind(), K => {
         let d = dispatcher();
         load::<K>(s, Leg::Linked, s.bind(&d, "honest-linked")).expect("the honest door loads linked");
@@ -338,8 +343,8 @@ fn as_kind<K: Kind>(s: &Subject) -> (Option<LoadError>, Option<LoadError>) {
 }
 
 /// **RED: a door asked for as another kind is refused, both ways, for every kind.** For each kind
-/// the door is not, the linked row is refused ([`LoadError::WrongKind`]) and the dropped-in library
-/// is refused before `dlopen` ([`LoadError::ManifestKind`]); asked for as its own kind it loads,
+/// the door is not, its stated rendering is refused ([`LoadError::ManifestKind`]) in both paths,
+/// before the dropped-in library is opened; asked for as its own kind it loads,
 /// both ways.
 ///
 /// # Panics
@@ -356,7 +361,7 @@ pub fn red_wrong_kind(s: &Subject) {
         let (linked, dropped) = by_kind!(want, K => as_kind::<K>(s));
         assert_eq!(
             linked,
-            Some(LoadError::WrongKind { door: own, want }),
+            Some(LoadError::ManifestKind { stated: own, want }),
             "the {own:?} door asked for as {want:?}, linked"
         );
         assert_eq!(
