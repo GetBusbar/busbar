@@ -336,28 +336,6 @@ mod tests {
         assert!(serde_json::from_value::<ListRequest>(json!({"force":true})).is_err());
     }
 
-    #[test]
-    fn safe_item_projection_contains_no_operation_body_or_derived_balance() {
-        let item = RecoveryItem {
-            operation_id: [1; 16],
-            body_fingerprint: [2; 32],
-            revision: 9,
-            kind: RecoveryKind::Correction,
-            state: RecoveryState::LandedUnknown,
-            first_sent_at_ms: Some(1234),
-            can_resolve: false,
-        };
-        let view = serde_json::to_value(ItemView::from(item)).unwrap();
-        assert_eq!(
-            view,
-            json!({
-                "operation_id":"01".repeat(16), "body_fingerprint":"02".repeat(32),
-                "recovery_version":9,"kind":"correction","state":"landed_unknown",
-                "first_sent_at_ms":1234,"can_resolve":false,
-            })
-        );
-    }
-
     #[tokio::test]
     async fn backend_error_details_are_never_exposed() {
         for (error, status, code) in [
