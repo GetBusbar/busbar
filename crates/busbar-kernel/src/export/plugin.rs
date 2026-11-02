@@ -40,6 +40,37 @@ pub(crate) fn scrape_instance(
     (scrape, recorder)
 }
 
+pub(crate) fn configured_instance(
+    name: &str,
+    def: &crate::config::ExportDefCfg,
+    projection: Projection,
+    problems: Option<Vec<String>>,
+    scrape: bool,
+    linked_modules: impl FnOnce() -> Vec<String>,
+    errors: &mut Vec<String>,
+) -> Option<crate::config::PluginExportSettings> {
+    match problems {
+        Some(problems) => {
+            errors.extend(problems);
+            Some(crate::config::PluginExportSettings {
+                name: name.to_owned(),
+                def: def.clone(),
+                projection,
+                scrape,
+            })
+        }
+        None => {
+            errors.push(format!(
+                "export.{name}.module: unknown exporter '{}'; the built-in export modules are \
+                 {}",
+                def.module.trim(),
+                linked_modules().join(" | ")
+            ));
+            None
+        }
+    }
+}
+
 pub(crate) fn probe(
     name: &str,
     module: &str,

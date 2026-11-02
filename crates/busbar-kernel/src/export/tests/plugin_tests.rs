@@ -2,9 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::config::{resolve_export, ExportDefCfg, ExportDefs};
-
-use crate::export::scrape::tests::installed_axis;
+use crate::config::ExportDefCfg;
 
 fn def(module: &str) -> ExportDefCfg {
     serde_json::from_value(serde_json::json!({ "module": module })).expect("a minimal definition")
@@ -236,12 +234,31 @@ fn declared_listener_policy_preserves_boot_routes_but_removes_config_routes() {
 
 #[test]
 fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() {
-    installed_axis();
     for module in ["k9-axis-sink", "k9-tail"] {
-        let mut defs = ExportDefs::new();
-        defs.insert("audit-tail".to_string(), def(module));
         let mut errors = Vec::new();
-        let cfg = resolve_export(&defs, &mut errors);
+        let projection = resolve_projection(
+            "audit-tail",
+            module,
+            Some(&[ExportStream::Logs]),
+            None,
+            None,
+            false,
+            &mut errors,
+        );
+        let configured = configured_instance(
+            "audit-tail",
+            &def(module),
+            projection,
+            Some(Vec::new()),
+            false,
+            || vec!["prometheus".into()],
+            &mut errors,
+        )
+        .expect("admitted probe data lowers to an instance");
+        let cfg = crate::config::ExportCfg {
+            plugins: vec![configured],
+            ..Default::default()
+        };
         assert!(errors.is_empty(), "{module}: {errors:?}");
         assert_eq!(cfg.plugins.len(), 1, "{module}");
         assert_eq!(cfg.plugins[0].name, "audit-tail");
@@ -249,17 +266,26 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
         assert!(cfg.projection_union().wants_stream(ExportStream::Logs));
     }
 
-    let mut defs = ExportDefs::new();
-    defs.insert("audit-tail".to_string(), def("k9-never-registered"));
     let mut errors = Vec::new();
-    let cfg = resolve_export(&defs, &mut errors);
+    let configured = configured_instance(
+        "audit-tail",
+        &def("k9-never-registered"),
+        Projection::default(),
+        None,
+        false,
+        || vec!["prometheus".into()],
+        &mut errors,
+    );
+    let cfg = crate::config::ExportCfg {
+        plugins: configured.into_iter().collect(),
+        ..Default::default()
+    };
     assert!(cfg.plugins.is_empty());
     assert_eq!(
         errors,
         vec![
-            // The modules this axis serves: it LINKS the scrape double (and nothing else). A default
-            // binary links every sink, and its line is 1.5.5's byte for byte
-            // (`crates/busbar/tests/export_unknown_module_lists_what_links.rs`).
+            // Catalog words are declaration data for this diagnostic policy. The actual
+            // distribution catalog is covered by export_unknown_module_lists_what_links.rs.
             "export.audit-tail.module: unknown exporter 'k9-never-registered'; the built-in export \
              modules are prometheus"
                 .to_string()

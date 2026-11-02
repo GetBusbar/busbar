@@ -1501,32 +1501,29 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             }
             seen_once.push(module);
         }
-        match module {
-            other if axis.is_some() => {
-                let (scrape, recorder) = crate::export::plugin::scrape_instance(
-                    projection,
-                    declared,
-                    crate::export::plugin::first_party(other),
-                    out.plugins.iter().any(|p| p.scrape),
-                    settings,
-                );
-                if scrape {
-                    out.recorder = recorder;
-                }
-                errors.extend(axis.into_iter().flat_map(|(_, problems)| problems));
-                out.plugins.push(PluginExportSettings {
-                    name: name.clone(),
-                    def: def.clone(),
-                    projection,
-                    scrape,
-                })
+        let first_party = axis
+            .as_ref()
+            .is_some_and(|_| crate::export::plugin::first_party(module));
+        let (scrape, recorder) = crate::export::plugin::scrape_instance(
+            projection,
+            declared,
+            first_party,
+            out.plugins.iter().any(|p| p.scrape),
+            settings,
+        );
+        if let Some(instance) = crate::export::plugin::configured_instance(
+            name,
+            def,
+            projection,
+            axis.map(|(_, problems)| problems),
+            scrape,
+            crate::export::plugin::linked_modules,
+            errors,
+        ) {
+            if scrape {
+                out.recorder = recorder;
             }
-
-            other => errors.push(format!(
-                "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
-                 {}",
-                crate::export::plugin::linked_modules().join(" | ")
-            )),
+            out.plugins.push(instance);
         }
     }
     out
