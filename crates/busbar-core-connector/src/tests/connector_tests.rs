@@ -811,6 +811,9 @@ fn config_targeted_need(target_from: &str) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     }
 }
 
@@ -2943,6 +2946,9 @@ mod transport_pin {
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
+            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_response_headers: Vec::new(),
+            deny_response_headers: Vec::new(),
         };
         DeclaredConns::declare(c, OWNER, NeedId(0), &need, None, Some(pem))
     }

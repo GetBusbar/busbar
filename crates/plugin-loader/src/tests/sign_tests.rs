@@ -1296,6 +1296,118 @@ fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
     );
 }
 
+/// A valid signature authenticates the stated policy; admission must still compare that policy
+/// against the actual module's Statement. Only retention differs in each refused manifest here.
+#[test]
+fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
+    use crate::dispatch::{load_linked, Adopter, Bind, ConnTable, LinkedRow, LoadError, NoSink};
+    use busbar_contract::abi::host::conn::connector::{Need, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED};
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
+    use busbar_contract::abi::mechanism::rendering::render;
+    use busbar_contract::abi::sdk::door::abi_str;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::Arc;
+
+    static ACTUAL: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    extern "C" fn actual() -> *const Door {
+        ACTUAL.load(Ordering::SeqCst)
+    }
+    const HEADERS: &[busbar_contract::abi::mechanism::call::AbiStr] =
+        &[abi_str("x-retention-first"), abi_str("x-retention-second")];
+    const REVERSED: &[busbar_contract::abi::mechanism::call::AbiStr] =
+        &[abi_str("x-retention-second"), abi_str("x-retention-first")];
+    const RENAMED: &[busbar_contract::abi::mechanism::call::AbiStr] =
+        &[abi_str("x-retention-third"), abi_str("x-retention-second")];
+    const ARTIFACT: &[u8] = b"signed-retention-test-module";
+    let key = test_key(11);
+    let binding = || Bind {
+        instance: "retention-policy".into(),
+        max_inflight_cap: 1,
+        sink: Arc::new(NoSink),
+        dispatcher: Adopter::unwatched(),
+        conns: ConnTable::Probe,
+    };
+    for mode in [KEEP_NAMED, KEEP_ALL_EXCEPT_DENIED] {
+        let policy = |names| {
+            let need = Need {
+                keep_mode: mode,
+                ..crate::needs_restated::need(abi_str("tcp"))
+            };
+            if mode == KEEP_NAMED {
+                need.with_keep_response_headers(names)
+            } else {
+                need.with_deny_response_headers(names)
+            }
+        };
+        let actual_need = Box::leak(Box::new([policy(HEADERS)]));
+        let mut parts = crate::dispatch_test_plugin::door().parts();
+        // SAFETY: the real fixture's door holds a complete static Statement.
+        let base = unsafe { parts.statement.read_unaligned() };
+        let st = Box::leak(Box::new(Statement {
+            needs: actual_need.as_ptr(),
+            needs_len: actual_need.len(),
+            ..base
+        }));
+        parts.statement = st;
+        // SAFETY: all copied fixture data and the replacement Need/Statement live for the process.
+        ACTUAL.store(
+            Box::into_raw(Box::new(unsafe { Door::__from_parts(parts) })),
+            Ordering::SeqCst,
+        );
+        // SAFETY: all Statement backing is static or leaked above.
+        let own = unsafe { render(st) }.unwrap();
+        let facts = busbar_contract::abi::mechanism::rendering::read(&own).unwrap();
+        let mut m = manifest(&facts.name, "retention", "busbar");
+        m.kind = crate::dispatch_test_plugin::KIND.word().into();
+        m.version = facts.version;
+        m.abi_version = crate::dispatch_test_plugin::KIND.abi_version();
+        m.statement = Some(hex::encode(&own));
+        let signed = sign(&key, m, ARTIFACT);
+        assert!(signature_ok(&signed, ARTIFACT, &key.verifying_key()).is_ok());
+        let control = LinkedRow {
+            statement: signed.stated_rendering().unwrap().unwrap(),
+            door: actual,
+        };
+        assert!(load_linked::<crate::dispatch_tests::TestKind>(&control, binding()).is_ok());
+        let other_mode = Need {
+            keep_mode: if mode == KEEP_NAMED {
+                KEEP_ALL_EXCEPT_DENIED
+            } else {
+                KEEP_NAMED
+            },
+            ..crate::needs_restated::need(abi_str("tcp"))
+        };
+        for need in [
+            policy(&[]),
+            policy(&HEADERS[..1]),
+            policy(REVERSED),
+            policy(RENAMED),
+            other_mode,
+        ] {
+            let changed = Statement {
+                needs: &need,
+                ..*st
+            };
+            // SAFETY: replacement Need lives through rendering and its names are static.
+            let changed = unsafe { render(&changed) }.unwrap();
+            assert_ne!(changed, own);
+            let mut tampered = signed.clone();
+            tampered.statement = Some(hex::encode(&changed));
+            assert!(signature_ok(&tampered, ARTIFACT, &key.verifying_key()).is_err());
+            let restated = sign(&key, tampered, ARTIFACT);
+            assert!(signature_ok(&restated, ARTIFACT, &key.verifying_key()).is_ok());
+            let row = LinkedRow {
+                statement: restated.stated_rendering().unwrap().unwrap(),
+                door: actual,
+            };
+            assert_eq!(
+                load_linked::<crate::dispatch_tests::TestKind>(&row, binding()).err(),
+                Some(LoadError::StatementMismatch)
+            );
+        }
+    }
+}
+
 /// `TrustPolicy::from_config` (the resolution the kernel's `PluginsCfg::to_policy` did, moved out of
 /// the kernel): its refusals keep their bytes, and the per-name floors — `min_versions` and the
 /// rollback pins in `first_party_floors` — are carried exactly, with no automatic floor armed.

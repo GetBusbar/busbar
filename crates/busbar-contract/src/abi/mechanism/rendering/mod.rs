@@ -11,8 +11,8 @@
 //! THE FORMAT. Deterministic, little-endian, no padding, and never a pointer:
 //!
 //! ```text
-//! magic            8 bytes  "BBSTMT02" (the rendering's own version; "BBSTMT01" stated the tail's
-//!                           size alone)
+//! magic            8 bytes  "BBSTMT03" (the rendering's own version; "BBSTMT02" omitted need
+//!                           retention policy; "BBSTMT01" stated the tail's size alone)
 //! mechanism        u32      MECHANISM_VERSION the rendering was made under
 //! kind             u32
 //! kind_abi         u32
@@ -32,7 +32,9 @@
 //! rewrites         list of { class u32, from str, to str }
 //! sections         list of { name str, flags u32 }
 //! needs            list of { direction u32, egress_class u32, transport str, auth str,
-//!                            target_from str, trust_from str, details blob, timeout_ms u64 }
+//!                            target_from str, trust_from str, details blob,
+//!                            keep_response_headers list of str, timeout_ms u64, keep_mode u32,
+//!                            deny_response_headers list of str }
 //! target_from      str
 //! trust_from       str
 //! answers          list of str
@@ -66,7 +68,11 @@ mod tail;
 pub use tail::{read_auth_tail, read_plane_cli_help, ReadAuthTail, ReadStyle};
 
 /// The rendering's first eight bytes.
-pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT02";
+pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT03";
+
+/// The rendering before a need's response-header retention policy was rendered: its signed facts
+/// do not bind the actual policy, so a manifest carrying it must be repacked.
+pub const RENDERING_MAGIC_WITHOUT_NEED_RETENTION: &[u8; 8] = b"BBSTMT02";
 
 /// The first eight bytes of the rendering before the kind tail was rendered whole: a manifest that
 /// carries one was packed by an older pack tool, and is repacked.
@@ -247,7 +253,18 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, RenderError> {
             o.str(n.target_from, "need.target_from")?;
             o.str(n.trust_from, "need.trust_from")?;
             o.blob(n.details, "need.details")?;
+            let kept = items(n.keep_response_headers, n.keep_response_headers_len);
+            o.len(kept.len(), "need.keep_response_headers")?;
+            for name in kept {
+                o.str(*name, "need.keep_response_headers")?;
+            }
             o.u64(n.timeout_ms);
+            o.u32(n.keep_mode);
+            let denied = items(n.deny_response_headers, n.deny_response_headers_len);
+            o.len(denied.len(), "need.deny_response_headers")?;
+            for name in denied {
+                o.str(*name, "need.deny_response_headers")?;
+            }
         }
         o.str(st.target_from, "target_from")?;
         o.str(st.trust_from, "trust_from")?;
@@ -310,8 +327,14 @@ pub struct ReadNeed {
     pub trust_from: String,
     /// Its details.
     pub details: ReadBlob,
+    /// The response-header names kept under `KEEP_NAMED`, in declaration order.
+    pub keep_response_headers: Vec<String>,
     /// Its establish and reply-wait bound, milliseconds; `0` = the host's default.
     pub timeout_ms: u64,
+    /// The response-header retention policy, `KEEP_*`.
+    pub keep_mode: u32,
+    /// The response-header names denied under `KEEP_ALL_EXCEPT_DENIED`, in declaration order.
+    pub deny_response_headers: Vec<String>,
 }
 
 /// A Statement read back from its rendering: every fact the rendering carries, owned.
@@ -450,7 +473,20 @@ impl In<'_> {
 /// [`Unreadable`], at the first byte that is not what the format states.
 pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let mut i = In { b: bytes, at: 0 };
-    if i.take(RENDERING_MAGIC.len(), "the magic")? != RENDERING_MAGIC {
+    let magic = i.take(RENDERING_MAGIC.len(), "the magic")?;
+    if magic == RENDERING_MAGIC_WITHOUT_NEED_RETENTION {
+        return Err(Unreadable {
+            at: 0,
+            what: "a rendering with need retention policy; repack the plugin",
+        });
+    }
+    if magic == RENDERING_MAGIC_TAIL_SIZE_ONLY {
+        return Err(Unreadable {
+            at: 0,
+            what: "a rendering with kind tail facts; repack the plugin",
+        });
+    }
+    if magic != RENDERING_MAGIC {
         return Err(Unreadable {
             at: 0,
             what: "the magic",
@@ -510,7 +546,10 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
             target_from: i.str("need.target_from")?,
             trust_from: i.str("need.trust_from")?,
             details: i.blob("need.details")?,
+            keep_response_headers: i.strs("need.keep_response_headers")?,
             timeout_ms: i.u64("need.timeout_ms")?,
+            keep_mode: i.u32("need.keep_mode")?,
+            deny_response_headers: i.strs("need.deny_response_headers")?,
         });
     }
     let target_from = i.str("target_from")?;

@@ -1864,8 +1864,9 @@ fn red_both_origins_refuse_the_same_way() {
 fn red_a_statement_other_than_the_stated_one_is_refused_at_admit() {
     assert_eq!(facts(), ManifestFacts::read(&stated()).unwrap());
     let mut lying = stated();
-    let last = lying.len() - 1;
-    lying[last] ^= 1;
+    let max_inflight_at = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len()
+        + 3 * std::mem::size_of::<u32>();
+    lying[max_inflight_at] ^= 1;
     let lying_row = LinkedRow {
         statement: lying.clone(),
         door: plug::busbar_plugin_door,
@@ -1880,10 +1881,10 @@ fn red_a_statement_other_than_the_stated_one_is_refused_at_admit() {
         statement: short,
         door: plug::busbar_plugin_door,
     };
-    assert_eq!(
+    assert!(matches!(
         load_linked::<TestKind>(&short_row, bind(quiet())).err(),
-        Some(LoadError::StatementMismatch)
-    );
+        Some(LoadError::Rendering(_))
+    ));
     assert!(load_linked::<TestKind>(&row(), bind(quiet())).is_ok());
     let path = dropped_path();
     assert_eq!(
@@ -1891,6 +1892,101 @@ fn red_a_statement_other_than_the_stated_one_is_refused_at_admit() {
         Some(LoadError::StatementMismatch)
     );
     assert!(load_dropped::<TestKind>(&path, &stated(), bind(quiet())).is_ok());
+}
+
+#[test]
+fn malformed_or_obsolete_manifest_facts_are_refused_before_any_door_or_library_opens() {
+    use busbar_contract::abi::mechanism::rendering::{
+        RENDERING_MAGIC, RENDERING_MAGIC_TAIL_SIZE_ONLY, RENDERING_MAGIC_WITHOUT_NEED_RETENTION,
+    };
+    static ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    extern "C" fn must_not_enter() -> *const Door {
+        ENTERED.store(true, std::sync::atomic::Ordering::SeqCst);
+        plug::busbar_plugin_door()
+    }
+    let control = stated();
+    assert!(ManifestFacts::read(&control).is_ok());
+    let mut malformed = Vec::new();
+    for cut in 0..control.len() {
+        malformed.push(control[..cut].to_vec());
+    }
+    // A live Need control reaches the actual count guards for both retention lists; corrupting
+    // the count must refuse before a library initializer or even the linked door can run.
+    {
+        use busbar_contract::abi::host::conn::connector::{KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED};
+        use busbar_contract::abi::sdk::door::{abi_str, statement};
+        const NAME: &str = "x-admission-count-control";
+        const NAMES: &[busbar_contract::abi::mechanism::call::AbiStr] = &[abi_str(NAME)];
+        for mode in [KEEP_NAMED, KEEP_ALL_EXCEPT_DENIED] {
+            let mut need = crate::needs_restated::need(abi_str("tcp"));
+            need.keep_mode = mode;
+            let need = if mode == KEEP_NAMED {
+                need.with_keep_response_headers(NAMES)
+            } else {
+                need.with_deny_response_headers(NAMES)
+            };
+            let st = Statement {
+                kind: plug::KIND as u32,
+                kind_abi: plug::KIND.abi_version(),
+                needs: &need,
+                needs_len: 1,
+                ..statement("retention-count", "1", 1)
+            };
+            // SAFETY: the Statement and its Need live for rendering, with static names.
+            let mut huge =
+                unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }.unwrap();
+            assert!(ManifestFacts::read(&huge).is_ok());
+            let name_at = huge
+                .windows(NAME.len())
+                .position(|b| b == NAME.as_bytes())
+                .unwrap();
+            let count_at = name_at - 2 * std::mem::size_of::<u32>();
+            huge[count_at..count_at + std::mem::size_of::<u32>()]
+                .copy_from_slice(&u32::MAX.to_le_bytes());
+            malformed.push(huge);
+        }
+    }
+    for magic in [
+        RENDERING_MAGIC_TAIL_SIZE_ONLY,
+        RENDERING_MAGIC_WITHOUT_NEED_RETENTION,
+    ] {
+        let mut old = control.clone();
+        old[..magic.len()].copy_from_slice(magic);
+        let Some(LoadError::Rendering(why)) = ManifestFacts::read(&old).err() else {
+            panic!("old renderings must refuse before admission");
+        };
+        assert!(why.contains("repack the plugin"));
+        malformed.push(old);
+    }
+    let mut padded = control.clone();
+    padded.push(0);
+    malformed.push(padded);
+    let mut foreign = control.clone();
+    foreign[..RENDERING_MAGIC.len()].fill(0);
+    malformed.push(foreign);
+    for statement in malformed {
+        assert!(matches!(
+            ManifestFacts::read(&statement),
+            Err(LoadError::Rendering(_))
+        ));
+        assert!(matches!(
+            load_dropped::<TestKind>(
+                std::path::Path::new("/nonexistent/libnothing.so"),
+                &statement,
+                bind(quiet())
+            ),
+            Err(LoadError::Rendering(_))
+        ));
+        let row = LinkedRow {
+            statement,
+            door: must_not_enter,
+        };
+        assert!(matches!(
+            load_linked::<TestKind>(&row, bind(quiet())),
+            Err(LoadError::Rendering(_))
+        ));
+        assert!(!ENTERED.load(std::sync::atomic::Ordering::SeqCst));
+    }
 }
 
 /// THE PACK-TIME RENDERING: the dropped `cdylib`'s own door renders the same Statement the linked
