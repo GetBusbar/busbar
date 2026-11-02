@@ -83,7 +83,7 @@ fn audit_outcomes(actor: &str) -> Vec<String> {
 }
 
 async fn accepted_audit(
-    observation: busbar_kernel::audit::auditlog::AcceptedAdminAudit,
+    observation: busbar_kernel_testkit::test_support::accepted_audit::AcceptedAdminAudit,
 ) -> audit_ring::AuditEntry {
     tokio::time::timeout(std::time::Duration::from_secs(5), observation.accepted())
         .await
@@ -107,11 +107,12 @@ async fn a_failed_admin_or_data_refresh_is_not_a_successful_flush() {
             .admin_door("a-admin", admin.clone())
             .admin_door("z-later-admin", later_admin.clone())
             .build();
-        let audit = busbar_kernel::audit::auditlog::observe_accepted_admin_entry(
-            "auth.cache_flush",
-            "*",
-            actor,
-        );
+        let audit =
+            busbar_kernel_testkit::test_support::accepted_audit::observe_accepted_admin_entry(
+                "auth.cache_flush",
+                "*",
+                actor,
+            );
         let (status, body) = flush(app, actor, None).await;
         assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["error"]["code"], "internal");
@@ -149,7 +150,7 @@ async fn a_filtered_flush_sums_both_chains_without_refreshing_other_modules() {
         .admin_door("target", admin.clone())
         .admin_door("omitted", omitted_admin.clone())
         .build();
-    let audit = busbar_kernel::audit::auditlog::observe_accepted_admin_entry(
+    let audit = busbar_kernel_testkit::test_support::accepted_audit::observe_accepted_admin_entry(
         "auth.cache_flush",
         "target",
         "flush-filtered",

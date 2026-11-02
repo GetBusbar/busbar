@@ -143,9 +143,9 @@ mod test_seams {
         static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
         SEAM_ONCE.call_once(|| {
             // The operator credential's double, before anything resolves the auth axis.
-            busbar_kernel::test_support::operator_double::install();
+            busbar_kernel_testkit::test_support::operator_double::install();
             // The kernel's neutral seam: its synthetic protocols and the neutral fallback plane.
-            (busbar_kernel::testkit::TEST_SEAM.install)();
+            (busbar_kernel_testkit::testkit::TEST_SEAM.install)();
             super::install();
         });
     }
@@ -157,9 +157,9 @@ use test_seams::ensure_seam;
 /// seam) are installed — moved admin tests use this in place of `TestApp::new()` so the seams are in
 /// place BEFORE `.build()` resolves providers/planes.
 #[cfg(test)]
-pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
+pub(crate) fn new_test_app() -> busbar_kernel_testkit::test_support::TestApp {
     ensure_seam();
-    busbar_kernel::test_support::TestApp::new()
+    busbar_kernel_testkit::test_support::TestApp::new()
 }
 
 /// The first codec protocol this test binary registers, read off the protocol registry (the

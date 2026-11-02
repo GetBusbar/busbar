@@ -227,7 +227,7 @@ fn spawn_liveness_probe() -> (
 /// blocking thread.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_store_read_does_not_stall_the_executor() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let delay = Duration::from_millis(400);
     let store = Arc::new(SlowStore::new(delay));
     let probe_store = store.clone();
@@ -287,7 +287,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
 /// the post-lock snapshot and there is no older one in scope, so the mint sees cap 1 and 409s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cap_is_read_from_the_post_lock_snapshot() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let mut app = crate::new_test_app()
         .governance(gov(store))
@@ -355,7 +355,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
 /// same `config_transaction` section for EVERY bind path, so a bind path added later inherits it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_mints_never_bind_a_deleted_group() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     // A separate positive fixture proves the same group bind can commit and be read back. It
     // must not seed the race fixture: an existing bound key would make deletion-first impossible.
     {
@@ -443,7 +443,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
 /// the same class, closed for the same structural reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_rebinds_never_bind_a_deleted_group() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let g = gov(store);
     let app = crate::new_test_app()
@@ -515,7 +515,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
 /// releases, so no plugin write can appear inside another plugin op's validate→rebuild window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plugin_install_is_serialized_by_the_mutation_domain() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-txn-plugins-{}-{:?}",
         std::process::id(),
@@ -610,7 +610,7 @@ async fn a_failed_persist_swaps_nothing() {
 /// administrative transaction: observing the new head is not an acknowledgement of this write.
 #[tokio::test]
 async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
-    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
     let handle = handle_for(
         crate::new_test_app()
             .overlay_backend(overlay.backend())
@@ -673,7 +673,7 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
 /// the mutation domain. The Store accepts the write before the detached transaction swaps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain() {
-    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
     let handle = handle_for(
         crate::new_test_app()
             .overlay_backend(overlay.backend())
@@ -869,13 +869,15 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
 /// reached without bypassing either admission guard.
 fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::hooks::HookEnv::with_axis(
-        busbar_kernel::test_support::rows::Rows::new()
+        busbar_kernel_testkit::test_support::rows::Rows::new()
             .with_dropped_secret_slots(
-                busbar_kernel::test_support::rows::row("some-hook-plugin", "", "hook"),
+                busbar_kernel_testkit::test_support::rows::row("some-hook-plugin", "", "hook"),
                 &["licenseKey"],
             )
             .into_rows(),
-        busbar_kernel::test_support::hook_double::HookAxisDouble::new(&["some-hook-plugin"]),
+        busbar_kernel_testkit::test_support::hook_double::HookAxisDouble::new(&[
+            "some-hook-plugin",
+        ]),
         Arc::new(busbar_kernel::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(delay);
@@ -922,7 +924,7 @@ async fn register_secret_hook(handle: Arc<AppHandle>) -> (StatusCode, String) {
 /// while ALSO holding the process-wide config-mutation lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_secret_plugin_does_not_stall_the_executor() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let delay = Duration::from_millis(400);
     let app = crate::new_test_app()
         .hook_env(parking_secret_hook_env(delay))

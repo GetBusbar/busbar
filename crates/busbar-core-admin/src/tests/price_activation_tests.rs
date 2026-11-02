@@ -48,7 +48,7 @@ impl Scenario {
         // Install through the existing test RootInstall carrier, as the shipped root does.
         let _fixture = crate::new_test_app();
         let holder = holder();
-        busbar_kernel::test_support::rate_holders::install_rate_apply(holder);
+        busbar_kernel_testkit::test_support::rate_holders::install_rate_apply(holder);
         let scenario = Arc::new(Self {
             candidate: TestOverlayStore::new(),
             activation: TestOverlayStore::new(),
@@ -209,7 +209,7 @@ impl Drop for Inputs {
 }
 
 fn settings_handle(tag: &str) -> (Inputs, TestOverlayStore, Arc<AppHandle>) {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let (dir, config_path, providers_path) = write_reset_fixture(tag);
     let overlay = TestOverlayStore::new();
     let mut app = crate::new_test_app()
@@ -502,10 +502,10 @@ static PANIC_PLANE: busbar_kernel::plane_driver::registry::PlaneDecl =
             fallback: false,
             config_section: PRE_PUBLICATION_PLANE,
             scope_kinds: &[],
-            ..busbar_kernel::test_support::NEUTRAL_FALLBACK.declaration
+            ..busbar_kernel_testkit::test_support::NEUTRAL_FALLBACK.declaration
         },
         on_swap: Some(before_publication),
-        ..busbar_kernel::test_support::NEUTRAL_FALLBACK
+        ..busbar_kernel_testkit::test_support::NEUTRAL_FALLBACK
     };
 
 struct ClearPanicPath;
@@ -520,7 +520,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     let scenario = Scenario::install(PRE_PUBLICATION_PANIC_FEE);
     let (_inputs, overlay, handle) = settings_handle("before-price-publication");
-    busbar_kernel::test_support::planes::register_test_plane(&PANIC_PLANE);
+    busbar_kernel_testkit::test_support::planes::register_test_plane(&PANIC_PLANE);
     let before = handle.load();
     let before_limits = busbar_kernel::config::limits::installed();
     *PRE_PANIC_PATH.lock().unwrap() = before.config_path.clone();

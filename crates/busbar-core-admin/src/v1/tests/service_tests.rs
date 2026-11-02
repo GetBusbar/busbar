@@ -36,7 +36,8 @@ pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
 /// Lanes/store are shared (unchanged), proving the store-constraint-free subset.
 #[test]
 fn build_with_hook_registers_and_wires_global_tap() {
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
+    let env =
+        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     assert_eq!(app.tap_hooks.len(), 0, "fixture starts with no taps");
     let next = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
@@ -65,7 +66,8 @@ fn build_with_hook_registers_and_wires_global_tap() {
 /// reported `global: true`.
 #[test]
 fn build_with_hook_demotes_global_false_removes_wiring() {
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
+    let env =
+        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     // Register a GLOBAL tap, then PUT the same name with global: false.
     let promoted =
@@ -1957,7 +1959,7 @@ impl busbar_contract::records::RecordStore for FailingMeteringStore {
 #[test]
 fn usage_read_store_failure_logs_the_real_error() {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(subscriber, || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -2095,7 +2097,7 @@ fn max_inspect_schema_json_bytes_is_exactly_256_kibibytes() {
 /// return `Some(false)` and pass a loose "it's false" check, but the detail text would be wrong.
 #[tokio::test]
 async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
-    let env = busbar_kernel::test_support::test_hook_env_with_wrong_kind_plugin(
+    let env = busbar_kernel_testkit::test_support::test_hook_env_with_wrong_kind_plugin(
         "test-hook",
         "test-wrong-kind",
     );
@@ -2141,7 +2143,8 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
 /// would defeat the guard and double-push on every re-register.
 #[test]
 fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
+    let env =
+        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let once = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
         .expect("first global registration");
@@ -2165,7 +2168,7 @@ fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
 /// needs at least two).
 #[test]
 fn build_with_hook_demote_only_removes_the_target_hook() {
-    let env = busbar_kernel::test_support::test_hook_env(
+    let env = busbar_kernel_testkit::test_support::test_hook_env(
         &["test-hook", "test-hook-2"],
         Default::default(),
     );
@@ -2193,7 +2196,7 @@ fn build_with_hook_demote_only_removes_the_target_hook() {
 /// wiring untouched — same `!=`/`==` retain distinction as the demote case above.
 #[test]
 fn build_without_hook_only_removes_the_target_from_global_wiring() {
-    let env = busbar_kernel::test_support::test_hook_env(
+    let env = busbar_kernel_testkit::test_support::test_hook_env(
         &["test-hook", "test-hook-2"],
         Default::default(),
     );
@@ -2241,7 +2244,8 @@ fn build_with_group_name_length_boundary_is_exact() {
 /// one is fine — a mutated `> 1` boundary needs both sides tested to catch `==`/`>=` variants.
 #[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
+    let env =
+        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let mut one_default = hook(HookKind::Tap, false);
     one_default.default = true;
@@ -2266,7 +2270,8 @@ fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
 /// every VALID global reference instead.
 #[test]
 fn build_with_registry_rejects_a_dangling_global_hook_reference() {
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
+    let env =
+        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let mut registry = HashMap::new();
     registry.insert("logger".to_string(), hook(HookKind::Tap, true));
@@ -2318,7 +2323,8 @@ async fn healthz_returns_a_real_response_not_the_default() {
 /// whose gate disagrees with its own hook registry.
 #[test]
 fn hook_snapshot_builders_recompute_the_content_gate() {
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
+    let env =
+        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     assert!(
         !app.any_content_hook,
@@ -2364,7 +2370,8 @@ fn hook_snapshot_builders_recompute_the_content_gate() {
 #[test]
 fn hook_derived_fields_follow_the_registry() {
     // Never a skip: the hook double behind the kernel's hook port is always there.
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
+    let env =
+        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
 
     /// Every `App` field that is a PURE FUNCTION of `hook_registry`, re-derived from the snapshot's
     /// own registry and compared against what the builder installed.
@@ -3794,7 +3801,7 @@ mod plane_fees_on_admin_usage {
     use busbar_kernel::cost::PlaneFees;
     use busbar_kernel::governance::PLANE_LANE_SEP;
     use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
-    use busbar_kernel::test_support::planes::TestRegistryIsolation;
+    use busbar_kernel_testkit::test_support::planes::TestRegistryIsolation;
 
     const KEY: &str = "vk_plane_fees";
     /// The pools plane's model and provider, as the rows below name them.
@@ -4502,7 +4509,7 @@ mod plane_fees_on_admin_usage {
 #[test]
 fn the_store_catalog_heads_with_the_linked_store_rows() {
     let svc = svc_with(tmp_plugins_dir("linked-head"), unsigned_ok_posture());
-    busbar_kernel::test_support::root::ensure();
+    busbar_kernel_testkit::test_support::root::ensure();
     let stores = busbar_kernel::preflight::root_rows().stores;
     let linked: Vec<&str> = stores.iter().map(|s| s.0).collect();
     assert!(!linked.is_empty(), "the build links a store row");
@@ -4527,7 +4534,7 @@ fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.min_versions.insert("p".into(), "v2".into());
     let app = crate::new_test_app().plugins_cfg(cfg).build();
-    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(subscriber, || {
         super::operations::admission(&app).expect("an admission is installed");
@@ -4651,7 +4658,7 @@ where
     F: FnOnce(Arc<App>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
     let app = crate::new_test_app()
         .overlay_backend(overlay.backend())
         .build();
@@ -4719,7 +4726,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
 /// live definitions — moving the read off the worker changed where it runs, not what it says.
 #[tokio::test(flavor = "current_thread")]
 async fn named_defs_still_flag_an_unparseable_overlay_entry() {
-    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
     let mut doc = serde_json::json!({"version": 1, "named_maps": {}});
     doc["named_maps"][NamedMapSection::Export.key()] =
         serde_json::json!({"broken": {"no_such_field": true}});
@@ -4747,7 +4754,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
 /// A Store read failure is an error, never a fabricated empty list or missing definition.
 #[tokio::test]
 async fn named_defs_propagate_store_overlay_read_failures() {
-    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let overlay = busbar_kernel_testkit::test_support::TestOverlayStore::new();
     let app = crate::new_test_app()
         .overlay_backend(overlay.backend())
         .build();

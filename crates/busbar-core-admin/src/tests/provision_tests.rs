@@ -162,7 +162,7 @@ const PROVISION_FAIL_VERSION_SUMMARY: &str = "group.provision group:user:alice-m
 /// committed config change is never invisible, and the retry is idempotent (the group now exists).
 #[tokio::test]
 async fn mint_failure_after_the_provision_commit_still_records_the_committed_group() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let app = crate::new_test_app()
         .governance(gov(Arc::new(RefusesKeyWrites(MemoryStore::new()))))
         .groups_tree(tree(&["team"]))
@@ -265,7 +265,7 @@ const CEILING_ACTOR: &str = "test:ceiling-audit";
 /// configured groups and mints that bind to an EXISTING group are unaffected.
 #[tokio::test]
 async fn auto_provision_stops_at_the_group_ceiling() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let mut app = crate::new_test_app()
         .governance(gov(Arc::new(MemoryStore::new())))
         .groups_tree(tree(&["team"]))
@@ -288,7 +288,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     let ceiling_actor = busbar_kernel::auth::AuthPrincipal(Some(
         busbar_contract::auth::Principal::from_id(CEILING_ACTOR),
     ));
-    let audit = busbar_kernel::audit::auditlog::observe_accepted_admin_entry(
+    let audit = busbar_kernel_testkit::test_support::accepted_audit::observe_accepted_admin_entry(
         "key.create",
         crate::keys::KEY_RESOURCE_NONE,
         CEILING_ACTOR,

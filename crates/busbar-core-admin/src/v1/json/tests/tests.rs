@@ -736,23 +736,23 @@ struct MarkingAdmission;
 
 impl busbar_kernel::admission::PluginAdmission for MarkingAdmission {
     fn is_tarball(&self, file: &str) -> bool {
-        busbar_kernel::test_support::AdmissionStandIn.is_tarball(file)
+        busbar_kernel_testkit::test_support::AdmissionStandIn.is_tarball(file)
     }
     fn max_tarball_bytes(&self) -> u64 {
-        busbar_kernel::test_support::AdmissionStandIn.max_tarball_bytes()
+        busbar_kernel_testkit::test_support::AdmissionStandIn.max_tarball_bytes()
     }
     fn restart_default(&self, kind: &str) -> bool {
-        busbar_kernel::test_support::AdmissionStandIn.restart_default(kind)
+        busbar_kernel_testkit::test_support::AdmissionStandIn.restart_default(kind)
     }
     fn policy_resolves(&self, cfg: &busbar_kernel::config::PluginsCfg) -> Result<(), String> {
-        busbar_kernel::test_support::AdmissionStandIn.policy_resolves(cfg)
+        busbar_kernel_testkit::test_support::AdmissionStandIn.policy_resolves(cfg)
     }
     fn inventory(
         &self,
         dir: &std::path::Path,
         cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<Vec<busbar_kernel::admission::Inventoried>, String> {
-        busbar_kernel::test_support::AdmissionStandIn.inventory(dir, cfg)
+        busbar_kernel_testkit::test_support::AdmissionStandIn.inventory(dir, cfg)
     }
     fn admit_upload(
         &self,
@@ -761,7 +761,7 @@ impl busbar_kernel::admission::PluginAdmission for MarkingAdmission {
         tarball: &[u8],
         cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<busbar_kernel::admission::Admitted, busbar_kernel::admission::Refusal> {
-        busbar_kernel::test_support::AdmissionStandIn.admit_upload(dir, file, tarball, cfg)
+        busbar_kernel_testkit::test_support::AdmissionStandIn.admit_upload(dir, file, tarball, cfg)
     }
     fn inspect(
         &self,
@@ -785,7 +785,7 @@ impl busbar_kernel::admission::PluginAdmission for MarkingAdmission {
         bytes: &[u8],
         cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<busbar_kernel::admission::Stated, busbar_kernel::admission::Refusal> {
-        busbar_kernel::test_support::AdmissionStandIn.rollback_target(file, bytes, cfg)
+        busbar_kernel_testkit::test_support::AdmissionStandIn.rollback_target(file, bytes, cfg)
     }
 }
 

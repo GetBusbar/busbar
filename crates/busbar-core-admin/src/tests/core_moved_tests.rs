@@ -19,7 +19,7 @@ async fn test_admin_blank_header_token_rejected() {
 
     use std::sync::Arc;
 
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -77,7 +77,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
 
     use std::sync::Arc;
 
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -154,7 +154,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 
     use std::sync::Arc;
 
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -231,7 +231,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 /// token authenticates `/api/v1/admin/*` and returns above the data-plane gate, unchanged.
 #[tokio::test]
 async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let (gov, _secret) = dp_gov_with_key();
     let app = crate::new_test_app().governance(gov).build();
     let (addr, handle) = dp_serve(app).await;
@@ -274,9 +274,9 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
 #[tokio::test]
 async fn split_admin_listener_no_double_exposure() {
     use busbar_kernel::governance::{GovState, MemoryStore};
-    use busbar_kernel::test_support::LaneSpec;
+    use busbar_kernel_testkit::test_support::LaneSpec;
     use std::sync::Arc;
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -342,7 +342,7 @@ async fn test_governance_admin_api() {
     use busbar_kernel::governance::{GovState, MemoryStore};
     use std::sync::Arc;
 
-    busbar_kernel::snapshot::init();
+    busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     // A signing key is required to MINT signed-token keys (1.5.0).
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
