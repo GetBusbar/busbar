@@ -5531,6 +5531,32 @@ live at `/specification/2026-07-28`). Authorization: `/specification/<rev>/basic
 | MCP | WebSocket | — | **never officially defined** in any MCP revision (only community/unmerged proposals, e.g. SEP-1287, issue #3339) | **no** (deliberate) | none — not a gap, spec has no WS binding | — | n/a |
 | MCP | Authorization: OAuth 2.1, RFC 8707 resource indicators, RFC 9728 protected-resource metadata, RFC 8414/OIDC discovery | server (resource server) | required when HTTP-based auth is used | **yes** — busbar acts as resource server: 401 + `WWW-Authenticate` naming the RFC 9728 doc, `aud` check enforces RFC 8707 against operator-configured canonical URI; does not itself act as AS for `mcp:` (verify-only); separate in-core `oauth_as` plane can mint RFC 9068 `at+jwt` tokens when configured | Dynamic Client Registration / Client-ID-Metadata-Document flows not confirmed present | S (if needed) | http (TLS) |
 
+MCP stdio configured-launch trust (2026-11-02 implementation clarification of required stdio
+and SEC-PIN): `pin.mechanism: local_program` names the exact configured absolute command path
+in `pin.key` and requires an explicit absolute `cwd`. The host privately binds command, argv,
+environment references/values and cwd to its operator-owned program grant, clears the child
+environment, and applies that cwd. No public hash of a secret-bearing launch recipe is emitted.
+The host produces the first successful program-need HEAD only after a successful same-ticket
+spawn with the checked tagged supplier and a live program receipt, with no failure. A carrier's
+Ready claim alone cannot establish that identity. The plane requires single canonical host
+`program-instance`, `generation`, and base64-encoded command `program-identity` fields before
+any greeting or tool observation. A governed rooted call or owed child reply carries the checked
+expected incarnation and generation through existing connector fields; the host consumes those
+fields and refuses a missing-live or mismatched pair before spawning or flushing a body. The
+plane validates the actual call lease head before accepting its response. Stdio refuses TLS
+pin mechanisms because it performs no TLS handshake. Nonzero, nonreused member incarnations and per-incarnation
+child generations scope greeting/ask/retry caches; changing the private recipe creates a new
+incarnation, even when the command path stays equal and child generation starts again at 1.
+Missing, malformed, duplicate, unsuccessful, mismatched or retired receipts refuse the exchange.
+Rooted child replies additionally require the originating plane's local live-work custody before
+work resume or settlement; sealed numeric pairs or adopted durable rows cannot transfer that
+custody across plane or host restarts. Incarnation nonreuse is scoped to the live host.
+
+This is an operator-configured launch identity under the host's private admission and the selected
+trusted stdio carrier's framing semantics. It does not attest executable bytes, an inode, script
+contents, signatures, or arbitrary malicious carrier payloads. The existing SEC-PIN refusal for
+unverified `pinned_pubkey` remains; launch identity does not approve a tool's content.
+
 ---
 
 ### 3. LLM plane — `busbar-llm` / `busbar-plane-llm` (six dialects, one IR)
