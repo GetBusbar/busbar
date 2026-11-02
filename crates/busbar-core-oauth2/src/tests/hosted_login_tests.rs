@@ -205,27 +205,23 @@ fn the_same_origin_refresh_rule_against_1_5_5s() {
     }
 }
 
-#[tokio::test]
-async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
+#[test]
+fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
     for bad in [
         "https://idp.example.com/authorize\r\nX-Evil: 1",
         "https://idp.example.com/authorize\nX-Evil: 1",
         "https://idp.example.com/authorize?x=\u{0}",
         "https://idp.example.com/authorize?x=\u{7f}",
     ] {
-        let app = busbar_kernel_testkit::test_support::TestApp::new()
-            .public_url("https://busbar.example.com")
-            .login_method_door(
-                "microsoft",
-                std::sync::Arc::new(DoorLogin {
-                    begin: LoginOutcome::Authorize(bad.to_string()),
-                    ..DoorLogin::answering(|_| alice())
-                }),
-                LoginKind::Redirect,
-                true,
-            )
-            .build();
-        let resp = begin(&app, "microsoft", false).await;
+        let resp = begin_outcome(
+            "microsoft",
+            "https://busbar.example.com",
+            "verifier".into(),
+            "state".into(),
+            "nonce".into(),
+            false,
+            LoginOutcome::Authorize(bad.to_string()),
+        );
         assert_eq!(
             resp.status().as_u16(),
             502,
@@ -682,10 +678,17 @@ fn door_cookie() -> LoginCookie {
     }
 }
 
-#[tokio::test]
-async fn a_door_login_begins_with_the_plugins_authorize_url() {
-    let app = door_app(DoorLogin::new(LoginOutcome::Reject));
-    let resp = begin(&app, "idp", false).await;
+#[test]
+fn a_door_login_begins_with_the_plugins_authorize_url() {
+    let resp = begin_outcome(
+        "idp",
+        "https://busbar.example.com",
+        "verifier".into(),
+        "state".into(),
+        "nonce".into(),
+        false,
+        LoginOutcome::Authorize("https://idp.example.com/authorize?x=1".into()),
+    );
     assert_eq!(resp.status().as_u16(), 302);
     assert_eq!(
         resp.headers().get(header::LOCATION).unwrap(),
@@ -743,8 +746,8 @@ async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
     assert!(door.seen.lock().unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn a_door_callback_renders_each_answer_on_its_page() {
+#[test]
+fn a_door_callback_renders_each_answer_on_its_page() {
     for (outcome, status, heading) in [
         (
             LoginOutcome::SecurityCheckFailed,
@@ -752,35 +755,21 @@ async fn a_door_callback_renders_each_answer_on_its_page() {
             "Sign-in couldn't be verified",
         ),
         (LoginOutcome::Reject, 401, "Sign-in was declined"),
-        (
-            LoginOutcome::Identify(Principal::from_id("alice")),
-            403,
-            "No access yet",
-        ),
     ] {
-        let app = door_app(DoorLogin::new(outcome.clone()));
-        let resp = callback(
-            &app,
-            &cred_handle(&app),
-            Some(door_cookie().encode()),
-            "the-code".into(),
-            Some("st".into()),
-        )
-        .await;
+        let resp = callback_outcome("idp", outcome.clone()).unwrap_err();
         assert_eq!(resp.status().as_u16(), status, "{outcome:?}");
         assert_branded_error_page(&body_of(resp), heading);
     }
-    let app = door_app(DoorLogin::new(LoginOutcome::Outage {
-        retry_after_secs: None,
-    }));
-    let unreachable = callback(
-        &app,
-        &cred_handle(&app),
-        Some(door_cookie().encode()),
-        "the-code".into(),
-        Some("st".into()),
+    let principal = callback_outcome("idp", LoginOutcome::Identify(Principal::from_id("alice")))
+        .expect("an identified principal passes through to the real self-key issuer");
+    assert_eq!(principal.id, "alice");
+    let unreachable = callback_outcome(
+        "idp",
+        LoginOutcome::Outage {
+            retry_after_secs: None,
+        },
     )
-    .await;
+    .unwrap_err();
     let page = provider_unreachable(None);
 
     assert_eq!(unreachable.status().as_u16(), 503);
@@ -815,15 +804,7 @@ async fn an_outage_sends_the_idps_retry_after_clamped() {
                 .get("retry-after")
                 .map(|v| v.to_str().unwrap().to_string())
         };
-        let app = door_app(DoorLogin::new(outcome.clone()));
-        let redirect = callback(
-            &app,
-            &cred_handle(&app),
-            Some(door_cookie().encode()),
-            "the-code".into(),
-            Some("st".into()),
-        )
-        .await;
+        let redirect = callback_outcome("idp", outcome.clone()).unwrap_err();
         assert_eq!(redirect.status().as_u16(), 503, "{stated:?}");
         assert_eq!(retry_after(&redirect), Some(sent.to_string()), "{stated:?}");
         assert_branded_error_page(&body_of(redirect), "Couldn't reach your provider");

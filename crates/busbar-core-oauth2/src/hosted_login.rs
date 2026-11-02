@@ -108,6 +108,26 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
     };
 
     let outcome = login_step(app, method, LoginStep::Begin(begin)).await;
+    begin_outcome(
+        method,
+        app.public_url.as_deref().unwrap_or(""),
+        code_verifier,
+        state,
+        nonce,
+        refresh,
+        outcome,
+    )
+}
+
+fn begin_outcome(
+    method: &str,
+    base_url: &str,
+    code_verifier: String,
+    state: String,
+    nonce: String,
+    refresh: bool,
+    outcome: LoginOutcome,
+) -> Response {
     match outcome {
         LoginOutcome::Authorize(url) => {
             let Ok(location) = header::HeaderValue::try_from(url) else {
@@ -147,7 +167,6 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
                 refresh,
             }
             .encode();
-            let base_url = app.public_url.as_deref().unwrap_or("");
             let page = render_login_form(method, &form, &state, base_url, refresh);
             let mut resp = html_no_store(page);
             resp.headers_mut().append(
@@ -211,32 +230,36 @@ async fn callback(
             ..Default::default()
         },
     };
-    let principal = match login_step(app, &cookie.method, LoginStep::Complete(request)).await {
-        LoginOutcome::Identify(p) => p,
-        LoginOutcome::Outage { retry_after_secs } => {
-            return clear_and(provider_unavailable(&cookie.method, retry_after_secs))
-        }
-
-        LoginOutcome::SecurityCheckFailed => return clear_and(security_check_failed()),
-        LoginOutcome::Reject => {
-            return clear_and(error_page(
-                StatusCode::UNAUTHORIZED,
-                "Sign-in was declined",
-                "Your identity provider declined this sign-in. Check with your Busbar admin if \
-                 this keeps happening.",
-            ));
-        }
-
-        LoginOutcome::Authorize(_) | LoginOutcome::Prompt(_) | LoginOutcome::Exchange(_) => {
-            return clear_and(error_page(
-                StatusCode::BAD_GATEWAY,
-                "Sign-in unavailable",
-                "Something went wrong completing this sign-in. Please head back and try again.",
-            ));
-        }
+    let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
+    let principal = match callback_outcome(&cookie.method, outcome) {
+        Ok(principal) => principal,
+        Err(response) => return response,
     };
 
     clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
+}
+
+fn callback_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Response> {
+    match outcome {
+        LoginOutcome::Identify(principal) => Ok(principal),
+        LoginOutcome::Outage { retry_after_secs } => {
+            Err(clear_and(provider_unavailable(method, retry_after_secs)))
+        }
+        LoginOutcome::SecurityCheckFailed => Err(clear_and(security_check_failed())),
+        LoginOutcome::Reject => Err(clear_and(error_page(
+            StatusCode::UNAUTHORIZED,
+            "Sign-in was declined",
+            "Your identity provider declined this sign-in. Check with your Busbar admin if \
+             this keeps happening.",
+        ))),
+        LoginOutcome::Authorize(_) | LoginOutcome::Prompt(_) | LoginOutcome::Exchange(_) => {
+            Err(clear_and(error_page(
+                StatusCode::BAD_GATEWAY,
+                "Sign-in unavailable",
+                "Something went wrong completing this sign-in. Please head back and try again.",
+            )))
+        }
+    }
 }
 
 async fn issue_and_render(
