@@ -601,7 +601,7 @@ pub fn publish(resolved: &LimitsResolved) {
 /// cascade into every other test that wants the lock. Synchronous tests take it with
 /// `blocking_lock()`, which is legal precisely because a plain `#[test]` fn has no runtime.
 #[cfg(test)]
-pub use install_guard::LIMITS_TEST_LOCK;
+pub use crate::test_support::fixture_limits::LIMITS_TEST_LOCK;
 
 /// Install (or RE-install) the resolved limits process-wide, unconditionally and with no rollback.
 ///
@@ -628,10 +628,7 @@ pub fn swap_installed(slot: Option<LimitsResolved>) -> Option<LimitsResolved> {
 
 /// The kernel testkit's guard, mounted for the kernel's own test fixtures.
 #[cfg(test)]
-#[path = "../../../busbar-kernel-testkit/src/limits.rs"]
-mod install_guard;
-#[cfg(test)]
-pub use install_guard::InstallGuard;
+pub use crate::test_support::fixture_limits::InstallGuard;
 
 /// Mirror the egress translate-body cap AND the hook content ceiling
 /// into the `proxy` process globals, so a reader that has no `App` in hand (the proxy paths, and the plane crates that read

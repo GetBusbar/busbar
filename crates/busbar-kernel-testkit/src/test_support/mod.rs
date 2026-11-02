@@ -708,7 +708,7 @@ pub type BuiltApp = crate::state::App;
 /// seam is a `door-only` finding.)
 #[cfg(test)]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    Some(crate::plane_driver::registry::default_section_plane_test_runtime())
+    Some(std::sync::Arc::new(()))
 }
 #[cfg(not(test))]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
@@ -2260,6 +2260,10 @@ pub use fixtures::*;
 /// The kernel testkit's production-path App build, mounted for the kernel's own fixtures.
 #[path = "../app.rs"]
 mod app;
+
+// One limits guard and lock for every shared fixture mount in this binary.
+#[path = "../limits.rs"]
+pub(crate) mod fixture_limits;
 pub use app::{build_once, build_once_under, from_cfg};
 
 #[cfg(test)]

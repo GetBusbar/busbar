@@ -10,7 +10,9 @@
 /// An App built from a test's configuration through the kernel's own build.
 pub mod app;
 /// A process-wide limits posture for a test's duration, rolled back on drop.
-pub mod limits;
+pub mod limits {
+    pub use crate::test_support::fixture_limits::*;
+}
 /// The base data router's mounted surface for an App, as plain data.
 pub mod routes;
 

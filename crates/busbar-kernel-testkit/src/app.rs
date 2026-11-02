@@ -75,12 +75,5 @@ pub fn from_cfg(cfg: busbar_kernel::config::RootCfg) -> std::sync::Arc<busbar_ke
 }
 
 fn limits_lock() -> &'static tokio::sync::Mutex<()> {
-    #[cfg(test)]
-    {
-        &busbar_kernel::config::limits::LIMITS_TEST_LOCK
-    }
-    #[cfg(not(test))]
-    {
-        &crate::limits::LIMITS_TEST_LOCK
-    }
+    &crate::test_support::fixture_limits::LIMITS_TEST_LOCK
 }
