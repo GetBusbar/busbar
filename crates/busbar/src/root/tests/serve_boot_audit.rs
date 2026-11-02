@@ -133,7 +133,8 @@ pub(super) async fn run() {
         step(&config.limits);
     }
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
-        config.clone(),
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the boot deployment resolves for its owned build"),
         plugins.clone(),
         None,
         Default::default(),
