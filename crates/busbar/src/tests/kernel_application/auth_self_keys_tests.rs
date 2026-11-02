@@ -956,3 +956,297 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         }
     }
 }
+
+#[tokio::test]
+async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation() {
+    let user = busbar_kernel::governance::SELF_KEY_BINDING_MODE;
+    let app = busbar_kernel::governance::SELF_KEY_BINDING_MODE_APP;
+    for route in ["exchange", "login", "refresh"] {
+        for (block, role, allowed) in [
+            (None, None, true),
+            (Some(vec![user]), None, true),
+            (Some(vec![app]), None, false),
+            (Some(vec![]), None, false),
+            (None, Some(vec![app]), false),
+        ] {
+            let mut policy = serde_json::Map::new();
+            if let Some(block) = block {
+                policy.insert("binding_modes".into(), serde_json::json!(block));
+            }
+            if let Some(role) = role {
+                policy.insert(
+                    "mint_ceilings".into(),
+                    serde_json::json!({ "eng": { "binding_modes": role } }),
+                );
+            }
+            crate::dist_root_install::install();
+            let library_path = std::path::PathBuf::from(
+                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                    .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+            );
+            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+                .expect("the actual store statement reads")
+                .expect("the actual store exports its statement");
+            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .expect("the actual store statement is valid")
+                .name;
+            let mut manifest = plugins::manifest(
+                "store",
+                &module,
+                busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            );
+            manifest.statement = Some(hex::encode(statement));
+            let library = std::fs::read(library_path).expect("the actual store library reads");
+            let directory = plugins::scratch("auth-self-mint-mode-policy");
+            let archive =
+                plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+            std::fs::write(directory.join("store.tar.gz"), archive)
+                .expect("stage the actual store archive");
+            let settings: serde_json::Value = serde_json::from_str(
+                &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
+                    .unwrap_or_else(|_| "{}".into()),
+            )
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+            assert!(
+                settings.is_object(),
+                "the actual store settings are an object"
+            );
+            let oidc_path = common::plugins::token_verifier_cdylib_path()
+                .expect("the freshly built actual OIDC product is required");
+            let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
+                .expect("the actual OIDC statement reads")
+                .expect("the actual OIDC product exports its statement");
+            let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+                .expect("the actual OIDC statement is valid")
+                .name;
+            common::credentials::install_auth_plugin(&directory, &oidc_module, "corp", true);
+            let signing = directory.join("signing-key");
+            std::fs::write(&signing, hex::encode([9u8; 32]))
+                .expect("write the actual configured signing key");
+            let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+                "providers": {},
+                "models": {},
+                "identity-providers": {
+                    "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
+                },
+                "auth": {
+                    "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+                    "key_ttl": "1h", "policy": policy,
+                    "role_bindings": { "corp": { "eng": { "group": "team" } } }
+                },
+                "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
+                "store": { "module": module, "settings": settings },
+                "advanced": { "allow_destinations": ["127.0.0.1"] },
+            }))
+            .expect("the product deployment parses");
+            let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+                .expect("the product deployment resolves");
+            let plugin_config = busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            let mut anchor =
+                busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+                    .expect("the actual Store bootstraps its config authority");
+            let observed = Arc::new(ObservedStoreCalls {
+                calls: anchor
+                    .calls
+                    .as_ref()
+                    .cloned()
+                    .expect("the actual Store exposes typed calls"),
+                record_writes: std::sync::atomic::AtomicUsize::new(0),
+                transactions: std::sync::atomic::AtomicUsize::new(0),
+            });
+            anchor.calls = Some(observed.clone());
+            let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+                anchor
+                    .calls
+                    .as_ref()
+                    .cloned()
+                    .expect("the actual Store exposes typed calls"),
+            )
+            .expect("the actual Store supports conditional config records");
+            let rules = Arc::new(crate::root::door_steps::Rules::default())
+                as Arc<dyn busbar_kernel::appbuild::RootRules>;
+            let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+                config,
+                plugin_config,
+                Some(overlay.clone()),
+                Default::default(),
+                Default::default(),
+                (None, None),
+                None,
+                &rules,
+                Some(anchor),
+            )
+            .expect("the actual product builds the session deployment");
+            limits.keep().expect("the product limits commit");
+            if let Some(rotate) = rotate {
+                rotate();
+            }
+            let app = Arc::new(app);
+            let gov = app
+                .governance
+                .as_ref()
+                .expect("the actual Store supplies governance")
+                .clone();
+            let (router, handle) =
+                busbar_kernel::router::build_router_with_limits(app, 64 * 1024, 1, false);
+            let before = handle.load();
+            let overlay_before = overlay
+                .read_bytes()
+                .expect("the actual overlay reads before admission");
+            let writes_before = observed
+                .record_writes
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let transactions_before = observed
+                .transactions
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let token = if route == "exchange" {
+                let anonymous = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    tower::ServiceExt::oneshot(
+                        router.clone(),
+                        axum::http::Request::builder()
+                            .method("POST")
+                            .uri("/auth/token")
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    ),
+                )
+                .await
+                .expect("the actual anonymous exchange is bounded")
+                .unwrap();
+                assert_eq!(anonymous.status(), axum::http::StatusCode::UNAUTHORIZED);
+                assert!(Arc::ptr_eq(&before, &handle.load()));
+                assert!(gov.all_keys().unwrap().is_empty());
+                assert_eq!(overlay.read_bytes().unwrap(), overlay_before);
+                assert_eq!(
+                    observed
+                        .record_writes
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    writes_before
+                );
+                assert_eq!(
+                    observed
+                        .transactions
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    transactions_before
+                );
+                let credential =
+                    common::credentials::token_for("subject", &["eng"], "api://auth-self-groups");
+                let response = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    tower::ServiceExt::oneshot(
+                        router,
+                        axum::http::Request::builder()
+                            .method("POST")
+                            .uri("/auth/token")
+                            .header("authorization", format!("Bearer {credential}"))
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    ),
+                )
+                .await
+                .expect("the actual OIDC exchange is bounded")
+                .unwrap();
+                let status = response.status();
+                let body = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    axum::body::to_bytes(response.into_body(), 64 * 1024),
+                )
+                .await
+                .expect("the actual exchange body is bounded")
+                .unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                if allowed {
+                    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+                    Some(body["api_key"].as_str().expect("issued token").to_string())
+                } else {
+                    assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+                    assert_eq!(
+                        body["error"],
+                        "the key this identity would mint is over the mint ceiling (auth.policy)"
+                    );
+                    assert!(body.get("api_key").is_none());
+                    None
+                }
+            } else {
+                // The public login/refresh mint API takes verified principal DATA. The exchange arm
+                // above separately supplies that same subject and role through actual OIDC verification.
+                let mut principal = busbar_kernel::auth::Principal::from_id("oidc:subject");
+                principal.roles = vec!["eng".to_string()];
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    busbar_kernel::auth::login::issue_self_key(
+                        &before,
+                        &handle,
+                        "corp",
+                        principal,
+                        route == "refresh",
+                    ),
+                )
+                .await
+                .expect("the actual post-identity mint is bounded")
+                {
+                    busbar_kernel::auth::login::SelfKeyIssue::Issued { secret, .. } => {
+                        assert!(allowed);
+                        Some(secret.expose(&busbar_kernel::seal::lend()).clone())
+                    }
+                    busbar_kernel::auth::login::SelfKeyIssue::OverCeiling => {
+                        assert!(!allowed);
+                        None
+                    }
+                    _ => panic!("unexpected actual post-identity mint result"),
+                }
+            };
+            if let Some(token) = token {
+                let key = gov
+                    .verify_token(&token, busbar_kernel::store::now(), None)
+                    .unwrap();
+                assert_eq!(key.binding_mode.as_deref(), Some(user));
+                assert_eq!(key.group.as_deref(), Some("user:oidc:subject"));
+                assert_eq!(gov.all_keys().unwrap().len(), 1);
+                assert!(handle
+                    .load()
+                    .groups_registry
+                    .contains_key("user:oidc:subject"));
+                let persisted = overlay
+                    .read_required()
+                    .expect("the real Store overlay reads")
+                    .expect("the allowed mint persisted an actual overlay generation");
+                assert_eq!(
+                    persisted.groups["user:oidc:subject"].parent.as_deref(),
+                    Some("team")
+                );
+            } else {
+                assert!(gov.all_keys().unwrap().is_empty(), "no binding was written");
+                assert!(
+                    Arc::ptr_eq(&before, &handle.load()),
+                    "no group snapshot swap"
+                );
+                assert!(!before.groups_registry.contains_key("user:oidc:subject"));
+                assert_eq!(
+                    overlay.read_bytes().unwrap(),
+                    overlay_before,
+                    "no group overlay was persisted"
+                );
+                assert_eq!(
+                    observed
+                        .record_writes
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    writes_before,
+                    "no Store overlay staging was attempted"
+                );
+                assert_eq!(
+                    observed
+                        .transactions
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    transactions_before,
+                    "no Store conditional candidate was submitted"
+                );
+            }
+        }
+    }
+}
