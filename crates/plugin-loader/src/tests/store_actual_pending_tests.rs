@@ -509,6 +509,13 @@ fn a_usage_batch_cancelled_after_its_write_retries_counted_once() {
         first.is_err(),
         "the first attempt pends until it is cancelled"
     );
+    assert_eq!(
+        RecordStore::get_usage(&s, "m", 60)
+            .expect("the committed first attempt is visible")
+            .requests,
+        4,
+        "the original attempt committed before its reply was cancelled"
+    );
     rt.block_on(s.add_usage_batch(op, &cells))
         .expect("the retry of the same op_id answers");
     let counted = RecordStore::get_usage(&s, "m", 60).expect("read");
