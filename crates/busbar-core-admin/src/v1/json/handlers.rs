@@ -230,7 +230,13 @@ pub(crate) async fn inspect_plugin(
     };
 
     let service = service(&handle);
-    match tokio::task::spawn_blocking(move || service.inspect_plugin(&tarball)).await {
+    inspect_candidate(move || service.inspect_plugin(&tarball)).await
+}
+
+pub(super) async fn inspect_candidate(
+    inspect: impl FnOnce() -> Result<serde_json::Value, AdminError> + Send + 'static,
+) -> Response {
+    match tokio::task::spawn_blocking(inspect).await {
         Ok(view) => respond(StatusCode::OK, view),
         Err(join_err) => {
             diag_error!(
@@ -4239,22 +4245,21 @@ pub(crate) fn openapi_json() -> String {
 pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
     let app = handle.load();
 
+    render_openapi(move |section: &str| {
+        busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
+            .is_some_and(|decl| app.plane_configured(decl))
+    })
+    .await
+}
+
+pub(super) async fn render_openapi(configured: impl Fn(&str) -> bool + Send + 'static) -> Response {
     let served = tokio::task::spawn_blocking(move || {
-        let configured = |section: &str| {
-            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
-                .is_some_and(|decl| app.plane_configured(decl))
-        };
         let committed = openapi_json();
         openapi_for_configured_planes(&committed, configured).unwrap_or(committed)
     })
     .await;
     match served {
-        Ok(body) => (
-            StatusCode::OK,
-            [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
-            body,
-        )
-            .into_response(),
+        Ok(body) => openapi_document_response(body),
         Err(join_err) => {
             diag_error!(
                 busbar_kernel::diagnostics::ADMIN_STORE_TASK_JOIN_FAILED,
@@ -4265,6 +4270,15 @@ pub(crate) async fn openapi(State(handle): State<Arc<AppHandle>>) -> Response {
             err_json(&AdminError::Internal)
         }
     }
+}
+
+pub(super) fn openapi_document_response(body: String) -> Response {
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
+        body,
+    )
+        .into_response()
 }
 
 pub(crate) fn openapi_for_configured_planes(

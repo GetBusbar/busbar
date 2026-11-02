@@ -533,24 +533,36 @@ pub fn bootstrap_dependency_names(
     cfg: &config::RootCfg,
     registry: &dyn busbar_contract::plugin_rows::PluginRows,
 ) -> std::collections::BTreeSet<String> {
-    let mut modules = std::collections::BTreeSet::new();
-    let mut add = |module: &str| {
-        let name = registry
+    let fields: Vec<_> = cfg.store.as_ref().map_or_else(Vec::new, |store| {
+        registry
+            .secret_slots(&store.module)
+            .into_iter()
+            .chain(registry.reference_slots(&store.module))
+            .collect()
+    });
+    bootstrap_dependency_names_from_metadata(cfg, &fields, |module| {
+        registry
             .resolve(module)
             .map(|row| row.name)
             .or_else(|| registry.unresolved_reason(module).map(|row| row.name))
-            .unwrap_or_else(|| module.to_string());
-        modules.insert(name);
+            .unwrap_or_else(|| module.to_string())
+    })
+}
+
+pub fn bootstrap_dependency_names_from_metadata(
+    cfg: &config::RootCfg,
+    fields: &[String],
+    mut canonical: impl FnMut(&str) -> String,
+) -> std::collections::BTreeSet<String> {
+    let mut modules = std::collections::BTreeSet::new();
+    let mut add = |module: &str| {
+        modules.insert(canonical(module));
     };
     if let Some(store) = &cfg.store {
         add(&store.module);
         let mut tree = serde_json::Value::Object(store.settings.clone());
-        let fields = registry
-            .secret_slots(&store.module)
-            .into_iter()
-            .chain(registry.reference_slots(&store.module));
         for path in fields {
-            for at in busbar_contract::secret_fields::declared_references(&tree, &path) {
+            for at in busbar_contract::secret_fields::declared_references(&tree, path) {
                 if let Some(value) = busbar_contract::secret_fields::value_at_mut(&mut tree, &at) {
                     if let config::secret::SettingShape::Reference(reference) =
                         config::secret::classify_setting(value)
@@ -717,6 +729,7 @@ pub fn build_app_from_config(
         prior,
         rules,
         None,
+        false,
     )
 }
 
@@ -731,6 +744,7 @@ pub fn build_app_from_config_with_store(
     prior: Option<&state::App>,
     rules: &Arc<dyn RootRules>,
     boot_store: Option<busbar_contract::store_calls::OpenedStore>,
+    recover_usage_before_hydration: bool,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     let configured_card = config::card::CardFields::of_root(&cfg);
 
@@ -1189,11 +1203,13 @@ pub fn build_app_from_config_with_store(
                     rewrap_at_rest(&gs);
                 }
 
-                if let Err(e) = gs.hydrate_budgets(&cost, busbar_kernel::store::now()) {
-                    return Err(format!(
-                        "governance boot: budget hydration failed ({e}); refusing to start with an \
-                         unenforced (reset) ledger. Fix the durable store and restart."
-                    ));
+                if !recover_usage_before_hydration {
+                    if let Err(e) = gs.hydrate_budgets(&cost, busbar_kernel::store::now()) {
+                        return Err(format!(
+                            "governance boot: budget hydration failed ({e}); refusing to start with an \
+                             unenforced (reset) ledger. Fix the durable store and restart."
+                        ));
+                    }
                 }
 
                 let keys = gs.all_keys().map_err(|e| {

@@ -158,7 +158,7 @@ async fn a_configure_refused_at_the_full_cap_until_timeout_keeps_recovery_availa
         .await
         .unwrap();
     let plugin = match &*instance.inner.lock() {
-        super::super::State::Live(plugin) => Arc::clone(plugin),
+        super::super::State::Live { plugin, .. } => Arc::clone(plugin),
         _ => panic!("opened"),
     };
     let (wake, _) = std::sync::mpsc::channel();

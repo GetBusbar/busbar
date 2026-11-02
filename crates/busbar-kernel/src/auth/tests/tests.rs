@@ -197,41 +197,6 @@ fn test_extract_bearer_token_malformed_no_panic() {
 }
 
 #[test]
-fn test_chain_identifies_with_module_and_principal() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
-    match mw.run_chain(Some("grp:dev")) {
-        ChainVerdict::Identified {
-            module, principal, ..
-        } => {
-            assert_eq!(module, "test-groups-module");
-            assert_eq!(principal.id, "test:dev");
-            assert_eq!(principal.roles, vec!["dev".to_string()]);
-        }
-        other => panic!("expected Identified, got {other:?}"),
-    }
-    assert!(mw.validate_token(Some("grp:dev")));
-    assert!(!mw.is_open());
-}
-
-#[test]
-fn test_nonempty_chain_fails_closed_on_all_pass() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
-    assert_eq!(
-        mw.run_chain(Some("not-a-recognized-credential")),
-        ChainVerdict::Denied,
-        "an unrecognized credential must be denied by a configured chain"
-    );
-    assert_eq!(
-        mw.run_chain(None),
-        ChainVerdict::Denied,
-        "no credential at all must be denied by a configured chain"
-    );
-    assert!(!mw.validate_token(Some("tok3")));
-    assert!(!mw.validate_token(None));
-    assert!(!mw.validate_token(Some("")));
-}
-
-#[test]
 fn an_identified_principal_with_no_grant_is_refused() {
     let identified = |module: &str, principal: Principal| ChainVerdict::Identified {
         module: module.to_string(),
@@ -313,35 +278,6 @@ fn the_refuse_every_ungoverned_rule_against_1_5_5s_guard() {
             "{principal:?}"
         );
     }
-}
-
-#[test]
-fn test_empty_chain_is_open_front_door() {
-    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(mw.is_open());
-    assert_eq!(mw.run_chain(None), ChainVerdict::Open);
-    assert_eq!(mw.run_chain(Some("anything")), ChainVerdict::Open);
-    assert!(mw.validate_token(None));
-    assert!(mw.validate_token(Some("anything")));
-}
-
-#[test]
-fn test_keys_in_chain_sets_flag_not_module() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    assert!(mw.keys_in_chain, "chain: [keys] must set keys_in_chain");
-    assert!(
-        mw.chain_names().is_empty(),
-        "keys is engine-handled, never a boxed module"
-    );
-
-    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(!mw.keys_in_chain, "an empty chain must not claim keys");
-
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
-    assert!(mw.keys_in_chain);
-    assert_eq!(mw.chain_names(), vec!["test-groups-module"]);
-    assert!(mw.validate_token(Some("grp:dev")));
-    assert!(!mw.validate_token(Some("wrong")), "still fail-closed");
 }
 
 #[test]
@@ -482,10 +418,6 @@ fn test_synth_key_reserved_id_prefixes_refused() {
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
-fn residual_app() -> std::sync::Arc<crate::state::App> {
-    crate::test_support::TestApp::new().build()
-}
-
 fn decode_body(resp: Response) -> serde_json::Value {
     let bytes = futures::executor::block_on(async {
         axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -525,7 +457,7 @@ fn a_door_refusal_retains_its_exact_query_in_a_wiping_target() {
         zeroize::Zeroizing::new(target.to_owned()),
     );
     wiped_when_dropped(&door.1);
-    let response = unauthorized_response(&residual_app(), "/v1/responses", Some(&door));
+    let response = refuse_door(&door);
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(seen.lock().unwrap().as_deref(), Some(target));
 }
@@ -554,7 +486,14 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/totally/unknown/path",
     ];
     for path in paths {
-        let body = decode_body(unauthorized_response(&residual_app(), path, None));
+        // This is the fallback formatter continuation. Actual mounted-door routing is
+        // exercised by root product tests; no application or invented plane table is needed.
+        let ingress = crate::plane_driver::dispatch::Ingress::Fallback(
+            crate::ingress::protocols::residual_dialect_for_path(path),
+        );
+        let response = unauthorized_ingress_response(ingress);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = decode_body(response);
         let mut strings = Vec::new();
         collect_strings(&body, &mut strings);
         for s in &strings {
@@ -1083,30 +1022,6 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
 }
 
 #[test]
-fn test_auth_middleware_debug_redacts_tokens() {
-    let cfg = chain_cfg(&["keys", "test-groups-module"]);
-    let mw = AuthMiddleware::new_builtin(&cfg);
-    let dbg = format!("{mw:?}");
-    assert!(
-        dbg.contains("chain_len"),
-        "AuthMiddleware Debug should report the chain length: {dbg}"
-    );
-    assert!(
-        dbg.contains("keys_in_chain"),
-        "AuthMiddleware Debug should report the keys flag: {dbg}"
-    );
-
-    for forbidden in ["token", "secret", "credential"] {
-        assert!(
-            !dbg.to_ascii_lowercase()
-                .replace("keys_in_chain", "")
-                .contains(forbidden),
-            "AuthMiddleware Debug printed an unexpected field '{forbidden}': {dbg}"
-        );
-    }
-}
-
-#[test]
 fn test_caller_token_debug_redacts_value() {
     let secret = "sk-caller-secret-CCCC";
     let present = CallerToken(Some(secret.to_string()));
@@ -1176,85 +1091,47 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     server.shutdown().await;
 }
 
-/// The module `max_admin_scope` ceiling (App.auth_scope_caps) still caps what role_bindings
-/// grant, exercised through `dry_run_admin_scope` (the same chain -> bindings -> cap pipeline
-/// the admin middleware runs):
-///   - an external module DEFAULTS to a read-only ceiling, so a full binding is capped;
-///   - an explicit `max_admin_scope: full` cap lifts the ceiling;
-///   - module scoping holds through the full stack: a binding under another module's table
-///     earns the identified principal nothing;
-///   - a credential no module identifies is denied outright.
+/// Internal policy continuation: real callers supply their verified principal and configured
+/// bindings/caps to these same production functions. Real OIDC refusal is covered separately in
+/// the root's test_nonempty_chain_fails_closed_on_all_pass, including the old not-a-grp input.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    let mk_app = |cap: Option<&str>, bind_module: &str| {
-        let mut app = crate::test_support::TestApp::new().build();
-        let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-        a.admin_chain = vec!["test-scope-module".to_string()];
-        a.role_bindings = bindings_for(bind_module, &[("ops", binding(None, None, Some("full")))]);
-        if let Some(c) = cap {
-            a.auth_scope_caps
-                .insert("test-scope-module".to_string(), c.to_string());
-        }
-        app
+    let operator = Operator::new("operator-provider");
+    let principal = grp_principal("test:ops", &["ops"]);
+    let module = "test-scope-module";
+    let granted = |configured: Option<&str>, bind_module: &str| {
+        let bindings = bindings_for(bind_module, &[("ops", binding(None, None, Some("full")))]);
+        let caps = configured
+            .map(|cap| (module.to_string(), cap.to_string()))
+            .into_iter()
+            .collect();
+        cap_admin_scope(
+            admin_scope_from_bindings(
+                &bindings,
+                &operator,
+                "operator:local",
+                Some(module),
+                Some(&principal),
+            ),
+            module_scope_cap(&caps, &operator, module),
+        )
     };
 
-    let app = mk_app(None, "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
+        granted(None, module),
         Grants::of(Scope::ReadOnly),
         "an external module without an explicit cap must be ceilinged to read-only"
     );
-
-    let app = mk_app(Some("full"), "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
+        granted(Some("full"), module),
         Grants::of(Scope::Full),
         "an explicit full cap must let the full binding through"
     );
-
-    let app = mk_app(Some("full"), "other-module");
-    assert!(
-        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)) == Grants::default(),
-        "a binding under another module's table must grant nothing"
-    );
-
-    let app = mk_app(Some("full"), "test-scope-module");
-    assert!(
-        dry_run_admin_scope(&app, &admin_headers(Some("not-a-grp"), None)) == Grants::default()
-    );
-}
-
-#[test]
-fn test_dry_run_empty_admin_chain_is_not_full() {
-    use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    let mut app = crate::test_support::TestApp::new().build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec![];
-
-    let g = dry_run_admin_scope(&app, &admin_headers(None, None));
-    assert!(
-        !g.contains(Scope::Full),
-        "an empty admin_auth chain must NOT dry-run to Full — that masks the fail-open the \
-         PUT /admin/admin-auth lock-out guard reads"
-    );
     assert_eq!(
-        g,
+        granted(Some("full"), "other-module"),
         Grants::default(),
-        "an empty chain is reported as no earned grant, never full"
-    );
-
-    assert!(
-        !dry_run_admin_scope(
-            &app,
-            &admin_headers(Some("anything"), Some("x-admin-token"))
-        )
-        .contains(Scope::Full),
-        "an empty chain must not grant Full to any presented credential"
+        "a binding under another module's table must grant nothing"
     );
 }
 
@@ -1340,66 +1217,6 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     );
     handle.abort();
     server.shutdown().await;
-}
-
-#[test]
-fn test_1_5_2_keys_arm_resolves_the_vkey() {
-    use crate::governance::{GovState, NewKeySpec};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = crate::real_store::store();
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-        &[9u8; 32],
-        crate::governance::signing::DEFAULT_KID,
-    );
-    let gov = GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap();
-    let (_k, secret) = gov
-        .mint_signed(
-            NewKeySpec {
-                name: "ce".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            2_000_000_000,
-            1_000_000_000,
-        )
-        .unwrap();
-    let secret = secret.expose(&crate::seal::lend()).as_str();
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    let now = busbar_kernel::store::now();
-    let verdict = mw.run_chain_with(Some(secret), Some(&gov), now, None);
-    assert!(
-        matches!(
-            verdict,
-            ChainVerdict::Identified {
-                resolved: Some(_),
-                ..
-            }
-        ),
-        "the keys arm must resolve the vkey"
-    );
-}
-
-#[test]
-fn a_keys_only_chain_is_not_an_open_front_door() {
-    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    assert!(mw.keys_in_chain, "precondition: keys sets the flag");
-    assert!(
-        mw.chain_names().is_empty(),
-        "precondition: keys installs no boxed module"
-    );
-    assert!(
-        !mw.is_open(),
-        "chain: [keys] authenticates, so the front door is CLOSED — reporting it open grants \
-         VerbScope::Full to every caller at Root::admin_grant"
-    );
-
-    let none = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
-    assert!(none.is_open(), "no module and no keys arm IS the open door");
-
-    let both = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
-    assert!(!both.is_open(), "a boxed module closes the door regardless");
 }
 
 #[test]

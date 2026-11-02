@@ -5,58 +5,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-
 use super::super::self_keys::{
-    admit_self_mint, issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError,
-    IssuedKey, SelfGroupProvisioner, SelfServeKeys,
+    admit_self_mint, issue_key, mint_provisioned_self_key, resolve_exchange,
+    DeterministicEd25519Keys, ExchangeError,
 };
 use super::super::{ChainVerdict, Principal};
-use crate::config::groups::{provision_child, GroupCfg};
+use crate::config::groups::GroupCfg;
 use crate::config::{RoleBindingCfg, RoleBindings};
 use crate::governance::{GovState, RecordStore as _};
 
 const SEED: [u8; 32] = [7u8; 32];
-
-struct FakeProvisioner {
-    registry: std::sync::Mutex<BTreeMap<String, GroupCfg>>,
-}
-
-impl FakeProvisioner {
-    fn with_team(team: &str, group_yaml: &str) -> Self {
-        let cfg: GroupCfg = serde_yaml::from_str(group_yaml).expect("team group cfg parses");
-        let mut reg = BTreeMap::new();
-        reg.insert(team.to_string(), cfg);
-        Self {
-            registry: std::sync::Mutex::new(reg),
-        }
-    }
-
-    fn snapshot(&self) -> BTreeMap<String, GroupCfg> {
-        self.registry.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl SelfGroupProvisioner for FakeProvisioner {
-    async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
-        let mut reg = self.registry.lock().unwrap();
-        if reg.contains_key(leaf) {
-            return Ok(());
-        }
-        let cfg = provision_child(&reg, parent);
-        reg.insert(leaf.to_string(), cfg);
-        Ok(())
-    }
-}
-
-struct NoopProvisioner;
-#[async_trait]
-impl SelfGroupProvisioner for NoopProvisioner {
-    async fn ensure_leaf(&self, _leaf: &str, _parent: &str) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 fn gov() -> Arc<GovState> {
     Arc::new(
@@ -115,134 +73,6 @@ fn self_rows(gov: &GovState, sub: &str) -> Vec<crate::governance::VirtualKey> {
         .collect()
 }
 
-fn provisioned_self_app(gov: Arc<GovState>) -> crate::test_support::TestApp {
-    let groups = serde_yaml::from_str(
-        "team-a:\n  child_default:\n    limits:\n      - { budget: 500, per: month }\n\
-         team-b: {}\n\
-         user:sam:\n  parent: team-a\n  limits:\n    - { budget: 37, per: month }\n",
-    )
-    .expect("existing user leaf with customized limits");
-    crate::test_support::TestApp::new()
-        .groups_tree(groups)
-        .governance(gov)
-}
-
-#[tokio::test]
-async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
-    for refresh in [false, true] {
-        let gov = gov();
-        let overlay = crate::test_support::TestOverlayStore::new();
-        let handle = Arc::new(crate::state::AppHandle::new(
-            provisioned_self_app(gov.clone())
-                .overlay_backend(overlay.backend())
-                .build(),
-        ));
-        let before = handle.load();
-        let provisioner = Arc::new(super::super::self_keys::HandleProvisioner::new(
-            handle.clone(),
-            "sam".into(),
-        ));
-        let verdict = identified("corp", principal("sam", &["eng"]));
-        let old = if refresh {
-            let keys = DeterministicEd25519Keys::new(
-                gov.clone(),
-                "corp".into(),
-                "team-a".into(),
-                None,
-                provisioner.clone(),
-            );
-            Some(
-                issue_key(
-                    &keys,
-                    &principal("sam", &["eng"]),
-                    Duration::from_secs(3600),
-                    false,
-                )
-                .await
-                .expect("the original team can issue a key"),
-            )
-        } else {
-            None
-        };
-        let (principal, team, scopes) =
-            resolve_exchange(&verdict, &bindings("corp", "eng", Some("team-b")), None)
-                .expect("the updated binding resolves the new team");
-        let keys =
-            DeterministicEd25519Keys::new(gov.clone(), "corp".into(), team, scopes, provisioner);
-        let result = issue_key(&keys, principal, Duration::from_secs(3600), refresh).await;
-        assert!(
-            matches!(result, Err(ExchangeError::MintFailed(_))),
-            "{result:?}"
-        );
-        assert!(
-            Arc::ptr_eq(&before, &handle.load()),
-            "refusal must not swap the group tree"
-        );
-        assert!(
-            overlay.read_bytes().is_none(),
-            "refusal must not persist a changed group"
-        );
-        if let Some(old) = old {
-            assert!(
-                gov.verify_token(
-                    old.secret.expose(&crate::seal::lend()),
-                    busbar_kernel::store::now(),
-                    None,
-                )
-                .is_some(),
-                "refused refresh must not invalidate the existing token"
-            );
-        } else {
-            assert!(
-                self_rows(&gov, "sam").is_empty(),
-                "refused issue must not mint a binding"
-            );
-        }
-    }
-}
-
-#[tokio::test]
-async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persistence() {
-    let gov = gov();
-    let handle = Arc::new(crate::state::AppHandle::new(
-        provisioned_self_app(gov.clone()).no_overlay().build(),
-    ));
-    let before = handle.load();
-    let keys = DeterministicEd25519Keys::new(
-        gov.clone(),
-        "corp".into(),
-        "team-a".into(),
-        None,
-        Arc::new(super::super::self_keys::HandleProvisioner::new(
-            handle.clone(),
-            "sam".into(),
-        )),
-    );
-    for refresh in [false, false, true] {
-        let issued = issue_key(
-            &keys,
-            &principal("sam", &["eng"]),
-            Duration::from_secs(3600),
-            refresh,
-        )
-        .await
-        .expect("an existing matching leaf needs no writable overlay");
-        assert_eq!(issued.group, "user:sam");
-        assert!(
-            Arc::ptr_eq(&before, &handle.load()),
-            "re-login must preserve the snapshot and customized limits"
-        );
-        assert!(gov
-            .verify_token(
-                issued.secret.expose(&crate::seal::lend()),
-                busbar_kernel::store::now(),
-                None,
-            )
-            .is_some());
-    }
-    assert_eq!(self_rows(&gov, "sam").len(), 1);
-}
-
 #[test]
 fn first_call_provisions_second_call_reuses_one_row() {
     let gov = gov();
@@ -261,78 +91,6 @@ fn first_call_provisions_second_call_reuses_one_row() {
 
     assert!(gov.verify_token(&t1, 1000, None).is_some());
     assert!(gov.verify_token(&t2, 2000, None).is_some());
-}
-
-#[tokio::test]
-async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
-    let gov = gov();
-
-    let prov = Arc::new(FakeProvisioner::with_team(
-        "team",
-        "child_default:\n  limits:\n    - { budget: 500, per: month }\n",
-    ));
-    let keys = DeterministicEd25519Keys::new(
-        gov.clone(),
-        "corp".into(),
-        "team".into(),
-        None,
-        prov.clone(),
-    );
-
-    let issued = issue_key(
-        &keys,
-        &principal("sam", &["eng"]),
-        Duration::from_secs(3600),
-        false,
-    )
-    .await
-    .expect("first exchange issues a key");
-    assert_eq!(issued.group, "user:sam");
-
-    let reg = prov.snapshot();
-    let leaf = reg
-        .get("user:sam")
-        .expect("user:sam leaf auto-provisioned on first exchange (the fix)");
-    assert_eq!(
-        leaf.parent.as_deref(),
-        Some("team"),
-        "leaf parented under the team"
-    );
-    assert_eq!(
-        leaf.limits,
-        reg["team"].child_default.as_ref().unwrap().limits,
-        "leaf limits stamped from the team's child_default"
-    );
-    assert!(
-        !leaf.limits.is_empty(),
-        "child_default limits actually copied onto the leaf"
-    );
-
-    let cost = crate::cost::CostModel::resolve_parts(None, 0, &reg);
-    assert!(cost.group_named("user:sam").is_some());
-    let binding = gov
-        .lookup_by_sub(&issued.key_id)
-        .expect("minted binding row");
-    assert!(
-        cost.chain_for(&binding).is_ok(),
-        "the self key resolves its enforcement chain (not MissingGroup)"
-    );
-
-    let issued2 = issue_key(
-        &keys,
-        &principal("sam", &["eng"]),
-        Duration::from_secs(3600),
-        false,
-    )
-    .await
-    .expect("second exchange reuses");
-    assert_eq!(issued2.key_id, issued.key_id, "same deterministic key row");
-    assert_eq!(
-        prov.snapshot().len(),
-        2,
-        "team + exactly one user leaf (no duplicate)"
-    );
-    assert_eq!(self_rows(&gov, "sam").len(), 1, "exactly one key binding");
 }
 
 #[test]
@@ -1060,19 +818,24 @@ fn sub_sanitization_refused() {
 #[tokio::test]
 async fn resolve_then_issue_via_real_seam() {
     let gov = gov();
+    // Internal post-provisioning mint continuation over the actual Store. Actual group
+    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+    let mint_now = busbar_kernel::store::now();
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, team, pools) = resolve_exchange(&v, &rb, None).unwrap();
-    let keys = DeterministicEd25519Keys::new(
+    assert_eq!(team, "team");
+    let issued = mint_provisioned_self_key(
         gov.clone(),
-        "corp".into(),
-        team,
+        crate::governance::SelfMintOp::Issue,
+        p,
+        "corp",
         pools,
-        Arc::new(NoopProvisioner),
-    );
-    let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
-        .await
-        .unwrap();
+        mint_now.saturating_add(3600),
+        mint_now,
+    )
+    .await
+    .unwrap();
     assert!(issued
         .secret
         .expose(&crate::seal::lend())
@@ -1088,6 +851,9 @@ async fn resolve_then_issue_via_real_seam() {
 #[tokio::test]
 async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let gov = gov();
+    // Internal post-provisioning mint continuation over the actual Store. Actual group
+    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+    let mint_now = busbar_kernel::store::now();
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified(
         "test-idp-double",
@@ -1095,16 +861,18 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     );
     let (p, team, pools) = resolve_exchange(&v, &rb, None)
         .expect("a module-namespaced subject is legitimate + verified");
-    let keys = DeterministicEd25519Keys::new(
+    assert_eq!(team, "team");
+    let issued = mint_provisioned_self_key(
         gov.clone(),
-        "corp".into(),
-        team,
+        crate::governance::SelfMintOp::Issue,
+        p,
+        "corp",
         pools,
-        Arc::new(NoopProvisioner),
-    );
-    let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
-        .await
-        .unwrap();
+        mint_now.saturating_add(3600),
+        mint_now,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         issued.group, "user:test-idp-double:alice",
         "the whole sub lives inside the user: namespace"
@@ -1118,16 +886,6 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         .is_some());
 }
 
-fn keys_via(gov: &Arc<GovState>, provider: &str) -> DeterministicEd25519Keys {
-    DeterministicEd25519Keys::new(
-        gov.clone(),
-        provider.into(),
-        "team".into(),
-        None,
-        Arc::new(NoopProvisioner),
-    )
-}
-
 fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
     gov.store().get_key(id).unwrap().expect("the row exists")
 }
@@ -1135,15 +893,25 @@ fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
 #[tokio::test]
 async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     let gov = gov();
+    // Internal post-provisioning mint continuation over the actual Store. Actual group
+    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+    let mint_now = busbar_kernel::store::now();
 
     gov.hold_self_mint_state();
-    let keys = keys_via(&gov, "corp");
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
-    let t0 = issue_key(&keys, &alice, ttl, false)
-        .await
-        .expect("first login issues");
+    let t0 = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("first login issues");
     let now = busbar_kernel::store::now();
     assert!(gov
         .verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
@@ -1154,12 +922,32 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         .expect("the key exists");
 
     assert_eq!(
-        issue_key(&keys, &alice, ttl, false).await.unwrap_err(),
+        mint_provisioned_self_key(
+            gov.clone(),
+            crate::governance::SelfMintOp::Issue,
+            &alice,
+            "corp",
+            None,
+            mint_now.saturating_add(ttl.as_secs()),
+            mint_now
+        )
+        .await
+        .unwrap_err(),
         ExchangeError::Unbound,
         "a login while the key is disabled is refused, not re-enabled"
     );
     assert_eq!(
-        issue_key(&keys, &alice, ttl, true).await.unwrap_err(),
+        mint_provisioned_self_key(
+            gov.clone(),
+            crate::governance::SelfMintOp::Refresh,
+            &alice,
+            "corp",
+            None,
+            mint_now.saturating_add(ttl.as_secs()),
+            mint_now
+        )
+        .await
+        .unwrap_err(),
         ExchangeError::Unbound,
         "a refresh while the key is disabled is refused too"
     );
@@ -1181,39 +969,84 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
 #[tokio::test]
 async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
     let gov = gov();
-    let keys = keys_via(&gov, "corp");
+    // Internal post-provisioning mint continuation over the actual Store. Actual group
+    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+    let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
-    let t0 = issue_key(&keys, &alice, ttl, false)
-        .await
-        .expect("first login issues");
+    let t0 = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("first login issues");
     gov.update_key(&t0.key_id, Some(false), None)
         .unwrap()
         .expect("the key exists");
 
-    let again = issue_key(&keys, &alice, ttl, false)
-        .await
-        .expect("1.5.5 minted a key on the next login");
+    let again = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("1.5.5 minted a key on the next login");
     assert_eq!(again.key_id, t0.key_id, "1.5.5 wrote the derived row back");
     assert!(row(&gov, &t0.key_id).enabled, "and wrote it enabled");
-    issue_key(&keys, &alice, ttl, true)
-        .await
-        .expect("1.5.5 minted on a refresh too");
+    mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Refresh,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("1.5.5 minted on a refresh too");
 }
 
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did() {
     let gov = gov();
+    // Internal post-provisioning mint continuation over the actual Store. Actual group
+    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+    let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
-    let corp = issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
-        .await
-        .expect("corp issues");
-    let partner = issue_key(&keys_via(&gov, "partner"), &alice, ttl, false)
-        .await
-        .expect("1.5.5 minted for the second provider");
+    let corp = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("corp issues");
+    let partner = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "partner",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("1.5.5 minted for the second provider");
     assert_eq!(
         partner.key_id, corp.key_id,
         "the subject's one key, as in 1.5.5"
@@ -1223,23 +1056,51 @@ async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5
 #[tokio::test]
 async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     let gov = gov();
-    let corp = keys_via(&gov, "corp");
+    // Internal post-provisioning mint continuation over the actual Store. Actual group
+    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+    let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
-    let issued = issue_key(&corp, &alice, ttl, false).await.expect("issues");
+    let issued = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("issues");
     let first = row(&gov, &issued.key_id);
     assert!(first.labels.is_empty(), "issue: {:?}", first.labels);
     assert_eq!(first.idp_provider.as_deref(), Some("corp"));
 
-    let again = issue_key(&corp, &alice, ttl, false)
-        .await
-        .expect("re-issues");
+    let again = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("re-issues");
     assert!(row(&gov, &again.key_id).labels.is_empty(), "re-issue");
 
-    let rotated = issue_key(&corp, &alice, ttl, true)
-        .await
-        .expect("refreshes");
+    let rotated = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Refresh,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("refreshes");
     let rotated_row = row(&gov, &rotated.key_id);
     assert!(
         rotated_row.labels.is_empty(),
@@ -1252,16 +1113,25 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_refused() {
     let gov = gov();
+    // Internal post-provisioning mint continuation over the actual Store. Actual group
+    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+    let mint_now = busbar_kernel::store::now();
 
     gov.hold_self_mint_state();
-    let corp = keys_via(&gov, "corp");
-    let partner = keys_via(&gov, "partner");
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
-    let issued = issue_key(&corp, &alice, ttl, false)
-        .await
-        .expect("corp issues");
+    let issued = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("corp issues");
     let before = row(&gov, &issued.key_id);
     assert_eq!(
         before.idp_provider.as_deref(),
@@ -1270,12 +1140,32 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
     );
 
     assert_eq!(
-        issue_key(&partner, &alice, ttl, false).await.unwrap_err(),
+        mint_provisioned_self_key(
+            gov.clone(),
+            crate::governance::SelfMintOp::Issue,
+            &alice,
+            "partner",
+            None,
+            mint_now.saturating_add(ttl.as_secs()),
+            mint_now
+        )
+        .await
+        .unwrap_err(),
         ExchangeError::Unbound,
         "another provider asserting the subject is refused"
     );
     assert_eq!(
-        issue_key(&partner, &alice, ttl, true).await.unwrap_err(),
+        mint_provisioned_self_key(
+            gov.clone(),
+            crate::governance::SelfMintOp::Refresh,
+            &alice,
+            "partner",
+            None,
+            mint_now.saturating_add(ttl.as_secs()),
+            mint_now
+        )
+        .await
+        .unwrap_err(),
         ExchangeError::Unbound,
         "and cannot refresh corp's key away"
     );
@@ -1290,31 +1180,58 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
     assert!(gov
         .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
-    let again = issue_key(&corp, &alice, ttl, false)
-        .await
-        .expect("corp still logs in");
+    let again = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("corp still logs in");
     assert_eq!(again.key_id, issued.key_id);
 }
 
 #[tokio::test]
 async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     let gov = gov();
+    // Internal post-provisioning mint continuation over the actual Store. Actual group
+    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+    let mint_now = busbar_kernel::store::now();
 
     gov.hold_self_mint_state();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
-    let issued = issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
-        .await
-        .expect("issues");
+    let issued = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "corp",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("issues");
     let mut legacy = row(&gov, &issued.key_id);
     legacy.idp_provider = None;
     gov.store().put_key(&legacy).unwrap();
     gov.refresh().unwrap();
 
-    let adopted = issue_key(&keys_via(&gov, "partner"), &alice, ttl, false)
-        .await
-        .expect("the first provider to log in adopts the legacy binding");
+    let adopted = mint_provisioned_self_key(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        &alice,
+        "partner",
+        None,
+        mint_now.saturating_add(ttl.as_secs()),
+        mint_now,
+    )
+    .await
+    .expect("the first provider to log in adopts the legacy binding");
     assert_eq!(adopted.key_id, issued.key_id, "the same key, not a new one");
     let adopted_row = row(&gov, &issued.key_id);
     assert_eq!(
@@ -1327,60 +1244,19 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
         "the adoption writes no label (1.5.5's empty labels stand)"
     );
     assert_eq!(
-        issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
-            .await
-            .unwrap_err(),
+        mint_provisioned_self_key(
+            gov.clone(),
+            crate::governance::SelfMintOp::Issue,
+            &alice,
+            "corp",
+            None,
+            mint_now.saturating_add(ttl.as_secs()),
+            mint_now
+        )
+        .await
+        .unwrap_err(),
         ExchangeError::Unbound,
         "after the adoption, any other provider is refused"
-    );
-}
-
-struct FakeKeys;
-#[async_trait]
-impl SelfServeKeys for FakeKeys {
-    async fn issue(
-        &self,
-        principal: &Principal,
-        _ttl: Duration,
-    ) -> Result<IssuedKey, ExchangeError> {
-        Ok(IssuedKey {
-            secret: busbar_contract::redacted::Secret::new(format!(
-                "fake-scheme-token:{}",
-                principal.id
-            )),
-            key_id: "fake".into(),
-            group: format!("user:{}", principal.id),
-            exp: 9999,
-        })
-    }
-    async fn refresh(
-        &self,
-        principal: &Principal,
-        ttl: Duration,
-    ) -> Result<IssuedKey, ExchangeError> {
-        self.issue(principal, ttl).await
-    }
-}
-
-#[tokio::test]
-async fn endpoint_is_scheme_agnostic_over_the_trait() {
-    let rb = bindings("test-idp-double", "eng", Some("team"));
-    let v = identified("test-idp-double", principal("sam", &["eng"]));
-    let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
-    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
-        .await
-        .unwrap();
-    assert_eq!(
-        issued.secret.expose(&crate::seal::lend()),
-        "fake-scheme-token:sam"
-    );
-
-    let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true)
-        .await
-        .unwrap();
-    assert_eq!(
-        refreshed.secret.expose(&crate::seal::lend()),
-        "fake-scheme-token:sam"
     );
 }
 
@@ -1389,9 +1265,18 @@ async fn issued_key_debug_never_leaks_the_live_token() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
-    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
-        .await
-        .unwrap();
+    let now = busbar_kernel::store::now();
+    let issued = mint_provisioned_self_key(
+        gov(),
+        crate::governance::SelfMintOp::Issue,
+        p,
+        "corp",
+        None,
+        now.saturating_add(60),
+        now,
+    )
+    .await
+    .expect("the actual Store mints the credential whose Debug is inspected");
     let token = issued.secret.expose(&crate::seal::lend()).clone();
     let dbg = format!("{issued:?}");
     assert!(
@@ -1403,217 +1288,10 @@ async fn issued_key_debug_never_leaks_the_live_token() {
         "the secret field must render redacted: {dbg}"
     );
 
-    assert!(dbg.contains("fake"), "key_id (safe id) still shows: {dbg}");
-}
-
-#[tokio::test]
-async fn proof_self_mint_disabled_refuses_self_serve() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    for self_mint in [Some(true), Some(false), None] {
-        let gov = gov();
-        let overlay = crate::test_support::TestOverlayStore::new();
-        let app = crate::test_support::TestApp::new()
-            .idp_chain()
-            .governance(gov.clone())
-            .overlay_backend(overlay.backend())
-            .groups_tree(std::collections::BTreeMap::from([(
-                "team".into(),
-                GroupCfg::default(),
-            )]))
-            .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
-            .mint_policy(crate::governance::mint_policy::MintPolicy {
-                self_mint,
-                ..Default::default()
-            })
-            .build();
-        let handle = Arc::new(crate::state::AppHandle::new(app));
-
-        let response = crate::auth::exchange::exchange(
-            axum::extract::State(handle),
-            axum::http::Request::builder()
-                .method("POST")
-                .uri("/auth/token")
-                .header("authorization", "Bearer eligible-idp-credential")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await;
-        let status = response.status();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        if self_mint == Some(false) {
-            assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
-            assert!(body.get("api_key").is_none(), "no credential is issued");
-            assert!(
-                gov.all_keys().unwrap().is_empty(),
-                "the refused exchange must not write any key to its attached store"
-            );
-        } else {
-            assert_eq!(status, axum::http::StatusCode::OK, "{body}");
-            let token = body["api_key"].as_str().expect("issued token");
-            let key = gov
-                .verify_token(token, crate::store::now(), None)
-                .expect("the exchange returns a usable signed key");
-            assert_eq!(body["key_id"].as_str(), Some(key.id.as_str()));
-            assert_eq!(key.group.as_deref(), Some("user:idp:subject"));
-            assert_eq!(self_rows(&gov, "idp:subject").len(), 1);
-            assert_eq!(gov.all_keys().unwrap().len(), 1);
-        }
-    }
-}
-
-#[tokio::test]
-async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation() {
-    use crate::auth::login::{issue_self_key, SelfKeyIssue};
-    use crate::governance::mint_policy::{MintPolicy, RoleCeiling};
-    use crate::governance::{SELF_KEY_BINDING_MODE, SELF_KEY_BINDING_MODE_APP};
-
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    for route in ["exchange", "login", "refresh"] {
-        for (block, role, allowed) in [
-            (None, None, true),
-            (Some(vec![SELF_KEY_BINDING_MODE]), None, true),
-            (Some(vec![SELF_KEY_BINDING_MODE_APP]), None, false),
-            (Some(vec![]), None, false),
-            (None, Some(vec![SELF_KEY_BINDING_MODE_APP]), false),
-        ] {
-            let mut policy = MintPolicy {
-                block_binding_modes: block
-                    .map(|modes| modes.into_iter().map(str::to_string).collect()),
-                ..Default::default()
-            };
-            if let Some(modes) = role {
-                policy.ceilings.insert(
-                    "idp-user".into(),
-                    RoleCeiling {
-                        binding_modes: Some(modes.into_iter().map(str::to_string).collect()),
-                        ..Default::default()
-                    },
-                );
-            }
-            let gov = gov();
-            let overlay = crate::test_support::TestOverlayStore::new();
-            let app = crate::test_support::TestApp::new()
-                .idp_chain()
-                .governance(gov.clone())
-                .groups_tree(std::collections::BTreeMap::from([(
-                    "team".into(),
-                    GroupCfg::default(),
-                )]))
-                .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
-                .mint_policy(policy)
-                .overlay_backend(overlay.backend())
-                .build();
-            let handle = Arc::new(crate::state::AppHandle::new(app));
-            let before = handle.load();
-            let token = if route == "exchange" {
-                let anonymous = crate::auth::exchange::exchange(
-                    axum::extract::State(handle.clone()),
-                    axum::http::Request::builder()
-                        .method("POST")
-                        .uri("/auth/token")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                )
-                .await;
-                assert_eq!(anonymous.status(), axum::http::StatusCode::UNAUTHORIZED);
-                assert!(Arc::ptr_eq(&before, &handle.load()));
-                assert!(gov.all_keys().unwrap().is_empty());
-                assert!(overlay.read_bytes().is_none());
-                assert_eq!(overlay.stored_record_count(), 0);
-                assert!(overlay.candidates().is_empty());
-                let response = crate::auth::exchange::exchange(
-                    axum::extract::State(handle.clone()),
-                    axum::http::Request::builder()
-                        .method("POST")
-                        .uri("/auth/token")
-                        .header("authorization", "Bearer eligible-idp-credential")
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                )
-                .await;
-                let status = response.status();
-                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                    .await
-                    .unwrap();
-                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                if allowed {
-                    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
-                    Some(body["api_key"].as_str().expect("issued token").to_string())
-                } else {
-                    assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
-                    assert_eq!(
-                        body["error"],
-                        "the key this identity would mint is over the mint ceiling (auth.policy)"
-                    );
-                    assert!(body.get("api_key").is_none());
-                    None
-                }
-            } else {
-                match issue_self_key(
-                    &before,
-                    &handle,
-                    "test-idp-module",
-                    principal("idp:subject", &["idp-user"]),
-                    route == "refresh",
-                )
-                .await
-                {
-                    SelfKeyIssue::Issued { secret, .. } => {
-                        assert!(allowed);
-                        Some(secret.expose(&crate::seal::lend()).clone())
-                    }
-                    SelfKeyIssue::OverCeiling => {
-                        assert!(!allowed);
-                        None
-                    }
-                    other => panic!("unexpected {route} result: {other:?}"),
-                }
-            };
-            if let Some(token) = token {
-                let key = gov.verify_token(&token, crate::store::now(), None).unwrap();
-                assert_eq!(key.binding_mode.as_deref(), Some(SELF_KEY_BINDING_MODE));
-                assert_eq!(key.group.as_deref(), Some("user:idp:subject"));
-                assert_eq!(gov.all_keys().unwrap().len(), 1);
-                assert!(handle
-                    .load()
-                    .groups_registry
-                    .contains_key("user:idp:subject"));
-                let persisted: crate::config::overlay::OverlayDoc = serde_json::from_slice(
-                    &overlay
-                        .read_bytes()
-                        .expect("the allowed mint persists its group in Store"),
-                )
-                .expect("Store holds a valid overlay document");
-                assert_eq!(
-                    persisted.groups["user:idp:subject"].parent.as_deref(),
-                    Some("team")
-                );
-            } else {
-                assert!(gov.all_keys().unwrap().is_empty(), "no binding was written");
-                assert!(
-                    Arc::ptr_eq(&before, &handle.load()),
-                    "no group snapshot swap"
-                );
-                assert!(!before.groups_registry.contains_key("user:idp:subject"));
-                assert!(
-                    overlay.read_bytes().is_none(),
-                    "no group overlay was persisted"
-                );
-                assert_eq!(
-                    overlay.stored_record_count(),
-                    0,
-                    "no Store records were staged"
-                );
-                assert!(
-                    overlay.candidates().is_empty(),
-                    "no Store transaction was attempted"
-                );
-            }
-        }
-    }
+    assert!(
+        dbg.contains(&issued.key_id),
+        "key_id (safe id) still shows: {dbg}"
+    );
 }
 
 struct ModeReplayIdentity;

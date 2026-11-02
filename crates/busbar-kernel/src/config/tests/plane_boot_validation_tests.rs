@@ -3,7 +3,7 @@
 
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 
-use crate::config::named_map::NamedMapSection;
+use super::PlaneDefinition;
 use crate::config::plane_sections::{validate_plane_entry, validate_plane_section};
 
 const MECHANISMS: &[PinMechanismDecl] = &[
@@ -36,27 +36,12 @@ const KEYS: &[TrustKeyDecl] = &[
     },
 ];
 
-fn accept_anything(
-    _: &crate::plane_driver::registry::PlaneDecl,
-    _: &serde_yaml::Value,
-) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String> {
-    Ok(Box::<crate::config::plane_sections::RawPlaneSection>::default())
-}
-
-static BAYS_PLANE: crate::plane_driver::registry::PlaneDecl =
-    crate::plane_driver::registry::PlaneDecl {
-        declaration: crate::plane_driver::registry::PlaneDeclaration {
-            key: "bays-plane",
-            fallback: false,
-            config_section: "bays",
-            owned_config_sections: &["bays"],
-            trust_keys: KEYS,
-            caller_credential_refusal: None,
-            ..crate::test_support::NEUTRAL_FALLBACK.declaration
-        },
-        parse_section: Some(accept_anything),
-        ..crate::test_support::NEUTRAL_FALLBACK
-    };
+static BAYS: PlaneDefinition<'static> = PlaneDefinition {
+    section: "bays",
+    trust_keys: KEYS,
+    caller_credential_refusal: None,
+    sections: &["bays", "export", "moorings"],
+};
 
 const PIN_REFUSAL: &str = "`bays.dock`: `anchor.mechanism: sealed_key` needs `anchor.key:` — the \
      out-of-band material this registration is verified against. A pin with nothing to verify with \
@@ -71,10 +56,9 @@ const CROSS_PLANE_REFUSAL: &str = "`bays.dock`: `hooks:` may only name hooks fro
      `hooks:` map, by bare name. `export.siem` reaches onto the `export:` plane, and no entry on one \
      plane may reference an entry on another. Did you mean the hook `siem`?";
 
-fn boot(section: &str) -> Result<(), String> {
-    crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\nbays:\n{section}"))
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+fn judge_section(section: &str) -> Result<(), String> {
+    let value: serde_yaml::Value = serde_yaml::from_str(section).map_err(|e| e.to_string())?;
+    validate_plane_section("bays", &value, KEYS, None, BAYS.sections)
 }
 
 fn assert_refused(got: Result<(), String>, sentence: &str) {
@@ -86,48 +70,47 @@ fn assert_refused(got: Result<(), String>, sentence: &str) {
 }
 
 #[test]
-fn boot_refuses_a_cross_plane_reference_in_a_planes_section() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    boot("  dock:\n    hooks: [siem]\n").expect("a bare hook name is the legal form");
+fn section_policy_refuses_a_cross_plane_reference_in_a_planes_section() {
+    judge_section("  dock:\n    hooks: [siem]\n").expect("a bare hook name is the legal form");
     assert_refused(
-        boot("  dock:\n    hooks: [export.siem]\n"),
+        judge_section("  dock:\n    hooks: [export.siem]\n"),
         CROSS_PLANE_REFUSAL,
     );
 }
 
 #[test]
-fn boot_refuses_a_bad_pin_in_a_planes_section() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    boot("  dock:\n    anchor: { mechanism: sealed_key, key: K }\n")
+fn section_policy_refuses_a_bad_pin_in_a_planes_section() {
+    judge_section("  dock:\n    anchor: { mechanism: sealed_key, key: K }\n")
         .expect("a rooted pin with material is legal");
     assert_refused(
-        boot("  dock:\n    anchor: { mechanism: sealed_key }\n"),
+        judge_section("  dock:\n    anchor: { mechanism: sealed_key }\n"),
         PIN_REFUSAL,
     );
 }
 
 #[test]
-fn boot_refuses_a_bad_cadence_in_a_planes_section() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    boot("  dock:\n    recheck_after: 30s\n").expect("a duration is legal");
-    assert_refused(boot("  dock:\n    recheck_after: soon\n"), CADENCE_REFUSAL);
+fn section_policy_refuses_a_bad_cadence_in_a_planes_section() {
+    judge_section("  dock:\n    recheck_after: 30s\n").expect("a duration is legal");
+    assert_refused(
+        judge_section("  dock:\n    recheck_after: soon\n"),
+        CADENCE_REFUSAL,
+    );
 }
 
 #[test]
-fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    boot("  dock:\n    timeout: 10s\n").expect("a duration is legal");
+fn section_policy_and_the_admin_write_path_judge_an_entrys_timeout() {
+    judge_section("  dock:\n    timeout: 10s\n").expect("a duration is legal");
     assert_refused(
-        boot("  dock:\n    timeout: soon\n"),
+        judge_section("  dock:\n    timeout: soon\n"),
         "`bays.dock`: `timeout:` invalid duration 'soon': expected <number><s|m|h|d>",
     );
     assert_refused(
-        boot("  dock:\n    timeout: 0s\n"),
+        judge_section("  dock:\n    timeout: 0s\n"),
         "`bays.dock`: `timeout: 0s` is zero, which would refuse every call to this entry before \
          it was sent.",
     );
     assert_refused(
-        boot("  dock:\n    timeout: 10\n"),
+        judge_section("  dock:\n    timeout: 10\n"),
         "`bays.dock`: `timeout:` must be a duration `<n><s|m|h|d>`, e.g. `30s`",
     );
     let entry: serde_yaml::Value = serde_yaml::from_str("timeout: 0m").expect("yaml");
@@ -147,9 +130,8 @@ fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
 }
 
 #[test]
-fn the_admin_write_path_refuses_what_boot_refuses() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    let section = NamedMapSection::Plane("bays");
+fn the_admin_write_path_refuses_what_the_section_refuses() {
+    let section = &BAYS;
     for (def, sentence) in [
         (
             serde_json::json!({ "hooks": ["export.siem"] }),
@@ -169,27 +151,28 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
         ),
     ] {
         let err = section
-            .parse_def("dock", &def)
+            .validate("dock", &def, || Ok(()))
             .err()
             .expect("the write path must refuse it");
         assert_eq!(err, sentence);
     }
     section
-        .parse_def(
+        .validate(
             "dock",
             &serde_json::json!({ "anchor": { "mechanism": "open" }, "hooks": ["siem"] }),
+            || Ok(()),
         )
         .expect("a well-formed definition is accepted");
 }
 
 #[test]
 fn the_admin_write_path_refuses_a_pin_token_the_declaration_does_not_spell() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
-    let section = NamedMapSection::Plane("bays");
+    let section = &BAYS;
     let err = section
-        .parse_def(
+        .validate(
             "dock",
             &serde_json::json!({ "anchor": { "mechanism": "sealed-key" } }),
+            || Ok(()),
         )
         .err()
         .expect("a drifted token must be refused on the write path");
@@ -223,35 +206,30 @@ fn a_section_is_judged_per_registration_in_order_skipping_reserved_words() {
 
 const FORWARD_REFUSAL: &str = "the moorings plane never forwards a caller's credential";
 
-static MOORINGS_PLANE: crate::plane_driver::registry::PlaneDecl =
-    crate::plane_driver::registry::PlaneDecl {
-        declaration: crate::plane_driver::registry::PlaneDeclaration {
-            key: "moorings-plane",
-            fallback: false,
-            config_section: "moorings",
-            owned_config_sections: &["moorings"],
-            trust_keys: &[],
-            caller_credential_refusal: Some(FORWARD_REFUSAL),
-            ..crate::test_support::NEUTRAL_FALLBACK.declaration
-        },
-        parse_section: Some(accept_anything),
-        ..crate::test_support::NEUTRAL_FALLBACK
-    };
+static MOORINGS: PlaneDefinition<'static> = PlaneDefinition {
+    section: "moorings",
+    trust_keys: &[],
+    caller_credential_refusal: Some(FORWARD_REFUSAL),
+    sections: &["bays", "export", "moorings"],
+};
 
 #[test]
-fn boot_refuses_a_forwarded_caller_credential_in_the_planes_own_words() {
-    let _isolation =
-        crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE, &MOORINGS_PLANE]);
+fn section_policy_refuses_a_forwarded_caller_credential_in_the_planes_own_words() {
     let moorings = |default: &str| {
-        crate::config::deploy_from_yaml_str(&format!(
-            "providers: {{}}\nmodels: {{}}\nmoorings:\n  upstream_credentials: {default}\n  berth: {{}}\n"
-        ))
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        let value =
+            serde_yaml::from_str(&format!("upstream_credentials: {default}\nberth: {{}}\n"))
+                .map_err(|e| e.to_string())?;
+        validate_plane_section(
+            "moorings",
+            &value,
+            &[],
+            Some(FORWARD_REFUSAL),
+            MOORINGS.sections,
+        )
     };
     assert_refused(moorings("passthrough"), FORWARD_REFUSAL);
     moorings("own").expect("the plane's own credential is not refused");
-    boot("  upstream_credentials: passthrough\n  dock: {}\n")
+    judge_section("  upstream_credentials: passthrough\n  dock: {}\n")
         .expect("a plane that states no refusal accepts a forwarded caller credential");
 }
 
@@ -279,14 +257,15 @@ fn the_section_default_is_judged_after_its_registrations() {
 
 #[test]
 fn a_registrations_own_passthrough_is_refused_in_the_planes_own_words() {
-    let _isolation =
-        crate::test_support::planes::TestRegistryIsolation::seeded(&[&BAYS_PLANE, &MOORINGS_PLANE]);
     let moorings = |section: &str| {
-        crate::config::deploy_from_yaml_str(&format!(
-            "providers: {{}}\nmodels: {{}}\nmoorings:\n{section}"
-        ))
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        let value = serde_yaml::from_str(section).map_err(|e| e.to_string())?;
+        validate_plane_section(
+            "moorings",
+            &value,
+            &[],
+            Some(FORWARD_REFUSAL),
+            MOORINGS.sections,
+        )
     };
     let refused = moorings("  berth:\n    upstream_credentials: passthrough\n")
         .expect_err("a registration's own passthrough is refused");
@@ -297,10 +276,11 @@ fn a_registrations_own_passthrough_is_refused_in_the_planes_own_words() {
     moorings("  berth:\n    upstream_credentials: own\n")
         .expect("a registration's own credential is not refused");
 
-    let refused = NamedMapSection::Plane("moorings")
-        .parse_def(
+    let refused = MOORINGS
+        .validate(
             "berth",
             &serde_json::json!({ "upstream_credentials": "passthrough" }),
+            || Ok(()),
         )
         .err()
         .expect("the admin write path refuses what boot refuses");
@@ -309,6 +289,6 @@ fn a_registrations_own_passthrough_is_refused_in_the_planes_own_words() {
         "{refused}"
     );
 
-    boot("  dock:\n    upstream_credentials: passthrough\n")
+    judge_section("  dock:\n    upstream_credentials: passthrough\n")
         .expect("a plane that states no refusal accepts a registration's own passthrough");
 }

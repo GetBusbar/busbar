@@ -109,3 +109,105 @@ fn ordinary_small_usage_unknown_reply_does_not_duplicate_committed_effect() {
 fn ordinary_small_usage_unwind_does_not_duplicate_committed_effect() {
     ordinary_unknown_result_retries_once(true);
 }
+
+#[derive(Default)]
+struct RecoveryJournal(std::sync::Mutex<Vec<super::super::recovery::RecoveryEvent>>);
+impl super::super::recovery::RecoverySink for RecoveryJournal {
+    fn replay(
+        &self,
+    ) -> Result<Vec<super::super::recovery::RecoveryEvent>, super::super::recovery::RecoveryError>
+    {
+        Ok(self.0.lock().unwrap().clone())
+    }
+    fn persist(
+        &self,
+        event: &super::super::recovery::RecoveryEvent,
+    ) -> Result<(), super::super::recovery::RecoveryError> {
+        let mut events = self.0.lock().unwrap();
+        if !events.contains(event) {
+            events.push(event.clone());
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_usage() {
+    use super::super::recovery::{RecoveryResolution, RecoveryState, RecoveryVerdict};
+    let store = Arc::new(UnknownFlushStore {
+        inner: MemoryStore::new(),
+        fail_after_commit: std::sync::atomic::AtomicBool::new(true),
+        unwind: false,
+    });
+    let key = sample_key("vk_durable_unknown_commit", "durable-unknown-generation");
+    store.put_key(&key).unwrap();
+    let journal = Arc::new(RecoveryJournal::default());
+    let original = GovState::new(store.clone(), None).unwrap();
+    original.attach_recovery_sink(journal.clone()).unwrap();
+    accrue_plain(&original, &key.id, FIRST_INPUT);
+    original.flush_budgets();
+    assert_eq!(
+        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        Some(FIRST_INPUT)
+    );
+    let intent = original.recovery().list(None, 10).unwrap().pop().unwrap();
+    assert_eq!(intent.state, RecoveryState::Intent);
+    drop(original);
+
+    let gov = GovState::new(store.clone(), None).unwrap();
+    gov.attach_recovery_sink(journal).unwrap();
+    let cost = flat_cost(0);
+    gov.hydrate_budgets(&cost, crate::store::now()).unwrap();
+    gov.resume_raw_recovery().unwrap();
+    let unknown = gov.recovery_event(intent.operation_id).unwrap();
+    assert_eq!(unknown.state, RecoveryState::LandedUnknown);
+    accrue_plain(&gov, &key.id, LATER_INPUT);
+    gov.flush_budgets();
+    assert_eq!(
+        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        Some(FIRST_INPUT + LATER_INPUT)
+    );
+
+    {
+        let mut cells = gov.budget.write(&key.id);
+        let cell = cells.get_mut(&key.id).unwrap();
+        cell.mutate(|cell| {
+            let units = &mut cell
+                .models
+                .iter_mut()
+                .find(|model| &*model.model == MODEL)
+                .unwrap()
+                .cur;
+            *units.get_mut("input").unwrap() -= FIRST_INPUT;
+            cell.dirty = true;
+        });
+    }
+    gov.flush_budgets();
+    assert_eq!(
+        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        Some(FIRST_INPUT + LATER_INPUT),
+        "dependent negative remains quarantined while fresh positive has posted"
+    );
+    let selected = gov.recovery_event(intent.operation_id).unwrap();
+    let resolution = RecoveryResolution {
+        operation_id: intent.operation_id,
+        body_fingerprint: intent.body_fingerprint,
+        expected_revision: selected.revision,
+        verdict: RecoveryVerdict::Landed,
+        sender_quiesced: true,
+        backend_quiesced: true,
+        actor: "operator".into(),
+        reason: "original backend receipt confirmed after sender retirement".into(),
+    };
+    let settled = gov.recovery().resolve(&cost, resolution.clone()).unwrap();
+    assert_eq!(settled.state, RecoveryState::Settled);
+    let audit: serde_json::Value =
+        serde_json::from_slice(&gov.recovery_event(intent.operation_id).unwrap().payload).unwrap();
+    assert_eq!(audit["verdict"]["sender_quiesced"], true);
+    assert_eq!(audit["verdict"]["backend_quiesced"], true);
+    gov.recovery().resolve(&cost, resolution).unwrap();
+    assert_eq!(
+        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        Some(LATER_INPUT)
+    );
+}

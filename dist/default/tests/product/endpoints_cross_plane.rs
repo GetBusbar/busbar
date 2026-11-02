@@ -25,7 +25,7 @@ use busbar_kernel::endpoints::{catalog_names, stats};
 use busbar_kernel::governance::GovCtx;
 use busbar_kernel::state::{App, CurrentApp};
 use busbar_kernel::store::now;
-#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 use serde_json::{json, Value};
 use std::sync::Arc;

@@ -2567,7 +2567,7 @@ impl Connector {
             .map_err(|_| ConnError::Fault)?;
         let cert = Arc::new(dtls::SessionCert::mint().map_err(|_| ConnError::Fault)?);
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
-        let (framing, mut began) = datagram::DatagramFraming::dial(
+        let (framing, began) = datagram::DatagramFraming::dial(
             Arc::clone(door),
             cert,
             port.local_addr(),
@@ -2576,14 +2576,15 @@ impl Connector {
             judged_class,
         )
         .map_err(|_| ConnError::Refused)?;
-        let description = std::mem::take(&mut began.pieces)
-            .into_iter()
+        let description = began
+            .pieces
+            .iter()
             .find(|g| g.stream == 0 && !g.fields)
-            .map(|g| g.bytes)
+            .map(|g| g.bytes.as_slice())
             .ok_or(ConnError::Fault)?;
         let due = due_at(std::time::Instant::now(), desc.timeout_ms);
 
-        let body = dialled::composed_body(desc.fields, &desc.body, &description)?;
+        let body = dialled::composed_body(desc.fields, &desc.body, description)?;
         let held = self.dial_exchange(
             caller,
             need,
@@ -2598,7 +2599,8 @@ impl Connector {
             false,
             require_secure,
         )?;
-        Ok(held.dialling(dialled::Dialled::new(framing, port, pairing, due)))
+        let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began)?;
+        Ok(held.dialling(dialled))
     }
 
     /// THE DIALLED EXCHANGE over `door` (a framer of a stream, or a carrier carried as itself):

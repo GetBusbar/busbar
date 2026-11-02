@@ -226,10 +226,13 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
             &[],
         )
         .expect("publishes");
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec![crate::config::operator_provider().to_string()])
-        .build();
-    let consumed = crate::auth::gate_consumed(&app, true, false);
+    let consumed = crate::auth::ConsumedCredentials::carrying(&[
+        axum::http::HeaderName::from_static("x-admin-token"),
+        axum::http::header::AUTHORIZATION,
+        axum::http::HeaderName::from_static("x-api-key"),
+        axum::http::HeaderName::from_static("x-goog-api-key"),
+        axum::http::HeaderName::from_static("dpop"),
+    ]);
     let mut headers = axum::http::HeaderMap::new();
     for (name, value) in [
         ("x-admin-token", "operator-secret"),
@@ -287,133 +290,6 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
         rows.0.lock().unwrap().as_slice(),
         [("door.check".to_string(), "op".to_string())]
     );
-}
-
-fn asked<'a>(path: &'a str, headers: &'a axum::http::HeaderMap) -> AdminServe<'a> {
-    AdminServe {
-        method: "GET",
-        path,
-        query: None,
-        headers,
-        consumed: None,
-        principal: None,
-    }
-}
-
-fn health_table(instance: &str, calls: std::sync::Arc<Echo>) -> ServeTable {
-    ServeTable {
-        instance: instance.to_string(),
-        audit_kind: "door".to_string(),
-        calls,
-        caps: BufferCaps::default(),
-        routes: vec![ServeRoute {
-            verb: "GET".to_string(),
-            target: format!("/{instance}/{{name}}/health"),
-            flags: 0,
-            audit_verb: String::new(),
-        }],
-        records: None,
-    }
-}
-
-#[tokio::test]
-async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
-    let echo = std::sync::Arc::new(Echo::default());
-    let (lent_a, lent_b) = (ServeTables::default(), ServeTables::default());
-    lent_a
-        .publish(health_table("lent-a", echo.clone()), &[])
-        .expect("publishes");
-    lent_b
-        .publish(health_table("lent-b", echo.clone()), &[])
-        .expect("publishes");
-    let app = |tables: ServeTables| {
-        crate::test_support::TestApp::new()
-            .serve_tables(tables)
-            .build()
-    };
-    let (a, b, unlent) = (
-        app(lent_a),
-        app(lent_b),
-        crate::test_support::TestApp::new().build(),
-    );
-    let headers = axum::http::HeaderMap::new();
-    let rows = Rows::default();
-    for (on, own, other) in [(&a, "lent-a", "lent-b"), (&b, "lent-b", "lent-a")] {
-        let (own, other) = (format!("/{own}/x/health"), format!("/{other}/x/health"));
-        let served = on
-            .serve_tables
-            .served_at_to(&rows, asked(&own, &headers), Bytes::new())
-            .await;
-        assert_eq!(
-            served
-                .expect("its own instance names it")
-                .expect("served")
-                .status,
-            200
-        );
-        let theirs = on
-            .serve_tables
-            .served_at_to(&rows, asked(&other, &headers), Bytes::new())
-            .await;
-        assert!(
-            theirs.is_none(),
-            "{other}: the other root's instance is not on this table"
-        );
-    }
-    for path in ["/lent-a/x/health", "/lent-b/x/health"] {
-        let none = unlent
-            .serve_tables
-            .served_at_to(&rows, asked(path, &headers), Bytes::new())
-            .await;
-        assert!(
-            none.is_none(),
-            "{path}: a generation lent no table serves nothing"
-        );
-    }
-}
-
-#[test]
-fn a_rebuild_carries_the_published_admin_table() {
-    crate::test_support::register_neutral_test_plane();
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let cfg = || {
-        crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::env(
-            "BUSBAR_TEST_NO_SUCH_KEY_SERVE_TABLES",
-        ))
-    };
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime");
-    let headers = axum::http::HeaderMap::new();
-    let rows = Rows::default();
-    let served = |on: &crate::state::App, path: &str| {
-        rt.block_on(
-            on.serve_tables
-                .served_at_to(&rows, asked(path, &headers), Bytes::new()),
-        )
-        .map(|s| s.expect("served").status)
-    };
-    let boot = crate::test_support::build_once(cfg(), None).expect("boot");
-    assert_eq!(
-        served(&boot, "/carried/x/health"),
-        None,
-        "the boot generation starts with an empty table"
-    );
-    let echo = std::sync::Arc::new(Echo::default());
-    boot.serve_tables
-        .publish(health_table("carried", echo.clone()), &[])
-        .expect("publishes");
-    let applied = crate::test_support::build_once(cfg(), Some(&boot)).expect("rebuild");
-    applied
-        .serve_tables
-        .publish(health_table("after", echo), &[])
-        .expect("publishes");
-    for on in [&boot, &applied] {
-        for path in ["/carried/x/health", "/after/x/health"] {
-            assert_eq!(served(on, path), Some(200), "{path}");
-        }
-    }
 }
 
 #[tokio::test]

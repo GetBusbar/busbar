@@ -121,27 +121,50 @@ impl DeterministicEd25519Keys {
             .await
             .map_err(ExchangeError::MintFailed)?;
 
-        let (binding, token) = crate::governance::mint_self_offloaded(
+        mint_provisioned_self_key(
             self.gov.clone(),
             op,
-            principal.id.clone(),
-            self.provider.clone(),
+            principal,
+            &self.provider,
             self.allowed_scopes.clone(),
             exp,
             now,
         )
         .await
-        .map_err(|e| match e {
-            crate::governance::SelfMintError::Refused(_) => ExchangeError::Unbound,
-            crate::governance::SelfMintError::Store(e) => ExchangeError::MintFailed(e.to_string()),
-        })?;
-        Ok(IssuedKey {
-            secret: busbar_contract::redacted::Secret::new(token),
-            key_id: binding.id,
-            group: binding.group.unwrap_or_default(),
-            exp,
-        })
     }
+}
+
+// The continuation after the real provisioner has committed or reused the subject's leaf.
+// The caller records now/exp before provisioning and passes those exact values here.
+async fn mint_provisioned_self_key(
+    gov: Arc<GovState>,
+    op: crate::governance::SelfMintOp,
+    principal: &Principal,
+    provider: &str,
+    allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
+    exp: u64,
+    now: u64,
+) -> Result<IssuedKey, ExchangeError> {
+    let (binding, token) = crate::governance::mint_self_offloaded(
+        gov,
+        op,
+        principal.id.clone(),
+        provider.to_string(),
+        allowed_scopes,
+        exp,
+        now,
+    )
+    .await
+    .map_err(|e| match e {
+        crate::governance::SelfMintError::Refused(_) => ExchangeError::Unbound,
+        crate::governance::SelfMintError::Store(e) => ExchangeError::MintFailed(e.to_string()),
+    })?;
+    Ok(IssuedKey {
+        secret: busbar_contract::redacted::Secret::new(token),
+        key_id: binding.id,
+        group: binding.group.unwrap_or_default(),
+        exp,
+    })
 }
 
 #[async_trait]

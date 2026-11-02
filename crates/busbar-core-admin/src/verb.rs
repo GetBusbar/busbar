@@ -34,7 +34,7 @@ impl VerbScope {
 pub enum Class {
     /// One of the 66 operations of 1.5.5's `openapi.json`.
     Legacy,
-    /// One of the 11 new 1.6.0 verbs.
+    /// One of the 14 new 1.6.0 verbs.
     New,
     /// One of the five 1.6.0 ledger views.
     Ledger,
@@ -190,6 +190,8 @@ pub enum KernelVerb {
     CommitUpgrade,
     Adjust,
     AmendRateHistory,
+    RecoveryList,
+    RecoveryResolve,
     GetTrust,
     TrustApprove,
     TrustRevoke,
@@ -295,6 +297,8 @@ pub const TABLE: &[VerbRow] = table! {
     New CommitUpgrade "POST" "/api/v1/admin/commit-upgrade" "commit_upgrade";
     New Adjust "POST" "/api/v1/admin/adjust" "adjust";
     New AmendRateHistory "POST" "/api/v1/admin/ledger/amend-rate-history" "amend_rate_history";
+    New RecoveryList "POST" "/api/v1/admin/ledger/recovery/list" "recovery_list";
+    New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";

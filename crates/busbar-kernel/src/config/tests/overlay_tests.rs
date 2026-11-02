@@ -337,8 +337,7 @@ fn plugin_versions_section_parses() {
 
 #[test]
 fn store_round_trip_preserves_every_sibling_and_resets_only_requested_section() {
-    let fixture = TestOverlayStore::new();
-    let backend = fixture.backend();
+    let backend = OverlayStore::new(crate::real_store::store()).unwrap();
     persist(
         Some(&backend),
         &HashMap::from([("h".into(), gate())]),
@@ -387,8 +386,7 @@ fn store_round_trip_preserves_every_sibling_and_resets_only_requested_section() 
 
 #[test]
 fn hook_and_group_tombstones_reconcile_readds_and_prune_nonbase_names() {
-    let fixture = TestOverlayStore::new();
-    let backend = fixture.backend();
+    let backend = OverlayStore::new(crate::real_store::store()).unwrap();
     write(
         &backend,
         &OverlayDoc {
@@ -473,8 +471,7 @@ fn unknown_commit_replays_exact_candidate_and_never_applies_the_new_request() {
 
 #[test]
 fn overlays_larger_than_record_bound_round_trip_without_a_content_cap() {
-    let fixture = TestOverlayStore::new();
-    let backend = fixture.backend();
+    let backend = OverlayStore::new(crate::real_store::store()).unwrap();
     let payload = "x".repeat(busbar_contract::MAX_RECORD_BYTES * 2 + 17);
     let mut doc = OverlayDoc::default();
     doc.named_maps.insert(

@@ -46,7 +46,7 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let _config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
@@ -56,7 +56,8 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
-        config.clone(),
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the same product deployment resolves"),
         plugin_config.clone(),
         None,
         Default::default(),
@@ -75,7 +76,8 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
         "with BUSBAR_INCREMENTAL_SCAN unset the gate incremental scan must default OFF"
     );
     let (next, rotate, limits) = busbar_kernel::build_app_from_config(
-        config.clone(),
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the same product deployment resolves"),
         plugin_config.clone(),
         None,
         Default::default(),
@@ -135,7 +137,7 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let _config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
@@ -145,7 +147,8 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
-        config.clone(),
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the same product deployment resolves"),
         plugin_config.clone(),
         None,
         Default::default(),
@@ -168,7 +171,8 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
         "the boot generation carries the journal its governance owns"
     );
     let (next, rotate, limits) = busbar_kernel::build_app_from_config(
-        config.clone(),
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the same product deployment resolves"),
         plugin_config.clone(),
         None,
         Default::default(),

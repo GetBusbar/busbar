@@ -8,7 +8,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::sdk::store::conditional::{Decision, Mutation};
+use busbar_contract::abi::sdk::store::conditional::{
+    Decision, Expected, Mutation, Predicate, Request,
+};
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_wal::{Record, ShipError, Shipper, MEMORY_BUFFER_RECORDS};
@@ -103,6 +105,9 @@ pub(super) fn put_record(
     lease: &HeldLease,
     record: &Record,
 ) -> Result<(), String> {
+    if super::usage_recovery::is_recovery_record(record) {
+        return put_immutable_record(calls, lease, record);
+    }
     let mut audit = match super::audit_heads::prepare(calls, record)? {
         super::audit_heads::Write::Ordinary => None,
 
@@ -143,6 +148,100 @@ pub(super) fn put_record(
             )?;
         } else {
             wait_for(calls.record_put(JOURNAL_SCHEMA, &key, value)).map_err(|f| f.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Recovery records have immutable addresses and bytes. Unlike an arbitrary mutation, a retry
+/// with a fresh transaction identity is safe even after conditional receipt retention expires:
+/// absent predicates prevent any existing part from being replaced.
+fn put_immutable_record(
+    calls: &dyn StoreCalls,
+    lease: &HeldLease,
+    record: &Record,
+) -> Result<(), String> {
+    let (request, fences, parts) = immutable_request(calls, lease, record)?;
+    // One call only: an unknown journal transition is not an unknown usage outcome. The next
+    // lane attempt uses a new conditional id and the same immutable record under a current fence.
+    let decision = wait_for(calls.record_transaction(&request));
+    confirm_immutable_record(calls, lease, &fences, record, &parts)
+        .map_err(|why| format!("recovery journal record is not confirmed ({decision:?}): {why}"))
+}
+
+fn immutable_request(
+    calls: &dyn StoreCalls,
+    lease: &HeldLease,
+    record: &Record,
+) -> Result<(Request, Vec<Predicate>, Vec<RecordBytes>), String> {
+    if !calls.supports_record_transaction() {
+        return Err("usage recovery requires atomic conditional record transactions".into());
+    }
+    let fences = lease.recovery_predicates(calls, record.node)?;
+    let parts = parts_of(record)?;
+    let mut predicates = fences.clone();
+    let mut mutations = Vec::with_capacity(parts.len());
+    for (index, part) in parts.iter().enumerate() {
+        let index = u16::try_from(index).map_err(|_| "too many recovery parts")?;
+        let key = part_key(record.node, record.node_seq, index).to_vec();
+        predicates.push(Predicate {
+            schema: JOURNAL_SCHEMA.into(),
+            key: key.clone(),
+            expected: Expected::Absent,
+        });
+        mutations.push(Mutation::Put {
+            schema: JOURNAL_SCHEMA.into(),
+            key,
+            value: part.as_slice().to_vec(),
+        });
+    }
+    let request = super::conditional::candidate(predicates, mutations);
+    // This validates the actual extension frame, including part keys and both predicate and
+    // mutation envelopes, against the existing 16 MiB ABI bound before the Store sees it.
+    drop(request.encode_held().map_err(|why| {
+        format!("recovery transaction cannot be encoded within the ABI byte bound: {why}")
+    })?);
+    Ok((request, fences, parts))
+}
+
+fn confirm_immutable_record(
+    calls: &dyn StoreCalls,
+    lease: &HeldLease,
+    fences: &[Predicate],
+    record: &Record,
+    parts: &[RecordBytes],
+) -> Result<(), String> {
+    if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
+        return Err("the node fence changed before recovery readback".into());
+    }
+    confirm_record_parts(calls, record, parts)?;
+    if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
+        return Err("the node fence changed during recovery readback".into());
+    }
+    Ok(())
+}
+
+pub(super) fn confirm_record_bytes(calls: &dyn StoreCalls, record: &Record) -> Result<(), String> {
+    confirm_record_parts(calls, record, &parts_of(record)?)
+}
+
+fn confirm_record_parts(
+    calls: &dyn StoreCalls,
+    record: &Record,
+    parts: &[RecordBytes],
+) -> Result<(), String> {
+    let prefix = part_key(record.node, record.node_seq, 0);
+    let actual = wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix[..16], SCAN_LIMIT))
+        .map_err(|why| format!("recovery record readback failed: {why}"))?;
+    if actual.len() != parts.len() {
+        return Err("recovery record part count differs".into());
+    }
+    for (index, ((key, actual), expected)) in actual.iter().zip(parts).enumerate() {
+        let index = u16::try_from(index).map_err(|_| "too many recovery parts")?;
+        if key.as_slice() != part_key(record.node, record.node_seq, index)
+            || actual.as_slice() != expected.as_slice()
+        {
+            return Err("an exact recovery record part is absent or differs".into());
         }
     }
     Ok(())
@@ -511,6 +610,45 @@ impl JournalLane {
         self.lane.lease.hold(lease);
     }
 
+    pub(crate) fn bind_recovery_identity(&self, host: &str, node: u64) -> Result<(), String> {
+        self.lane
+            .lease
+            .bind_recovery_identity(self.lane.calls.as_ref(), host, node)
+    }
+
+    pub(super) fn recovery_predicates(&self, node: u64) -> Result<Vec<Predicate>, String> {
+        if self.lane.lock().stopped {
+            return Err("the recovery journal writer has retired".into());
+        }
+        self.lane
+            .lease
+            .recovery_predicates(self.lane.calls.as_ref(), node)
+    }
+
+    pub(super) fn confirm_recovery_record(&self, record: &Record) -> Result<(), String> {
+        let predicates = self.recovery_predicates(record.node)?;
+        confirm_immutable_record(
+            self.lane.calls.as_ref(),
+            &self.lane.lease,
+            &predicates,
+            record,
+            &parts_of(record)?,
+        )
+    }
+
+    pub(super) fn validate_recovery_frame(&self, node: u64, body_len: usize) -> Result<(), String> {
+        let length = busbar_kernel_wal::JOURNAL_HEADER_BYTES
+            .checked_add(body_len)
+            .filter(|length| {
+                *length as u64 <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
+            })
+            .ok_or_else(|| "recovery candidate exceeds the ABI byte bound".to_string())?;
+        // Sequence and digest bytes have fixed width: this exact-length stand-in measures the
+        // complete frame before allocating any journal sequence or retaining a candidate.
+        let measure = Record::new(node, 0, vec![0; length]);
+        immutable_request(self.lane.calls.as_ref(), &self.lane.lease, &measure).map(|_| ())
+    }
+
     pub fn refresh_held_lease(&self) {
         self.lane.lease.refresh(self.lane.calls.as_ref());
         self.lane.set_full(&self.lane.lock());
@@ -695,6 +833,103 @@ impl Shipper<Record> for LaneShipper {
         drop(state);
         lane.work.notify_one();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod recovery_record_tests {
+    use super::*;
+    use crate::root::store_double::RecordSlots;
+
+    fn identity(slots: &RecordSlots, host: &str) -> (u64, HeldLease) {
+        let taken = super::super::take_node(slots.calls().as_ref(), host).unwrap();
+        let lease = HeldLease::default();
+        lease.hold(taken.lease.unwrap());
+        lease
+            .bind_recovery_identity(slots.calls().as_ref(), host, taken.id)
+            .unwrap();
+        (taken.id, lease)
+    }
+
+    #[test]
+    fn lost_transaction_ack_confirms_only_the_exact_whole_immutable_record() {
+        let slots = RecordSlots::new();
+        let (node, lease) = identity(&slots, "recovery-exact");
+        let record = Record::new(node, 7, vec![42; PART_BYTES * 2 + 1]);
+        slots.lose_transaction_acks(true);
+        put_immutable_record(slots.calls().as_ref(), &lease, &record).unwrap();
+        let puts = slots.puts();
+        put_immutable_record(slots.calls().as_ref(), &lease, &record).unwrap();
+        assert_eq!(slots.puts(), puts, "immutable replay never replaces parts");
+        slots.corrupt(JOURNAL_SCHEMA, &part_key(node, 7, 1));
+        assert!(put_immutable_record(slots.calls().as_ref(), &lease, &record).is_err());
+        assert_eq!(
+            slots.puts(),
+            puts,
+            "a conflict must not repair divergent bytes"
+        );
+    }
+
+    #[test]
+    fn partial_record_cannot_confirm_and_is_never_overwritten() {
+        let slots = RecordSlots::new();
+        let (node, lease) = identity(&slots, "recovery-partial");
+        let record = Record::new(node, 8, vec![9; PART_BYTES + 1]);
+        let parts = parts_of(&record).unwrap();
+        slots.put_row(JOURNAL_SCHEMA, &part_key(node, 8, 0), parts[0].as_slice());
+        let puts = slots.puts();
+        assert!(put_immutable_record(slots.calls().as_ref(), &lease, &record).is_err());
+        assert_eq!(slots.puts(), puts);
+    }
+
+    #[test]
+    fn unreadable_record_or_changed_fence_cannot_confirm_unknown_transition() {
+        let slots = RecordSlots::new();
+        let (node, lease) = identity(&slots, "recovery-fence");
+        let record = Record::new(node, 9, vec![3; 40]);
+        slots.lose_transaction_acks(true);
+        put_immutable_record(slots.calls().as_ref(), &lease, &record).unwrap();
+        slots.fail_reads(true);
+        assert!(put_immutable_record(slots.calls().as_ref(), &lease, &record).is_err());
+        slots.fail_reads(false);
+        super::super::store_identity::set_lease_expiry(slots.calls().as_ref(), "recovery-fence", 0);
+        assert!(put_immutable_record(slots.calls().as_ref(), &lease, &record).is_err());
+    }
+
+    #[test]
+    fn unknown_not_applied_returns_without_replaying_the_conditional_id() {
+        use std::sync::atomic::AtomicUsize;
+        let slots = RecordSlots::new();
+        let (node, lease) = identity(&slots, "recovery-unknown");
+        let seen = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&seen);
+        slots.on_transaction(move |_| {
+            count.fetch_add(1, Ordering::Relaxed);
+            Some(busbar_contract::store_calls::StoreFailure::Failed(
+                "unknown".into(),
+            ))
+        });
+        let record = Record::new(node, 10, vec![8; 40]);
+        assert!(put_immutable_record(slots.calls().as_ref(), &lease, &record).is_err());
+        assert_eq!(seen.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn complete_transaction_frame_bound_is_checked_before_the_store_call() {
+        let slots = RecordSlots::new();
+        let (node, lease) = identity(&slots, "recovery-frame");
+        let record = Record::new(
+            node,
+            11,
+            vec![0; busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize],
+        );
+        let before = slots.puts();
+        assert!(
+            put_immutable_record(slots.calls().as_ref(), &lease, &record)
+                .unwrap_err()
+                .contains("ABI byte bound")
+        );
+        assert_eq!(slots.puts(), before);
     }
 }
 

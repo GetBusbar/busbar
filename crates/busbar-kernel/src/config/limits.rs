@@ -455,9 +455,6 @@ pub fn publish(resolved: &LimitsResolved) {
 }
 
 #[cfg(test)]
-pub use crate::test_support::fixture_limits::LIMITS_TEST_LOCK;
-
-#[cfg(test)]
 pub fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
     mirror_derived_caps(Some(resolved));
@@ -473,9 +470,6 @@ pub fn swap_installed(slot: Option<LimitsResolved>) -> Option<LimitsResolved> {
     mirror_derived_caps(slot.as_ref());
     std::mem::replace(&mut *installed, slot)
 }
-
-#[cfg(test)]
-pub use crate::test_support::fixture_limits::InstallGuard;
 
 fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
     let translate_cap = slot

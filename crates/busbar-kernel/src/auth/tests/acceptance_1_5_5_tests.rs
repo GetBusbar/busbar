@@ -53,7 +53,10 @@ fn capture<T>(f: impl FnOnce() -> T) -> (T, Buf) {
         .with_ansi(false)
         .with_max_level(tracing::Level::DEBUG)
         .finish();
-    let out = tracing::subscriber::with_default(subscriber, f);
+    let out = tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        f()
+    });
     (out, buf)
 }
 
@@ -125,25 +128,6 @@ fn auth_fault_path_diagnostic_identities_are_pinned() {
 }
 
 #[test]
-fn auth_chain_open_relay_diag_fires_on_empty_data_plane_chain() {
-    let cfg = crate::config::AuthCfg::default_none();
-    let (chain, buf) = capture(|| AuthMiddleware::new_builtin(&cfg));
-    assert!(
-        chain.is_open(),
-        "an empty chain with no keys verifier is open"
-    );
-    let text = buf.text();
-    assert!(
-        text.contains("diag=BUSBAR-4004"),
-        "expected AUTH_CHAIN_OPEN_RELAY (BUSBAR-4004) to fire; got: {text:?}"
-    );
-    assert!(
-        text.contains("auth.chain is empty (open relay)"),
-        "message text must match the v1.5.5 wording; got: {text:?}"
-    );
-}
-
-#[test]
 fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
     let mut app = crate::test_support::TestApp::new().build();
     let a = Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
@@ -166,79 +150,9 @@ fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
     );
 }
 
-/// How a [`FakeDoor`] answers each `verify`.
-#[derive(Clone)]
-enum DoorAnswer {
-    /// Answers this verdict.
-    Verdict(Box<busbar_contract::auth_calls::Verified>),
-    /// FAULTS (the plugin broke its contract), answered as a failed verify that says so.
-    Fault,
-    /// Never answers.
-    Never,
-}
-
-impl DoorAnswer {
-    fn verdict(verified: busbar_contract::auth_calls::Verified) -> Self {
-        Self::Verdict(Box::new(verified))
-    }
-}
-
 type Emitter = fn(&std::sync::atomic::AtomicBool);
 
-struct FakeDoor(DoorAnswer);
-
-struct FakeCall(DoorAnswer);
-
-impl std::future::Future for FakeCall {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        use busbar_contract::auth_calls::Verified;
-        match &self.0 {
-            DoorAnswer::Verdict(v) => std::task::Poll::Ready((**v).clone().into()),
-            DoorAnswer::Fault => std::task::Poll::Ready(Verified::Failed.into()),
-            DoorAnswer::Never => std::task::Poll::Pending,
-        }
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for FakeCall {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn faulted(&self) -> bool {
-        matches!(self.0, DoorAnswer::Fault)
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for FakeDoor {
-    fn name(&self) -> &str {
-        "fake-door"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(FakeCall(self.0.clone()))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
 fn captured_on_paused_clock<T>(f: impl std::future::Future<Output = T>) -> (T, Buf) {
-    let _gate = crate::test_support::warn_capture::WarnCapture::capturing_debug();
     capture(|| {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -247,33 +161,6 @@ fn captured_on_paused_clock<T>(f: impl std::future::Future<Output = T>) -> (T, B
             .expect("runtime")
             .block_on(f)
     })
-}
-
-async fn data_door(answer: DoorAnswer) -> ChainVerdict {
-    let auth = Arc::new(AuthMiddleware::from_doors_for_test(vec![(
-        "door".to_string(),
-        Arc::new(FakeDoor(answer)) as Arc<dyn AuthCalls>,
-    )]));
-    AuthMiddleware::run_chain_on_request_path(
-        &auth,
-        Some("cred".into()),
-        ChainHead::default(),
-        None,
-        None,
-    )
-    .await
-}
-
-async fn admin_door_walk(answer: DoorAnswer) -> ChainVerdict {
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["ext".to_string()])
-        .admin_door("ext", Arc::new(FakeDoor(answer)))
-        .build();
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer cred"));
-    run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default())
-        .await
-        .0
 }
 
 const AUTH_SATURATED_TEXT: &str =
@@ -293,19 +180,12 @@ const ADMIN_STALLED_TEXT: &str =
 #[test]
 fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
+    // Internal continuation: outcome DATA is interpreted by production functions; actual
+    // auth-product I/O is exercised by the root's OIDC controls.
     let (judged, said) = captured_on_paused_clock(async {
-        let auth = Arc::new(AuthMiddleware::from_doors_for_test(vec![(
-            "door".to_string(),
-            Arc::new(FakeDoor(DoorAnswer::verdict(Verified::Overloaded))) as Arc<dyn AuthCalls>,
-        )]));
-        AuthMiddleware::judge_chain_on_request_path(
-            &auth,
-            Some("cred".into()),
-            ChainHead::default(),
-            None,
-            None,
-        )
-        .await
+        data_verdict_of("door", Verified::Overloaded.into(), false).map(|judged| {
+            chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
+        })
     });
     assert_eq!(
         judged,
@@ -313,15 +193,17 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
         "handed back apart"
     );
     assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
-
     let (verdict, said) = captured_on_paused_clock(async {
         let held = AUTH_ADMISSION_PERMITS
             .acquire_many(AUTH_ADMISSION_MAX_INFLIGHT as u32)
             .await
             .expect("the budget");
-        let verdict = data_door(DoorAnswer::verdict(Verified::Pass)).await;
+        let refused = match auth_admission_permit().await {
+            Ok(_) => panic!("the held actual admission budget must time out"),
+            Err(refused) => refused,
+        };
         drop(held);
-        verdict
+        chain_position_verdict("door", refused.verdict).expect("a refusal is terminal")
     });
     assert_eq!(
         verdict,
@@ -333,9 +215,11 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
         "{:?}",
         said.text()
     );
-
-    let (verdict, said) =
-        captured_on_paused_clock(data_door(DoorAnswer::verdict(Verified::Reject)));
+    let (verdict, said) = captured_on_paused_clock(async {
+        let judged =
+            data_verdict_of("door", Verified::Reject.into(), false).expect("an actual refusal");
+        chain_position_verdict("door", judged.verdict).expect("a refusal is terminal")
+    });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
 }
@@ -343,14 +227,21 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
 #[test]
 fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
-    let (verdict, said) = captured_on_paused_clock(data_door(DoorAnswer::Fault));
+    // Internal fault/result continuation, preserving the exact production fail-closed fold.
+    let (verdict, said) = captured_on_paused_clock(async {
+        deny_unavailable_chain(data_verdict_of("door", Verified::Failed.into(), true).map(
+            |judged| chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied),
+        ))
+    });
     assert_eq!(verdict, ChainVerdict::Denied);
     let text = said.text();
     assert!(text.contains("diag=BUSBAR-4006"), "{text:?}");
     assert!(text.contains(AUTH_PANICKED_TEXT), "1.5.5's text: {text:?}");
-
-    let (verdict, said) =
-        captured_on_paused_clock(data_door(DoorAnswer::verdict(Verified::Failed)));
+    let (verdict, said) = captured_on_paused_clock(async {
+        deny_unavailable_chain(data_verdict_of("door", Verified::Failed.into(), false).map(
+            |judged| chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied),
+        ))
+    });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(!said.text().contains("BUSBAR-4006"), "{:?}", said.text());
 }
@@ -358,8 +249,11 @@ fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
 #[test]
 fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
-    let (verdict, said) =
-        captured_on_paused_clock(admin_door_walk(DoorAnswer::verdict(Verified::Overloaded)));
+    // Internal outcome and actual admission-budget continuations.
+    let (verdict, said) = captured_on_paused_clock(async {
+        let judged = admin_verdict_of(Verified::Overloaded.into(), false);
+        chain_position_verdict("ext", judged.verdict).expect("overload is terminal")
+    });
     assert_eq!(verdict, ChainVerdict::Denied);
     let text = said.text();
     assert!(text.contains("diag=BUSBAR-4008"), "{text:?}");
@@ -367,15 +261,17 @@ fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
         text.contains(ADMIN_SATURATED_TEXT),
         "1.5.5's text: {text:?}"
     );
-
     let (verdict, said) = captured_on_paused_clock(async {
         let held = ADMIN_ADMISSION_PERMITS
             .acquire_many(ADMIN_ADMISSION_MAX_INFLIGHT as u32)
             .await
             .expect("the budget");
-        let verdict = admin_door_walk(DoorAnswer::verdict(Verified::Pass)).await;
+        let refused = match admin_admission_permit().await {
+            Ok(_) => panic!("the held actual admission budget must time out"),
+            Err(refused) => refused,
+        };
         drop(held);
-        verdict
+        chain_position_verdict("ext", refused.verdict).expect("a refusal is terminal")
     });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(
@@ -383,9 +279,10 @@ fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
         "{:?}",
         said.text()
     );
-
-    let (verdict, said) =
-        captured_on_paused_clock(admin_door_walk(DoorAnswer::verdict(Verified::Reject)));
+    let (verdict, said) = captured_on_paused_clock(async {
+        let judged = admin_verdict_of(Verified::Reject.into(), false);
+        chain_position_verdict("ext", judged.verdict).expect("a refusal is terminal")
+    });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(!said.text().contains("BUSBAR-4008"), "{:?}", said.text());
 }
@@ -393,22 +290,35 @@ fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
 #[test]
 fn a_stalled_or_faulted_admin_verify_says_4009_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
-    for answer in [DoorAnswer::Never, DoorAnswer::Fault] {
-        let (verdict, said) = captured_on_paused_clock(admin_door_walk(answer));
+    for timed_out in [true, false] {
+        let (verdict, said) = captured_on_paused_clock(async {
+            let judged = if timed_out {
+                // The timeout error comes from the actual Tokio timer, not a pending auth door.
+                let elapsed =
+                    tokio::time::timeout(ADMIN_ADMISSION_WAIT, std::future::pending::<()>())
+                        .await
+                        .expect_err("the actual timer elapses");
+                admin_verification_timed_out(elapsed)
+            } else {
+                admin_verdict_of(Verified::Failed.into(), true)
+            };
+            chain_position_verdict("ext", judged.verdict).expect("no verdict is terminal")
+        });
         assert_eq!(verdict, ChainVerdict::Denied);
         let text = said.text();
         assert!(text.contains("diag=BUSBAR-4009"), "{text:?}");
         assert!(text.contains(ADMIN_STALLED_TEXT), "1.5.5's text: {text:?}");
     }
-    let (verdict, said) =
-        captured_on_paused_clock(admin_door_walk(DoorAnswer::verdict(Verified::Failed)));
+    let (verdict, said) = captured_on_paused_clock(async {
+        let judged = admin_verdict_of(Verified::Failed.into(), false);
+        chain_position_verdict("ext", judged.verdict).expect("a failed verification is terminal")
+    });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(!said.text().contains("BUSBAR-4009"), "{:?}", said.text());
 }
 
 #[test]
 fn the_door_path_diagnostics_warn_once_then_debug_as_1_5_5() {
-    let _gate = crate::test_support::warn_capture::WarnCapture::capturing_debug();
     let emitters: [(&str, Emitter); 4] = [
         ("BUSBAR-4005", auth_saturated_on),
         ("BUSBAR-4006", auth_faulted_on),

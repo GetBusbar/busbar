@@ -4,7 +4,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 
 fn app() -> Arc<busbar_kernel::state::App> {

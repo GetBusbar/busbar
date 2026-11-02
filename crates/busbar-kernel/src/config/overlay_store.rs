@@ -760,3 +760,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/version_gate_tests.rs"]
+mod version_gate_tests;

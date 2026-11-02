@@ -12,19 +12,17 @@
 //!      PARAMETER, so the answer is a section name and nothing else — no config module, no
 //!      validator, no refusal type.
 
-use crate::config::plane_sections::{
+use busbar_kernel::config::plane_sections::{
     config_sections, judge_hook_ref, refuse_cross_plane_reference, validate_section_hooks,
     HookRefError,
 };
 
 #[test]
 fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
-        crate::test_support::neutral_fallback_plane(),
-    ]);
+    crate::dist_root_install::install();
     let mut expected: Vec<&'static str> = Vec::new();
-    for s in crate::plane_driver::dispatch::plane_keys()
-        .map(|k| crate::plane_driver::dispatch::plane_decl(k).config_section)
+    for s in busbar_kernel::plane_driver::dispatch::plane_keys()
+        .map(|k| busbar_kernel::plane_driver::dispatch::plane_decl(k).config_section)
         .chain(busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS)
     {
         if !expected.contains(&s) {
@@ -51,7 +49,7 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
 
 #[test]
 fn a_third_plane_costs_a_section_name_and_nothing_else() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::empty();
+    crate::dist_root_install::install();
     let mut sections = config_sections();
     assert!(
         !sections.contains(&"bays"),
@@ -84,6 +82,7 @@ fn a_third_plane_costs_a_section_name_and_nothing_else() {
 
 #[test]
 fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
+    crate::dist_root_install::install();
     let sections = config_sections();
     let err = refuse_cross_plane_reference("`tools.search`", "agents.planner", &sections)
         .expect_err("a dotted name that reaches onto a plane is refused at parse time");
@@ -95,6 +94,7 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
 
 #[test]
 fn every_refusal_arm_has_a_sentence_of_its_own() {
+    crate::dist_root_install::install();
     let sections = config_sections();
     assert_eq!(
         refuse_cross_plane_reference("`tools.search`", "  ", &sections).unwrap_err(),

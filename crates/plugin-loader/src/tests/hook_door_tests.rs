@@ -28,6 +28,12 @@ mod checkpoint_plugin;
 #[path = "hook_checkpoint_cancellation_tests.rs"]
 mod checkpoint_cancellation;
 
+#[path = "hook_route_metadata_tests.rs"]
+mod route_metadata;
+
+#[path = "hook_recovery_backoff_tests.rs"]
+mod recovery_backoff;
+
 fn checkpoint_instance(
     way: Way,
     mode: &str,
@@ -69,7 +75,7 @@ fn regenerate(instance: &super::HookInstance) {
             },
         )
     };
-    if let super::State::Live(plugin) = retired {
+    if let super::State::Live { plugin, .. } = retired {
         super::close(&plugin);
     }
 }
@@ -190,7 +196,7 @@ async fn delayed_equal_version_and_retired_instance_acks_cannot_roll_back_recove
     use busbar_contract::hook_calls::HookCalls;
     let (instance, _) = checkpoint_instance(Way::Linked, "valid");
     let original = match &*instance.inner.lock() {
-        super::State::Live(p) => Arc::clone(p),
+        super::State::Live { plugin: p, .. } => Arc::clone(p),
         _ => panic!("opened"),
     };
     instance
@@ -237,7 +243,7 @@ async fn an_ack_racing_the_replay_is_restored_before_the_trial_is_published() {
         .await
         .unwrap();
     let original = match &*instance.inner.lock() {
-        super::State::Live(p) => Arc::clone(p),
+        super::State::Live { plugin: p, .. } => Arc::clone(p),
         _ => panic!("opened"),
     };
     let (entered, entered_rx) = std::sync::mpsc::channel();
@@ -271,7 +277,7 @@ async fn a_missing_checkpoint_cannot_be_repaired_by_an_older_delayed_reply() {
     use busbar_contract::hook_calls::HookCalls;
     let (instance, _) = checkpoint_instance(Way::Linked, "valid");
     let original = match &*instance.inner.lock() {
-        super::State::Live(p) => Arc::clone(p),
+        super::State::Live { plugin: p, .. } => Arc::clone(p),
         _ => panic!("opened"),
     };
     instance
