@@ -134,6 +134,58 @@ fn view() -> DoorView {
     DoorView::of(plugin::MACRO_DOOR)
 }
 
+mod allowed_needs {
+    use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND};
+    use crate::abi::sdk::door::abi_str;
+
+    const NEEDS: &[Need] = &[Need {
+        direction: DIRECTION_OUTBOUND,
+        transport: abi_str("https"),
+        ..Need::EMPTY
+    }
+    .with_keep_response_headers(&[abi_str("retry-after")])];
+    crate::plugin_door! {
+        ops: crate::abi::transport::Ops,
+        statement: super::STATEMENT.with_needs(NEEDS),
+        lifecycle: life(super::Probe),
+    }
+}
+
+mod forbidden_needs {
+    use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND};
+    use crate::abi::sdk::door::abi_str;
+
+    const NEEDS: &[Need] = &[Need {
+        direction: DIRECTION_OUTBOUND,
+        transport: abi_str("https"),
+        ..Need::EMPTY
+    }
+    .with_keep_response_headers(&[abi_str("authorization")])];
+    crate::plugin_door! {
+        ops: crate::abi::transport::Ops,
+        statement: super::STATEMENT.with_needs(NEEDS),
+        lifecycle: life(super::Probe),
+    }
+}
+
+#[test]
+fn safe_needs_validation_reads_the_exported_descriptor_and_nested_headers() {
+    assert_eq!(
+        DoorView::of(allowed_needs::MACRO_DOOR).check_needs(),
+        Ok(())
+    );
+    assert_eq!(
+        view().check_needs(),
+        Ok(()),
+        "an empty exported list passes"
+    );
+    let fault = DoorView::of(forbidden_needs::MACRO_DOOR)
+        .check_needs()
+        .expect_err("the exported authorization retention need is forbidden");
+    assert_eq!(fault.rule, crate::abi::mechanism::check::Rule::Foreign);
+    assert_eq!(fault.field, "need.keep_response_headers");
+}
+
 /// A head for slot `op` over a `T` `in`, every other byte zero.
 fn in_head<T>(op: u32) -> InHead {
     let mut h: InHead = zeroed();

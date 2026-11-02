@@ -405,6 +405,28 @@ impl DoorView {
         self.statement
     }
 
+    /// Validate the needs this actual exported Statement declares, including their nested
+    /// response-header lists, using the host's shared need validator.
+    ///
+    /// # Errors
+    ///
+    /// The rule a declared need breaks, unchanged from the shared validator.
+    ///
+    /// # Panics
+    ///
+    /// The Statement's needs list breaks the door contract (NULL with a count or misaligned).
+    pub fn check_needs(&self) -> Result<(), busbar_contract::abi::mechanism::check::Fault> {
+        let needs = list(
+            self.statement.needs,
+            self.statement.needs_len,
+            "statement.needs",
+        );
+        // SAFETY: this view names only its MacroDoor's actual immutable static Statement.
+        // Its counted Need entries, nested header-name arrays and string bytes remain live for
+        // the process under that descriptor's provenance contract; list checked its outer shape.
+        unsafe { busbar_contract::abi::mechanism::check::check_needs(needs) }
+    }
+
     /// The kind the door states, or `None` for a number no kind has.
     #[must_use]
     pub fn kind(&self) -> Option<KindCode> {
