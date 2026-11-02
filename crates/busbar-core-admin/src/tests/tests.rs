@@ -4330,19 +4330,6 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
     handle.abort();
 }
 
-fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
-    busbar_kernel::config::groups::LimitCfg {
-        metric: busbar_kernel::config::groups::LimitMetric::Budget,
-        amount: cents,
-        per: Some(busbar_kernel::config::groups::LimitWindow::Month),
-        scope: None,
-        on_exhaust: None,
-        downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
-    }
-}
-
 fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "busbar-reset-{}-{}-{}",
