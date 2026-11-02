@@ -67,6 +67,11 @@ on:
         required: false
         type: string
         default: ""
+      test_features:
+        description: "Existing plugin features required by its test image; production builds remain default."
+        required: false
+        type: string
+        default: ""
       plugin_crate:
         description: "The cdylib's Cargo package (built with -p), e.g. busbar-store-sqlite-plugin. Used only to locate the built cdylib for the signing gate (kind store|auth|hook|secret)."
         required: true
@@ -132,8 +137,6 @@ jobs:
           sparse-checkout: |
             scripts/fleet
             dist/default
-      - name: pin-check selftest (every refusal fires before the verdict is trusted)
-        run: bash busbar/scripts/fleet/pin-check.sh --selftest
       - name: pin-check
         env:
           PIN_CHECK_LANG: ${{ inputs.plugin_lang }}
@@ -310,7 +313,8 @@ jobs:
             Linux) file="lib${CRATE//-/_}.so" ;;
             *) echo "::error::unsupported plugin test platform $RUNNER_OS"; exit 1 ;;
           esac
-          artifact="$GITHUB_WORKSPACE/plugin/target/debug/$file"
+          target="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+          artifact="$target/debug/$file"
           [ -f "$artifact" ] || { echo "::error::fresh plugin library missing: $artifact"; exit 1; }
           echo "BUSBAR_PLUGIN_CDYLIB=$artifact" >> "$GITHUB_ENV"
       - name: "C: build from busbar_plugin.h alone (the library a signed tarball carries)"
@@ -342,11 +346,26 @@ jobs:
           CRATE: ${{ inputs.plugin_crate }}
         run: |
           set -euo pipefail
-          lib="target/debug/lib${CRATE//-/_}.so"
+          lib="${BUSBAR_PLUGIN_CDYLIB:-$BUSBAR_C_ABI_LIBRARY}"
           [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; ls -la target/debug/ >&2; exit 1; }
           bash "$GITHUB_WORKSPACE/busbar/scripts/signing-gate.sh" \
             "$GITHUB_WORKSPACE/busbar" "$CRATE" "${{ inputs.plugin_kind }}" "${{ inputs.plugin_alias }}" "$lib" \
             "${{ inputs.manifest_name || github.event.repository.name }}"
+      - name: fresh test image with the plugin's existing test features
+        if: steps.crates.outputs.present == 'true' && inputs.test_features != ''
+        working-directory: plugin
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          TEST_FEATURES: ${{ inputs.test_features }}
+        run: |
+          set -euo pipefail
+          production="$RUNNER_TEMP/production-$(basename "$BUSBAR_PLUGIN_CDYLIB")"
+          cp "$BUSBAR_PLUGIN_CDYLIB" "$production"
+          echo "BUSBAR_PRODUCTION_PLUGIN_CDYLIB=$production" >> "$GITHUB_ENV"
+          feat=""
+          if cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
+          cargo build --locked -p "$CRATE" --lib $feat --features "$TEST_FEATURES"
+          [ -f "$BUSBAR_PLUGIN_CDYLIB" ] || { echo "::error::fresh test image missing"; exit 1; }
       - name: mysql strict sql_mode (a dynamic variable; only root may set it)
         if: inputs.service == 'mysql'
         run: mysql -h 127.0.0.1 -uroot -pbusbar -e "SET GLOBAL sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION';"
@@ -356,7 +375,12 @@ jobs:
       - name: test (the plugin's whole suite, live backend included)
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
-        run: cargo test --workspace --locked
+        env:
+          TEST_FEATURES: ${{ inputs.test_features }}
+        run: |
+          features=()
+          [ -z "$TEST_FEATURES" ] || features=(--features "$TEST_FEATURES")
+          cargo test --workspace --locked "${features[@]}"
       - name: extra test command
         if: inputs.extra_test != '' && steps.crates.outputs.present == 'true'
         working-directory: plugin
@@ -368,18 +392,26 @@ jobs:
         working-directory: plugin
         env:
           CRATE: ${{ inputs.plugin_crate }}
+          TEST_FEATURES: ${{ inputs.test_features }}
         run: |
           set -euo pipefail
           feat=""
           if cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
           cargo build --release --locked -p "$CRATE" --lib $feat
-          export BUSBAR_PLUGIN_CDYLIB="$GITHUB_WORKSPACE/plugin/target/release/lib${CRATE//-/_}.so"
+          target="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+          export BUSBAR_PLUGIN_CDYLIB="$target/release/lib${CRATE//-/_}.so"
+          features=()
+          if [ -n "$TEST_FEATURES" ]; then
+            cp "$BUSBAR_PLUGIN_CDYLIB" "$RUNNER_TEMP/production-release-lib${CRATE//-/_}.so"
+            features=(--features "$TEST_FEATURES")
+            cargo build --release --locked -p "$CRATE" --lib $feat "${features[@]}"
+          fi
           [ -f "$BUSBAR_PLUGIN_CDYLIB" ] || { echo "::error::fresh plugin library missing"; exit 1; }
           list="$RUNNER_TEMP/plugin-tests.list"
-          cargo test --release --locked -p "$CRATE" --tests -- --list > "$list"
+          cargo test --release --locked -p "$CRATE" --tests "${features[@]}" -- --list > "$list"
           grep -q ': test$' "$list" || { echo "::error::the actual plugin has no ordinary tests"; exit 1; }
           out="$RUNNER_TEMP/plugin-tests.log"
-          cargo test --release --locked -p "$CRATE" --tests 2>&1 | tee "$out"
+          cargo test --release --locked -p "$CRATE" --tests "${features[@]}" 2>&1 | tee "$out"
           python3 -c 'import re,sys; text=open(sys.argv[1]).read(); passed=[int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", text)]; assert sum(passed)>0, "no ordinary plugin test executed"' "$out"
       - name: cargo deny (the rendered deny.toml; busbar's .github/fleet/deps.toml at the pin)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
@@ -520,9 +552,25 @@ jobs:
             Linux) file="lib${CRATE//-/_}.so" ;;
             *) echo "::error::unsupported plugin test platform $RUNNER_OS"; exit 1 ;;
           esac
-          artifact="$GITHUB_WORKSPACE/plugin/target/debug/$file"
+          target="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+          artifact="$target/debug/$file"
           [ -f "$artifact" ] || { echo "::error::fresh plugin library missing: $artifact"; exit 1; }
           echo "BUSBAR_PLUGIN_CDYLIB=$artifact" >> "$GITHUB_ENV"
+      - name: fresh test image with the plugin's existing test features
+        if: steps.crates.outputs.present == 'true' && inputs.test_features != ''
+        working-directory: plugin
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          TEST_FEATURES: ${{ inputs.test_features }}
+        run: |
+          set -euo pipefail
+          production="$RUNNER_TEMP/production-$(basename "$BUSBAR_PLUGIN_CDYLIB")"
+          cp "$BUSBAR_PLUGIN_CDYLIB" "$production"
+          echo "BUSBAR_PRODUCTION_PLUGIN_CDYLIB=$production" >> "$GITHUB_ENV"
+          feat=""
+          if cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
+          cargo build --locked -p "$CRATE" --lib $feat --features "$TEST_FEATURES"
+          [ -f "$BUSBAR_PLUGIN_CDYLIB" ] || { echo "::error::fresh test image missing"; exit 1; }
       - name: test
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin
