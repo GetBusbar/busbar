@@ -3745,4 +3745,3 @@ async fn an_ungoverned_unit_runs_lent_the_empty_reference() {
         "{lent:?}"
     );
 }
-
