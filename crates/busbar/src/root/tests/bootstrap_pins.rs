@@ -3,6 +3,36 @@
 
 use super::*;
 
+fn constructor_output(command: &mut std::process::Command) -> std::process::Output {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let timed_out = loop {
+        if child.try_wait().unwrap().is_some() {
+            break false;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            break true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        !timed_out,
+        "constructor child exceeded its refusal bound: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    output
+}
+
 #[test]
 fn early_plane_archive_pins_refuse_before_native_constructors() {
     const CHILD: &str = "BUSBAR_EARLY_PLANE_ARCHIVE_CHILD";
@@ -90,16 +120,18 @@ __attribute__((constructor)) static void mark_loaded(void) {
             .collect();
         let document = serde_json::json!({
             "providers":{}, "models":{}, "store":{"module":"memory","settings":{}},
+            "listen":"127.0.0.1:0", "admin_listen":"127.0.0.1:0",
             "advanced":{"worker_threads":1},
             "plugins":{"enabled":true,"dir":plugins,"fetch":fetch}
         });
         std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
         let marker = dir.join(format!("{tag}.marker"));
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = constructor_output(std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "root::boot::bootstrap_pin_tests::early_plane_archive_pins_refuse_before_native_constructors", "--nocapture"])
             .current_dir(&dir).env(CHILD, "1").env("BUSBAR_PLANE_CTOR_MARKER", &marker)
+            .env("BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY", hex::encode(key.verifying_key().to_bytes()))
             .env("BUSBAR_CONFIG", &config).env("BUSBAR_PROVIDERS", &providers)
-            .env("BUSBAR_DATA_DIR", dir.join("state")).output().unwrap();
+            .env("BUSBAR_DATA_DIR", dir.join("state")));
         let logs = String::from_utf8_lossy(&output.stdout).into_owned()
             + &String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -191,17 +223,18 @@ __attribute__((constructor)) static void mark_loaded(void) {
         let secret = serde_json::json!({"module":"constructor-secret","settings":{}});
         let document = serde_json::json!({
             "providers":{},"models":{},"store":{"module":"memory","settings":{}},
+            "listen":"127.0.0.1:0", "admin_listen":"127.0.0.1:0",
             "advanced":{"worker_threads":1},"tls":{"cert":secret,"key":secret},
             "plugins":{"enabled":true,"dir":plugins,"fetch":fetch}
         });
         std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
         let marker = dir.join(format!("{tag}.marker"));
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = constructor_output(std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact","root::boot::bootstrap_pin_tests::offline_secret_checker_archive_pins_refuse_before_native_constructors","--nocapture"])
             .current_dir(&dir).env(CHILD,"1").env("BUSBAR_SECRET_CTOR_MARKER",&marker)
             .env("BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",hex::encode(key.verifying_key().to_bytes()))
             .env("BUSBAR_CONFIG",&config).env("BUSBAR_PROVIDERS",&providers)
-            .env("BUSBAR_DATA_DIR",dir.join("state")).output().unwrap();
+            .env("BUSBAR_DATA_DIR",dir.join("state")));
         let logs = String::from_utf8_lossy(&output.stdout).into_owned()
             + &String::from_utf8_lossy(&output.stderr);
         assert!(
