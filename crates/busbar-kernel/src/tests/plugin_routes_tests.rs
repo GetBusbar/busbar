@@ -2,12 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use axum::Router;
 use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
-
-const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
 
 struct FakeDispatch {
     label: &'static str,
@@ -249,87 +246,9 @@ fn only_the_scrape_sink_claims_metrics_hooks() {
     }
 }
 
-fn app_with_table(table: Arc<PluginRouteTable>) -> Arc<crate::state::App> {
-    use crate::test_support::{LaneSpec, TestApp};
-    let base = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://127.0.0.1:1"))
-        .pool("pa", &[(0, 1)])
-        .build();
-    let mut app = (*base).clone();
-    app.plugin_routes = table;
-    Arc::new(app)
-}
-
-async fn get(router: Router, path: &str) -> (u16, String) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let resp = reqwest::Client::new()
-        .get(format!("http://{addr}{path}"))
-        .send()
-        .await
-        .unwrap();
-    let code = resp.status().as_u16();
-    let body = resp.text().await.unwrap();
-    server.abort();
-    (code, body)
-}
-
-#[tokio::test]
-async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
-    const P: &str = "/exports/prometheus/scrape";
-
-    let table_a = Arc::new(
-        build_route_table(vec![decl(
-            "prometheus",
-            RouteKind::Export,
-            P,
-            RouteMethod::Get,
-            RouteAuth::None,
-            "prom",
-        )])
-        .unwrap(),
-    );
-    let app_a = app_with_table(table_a);
-    let (data_router, _admin_router, handle) = crate::build_split_routers_with_limits(
-        app_a,
-        busbar_kernel_egress::upstream::max_translate_body_bytes(),
-        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-    );
-
-    let (code, body) = get(data_router.clone(), P).await;
-    assert_eq!(
-        code, 200,
-        "the none-auth plugin route dispatches (no token)"
-    );
-    assert_eq!(
-        body,
-        format!("prom GET {P}"),
-        "handle_http response relayed verbatim"
-    );
-
-    let table_b = Arc::new(
-        build_route_table(vec![decl(
-            "prometheus",
-            RouteKind::Export,
-            P,
-            RouteMethod::Get,
-            RouteAuth::None,
-            "next",
-        )])
-        .unwrap(),
-    );
-    handle.swap(app_with_table(table_b));
-
-    let (code, body) = get(data_router, P).await;
-    assert_eq!(code, 200);
-    assert_eq!(
-        body,
-        format!("next GET {P}"),
-        "the SAME server resolved the NEW plugin from the live snapshot — no stale route"
-    );
-}
+// Actual export dispatch, same-listener generation swaps and GET/HEAD crossings live in
+// busbar/src/tests/kernel_application/plugin_routes_actual.rs, where a real root and
+// a real dropped Prometheus owner replace the former label-echo application fixture.
 
 #[test]
 fn admin_auth_route_is_classified_to_the_admin_plane_only() {
@@ -353,66 +272,11 @@ fn admin_auth_route_is_classified_to_the_admin_plane_only() {
     );
 }
 
-#[tokio::test]
-async fn admin_auth_route_is_absent_from_the_data_listener() {
-    use crate::governance::GovState;
-    use crate::test_support::{LaneSpec, TestApp};
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-    let base = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://127.0.0.1:1"))
-        .pool("pa", &[(0, 1)])
-        .governance(gov)
-        .admin_chain(Vec::new())
-        .build();
-    let table = Arc::new(
-        build_route_table(vec![decl(
-            "audit-sink",
-            RouteKind::Export,
-            "/exports/audit-sink/admin-op",
-            RouteMethod::Get,
-            RouteAuth::Admin,
-            "audit",
-        )])
-        .unwrap(),
-    );
-    let mut app = (*base).clone();
-    app.plugin_routes = table;
-    let (data_router, admin_router, _handle) = crate::build_split_routers_with_limits(
-        Arc::new(app),
-        busbar_kernel_egress::upstream::max_translate_body_bytes(),
-        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-    );
-
-    async fn get_tok(router: Router, path: &str, token: &str) -> u16 {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let code = reqwest::Client::new()
-            .get(format!("http://{addr}{path}"))
-            .bearer_auth(token)
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16();
-        server.abort();
-        code
-    }
-
-    assert_eq!(
-        get_tok(data_router, "/exports/audit-sink/admin-op", "admintok").await,
-        404,
-        "an auth:admin plugin route must be physically absent from the data listener"
-    );
-
-    assert_eq!(
-        get_tok(admin_router, "/exports/audit-sink/admin-op", "admintok").await,
-        200,
-        "the admin listener serves the auth:admin plugin route"
-    );
-}
+// The former injected audit-sink response only proved its own fake body. The actual
+// core-admin info owner now witnesses physical listener isolation (404 data / 200
+// authenticated admin) in plugin_routes_actual.rs. The policy test above separately
+// retains plugin auth:admin -> admin-plane classification; it does not claim a real
+// plugin auth:admin wire crossing.
 
 #[test]
 fn head_is_looked_up_as_the_declared_get_route() {
