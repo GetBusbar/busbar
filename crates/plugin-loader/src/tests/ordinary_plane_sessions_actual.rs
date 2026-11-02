@@ -13,14 +13,19 @@ use busbar_contract::abi::plane::{
     slot, OnPieceIn, OnPieceOut, Ops, PlaneCancelIn, PlaneCancelOut, PlaneOpenIn, CANCEL_ABORTED,
     EMIT_DONE, FROM_CALLER,
 };
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 static SERIAL: Mutex<()> = Mutex::new(());
 static MODE: AtomicUsize = AtomicUsize::new(0);
 static CANCELS: AtomicUsize = AtomicUsize::new(0);
 static SEEN: Mutex<Vec<(Ticket, u32, u64)>> = Mutex::new(Vec::new());
 static OPEN_URLS: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
+static ACTIVE: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+fn active() -> &'static Mutex<HashSet<u64>> {
+    ACTIVE.get_or_init(Default::default)
+}
 fn guarded(f: impl FnOnce() -> RawOutcome) -> RawOutcome {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
         .unwrap_or(RawOutcome::of(Outcome::Fault))
@@ -47,12 +52,48 @@ extern "C" fn open(
             )
         };
         OPEN_URLS.lock().unwrap().push(url);
+        active().lock().unwrap().insert(i.open.head.host.handle);
         // SAFETY: exact real MCP table and frames, no lifecycle mutation or substitute instance.
         unsafe {
             let ops = &*crate::actual_mcp::door().ops().cast::<Ops>();
             ops.head.open.unwrap()(instance, input, out)
         }
     })
+}
+extern "C" fn close(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> RawOutcome {
+    guarded(|| {
+        // SAFETY: exact borrowed actual MCP CLOSE frames and initialized leading ABI head.
+        let host = unsafe {
+            (*input.cast::<busbar_contract::abi::mechanism::call::InHead>())
+                .host
+                .handle
+        };
+        let result = unsafe {
+            let ops = &*crate::actual_mcp::door().ops().cast::<Ops>();
+            ops.head.close.unwrap()(instance, input, out)
+        };
+        if result.outcome() == Outcome::Ready {
+            active().lock().unwrap().remove(&host);
+        }
+        result
+    })
+}
+fn finish(d: Dispatcher, p: Plugin<Plane>) {
+    let host = p.inner.ctx().handle;
+    drop(p);
+    drop(d);
+    let end = Instant::now() + Duration::from_secs(5);
+    while active().lock().unwrap().contains(&host) {
+        assert!(
+            Instant::now() < end,
+            "actual instance did not close before next boundary control"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 extern "C" fn piece(
     _: *mut std::ffi::c_void,
@@ -112,6 +153,7 @@ extern "C" fn door() -> &'static Door {
             head: busbar_contract::abi::mechanism::lifecycle::OpsHead {
                 cancel: Some(cancel),
                 open: Some(open),
+                close: Some(close),
                 ..ops.head
             },
             ..ops
@@ -182,6 +224,7 @@ fn every_pending_piece_resumes_on_its_original_unit_ticket() {
     drop(seen);
     assert_eq!(d.stats().deadline_without_wake, 0);
     d.recycle(t);
+    finish(d, p);
 }
 #[test]
 fn terminal_session_refuses_another_crossing_and_allows_a_fresh_unit() {
@@ -223,6 +266,7 @@ fn terminal_session_refuses_another_crossing_and_allows_a_fresh_unit() {
     assert_eq!(SEEN.lock().unwrap().len(), count + 1);
     d.recycle(t);
     d.recycle(fresh);
+    finish(d, p);
 }
 #[test]
 fn cancelling_no_session_ticket_cannot_end_an_admitted_unit() {
@@ -250,14 +294,15 @@ fn cancelling_no_session_ticket_cannot_end_an_admitted_unit() {
     assert_eq!(SEEN.lock().unwrap().len(), 1);
     assert_eq!(CANCELS.load(SeqCst), 0);
     d.recycle(t);
+    finish(d, p);
 }
 
 #[test]
 fn open_passes_an_absent_public_url_as_none_and_a_present_url_verbatim() {
     let _serial = SERIAL.lock().unwrap();
     OPEN_URLS.lock().unwrap().clear();
-    let d = Dispatcher::new(DispatchConfig::default());
     for url in [None, Some("https://public.example/mcp")] {
+        let d = Dispatcher::new(DispatchConfig::default());
         let p = load_linked::<Plane>(
             &LinkedRow::of(door).unwrap(),
             Bind {
@@ -270,6 +315,7 @@ fn open_passes_an_absent_public_url_as_none_and_a_present_url_verbatim() {
         )
         .unwrap();
         open_door(&p, b"{}", b"{}", url).expect("actual MCP opens with its public URL posture");
+        finish(d, p);
     }
     assert_eq!(
         *OPEN_URLS.lock().unwrap(),
@@ -331,4 +377,5 @@ fn a_short_piece_is_recalled_with_room_on_the_same_session_ticket() {
         4,
         "two actual crossings for each SHORT and recall"
     );
+    finish(d, p);
 }
