@@ -515,28 +515,34 @@ impl RequestAdmission {
     }
 
     pub(crate) async fn claim_replay(&self) -> bool {
-        if !self.inner.alive.load(std::sync::atomic::Ordering::Acquire) {
-            return false;
-        }
-        let Some(replay) = &self.inner.replay else {
-            return true;
-        };
-        if self
-            .inner
-            .deadline
-            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-        {
-            return false;
-        }
-        let won = until_deadline(
+        claim_request_replay(
+            &self.inner.alive,
+            self.inner.replay.as_deref(),
             self.inner.deadline,
-            replay.won.get_or_init(|| replay.pending.win()),
         )
+        .await
+    }
+}
+
+async fn claim_request_replay(
+    alive: &std::sync::atomic::AtomicBool,
+    replay: Option<&ReplayAdmission>,
+    deadline: Option<std::time::Instant>,
+) -> bool {
+    if !alive.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    let Some(replay) = replay else {
+        return true;
+    };
+    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        return false;
+    }
+    let won = until_deadline(deadline, replay.won.get_or_init(|| replay.pending.win()))
         .await
         .copied()
         .unwrap_or(false);
-        won && self.inner.alive.load(std::sync::atomic::Ordering::Acquire)
-    }
+    won && alive.load(std::sync::atomic::Ordering::Acquire)
 }
 
 fn same_request(left: &Head, right: &Head) -> bool {
@@ -748,24 +754,38 @@ impl UnitState {
     }
 
     fn fixed_at(&self, peer: bool) -> Option<Fixed> {
-        for (i, a) in self.answers.iter().enumerate() {
-            if peer
-                && self.table.request_auths.contains(&self.providers[i])
-                && matches!(a, Some(Judged::Identity | Judged::Pass))
-            {
-                return None;
-            }
-            match a {
-                None => return None,
-                Some(Judged::Pass) => {}
-                Some(Judged::Identity) => return Some(Fixed::Admitted(i)),
-                Some(Judged::Denied) => return Some(Fixed::Denied),
-                Some(Judged::Overloaded) => return Some(Fixed::Overloaded),
-            }
-        }
-
-        Some(Fixed::Denied)
+        fixed_answer_at(
+            &self.answers,
+            &self.providers,
+            &self.table.request_auths,
+            peer,
+        )
     }
+}
+
+fn fixed_answer_at(
+    answers: &[Option<Judged>],
+    providers: &[String],
+    request_auths: &HashSet<String>,
+    peer: bool,
+) -> Option<Fixed> {
+    for (i, a) in answers.iter().enumerate() {
+        if peer
+            && request_auths.contains(&providers[i])
+            && matches!(a, Some(Judged::Identity | Judged::Pass))
+        {
+            return None;
+        }
+        match a {
+            None => return None,
+            Some(Judged::Pass) => {}
+            Some(Judged::Identity) => return Some(Fixed::Admitted(i)),
+            Some(Judged::Denied) => return Some(Fixed::Denied),
+            Some(Judged::Overloaded) => return Some(Fixed::Overloaded),
+        }
+    }
+
+    Some(Fixed::Denied)
 }
 
 struct Table {
