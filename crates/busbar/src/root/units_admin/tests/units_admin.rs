@@ -1588,6 +1588,7 @@ fn each_view_serves_the_figures_the_ledger_holds() {
 
 #[cfg(feature = "root-admin")]
 fn real_admin_dispatch() -> RouterDispatch {
+    busbar_kernel_testkit::test_support::operator_double::install();
     busbar_core_admin::install();
     let gov = Arc::new(
         busbar_kernel::governance::GovState::new(
