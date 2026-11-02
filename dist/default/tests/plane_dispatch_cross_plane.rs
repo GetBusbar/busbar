@@ -348,7 +348,7 @@ fn the_mount_table_is_read_before_the_path_shape() {
     );
     assert_eq!(
         d.ingress_of("/v1/chat/completions"),
-        Ingress::Fallback(Some("openai"))
+        Ingress::Fallback(None)
     );
     assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback(None));
     assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback(None));
@@ -379,10 +379,7 @@ fn a_resolved_ingress_names_its_own_wire_format() {
     let s = single();
     let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
     assert_eq!(d.ingress_of(&door(s)).wire_format(), Some(WIRE_JSONRPC));
-    assert_eq!(
-        d.ingress_of("/v1/messages").wire_format(),
-        Some("anthropic")
-    );
+    assert_eq!(d.ingress_of("/v1/messages").wire_format(), None);
     assert_eq!(d.ingress_of("/stats").wire_format(), None);
     let over = PlaneDispatch::default().mount(s, "/v1/messages", WIRE_JSONRPC);
     assert_eq!(
