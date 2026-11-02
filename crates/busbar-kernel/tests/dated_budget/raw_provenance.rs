@@ -109,14 +109,14 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
     let key = team_key(store.as_ref(), RAW_KEY);
     let gov = GovState::new(store.clone(), None).unwrap();
 
-    let later = metering_bucket(busbar_kernel::store::now()) + SECS_PER_DAY;
+    let later = metering_bucket(busbar_kernel::store::now());
     let opening = raw_cost(1.0, OPENING_FEE);
     let opening_grant = accrue(&gov, &opening, &key, later);
     let opening_era = opening_grant.charge().raw_era();
     assert_eq!(opening_era.effective_from, 0);
     assert!(opening_era.entry_id.is_some());
 
-    let shared_start = busbar_kernel::store::now_ms().saturating_sub(1);
+    let shared_start = later.saturating_sub(SECS_PER_DAY) * 1_000;
     let first_era = confirm(holder, shared_start, 2.0, FIRST_FEE, 1);
     let first = raw_cost(2.0, FIRST_FEE);
     let first_grant = accrue(&gov, &first, &key, later);
@@ -169,6 +169,17 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
         delta: &delta,
         now: later,
     };
+    let future_epoch_ms = busbar_kernel::store::now_ms() + SECS_PER_DAY * 1_000;
+    let future = busbar_kernel::governance::Adjustment {
+        card_epoch_ms: future_epoch_ms,
+        ..ambiguous
+    };
+    assert!(matches!(
+        gov.adjust_usage(&second, &future).unwrap(),
+        Err(busbar_kernel::governance::AdjustRefused::FutureEpoch { at, now })
+            if at == future_epoch_ms && now < future_epoch_ms
+    ));
+    assert_eq!(reads(&gov), (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE));
     assert!(gov
         .adjust_usage(&second, &ambiguous)
         .unwrap_err()
