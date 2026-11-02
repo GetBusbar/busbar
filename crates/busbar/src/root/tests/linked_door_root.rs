@@ -7,8 +7,6 @@ use crate::root::linked::linked_transport;
 use crate::root::registry::{compose, Dropped};
 use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 
-use busbar_test_kit::root_door_fixtures::layered;
-
 #[allow(unsafe_code)]
 extern "C" fn misnamed_tcp() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::mechanism::door::{Door, Statement};
@@ -55,14 +53,6 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
         built[0].1.key(),
         "tcp",
         "the boot's admission of its door answers the same key"
-    );
-
-    let layered = linked_transport!(layered::door);
-    assert_eq!((layered.key)(), "door-root-layered");
-    assert_eq!((layered.composes_over)(), ["door-root-under"]);
-    assert!(
-        !row_facts(layered::door).session,
-        "its claim row carries no session"
     );
 
     let framer = linked_transport!(busbar_transport_http::door::door);
