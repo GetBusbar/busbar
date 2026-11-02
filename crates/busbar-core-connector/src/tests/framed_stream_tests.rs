@@ -95,6 +95,7 @@ impl FramerDoor for LengthDoor {
                     },
                 );
                 o.framing = token;
+                wire(&i.sink, o, b"trailer: lp-status, lp-message, lp-details, lp-reason\r\nx-open: one\r\nx-open: two\r\n");
                 ok
             }
             Call::Ingest(i, o) => {
@@ -278,6 +279,32 @@ fn a_refusal_after_the_head_is_told_the_head_went_out() {
 fn a_claim_the_framer_does_not_answer_opens_no_stream() {
     let d = door();
     assert!(FramedStream::open(d as Arc<dyn FramerDoor>, "other", "/", &[], SCHEME_PLAIN).is_err());
+}
+
+#[test]
+fn a_stream_retains_its_framers_initial_fields_including_repeated_values() {
+    let stream = FramedStream::open(door(), "lp", "/", &[], SCHEME_PLAIN).unwrap();
+    assert_eq!(
+        stream.opening_fields(),
+        pairs(&[
+            ("trailer", "lp-status, lp-message, lp-details, lp-reason"),
+            ("x-open", "one"),
+            ("x-open", "two"),
+        ])
+    );
+}
+
+#[test]
+fn malformed_initial_field_blocks_are_refused_whole() {
+    for block in [
+        b"trailer: lp-status\r\ncut".as_slice(),
+        b":status: 200\r\n",
+        b"bad name: x\r\n",
+        b"x: bad\0value\r\n",
+        b"x: bare\nvalue\r\n",
+    ] {
+        assert!(super::opening_fields(block).is_err(), "{block:?}");
+    }
 }
 
 #[test]

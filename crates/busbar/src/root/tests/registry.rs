@@ -532,7 +532,7 @@ fn an_undeclared_composition_refuses_at_boot() {
 fn an_unregistered_layer_refuses_at_boot() {
     let rows = vec![Registered {
         key: "upper-wire",
-        composes_over: &["floor-wire"],
+        composes_over: std::borrow::Cow::Borrowed(&["floor-wire"]),
         composed_over: None,
     }];
     let err = check_composition(&rows).expect_err("nothing registered the floor wire");
@@ -735,7 +735,7 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
             .map(|(row, _)| row)
             .collect();
     for (i, row) in refolded.iter().enumerate() {
-        for layer in row.composes_over {
+        for layer in row.composes_over.iter() {
             if linked.contains(layer) {
                 assert!(
                     refolded[..i].iter().any(|r| r.key == *layer),
@@ -1043,6 +1043,28 @@ fn one_door() -> Dropped {
     Dropped {
         doors: std::borrow::Cow::Borrowed(&dropped_doors()[..1]),
     }
+}
+
+#[test]
+fn composing_an_owned_inventory_retains_its_dynamic_declaration_without_leaking_it() {
+    let mut door = dropped_doors()[0].clone();
+    door.composes_over = vec!["declared-layer"];
+    let key = door.key;
+    let built = compose(
+        &[],
+        Dropped {
+            doors: std::borrow::Cow::Owned(vec![door]),
+        },
+        &TransportSettings::default(),
+    )
+    .unwrap();
+    let row = &built.iter().find(|(row, _)| row.key == key).unwrap().0;
+    assert_eq!(row.composes_over.as_ref(), &["declared-layer"]);
+    assert!(matches!(&row.composes_over, std::borrow::Cow::Owned(_)));
+    assert!(matches!(
+        check_composition(&built.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>()),
+        Err(CompositionError::UnregisteredLayer { .. })
+    ));
 }
 
 /// A table of linked rows held for the process, as `Linked::transports` holds its own.

@@ -28,8 +28,8 @@ use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOS
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
-    PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
-    PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
+    EMIT_TRAILERS, PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME,
+    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
     PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
     YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
@@ -1068,6 +1068,7 @@ struct EmitHead {
     body_len: Option<u64>,
     status: u32,
     extensions: Vec<u8>,
+    trailers: bool,
 }
 
 /// A TICKETED FRAMER OP, as the framing issues it (and re-issues it on a resume): `begin`,
@@ -1097,6 +1098,7 @@ enum Ticketed<'a> {
         bytes: std::borrow::Cow<'a, [u8]>,
         end_of_frame: bool,
         text: bool,
+        trailers: bool,
         /// The opening body's length on a dialled request's head emit: `Some` = known.
         body_len: Option<u64>,
         /// An accepted stream's answer status, on the emit that carries its head; `0` otherwise.
@@ -1141,6 +1143,7 @@ impl Ticketed<'_> {
                 stream,
                 end_of_frame,
                 text,
+                trailers,
                 body_len,
                 status,
                 extensions,
@@ -1150,6 +1153,7 @@ impl Ticketed<'_> {
                 bytes: std::borrow::Cow::Owned(Vec::new()),
                 end_of_frame,
                 text,
+                trailers,
                 body_len,
                 status,
                 extensions,
@@ -2012,6 +2016,7 @@ impl Framing {
                 bytes,
                 end_of_frame,
                 text,
+                trailers,
                 body_len,
                 status,
                 extensions,
@@ -2031,7 +2036,8 @@ impl Framing {
                     i.bytes = bytes.as_ptr();
                     i.len = bytes.len();
                     i.end_of_frame = u32::from(*end_of_frame);
-                    i.flags = if *text { EMIT_TEXT } else { 0 };
+                    i.flags = if *text { EMIT_TEXT } else { 0 }
+                        | if *trailers { EMIT_TRAILERS } else { 0 };
                 }
                 // An accepted answer's status rides the emit that carries its head, and that op's
                 // resume; a `YIELD_MORE` re-call of it states none.
@@ -2489,6 +2495,31 @@ impl Framing {
         )
     }
 
+    /// End an accepted answer with a neutral field block after its body. The transport renders
+    /// these as trailers; they are never payload bytes. Pending and drain recalls retain this
+    /// operation's identity and cannot be overtaken by later work on the stream.
+    ///
+    /// # Errors
+    /// The framer refused the trailers or the stream is held by an earlier operation.
+    pub fn emit_trailers(&mut self, stream: u64, fields: &[u8]) -> Result<Yielded, Refused> {
+        if self.bufs.side != SIDE_ACCEPT {
+            return Err(Refused {
+                outcome: Outcome::Refused,
+                error: "trailers end an accepted answer only".into(),
+            });
+        }
+        self.emit_op(
+            stream,
+            fields,
+            true,
+            false,
+            EmitHead {
+                trailers: true,
+                ..EmitHead::default()
+            },
+        )
+    }
+
     /// The one `emit` op every emit is.
     fn emit_op(
         &mut self,
@@ -2504,6 +2535,7 @@ impl Framing {
             bytes: std::borrow::Cow::Borrowed(bytes),
             end_of_frame,
             text,
+            trailers: head.trailers,
             body_len: head.body_len,
             status: head.status,
             extensions: head.extensions,

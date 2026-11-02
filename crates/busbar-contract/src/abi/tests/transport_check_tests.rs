@@ -24,6 +24,57 @@ fn f(rule: Rule, field: &'static str) -> Result<(), Fault> {
 }
 
 #[test]
+fn trailer_emits_are_final_accepted_fields_after_the_head() {
+    let mut i: EmitIn = z();
+    i.flags = EMIT_TRAILERS;
+    i.end_of_frame = 1;
+    assert_eq!(check_emit_flags(&i, SIDE_ACCEPT, false), Ok(()));
+    assert_eq!(
+        check_emit_flags(&i, SIDE_DIAL, false),
+        f(Rule::Contradiction, "emit.flags")
+    );
+    assert_eq!(
+        check_emit_flags(&i, SIDE_ACCEPT, true),
+        f(Rule::Contradiction, "emit.flags")
+    );
+    for bad in [0, 2] {
+        i.end_of_frame = bad;
+        assert_eq!(
+            check_emit_flags(&i, SIDE_ACCEPT, false),
+            f(Rule::Contradiction, "emit.flags")
+        );
+    }
+    i.end_of_frame = 1;
+    i.flags |= EMIT_TEXT;
+    assert_eq!(
+        check_emit_flags(&i, SIDE_ACCEPT, false),
+        f(Rule::Contradiction, "emit.flags")
+    );
+    i.flags = EMIT_TRAILERS;
+    i.status = 200;
+    assert_eq!(
+        check_emit_flags(&i, SIDE_ACCEPT, false),
+        f(Rule::Contradiction, "emit.flags")
+    );
+    i.status = 0;
+    i.body_len_known = 1;
+    assert_eq!(
+        check_emit_flags(&i, SIDE_ACCEPT, false),
+        f(Rule::Contradiction, "emit.flags")
+    );
+    i.body_len_known = 0;
+    i.flags = 4;
+    assert!(check_emit_flags(&i, SIDE_ACCEPT, false).is_err());
+    i.flags = 0;
+    i.end_of_frame = 0;
+    assert_eq!(
+        check_emit_flags(&i, SIDE_ACCEPT, false),
+        Ok(()),
+        "empty drains carry no new kind"
+    );
+}
+
+#[test]
 fn listen_and_accept_have_no_short_path_over_cap_is_fault() {
     let mut l: ListenOut = z();
     l.addr_written = MAX_ADDR + 1;

@@ -30,29 +30,17 @@
 //! node mints it once and reads it back on every boot, so `/admin/verify` verifies the records a
 //! predecessor signed. There is no filesystem cache.
 //!
-//! ## Minting races on the store's one atomic step
+//! ## Atomic ownership
 //!
-//! The store ABI has no compare-and-set. Its one atomic step is `redeem_plane_token`, a single-use
-//! TEST-AND-SET: exactly one caller is told it was first (the construction `oauth_as`'s store and
-//! the kernel's own claims use). So two first boots racing on an empty store never keep two
-//! keysets or two ids for one host:
-//!
-//! * Minting the deployment keyset, and minting a host's node id, each REDEEMS a claim first
-//!   ([`MINT_CLAIM_KIND`]). Only the boot the store answers `true` mints and keeps; every other
-//!   boot waits for the winner's write and takes it ([`MINT_WAIT`]), and refuses if it has not
-//!   appeared.
-//! * A node id is claimed for good before it is kept, so no two hosts can hold one id.
-//! * A minting claim is a claim FOR ONE PERIOD ([`MINT_CLAIM_SECS`]): its token names the period
-//!   it was redeemed in. A boot that won it and died before keeping what it minted leaves the
-//!   store with nothing until the period ends; the next period's claim is a new token, so a boot
-//!   then claims again. (A losing redemption cannot push the claim out: a store may re-stamp a
-//!   token's expiry on every redemption, and the period's token is never redeemed after it ends.)
-//!   That is liveness, bounded by one period. The window left is two first boots that both win
-//!   because they straddle a period boundary within the milliseconds between a claim and its
-//!   write; each reads back what the store holds after its own write.
+//! The configured Store must negotiate conditional record transactions. The host pointer and
+//! deployment key are inserted only when absent. Lease take, refresh and release compare exact
+//! observed bytes, and every leased journal mutation compares that same lease in its transaction.
+//! A delayed predecessor cannot publish after a successor takes the identity. Unknown outcomes
+//! retain their immutable operation id/body until a definitive Store decision.
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Predicate};
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_audit::{AuditChain, AuditKeySet, AuditRecord};
@@ -74,41 +62,8 @@ const REGISTRY_LIMIT: u32 = 1 << 16;
 /// The kind every minting claim is redeemed under (`redeem_plane_token`).
 pub(super) const MINT_CLAIM_KIND: &str = "busbar.mint.v1";
 
-/// The period a minting claim is for, in seconds: a claim nobody kept a value for is free again
-/// once its period ends.
-#[cfg(not(test))]
-pub(super) const MINT_CLAIM_SECS: u64 = 60;
-#[cfg(test)]
-pub(super) const MINT_CLAIM_SECS: u64 = 2;
-
-/// How long a boot that lost a minting claim waits for the winner's write before it refuses.
-#[cfg(not(test))]
-pub(super) const MINT_WAIT: Duration = Duration::from_secs(10);
-#[cfg(test)]
-pub(super) const MINT_WAIT: Duration = Duration::from_millis(400);
-
-/// How often a waiting boot reads the store again.
-const MINT_POLL: Duration = Duration::from_millis(20);
-
 /// The most candidate node ids one boot tries to claim before it refuses.
 const ID_ATTEMPTS: usize = 16;
-
-/// The claim on minting the deployment keyset, for the period `now` falls in.
-pub(super) fn keyset_claim(now: u64) -> String {
-    format!("keyset:deployment@{}", now / MINT_CLAIM_SECS)
-}
-
-/// The claim on minting `host`'s node id, for the period `now` falls in.
-pub(super) fn host_claim(host: &str, now: u64) -> String {
-    format!("host:{host}@{}", now / MINT_CLAIM_SECS)
-}
-
-/// When a claim redeemed at `now` may be dropped: after the end of the period after its own.
-fn claim_lapses(now: u64) -> u64 {
-    (now / MINT_CLAIM_SECS)
-        .saturating_add(2)
-        .saturating_mul(MINT_CLAIM_SECS)
-}
 
 /// The claim that holds node id `id` for the one host that took it, for good.
 fn id_claim(id: u64) -> String {
@@ -131,29 +86,6 @@ fn now_secs() -> u64 {
 fn claim(calls: &dyn StoreCalls, token: &str, expires_at: u64) -> Result<bool, String> {
     wait_for(calls.redeem_plane_token(MINT_CLAIM_KIND, token, expires_at, now_secs()))
         .map_err(|f| format!("the store would not answer the minting claim `{token}`: {f}"))
-}
-
-/// A boot that lost the claim on minting `what`: the winner's write, read back as soon as it is
-/// there, for at most [`MINT_WAIT`].
-///
-/// # Errors
-///
-/// The read failed, or nothing was kept in time: this boot refuses rather than mint a second one.
-fn take_winners<T>(what: &str, read: impl Fn() -> Result<Option<T>, String>) -> Result<T, String> {
-    let deadline = Instant::now() + MINT_WAIT;
-    loop {
-        if let Some(kept) = read()? {
-            return Ok(kept);
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "another boot holds the store's claim to mint {what} and has not kept it; this boot \
-                 refuses rather than mint a second one (the claim is free again within \
-                 {MINT_CLAIM_SECS} s)"
-            ));
-        }
-        std::thread::sleep(MINT_POLL);
-    }
 }
 
 /// This host's name, as the node registry keys it: `HOSTNAME`, else the kernel's host name, else
@@ -193,9 +125,9 @@ fn id_of(value: &RecordBytes) -> Option<u64> {
     Some(u64::from_be_bytes(bytes)).filter(|&id| id != 0)
 }
 
-/// THIS HOST'S NODE ID: the one the registry holds for `host`, or one minted now and kept. Only the
-/// boot that wins the store's claim on minting this host's id mints it; a concurrent first boot of
-/// the same host takes the winner's. The minted id is claimed for good before it is kept, so it is
+/// THIS HOST'S NODE ID: the one the registry holds for `host`, or one conditionally inserted now.
+/// A concurrent loser reads the winning pointer. Each minted id is claimed for good before use,
+/// so it is
 /// never zero and never an id another host holds.
 ///
 /// # Errors
@@ -208,17 +140,22 @@ pub fn node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
     if let Some(id) = get()? {
         return Ok(id);
     }
-    // ONE MINTER PER HOST: the boot the store answers first mints; every other takes its id.
-    let now = now_secs();
-    if !claim(calls, &host_claim(host, now), claim_lapses(now))? {
-        return take_winners("this host's node id", get);
-    }
-    // A boot that claimed a later period than a slow earlier claimant finds that claimant's id.
-    if let Some(id) = get()? {
-        return Ok(id);
-    }
     let id = mint_id(calls)?;
-    keep_id(calls, &key, id)?;
+    // The host pointer is immutable. A delayed first boot can never overwrite its winner,
+    // regardless of elapsed time or any earlier ambiguous answer.
+    let request = super::conditional::candidate(
+        vec![Predicate {
+            schema: NODE_SCHEMA.into(),
+            key: key.clone(),
+            expected: Expected::Absent,
+        }],
+        vec![Mutation::Put {
+            schema: NODE_SCHEMA.into(),
+            key: key.clone(),
+            value: id.to_be_bytes().to_vec(),
+        }],
+    );
+    super::conditional::decide(calls, &request)?;
     get()?.ok_or_else(|| "the store did not keep this node's id".to_string())
 }
 
@@ -351,6 +288,9 @@ impl LeaseRow {
 
     fn parse(value: &RecordBytes) -> Option<Self> {
         let raw = value.as_slice();
+        if raw.len() != 24 {
+            return None;
+        }
         Some(LeaseRow {
             holder: raw.get(..16)?.try_into().ok()?,
             expires_ms: u64::from_be_bytes(raw.get(16..24)?.try_into().ok()?),
@@ -365,8 +305,15 @@ impl LeaseRow {
 /// The store refused or failed the read.
 fn read_lease(calls: &dyn StoreCalls, host: &str) -> Result<Option<LeaseRow>, String> {
     wait_for(calls.record_get(NODE_SCHEMA, &lease_key(host)))
-        .map(|value| value.as_ref().and_then(LeaseRow::parse))
         .map_err(|f| format!("the store would not read this host's lease: {f}"))
+        .and_then(|value| {
+            value
+                .map(|value| {
+                    LeaseRow::parse(&value)
+                        .ok_or_else(|| "the store's host lease is malformed".to_string())
+                })
+                .transpose()
+        })
 }
 
 /// Put `row` as `host`'s lease.
@@ -374,6 +321,7 @@ fn read_lease(calls: &dyn StoreCalls, host: &str) -> Result<Option<LeaseRow>, St
 /// # Errors
 ///
 /// The store refused or failed the write.
+#[cfg(test)]
 fn put_lease(calls: &dyn StoreCalls, host: &str, row: LeaseRow) -> Result<(), String> {
     let value = RecordBytes::new(row.bytes())
         .map_err(|n| format!("a {n}-byte lease is over the slot's bound"))?;
@@ -411,6 +359,19 @@ pub struct NodeLease {
 }
 
 impl NodeLease {
+    /// Exact ownership predicate for the same atomic transaction as the journal mutation.
+    /// A local expiry check is never a server fence: a successor's conditional take changes
+    /// these bytes before it reads the chain it will resume.
+    fn predicate(&self, calls: &dyn StoreCalls) -> Result<Option<Predicate>, String> {
+        Ok(read_lease(calls, &self.host)?
+            .filter(|row| row.holder == self.holder && row.expires_ms != 0)
+            .map(|row| Predicate {
+                schema: NODE_SCHEMA.into(),
+                key: lease_key(&self.host),
+                expected: Expected::Bytes(row.bytes()),
+            }))
+    }
+
     /// REFRESH the lease for another [`LEASE_TTL_MS`]. `false` when another process holds it now
     /// (this one went unrefreshed past its lapse): it is left to that holder.
     ///
@@ -418,17 +379,26 @@ impl NodeLease {
     ///
     /// The store refused or failed the read or the write.
     pub fn refresh(&self, calls: &dyn StoreCalls) -> Result<bool, String> {
-        match read_lease(calls, &self.host)? {
-            Some(row) if row.holder != self.holder => Ok(false),
-            _ => put_lease(
-                calls,
-                &self.host,
-                LeaseRow {
-                    holder: self.holder,
-                    expires_ms: now_ms().saturating_add(LEASE_TTL_MS),
-                },
-            )
-            .map(|()| true),
+        loop {
+            let Some(predicate) = self.predicate(calls)? else {
+                return Ok(false);
+            };
+            let request = super::conditional::candidate(
+                vec![predicate],
+                vec![Mutation::Put {
+                    schema: NODE_SCHEMA.into(),
+                    key: lease_key(&self.host),
+                    value: LeaseRow {
+                        holder: self.holder,
+                        expires_ms: now_ms().saturating_add(LEASE_TTL_MS),
+                    }
+                    .bytes(),
+                }],
+            );
+            match super::conditional::decide(calls, &request)? {
+                Decision::Applied => return Ok(true),
+                Decision::ConditionConflict => continue,
+            }
         }
     }
 
@@ -439,16 +409,26 @@ impl NodeLease {
     ///
     /// The store refused or failed the read or the write.
     pub fn release(&self, calls: &dyn StoreCalls) -> Result<(), String> {
-        match read_lease(calls, &self.host)? {
-            Some(row) if row.holder == self.holder => put_lease(
-                calls,
-                &self.host,
-                LeaseRow {
-                    holder: self.holder,
-                    expires_ms: 0,
-                },
-            ),
-            _ => Ok(()),
+        loop {
+            let Some(predicate) = self.predicate(calls)? else {
+                return Ok(());
+            };
+            let request = super::conditional::candidate(
+                vec![predicate],
+                vec![Mutation::Put {
+                    schema: NODE_SCHEMA.into(),
+                    key: lease_key(&self.host),
+                    value: LeaseRow {
+                        holder: self.holder,
+                        expires_ms: 0,
+                    }
+                    .bytes(),
+                }],
+            );
+            match super::conditional::decide(calls, &request)? {
+                Decision::Applied => return Ok(()),
+                Decision::ConditionConflict => continue,
+            }
         }
     }
 }
@@ -461,9 +441,8 @@ impl NodeLease {
 /// meanwhile, its holder is live and this boot clashes with it; released, or left to lapse, its
 /// holder is gone (a crash), and this boot takes it and resumes the chain, recovering its holds.
 ///
-/// The store has no compare-and-set, so taking a lease REDEEMS a claim named after the lease row
-/// this boot read (and the period it is in, so a claimant that died before writing frees it within
-/// [`MINT_CLAIM_SECS`]): two boots that read one row race on one claim, and only the first writes.
+/// Taking the lease conditionally replaces the exact observed row. Time only permits a take
+/// attempt; the atomic Store comparison fences a delayed refresh, release or journal mutation.
 ///
 /// # Errors
 ///
@@ -493,24 +472,24 @@ fn take_lease(calls: &dyn StoreCalls, host: &str, holder: [u8; 16]) -> Result<bo
             }
         }
     }
-    let observed = seen.map_or_else(
-        || "free".to_string(),
-        |row| format!("{}:{}", hex::encode(row.holder), row.expires_ms),
+    let key = lease_key(host);
+    let request = super::conditional::candidate(
+        vec![Predicate {
+            schema: NODE_SCHEMA.into(),
+            key: key.clone(),
+            expected: seen.map_or(Expected::Absent, |row| Expected::Bytes(row.bytes())),
+        }],
+        vec![Mutation::Put {
+            schema: NODE_SCHEMA.into(),
+            key,
+            value: LeaseRow {
+                holder,
+                expires_ms: now_ms().saturating_add(LEASE_TTL_MS),
+            }
+            .bytes(),
+        }],
     );
-    let now = now_secs();
-    let token = format!("lease:{host}@{observed}@{}", now / MINT_CLAIM_SECS);
-    if !claim(calls, &token, claim_lapses(now))? {
-        return Ok(false);
-    }
-    put_lease(
-        calls,
-        host,
-        LeaseRow {
-            holder,
-            expires_ms: now_ms().saturating_add(LEASE_TTL_MS),
-        },
-    )?;
-    Ok(read_lease(calls, host)?.is_some_and(|row| row.holder == holder))
+    Ok(super::conditional::decide(calls, &request)? == Decision::Applied)
 }
 
 /// The identity a node with no data directory journals under, and the lease it holds for it.
@@ -561,6 +540,7 @@ pub struct HeldLease {
     lease: std::sync::Mutex<Option<NodeLease>>,
     /// The checkpoint flush ticks counted since the lease was last refreshed.
     ticks: std::sync::atomic::AtomicU32,
+    lost: std::sync::atomic::AtomicBool,
 }
 
 impl HeldLease {
@@ -573,6 +553,26 @@ impl HeldLease {
     /// Keep `lease` as the one [`HeldLease::refresh`] and [`HeldLease::release`] act on.
     pub fn hold(&self, lease: NodeLease) {
         *self.lock() = Some(lease);
+    }
+
+    pub(super) fn lost(&self) -> bool {
+        self.lost.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(super) fn predicate(&self, calls: &dyn StoreCalls) -> Result<Option<Predicate>, String> {
+        if self.lost() {
+            return Err("this node no longer owns its journal identity".into());
+        }
+        let Some(lease) = self.lock().clone() else {
+            return Ok(None);
+        };
+        match lease.predicate(calls)? {
+            Some(predicate) => Ok(Some(predicate)),
+            None => {
+                self.lost.store(true, std::sync::atomic::Ordering::Release);
+                Err("this node no longer owns its journal identity".into())
+            }
+        }
     }
 
     /// REFRESH the lease in `calls`, if one is held, on every [`LEASE_REFRESH_TICKS`]-th call: run
@@ -591,10 +591,13 @@ impl HeldLease {
         };
         match lease.refresh(calls) {
             Ok(true) => {}
-            Ok(false) => tracing::error!(
-                host = %lease.host,
-                "this node's lease on its host name lapsed and another process took it"
-            ),
+            Ok(false) => {
+                self.lost.store(true, std::sync::atomic::Ordering::Release);
+                tracing::error!(
+                    host = %lease.host,
+                    "this node's lease on its host name lapsed and another process took it"
+                );
+            }
             Err(why) => tracing::warn!(reason = %why, "this node's lease was not refreshed"),
         }
     }
@@ -627,8 +630,43 @@ struct RegistryScan {
 }
 
 fn scan_registry(calls: &dyn StoreCalls) -> Result<RegistryScan, String> {
-    let rows = wait_for(calls.record_scan(NODE_SCHEMA, b"host:", REGISTRY_LIMIT))
-        .map_err(|f| format!("the store would not list the node registry: {f}"))?;
+    scan_registry_with_limit(calls, REGISTRY_LIMIT)
+}
+
+/// Saturated pages are subdivided by raw key prefix, including a row equal to that prefix.
+/// The byte alphabet partitions the remaining keys completely; no fleet-size limit is imposed.
+fn scan_registry_with_limit(calls: &dyn StoreCalls, limit: u32) -> Result<RegistryScan, String> {
+    if limit == 0 {
+        return Err("a node-registry scan needs a nonzero page size".into());
+    }
+    let mut pending = vec![b"host:".to_vec()];
+    let mut rows = Vec::new();
+    while let Some(prefix) = pending.pop() {
+        let page = wait_for(calls.record_scan(NODE_SCHEMA, &prefix, limit))
+            .map_err(|f| format!("the store would not list the node registry: {f}"))?;
+        if page.len() > limit as usize
+            || page.iter().any(|(key, _)| !key.starts_with(&prefix))
+            || page.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+        {
+            return Err(
+                "the store returned an invalid node-registry page; verification is incomplete"
+                    .into(),
+            );
+        }
+        if page.len() < limit as usize {
+            rows.extend(page);
+            continue;
+        }
+        if let Some((key, value)) = page.first().filter(|(key, _)| key == &prefix) {
+            rows.push((key.clone(), value.clone()));
+        }
+        for byte in 0..=u8::MAX {
+            let mut child = prefix.clone();
+            child.push(byte);
+            pending.push(child);
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
     let mut scan = RegistryScan {
         nodes: Vec::new(),
         unreadable: 0,
@@ -661,9 +699,8 @@ pub fn stored_keyset(calls: &dyn StoreCalls) -> Result<Option<String>, String> {
         })
 }
 
-/// THE DEPLOYMENT KEYSET, minted once: the seed the store keeps, or `seed_hex` kept now by the
-/// boot that wins the store's claim on minting it. A concurrent first boot that lost the claim
-/// takes the winner's, so every node on the store signs with one key.
+/// The immutable deployment keyset: insert `seed_hex` only when absent; a concurrent loser reads
+/// the winning seed. No elapsed-time claim can authorize replacing an existing key.
 ///
 /// # Errors
 ///
@@ -673,18 +710,19 @@ pub fn keep_keyset(calls: &dyn StoreCalls, seed_hex: &str) -> Result<String, Str
     if let Some(held) = stored_keyset(calls)? {
         return Ok(held);
     }
-    let now = now_secs();
-    if !claim(calls, &keyset_claim(now), claim_lapses(now))? {
-        return take_winners("the deployment keyset", || stored_keyset(calls));
-    }
-    // A boot that claimed a later period than a slow earlier claimant finds that claimant's key.
-    if let Some(held) = stored_keyset(calls)? {
-        return Ok(held);
-    }
-    let value = RecordBytes::new(seed_hex.as_bytes().to_vec())
-        .map_err(|n| format!("a {n}-byte keyset is over the slot's bound"))?;
-    wait_for(calls.record_put(KEYSET_SCHEMA, KEYSET_KEY, &value))
-        .map_err(|f| format!("the store would not keep the deployment keyset: {f}"))?;
+    let request = super::conditional::candidate(
+        vec![Predicate {
+            schema: KEYSET_SCHEMA.into(),
+            key: KEYSET_KEY.to_vec(),
+            expected: Expected::Absent,
+        }],
+        vec![Mutation::Put {
+            schema: KEYSET_SCHEMA.into(),
+            key: KEYSET_KEY.to_vec(),
+            value: seed_hex.as_bytes().to_vec(),
+        }],
+    );
+    super::conditional::decide(calls, &request)?;
     stored_keyset(calls)?.ok_or_else(|| "the store did not keep the deployment keyset".to_string())
 }
 

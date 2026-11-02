@@ -7,7 +7,7 @@
 //! honoured exactly.
 
 use crate::idempotency::durable::{self, Refused, Settled};
-use crate::idempotency::{IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
+use crate::idempotency::{IDEMPOTENCY_TTL_SECS, IdempotencyCache, Probe};
 use busbar_kernel::governance::MemoryStore;
 
 fn key(actor: &str, header: &str) -> (String, String) {
@@ -264,4 +264,91 @@ fn claims_are_scoped_to_the_principal() {
     let store = MemoryStore::new();
     durable::claim(&store, &key("alice", "same"), 1_000).unwrap();
     assert!(durable::claim(&store, &key("bob", "same"), 1_000).is_ok());
+}
+
+#[test]
+fn a_held_claim_never_expires_while_its_effect_or_settlement_is_unknown() {
+    let store = MemoryStore::new();
+    let k = key("alice", "held-without-settlement");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    let later = 1_000 + IDEMPOTENCY_TTL_SECS * 3;
+    // Death or a failed settlement after the effect leaves no record. Its permanent token still
+    // prevents both the same node and a fresh caller from starting another effect.
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::InFlight)
+    );
+    let receipt = b"the exact first operation, metadata, body and 503".to_vec();
+    durable::settle(&store, &first, 1_000, &Settled::Retained(receipt.clone())).unwrap();
+    // An unrelated settle sweeps old terminal rows; the retained row remains active.
+    let other = durable::claim_held(&store, &key("alice", "unrelated-held"), later).unwrap();
+    durable::settle(&store, &other, later, &Settled::Answer(b"done".to_vec())).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::Retained(receipt))
+    );
+}
+
+#[test]
+fn an_old_held_refusal_cannot_skip_a_newer_in_flight_generation() {
+    let store = MemoryStore::new();
+    let k = key("alice", "held-released");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let second = durable::claim_held(&store, &k, 1_001).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(
+        durable::claim_held(&store, &k, 1_002),
+        Err(Refused::InFlight)
+    );
+    let later = 1_000 + IDEMPOTENCY_TTL_SECS * 3;
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::InFlight)
+    );
+    durable::settle(
+        &store,
+        &second,
+        1_001,
+        &Settled::Answer(b"completed".to_vec()),
+    )
+    .unwrap();
+    let third = durable::claim_held(&store, &k, later).unwrap();
+    assert_ne!(second, third, "only a definite answer expires normally");
+    assert_eq!(
+        durable::claim_held(&store, &k, later + 1),
+        Err(Refused::InFlight)
+    );
+}
+
+#[test]
+fn a_late_predecessor_settlement_cannot_replace_a_successor_receipt() {
+    let store = MemoryStore::new();
+    let k = key("alice", "late-settlement");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let second = durable::claim_held(&store, &k, 1_001).unwrap();
+    let receipt = Settled::Retained(b"exact successor operation and answer".to_vec());
+    durable::settle(&store, &second, 1_001, &receipt).unwrap();
+    // The first upsert had timed out, and its delayed retry lands after generation1 settled.
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, 10_000),
+        Err(Refused::Retained(
+            b"exact successor operation and answer".to_vec()
+        ))
+    );
+}
+
+#[test]
+fn a_legacy_refusal_cannot_hide_its_pending_successor_during_migration() {
+    let store = MemoryStore::new();
+    let k = key("alice", "legacy-pending-successor");
+    let first = durable::claim(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let _pending = durable::claim(&store, &k, 1_001).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, 1_002),
+        Err(Refused::InFlight)
+    );
 }

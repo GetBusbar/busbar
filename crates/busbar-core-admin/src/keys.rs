@@ -594,7 +594,7 @@ async fn settle_in_store(
 /// The answer to a store claim that was not granted. Never a second run of the mutation.
 fn claim_refused(who: KeyAudit<'_>, refused: Refused) -> Response {
     let ran = match refused {
-        Refused::InFlight => {
+        Refused::InFlight | Refused::Retained(_) => {
             return key_err(
                 who,
                 &AdminError::Conflict(

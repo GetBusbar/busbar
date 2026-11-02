@@ -145,12 +145,12 @@ impl Default for TransportSettings {
 /// data, recorded at registration by the composition root that named the transport. Nothing here is
 /// derived — every field is what the crate declared or what the root wired — because a check that
 /// re-derived its own inputs would agree with itself for free.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registered {
     /// The transport's registry key.
     pub key: &'static str,
     /// The layers it declares it can be built over.
-    pub composes_over: &'static [&'static str],
+    pub composes_over: std::borrow::Cow<'static, [&'static str]>,
     /// The layer it was ACTUALLY built over, where the root composed it over one.
     pub composed_over: Option<&'static str>,
 }
@@ -222,7 +222,7 @@ pub fn check_composition(registered: &[Registered]) -> Result<(), CompositionErr
         }
     }
     for r in registered {
-        for layer in r.composes_over {
+        for layer in r.composes_over.iter() {
             if !registered.iter().any(|other| other.key == *layer) {
                 return Err(CompositionError::UnregisteredLayer {
                     transport: r.key,

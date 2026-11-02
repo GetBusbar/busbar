@@ -65,7 +65,7 @@ fn sink_into(store: &Arc<dyn PlaneStore>, landed: &Arc<Mutex<Vec<String>>>) -> P
         landed.lock().expect("landed").push(record.kind.clone());
         store
             .upsert_plane_record(record.view())
-            .map_err(|e| e.to_string())
+            .map_err(|e| busbar_contract::store_calls::StoreFailure::Failed(e.to_string()))
     })
 }
 
@@ -84,6 +84,7 @@ fn write(
         Some(sink),
     )
     .expect("the effect answers")
+    .answer
 }
 
 /// The answer's error envelope `(status, code)`.
@@ -232,4 +233,117 @@ fn two_planes_declaring_one_kind_neither_see_nor_overwrite_each_others_rows() {
             "neither write overwrote the other"
         );
     }
+}
+
+/// The upsert commits and then loses its acknowledgement. A body read cannot prove which
+/// metadata landed, so local and durable retries keep the original unknown receipt verbatim.
+#[test]
+fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() {
+    use crate::root::units_admin::AdminRequest;
+    use busbar_contract::records::RecordStore;
+    use busbar_core_admin::idempotency::durable::{self, Refused};
+
+    let store: Arc<dyn RecordStore> = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let replay_store: super::ReplayStore = {
+        let store = Arc::clone(&store);
+        Arc::new(move || Some(Arc::clone(&store)))
+    };
+    let submitted = Arc::new(Mutex::new(Vec::new()));
+    let sink: PlaneRecordSink = {
+        let (store, submitted) = (Arc::clone(&store), Arc::clone(&submitted));
+        Arc::new(move |record| {
+            submitted.lock().unwrap().push(record.clone());
+            store.upsert_plane_record(record.view()).map_err(|error| {
+                busbar_contract::store_calls::StoreFailure::Failed(error.to_string())
+            })?;
+            Err(busbar_contract::store_calls::StoreFailure::Failed(
+                "committed; acknowledgement lost".into(),
+            ))
+        })
+    };
+    let mut request = AdminRequest {
+        method: "POST".into(), path: "/api/v1/admin/plane-record-write".into(),
+        credential: None,
+        headers: vec![("idempotency-key".into(), "unknown-record".into())],
+        body: br#"{"plane":"alpha","kind":"note","id":"n1","parent":"p1","terminal":true,"body":{"n":7}}"#.to_vec(),
+        at: 1_700_000_000, unit: 1,
+    };
+    let cache = super::ReplayCache::new();
+    let lookup = |key: &str| (key == "alpha").then_some(plane("alpha", &["note"]));
+    let ask = |cache: &super::ReplayCache, request: &AdminRequest| {
+        super::replayable(
+            cache,
+            Some(&replay_store),
+            busbar_core_admin::KernelVerb::PlaneRecordWrite,
+            "admin",
+            request,
+            &request.body,
+            None,
+            || plane_record_write_effect(&request.body, request.at, &lookup, Some(&sink)),
+        )
+        .expect("the write answers")
+    };
+    let first = ask(&cache, &request);
+    assert_eq!(first.status, 503);
+    let original = submitted.lock().unwrap()[0].clone();
+    assert_eq!(
+        original,
+        PlaneRecord {
+            kind: busbar_kernel::store::plane_view::plane_owned_kind("alpha", "note").unwrap(),
+            id: "n1".into(),
+            parent: Some("p1".into()),
+            seq: 0,
+            ts: request.at,
+            disposition: PlaneDisposition::Terminal,
+            body: br#"{"n":7}"#.to_vec(),
+        }
+    );
+    let name =
+        busbar_core_admin::verb_name(busbar_core_admin::KernelVerb::PlaneRecordWrite).unwrap();
+    let replay_key = ("admin".to_string(), format!("{name}:unknown-record"));
+    let kept = match durable::claim_held(&*store, &replay_key, request.at) {
+        Err(Refused::Retained(bytes)) => super::kept_answer(&bytes).expect("readable receipt"),
+        other => panic!("the exact unknown receipt must be durable: {other:?}"),
+    };
+    assert_eq!(
+        kept.digest,
+        busbar_contract::abi::sdk::digest::sha256(&request.body)
+    );
+    assert_eq!(kept.answer, first);
+    assert_eq!(
+        kept.receipt,
+        Some(super::EffectReceipt::PlaneRecordWrite {
+            record: original.clone()
+        })
+    );
+    assert_eq!(
+        store
+            .get_plane_record(&original.kind, &original.id)
+            .unwrap(),
+        Some(original.body.clone())
+    );
+    assert_eq!(ask(&cache, &request), first);
+    request.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1;
+    assert_eq!(
+        ask(&cache, &request),
+        first,
+        "local custody outlives the replay window"
+    );
+    assert_eq!(
+        ask(&super::ReplayCache::new(), &request),
+        first,
+        "restart replays the durable receipt"
+    );
+    assert_eq!(
+        *submitted.lock().unwrap(),
+        vec![original],
+        "no retry changed metadata or repeated the upsert"
+    );
+    request.body = br#"{"plane":"alpha","kind":"note","id":"other","body":{}}"#.to_vec();
+    assert_eq!(
+        ask(&super::ReplayCache::new(), &request).status,
+        409,
+        "a retained key still owns its first body"
+    );
+    assert_eq!(submitted.lock().unwrap().len(), 1);
 }

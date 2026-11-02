@@ -47,6 +47,18 @@ fn policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String>
     crate::root::boot::trust_policy(cfg, binary_version)
 }
 
+/// The audited action relaxes only its target's two independent floor gates. Trust and all
+/// other names retain the running posture.
+fn rollback_policy(mut policy: TrustPolicy, manifest: &Manifest) -> TrustPolicy {
+    policy
+        .min_versions
+        .insert(manifest.name.clone(), manifest.version.clone());
+    policy
+        .first_party_floors
+        .insert(manifest.name.clone(), manifest.version.clone());
+    policy
+}
+
 /// `tarball` unpacked in memory and its manifest checked for completeness, integrity and a
 /// supported ABI; `what` names the tarball in a refusal (empty: the upload's own words).
 fn unpack_checked(
@@ -203,10 +215,10 @@ impl PluginAdmission for RootAdmission {
         let what = format!(" `{file}`");
         let unpacked = unpack_checked(bytes, &what)?;
         let manifest = &unpacked.manifest;
-        let mut policy = policy(cfg, &manifest.version).map_err(Refusal::Validation)?;
-        policy
-            .min_versions
-            .insert(manifest.name.clone(), manifest.version.clone());
+        let policy = rollback_policy(
+            policy(cfg, &manifest.version).map_err(Refusal::Validation)?,
+            manifest,
+        );
         match evaluate(&unpacked.lib_bytes, manifest, &policy) {
             Ok(Verdict::Trusted { .. } | Verdict::Allowed { .. }) => Ok(stated(manifest)),
             Err(rejected) => Err(Refusal::Conflict(format!(
@@ -216,6 +228,75 @@ impl PluginAdmission for RootAdmission {
                 manifest.version, rejected.reason
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod rollback_tests {
+    use super::*;
+    use crate::root::loader::sign::{sign, SigningKey, FIRST_PARTY_PUBLISHER};
+
+    #[test]
+    fn first_party_rollback_relaxes_its_prior_pin_and_preserves_other_floors_and_trust() {
+        let key = SigningKey::from_bytes(&[0x31; 32]);
+        let lib = b"signed rollback fixture, never loaded";
+        let make = |name: &str| {
+            sign(
+                &key,
+                Manifest {
+                    name: name.into(),
+                    alias: name.into(),
+                    kind: "hook".into(),
+                    version: "1.4.0".into(),
+                    publisher: FIRST_PARTY_PUBLISHER.into(),
+                    abi_version: *crate::root::loader::supported_abi("hook")
+                        .iter()
+                        .max()
+                        .unwrap(),
+                    ..Default::default()
+                },
+                lib,
+            )
+        };
+        let target = make("busbar-hook-rollback-fixture");
+        let other = make("busbar-hook-other-fixture");
+        let mut running = TrustPolicy {
+            first_party_key: Some(key.verifying_key()),
+            ..Default::default()
+        };
+        for name in [&target.name, &other.name] {
+            running.min_versions.insert(name.clone(), "2.0.0".into());
+            running
+                .first_party_floors
+                .insert(name.clone(), "2.0.0".into());
+            running
+                .first_party_high_water
+                .insert(name.clone(), "3.0.0".into());
+        }
+        assert!(
+            evaluate(lib, &target, &running).is_err(),
+            "the ordinary path keeps the prior pin"
+        );
+        let tarball = crate::root::loader::tarball::package(&target, "lib.so", lib).unwrap();
+        let checked = unpack_checked(&tarball, " `old.tar.gz`").unwrap();
+        let rollback = rollback_policy(running, &checked.manifest);
+        assert!(matches!(
+            evaluate(&checked.lib_bytes, &checked.manifest, &rollback),
+            Ok(Verdict::Trusted {
+                first_party: true,
+                ..
+            })
+        ));
+        assert!(
+            evaluate(lib, &other, &rollback).is_err(),
+            "another name's floor is preserved"
+        );
+        let mut wrong_key = rollback;
+        wrong_key.first_party_key = Some(SigningKey::from_bytes(&[0x32; 32]).verifying_key());
+        assert!(
+            evaluate(lib, &target, &wrong_key).is_err(),
+            "floor relaxation never relaxes signature trust"
+        );
     }
 }
 

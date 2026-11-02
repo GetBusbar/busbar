@@ -531,6 +531,84 @@ fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
 use crate::support::{AuthHost, AuthTicket, PendingDoor};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
+struct TrailerDoor {
+    inner: PendingDoor,
+    seen: std::sync::Mutex<Vec<(u64, usize, u32, u32, bool)>>,
+}
+
+impl FramerDoor for TrailerDoor {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        self.inner.cross(call)
+    }
+    fn framing_side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.framing_side()
+    }
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> Crossed {
+        self.inner.carry(side, resume, call)
+    }
+    fn cross_on(&self, side: &dyn crate::carrier::Side, resume: bool, call: Call<'_>) -> Crossed {
+        if let Call::Emit(i, _) = &call {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((i.stream, i.len, i.flags, i.end_of_frame, resume));
+            if i.len == 0 && !resume {
+                // A completed Pending crossing can still owe wire-room drains; the fixture's
+                // already-owned bytes remain in its inner sans-IO output queue.
+                return self.inner.inner.cross(call);
+            }
+        }
+        self.inner.cross_on(side, resume, call)
+    }
+}
+
+#[test]
+fn final_fields_keep_their_kind_and_custody_across_pending_and_drain() {
+    use busbar_contract::abi::transport::EMIT_TRAILERS;
+
+    let door = Arc::new(TrailerDoor {
+        inner: PendingDoor::new(TestDoor::identity("bytes"), 1),
+        seen: Default::default(),
+    });
+    let (mut framing, _) = Framing::begin(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+    )
+    .unwrap();
+    framing.bufs = Buffers::new(7, 5, 1);
+    framing.bufs.side = SIDE_ACCEPT;
+    let fields = b"final-status: 7\r\n";
+    assert!(framing.emit_trailers(1, fields).unwrap().wire.is_empty());
+    assert!(framing.holds(1));
+    assert!(framing.emit(1, b"late", true, false).is_err());
+    assert_eq!(framing.emit(3, b"ok", true, false).unwrap().wire, b"ok");
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    door.inner.host.complete(9);
+    let std::task::Poll::Ready(Ok(done)) = framing.poll_parked(&mut noop_cx()) else {
+        panic!("the original trailer op resumes and drains");
+    };
+    assert_eq!(done.wire, fields);
+    assert!(!framing.holds(1));
+    let seen = door.seen.lock().unwrap();
+    let same: Vec<_> = seen.iter().filter(|v| v.0 == 1).collect();
+    assert_eq!(*same[0], (1, fields.len(), EMIT_TRAILERS, 1, false));
+    assert!(
+        same.len() > 2,
+        "the small wire sink requires empty drain recalls"
+    );
+    assert!(same[1..].iter().all(|v| v.1 == 0 && v.2 == 0 && v.3 == 0));
+}
+
 /// A framer whose dial `begin` calls the auth service (handle seq 0) on its framing's ticket: it
 /// answers PENDING while the auth is not ready, and READY (framing token 42) once the call answers.
 struct AuthDoor {

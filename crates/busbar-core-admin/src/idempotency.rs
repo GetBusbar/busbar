@@ -237,13 +237,15 @@ impl<'a, V: Clone> Drop for Reservation<'a, V> {
 ///   store never holds, so the caller refuses rather than run it again;
 /// - [`Settled::Released`]: the mutation refused with nothing done, so the next generation of the
 ///   claim is open and the retry runs;
+/// - [`Settled::Retained`]: a root write sealed or may have applied; its exact receipt and first
+///   answer stay held beyond the replay window;
 /// - nothing yet: the winner is still running, or died between claiming and settling. Refused as in
 ///   flight until the claim lapses with the replay window.
 ///
 /// A store that cannot answer refuses the mutation ([`Refused::Unavailable`]): a claim nobody can
 /// check is not taken on trust.
 pub mod durable {
-    use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, RecordStore};
+    use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, RecordStore, Retention};
 
     use super::IDEMPOTENCY_TTL_SECS;
 
@@ -266,6 +268,9 @@ pub mod durable {
         Applied(String),
         /// Ran; this is its answer, replayable byte for byte.
         Answer(Vec<u8>),
+        /// Sealed or possibly applied; the caller's exact receipt and answer remain in custody.
+        /// This outcome never expires merely because the ordinary replay window elapsed.
+        Retained(Vec<u8>),
     }
 
     /// Why a claim was not granted.
@@ -275,6 +280,8 @@ pub mod durable {
         Applied(String),
         /// An earlier call with this key ran; this is its answer.
         Answer(Vec<u8>),
+        /// An earlier call sealed or may have applied; reconcile its exact retained receipt.
+        Retained(Vec<u8>),
         /// An earlier call with this key has not settled.
         InFlight,
         /// The store could not answer.
@@ -286,6 +293,7 @@ pub mod durable {
     pub struct Claim {
         id: String,
         generation: u32,
+        held: bool,
     }
 
     /// The record id of `key`: a digest, so neither the actor nor the client's header is stored.
@@ -296,6 +304,12 @@ pub mod durable {
 
     fn token(id: &str, generation: u32) -> String {
         format!("{id}:{generation}")
+    }
+
+    /// Held outcomes have immutable generation addresses. A timed-out upsert of G0 may still
+    /// land after G1 settled; it must never replace G1's answer or retained effect receipt.
+    fn held_record_id(id: &str, generation: u32) -> String {
+        format!("held:{id}:{generation}")
     }
 
     fn encode(generation: u32, written_at: u64, settled: &Settled) -> Vec<u8> {
@@ -311,6 +325,10 @@ pub mod durable {
             Settled::Answer(answer) => {
                 bytes.push(2);
                 bytes.extend_from_slice(answer);
+            }
+            Settled::Retained(receipt) => {
+                bytes.push(3);
+                bytes.extend_from_slice(receipt);
             }
         }
         bytes
@@ -328,17 +346,14 @@ pub mod durable {
             0 => Settled::Released,
             1 => Settled::Applied(String::from_utf8(body.to_vec()).ok()?),
             2 => Settled::Answer(body.to_vec()),
+            3 => Settled::Retained(body.to_vec()),
             _ => return None,
         };
         Some((generation, written_at, settled))
     }
 
-    /// The settled record for `id`, if one was written inside the replay window.
-    fn read(
-        store: &dyn RecordStore,
-        id: &str,
-        now: u64,
-    ) -> Result<Option<(u32, Settled)>, Refused> {
+    /// The settled record for `id`, including a receipt or generation kept beyond the replay window.
+    fn read_any(store: &dyn RecordStore, id: &str) -> Result<Option<(u32, u64, Settled)>, Refused> {
         let Some(bytes) = store
             .get_plane_record(REPLAY_KIND, id)
             .map_err(|e| Refused::Unavailable(e.to_string()))?
@@ -350,7 +365,20 @@ pub mod durable {
                 "the idempotency record `{id}` in the store is not one this build wrote"
             )));
         };
-        if now.saturating_sub(written_at) >= IDEMPOTENCY_TTL_SECS {
+        Ok(Some((generation, written_at, settled)))
+    }
+
+    fn read(
+        store: &dyn RecordStore,
+        id: &str,
+        now: u64,
+    ) -> Result<Option<(u32, Settled)>, Refused> {
+        let Some((generation, written_at, settled)) = read_any(store, id)? else {
+            return Ok(None);
+        };
+        if !matches!(settled, Settled::Retained(_))
+            && now.saturating_sub(written_at) >= IDEMPOTENCY_TTL_SECS
+        {
             return Ok(None);
         }
         Ok(Some((generation, settled)))
@@ -374,7 +402,11 @@ pub mod durable {
                 .redeem_plane_token(REPLAY_KIND, &token(&id, generation), expires_at, now)
                 .map_err(|e| Refused::Unavailable(e.to_string()))?;
             if first {
-                return Ok(Claim { id, generation });
+                return Ok(Claim {
+                    id,
+                    generation,
+                    held: false,
+                });
             }
             match read(store, &id, now)? {
                 Some((held, Settled::Released)) if held >= generation => {
@@ -382,20 +414,99 @@ pub mod durable {
                 }
                 Some((_, Settled::Applied(what))) => return Err(Refused::Applied(what)),
                 Some((_, Settled::Answer(answer))) => return Err(Refused::Answer(answer)),
+                Some((_, Settled::Retained(receipt))) => return Err(Refused::Retained(receipt)),
                 _ => return Err(Refused::InFlight),
             }
         }
         Err(Refused::InFlight)
     }
 
-    /// SETTLE a held claim: what its mutation came to, kept for the replay window. Records older
-    /// than the window are swept on the way; a sweep the store refuses is logged and retried by the
-    /// next settle.
+    /// Claim a root write whose unknown result can outlive the replay window. The token is held
+    /// before invoking the effect and never lapses, including if settlement fails or the process
+    /// dies. Only a recorded definite refusal or an expired, definite answer opens a successor.
+    /// Held settlement rows stay active at a separate address per generation. Walk only definite
+    /// refusals/expired answers; a missing outcome behind an already-spent token stays in flight.
+    /// Neither a stale predecessor nor its late upsert can replace/skip the successor's receipt.
+    ///
+    /// # Errors
+    ///
+    /// The key is already held, its settled answer must be replayed, or the Store cannot answer.
+    pub fn claim_held(
+        store: &dyn RecordStore,
+        key: &(String, String),
+        now: u64,
+    ) -> Result<Claim, Refused> {
+        let id = record_id(key);
+        let mut generation = 0;
+        loop {
+            let row = held_record_id(&id, generation);
+            if let Some((held, written_at, settled)) = read_any(store, &row)? {
+                if held != generation {
+                    return Err(Refused::Unavailable(format!(
+                        "the held idempotency record `{row}` names a different generation"
+                    )));
+                }
+                advance_held(settled, written_at, now)?;
+                generation = generation.checked_add(1).ok_or(Refused::InFlight)?;
+                continue;
+            }
+            if generation == 0 {
+                // Compatibility with the former single-row layout. Once the new generation0
+                // exists, late writes to that old address cannot replace any successor outcome.
+                let legacy_generation = match read_any(store, &id)? {
+                    Some((held, written_at, settled)) => {
+                        advance_held(settled, written_at, now)?;
+                        held.checked_add(1).ok_or(Refused::InFlight)?
+                    }
+                    None => 0,
+                };
+                // Fence the next legacy generation too: an older process may already own it
+                // while the preceding Released/expired Answer is still the only visible row.
+                let first = store
+                    .redeem_plane_token(REPLAY_KIND, &token(&id, legacy_generation), u64::MAX, now)
+                    .map_err(|e| Refused::Unavailable(e.to_string()))?;
+                if !first {
+                    return Err(Refused::InFlight);
+                }
+            }
+            let first = store
+                .redeem_plane_token(REPLAY_KIND, &row, u64::MAX, now)
+                .map_err(|e| Refused::Unavailable(e.to_string()))?;
+            if first {
+                return Ok(Claim {
+                    id,
+                    generation,
+                    held: true,
+                });
+            }
+            // A settlement racing this failed claim is read on the next pass at this exact
+            // generation. No earlier row can stand in for an outcome still owed here.
+            if read_any(store, &row)?.is_none() {
+                return Err(Refused::InFlight);
+            }
+        }
+    }
+
+    fn advance_held(settled: Settled, written_at: u64, now: u64) -> Result<(), Refused> {
+        match settled {
+            Settled::Retained(receipt) => Err(Refused::Retained(receipt)),
+            Settled::Answer(answer) if now.saturating_sub(written_at) < IDEMPOTENCY_TTL_SECS => {
+                Err(Refused::Answer(answer))
+            }
+            Settled::Applied(what) if now.saturating_sub(written_at) < IDEMPOTENCY_TTL_SECS => {
+                Err(Refused::Applied(what))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// SETTLE a claim: what its mutation came to. Ordinary claims' terminal answers are swept
+    /// after the replay window; held claims retain the active generation and any unknown receipt.
     ///
     /// # Errors
     ///
     /// The store did not keep the record. The caller logs it: a later retry of this key then reads
-    /// the claim as in flight until it lapses, never as free to run again.
+    /// the claim as in flight, never as free to run again. A [`claim_held`] token never lapses.
     pub fn settle(
         store: &dyn RecordStore,
         claim: &Claim,
@@ -403,20 +514,31 @@ pub mod durable {
         settled: &Settled,
     ) -> Result<(), String> {
         let body = encode(claim.generation, now, settled);
+        let id = if claim.held {
+            held_record_id(&claim.id, claim.generation)
+        } else {
+            claim.id.clone()
+        };
         store
             .upsert_plane_record(PlaneRecordRef {
                 kind: REPLAY_KIND,
-                id: &claim.id,
+                id: &id,
                 parent: None,
                 seq: 0,
                 ts: now,
-                disposition: PlaneDisposition::Terminal,
+                disposition: if claim.held || matches!(settled, Settled::Retained(_)) {
+                    PlaneDisposition::Active
+                } else {
+                    PlaneDisposition::Terminal
+                },
                 body: &body,
             })
             .map_err(|e| e.to_string())?;
-        if let Err(e) =
-            store.purge_plane_records_before(REPLAY_KIND, now.saturating_sub(IDEMPOTENCY_TTL_SECS))
-        {
+        if let Err(e) = store.purge_plane_records(
+            REPLAY_KIND,
+            now.saturating_sub(IDEMPOTENCY_TTL_SECS),
+            Retention::TerminalOnly,
+        ) {
             tracing::warn!(error = %e, "expired idempotency records were not swept; the next settle retries");
         }
         Ok(())

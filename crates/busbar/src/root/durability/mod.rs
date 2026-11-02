@@ -64,6 +64,7 @@ pub(crate) use store_chain::{off_runtime, wait_for};
 #[cfg(test)]
 pub use store_chain::{part_key, JOURNAL_SCHEMA};
 
+mod conditional;
 /// Who a node is and the key it signs with, kept in the configured store: the node registry, the
 /// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
 mod store_identity;

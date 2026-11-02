@@ -12,6 +12,7 @@ fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
     let app = TestApp::new().build();
     let make = || ModelTelemetry {
         app: LiveApp::fixed(Arc::clone(&app)),
+        names: Arc::default(),
         queued: crate::root::egress_ports::WalkTelemetry::default(),
         reservoirs: Arc::new(HashMap::new()),
     };
@@ -45,6 +46,14 @@ fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> WalkCells 
 
 /// [`cells_over`], with each of `direct` a model a route names directly.
 fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
+    let names = Arc::new(
+        app.load()
+            .engine_tables_view()
+            .model_indices()
+            .into_iter()
+            .map(|(name, lane)| (DestinationId::new(lane as u64), name.to_string()))
+            .collect(),
+    );
     let mut records: HashMap<String, busbar_kernel::store::BreakerCfg> = pools
         .iter()
         .map(|pool| {
@@ -60,8 +69,121 @@ fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
         Arc::new(CellPlan {
             records,
             direct: direct.iter().map(|m| (*m).to_owned()).collect(),
+            names,
         }),
     )
+}
+
+#[test]
+fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
+    use busbar_kernel::plane_driver::MemberSignals as _;
+    use busbar_kernel_egress::ports::Telemetry as _;
+    let first = TestApp::new()
+        .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9"))
+        .build();
+    let second = TestApp::new()
+        .lane(LaneSpec::new("m-a", "wire", "http://127.0.0.1:9"))
+        .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9"))
+        .build();
+    let removed = TestApp::new()
+        .lane(LaneSpec::new("m-a", "wire", "http://127.0.0.1:9"))
+        .build();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
+    let slot = Arc::new(std::sync::OnceLock::new());
+    slot.set(Arc::downgrade(&handle)).unwrap();
+    let cells = cells_routing(LiveApp::new(slot, Arc::clone(&first)), &["p"], &[]);
+    let signals = ModelSignals {
+        app: cells.live.clone(),
+        names: Arc::clone(&cells.plan.names),
+        permits: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
+        reservoirs: Arc::default(),
+    };
+    let telemetry = ModelTelemetry {
+        app: cells.live.clone(),
+        names: Arc::clone(&cells.plan.names),
+        queued: crate::root::egress_ports::WalkTelemetry::default(),
+        reservoirs: Arc::default(),
+    };
+    let token = busbar_kernel::test_support::tokens::pass();
+    let destination = DestinationId::new(0);
+    let now = wall_secs();
+    handle.swap(Arc::clone(&second));
+    cells.observe("p", destination, Outcome::HardDown, now, &token);
+    assert!(
+        matches!(
+            second.store.breaker_state_snapshot_in("", 0),
+            busbar_kernel::store::BreakerState::Closed
+        ),
+        "new index0 is another model"
+    );
+    assert!(
+        matches!(
+            second.store.breaker_state_snapshot_in("", 1),
+            busbar_kernel::store::BreakerState::Open { .. }
+        ),
+        "the original model moved to index1"
+    );
+    telemetry.upstream_latency(destination, 23.0);
+    assert_eq!(second.store.lane_latency_ms(0), None);
+    assert_eq!(signals.standing("p", destination).latency_ms, Some(23.0));
+    handle.swap(Arc::clone(&removed));
+    assert!(
+        !cells.admissible(destination),
+        "a removed model is unavailable"
+    );
+    assert!(matches!(
+        cells.try_admit("p", destination, now),
+        Err(Unavailable::Dead)
+    ));
+    cells.probed(destination, Outcome::HardDown, now, &token);
+    cells.observe("p", destination, Outcome::Success, now, &token);
+    telemetry.upstream_latency(destination, 91.0);
+    assert_eq!(signals.standing("p", destination).budget_remaining, Some(0));
+    assert_eq!(removed.store.lane_latency_ms(0), None);
+    assert!(matches!(
+        removed.store.breaker_state_snapshot_in("", 0),
+        busbar_kernel::store::BreakerState::Closed
+    ));
+    assert_eq!(removed.store.snapshot(0, now).ok, 0);
+    assert_eq!(removed.store.snapshot(0, now).err, 0);
+}
+
+#[test]
+fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
+    let first = TestApp::new()
+        .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9").budget(2))
+        .build();
+    let second = TestApp::new()
+        .lane(LaneSpec::new("m-a", "wire", "http://127.0.0.1:9").budget(11))
+        .lane(LaneSpec::new("m-z", "wire", "http://127.0.0.1:9").budget(7))
+        .build();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
+    let slot = Arc::new(std::sync::OnceLock::new());
+    slot.set(Arc::downgrade(&handle)).unwrap();
+    let cells = cells_routing(LiveApp::new(slot, Arc::clone(&first)), &["p"], &[]);
+    let destination = DestinationId::new(0);
+    assert!(cells.spend_budget(destination));
+    assert_eq!(first.store.lane_budget_remaining(0), Some(1));
+    let token = busbar_kernel::test_support::tokens::pass();
+    let now = wall_secs();
+    cells.observe("p", destination, Outcome::HardDown, now, &token);
+    let later = now + busbar_kernel_breaker::DEFAULT_HARD_DOWN_COOLDOWN_SECS + 1;
+    let epoch = cells
+        .try_admit("p", destination, later)
+        .unwrap()
+        .probe_epoch
+        .expect("probe owned");
+    handle.swap(Arc::clone(&second));
+    cells.refund_budget(destination);
+    cells.release_probe("p", destination, epoch, later);
+    assert_eq!(first.store.lane_budget_remaining(0), Some(2));
+    assert_eq!(second.store.lane_budget_remaining(0), Some(11));
+    assert_eq!(second.store.lane_budget_remaining(1), Some(7));
+    let unit = first.store.breaker_unit();
+    let again = unit
+        .try_admit("p", destination, later)
+        .expect("the old unit's probe was released");
+    unit.release_probe("p", destination, again.probe_epoch.unwrap());
 }
 
 fn wall_secs() -> u64 {

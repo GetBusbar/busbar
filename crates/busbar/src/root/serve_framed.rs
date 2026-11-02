@@ -159,6 +159,7 @@ pub(super) struct FramedCaller {
     inner: IngressCaller,
     stream: Shared,
     trailers: Trailers,
+    opening: HeadFields,
 }
 
 impl FramedCaller {
@@ -167,10 +168,16 @@ impl FramedCaller {
         stream: Shared,
         trailers: oneshot::Sender<HeaderMap>,
     ) -> Self {
+        let opening = lock(&stream)
+            .stream
+            .as_ref()
+            .map(|stream| stream.opening_fields().to_vec())
+            .unwrap_or_default();
         Self {
             inner,
             stream,
             trailers: Arc::new(Mutex::new(Some(trailers))),
+            opening,
         }
     }
 
@@ -230,6 +237,7 @@ impl FramedCaller {
 impl CallerEnd for FramedCaller {
     /// The unit's head, without a stated length: the framed body is the framer's, not the unit's.
     fn head(&self, status: u32, mut fields: HeadFields) {
+        fields.extend(self.opening.iter().cloned());
         fields.retain(|(name, _)| !name.eq_ignore_ascii_case(b"content-length"));
         self.inner.head(status, fields);
     }

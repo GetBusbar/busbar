@@ -199,6 +199,11 @@ enum Op {
         end: bool,
         done: oneshot::Sender<bool>,
     },
+    /// Final field block, after every body byte; the framer owns its wire rendering.
+    Trailers {
+        fields: Vec<u8>,
+        done: oneshot::Sender<bool>,
+    },
     /// The stream failed before or after its head: the framer ends it.
     Refuse { status: u32, head_sent: bool },
     /// The connection switches to the upgrade's framer, the admitted session carried over it.
@@ -240,6 +245,11 @@ impl Emitter {
     async fn data(&self, bytes: Bytes, end: bool) -> bool {
         let (done, said) = oneshot::channel();
         self.ask(Op::Data { bytes, end, done }, said).await
+    }
+
+    async fn trailers(&self, fields: Vec<u8>) -> bool {
+        let (done, said) = oneshot::channel();
+        self.ask(Op::Trailers { fields, done }, said).await
     }
 
     fn send(&self, op: Op) {
@@ -934,13 +944,16 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                         *req.method(),
                         Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
                     );
+                // Own retirement before spawn: an abort can drop this future before its first
+                // poll when another piece in the same batch refuses or resets this stream.
+                let end = StreamEnd(out.clone(), scope);
                 self.tasks.spawn(serve_stream(
                     self.router.clone(),
                     req,
                     defer,
                     slot,
                     out,
-                    scope,
+                    end,
                 ))
             }
             None => {
@@ -976,7 +989,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 .inflows
                 .get(stream)
                 .is_some_and(|inflow| inflow.refused)
-                && matches!(op, Op::Head { .. } | Op::Data { .. } | Op::Switch { .. })
+                && matches!(
+                    op,
+                    Op::Head { .. } | Op::Data { .. } | Op::Trailers { .. } | Op::Switch { .. }
+                )
             {
                 // These writes will be discarded, so neither output room nor a stalled stream
                 // may keep them in front of the terminal size refusal.
@@ -991,7 +1007,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 break;
             }
             let waits = framing.is_some_and(|framing| framing.holds(*stream))
-                || matches!(op, Op::Head { .. } | Op::Data { .. })
+                || matches!(op, Op::Head { .. } | Op::Data { .. } | Op::Trailers { .. })
                     && (self.out.len() >= WRITE_ROOM || self.full.contains(stream));
             if waits || blocked.contains(stream) {
                 // Later work on this stream, including refusal/retirement, cannot overtake it.
@@ -1013,7 +1029,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             .is_some_and(|inflow| inflow.refused)
         {
             match op {
-                Op::Head { done, .. } | Op::Data { done, .. } => {
+                Op::Head { done, .. } | Op::Data { done, .. } | Op::Trailers { done, .. } => {
                     let _ = done.send(false);
                     return Step::Done;
                 }
@@ -1042,6 +1058,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             Op::Data { bytes, end, done } => {
                 let r = framing.emit(stream, &bytes, end, false);
+                let ok = self.took(r);
+                let _ = done.send(ok);
+            }
+            Op::Trailers { fields, done } => {
+                let r = framing.emit_trailers(stream, &fields);
                 let ok = self.took(r);
                 let _ = done.send(ok);
             }
@@ -1202,9 +1223,8 @@ async fn serve_stream(
     defer: bool,
     slot: SessionSlot,
     out: Emitter,
-    scope: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    _end: StreamEnd,
 ) {
-    let _end = StreamEnd(out.clone(), scope);
     let req = if defer {
         let (parts, body) = req.into_parts();
         match read_whole(body).await {
@@ -1256,20 +1276,28 @@ async fn read_whole(mut body: AxumBody) -> Result<Bytes, axum::http::StatusCode>
 /// length the body states where its size is known and no line states one, as the hyper loop stated
 /// it (never on a `1xx`, `204` or `304`, or beside a `transfer-encoding`).
 fn head_block(status: u16, headers: &HeaderMap, exact: Option<u64>) -> Vec<u8> {
+    let mut block = field_block(headers);
+    let bodyless = status < 200 || status == 204 || status == 304;
+    let stated = headers.contains_key(axum::http::header::CONTENT_LENGTH)
+        || headers.contains_key(axum::http::header::TRANSFER_ENCODING);
+    if let Some(len) =
+        exact.filter(|_| !bodyless && !stated && !headers.contains_key(axum::http::header::TRAILER))
+    {
+        block.extend_from_slice(b"content-length");
+        block.extend_from_slice(fields::SEPARATOR);
+        block.extend_from_slice(len.to_string().as_bytes());
+        block.extend_from_slice(fields::LINE_END);
+    }
+    block
+}
+
+/// Copy neutral field lines, preserving repeated values for the transport.
+fn field_block(headers: &HeaderMap) -> Vec<u8> {
     let mut block = Vec::new();
     for (name, value) in headers {
         block.extend_from_slice(name.as_str().as_bytes());
         block.extend_from_slice(fields::SEPARATOR);
         block.extend_from_slice(value.as_bytes());
-        block.extend_from_slice(fields::LINE_END);
-    }
-    let bodyless = status < 200 || status == 204 || status == 304;
-    let stated = headers.contains_key(axum::http::header::CONTENT_LENGTH)
-        || headers.contains_key(axum::http::header::TRANSFER_ENCODING);
-    if let Some(len) = exact.filter(|_| !bodyless && !stated) {
-        block.extend_from_slice(b"content-length");
-        block.extend_from_slice(fields::SEPARATOR);
-        block.extend_from_slice(len.to_string().as_bytes());
         block.extend_from_slice(fields::LINE_END);
     }
     block
@@ -1291,13 +1319,19 @@ async fn respond(out: &Emitter, response: Response<AxumBody>) {
                 let _ = out.data(Bytes::new(), true).await;
                 return;
             }
-            Some(Ok(frame)) => {
-                if let Ok(data) = frame.into_data() {
+            Some(Ok(frame)) => match frame.into_data() {
+                Ok(data) => {
                     if !data.is_empty() && !out.data(data, false).await {
                         return;
                     }
                 }
-            }
+                Err(frame) => {
+                    if let Ok(trailers) = frame.into_trailers() {
+                        let _ = out.trailers(field_block(&trailers)).await;
+                        return;
+                    }
+                }
+            },
             Some(Err(e)) => {
                 tracing::debug!(error = %e, "data door: an answer's body failed after its head");
                 out.send(Op::Refuse {

@@ -28,6 +28,7 @@ pub struct FramedStream {
     claim: u32,
     rows: Vec<StatusRow>,
     partial: Vec<u8>,
+    opening: Vec<HeadWords>,
 }
 
 impl std::fmt::Debug for FramedStream {
@@ -104,7 +105,7 @@ impl FramedStream {
             scheme,
             ..Established::default()
         };
-        let (framing, _) = Framing::begin_ticketless(
+        let (framing, opened) = Framing::begin_ticketless(
             door,
             SIDE_ACCEPT_STREAM,
             target,
@@ -112,12 +113,22 @@ impl FramedStream {
             head,
             binding,
         )?;
+        let opening = opening_fields(&opened.wire)?;
         Ok(Self {
             framing,
             claim: index,
             rows,
             partial: Vec::new(),
+            opening,
         })
+    }
+
+    /// Initial response fields supplied by the stream's framer at Begin, before any body or
+    /// terminal outcome. These include its own declaration of closing fields when its carrier
+    /// needs one. The host copies these fields without inventing protocol names.
+    #[must_use]
+    pub fn opening_fields(&self) -> &[HeadWords] {
+        &self.opening
     }
 
     /// The stream's body bytes (`end` = its last); the messages they complete, in order.
@@ -194,6 +205,34 @@ impl FramedStream {
             .finish_final(status, message, details, &self.rows, self.claim)?;
         closing(&y)
     }
+}
+
+/// An initial field block must be wholly parsed and carry only valid ordinary field names and
+/// values. A malformed suffix must not disappear when the host constructs its response head.
+fn opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
+    use busbar_contract::abi::transport::fields;
+    let mut read = 0;
+    let mut out = Vec::new();
+    for (name, value) in fields::lines(block) {
+        if name.is_empty()
+            || !name
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(b))
+            || value.iter().any(|b| *b < b' ' && *b != b'\t' || *b == 0x7f)
+        {
+            return Err(fault(
+                "the opening field block has an invalid name or value",
+            ));
+        }
+        read += name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len();
+        out.push((name.to_vec(), value.to_vec()));
+    }
+    if read != block.len() {
+        return Err(fault(
+            "the opening field block has an incomplete or malformed line",
+        ));
+    }
+    Ok(out)
 }
 
 /// The closing field block an answer wrote, read as field lines.

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 
+use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Request};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
@@ -28,6 +29,8 @@ type Claims = BTreeMap<(String, String), u64>;
 type ScanProbe = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 type PutProbe = Arc<Mutex<Option<Arc<dyn Fn() -> Option<StoreFailure> + Send + Sync>>>>;
+type TransactionProbe =
+    Arc<Mutex<Option<Arc<dyn Fn(&Request) -> Option<StoreFailure> + Send + Sync>>>>;
 
 /// The double. Cheap to clone; every clone is the same store.
 #[derive(Clone, Default)]
@@ -46,6 +49,8 @@ pub(crate) struct RecordSlots {
     /// Calls remain genuinely Pending until the test releases them.
     paused: Arc<AtomicBool>,
     parked: Arc<Mutex<Vec<Waker>>>,
+    receipts: Arc<Mutex<BTreeMap<[u8; 16], Request>>>,
+    transaction_probe: TransactionProbe,
 }
 
 impl RecordSlots {
@@ -57,6 +62,18 @@ impl RecordSlots {
     /// The same store as the root's journal reaches it.
     pub(crate) fn calls(&self) -> Arc<dyn StoreCalls> {
         Arc::new(self.clone())
+    }
+
+    /// Before the atomic transaction, outside every fixture lock. Tests can delay a particular
+    /// immutable candidate while another writer changes its predicates.
+    pub(crate) fn on_transaction(
+        &self,
+        probe: impl Fn(&Request) -> Option<StoreFailure> + Send + Sync + 'static,
+    ) {
+        *self
+            .transaction_probe
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(probe));
     }
 
     /// Pause or release Store futures. Wake outside the fixture lock, as a backend completion does.
@@ -194,6 +211,89 @@ fn not_this<'a, T: Send + 'a>() -> StoreCall<'a, T> {
 }
 
 impl StoreCalls for RecordSlots {
+    fn supports_record_transaction(&self) -> bool {
+        true
+    }
+
+    fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+        Box::pin(async move {
+            self.ready().await;
+            request
+                .validate()
+                .map_err(|why| StoreFailure::Refused(why.into()))?;
+            let probe = self
+                .transaction_probe
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            if let Some(why) = probe.and_then(|probe| probe(request)) {
+                return Err(why);
+            }
+            let probe = self
+                .put_probe
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            if let Some(why) = probe.and_then(|probe| probe()) {
+                return Err(why);
+            }
+            let mut receipts = self.receipts.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(kept) = receipts.get(&request.op_id.0) {
+                return if kept == request {
+                    Ok(Decision::Applied)
+                } else {
+                    Err(StoreFailure::Conflict)
+                };
+            }
+            if self.refuses_put() {
+                return Err(StoreFailure::Refused(
+                    "the test store refuses writes".into(),
+                ));
+            }
+            let mut rows = self.rows.lock().unwrap_or_else(|p| p.into_inner());
+            for p in &request.predicates {
+                let got = rows.get(&(p.schema.clone(), p.key.clone()));
+                let matches = match &p.expected {
+                    Expected::Absent => got.is_none(),
+                    Expected::Bytes(bytes) => got.is_some_and(|v| v.as_slice() == bytes.as_slice()),
+                };
+                if !matches {
+                    return Ok(Decision::ConditionConflict);
+                }
+            }
+            for m in &request.mutations {
+                match m {
+                    Mutation::Put { schema, key, value } => {
+                        rows.insert(
+                            (schema.clone(), key.clone()),
+                            RecordBytes::new(value.clone()).expect("validated transaction"),
+                        );
+                        self.puts.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Mutation::Delete { schema, key } => {
+                        rows.remove(&(schema.clone(), key.clone()));
+                    }
+                    Mutation::DeleteRange {
+                        schema,
+                        prefix,
+                        exact_key_length,
+                    } => rows.retain(|(s, key), _| {
+                        s != schema
+                            || !key.starts_with(prefix)
+                            || key.len() as u64 != *exact_key_length
+                    }),
+                }
+            }
+            receipts.insert(request.op_id.0, request.clone());
+            if self.lost_acks.load(Ordering::Acquire) {
+                Err(StoreFailure::Failed(
+                    "the test store lost the transaction ack".into(),
+                ))
+            } else {
+                Ok(Decision::Applied)
+            }
+        })
+    }
     fn add_usage_batch<'a>(
         &'a self,
         _: OpId,

@@ -829,6 +829,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     &self.attribution.principal,
                     &self.request,
                     request,
+                    self.amendments.as_deref(),
                     || {
                         bound::plane_record_write_effect(
                             request,
@@ -847,6 +848,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     &self.attribution.principal,
                     &self.request,
                     request,
+                    self.amendments.as_deref(),
                     || {
                         bound::commit_upgrade_effect(
                             request,
