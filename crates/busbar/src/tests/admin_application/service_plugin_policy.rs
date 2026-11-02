@@ -90,7 +90,13 @@ async fn inspect_bounds_pathological_schema_nesting_depth() {
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
     candidate.settings_schema = Some(bomb);
-    plugins::state(&mut candidate, &library);
+    candidate.statement = Some(hex::encode(
+        busbar_plugin_loader::dispatch::rendering_of_library(&std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN").unwrap(),
+        ))
+        .expect("the actual Store statement reads")
+        .expect("the actual Store exports its statement"),
+    ));
     let tarball = plugins::signed(
         &crate::dist_root_install::release_key(),
         candidate,
