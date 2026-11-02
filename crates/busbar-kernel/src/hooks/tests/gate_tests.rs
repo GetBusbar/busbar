@@ -1312,7 +1312,11 @@ async fn incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_c
     }
     let _restore = Restore(crate::hooks::hook_content_max_bytes());
     const OMIT_CONTENT_CEILING_BYTES: usize = 1;
-    const RETAIN_CONTENT_CEILING_BYTES: usize = PROJECTED.len();
+    let retain_content_ceiling_bytes = "user".len()
+        + serde_json::from_slice::<serde_json::Value>(PROJECTED)
+            .unwrap()
+            .to_string()
+            .len();
     const SESSION_CAPACITY: usize = 1;
     const HOOK_GENERATION: u64 = 1;
     const SESSION: &[u8] = b"ceiling-session";
@@ -1329,7 +1333,7 @@ async fn incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_c
                 false,
             ),
             (
-                RETAIN_CONTENT_CEILING_BYTES,
+                retain_content_ceiling_bytes,
                 OMIT_CONTENT_CEILING_BYTES,
                 true,
             ),
