@@ -155,7 +155,8 @@ fn raw_read(ctx: ConnCtx, conn: ConnId) -> DeclStr {
     let mut piece: WirePiece = unsafe { core::mem::zeroed() };
     let read = host_slots().read.unwrap();
     assert_eq!(
-        read(ctx, conn.0, 0, buf.as_mut_ptr(), buf.len(), &mut piece).result(),
+        // SAFETY: callers keep ctx's host live; buf and piece are exclusive initialized outputs.
+        unsafe { read(ctx, conn.0, 0, buf.as_mut_ptr(), buf.len(), &mut piece) }.result(),
         Ok(())
     );
     piece.ns
@@ -167,7 +168,8 @@ fn raw_facts(ctx: ConnCtx, conn: ConnId) -> [DeclStr; 6] {
     // SAFETY: an all-zero `WireConnFacts` is a valid out-slot (integers, NULL ranges).
     let mut w: WireConnFacts = unsafe { core::mem::zeroed() };
     let facts = host_slots().facts.unwrap();
-    assert_eq!(facts(ctx, conn.0, &mut w).result(), Ok(()));
+    // SAFETY: callers keep ctx's host live and w is our initialized exclusive output.
+    assert_eq!(unsafe { facts(ctx, conn.0, &mut w) }.result(), Ok(()));
     [
         w.sni,
         w.alpn,
@@ -180,7 +182,8 @@ fn raw_facts(ctx: ConnCtx, conn: ConnId) -> [DeclStr; 6] {
 
 /// The `close` slot itself.
 fn raw_close(ctx: ConnCtx, conn: ConnId) -> Result<(), ConnError> {
-    (host_slots().close.unwrap())(ctx, conn.0).result()
+    // SAFETY: callers keep ctx's host live; the host checks the numeric connection handle.
+    unsafe { (host_slots().close.unwrap())(ctx, conn.0) }.result()
 }
 
 // ── THE WITNESS (the only code tied to the host's private shape) ─────────────────────────────────

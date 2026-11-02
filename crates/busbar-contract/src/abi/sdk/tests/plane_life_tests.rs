@@ -166,11 +166,14 @@ fn a_plane_life_door_states_migrate_when_it_names_one() {
     input.err_buf = buf.as_mut_ptr();
     input.err_cap = buf.len();
     let mut out = out_head::<OutHead>();
-    let raw = op(
-        ptr::null_mut(),
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut out).cast(),
-    );
+    // SAFETY: the stateless SDK MIGRATE accepts NULL instance; initialized frames and nested ranges stay live.
+    let raw = unsafe {
+        op(
+            ptr::null_mut(),
+            ptr::from_ref(&input).cast(),
+            ptr::from_mut(&mut out).cast(),
+        )
+    };
     assert_eq!(raw.outcome(), Outcome::Ready);
     let m = read_answer(raw.outcome(), &buf[..out.error.len]).expect("a migration");
     assert_eq!(m.settings, serde_json::json!({"new": 1}));
