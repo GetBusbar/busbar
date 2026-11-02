@@ -17,7 +17,8 @@ mod plugins;
 struct OverlayReads {
     actual: Arc<dyn StoreCalls>,
     fail: AtomicBool,
-    barrier: std::sync::Mutex<Option<Arc<std::sync::Barrier>>>,
+    started: AtomicBool,
+    gate: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     entered: tokio::sync::Notify,
 }
 impl StoreCalls for OverlayReads {
@@ -72,10 +73,12 @@ impl StoreCalls for OverlayReads {
                     "overlay read interrupted".into(),
                 ))));
             }
-            let barrier = self.barrier.lock().unwrap().take();
-            if let Some(barrier) = barrier {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                self.started.store(true, Ordering::SeqCst);
                 self.entered.notify_one();
-                barrier.wait();
+                gate.recv_timeout(std::time::Duration::from_secs(6))
+                    .expect("the actual read is released within its bound");
             }
         }
         self.actual.record_get(schema, key)
@@ -288,21 +291,23 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let faults = Arc::new(OverlayReads {
         actual: calls,
         fail: AtomicBool::new(false),
-        barrier: std::sync::Mutex::new(None),
+        started: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     });
     let backend = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(backend.clone());
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    *faults.barrier.lock().unwrap() = Some(barrier.clone());
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    *faults.gate.lock().unwrap() = Some(gate);
     let (done, finished) = std::sync::mpsc::channel::<()>();
+    let watching = faults.clone();
     let watchdog = std::thread::spawn(move || {
         let free = finished
             .recv_timeout(std::time::Duration::from_secs(5))
             .is_ok();
-        barrier.wait();
-        free
+        let _ = release.send(());
+        free && watching.started.load(Ordering::SeqCst)
     });
     let waiting = faults.clone();
     let sibling = tokio::spawn(async move {
@@ -419,21 +424,23 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let faults = Arc::new(OverlayReads {
         actual: calls,
         fail: AtomicBool::new(false),
-        barrier: std::sync::Mutex::new(None),
+        started: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     });
     let backend = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(backend.clone());
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    *faults.barrier.lock().unwrap() = Some(barrier.clone());
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    *faults.gate.lock().unwrap() = Some(gate);
     let (done, finished) = std::sync::mpsc::channel::<()>();
+    let watching = faults.clone();
     let watchdog = std::thread::spawn(move || {
         let free = finished
             .recv_timeout(std::time::Duration::from_secs(5))
             .is_ok();
-        barrier.wait();
-        free
+        let _ = release.send(());
+        free && watching.started.load(Ordering::SeqCst)
     });
     let waiting = faults.clone();
     let sibling = tokio::spawn(async move {
@@ -550,7 +557,8 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let faults = Arc::new(OverlayReads {
         actual: calls,
         fail: AtomicBool::new(false),
-        barrier: std::sync::Mutex::new(None),
+        started: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     });
     let backend = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
@@ -685,7 +693,8 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     let faults = Arc::new(OverlayReads {
         actual: calls,
         fail: AtomicBool::new(false),
-        barrier: std::sync::Mutex::new(None),
+        started: AtomicBool::new(false),
+        gate: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     });
     let backend = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
