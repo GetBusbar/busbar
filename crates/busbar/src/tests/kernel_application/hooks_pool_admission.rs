@@ -22,7 +22,7 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
             let recorded = recorded.clone();
             async move {
-                let blocked = body["prompt"].to_string().contains("BLOCKME");
+                let blocked = body["request"]["messages"].to_string().contains("BLOCKME");
                 let transform = body["op"] == "transform";
                 recorded.lock().unwrap().push(body);
                 axum::Json(if blocked {
