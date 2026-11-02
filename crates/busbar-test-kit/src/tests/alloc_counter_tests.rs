@@ -4,7 +4,140 @@
 //! The counting allocator counts per thread. This crate's own test binary installs [`super::Counting`] as its
 //! `#[global_allocator]` (`lib.rs`).
 
-use super::{allocations, allocations_of, allocations_with, reset};
+use super::{
+    allocations, allocations_of, allocations_with, reset, AllocationLifetimeObservations,
+    AllocationLifetimeProbe,
+};
+
+#[test]
+fn allocation_lifetime_probe_distinguishes_retained_and_freed_buffers() {
+    const SIZE: usize = 12_347;
+    let retained = AllocationLifetimeProbe::start_exact_size(SIZE);
+    let buffer = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
+    let observations = retained.finish();
+    drop(buffer);
+    assert_eq!(
+        observations,
+        AllocationLifetimeObservations {
+            allocations: 1,
+            deallocations: 0,
+            reallocations: 0,
+        },
+        "a live allocation must not look retired"
+    );
+
+    let freed = AllocationLifetimeProbe::start_exact_size(SIZE);
+    let buffer = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
+    drop(buffer);
+    let observations = freed.finish();
+    assert_eq!(
+        observations,
+        AllocationLifetimeObservations {
+            allocations: 1,
+            deallocations: 1,
+            reallocations: 0,
+        },
+        "one exact matching allocation was freed inside the window"
+    );
+}
+
+#[test]
+fn allocation_lifetime_probe_sees_zeroed_allocations_and_excludes_other_sizes() {
+    const SIZE: usize = 12_347;
+    let probe = AllocationLifetimeProbe::start_exact_size(SIZE);
+    let other = std::hint::black_box(Vec::<u8>::with_capacity(SIZE + 1));
+    let matching = std::hint::black_box(vec![0u8; SIZE]);
+    drop(other);
+    drop(matching);
+    assert_eq!(
+        probe.finish(),
+        AllocationLifetimeObservations {
+            allocations: 1,
+            deallocations: 1,
+            reallocations: 0,
+        }
+    );
+}
+
+#[test]
+fn allocation_lifetime_probe_rejects_multiple_matches_even_after_address_reuse() {
+    const SIZE: usize = 12_347;
+    let probe = AllocationLifetimeProbe::start_exact_size(SIZE);
+    let first = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
+    drop(first);
+    // The system may reuse the first address. A second allocation event is still ambiguous.
+    let second = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
+    drop(second);
+    let observations = probe.finish();
+    assert_eq!(observations.allocations, 2);
+    assert_eq!(observations.deallocations, 1);
+    assert_eq!(observations.reallocations, 0);
+}
+
+#[test]
+fn allocation_lifetime_probe_marks_reallocation_of_its_match_ambiguous() {
+    const SIZE: usize = 12_347;
+    let probe = AllocationLifetimeProbe::start_exact_size(SIZE);
+    let mut buffer = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
+    buffer.reserve_exact(SIZE + 1);
+    std::hint::black_box(&buffer);
+    drop(buffer);
+    assert_eq!(
+        probe.finish(),
+        AllocationLifetimeObservations {
+            allocations: 1,
+            deallocations: 1,
+            reallocations: 1,
+        },
+        "reallocation cannot masquerade as a unique unresized allocation"
+    );
+}
+
+#[test]
+fn allocation_lifetime_probe_marks_resize_into_its_size_ambiguous() {
+    const SIZE: usize = 12_347;
+    let mut buffer = std::hint::black_box(Vec::<u8>::with_capacity(SIZE - 1));
+    let probe = AllocationLifetimeProbe::start_exact_size(SIZE);
+    buffer.reserve_exact(SIZE);
+    std::hint::black_box(&buffer);
+    drop(buffer);
+    assert_eq!(
+        probe.finish(),
+        AllocationLifetimeObservations {
+            allocations: 0,
+            deallocations: 0,
+            reallocations: 1,
+        },
+        "a resize into the selected layout is not an observed matching allocation"
+    );
+}
+
+#[test]
+fn allocation_lifetime_probe_bookkeeping_allocates_nothing() {
+    let (count, observations) = allocations_with(|| {
+        let probe = AllocationLifetimeProbe::start_exact_size(12_347);
+        probe.finish()
+    });
+    assert_eq!(count, 0);
+    assert_eq!(observations, AllocationLifetimeObservations::default());
+}
+
+#[test]
+fn allocation_lifetime_probe_drop_disarms_after_unwind() {
+    let unwound = std::panic::catch_unwind(|| {
+        let _probe = AllocationLifetimeProbe::start_exact_size(12_347);
+        panic!("leave the observation window");
+    });
+    assert!(unwound.is_err());
+    let probe = AllocationLifetimeProbe::start_exact_size(12_347);
+    assert_eq!(probe.finish(), AllocationLifetimeObservations::default());
+}
+
+#[test]
+#[should_panic(expected = "a lifetime probe requires a nonzero allocation size")]
+fn allocation_lifetime_probe_refuses_zero_size() {
+    let _probe = AllocationLifetimeProbe::start_exact_size(0);
+}
 
 /// The counter counts: this crate's own test binary installs [`super::Counting`] as its
 /// `#[global_allocator]` (`lib.rs`), so a heap allocation moves this thread's count and a call
