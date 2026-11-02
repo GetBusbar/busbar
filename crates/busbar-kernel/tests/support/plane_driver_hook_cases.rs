@@ -521,6 +521,11 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Warnings {
         }
         struct Fields(String);
         impl tracing::field::Visit for Fields {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                use std::fmt::Write;
+                write!(&mut self.0, "{}={value} ", field.name())
+                    .expect("append warning string field");
+            }
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 use std::fmt::Write;
                 write!(&mut self.0, "{}={value:?} ", field.name()).expect("append warning fields");
