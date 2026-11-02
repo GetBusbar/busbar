@@ -93,14 +93,16 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -213,14 +215,16 @@ async fn install_catalog_remove_roundtrip() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -295,16 +299,35 @@ async fn install_catalog_remove_roundtrip() {
         .build()
         .unwrap();
 
-    manifest.name = "acme-store-junk".into();
-    manifest.alias = "junkstore".into();
-    manifest.version = "1.0.0".into();
-    manifest.publisher = "acme".into();
+    let upload_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN").expect(
+            "BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual distinct SQLite Store cdylib",
+        ),
+    );
+    let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
+        .expect("the actual upload Store statement reads")
+        .expect("the upload Store exports its Statement");
+    let upload = busbar_contract::abi::mechanism::rendering::read(&upload_statement)
+        .expect("the actual upload Store Statement is valid");
+    assert_eq!(
+        upload.kind,
+        busbar_contract::abi::mechanism::KindCode::Store as u32
+    );
+    let upload_name = upload.name;
+    assert_ne!(
+        upload_name, module,
+        "publication uses an actual distinct Store rather than a linked copy"
+    );
+    let library = std::fs::read(upload_path).expect("the actual upload Store library reads");
+    manifest = plugins::manifest("store", &upload_name, "acme");
+    manifest.version = upload.version;
+    manifest.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::seal(manifest, &library);
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
     let view: serde_json::Value = response.json().await.unwrap();
     assert_eq!(view["trust"], "unverified");
-    assert_eq!(view["name"], "acme-store-junk");
+    assert_eq!(view["name"], upload_name);
     assert!(directory.join("junk.tar.gz").exists(), "tarball published");
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
@@ -321,7 +344,7 @@ async fn install_catalog_remove_roundtrip() {
         .find(|p| p["loader"] == "dynamic-library")
         .expect("actual dynamic Store in catalog");
     assert_eq!(row["valid"], true);
-    assert_eq!(row["name"], "acme-store-junk");
+    assert_eq!(row["name"], upload_name);
     assert_eq!(row["target"], "junk.tar.gz");
     assert_eq!(row["trust"], "unverified");
     let reloaded = client
@@ -365,14 +388,16 @@ async fn remove_filesystem_failure_is_internal_error() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -496,14 +521,16 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -608,9 +635,33 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         1,
         "five unchanged GETs cost exactly one actual inventory scan"
     );
-    let mut second = manifest;
-    second.name = "acme-store-cache-2".into();
-    second.alias = "cachestore2".into();
+    let upload_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN").expect(
+            "BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual distinct SQLite Store cdylib",
+        ),
+    );
+    let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
+        .expect("the actual upload Store statement reads")
+        .expect("the upload Store exports its Statement");
+    let upload = busbar_contract::abi::mechanism::rendering::read(&upload_statement)
+        .expect("the actual upload Store Statement is valid");
+    assert_eq!(
+        upload.kind,
+        busbar_contract::abi::mechanism::KindCode::Store as u32
+    );
+    let upload_name = upload.name;
+    assert_ne!(
+        upload_name, module,
+        "publication uses an actual distinct Store rather than a linked copy"
+    );
+    let library = std::fs::read(upload_path).expect("the actual upload Store library reads");
+    let mut second = plugins::manifest(
+        "store",
+        &upload_name,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    second.version = upload.version;
+    second.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::signed(&crate::dist_root_install::release_key(), second, &library);
     let installed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"cache2.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(installed.status().as_u16(), 201);
@@ -626,7 +677,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|p| p["name"] == "acme-store-cache-2"),
+            .any(|p| p["name"] == upload_name),
         "a newly installed plugin appears on the next GET"
     );
     assert_eq!(
@@ -649,14 +700,16 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -803,14 +856,16 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -939,14 +994,16 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -1070,14 +1127,16 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -1215,14 +1274,16 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -1378,14 +1439,16 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -1502,14 +1565,16 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -1615,14 +1680,16 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -1770,14 +1837,16 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -1948,14 +2017,16 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -2052,7 +2123,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     app.overlay_path = Some(overlay.clone());
     std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
     manifest.publisher = "acme".into();
-    manifest.version = "1.4.0".into();
+    manifest.version = module_version.clone();
     let target = plugins::signed(&publisher_key, manifest.clone(), &library);
     std::fs::write(directory.join("old.tar.gz"), target).unwrap();
     let rejected = plugins::seal(manifest, &library);
@@ -2098,14 +2169,14 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let view: serde_json::Value = response.json().await.unwrap();
     assert_eq!(status, 200, "the actual trusted target rolls back: {view}");
     assert_eq!(view["name"], module);
-    assert_eq!(view["version"], "1.4.0");
+    assert_eq!(view["version"], module_version);
     let persisted = overlay
         .read_required()
         .expect("the actual overlay reads")
         .expect("the actual overlay exists");
     assert_eq!(
         persisted.plugin_versions.get(&module).map(String::as_str),
-        Some("1.4.0"),
+        Some(module_version.as_str()),
         "the actual target version is pinned"
     );
     assert_eq!(
@@ -2130,14 +2201,16 @@ async fn install_filesystem_failures_are_internal_errors() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
+    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid");
+    let module = store.name;
+    let module_version = store.version;
     let mut manifest = plugins::manifest(
         "store",
         &module,
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
+    manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -2215,8 +2288,33 @@ async fn install_filesystem_failures_are_internal_errors() {
         .build()
         .unwrap();
 
-    manifest.name = "acme-store-io".into();
-    manifest.alias = "io".into();
+    let upload_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN").expect(
+            "BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual distinct SQLite Store cdylib",
+        ),
+    );
+    let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
+        .expect("the actual upload Store statement reads")
+        .expect("the upload Store exports its Statement");
+    let upload = busbar_contract::abi::mechanism::rendering::read(&upload_statement)
+        .expect("the actual upload Store Statement is valid");
+    assert_eq!(
+        upload.kind,
+        busbar_contract::abi::mechanism::KindCode::Store as u32
+    );
+    let upload_name = upload.name;
+    assert_ne!(
+        upload_name, module,
+        "publication uses an actual distinct Store rather than a linked copy"
+    );
+    let library = std::fs::read(upload_path).expect("the actual upload Store library reads");
+    manifest = plugins::manifest(
+        "store",
+        &upload_name,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.version = upload.version;
+    manifest.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
     assert_eq!(malformed.status().as_u16(), 400);
