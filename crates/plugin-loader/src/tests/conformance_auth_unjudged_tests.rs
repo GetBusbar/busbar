@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::*;
-use crate::conformance::{
-    dispatcher, load, open, test_door, test_op, Leg, Subject, TestDoor, TestOp,
-};
+use crate::auth_axis::AuthRows;
+use crate::dispatch::{DispatchConfig, Dispatcher};
+use crate::{LinkedPlugin, PluginRegistry};
 use busbar_contract::abi::auth::{
     AuthPoints, AuthTail, Ops, CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_REDIRECT,
 };
+use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail, VerifyPlugin};
 use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::auth::{BeginLogin, LoginOutcome};
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 pub struct Probe;
@@ -36,8 +38,8 @@ static FAULT: OnceLock<usize> = OnceLock::new();
 static READY: OnceLock<usize> = OnceLock::new();
 const URL: &[u8] = b"https://identity.test/login";
 struct Begin<const FAIL: bool>;
-impl<const FAIL: bool> TestOp for Begin<FAIL> {
-    fn op(
+impl<const FAIL: bool> Begin<FAIL> {
+    extern "C" fn op(
         _: *mut std::ffi::c_void,
         _: *const std::ffi::c_void,
         out: *mut std::ffi::c_void,
@@ -57,15 +59,15 @@ impl<const FAIL: bool> TestOp for Begin<FAIL> {
         outcome
     }
 }
-impl<const FAIL: bool> TestDoor for Begin<FAIL> {
-    fn door() -> *const Door {
+impl<const FAIL: bool> Begin<FAIL> {
+    extern "C" fn door() -> &'static Door {
         let slot = if FAIL { &FAULT } else { &READY };
-        *slot.get_or_init(|| {
+        let address = *slot.get_or_init(|| {
             let real = *base::door();
             // SAFETY: real SDK door and table are static and kind-correct.
             let ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
             let ops = Box::leak(Box::new(Ops {
-                begin_login: Some(test_op::<Begin<FAIL>>),
+                begin_login: Some(Begin::<FAIL>::op),
                 ..ops
             }));
             let door = unsafe {
@@ -75,30 +77,51 @@ impl<const FAIL: bool> TestDoor for Begin<FAIL> {
                 })
             };
             Box::into_raw(Box::new(door)) as usize
-        }) as *const Door
+        });
+        // SAFETY: the immutable descriptor and its SDK table are leaked once and remain live.
+        unsafe { &*(address as *const Door) }
     }
 }
-fn answer<const FAIL: bool>() -> String {
-    let s = Subject::of_raw(test_door::<Begin<FAIL>>, "unused", "{}");
-    let d = dispatcher();
-    let p = load::<Auth>(&s, Leg::Linked, s.bind(&d, "login-output")).unwrap();
-    assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
-    begin_login(&p, &serde_json::json!({}))
+fn answer<const FAIL: bool>() -> LoginOutcome {
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door_named(
+            "login-output",
+            "login-output",
+            Begin::<FAIL>::door,
+        )])
+        .expect("the original malicious ABI descriptor links");
+    let rows = AuthRows::new(
+        Arc::new(registry),
+        Arc::new(Dispatcher::new(DispatchConfig::default())),
+    );
+    let auth = rows
+        .open("login-output", "login-output", &serde_json::json!({}))
+        .expect("SDK instance opens");
+    let request = BeginLogin {
+        redirect_uri: "https://host.test/callback".into(),
+        state: "state".into(),
+        code_challenge: "challenge".into(),
+        nonce: None,
+        scopes: vec![],
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), auth.begin_login(request))
+            .await
+            .expect("the immediate answer settles")
+    })
 }
 #[test]
 fn a_fault_does_not_observe_its_borrowed_url() {
-    let line = answer::<true>();
-    assert!(
-        line.starts_with("Fault ") && line.ends_with(" UNREAD"),
-        "{line}"
-    );
-    assert!(!line.contains("identity.test"));
+    assert_eq!(answer::<true>(), LoginOutcome::Reject);
 }
 #[test]
 fn the_same_ready_url_is_observed_after_the_loader_judges_it() {
-    let line = answer::<false>();
-    assert!(
-        line.starts_with("Ready ") && line.contains("url=https://identity.test/login"),
-        "{line}"
+    assert_eq!(
+        answer::<false>(),
+        LoginOutcome::Authorize("https://identity.test/login".into())
     );
 }
