@@ -3511,6 +3511,7 @@ async fn named_map_app_opts(
             records: store.clone(),
             calls: Some(store),
         }),
+        false,
     )
     .expect("the actual product builds the named-map application");
     limits.keep().expect("the product limits commit");
