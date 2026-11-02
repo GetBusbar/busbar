@@ -26,6 +26,74 @@ use crate::root::loader::sign::{valid_semver, version_at_least};
 /// The host record schema the marks are kept under: one record per `(host, plugin name)`.
 pub const PLUGIN_FLOOR_SCHEMA: &str = "busbar.plugin_floor.v1";
 
+/// The authenticated release keys-document high-water mark, independently of plugin rollback pins.
+/// One unsigned 64-bit big-endian value per host; application state is kept only in the Store.
+pub const RELEASE_KEYS_FLOOR_SCHEMA: &str = "busbar.release_keys_floor.v1";
+
+fn release_keys_key(host: &str) -> Vec<u8> {
+    floor_key(host, "busbar-release-keys")
+}
+
+/// Recover the host's authenticated keys-document floor before evaluating a new candidate.
+pub fn release_keys_floor(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
+    let held = wait_for(calls.record_get(RELEASE_KEYS_FLOOR_SCHEMA, &release_keys_key(host)))
+        .map_err(|e| format!("the release keys-document floor: {e}"))?;
+    decode_release_keys_floor(held.as_ref().map(|bytes| bytes.as_slice()))
+}
+
+fn decode_release_keys_floor(held: Option<&[u8]>) -> Result<u64, String> {
+    held.map_or(Ok(0), |bytes| {
+        let bytes: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| "the release keys-document floor is malformed".to_string())?;
+        Ok(u64::from_be_bytes(bytes))
+    })
+}
+
+fn enforce_release_keys(
+    calls: &dyn StoreCalls,
+    host: &str,
+    versions: &[u64],
+    raise: bool,
+) -> Result<(), String> {
+    let Some(&lowest) = versions.iter().min() else {
+        return Ok(());
+    };
+    let highest = versions.iter().copied().max().unwrap_or(lowest);
+    let key = release_keys_key(host);
+    loop {
+        let held = wait_for(calls.record_get(RELEASE_KEYS_FLOOR_SCHEMA, &key))
+            .map_err(|e| format!("the release keys-document floor: {e}"))?;
+        let floor = decode_release_keys_floor(held.as_ref().map(|bytes| bytes.as_slice()))?;
+        if lowest < floor {
+            return Err(format!(
+                "keys-rollback: release keys-document version {lowest} is below {floor}, the \
+                 highest this host has accepted; no plugin rollback pin or trust opt-in lowers \
+                 this floor"
+            ));
+        }
+        if !raise || highest <= floor {
+            return Ok(());
+        }
+        let request = super::conditional::candidate(
+            vec![Predicate {
+                schema: RELEASE_KEYS_FLOOR_SCHEMA.into(),
+                key: key.clone(),
+                expected: held.map_or(Expected::Absent, |v| Expected::Bytes(v.as_slice().to_vec())),
+            }],
+            vec![Mutation::Put {
+                schema: RELEASE_KEYS_FLOOR_SCHEMA.into(),
+                key: key.clone(),
+                value: highest.to_be_bytes().to_vec(),
+            }],
+        );
+        match super::conditional::decide(calls, &request)? {
+            Decision::Applied => return Ok(()),
+            Decision::ConditionConflict => continue,
+        }
+    }
+}
+
 /// The key of `name`'s mark on `host`: each length-prefixed.
 fn floor_key(host: &str, name: &str) -> Vec<u8> {
     let mut key = Vec::new();
@@ -69,9 +137,19 @@ fn enforce(
     pins: &BTreeMap<String, String>,
     raise: bool,
 ) -> Result<(), String> {
+    // This is the root's own registry view. Only the evaluator's retained authenticated evidence
+    // can advance this floor; a plugin assertion or an allowed-but-unverified row cannot do so.
+    let registry = crate::root::loader::rows::registry_of(rows);
+    let versions: Vec<_> = rows
+        .loadable()
+        .iter()
+        .filter_map(|row| registry?.resolve(&row.name)?.release_keys_version())
+        .collect();
+    enforce_release_keys(calls, host, &versions, false)?;
     for row in rows.loadable() {
         enforce_candidate(calls, host, &row, pins, raise)?;
     }
+    enforce_release_keys(calls, host, &versions, raise)?;
     Ok(())
 }
 
@@ -80,8 +158,12 @@ pub fn check_candidate(
     calls: &dyn StoreCalls,
     host: &str,
     row: &busbar_contract::plugin_rows::Row,
+    release_keys_version: Option<u64>,
     pins: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    if let Some(version) = release_keys_version {
+        enforce_release_keys(calls, host, &[version], false)?;
+    }
     enforce_candidate(calls, host, row, pins, false)
 }
 

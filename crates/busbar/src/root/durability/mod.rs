@@ -107,7 +107,7 @@ pub use recovery::{node_verb_store, report_operator_breaks};
 mod plugin_floor;
 pub use plugin_floor::{
     check as check_plugin_floor, check_candidate as check_plugin_floor_candidate,
-    hold as hold_plugin_floor,
+    hold as hold_plugin_floor, release_keys_floor,
 };
 
 /// How many sealed audit records a node keeps in memory: a CACHE of the newest, never the record.
