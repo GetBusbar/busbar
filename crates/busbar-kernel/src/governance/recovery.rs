@@ -43,6 +43,29 @@ pub struct RecoveryEvent {
 pub trait RecoverySink: Send + Sync {
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError>;
     fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError>;
+
+    /// Foreign custody is visible without granting this process any write or send authority.
+    fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
+        Ok(Vec::new())
+    }
+
+    /// Select a fully journaled, audited ownership handover in one exact head CAS.
+    /// The returned selected predecessor chain is the only authority to resume effects.
+    fn adopt_verdict(
+        &self,
+        _resolution: &RecoveryResolution,
+        _transitions: &[RecoveryEvent],
+    ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+        Err(RecoveryError::Unavailable(
+            "recovery Store does not support audited foreign custody adoption".into(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryInspection {
+    pub owner_node: u64,
+    pub event: RecoveryEvent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +90,8 @@ pub struct RecoveryResolution {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryItem {
+    /// Present for a readonly foreign inspection; local ownership remains in the Store adapter.
+    pub owner_node: Option<u64>,
     pub operation_id: [u8; 16],
     pub body_fingerprint: [u8; 32],
     pub revision: u64,
@@ -321,6 +346,7 @@ impl RecoveryBook {
 impl RecoveryItem {
     fn from_event(event: &RecoveryEvent) -> Self {
         Self {
+            owner_node: None,
             operation_id: event.operation_id,
             body_fingerprint: event.body_fingerprint,
             revision: event.revision,
