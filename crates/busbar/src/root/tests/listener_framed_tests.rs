@@ -60,6 +60,12 @@ async fn actual_http_streams_a_request_larger_than_its_lent_frame_capacity() {
         .pieces
         .iter()
         .any(|piece| !piece.fields && piece.end));
+    assert_eq!(
+        yielded.heads.len(),
+        1,
+        "one request publishes exactly one head"
+    );
+    assert_eq!(yielded.heads[0].method.as_deref(), Some(b"POST".as_slice()));
     assert!(yielded
         .heads
         .iter()
