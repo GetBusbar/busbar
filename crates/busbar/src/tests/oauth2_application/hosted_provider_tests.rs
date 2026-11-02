@@ -398,3 +398,97 @@ async fn api_json_path_stays_json_not_html() {
     );
     handle.abort();
 }
+
+#[tokio::test]
+async fn redirect_begin_still_redirects() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let resp = client()
+        .get(format!("{base}/auth/token?method=microsoft"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 302);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn logout_renders_signed_out_and_clears_cookie() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let resp = client()
+        .get(format!("{base}/auth/token?logout=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    assert!(
+        resp.headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .any(|v| v.to_str().unwrap_or("").contains("Max-Age=0")),
+        "logout must clear the busbar login cookie"
+    );
+    let body = resp.text().await.unwrap();
+    assert!(body.starts_with("<!doctype html>"), "branded HTML card");
+    assert!(body.contains("Signed out"), "the heading confirms sign-out");
+    assert!(
+        body.contains("href=\"/auth/token\"") && body.contains("Sign in again"),
+        "offers a clean re-entry: {body}"
+    );
+
+    assert!(
+        body.contains("doesn't revoke your key"),
+        "copy is honest about scope: {body}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let (raw, decoded) = start_cookie(&base).await;
+    let code = format!(
+        "security-mismatch-{}",
+        busbar_kernel::door::op_id().counter()
+    );
+    let failed = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[
+            ("code", code.as_str()),
+            ("state", decoded["state"].as_str().unwrap()),
+        ])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    let mismatch = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[("code", code.as_str()), ("state", "WRONG")])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failed.status().as_u16(), 400);
+    assert_eq!(failed.status(), mismatch.status());
+    for h in [reqwest::header::CACHE_CONTROL, reqwest::header::SET_COOKIE] {
+        assert_eq!(
+            failed.headers().get(&h),
+            mismatch.headers().get(&h),
+            "{h} matches the state mismatch's"
+        );
+    }
+    assert!(failed
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .is_some_and(|v| v.to_str().is_ok_and(|v| v.contains("Max-Age=0"))));
+    let (a, b) = (failed.text().await.unwrap(), mismatch.text().await.unwrap());
+    assert!(
+        a.contains("Sign-in couldn&#39;t be verified")
+            || a.contains("Sign-in couldn't be verified")
+    );
+    assert_eq!(
+        a, b,
+        "one page for a state mismatch and a failed security check"
+    );
+    handle.abort();
+}

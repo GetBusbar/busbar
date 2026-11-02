@@ -426,13 +426,6 @@ async fn credential_begin_renders_the_form() {
 }
 
 #[tokio::test]
-async fn redirect_begin_still_redirects() {
-    let app = test_app_with_methods(vec![("microsoft", true)]);
-    let resp = begin(&app, "microsoft", false).await;
-    assert_eq!(resp.status().as_u16(), 302);
-}
-
-#[tokio::test]
 async fn credential_submit_issues_via_shared_seam() {
     let app = cred_app();
     let form = vec![
@@ -639,38 +632,6 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
     );
 }
 
-#[tokio::test]
-async fn logout_renders_signed_out_and_clears_cookie() {
-    let app = test_app_with_methods(vec![("microsoft", true)]);
-    let handle = cred_handle(&app);
-    let req = axum::http::Request::builder()
-        .uri("/auth/token?logout=1")
-        .body(axum::body::Body::empty())
-        .unwrap();
-    let resp = browser(handle, req).await;
-    assert_eq!(resp.status().as_u16(), 200);
-
-    assert!(
-        resp.headers()
-            .get_all(header::SET_COOKIE)
-            .iter()
-            .any(|v| v.to_str().unwrap_or("").contains("Max-Age=0")),
-        "logout must clear the busbar login cookie"
-    );
-    let body = body_of(resp);
-    assert!(body.starts_with("<!doctype html>"), "branded HTML card");
-    assert!(body.contains("Signed out"), "the heading confirms sign-out");
-    assert!(
-        body.contains("href=\"/auth/token\"") && body.contains("Sign in again"),
-        "offers a clean re-entry: {body}"
-    );
-
-    assert!(
-        body.contains("doesn't revoke your key"),
-        "copy is honest about scope: {body}"
-    );
-}
-
 #[test]
 fn pkce_code_challenge_is_s256_of_verifier() {
     let verifier = random_b64url(32);
@@ -825,64 +786,6 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
     for t in tasks {
         rt.block_on(async { t.await.ok() });
     }
-}
-
-#[tokio::test]
-async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .public_url("https://busbar.example.com")
-        .login_method_door(
-            "fails",
-            DoorLogin::new(LoginOutcome::SecurityCheckFailed),
-            LoginKind::Redirect,
-            true,
-        )
-        .build();
-    let cookie = LoginCookie {
-        method: "fails".into(),
-        code_verifier: "v".into(),
-        state: "st".into(),
-        nonce: "n".into(),
-        refresh: false,
-    };
-    let failed = callback(
-        &app,
-        &cred_handle(&app),
-        Some(cookie.encode()),
-        "code".into(),
-        Some("st".into()),
-    )
-    .await;
-    let mismatch = callback(
-        &app,
-        &cred_handle(&app),
-        Some(cookie.encode()),
-        "code".into(),
-        Some("WRONG".into()),
-    )
-    .await;
-    assert_eq!(failed.status().as_u16(), 400);
-    assert_eq!(failed.status(), mismatch.status());
-    for h in [header::CACHE_CONTROL, header::SET_COOKIE] {
-        assert_eq!(
-            failed.headers().get(&h),
-            mismatch.headers().get(&h),
-            "{h} matches the state mismatch's"
-        );
-    }
-    assert!(failed
-        .headers()
-        .get(header::SET_COOKIE)
-        .is_some_and(|v| v.to_str().is_ok_and(|v| v.contains("Max-Age=0"))));
-    let (a, b) = (body_of(failed), body_of(mismatch));
-    assert!(
-        a.contains("Sign-in couldn&#39;t be verified")
-            || a.contains("Sign-in couldn't be verified")
-    );
-    assert_eq!(
-        a, b,
-        "one page for a state mismatch and a failed security check"
-    );
 }
 
 fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<busbar_kernel::state::App> {
