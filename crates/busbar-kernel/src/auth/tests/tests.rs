@@ -2005,15 +2005,17 @@ async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
 #[tokio::test]
 async fn a_session_refused_for_its_grant_claims_no_replay_key() {
     let gov = replay_gov();
-    let answer = hook_answer(Some("standard-webhooks/msg_r6s"), Vec::new());
+    let now = busbar_kernel::store::now();
     for _ in 0..2 {
-        let refused = crate::auth::admit::admit_session(
-            replay_app(answer.clone(), gov.clone(), false),
-            Some("signed".into()),
-            String::new(),
-        )
-        .await
-        .expect_err("no grant: refused");
+        let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_r6s"), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let pending = PendingClaim::of(
+            ReplayClaim::of("door", answered.replay, now),
+            Some(gov.clone()),
+        );
+        let refused = admit_verified_session(&Default::default(), verdict, pending.as_ref())
+            .await
+            .expect_err("no grant: refused");
         assert_eq!(refused, IdentityRefusal::NoGrant, "refused for its grant");
     }
     assert!(

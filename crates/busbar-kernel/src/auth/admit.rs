@@ -18,15 +18,12 @@ pub async fn admit_session(
             expected_aud,
         )
         .await;
-        let admitted = super::resolve_data_plane_identity(
-            &app,
+        super::admit_verified_session(
+            &app.role_bindings,
             verdict.unwrap_or(super::ChainVerdict::Denied),
-        )?;
-
-        match claim {
-            Some(claim) if !claim.win().await => Err(super::IdentityRefusal::Denied),
-            _ => Ok(admitted),
-        }
+            claim.as_ref(),
+        )
+        .await
     })
     .await
     .unwrap_or(Err(super::IdentityRefusal::Denied))

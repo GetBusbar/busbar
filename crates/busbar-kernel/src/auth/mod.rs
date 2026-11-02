@@ -251,6 +251,18 @@ async fn claim_won(pending: Option<&PendingClaim>) -> bool {
     }
 }
 
+async fn admit_verified_session(
+    bindings: &crate::config::RoleBindings,
+    verdict: ChainVerdict,
+    claim: Option<&PendingClaim>,
+) -> Result<(AuthPrincipal, crate::governance::PlaneRequestCtx), IdentityRefusal> {
+    let admitted = resolve_identity_from_bindings(bindings, verdict)?;
+    match claim {
+        Some(claim) if !claim.win().await => Err(IdentityRefusal::Denied),
+        _ => Ok(admitted),
+    }
+}
+
 async fn claimed_chain_identity(
     verdict: Result<ChainVerdict, VerifierUnavailable>,
     pending: Option<&PendingClaim>,
