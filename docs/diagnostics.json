@@ -852,6 +852,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-4030",
+    "number": 4030,
+    "class": "auth",
+    "slug": "credential-invalid-bytes",
+    "title": "Auth credential contains invalid header bytes (credential header omitted)",
+    "severity": "actionable",
+    "summary": "A credential under a scheme configured with a credential-family table contains bytes invalid in an HTTP header value (for example a trailing newline), so the plugin omits the credential header. This also applies when no family prefix matches. It is raised on each request that would have carried the header, naming the protocol and the header; an unpresentable own credential is also logged once at open.",
+    "action": "Fix the credential's configured value (strip the control character, often a trailing newline from a file or env source). Requests omit the credential until it is fixed and may be refused by the upstream.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-5001",
     "number": 5001,
     "class": "proxy",
@@ -1972,9 +1984,9 @@
     "number": 7142,
     "class": "plane",
     "slug": "otlp-export-transport-failure",
-    "title": "OTLP export failed in transport (batch dropped)",
+    "title": "OTLP export could not be delivered (batch dropped)",
     "severity": "actionable",
-    "summary": "An OTLP export did not reach the collector (connection, timeout, DNS or TLS failure), so that batch of spans was dropped (exports are not retried).",
+    "summary": "An OTLP export could not be delivered because framing, connector admission or transport failed, so that batch of spans was dropped (exports are not retried). A refusal after the initial admission verdict does not change that verdict.",
     "action": "Check the collector's reachability from the busbar host and the configured `url`; the line names the error.",
     "since": "1.6.0",
     "retired": false
@@ -2000,6 +2012,30 @@
     "severity": "actionable",
     "summary": "A line of the traces stream was not exported because it is not JSON or carries no span identity (trace and span ids), so that span is missing from the collector.",
     "action": "Check what writes the traces stream; every record must be a JSON object with trace and span ids.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-7145",
+    "number": 7145,
+    "class": "plane",
+    "slug": "otlp-collector-warning",
+    "title": "OTLP collector feedback needs attention",
+    "severity": "actionable",
+    "summary": "The collector accepted an OTLP export but returned a partial-success warning, or its malformed or oversized reply left partial-success details unavailable. An unreadable reply does not establish how many spans were accepted or rejected.",
+    "action": "Read the warning and check the collector's response format and health. If it reports a partial-success message, fix what it warns about, such as span age or attributes.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-7150",
+    "number": 7150,
+    "class": "plane",
+    "slug": "ranking-configure-refused",
+    "title": "Ranking hook settings push refused (live strategy unchanged)",
+    "severity": "actionable",
+    "summary": "A settings push at the last applied version or a newer version was refused (an unknown key, a non-string `policy`, a strategy word the hook does not claim, or an invalid `expected_units` map), so the push was NACKed and the hook keeps ranking by the strategy it already had. The reason is in the line. Older versions are acknowledged without validation, application or logging.",
+    "action": "Fix the named hook's settings (`policy` is one of cheapest, fastest, least_busy, usage; optional `expected_units` maps class names to finite non-negative numbers) and push the corrected configuration.",
     "since": "1.6.0",
     "retired": false
   },
