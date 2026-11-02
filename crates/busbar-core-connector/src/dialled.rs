@@ -723,6 +723,16 @@ impl Dialled {
         }
     }
 
+    pub(crate) fn begun(self, yielded: Yielded) -> Result<Self, ConnError> {
+        if let Err(error) = self.leg.take(&self.pairing, yielded, Instant::now()) {
+            return Err(self.fail(error));
+        }
+        if self.pairing.closed() {
+            return Err(self.fail(ConnError::Fault));
+        }
+        Ok(self)
+    }
+
     /// Whether the exchange is still in flight (its pieces are read off the exchange's line).
     pub(crate) fn exchanging(&self) -> bool {
         matches!(*lock(&self.phase), Phase::Exchanging { .. })
