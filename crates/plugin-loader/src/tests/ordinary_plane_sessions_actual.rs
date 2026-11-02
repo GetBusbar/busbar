@@ -6,9 +6,7 @@ use crate::dispatch::{
     in_head, load_linked, out_head, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, LinkedRow,
     NoSink, Plugin,
 };
-use busbar_contract::abi::mechanism::call::{
-    DeadlineClass, InHead, Outcome, RawOutcome, FLAG_RESUME,
-};
+use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome, RawOutcome, FLAG_RESUME};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
