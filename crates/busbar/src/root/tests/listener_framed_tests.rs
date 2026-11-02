@@ -12,28 +12,29 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::{data_framer, DataFramer, DATA_SCHEME};
 
-fn actual_http_framing() -> busbar_core_connector::framer::Framing {
+fn actual_http_framing() -> (DataFramer, busbar_core_connector::framer::Framing) {
     use busbar_core_connector::framer::{Established, Framing};
     let framer = actual_http_framer();
     let established = Established {
         scheme: Established::scheme_of(false),
         ..Established::default()
     };
-    Framing::begin_lent(
+    let (framing, _) = Framing::begin_lent(
         Arc::clone(framer.door()),
         busbar_contract::abi::transport::SIDE_ACCEPT,
         "",
         &established,
         framer.guests(),
     )
-    .expect("the actual HTTP framing opens on its root-owned policy")
-    .0
+    .expect("the actual HTTP framing opens on its root-owned policy");
+    // The listener registration owns the published policy throughout decoding.
+    (framer, framing)
 }
 
 #[tokio::test]
 async fn actual_http_streams_a_request_larger_than_its_lent_frame_capacity() {
     let _publishing = anonymous_policy().await;
-    let mut framing = actual_http_framing();
+    let (_listener, mut framing) = actual_http_framing();
     let body = vec![b'x'; busbar_core_connector::framer::FRAME_CAP + 1];
     let mut request = format!(
         "POST /capture HTTP/1.1\r\nHost: t\r\ncontent-length: {}\r\n\r\n",
@@ -133,7 +134,7 @@ async fn actual_http_refuses_complete_malformed_heads_without_waiting_for_more_b
 #[tokio::test]
 async fn actual_http_keeps_fragmented_headers_and_body_until_their_complete_end() {
     let _publishing = anonymous_policy().await;
-    let mut framing = actual_http_framing();
+    let (_listener, mut framing) = actual_http_framing();
     let first = framing
         .ingest(
             b"POST /capture HTTP/1.1\r\nHost: t\r\ncontent-length: 3\r\n",
@@ -2007,7 +2008,7 @@ async fn an_ended_session_adoption_refuses_before_any_plane_effect() {
     // A real WebSocket handshake missing its mandatory key ends adoption with its own refusal.
     client.write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n").await.unwrap();
     let mut wire = read_reply(&mut client, b"").await;
-    stop.send(true).unwrap();
+    let _ = stop.send(true); // A real terminal refusal may already have closed the actor.
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
@@ -2076,7 +2077,7 @@ async fn a_staged_plane_refusal_keeps_its_head_and_body_without_committing_101()
     release.send(()).unwrap();
     let body = b"the staged plane refused";
     let mut wire = read_reply(&mut client, body).await;
-    stop.send(true).unwrap();
+    let _ = stop.send(true); // A real terminal refusal may already have closed the actor.
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
