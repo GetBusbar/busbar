@@ -344,7 +344,7 @@ pub fn clear_section(store: Option<&OverlayStore>, section: OverlaySection) -> R
 /// (`deleted`) — hooks removed via the API that must be subtracted from base config at boot. Tombstones
 /// are what let the additive `base + overlay` model express a DELETION (an additive merge alone cannot
 /// remove a base-defined hook).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayDoc {
     /// Overlay schema version (see `OVERLAY_VERSION`). Absent in a pre-versioning overlay -> `1`.
     #[serde(default = "default_overlay_version")]
@@ -395,6 +395,22 @@ pub struct OverlayDoc {
     /// deletion is expressible as a plain removal from this map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub named_maps: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+}
+
+impl Default for OverlayDoc {
+    fn default() -> Self {
+        Self {
+            version: default_overlay_version(),
+            hooks: HashMap::new(),
+            global_hooks: Vec::new(),
+            deleted: Vec::new(),
+            groups: BTreeMap::new(),
+            deleted_groups: Vec::new(),
+            root: None,
+            plugin_versions: BTreeMap::new(),
+            named_maps: BTreeMap::new(),
+        }
+    }
 }
 
 impl OverlayDoc {

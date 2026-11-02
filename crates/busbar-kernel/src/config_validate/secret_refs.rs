@@ -504,6 +504,20 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
              walked.",
         ),
     ),
+    (
+        "ProviderCfgCore",
+        SecretBearing::NotInResolvedConfig(
+            "serde's remote deserialize shape for ProviderCfg; it produces ProviderCfg, which \
+             resolve lowers into the walked ResolvedProvider before validation.",
+        ),
+    ),
+    (
+        "ProviderDeployCore",
+        SecretBearing::NotInResolvedConfig(
+            "serde's remote deserialize shape for ProviderDeploy; it produces ProviderDeploy, \
+             which resolve lowers into the walked ResolvedProvider before validation.",
+        ),
+    ),
     ("AuthCfg", SecretBearing::Walked),
     // `credentials.at_rest.{key,previous}`: the keys a recoverable credential is sealed under.
     ("AtRestCfg", SecretBearing::Walked),
