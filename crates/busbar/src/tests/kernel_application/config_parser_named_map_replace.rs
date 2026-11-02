@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::config::overlay::{apply_named_maps_to_deploy, OverlayDoc};
-use crate::config::DeployCfg;
+use busbar_kernel::config::overlay::{apply_named_maps_to_deploy, OverlayDoc};
+use busbar_kernel::config::DeployCfg;
 use std::collections::BTreeMap;
 
 fn deploy_with_a_base_provider() -> DeployCfg {
@@ -35,7 +35,7 @@ fn overlay_with(section: &str, name: &str, def: serde_json::Value) -> OverlayDoc
 
 #[test]
 fn an_overlay_entry_replaces_the_same_named_base_entry_whole() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -63,7 +63,7 @@ fn an_overlay_entry_replaces_the_same_named_base_entry_whole() {
 
 #[test]
 fn an_explicit_null_in_an_overlay_definition_is_delivered() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -90,7 +90,7 @@ fn an_explicit_null_in_an_overlay_definition_is_delivered() {
 
 #[test]
 fn an_unparseable_overlay_definition_leaves_the_base_entry() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
     let mut deploy = deploy_with_a_base_provider();
     let doc = overlay_with(
         "identity-providers",
@@ -109,7 +109,7 @@ fn an_unparseable_overlay_definition_leaves_the_base_entry() {
 
 #[test]
 fn replaying_the_overlay_is_idempotent() {
-    crate::test_support::register_neutral_test_plane();
+    crate::dist_root_install::install();
     let doc = overlay_with(
         "identity-providers",
         "corp",
