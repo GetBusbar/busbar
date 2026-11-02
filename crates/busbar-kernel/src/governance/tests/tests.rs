@@ -5252,8 +5252,34 @@ impl RecordStore for MeteringFailStore {
 
 #[test]
 fn flush_metering_failure_warns_once_per_tick_not_per_key() {
-    use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
+    #[derive(Clone, Default)]
+    struct MeteringWarnings(Arc<std::sync::Mutex<Vec<String>>>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for MeteringWarnings {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() != tracing::Level::WARN {
+                return;
+            }
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    use std::fmt::Write as _;
+                    write!(&mut self.0, "{}={value:?} ", field.name()).unwrap();
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
 
     let store: Arc<dyn RecordStore> = Arc::new(MeteringFailStore {
         inner: crate::real_store::store(),
@@ -5265,22 +5291,26 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
         gov.record_metering(k, "model-x", "prov", None, now);
     }
 
-    let cap = WarnCapture::default();
+    let cap = MeteringWarnings::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let flushed = tracing::subscriber::with_default(subscriber, || gov.flush_metering());
 
+    let messages = cap.0.lock().unwrap().clone();
     assert_eq!(flushed, 0, "every key failed to persist");
     assert_eq!(
-        cap.count("metering flush:"),
+        messages
+            .iter()
+            .filter(|message| message.contains("metering flush:"))
+            .count(),
         1,
         "exactly ONE aggregate warn per tick, not one per failed key: {:?}",
-        cap.messages()
+        messages
     );
 
     assert!(
-        cap.contains("failed=5"),
+        messages.iter().any(|message| message.contains("failed=5")),
         "the aggregate warn reports the failed-key count: {:?}",
-        cap.messages()
+        messages
     );
 
     assert_eq!(
