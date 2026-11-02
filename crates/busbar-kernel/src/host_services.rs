@@ -748,6 +748,17 @@ struct Demotions {
     default_instance: Arc<str>,
 }
 
+/// One fleet trust re-sync, held from submission through applying the read. A refused or
+/// abandoned job and an unwinding read release it just as a completed read does.
+struct TrustResync(Arc<(std::sync::atomic::AtomicU64, std::sync::atomic::AtomicBool)>);
+
+impl Drop for TrustResync {
+    fn drop(&mut self) {
+        let (_, running) = &*self.0;
+        running.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 impl Default for KernelServices {
     fn default() -> Self {
         Self::new()
@@ -1717,13 +1728,11 @@ impl KernelServices {
         {
             return;
         }
+        let resync = TrustResync(Arc::clone(&self.trust_resync));
         last.store(now, Ordering::Relaxed);
-        let (record, trust, state) = (
-            Arc::clone(&d.record),
-            Arc::clone(&self.trust),
-            Arc::clone(&self.trust_resync),
-        );
+        let (record, trust) = (Arc::clone(&d.record), Arc::clone(&self.trust));
         pool.run(Box::new(move || {
+            let _resync = resync;
             match record.decisions() {
                 Ok(rows) => {
                     let instances: std::collections::BTreeSet<&str> =
@@ -1740,7 +1749,6 @@ impl KernelServices {
                      until the next successful re-read)"
                 ),
             }
-            state.1.store(false, Ordering::Release);
         }));
     }
 

@@ -165,6 +165,7 @@ fn rig() -> Rig {
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
+            conditional_record_kinds: Vec::new(),
             signing: Some(Signing {
                 domain: "dom".into(),
                 kid_prefix: "p-".into(),
@@ -737,6 +738,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
         "second",
         InstanceFacts {
             record_kinds: vec![RecordSchemaId::new("other")],
+            conditional_record_kinds: Vec::new(),
             signing: Some(Signing {
                 domain: "dom2".into(),
                 kid_prefix: "q-".into(),
@@ -2236,7 +2238,11 @@ struct Probe {
     refuse_decisions: std::sync::atomic::AtomicBool,
     kernel: OnceLock<std::sync::Weak<KernelServices>>,
     lock_free_at_read: Mutex<Vec<bool>>,
+    decision_read: OnceLock<Arc<DecisionRead>>,
 }
+
+type DecisionRead =
+    dyn Fn() -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> + Send + Sync;
 
 impl crate::store::plane_view::PlaneStore for Probe {
     fn upsert_plane_record(
@@ -2273,6 +2279,9 @@ impl crate::store::plane_view::PlaneStore for Probe {
             if let Some(k) = self.kernel.get().and_then(std::sync::Weak::upgrade) {
                 let free = k.instances.try_lock().is_ok();
                 self.lock_free_at_read.lock().unwrap().push(free);
+            }
+            if let Some(read) = self.decision_read.get() {
+                return read();
             }
         }
         Ok(Vec::new())
@@ -2559,6 +2568,9 @@ fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
         "node b applies the approval node a kept"
     );
 }
+
+#[path = "trust_resync_tests.rs"]
+mod trust_resync_tests;
 
 /// A store that is down: every plane-record call fails.
 struct DownStore;
