@@ -126,8 +126,9 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let resolve = || busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
+    let mut config = resolve();
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
@@ -138,7 +139,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     let running = tagged_limits(1);
     config.limits = running.clone();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config.clone(),
+        config,
         plugin_config.clone(),
         None,
         Default::default(),
@@ -171,7 +172,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     refused.hard_down_cooldown_secs = 0;
     let Err(refusal) = busbar_kernel::build_app_from_config(
         {
-            let mut trial = config.clone();
+            let mut trial = resolve();
             trial.limits = refused;
             trial
         },
@@ -198,7 +199,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     let candidate = tagged_limits(3);
     let (next, candidate_rotate, unkept) = busbar_kernel::build_app_from_config(
         {
-            let mut trial = config.clone();
+            let mut trial = resolve();
             trial.limits = candidate.clone();
             trial
         },
