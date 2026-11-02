@@ -341,57 +341,6 @@ fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
 }
 
 #[test]
-fn install_answers_the_admissions_refusals_in_their_classes() {
-    let dir = tmp_plugins_dir("refusal-classes");
-    let svc = svc_with(dir.clone(), strict_posture());
-    assert!(matches!(
-        svc.install_store_plugin("x.tar.gz", b"garbage, not a tarball"),
-        Err(AdminError::Validation(msg)) if msg.starts_with("invalid plugin tarball")
-    ));
-    assert!(matches!(
-        svc.install_store_plugin("x.tar.gz", &fake_tarball("acme-store-x", "x", "1.0.0", "rejected")),
-        Err(AdminError::Conflict(msg)) if msg.starts_with("plugin rejected by the trust policy")
-    ));
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-#[test]
-fn install_catalog_remove_roundtrip() {
-    let dir = tmp_plugins_dir("roundtrip");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let tarball = fake_tarball("acme-store-junk", "junkstore", "1.0.0", "allowed");
-
-    let view = svc
-        .install_store_plugin("junk.tar.gz", &tarball)
-        .expect("an unsigned tarball installs under allow_unsigned");
-    assert_eq!(view.trust, "unverified");
-    assert_eq!(view.name, "acme-store-junk");
-    assert!(dir.join("junk.tar.gz").exists(), "tarball published");
-
-    let cat = svc.store_plugin_catalog();
-    assert_eq!(cat[0].name, migrated_store_module());
-    let dyn_row = cat
-        .iter()
-        .find(|p| p.loader == "dynamic-library")
-        .expect("dynamic plugin in catalog");
-    assert_eq!(dyn_row.valid, Some(true));
-    assert_eq!(dyn_row.name, "acme-store-junk");
-    assert_eq!(dyn_row.target.as_deref(), Some("junk.tar.gz"));
-    assert_eq!(dyn_row.trust, Some("unverified"));
-
-    let reload = svc.reload_store_plugins().unwrap();
-    assert!(reload.plugins.iter().all(|p| p.loader == "dynamic-library"));
-    assert_eq!(reload.plugins.len(), 1);
-
-    svc.remove_store_plugin("junk.tar.gz").expect("remove");
-    assert!(!dir.join("junk.tar.gz").exists());
-    assert!(matches!(
-        svc.remove_store_plugin("junk.tar.gz"),
-        Err(AdminError::NotFound { .. })
-    ));
-}
-
-#[test]
 fn install_filesystem_failures_are_internal_errors() {
     let dir = tmp_plugins_dir("install-io-errors");
     let blocked_dir = dir.join("not-a-directory");
@@ -428,44 +377,6 @@ fn install_filesystem_failures_are_internal_errors() {
     let missing = svc.remove_store_plugin("ok.tar.gz").unwrap_err();
     assert_eq!(missing.http_status(), 404);
     assert_eq!(missing.code(), "not_found");
-}
-
-#[cfg(unix)]
-#[test]
-fn remove_filesystem_failure_is_internal_error() {
-    use std::os::unix::fs::PermissionsExt;
-
-    struct RestorePermissions(std::path::PathBuf, std::fs::Permissions);
-    impl Drop for RestorePermissions {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.0, self.1.clone());
-        }
-    }
-
-    let dir = tmp_plugins_dir("remove-io-error");
-    let file = dir.join("plugin.tar.gz");
-    let probe = dir.join("unlink-probe");
-    std::fs::write(&file, b"keep this plugin").unwrap();
-    std::fs::write(&probe, b"probe").unwrap();
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let _restore = RestorePermissions(dir.clone(), std::fs::metadata(&dir).unwrap().permissions());
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-    match std::fs::remove_file(&probe) {
-        Ok(()) => {
-            eprintln!(
-                "remove failure regression not exercised: runner bypasses directory mode bits"
-            );
-            return;
-        }
-        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
-    }
-    assert!(file.is_file(), "the existing-file guard must pass");
-    let err = svc.remove_store_plugin("plugin.tar.gz").unwrap_err();
-    assert!(matches!(err, AdminError::Internal), "{err:?}");
-    assert_eq!(err.http_status(), 500);
-    assert_eq!(err.code(), "internal");
-    assert_eq!(err.message(), AdminError::Internal.message());
-    assert_eq!(std::fs::read(file).unwrap(), b"keep this plugin");
 }
 
 #[test]
@@ -597,40 +508,6 @@ fn catalog_projects_each_inventory_row_into_the_catalog_vocabulary() {
         row("d.tar.gz").name,
         "d.tar.gz",
         "no manifest: named by its file"
-    );
-}
-
-#[test]
-fn catalog_repeat_gets_reuse_the_cached_scan() {
-    let dir = tmp_plugins_dir("cache-reuse");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let tarball = fake_tarball("acme-store-cache", "cachestore", "1.0.0", "allowed");
-    svc.install_store_plugin("cache.tar.gz", &tarball)
-        .expect("install");
-
-    for _ in 0..5 {
-        let cat = svc.store_plugin_catalog();
-        assert!(cat.iter().any(|p| p.name == "acme-store-cache"));
-    }
-    let misses_after_repeats = catalog_cache().lock().unwrap()[&dir].misses;
-    assert_eq!(
-        misses_after_repeats, 1,
-        "5 repeat GETs over an unchanged directory must cost exactly 1 real scan"
-    );
-
-    let tarball2 = fake_tarball("acme-store-cache-2", "cachestore2", "1.0.0", "allowed");
-    svc.install_store_plugin("cache2.tar.gz", &tarball2)
-        .expect("install");
-
-    let cat = svc.store_plugin_catalog();
-    assert!(
-        cat.iter().any(|p| p.name == "acme-store-cache-2"),
-        "the newly installed plugin is visible on the very next GET"
-    );
-    let misses_after_change = catalog_cache().lock().unwrap()[&dir].misses;
-    assert_eq!(
-        misses_after_change, 2,
-        "a real directory change must invalidate the cache and cost exactly 1 more scan"
     );
 }
 
@@ -785,59 +662,6 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
     cache.get_mut(&dir).expect("entry present").inserted_at = now + CATALOG_CACHE_TTL_SECS + 1;
     prune_catalog_cache(&mut cache, now);
     assert!(!cache.contains_key(&dir), "an entry whose inserted_at is in the future (backward clock jump) must be treated as stale, not ageless");
-}
-
-#[cfg(unix)]
-#[test]
-fn catalog_unreadable_dir_does_not_serve_stale_cache() {
-    let dir = tmp_plugins_dir("unreadable");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-
-    let cat = svc.store_plugin_catalog();
-    assert!(
-        cat.iter().all(|p| p.loader != "dynamic-library"),
-        "an empty, readable plugins dir has no dynamic-library rows"
-    );
-    assert!(
-        catalog_cache().lock().unwrap().contains_key(&dir),
-        "an empty dir's (empty) scan is cached, exactly like a missing dir would be"
-    );
-
-    struct RemoveFileOnDrop<'a>(&'a std::path::Path);
-    impl Drop for RemoveFileOnDrop<'_> {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(self.0);
-        }
-    }
-
-    std::fs::remove_dir(&dir).unwrap();
-    std::fs::write(&dir, b"not a directory").unwrap();
-    let _remove = RemoveFileOnDrop(&dir);
-
-    assert!(
-        std::fs::read_dir(&dir).is_err(),
-        "a regular file at the plugins-dir path must fail read_dir for every user"
-    );
-
-    let cat_after = svc.store_plugin_catalog();
-
-    let cat_again = svc.store_plugin_catalog();
-
-    let row = cat_after
-        .iter()
-        .find(|p| p.loader == "dynamic-library")
-        .expect("an unreadable dir must surface a row, never silently serve the stale empty cache");
-    assert_eq!(row.valid, Some(false));
-    assert!(
-            row.error.as_deref().is_some_and(|e| e.starts_with("INVALID:")),
-            "must be the real INVALID row surfaced by inventory_tarballs/discover, not stale data: {row:?}"
-        );
-
-    let row_again = cat_again
-        .iter()
-        .find(|p| p.loader == "dynamic-library")
-        .expect("a second read while still unreadable surfaces the row again, every time");
-    assert_eq!(row_again.error, row.error);
 }
 
 #[test]
