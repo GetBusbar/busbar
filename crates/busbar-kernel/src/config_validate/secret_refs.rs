@@ -67,6 +67,42 @@ fn secret_module_row(
     }
 }
 
+fn checked_reference_result(what: &str, checked: Result<(), Vec<String>>) -> Result<(), String> {
+    checked.map_err(|reasons| {
+        reasons
+            .iter()
+            .map(|line| format!("{what}: {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+fn reference_module_row(
+    what: &str,
+    module: &str,
+    linked: bool,
+    row: Option<busbar_contract::plugin_rows::Row>,
+) -> Result<(), String> {
+    if linked {
+        return Ok(());
+    }
+    match row {
+        Some(p) if p.kind == "secret" => Ok(()),
+        Some(p) => Err(format!(
+            "{what} references secret module '{}', but plugin '{}' has kind '{}', not \
+                 'secret'; only a `kind: secret` plugin can back a secret reference",
+            module, p.key, p.kind
+        )),
+        None => Err(format!(
+            "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
+                 and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
+                 spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
+                 e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
+            module, module
+        )),
+    }
+}
+
 pub(crate) fn registry_refusal(registry: &dyn PluginRows, cfg: &RootCfg) -> Result<(), String> {
     registry_refusal_with(registry, cfg, crate::config::secret::axis())
 }
@@ -85,36 +121,15 @@ pub(crate) fn registry_refusal_with(
         }
         if let Some(axis) = axis.filter(|a| a.answers(&r.module)) {
             let settings = serde_json::Value::Object(r.settings.clone());
-            if let Err(reasons) = axis.check(&r.module, &settings) {
-                return Err(reasons
-                    .iter()
-                    .map(|line| format!("{what}: {line}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"));
-            }
+            checked_reference_result(&what, axis.check(&r.module, &settings))?;
         }
-        if axis.is_some_and(|a| a.linked(&r.module)) {
-            continue;
-        }
-        match registry.resolve(&r.module) {
-            Some(p) if p.kind == "secret" => {}
-            Some(p) => {
-                return Err(format!(
-                    "{what} references secret module '{}', but plugin '{}' has kind '{}', not \
-                     'secret'; only a `kind: secret` plugin can back a secret reference",
-                    r.module, p.key, p.kind
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
-                     and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
-                     spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
-                     e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
-                    r.module, r.module
-                ));
-            }
-        }
+        let linked = axis.is_some_and(|a| a.linked(&r.module));
+        let row = if linked {
+            None
+        } else {
+            registry.resolve(&r.module)
+        };
+        reference_module_row(&what, &r.module, linked, row)?;
     }
     Ok(())
 }
