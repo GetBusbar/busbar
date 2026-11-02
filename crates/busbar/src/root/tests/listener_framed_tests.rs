@@ -107,8 +107,7 @@ fn custody_conn(
     tokio::io::DuplexStream,
     super::Conn<tokio::io::DuplexStream>,
 ) {
-    let framer = found(Arc::new(H1Accept::new(true))).unwrap();
-    custody_conn_with_framer(router, framer)
+    custody_conn_with_framer(router, actual_http_framer())
 }
 
 fn custody_conn_with_framer(
@@ -690,6 +689,12 @@ async fn a_failed_refusal_ends_the_connection_and_a_rendered_refusal_keeps_it_li
 }
 
 async fn anonymous_policy() -> tokio::sync::MutexGuard<'static, ()> {
+    anonymous_policy_with_upgrade(None).await
+}
+
+async fn anonymous_policy_with_upgrade(
+    upgrade: Option<&str>,
+) -> tokio::sync::MutexGuard<'static, ()> {
     use busbar_contract::abi::auth::AuthPoints;
     use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
@@ -706,7 +711,7 @@ async fn anonymous_policy() -> tokio::sync::MutexGuard<'static, ()> {
         claimant: Claimant::Plane("listener-fixture".into()),
         dialect: 0,
         auth: LineAuth::None,
-        upgrade: None,
+        upgrade: upgrade.map(str::to_owned),
         offered: AuthPoints(0),
     }])
     .unwrap();
@@ -950,11 +955,11 @@ fn found(door: Arc<H1Accept>) -> Option<DataFramer> {
     }))
 }
 
-fn actual_transport(door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<dyn FramerDoor> {
+fn actual_transport_on(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
+) -> Arc<dyn FramerDoor> {
     use crate::root::doors::{bind_on, Dispatched};
-    use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    assert!(crate::root::inbound::install(&dispatcher));
     let plugin = crate::root::test_plugins::linked_transport(door, bind_on(&dispatcher));
     Arc::new(
         Dispatched::open_on(
@@ -966,12 +971,234 @@ fn actual_transport(door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<
     )
 }
 
+fn actual_transport(door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<dyn FramerDoor> {
+    use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    assert!(crate::root::inbound::install(&dispatcher));
+    actual_transport_on(door, dispatcher)
+}
+
 fn actual_http_framer() -> DataFramer {
     let door = actual_transport(busbar_transport_http::door::door);
     data_framer(Arc::new(move |scheme| {
         (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
     }))
     .expect("the actual HTTP transport accepts the data listener")
+}
+
+// Passive test-local instrumentation: no input, output, context, ticket or result is changed.
+// Counts carry no pointers or borrowed payload, and every crossing delegates exactly once.
+#[derive(Clone, Copy, Debug)]
+enum ObservedCall {
+    Finish,
+    Detach,
+    Adopt,
+    Emit {
+        status: u32,
+        end: bool,
+        len: usize,
+    },
+    Refuse {
+        stream: u64,
+        status: u32,
+        head_sent: bool,
+    },
+    Cancel,
+}
+
+struct ObservedDoor {
+    actual: Arc<dyn FramerDoor>,
+    calls: std::sync::Mutex<Vec<ObservedCall>>,
+}
+
+impl ObservedDoor {
+    fn new(actual: Arc<dyn FramerDoor>) -> Arc<Self> {
+        Arc::new(Self {
+            actual,
+            calls: Default::default(),
+        })
+    }
+
+    fn record(&self, call: &busbar_core_connector::framer::Call<'_>) {
+        use busbar_core_connector::framer::Call;
+        let observed = match call {
+            Call::Finish(..) => Some(ObservedCall::Finish),
+            Call::Detach(..) => Some(ObservedCall::Detach),
+            Call::Adopt(..) => Some(ObservedCall::Adopt),
+            Call::Emit(input, _) => Some(ObservedCall::Emit {
+                status: input.status,
+                end: input.end_of_frame != 0,
+                len: input.len,
+            }),
+            Call::Refuse(input, _) => Some(ObservedCall::Refuse {
+                stream: input.stream,
+                status: input.status,
+                head_sent: input.head_sent != 0,
+            }),
+            _ => None,
+        };
+        if let Some(observed) = observed {
+            self.calls.lock().unwrap().push(observed);
+        }
+    }
+
+    fn count(&self, matching: impl Fn(&ObservedCall) -> bool) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| matching(call))
+            .count()
+    }
+}
+
+impl FramerDoor for ObservedDoor {
+    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+        self.actual.facts()
+    }
+    fn seals_values(&self) -> bool {
+        self.actual.seals_values()
+    }
+    fn accepts(&self) -> bool {
+        self.actual.accepts()
+    }
+    fn instance(&self) -> Option<u64> {
+        self.actual.instance()
+    }
+    fn io_owner(&self) -> Option<u64> {
+        self.actual.io_owner()
+    }
+    fn side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
+        self.actual.side()
+    }
+    fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
+        self.actual.framing_side()
+    }
+    fn cross(
+        &self,
+        call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        self.record(&call);
+        self.actual.cross(call)
+    }
+    fn cross_on(
+        &self,
+        side: &dyn busbar_core_connector::carrier::Side,
+        resume: bool,
+        call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        self.record(&call);
+        self.actual.cross_on(side, resume, call)
+    }
+    fn carry(
+        &self,
+        side: &dyn busbar_core_connector::carrier::Side,
+        resume: bool,
+        call: busbar_core_connector::carrier::Carry<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        if matches!(&call, busbar_core_connector::carrier::Carry::Cancel(..)) {
+            self.calls.lock().unwrap().push(ObservedCall::Cancel);
+        }
+        self.actual.carry(side, resume, call)
+    }
+    fn framing_context(
+        &self,
+        listener: u64,
+        connection: u64,
+    ) -> Result<
+        Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        busbar_core_connector::framer::Refused,
+    > {
+        self.actual.framing_context(listener, connection)
+    }
+    fn adopting_context(
+        &self,
+        source: Arc<dyn busbar_contract::framing_scope::FramingScope>,
+    ) -> Result<
+        Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        busbar_core_connector::framer::Refused,
+    > {
+        self.actual.adopting_context(source)
+    }
+    fn cross_scoped(
+        &self,
+        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        side: Option<&dyn busbar_core_connector::carrier::Side>,
+        resume: bool,
+        call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        self.record(&call);
+        self.actual.cross_scoped(context, side, resume, call)
+    }
+    fn cancel_scoped(
+        &self,
+        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        side: &dyn busbar_core_connector::carrier::Side,
+        call: busbar_core_connector::carrier::Carry<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        if matches!(&call, busbar_core_connector::carrier::Carry::Cancel(..)) {
+            self.calls.lock().unwrap().push(ObservedCall::Cancel);
+        }
+        self.actual.cancel_scoped(context, side, call)
+    }
+}
+
+#[cfg(feature = "transport-ws")]
+async fn actual_session_framer() -> (
+    tokio::sync::MutexGuard<'static, ()>,
+    DataFramer,
+    Arc<ObservedDoor>,
+    Arc<ObservedDoor>,
+) {
+    use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
+    let publishing = anonymous_policy_with_upgrade(Some("ws")).await;
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    assert!(crate::root::inbound::install(&dispatcher));
+    let http = ObservedDoor::new(actual_transport_on(
+        busbar_transport_http::door::door,
+        dispatcher.clone(),
+    ));
+    let ws = ObservedDoor::new(actual_transport_on(
+        busbar_transport_ws::door::door,
+        dispatcher,
+    ));
+    let (http_door, ws_door): (Arc<dyn FramerDoor>, Arc<dyn FramerDoor>) =
+        (http.clone(), ws.clone());
+    let framer = data_framer(Arc::new(move |scheme| match scheme {
+        DATA_SCHEME => Some(http_door.clone()),
+        "ws" => Some(ws_door.clone()),
+        _ => None,
+    }))
+    .expect("actual HTTP opens the connection and WS owns its admitted upgrade");
+    (publishing, framer, http, ws)
+}
+
+#[cfg(feature = "transport-ws")]
+const SESSION_REQUEST: &[u8] = b"GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+
+#[cfg(feature = "transport-ws")]
+async fn read_reply(client: &mut tokio::io::DuplexStream, body: &[u8]) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut wire = Vec::new();
+        loop {
+            let mut bytes = [0; 1024];
+            let count = client.read(&mut bytes).await.unwrap();
+            assert_ne!(count, 0, "the real response completes before EOF: {wire:?}");
+            wire.extend_from_slice(&bytes[..count]);
+            assert!(wire.len() <= 16 * 1024, "bounded response");
+            if let Some(head_end) = wire.windows(4).position(|part| part == b"\r\n\r\n") {
+                if body.is_empty()
+                    || wire[head_end + 4..]
+                        .windows(body.len())
+                        .any(|part| part == body)
+                {
+                    return wire;
+                }
+            }
+        }
+    })
+    .await
+    .expect("the actual transport delivers its complete response")
 }
 
 async fn answer(s: &mut tokio::net::TcpStream) -> String {
@@ -1610,13 +1837,13 @@ fn held_session_refusal_route() -> (
     (router, admitted, release)
 }
 
+#[cfg(feature = "transport-ws")]
 #[tokio::test]
 async fn an_ended_session_adoption_refuses_before_any_plane_effect() {
     use busbar_kernel::plane_routes::FramedSession;
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::{Mux, SESSION_REFUSE_WIRE};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let _publishing = anonymous_policy().await;
+    let (_publishing, framer, http, ws) = actual_session_framer().await;
     let effects = Arc::new(AtomicUsize::new(0));
     let route_effects = effects.clone();
     let router = Router::new().route(
@@ -1633,134 +1860,160 @@ async fn an_ended_session_adoption_refuses_before_any_plane_effect() {
             },
         ),
     );
-    let door = Arc::new(Mux::with_refused_session());
     let (mut client, server) = tokio::io::duplex(4096);
-    let (_stop, stopped) = tokio::sync::watch::channel(false);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::serve(
         server,
-        staged_mux_framer(door.clone()),
+        framer,
         router,
         false,
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
-    let mut wire = Vec::new();
-    tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut wire))
-        .await
-        .expect("the refused stage closes")
-        .unwrap();
+    // A real WebSocket handshake missing its mandatory key ends adoption with its own refusal.
+    client.write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n").await.unwrap();
+    let mut wire = read_reply(&mut client, b"").await;
+    stop.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
-        .expect("the refused actor terminates")
+        .unwrap()
         .unwrap();
+    client.read_to_end(&mut wire).await.unwrap();
+    assert!(
+        wire.starts_with(b"HTTP/1.1 400") || wire.starts_with(b"HTTP/1.1 426"),
+        "{wire:?}"
+    );
     assert_eq!(
-        wire, SESSION_REFUSE_WIRE,
-        "the actual adoption refusal is preserved"
+        String::from_utf8_lossy(&wire).matches("HTTP/1.1 ").count(),
+        1,
+        "the actual adoption refusal is preserved without an extractor fallback"
     );
     assert_eq!(
         effects.load(Ordering::SeqCst),
         0,
         "admission gates every plane effect"
     );
-    assert_eq!(door.committed_heads(), 0);
-    assert!(door.emitted().is_empty());
-    assert!(
-        door.responses().is_empty(),
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
+    );
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { .. })),
+        0
+    );
+    assert_eq!(
+        http.count(|call| matches!(call, ObservedCall::Emit { .. })),
+        0,
         "no extractor fallback overwrites the stage refusal"
     );
 }
 
+#[cfg(feature = "transport-ws")]
 #[tokio::test]
 async fn a_staged_plane_refusal_keeps_its_head_and_body_without_committing_101() {
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::{Mux, SESSION_ACCEPT_WIRE};
-
-    let _publishing = anonymous_policy().await;
-    let door = Arc::new(Mux::with_session());
+    let (_publishing, framer, _http, ws) = actual_session_framer().await;
     let (router, admitted, release) = held_session_refusal_route();
     let (mut client, server) = tokio::io::duplex(4096);
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::serve(
         server,
-        staged_mux_framer(door.clone()),
+        framer,
         router,
         false,
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
+    client.write_all(SESSION_REQUEST).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), admitted)
         .await
-        .expect("the typed stage reaches the route")
+        .expect("the real typed stage reaches the route")
         .unwrap();
-    let mut first = [0; 1];
+    let mut byte = [0; 1];
     assert!(
-        tokio::time::timeout(Duration::from_millis(20), client.read(&mut first))
+        tokio::time::timeout(Duration::from_millis(20), client.read(&mut byte))
             .await
             .is_err(),
         "adoption's 101 bytes stay held while the route decides"
     );
-    assert_eq!(door.committed_heads(), 0);
-    assert!(door.emitted().is_empty());
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { .. })),
+        0
+    );
     release.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_response_end())
-        .await
-        .expect("the full refusal body finishes");
-    let mut wire = Vec::new();
-    while !wire.ends_with(b"the staged plane refused") {
-        let mut bytes = [0; 512];
-        let read = tokio::time::timeout(Duration::from_secs(10), client.read(&mut bytes))
-            .await
-            .expect("the plane refusal reaches the wire")
-            .unwrap();
-        assert_ne!(read, 0, "the response body is complete before EOF");
-        wire.extend_from_slice(&bytes[..read]);
-    }
-    let _ = stop.send(true);
+    let body = b"the staged plane refused";
+    let mut wire = read_reply(&mut client, body).await;
+    stop.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
-        .expect("the refusing actor stops")
+        .unwrap()
         .unwrap();
     client.read_to_end(&mut wire).await.unwrap();
-    let responses = door.responses();
-    let heads: Vec<_> = responses.iter().filter(|value| value.status != 0).collect();
-    assert_eq!(heads.len(), 1);
-    assert_eq!(heads[0].status, 401);
-    assert!(busbar_contract::abi::transport::fields::lines(&heads[0].bytes)
-        .any(|(name, value)| name == b"www-authenticate" && value == b"Bearer realm=\"staged\""));
-    let body: Vec<_> = responses
-        .iter()
-        .filter(|value| value.status == 0)
-        .flat_map(|value| value.bytes.iter().copied())
-        .collect();
-    assert_eq!(body, b"the staged plane refused");
-    assert!(responses.last().is_some_and(|value| value.end));
-    assert!(!wire
-        .windows(SESSION_ACCEPT_WIRE.len())
-        .any(|part| part == SESSION_ACCEPT_WIRE));
-    assert_eq!(door.committed_heads(), 0);
-    assert!(door.emitted().is_empty());
+    let head_end = wire
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .unwrap();
+    let head = String::from_utf8_lossy(&wire[..head_end]).to_ascii_lowercase();
+    assert!(head.starts_with("http/1.1 401"), "{head}");
+    assert!(
+        head.contains("www-authenticate: bearer realm=\"staged\""),
+        "{head}"
+    );
+    assert_eq!(
+        &wire[head_end + 4..],
+        body,
+        "the full refusal body is unchanged"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&wire).matches("HTTP/1.1 ").count(),
+        1
+    );
+    assert!(!wire.windows(12).any(|bytes| bytes == b"HTTP/1.1 101"));
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
+    );
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 401, .. })),
+        1
+    );
+    assert_eq!(ws.count(|call| matches!(call, ObservedCall::Emit { status: 0, end: false, len } if *len == body.len())), 1,
+        "the refusal payload reaches the actual adopted transport emitter");
+    assert_eq!(
+        ws.count(|call| matches!(
+            call,
+            ObservedCall::Emit {
+                status: 0,
+                end: true,
+                len: 0
+            }
+        )),
+        1,
+        "the refusal body is terminated through its actual emitter"
+    );
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { .. })),
+        3,
+        "only the refusal head, body and terminal emit occur; no application frame follows"
+    );
 }
 
+#[cfg(feature = "transport-ws")]
 #[tokio::test(start_paused = true)]
 async fn stopping_eof_and_timeout_abandon_uncommitted_sessions_without_wire() {
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux;
-
-    let _publishing = anonymous_policy().await;
     for ending in ["stop", "eof", "timeout"] {
-        let door = Arc::new(Mux::with_session());
+        let (_publishing, framer, _http, ws) = actual_session_framer().await;
         let (router, admitted, mut held) = held_session_refusal_route();
         let (mut client, server) = tokio::io::duplex(4096);
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let served = tokio::spawn(super::serve(
             server,
-            staged_mux_framer(door.clone()),
+            framer,
             router,
             false,
             Duration::from_secs(60),
             stopped,
         ));
-        client.write_all(b"1").await.unwrap();
+        client.write_all(SESSION_REQUEST).await.unwrap();
         tokio::time::timeout(Duration::from_secs(10), admitted)
             .await
             .expect("the route holds an admitted but uncommitted stage")
@@ -1794,13 +2047,21 @@ async fn stopping_eof_and_timeout_abandon_uncommitted_sessions_without_wire() {
             wire.is_empty(),
             "{ending}: neither held adoption nor finish wire may leak: {wire:?}"
         );
-        assert_eq!(door.committed_heads(), 0, "{ending}");
         assert_eq!(
-            door.session_finishes(),
+            ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+            0,
+            "{ending}"
+        );
+        assert_eq!(
+            ws.count(|call| matches!(call, ObservedCall::Finish)),
             1,
             "{ending}: staged framing finishes exactly once"
         );
-        assert!(door.emitted().is_empty(), "{ending}");
+        assert_eq!(
+            ws.count(|call| matches!(call, ObservedCall::Emit { .. })),
+            0,
+            "{ending}"
+        );
         tokio::time::timeout(Duration::from_secs(1), held.closed())
             .await
             .expect("the abandoned route receiver is cancelled");
@@ -2187,12 +2448,12 @@ async fn a_dropped_pending_admission_ack_cannot_publish_a_late_acceptance() {
     assert!(door.responses().is_empty());
 }
 
+#[cfg(feature = "transport-ws")]
 #[tokio::test]
 async fn a_plain_request_that_declines_detach_keeps_http_400_and_runs_no_plane_effect() {
     use busbar_kernel::plane_routes::FramedSession;
-    use busbar_test_kit::root_door_fixtures::pending_mux_accept::{Mux, SESSION_REFUSE_WIRE};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let _publishing = anonymous_policy().await;
+    let (_publishing, framer, http, ws) = actual_session_framer().await;
     let effects = Arc::new(AtomicUsize::new(0));
     let route_effects = effects.clone();
     let router = Router::new().route(
@@ -2209,35 +2470,50 @@ async fn a_plain_request_that_declines_detach_keeps_http_400_and_runs_no_plane_e
             },
         ),
     );
-    let door = Arc::new(Mux::with_declined_detach());
     let (mut client, server) = tokio::io::duplex(4096);
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::serve(
         server,
-        staged_mux_framer(door.clone()),
+        framer,
         router,
         false,
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
-    let mut wire = vec![0; SESSION_REFUSE_WIRE.len()];
-    tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut wire))
+    client
+        .write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .await
-        .expect("the retained HTTP framing writes its real 400 refusal")
         .unwrap();
-    assert_eq!(wire, SESSION_REFUSE_WIRE);
-    assert_eq!(door.detach_attempts(), 1, "the actual detach refused");
+    let wire = read_reply(&mut client, b"").await;
+    assert!(wire.starts_with(b"HTTP/1.1 400"), "{wire:?}");
     assert_eq!(
-        door.adoption_attempts(),
+        http.count(|call| matches!(call, ObservedCall::Detach)),
+        1,
+        "the actual detach refused"
+    );
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Adopt)),
         0,
         "the WS framer is never adopted"
     );
-    assert_eq!(door.refusals(), vec![(1, 400, false)]);
+    assert_eq!(
+        http.count(|call| matches!(
+            call,
+            ObservedCall::Refuse {
+                stream: 1,
+                status: 400,
+                head_sent: false
+            }
+        )),
+        1
+    );
     assert_eq!(effects.load(Ordering::SeqCst), 0);
-    assert_eq!(door.committed_heads(), 0);
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        0
+    );
     assert!(
-        door.responses().is_empty(),
+        http.count(|call| matches!(call, ObservedCall::Emit { .. })) == 0,
         "the route's fallback 403 is suppressed"
     );
     stop.send(true).unwrap();
@@ -2251,9 +2527,13 @@ async fn a_plain_request_that_declines_detach_keeps_http_400_and_runs_no_plane_e
         rest.is_empty(),
         "there is no duplicate refusal or 101 handshake"
     );
-    assert_eq!(door.http_finishes(), 1);
-    assert_eq!(door.session_finishes(), 0);
-    assert_eq!(door.cancellations(), 0);
+    assert_eq!(http.count(|call| matches!(call, ObservedCall::Finish)), 1);
+    assert_eq!(ws.count(|call| matches!(call, ObservedCall::Finish)), 0);
+    assert_eq!(
+        http.count(|call| matches!(call, ObservedCall::Cancel))
+            + ws.count(|call| matches!(call, ObservedCall::Cancel)),
+        0
+    );
 }
 
 #[cfg(feature = "transport-ws")]
