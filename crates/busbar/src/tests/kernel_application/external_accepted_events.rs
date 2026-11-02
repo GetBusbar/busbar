@@ -1,0 +1,314 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Actual SQLite acceptance/recovery controls. The four production exporters do
+//! not declare Events; projection and origin policy are checked beside auditlog's
+//! private production functions, without claiming nonexistent exporter delivery.
+
+use busbar_contract::plugin::Kind;
+use busbar_contract::records::PlaneSelector;
+use busbar_kernel::audit::auditlog::{
+    emit_admin_hostless_now, plugin_refusal_resource, record_plugin_refusal, PluginRefusal,
+    AUDIT_LOG,
+};
+use busbar_kernel::audit_ring::OUTCOME_APPLIED;
+use std::io::{BufRead, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+#[path = "../../root/tests/test_plugins.rs"]
+mod plugins;
+
+static ACCEPTED: AtomicUsize = AtomicUsize::new(0);
+fn accepted(entry: &busbar_kernel::audit_ring::AuditEntry) {
+    if entry.resource.starts_with("actual-accepted:") {
+        assert!(
+            AUDIT_LOG
+                .list_filtered(0, 10, None, Some(&entry.resource))
+                .iter()
+                .any(|accepted| accepted.seq == entry.seq),
+            "the accepted ring is visible before the producer observer"
+        );
+        ACCEPTED.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+// A second real SQLite connection holds the writer lock. No Store implementation
+// or append answer is substituted: the product's own append receives SQLITE_BUSY.
+struct WriterLock(std::process::Child);
+impl WriterLock {
+    fn acquire(database: &Path) -> Self {
+        let mut child = std::process::Command::new("python3")
+            .args(["-u", "-c", "import sqlite3,sys\nc=sqlite3.connect(sys.argv[1],timeout=0)\nc.execute('BEGIN IMMEDIATE')\nprint('writer-held',flush=True)\nsys.stdin.readline()\nc.rollback()\nc.close()"])
+            .arg(database)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn().expect("hold the actual SQLite database writer lock");
+        let mut witness = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("SQLite control stdout"))
+            .read_line(&mut witness)
+            .expect("read the SQLite lock witness");
+        assert_eq!(witness.trim(), "writer-held");
+        Self(child)
+    }
+}
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        if let Some(mut input) = self.0.stdin.take() {
+            input
+                .write_all(b"release\n")
+                .expect("release the actual SQLite writer lock");
+        }
+        assert!(self
+            .0
+            .wait()
+            .expect("wait for SQLite lock control")
+            .success());
+    }
+}
+
+#[test]
+fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_accept_them_again() {
+    const CHILD: &str = "BUSBAR_ACTUAL_ACCEPTED_EVENTS_CHILD";
+    const WITNESS: &str = "actual SQLite accepted-event controls completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test has an exact name")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start isolated actual root"),
+        );
+        let until = Instant::now() + Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().expect("poll actual root") {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(status.success(), "actual root failed: {status}: {output}");
+                assert!(
+                    output.contains(WITNESS),
+                    "exact child did not complete: {output}"
+                );
+                return;
+            }
+            assert!(
+                Instant::now() < until,
+                "actual SQLite acceptance control timed out"
+            );
+            std::thread::park_timeout(Duration::from_millis(5));
+        }
+    }
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
+            .expect("BUSBAR_TEST_SQLITE_CDYLIB names the actual built SQLite product"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("read actual SQLite statement")
+        .expect("SQLite exports a statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("valid actual SQLite statement")
+        .name;
+    assert_eq!(module, "busbar-store-sqlite");
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let directory = plugins::scratch(&format!(
+        "actual-accepted-events-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let library = std::fs::read(&library_path).expect("read actual SQLite library");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("sqlite.tar.gz"), archive)
+        .expect("stage signed actual SQLite product");
+    let database = directory.join("accepted.sqlite3");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": {"db_path": database, "busy_timeout_ms": 0}}
+    }))
+    .expect("actual SQLite deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("actual deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("actual Store config authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("actual typed Store calls"),
+    )
+    .expect("actual conditional config records");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        config,
+        plugin_config,
+        Some(overlay),
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(anchor),
+        true,
+    )
+    .expect("normal actual SQLite root builds");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("same SQLite Store books the root before activation");
+    limits.keep().expect("actual root limits activate");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("actual root audit hydration");
+    busbar_kernel::audit::auditlog::install_accepted_entry_test_hook(accepted);
+    let store = app
+        .governance
+        .as_ref()
+        .expect("normal root has governance")
+        .store();
+    let emit =
+        |resource| emit_admin_hostless_now("config.mutate", resource, OUTCOME_APPLIED, "admin");
+    let rows = |resource| AUDIT_LOG.list_filtered(0, 10, None, Some(resource));
+    emit("actual-accepted:first");
+    assert_eq!(
+        rows("actual-accepted:first").len(),
+        1,
+        "one mutation is accepted once"
+    );
+    assert_eq!(
+        ACCEPTED.load(Ordering::SeqCst),
+        1,
+        "ring acceptance happens once"
+    );
+    let failure_resource = plugin_refusal_resource(
+        Kind::Export.root(),
+        "actual-accepted-failure",
+        "delivery-failed",
+    );
+    {
+        let _lock = WriterLock::acquire(&database);
+        std::thread::spawn(|| {
+            record_plugin_refusal(
+                PluginRefusal::Op,
+                Kind::Export.root(),
+                "actual-accepted-failure",
+                "delivery-failed",
+            )
+        })
+        .join()
+        .expect("asynchronous host export-refusal record completes");
+        assert!(
+            rows(&failure_resource).is_empty(),
+            "failed append has not entered the accepted ring"
+        );
+    }
+    emit("actual-accepted:failure-recovery");
+    let failure = rows(&failure_resource);
+    assert_eq!(
+        failure.len(),
+        1,
+        "asynchronous refusal is recovered into the audit chain once"
+    );
+    let durable = store
+        .list_plane_records(
+            busbar_kernel::store::plane_view::KIND_AUDIT,
+            &PlaneSelector::All,
+        )
+        .expect("read actual durable audit records");
+    assert!(
+        durable
+            .iter()
+            .any(|body| String::from_utf8_lossy(body).contains(&failure_resource)),
+        "the asynchronous refusal is durably appended"
+    );
+    emit_admin_hostless_now(
+        PluginRefusal::Op.action(),
+        &failure_resource,
+        OUTCOME_APPLIED,
+        "admin",
+    );
+    assert_eq!(
+        rows(&failure_resource).len(),
+        2,
+        "ordinary identical resource text remains a separate accepted mutation"
+    );
+    let auth_resource = plugin_refusal_resource(
+        Kind::Auth.root(),
+        "actual-accepted-failure",
+        "delivery-failed",
+    );
+    record_plugin_refusal(
+        PluginRefusal::Op,
+        Kind::Auth.root(),
+        "actual-accepted-failure",
+        "delivery-failed",
+    );
+    assert_eq!(
+        rows(&auth_resource).len(),
+        1,
+        "non-export refusal remains an accepted producer"
+    );
+    {
+        let _lock = WriterLock::acquire(&database);
+        emit("actual-accepted:queued");
+        assert!(
+            rows("actual-accepted:queued").is_empty(),
+            "Store outage has not accepted the pending record"
+        );
+    }
+    emit("actual-accepted:recovered");
+    let queued = rows("actual-accepted:queued");
+    let recovered = rows("actual-accepted:recovered");
+    assert_eq!(queued.len(), 1, "recovered queued record is accepted once");
+    assert_eq!(recovered.len(), 1, "recovery trigger is accepted once");
+    assert_eq!(
+        recovered[0].seq,
+        queued[0].seq + 1,
+        "recovery preserves contiguous order"
+    );
+    let before = ACCEPTED.load(Ordering::SeqCst);
+    busbar_kernel::boot::hydrate_all(&app).expect("rehydrate actual accepted records");
+    assert_eq!(
+        ACCEPTED.load(Ordering::SeqCst),
+        before,
+        "restored records are not accepted again, so hydration cannot redispatch them"
+    );
+    assert_eq!(
+        rows("actual-accepted:queued").len(),
+        1,
+        "restore does not duplicate the accepted ring entry"
+    );
+    println!("{WITNESS}");
+}

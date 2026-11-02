@@ -1586,3 +1586,84 @@ fn an_enqueued_event_cannot_pass_an_older_failed_drain() {
     );
     assert_eq!(*delivered.lock().unwrap(), vec![1, 2]);
 }
+
+// Accepted-events projection is a producer policy. None of the four current product
+// exporters declares Events, so these tests intentionally claim no exporter delivery.
+#[test]
+fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
+    use crate::export::projection::Projection;
+    use busbar_contract::abi::export::{ExportField as F, ExportStream as S};
+    let entry = AuditEntry {
+        seq: 7,
+        ts: 1_700_000_000,
+        action: "config.mutate".into(),
+        resource: "config:accepted".into(),
+        outcome: "applied".into(),
+        principal: "admin".into(),
+        prev_hash: "prior".into(),
+        hash: "digest".into(),
+        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
+        recorded_here: true,
+    };
+    let full = project_audit_event(
+        Projection::for_test(
+            &[S::Events],
+            crate::export::projection::produced_fields(S::Events),
+        ),
+        &entry,
+    );
+    let narrow = project_audit_event(
+        Projection::for_test(&[S::Events], S::Events.pinned_fields()),
+        &entry,
+    );
+    assert_eq!(full[F::Kind.as_token()], "config.mutate");
+    assert_eq!(full[F::Actor.as_token()], "admin");
+    assert_eq!(full[F::Outcome.as_token()], "applied");
+    assert_eq!(full[F::Resource.as_token()], "config:accepted");
+    for field in [F::Seq, F::Ts, F::PrevHash] {
+        assert_eq!(
+            narrow[field.as_token()],
+            full[field.as_token()],
+            "the same accepted record supplies both projections"
+        );
+    }
+    for field in [F::Kind, F::Actor, F::Resource, F::Outcome] {
+        assert!(
+            narrow.get(field.as_token()).is_none(),
+            "ungranted fields never cross the producer boundary"
+        );
+    }
+    let logs = project_audit_event(
+        Projection::for_test(
+            &[S::Logs],
+            crate::export::projection::produced_fields(S::Events),
+        ),
+        &entry,
+    );
+    assert_eq!(
+        logs,
+        serde_json::json!({}),
+        "a log-only grant discloses no event fields"
+    );
+}
+
+#[test]
+fn accepted_event_origin_cannot_be_forged_by_mutation_resource_text() {
+    use busbar_contract::plugin::Kind;
+    let resource = plugin_refusal_resource(
+        Kind::Export.root(),
+        "accepted-events-failure",
+        "delivery-failed",
+    );
+    assert!(resource.contains("accepted-events-failure"));
+    assert!(!EventOrigin::for_plugin_refusal(PluginRefusal::Op, Kind::Export.root()).redispatch(),
+        "an asynchronous export operation failure is durable evidence without recursive Events delivery");
+    assert!(
+        EventOrigin::for_plugin_refusal(PluginRefusal::Op, Kind::Auth.root()).redispatch(),
+        "an auth operation failure remains an Events producer"
+    );
+    assert!(
+        EventOrigin::Mutation.redispatch(),
+        "a normal mutation with identical export-failure resource text still dispatches"
+    );
+}
