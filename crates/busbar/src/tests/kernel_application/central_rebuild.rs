@@ -46,7 +46,7 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let _config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
@@ -137,7 +137,7 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let _config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
