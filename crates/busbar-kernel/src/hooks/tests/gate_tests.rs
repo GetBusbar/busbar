@@ -1129,7 +1129,7 @@ impl RoutingPolicy for CeilingChangingSpy {
     }
 
     fn name(&self) -> &'static str {
-        self.spy.name()
+        RoutingPolicy::name(self.spy.as_ref())
     }
 }
 

@@ -4410,7 +4410,7 @@ fn self_subject_and_admin_key_callbacks_cannot_form_a_claim_cycle() {
         .issue_self("callback-cycle", "corp", None, now + 3600, now)
         .unwrap();
     let (entered_tx, entered) = std::sync::mpsc::channel();
-    let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+    let (continue_tx, continue_rx) = std::sync::mpsc::channel::<bool>();
     let weak = Arc::downgrade(&gov);
     *store.reenter.lock().unwrap() = Some(Box::new(move || {
         entered_tx.send(()).unwrap();

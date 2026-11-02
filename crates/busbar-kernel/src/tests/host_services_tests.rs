@@ -1971,7 +1971,6 @@ fn an_instance_declaring_a_kernel_record_kind_is_refused_at_admit() {
                 "squatter",
                 InstanceFacts {
                     record_kinds: vec![KIND, RecordSchemaId::new(kind)],
-                    conditional_records: true,
                     conditional_record_kinds: vec![1],
                     record_retentions: vec![busbar_contract::abi::plane::RecordRetention {
                         kind: 1,

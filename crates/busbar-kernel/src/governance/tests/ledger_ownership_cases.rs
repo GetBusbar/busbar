@@ -87,8 +87,11 @@ fn two_nodes_cannot_both_accept_corrections_beyond_the_shared_count() {
         .unwrap();
     assert_eq!(accepted.len(), 1);
     assert_eq!(
-        accepted[0].delta.get(busbar_contract::records::UNIT_INPUT),
-        Some(&CORRECTION_INPUT_UNITS)
+        accepted[0]
+            .delta
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
+        Some(i128::from(CORRECTION_INPUT_UNITS))
     );
     first_node.flush_budgets();
     second_node.flush_budgets();
