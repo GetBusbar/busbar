@@ -11,6 +11,34 @@ use busbar_contract::plugin_rows::{NeedLevel, PluginRows, Row, Skipped, Trust};
 
 use super::hold;
 
+#[test]
+fn a_present_malformed_floor_is_never_treated_as_absence_or_echoed() {
+    for corrupt in [
+        b"private-invalid-version".as_slice(),
+        b"private-invalid-utf8\xff".as_slice(),
+    ] {
+        let store = crate::root::store_double::RecordSlots::new();
+        let key = super::floor_key("node-a", "busbar-hook-x");
+        store.put_row(super::PLUGIN_FLOOR_SCHEMA, &key, corrupt);
+        let refused = hold(
+            store.calls().as_ref(),
+            "node-a",
+            &Scanned(vec![first_party("busbar-hook-x", "1.2.0")]),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(refused.contains("malformed"));
+        assert!(!refused.contains("private-invalid"));
+        assert_eq!(
+            super::wait_for(store.calls().record_get(super::PLUGIN_FLOOR_SCHEMA, &key))
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            corrupt
+        );
+    }
+}
+
 const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct ReleaseTransaction(Option<std::sync::mpsc::Sender<()>>);

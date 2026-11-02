@@ -1390,46 +1390,48 @@ fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
     );
 }
 
-/// **RACING FIRST BOOTS KEEP ONE DEPLOYMENT KEYSET**: minting the
-/// keyset redeems the store's single-use claim first, so a boot that lost it takes the key the
-/// winner keeps rather than keeping its own over it.
-///
-/// RED before the claim: the losing boot put its own seed and read its own back, and the two nodes
-/// signed with two keys.
+/// A delayed first boot cannot replace a key another first boot already confirmed.
 #[test]
-fn a_first_boot_that_lost_the_keyset_claim_takes_the_winners_key() {
-    use store_identity::{keyset_claim, KEYSET_SCHEMA, MINT_CLAIM_KIND};
-    let slots = crate::root::store_double::RecordSlots::new();
-    let winners = "a".repeat(64);
-    let mine = "b".repeat(64);
-    // The other boot won this period's claim (and the next one's, so the test never straddles a
-    // period boundary) and keeps its key a moment later.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after the epoch")
-        .as_secs();
-    for at in [now, now + store_identity::MINT_CLAIM_SECS] {
-        assert!(slots.redeem(MINT_CLAIM_KIND, &keyset_claim(at), u64::MAX, 0));
-    }
-    let writer = {
-        let slots = slots.clone();
-        let winners = winners.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(60));
-            slots.put_row(KEYSET_SCHEMA, b"deployment", winners.as_bytes());
-        })
+fn a_delayed_first_keyset_candidate_reads_the_atomic_winner() {
+    use busbar_contract::abi::sdk::store::conditional::Mutation;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
     };
-    let kept = keep_keyset(slots.calls().as_ref(), &mine).expect("the winner's keyset");
-    writer.join().expect("the winner kept its key");
+    let slots = crate::root::store_double::RecordSlots::new();
+    let mine = "a".repeat(64);
+    let winner = "b".repeat(64);
+    let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+    let (release, resumed) = std::sync::mpsc::sync_channel(1);
+    let resumed = Arc::new(Mutex::new(resumed));
+    let once = Arc::new(AtomicBool::new(true));
+    let selected = mine.clone();
+    slots.on_transaction(move |request| {
+        if request.mutations.iter().any(|m| {
+            matches!(m, Mutation::Put { schema, value, .. }
+            if schema == store_identity::KEYSET_SCHEMA && value == selected.as_bytes())
+        }) && once.swap(false, Ordering::SeqCst)
+        {
+            entered.send(()).unwrap();
+            resumed.lock().unwrap().recv().unwrap();
+        }
+        None
+    });
+    let delayed = {
+        let slots = slots.clone();
+        std::thread::spawn(move || keep_keyset(slots.calls().as_ref(), &mine))
+    };
+    waiting
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
     assert_eq!(
-        kept, winners,
-        "the boot that lost the claim takes the winner's key"
+        keep_keyset(slots.calls().as_ref(), &winner).unwrap(),
+        winner
     );
-    assert_eq!(
-        stored_keyset(slots.calls().as_ref()).expect("read"),
-        Some(winners),
-        "and never keeps its own over it"
-    );
+    release.send(()).unwrap();
+    assert_eq!(delayed.join().unwrap().unwrap(), winner);
+    assert_eq!(stored_keyset(slots.calls().as_ref()).unwrap(), Some(winner));
+    assert_eq!(slots.puts(), 1, "one immutable key was published");
 }
 
 #[test]
@@ -1529,70 +1531,60 @@ fn a_legacy_keyset_cache_never_repairs_corrupt_or_mismatched_store_state() {
     }
 }
 
-/// A boot that lost the keyset claim and finds nothing kept in time REFUSES rather than mint a
-/// second key; once the claim lapses, a later boot claims it and mints.
+/// A committed key whose answer was lost replays one immutable transaction, including its op id.
 #[test]
-fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
-    use store_identity::{keyset_claim, MINT_CLAIM_KIND, MINT_CLAIM_SECS};
+fn an_unknown_keyset_commit_replays_its_exact_candidate() {
+    use std::sync::{Arc, Mutex};
     let slots = crate::root::store_double::RecordSlots::new();
-    let secs = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("after the epoch")
-            .as_secs()
-    };
-    // Start at the beginning of a period, so the refused boot below runs well inside it.
-    let start = secs();
-    while secs() / MINT_CLAIM_SECS == start / MINT_CLAIM_SECS {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let now = secs();
-    // A winner that died before it kept anything: this period's claim is redeemed, nothing kept.
-    assert!(slots.redeem(MINT_CLAIM_KIND, &keyset_claim(now), u64::MAX, now));
-    let mine = "d".repeat(64);
-    let refused = keep_keyset(slots.calls().as_ref(), &mine).expect_err("no second key");
-    assert!(refused.contains("claim"), "{refused}");
-    assert_eq!(stored_keyset(slots.calls().as_ref()).expect("read"), None);
-    // Retried in the same period, the boot still refuses: its losing redemption bought nothing.
-    keep_keyset(slots.calls().as_ref(), &mine).expect_err("still no second key");
-    // The period ends; the next boot claims the next period's token and mints.
-    while secs() / MINT_CLAIM_SECS == now / MINT_CLAIM_SECS {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert_eq!(
-        keep_keyset(slots.calls().as_ref(), &mine).expect("minted"),
-        mine
-    );
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&attempts);
+    slots.on_transaction(move |request| {
+        seen.lock().unwrap().push(request.clone());
+        None
+    });
+    slots.lose_acks(true);
+    let seed = "d".repeat(64);
+    assert_eq!(keep_keyset(slots.calls().as_ref(), &seed).unwrap(), seed);
+    assert_eq!(slots.puts(), 1);
+    let attempts = attempts.lock().unwrap();
+    assert!(attempts.len() >= 2);
+    assert!(attempts.iter().all(|request| request == &attempts[0]));
 }
 
-/// **RACING FIRST BOOTS OF ONE HOST TAKE ONE NODE ID**: minting a
-/// host's id redeems the store's claim on that host first, so the boot that lost it takes the id
-/// the winner keeps.
-///
-/// RED before the claim: the losing boot minted and kept an id of its own over the winner's, and
-/// the two boots wrote two chains for one host.
 #[test]
-fn a_first_boot_that_lost_the_host_claim_takes_the_winners_node_id() {
-    use store_identity::{host_claim, MINT_CLAIM_KIND, NODE_SCHEMA};
-    let slots = crate::root::store_double::RecordSlots::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after the epoch")
-        .as_secs();
-    for at in [now, now + store_identity::MINT_CLAIM_SECS] {
-        assert!(slots.redeem(MINT_CLAIM_KIND, &host_claim("host-r", at), u64::MAX, 0));
-    }
-    let writer = {
-        let slots = slots.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(60));
-            slots.put_row(NODE_SCHEMA, b"host:host-r", &77u64.to_be_bytes());
-        })
+fn racing_first_host_candidates_keep_one_stable_registry_pointer() {
+    use busbar_contract::abi::sdk::store::conditional::Mutation;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
     };
-    let id = node_id(slots.calls().as_ref(), "host-r").expect("the winner's id");
-    writer.join().expect("the winner kept its id");
-    assert_eq!(id, 77, "the boot that lost the claim takes the winner's id");
-    assert_eq!(slots.rows_under(NODE_SCHEMA), 1, "and keeps no second row");
+    let slots = crate::root::store_double::RecordSlots::new();
+    let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+    let (release, resumed) = std::sync::mpsc::sync_channel(1);
+    let resumed = Arc::new(Mutex::new(resumed));
+    let once = Arc::new(AtomicBool::new(true));
+    slots.on_transaction(move |request| {
+        if request.mutations.iter().any(|m| {
+            matches!(m, Mutation::Put { schema, key, .. }
+            if schema == store_identity::NODE_SCHEMA && key == b"host:host-r")
+        }) && once.swap(false, Ordering::SeqCst)
+        {
+            entered.send(()).unwrap();
+            resumed.lock().unwrap().recv().unwrap();
+        }
+        None
+    });
+    let delayed = {
+        let slots = slots.clone();
+        std::thread::spawn(move || node_id(slots.calls().as_ref(), "host-r"))
+    };
+    waiting
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let winner = node_id(slots.calls().as_ref(), "host-r").unwrap();
+    release.send(()).unwrap();
+    assert_eq!(delayed.join().unwrap().unwrap(), winner);
+    assert_eq!(slots.rows_under(store_identity::NODE_SCHEMA), 1);
 }
 
 /// A minted node id is claimed for good before it is kept: every id the registry gives a host is
@@ -1607,6 +1599,43 @@ fn every_minted_node_id_is_held_by_its_claim() {
         "the id's claim is already redeemed"
     );
     assert_eq!(node_id(slots.calls().as_ref(), "host-x").expect("again"), a);
+}
+
+/// The page boundary is a Store response bound, never a fleet bound. Late-sorting peer chains
+/// participate in both migration and verification even after more than one registry page.
+#[test]
+fn a_saturated_registry_reads_the_late_peer_for_migration_and_verification() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let (own, late) = (7_u64, 8_u64);
+    for index in 0..=65_536 {
+        let node = if index == 65_536 { late } else { own };
+        slots.put_row(
+            store_identity::NODE_SCHEMA,
+            format!("host:{index:05}").as_bytes(),
+            &node.to_be_bytes(),
+        );
+    }
+    let mut first = keyed_store_book(&slots, own);
+    let mut peer = keyed_store_book(&slots, late);
+    first
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .unwrap();
+    peer.seal_unit(audit_inputs(1), audit_pass(), &token())
+        .unwrap();
+    drained(&first);
+    drained(&peer);
+    let migrated = store_identity::stored_chains(slots.calls().as_ref(), own).unwrap();
+    assert!(migrated
+        .iter()
+        .any(|(node, records)| *node == late && !records.is_empty()));
+    slots.corrupt(JOURNAL_SCHEMA, &part_key(late, 2, 0));
+    let (lane, own, keys) = first.stored_walk_inputs().unwrap();
+    let walk = walk_stored_chains(&lane, own, &keys);
+    assert!(walk.chains.contains(&late));
+    assert!(walk
+        .findings
+        .iter()
+        .any(|why| why.starts_with(&format!("node {late}:"))));
 }
 
 #[test]

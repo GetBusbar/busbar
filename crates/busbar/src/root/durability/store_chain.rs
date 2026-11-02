@@ -47,6 +47,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
+use busbar_contract::abi::sdk::store::conditional::{Decision, Mutation};
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_wal::{Record, ShipError, Shipper, MEMORY_BUFFER_RECORDS};
@@ -137,11 +138,55 @@ pub(crate) fn wait_for<F: Future>(fut: F) -> F::Output {
 }
 
 /// Put every part of `record`, in order.
-fn put_record(calls: &dyn StoreCalls, record: &Record) -> Result<(), String> {
+fn fenced_mutation(
+    calls: &dyn StoreCalls,
+    lease: &HeldLease,
+    mutation: Mutation,
+) -> Result<(), String> {
+    loop {
+        let Some(predicate) = lease.predicate(calls)? else {
+            return Err("a journal fence was released while its writer was active".into());
+        };
+        let request = super::conditional::candidate(vec![predicate], vec![mutation.clone()]);
+        match super::conditional::decide(calls, &request)? {
+            Decision::Applied => return Ok(()),
+            Decision::ConditionConflict => continue,
+        }
+    }
+}
+
+fn put_record(calls: &dyn StoreCalls, lease: &HeldLease, record: &Record) -> Result<(), String> {
+    let fenced = lease.predicate(calls)?.is_some();
+    if fenced {
+        // A predecessor may have left an unacknowledged multipart tail at this position.
+        // Clear it under the same ownership fence before publishing the replacement's parts.
+        fenced_mutation(
+            calls,
+            lease,
+            Mutation::DeleteRange {
+                schema: JOURNAL_SCHEMA.into(),
+                prefix: part_key(record.node, record.node_seq, 0)[..16].to_vec(),
+                exact_key_length: 18,
+            },
+        )?;
+    }
     for (part, value) in parts_of(record)?.iter().enumerate() {
         let part = u16::try_from(part).map_err(|_| "too many parts".to_string())?;
         let key = part_key(record.node, record.node_seq, part);
-        wait_for(calls.record_put(JOURNAL_SCHEMA, &key, value)).map_err(|f| f.to_string())?;
+        if fenced {
+            fenced_mutation(
+                calls,
+                lease,
+                Mutation::Put {
+                    schema: JOURNAL_SCHEMA.into(),
+                    key: key.to_vec(),
+                    value: value.as_slice().to_vec(),
+                },
+            )?;
+        } else {
+            // A concurrent same-host boot has an independently minted, never-reused id.
+            wait_for(calls.record_put(JOURNAL_SCHEMA, &key, value)).map_err(|f| f.to_string())?;
+        }
     }
     Ok(())
 }
@@ -415,6 +460,7 @@ struct Lane {
     /// The lease on this node's host name held in this store, once the boot took one
     /// ([`JournalLane::hold_lease`]).
     lease: HeldLease,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Lane {
@@ -424,7 +470,10 @@ impl Lane {
 
     fn set_full(&self, state: &LaneState) {
         self.full.store(
-            state.turned_away || state.queue.len() >= self.capacity,
+            state.stopped
+                || self.lease.lost()
+                || state.turned_away
+                || state.queue.len() >= self.capacity,
             Ordering::Release,
         );
     }
@@ -445,7 +494,7 @@ impl Lane {
                     None => return,
                 }
             };
-            match put_record(self.calls.as_ref(), &next) {
+            match put_record(self.calls.as_ref(), &self.lease, &next) {
                 Ok(()) => {
                     pause = RETRY_FIRST;
                     let mut state = self.lock();
@@ -468,6 +517,7 @@ impl Lane {
                         "the store did not take a journal record; it is retained and offered again"
                     );
                     state.refusal = Some(why);
+                    self.set_full(&state);
                     state.refusals = state.refusals.saturating_add(1);
                     self.moved.notify_all();
                     if !state.stopped {
@@ -540,12 +590,14 @@ impl JournalLane {
             moved: Condvar::new(),
             full: AtomicBool::new(false),
             lease: HeldLease::default(),
+            worker: Mutex::new(None),
         });
         let worker = Arc::clone(&lane);
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("busbar-journal-lane".to_string())
             .spawn(move || worker.run())
             .map_err(|e| format!("the journal's store lane could not start: {e}"))?;
+        *lane.worker.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
         Ok(JournalLane {
             _owner: Arc::new(Owner(Arc::clone(&lane))),
             lane,
@@ -574,11 +626,38 @@ impl JournalLane {
     /// flush tick, off any runtime worker ([`HeldLease::refresh`]).
     pub fn refresh_held_lease(&self) {
         self.lane.lease.refresh(self.lane.calls.as_ref());
+        self.lane.set_full(&self.lane.lock());
     }
 
     /// RELEASE the held lease, if any: run on a clean shutdown once the lane drained, so the next
     /// boot of the host resumes the whole chain at once ([`HeldLease::release`]).
     pub fn release_held_lease(&self) {
+        {
+            let mut state = self.lane.lock();
+            if !state.queue.is_empty() || state.turned_away {
+                tracing::warn!(
+                    "the journal still owns queued records; its host lease was not released"
+                );
+                return;
+            }
+            state.stopped = true;
+            self.lane.set_full(&state);
+        }
+        self.lane.work.notify_all();
+        let worker = self
+            .lane
+            .worker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(worker) = worker {
+            if worker.join().is_err() {
+                tracing::error!(
+                    "the journal writer did not retire cleanly; its host lease was not released"
+                );
+                return;
+            }
+        }
         self.lane.lease.release(self.lane.calls.as_ref());
     }
 
@@ -603,10 +682,13 @@ impl JournalLane {
     /// when it has room; the reason is built only for a refusal.
     #[must_use]
     pub fn refuses_money(&self) -> Option<String> {
-        if !self.lane.full.load(Ordering::Acquire) {
+        if !self.lane.full.load(Ordering::Acquire) && !self.lane.lease.lost() {
             return None;
         }
         let state = self.lane.lock();
+        if self.lane.lease.lost() || state.stopped {
+            return Some("this node's journal identity is retired or held by another process; new billable work is refused".into());
+        }
         Some(format!(
             "this node's journal is full: {} records await the store `{}`, which has not taken \
              them ({}); new billable work is refused until it does",
@@ -726,6 +808,11 @@ impl Shipper<Record> for LaneShipper {
         }
         let lane = &self.0.lane;
         let mut state = lane.lock();
+        if state.stopped || lane.lease.lost() {
+            return Err(ShipError::Unavailable(
+                "the journal writer no longer owns an active node identity".into(),
+            ));
+        }
         // An empty lane takes any batch whole. The journal re-offers what it retained as one batch,
         // which a long outage grows past the bound (admin units, the checkpoint cadence and accruals
         // still append while money is refused); turned away by an empty lane too, it would never
