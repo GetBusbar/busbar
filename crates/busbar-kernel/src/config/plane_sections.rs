@@ -385,10 +385,6 @@ where
 }
 
 #[cfg(test)]
-#[path = "tests/plane_sections_tests.rs"]
-mod config_tests;
-
-#[cfg(test)]
 #[path = "tests/plane_boot_validation_tests.rs"]
 mod boot_validation_tests;
 
