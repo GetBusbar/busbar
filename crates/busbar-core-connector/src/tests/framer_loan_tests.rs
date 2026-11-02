@@ -75,6 +75,11 @@ struct LoanDoor {
     loans: Loans,
     pending_at: Option<usize>,
     malformed_at: Option<usize>,
+    limit: usize,
+    scratch_until: usize,
+    pending_after: Option<usize>,
+    timer: bool,
+    cancels: AtomicUsize,
 }
 
 impl LoanDoor {
@@ -90,6 +95,11 @@ impl LoanDoor {
             pending_at,
             malformed_at,
             calls: AtomicUsize::new(0),
+            limit: 70,
+            scratch_until: 0,
+            pending_after: None,
+            timer: false,
+            cancels: AtomicUsize::new(0),
         })
     }
 
@@ -104,39 +114,11 @@ impl LoanDoor {
         .unwrap()
         .0
     }
-}
 
-impl FramerDoor for LoanDoor {
-    fn facts(&self) -> &DoorFacts {
-        self.inner.facts()
-    }
-    fn framing_context(&self, _: u64, _: u64) -> Result<Option<Arc<dyn FramingScope>>, Refused> {
-        Ok(Some(self.scope.clone()))
-    }
-    fn framing_side(&self) -> Option<Box<dyn crate::carrier::Side>> {
-        Some(Box::new(AuthTicket {
-            ticket: Ticket {
-                slot: 7,
-                generation: 1,
-            },
-            host: Arc::new(AuthHost::default()),
-        }))
-    }
-    fn cross(&self, call: Call<'_>) -> Crossed {
-        if let Call::Begin(_, out) = call {
-            out.framing = 21;
-        }
-        Crossed {
-            outcome: Outcome::Ready,
-            error: None,
-        }
-    }
-    fn cross_on(&self, side: &dyn crate::carrier::Side, _: bool, call: Call<'_>) -> Crossed {
-        let Call::Ingest(_, out) = call else {
-            return self.cross(call);
-        };
+    #[allow(unsafe_code)]
+    fn answer(&self, operation: Ticket, sink: FramerSink, out: &mut FramerOut) -> Crossed {
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
-        if index == 70 {
+        if index == self.limit {
             return Crossed {
                 outcome: Outcome::Ready,
                 error: None,
@@ -148,7 +130,7 @@ impl FramerDoor for LoanDoor {
                 generation: 1,
             }
         } else {
-            side.ticket()
+            operation
         };
         if !matches!(self.loans, Loans::None) {
             let stream = if matches!(self.loans, Loans::Repeated) {
@@ -167,17 +149,79 @@ impl FramerDoor for LoanDoor {
                 .unwrap();
         }
         out.yielded.flags = YIELD_MORE;
+        if index < self.scratch_until {
+            // SAFETY: the fixture initializes precisely the host's lent frame buffer.
+            unsafe {
+                std::ptr::write_bytes(sink.frame, b'x', sink.frame_cap);
+            }
+            out.yielded.frame_len = sink.frame_cap as u64;
+        }
         if self.malformed_at == Some(index) {
             out.yielded.frame_len = u64::MAX;
         }
         Crossed {
-            outcome: if self.pending_at == Some(index) {
+            outcome: if self.pending_at == Some(index)
+                || self.pending_after.is_some_and(|at| index >= at)
+            {
                 Outcome::Pending
             } else {
                 Outcome::Ready
             },
             error: None,
         }
+    }
+}
+
+impl FramerDoor for LoanDoor {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        _: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> Crossed {
+        let crate::carrier::Carry::Cancel(input, _) = call else {
+            panic!("the framer only carries cancellation");
+        };
+        assert_eq!(input.ticket, side.ticket());
+        self.cancels.fetch_add(1, Ordering::SeqCst);
+        Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        }
+    }
+    fn framing_context(&self, _: u64, _: u64) -> Result<Option<Arc<dyn FramingScope>>, Refused> {
+        Ok(Some(self.scope.clone()))
+    }
+    fn framing_side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        Some(Box::new(AuthTicket {
+            ticket: Ticket {
+                slot: 7,
+                generation: 1,
+            },
+            host: Arc::new(AuthHost::default()),
+        }))
+    }
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        match call {
+            Call::Begin(_, out) => out.framing = 21,
+            Call::Timer(input, out) if self.timer => {
+                return self.answer(Ticket::NONE, input.sink, out)
+            }
+            _ => {}
+        }
+        Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        }
+    }
+    fn cross_on(&self, side: &dyn crate::carrier::Side, _: bool, call: Call<'_>) -> Crossed {
+        let Call::Ingest(input, out) = call else {
+            return self.cross(call);
+        };
+        self.answer(side.ticket(), input.sink, out)
     }
 }
 
@@ -237,4 +281,51 @@ fn a_pending_cancel_or_invalid_output_revokes_the_operations_unpublished_loans()
     let mut framing = door.begin();
     assert!(framing.ingest(b"heads", false).is_err());
     assert!(door.host.live.lock().unwrap().is_empty());
+}
+
+#[test]
+fn control_only_more_and_pending_progress_share_the_operations_existing_byte_budget() {
+    use std::mem::size_of;
+    // Spend most of the existing budget on initialized scratch, then grant streams with no
+    // payload at all. The remaining grants exceed the byte budget without a new numeric cap.
+    let prefix = MORE_BYTES as usize / FRAME_CAP - 1;
+    let limit = prefix + FRAME_CAP / size_of::<Open>() + MORE_STALLS;
+    for (timer, pending) in [(false, false), (true, false), (false, true)] {
+        let mut door = LoanDoor::new(Loans::Distinct, None, None);
+        let configured = Arc::get_mut(&mut door).unwrap();
+        configured.limit = limit;
+        configured.scratch_until = prefix;
+        configured.timer = timer;
+        configured.pending_after = pending.then_some(prefix);
+        let mut framing = door.begin();
+        let result = if timer {
+            framing.timer()
+        } else {
+            framing.ingest(b"heads", false)
+        };
+        let error = if pending {
+            assert!(result.is_ok());
+            let mut failure = None;
+            for _ in prefix..=limit {
+                match framing.poll_parked(&mut noop_cx()) {
+                    std::task::Poll::Ready(Err(error)) => {
+                        failure = Some(error);
+                        break;
+                    }
+                    std::task::Poll::Ready(Ok(_)) => break,
+                    std::task::Poll::Pending => {}
+                }
+            }
+            failure.expect("new control progress while Pending must consume the same budget")
+        } else {
+            result.expect_err("control-only MORE must consume the same budget")
+        };
+        assert_eq!(error.outcome, Outcome::Fault);
+        assert!(door.calls.load(Ordering::SeqCst) <= limit);
+        assert_eq!(door.cancels.load(Ordering::SeqCst), usize::from(pending));
+        assert!(
+            door.host.live.lock().unwrap().is_empty(),
+            "failed operations revoke their unpublished grants"
+        );
+    }
 }

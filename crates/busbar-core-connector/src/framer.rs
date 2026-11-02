@@ -565,6 +565,44 @@ const EMPTY_PIECE: FramePiece = FramePiece {
 };
 
 impl Buffers {
+    /// Work retained by a validated answer. Count each independent copy, including overlapping
+    /// spans and a reason copied into both a head and its piece. Empty records still own metadata.
+    /// Keep the original frame-byte charge when the framer wrote scratch without a copied span.
+    fn output_work(&self, o: &FramerOut) -> u64 {
+        use std::mem::size_of;
+        let y = &o.yielded;
+        let Some(pieces) = self.pieces.get(..y.pieces_len as usize) else {
+            return u64::MAX;
+        };
+        let Some(heads) = self.heads.get(..y.heads_len as usize) else {
+            return u64::MAX;
+        };
+        let mut copied = 0_u64;
+        let mut metadata = 0_u64;
+        for piece in pieces {
+            if piece.flags & PIECE_WRITABLE != 0 {
+                metadata = metadata.saturating_add(size_of::<StreamFlow>() as u64);
+            } else {
+                metadata = metadata.saturating_add(size_of::<Got>() as u64);
+                copied = copied.saturating_add(piece.len);
+            }
+        }
+        for head in heads {
+            metadata = metadata.saturating_add(size_of::<Head>() as u64);
+            for slot in [head.method, head.target, head.authority, head.reason] {
+                copied = copied.saturating_add(slot.len);
+            }
+            // A reason may also be retained by its associated final or interim field piece.
+            copied = copied.saturating_add(head.reason.len);
+        }
+        if y.flags & YIELD_STREAM_FULL != 0 {
+            metadata = metadata.saturating_add(size_of::<StreamFlow>() as u64);
+        }
+        y.wire_len
+            .saturating_add(y.frame_len.max(copied))
+            .saturating_add(metadata)
+    }
+
     pub(crate) fn field_storage(&self) -> usize {
         // HashMap capacity excludes empty control buckets. Account an upper bound including
         // those buckets and per-entry alignment, rather than charging only occupied entries.
@@ -1460,18 +1498,23 @@ pub fn encode_head(
 /// that owes more and gives nothing would otherwise hold the host worker forever.
 pub(crate) const MORE_STALLS: usize = 64;
 
-/// The most bytes one op's `YIELD_MORE` re-calls may write before the framing FAULTs: an op's own
-/// input is bounded (a socket read, a write under the write buffer), so a framer that keeps writing
-/// past this is not answering it.
+/// The most output/control work one op's `YIELD_MORE` answers may retain before the framing FAULTs:
+/// payload bytes and the structural sizes of retained pieces, heads, flow and control records.
+/// An op's own input is bounded (a socket read, a write under the write buffer), so a framer that
+/// keeps writing past this is not answering it.
 pub(crate) const MORE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Whether one answer wrote anything: wire bytes, frame bytes, a piece or a head.
+/// Whether one answer wrote anything: wire bytes, frame bytes, a piece, head or flow record.
 pub(crate) fn wrote(o: &FramerOut) -> bool {
     let y = &o.yielded;
-    y.wire_len != 0 || y.frame_len != 0 || y.pieces_len != 0 || y.heads_len != 0
+    y.wire_len != 0
+        || y.frame_len != 0
+        || y.pieces_len != 0
+        || y.heads_len != 0
+        || y.flags & YIELD_STREAM_FULL != 0
 }
 
-/// The re-calls of one op: their count with nothing written, and the bytes written.
+/// The re-calls of one op: their count with nothing written, and their output/control work.
 #[derive(Default)]
 pub(crate) struct Recalls {
     stalls: usize,
@@ -1481,20 +1524,23 @@ pub(crate) struct Recalls {
 impl Recalls {
     /// Count one more answer that owed more: a FAULT once [`MORE_STALLS`] in a row wrote nothing,
     /// or the op's answers wrote past [`MORE_BYTES`].
-    pub(crate) fn owed(&mut self, o: &FramerOut) -> Result<(), Refused> {
-        self.owed_with_progress(o, false)
+    pub(crate) fn owed(&mut self, o: &FramerOut, bufs: &Buffers) -> Result<(), Refused> {
+        self.owed_with_progress(o, bufs, false)
     }
 
-    fn owed_with_progress(&mut self, o: &FramerOut, control_progress: bool) -> Result<(), Refused> {
+    fn owed_with_progress(
+        &mut self,
+        o: &FramerOut,
+        bufs: &Buffers,
+        control_progress: bool,
+    ) -> Result<(), Refused> {
         self.stalls = if wrote(o) || control_progress {
             0
         } else {
-            self.stalls + 1
+            self.stalls.saturating_add(1)
         };
-        self.bytes = self
-            .bytes
-            .saturating_add(o.yielded.wire_len)
-            .saturating_add(o.yielded.frame_len);
+        self.bytes = self.bytes.saturating_add(bufs.output_work(o));
+        self.control_progress(control_progress)?;
         if self.stalls >= MORE_STALLS {
             return Err(Refused {
                 outcome: Outcome::Fault,
@@ -1503,10 +1549,24 @@ impl Recalls {
                 ),
             });
         }
+        Ok(())
+    }
+
+    /// A PENDING crossing retains no output, but a newly granted stream still did control work.
+    /// Preserve that charge with the parked op, just as for READY/MORE crossings.
+    fn control_progress(&mut self, progress: bool) -> Result<(), Refused> {
+        if progress {
+            self.stalls = 0;
+            self.bytes = self.bytes.saturating_add(std::mem::size_of::<
+                busbar_contract::abi::transport::guest_policy::Open,
+            >() as u64);
+        }
         if self.bytes > MORE_BYTES {
             return Err(Refused {
                 outcome: Outcome::Fault,
-                error: format!("the framer's answers to one op ran past {MORE_BYTES} bytes"),
+                error: format!(
+                    "the framer's output/control work for one op ran past {MORE_BYTES} bytes"
+                ),
             });
         }
         Ok(())
@@ -2024,8 +2084,13 @@ impl Framing {
             });
             resume = false;
             if c.outcome == Outcome::Pending {
-                if control_progress {
-                    recalls.stalls = 0;
+                if let Err(error) = recalls.control_progress(control_progress) {
+                    // This crossing still owns a pending service. Cancel it before dropping its
+                    // ticket; it must never re-enter the idle pool as a completed operation.
+                    if let Some(side) = ticket.take() {
+                        self.cancel_ticket(side.as_ref());
+                    }
+                    return Err(error);
                 }
                 if let Some(t) = ticket.take() {
                     self.parked.push(Parked {
@@ -2058,6 +2123,7 @@ impl Framing {
             if self.bufs.take(&o, &mut yielded)? {
                 return Ok(Some(yielded));
             }
+            recalls.owed_with_progress(&o, &self.bufs, control_progress)?;
             if adopt {
                 // After adoption, drain leftover input on the same ticket without lending it again.
                 return self.run_on(
@@ -2074,11 +2140,8 @@ impl Framing {
             }
             if begin {
                 // What `begin` still owes comes out on `timer` re-calls, never another `begin`.
-                self.more(Again::Timer, &mut yielded)?;
+                self.more_with_recalls(Again::Timer, &mut yielded, recalls)?;
                 return Ok(Some(yielded));
-            }
-            if recall {
-                recalls.owed_with_progress(&o, control_progress)?;
             }
             recall = true;
         }
@@ -2208,18 +2271,31 @@ impl Framing {
 
     /// Re-call `again` with no new bytes until the framer owes nothing more.
     fn more(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
+        self.more_with_recalls(again, y, Recalls::default())
+    }
+
+    fn more_with_recalls(
+        &mut self,
+        again: Again,
+        y: &mut Yielded,
+        recalls: Recalls,
+    ) -> Result<(), Refused> {
         if let Some(context) = &self.context {
             context.operation_started(Ticket::NONE);
         }
-        let result = self.more_on(again, y);
+        let result = self.more_on(again, y, recalls);
         if let Some(context) = &self.context {
             context.operation_finished(Ticket::NONE, result.is_err());
         }
         result
     }
 
-    fn more_on(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
-        let mut recalls = Recalls::default();
+    fn more_on(
+        &mut self,
+        again: Again,
+        y: &mut Yielded,
+        mut recalls: Recalls,
+    ) -> Result<(), Refused> {
         loop {
             let sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
@@ -2259,7 +2335,7 @@ impl Framing {
             if self.bufs.take(&o, y)? {
                 return Ok(());
             }
-            recalls.owed_with_progress(&o, control_progress)?;
+            recalls.owed_with_progress(&o, &self.bufs, control_progress)?;
         }
     }
 
@@ -2447,7 +2523,9 @@ impl Framing {
         ))?;
         let mut y = Yielded::default();
         if !self.bufs.take(&o, &mut y)? {
-            self.more(Again::Refuse(stream, status, head_sent), &mut y)?;
+            let mut recalls = Recalls::default();
+            recalls.owed(&o, &self.bufs)?;
+            self.more_with_recalls(Again::Refuse(stream, status, head_sent), &mut y, recalls)?;
         }
         Ok(y)
     }
@@ -2503,7 +2581,7 @@ impl Framing {
                     context,
                 });
             }
-            recalls.owed(&o)?;
+            recalls.owed(&o, &self.bufs)?;
         }
     }
 
@@ -2582,7 +2660,7 @@ impl Framing {
                 }
                 return Ok(y);
             }
-            recalls.owed(&o)?;
+            recalls.owed(&o, &self.bufs)?;
         }
     }
 
@@ -2625,19 +2703,23 @@ impl Framing {
 }
 
 impl Framing {
+    fn cancel_ticket(&self, side: &dyn crate::carrier::Side) {
+        let mut i: busbar_contract::abi::mechanism::lifecycle::CancelIn = blank_in();
+        i.ticket = side.ticket();
+        let mut o: busbar_contract::abi::mechanism::lifecycle::CancelOut = blank_out();
+        let _ = self.door.cancel_scoped(
+            self.context.as_ref(),
+            side,
+            crate::carrier::Carry::Cancel(&mut i, &mut o),
+        );
+    }
+
     /// CANCEL every op parked on the framing's tickets, each on its own (`abi::mechanism::lifecycle`,
     /// `cancel`, made on no ticket: the ticket it cancels rides its `in`).
     fn cancel_parked(&mut self) {
         for p in std::mem::take(&mut self.parked) {
             let side = p.ticket.as_ref();
-            let mut i: busbar_contract::abi::mechanism::lifecycle::CancelIn = blank_in();
-            i.ticket = side.ticket();
-            let mut o: busbar_contract::abi::mechanism::lifecycle::CancelOut = blank_out();
-            let _ = self.door.cancel_scoped(
-                self.context.as_ref(),
-                side,
-                crate::carrier::Carry::Cancel(&mut i, &mut o),
-            );
+            self.cancel_ticket(side);
             if let Some(context) = &self.context {
                 context.operation_finished(side.ticket(), true);
             }

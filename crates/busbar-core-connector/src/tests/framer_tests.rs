@@ -88,6 +88,9 @@ fn refused_query_encodes_wipe_scratch_and_any_partial_copied_output() {
 #[path = "framer_loan_tests.rs"]
 mod loan_tests;
 
+#[path = "framer_more_tests.rs"]
+mod more_tests;
+
 #[test]
 fn sdk_sink_keeps_deferred_final_reason_with_its_first_piece_after_an_interim() {
     use std::collections::VecDeque;
