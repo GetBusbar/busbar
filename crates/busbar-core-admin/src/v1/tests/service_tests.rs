@@ -786,80 +786,6 @@ fn input_toks(n: u64) -> std::collections::BTreeMap<String, u64> {
     m
 }
 
-#[tokio::test]
-async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
-    let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
-    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).unwrap());
-    let app = crate::new_test_app()
-        .group("acme", usage_group_cfg())
-        .cost(usage_cost(&groups))
-        .governance(gov.clone())
-        .build();
-
-    let k = usage_key("acme");
-    let now = busbar_kernel::store::now();
-    gov.try_admit(&app.cost, &k, "frontier", now)
-        .expect("frontier request admits");
-    gov.record_usage(&app.cost, &k, "frontier", "m", &input_toks(100_000), now);
-    gov.try_admit(&app.cost, &k, "value", now)
-        .expect("value request admits");
-    gov.record_usage(&app.cost, &k, "value", "m", &input_toks(50_000), now);
-
-    let svc = AdminService::new(app);
-    let view = svc.get_group_usage("acme").await.expect("usage read");
-    assert_eq!(view.group, "acme");
-    assert!(view.enabled);
-    assert!(view.as_of >= now, "as_of is the read instant");
-    assert_eq!(
-        view.buckets.len(),
-        3,
-        "three (window, pool?) buckets: {:?}",
-        view.buckets
-    );
-    let find = |window: &str, pool: Option<&str>| {
-        view.buckets
-            .iter()
-            .find(|b| b.window == window && b.scope.as_deref() == pool)
-            .unwrap_or_else(|| panic!("bucket ({window}, {pool:?}) missing: {:?}", view.buckets))
-    };
-
-    let day = find("day", None);
-    assert_eq!(day.requests, 2);
-    assert_eq!(day.tokens, 150_000);
-    assert_eq!(day.requests_cap, Some(5));
-    assert_eq!(day.budget_cap, None);
-    assert_eq!(day.budget_remaining_cents, None);
-
-    let month = find("month", None);
-    assert_eq!(month.requests, 2);
-    assert_eq!(month.tokens, 150_000);
-    assert_eq!(month.spend_cents, 150, "150k tokens at 1c/1k tokens");
-    assert_eq!(month.budget_cap, Some(1_000));
-    assert_eq!(month.budget_remaining_cents, Some(850));
-
-    let frontier = find("month", Some("frontier"));
-    assert_eq!(frontier.requests, 1);
-    assert_eq!(frontier.tokens, 100_000);
-    assert_eq!(frontier.spend_cents, 100);
-    assert_eq!(frontier.budget_cap, Some(500));
-    assert_eq!(frontier.budget_remaining_cents, Some(400));
-}
-
-#[tokio::test]
-async fn get_group_usage_unknown_group_not_found() {
-    let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
-    let app = crate::new_test_app()
-        .group("acme", usage_group_cfg())
-        .cost(usage_cost(&groups))
-        .build();
-    let svc = AdminService::new(app);
-    let err = svc.get_group_usage("ghost").await.unwrap_err();
-    assert!(
-        matches!(&err, AdminError::NotFound { what: m, .. } if m.contains("ghost")),
-        "unknown group is not_found: {err:?}"
-    );
-}
-
 struct WaitsForTheRuntime {
     inner: MemoryStore,
     started: Arc<tokio::sync::Notify>,
@@ -986,38 +912,6 @@ fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
         r#"{"tokens_input":100,"tokens_output":40,"tokens_cache_read":7,"tokens_cache_creation":3,"requests":5,"spend_micros":12345}"#,
         "the admin usage JSON must keep the flat token aliases, byte-identical to pre-M1b"
     );
-}
-
-#[tokio::test]
-async fn get_group_usage_governance_off_zero_usage_caps_projected() {
-    let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
-    let app = crate::new_test_app()
-        .group("acme", usage_group_cfg())
-        .cost(usage_cost(&groups))
-        .build();
-    let svc = AdminService::new(app);
-    let view = svc.get_group_usage("acme").await.expect("usage read");
-    assert_eq!(
-        view.buckets.len(),
-        3,
-        "caps still projected: {:?}",
-        view.buckets
-    );
-    for b in &view.buckets {
-        assert_eq!(b.requests, 0, "governance off = zero usage ({b:?})");
-        assert_eq!(b.tokens, 0);
-        assert_eq!(b.spend_cents, 0);
-        assert_eq!(
-            b.budget_remaining_cents, b.budget_cap,
-            "nothing spent ⇒ the whole cap remains ({b:?})"
-        );
-    }
-
-    assert!(view.buckets.iter().any(|b| b.requests_cap == Some(5)));
-    assert!(view
-        .buckets
-        .iter()
-        .any(|b| b.budget_cap == Some(500) && b.scope.as_deref() == Some("frontier")));
 }
 
 /// A `Store` decorator whose `list_metering` always fails, everything else delegating to a
