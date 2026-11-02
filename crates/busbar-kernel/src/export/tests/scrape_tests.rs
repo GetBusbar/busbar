@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::config::{resolve_export, ExportCfg, ExportDefs};
+use crate::config::{ExportCfg, ExportDefs};
 use crate::test_support::export_axis::{
     scrape_module, SCRAPE_DOUBLE_CONTENT_TYPE, SCRAPE_DOUBLE_HOOKS_CONTENT_TYPE,
 };
@@ -36,13 +36,39 @@ fn get(path: &str) -> EndpointRequest {
 
 #[test]
 fn the_metrics_instance_is_the_scrape_sink() {
-    installed_axis();
     let defs: ExportDefs = serde_yaml::from_str(
         "metrics: { module: prometheus, settings: { buffer_seconds: 60, key_gauge_limit: 7 } }\n",
     )
     .expect("parses");
     let mut errors = Vec::new();
-    let cfg = resolve_export(&defs, &mut errors);
+    let mut cfg = ExportCfg::default();
+    for (name, def) in defs {
+        let projection = crate::export::projection::resolve_projection(
+            &name,
+            &def.module,
+            Some(&[busbar_contract::abi::export::ExportStream::Metrics]),
+            def.streams.as_deref(),
+            def.fields.as_deref(),
+            def.durable,
+            &mut errors,
+        );
+        let (scrape, recorder) = super::super::plugin::scrape_instance(
+            projection,
+            Some(&[busbar_contract::abi::export::ExportStream::Metrics]),
+            true,
+            cfg.plugins.iter().any(|plugin| plugin.scrape),
+            serde_json::Value::Object(def.settings.clone()),
+        );
+        if scrape {
+            cfg.recorder = recorder;
+        }
+        cfg.plugins.push(crate::config::PluginExportSettings {
+            name,
+            def,
+            projection,
+            scrape,
+        });
+    }
     assert!(errors.is_empty(), "{errors:?}");
     let scraped: Vec<_> = cfg
         .plugins

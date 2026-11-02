@@ -20,6 +20,26 @@ pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
     crate::preflight::root_rows().export_axis
 }
 
+pub(crate) fn scrape_instance(
+    projection: Projection,
+    declared: Option<&[ExportStream]>,
+    first_party: bool,
+    already_scraping: bool,
+    settings: serde_json::Value,
+) -> (bool, Option<crate::config::PrometheusSettings>) {
+    let metrics = ExportStream::Metrics;
+    let scrape = declared.is_some_and(|streams| streams.contains(&metrics))
+        && first_party
+        && projection.wants_stream(metrics)
+        && !already_scraping;
+    let recorder = if scrape {
+        serde_json::from_value(settings).ok()
+    } else {
+        None
+    };
+    (scrape, recorder)
+}
+
 pub(crate) fn probe(
     name: &str,
     module: &str,

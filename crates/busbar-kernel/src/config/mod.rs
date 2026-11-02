@@ -1503,14 +1503,15 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
         }
         match module {
             other if axis.is_some() => {
-                let metrics = busbar_contract::abi::export::ExportStream::Metrics;
-                let carries = declared.is_some_and(|d| d.contains(&metrics));
-                let first_party = crate::export::plugin::first_party(other);
-                let scrape = carries && first_party && projection.wants_stream(metrics);
-
-                let scrape = scrape && !out.plugins.iter().any(|p| p.scrape);
+                let (scrape, recorder) = crate::export::plugin::scrape_instance(
+                    projection,
+                    declared,
+                    crate::export::plugin::first_party(other),
+                    out.plugins.iter().any(|p| p.scrape),
+                    settings,
+                );
                 if scrape {
-                    out.recorder = serde_json::from_value(settings).ok();
+                    out.recorder = recorder;
                 }
                 errors.extend(axis.into_iter().flat_map(|(_, problems)| problems));
                 out.plugins.push(PluginExportSettings {
