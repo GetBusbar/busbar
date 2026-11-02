@@ -262,3 +262,18 @@ mod config_price_activation;
 
 #[path = "admin_application/config_secret_transaction.rs"]
 mod config_secret_transaction;
+
+#[path = "admin_application/service_group_deletion.rs"]
+mod service_group_deletion;
+
+#[path = "admin_application/service_groups.rs"]
+mod service_groups;
+
+#[path = "admin_application/service_hooks.rs"]
+mod service_hooks;
+
+#[path = "admin_application/service_named_defs.rs"]
+mod service_named_defs;
+
+#[path = "admin_application/service_plugin_policy.rs"]
+mod service_plugin_policy;
