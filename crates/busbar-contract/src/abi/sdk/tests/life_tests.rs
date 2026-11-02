@@ -544,7 +544,7 @@ fn metrics(out: &ResolveOut) -> Vec<(u32, f64)> {
     if env.metrics.is_null() {
         return Vec::new();
     }
-    // SAFETY: the envelope the answering instance keeps (until KEPT_RING newer ones).
+    // SAFETY: the answering instance still owns this reply and has not begun its next crossing.
     unsafe { std::slice::from_raw_parts(env.metrics, env.metrics_len) }
         .iter()
         .map(|m| (m.family_idx, m.value))

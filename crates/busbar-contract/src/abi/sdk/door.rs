@@ -500,6 +500,15 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
     // a panic leaves nothing half-written for the trampoline to copy out. It runs under the call
     // capture, which is this thread's scoped `tracing` dispatcher for exactly as long as the body.
     let capture = H::with(|slot| slot.dispatch());
+    // SAFETY: AbiIn starts with InHead and the local copy is initialized.
+    let call = unsafe { ptr::addr_of!(local_in).cast::<InHead>().read() };
+    let unbound = matches!(index, lc::slot::VALIDATE | lc::slot::MIGRATE);
+    let capture_host = if unbound {
+        crate::abi::mechanism::ticket::HostCtx::NONE
+    } else {
+        call.host
+    };
+    let mut captured = H::retention().begin(capture_host, instance, call.ticket);
     let ran = tracing_core::dispatcher::with_default(&capture, || {
         catch_unwind(move || {
             let mut written = local_out;
@@ -527,7 +536,17 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
             // What the body logged joins the envelope it answered.
             // SAFETY: the plugin's own `diags`, when set, point to `diags_len` live entries until
             // the next op on the ticket (the mechanism's memory rule).
-            H::with(|slot| unsafe { slot.seal(&mut head.envelope) });
+            H::with(|slot| unsafe { slot.seal(&mut head.envelope, &mut captured.reply) });
+            let opened = if index == lc::slot::OPEN {
+                // SAFETY: every kind's OPEN output starts with OpenOut (KindOps).
+                Some(unsafe { (*ptr::addr_of!(local_out).cast::<OpenOut>()).instance })
+            } else {
+                None
+            };
+            let ended = (index == lc::slot::CLOSE && outcome == Outcome::Ready)
+                || (index == lc::slot::OPEN
+                    && !matches!(outcome, Outcome::Ready | Outcome::Pending));
+            H::retention().keep(captured, ended, opened);
             // SAFETY: `out_n <= host_out` bytes of the host's `out` are writable, and
             // `out_n <= size_of::<S::Out>()` bytes of `local_out` are readable.
             unsafe {
@@ -1194,6 +1213,10 @@ macro_rules! plugin_door {
             /// `log` to every level: the capture keeps everything and the host filters.
             struct __Capture;
             impl $crate::abi::sdk::capture::CaptureHome for __Capture {
+                fn retention() -> &'static $crate::abi::sdk::capture::CaptureRetention {
+                    static RETENTION: ::std::sync::OnceLock<$crate::abi::sdk::capture::CaptureRetention> = ::std::sync::OnceLock::new();
+                    RETENTION.get_or_init(::core::default::Default::default)
+                }
                 fn with<R>(
                     f: impl ::core::ops::FnOnce(&mut $crate::abi::sdk::capture::CaptureSlot) -> R,
                 ) -> R {

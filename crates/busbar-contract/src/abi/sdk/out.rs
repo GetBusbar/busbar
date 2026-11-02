@@ -23,8 +23,9 @@
 //! plugin-owned and valid until that plugin's next refresh generation; no allocation on the hot
 //! path). What an answer names that the SDK allocated — a failure's owned text, the envelope's
 //! metrics and diagnostics — is kept by THE INSTANCE THAT ANSWERED ([`Kept`], in the SDK's instance
-//! box), in a bounded ring of the last [`KEPT_RING`] answers, so two instances of one plugin never
-//! share or overwrite each other's answers, on one thread or many. A call with no instance yet
+//! box), by the full ticket identity. A new crossing retires only its own preceding reply; another
+//! ticket cannot evict it. Recycled host slots reuse storage after the prior generation ended.
+//! Unticketed calls use their actual crossing thread. A call with no instance yet
 //! (`validate`, `open`) writes its owned text into the reason buffer the host lent it
 //! (`ValidateIn::err_buf`, `OpenIn::err_buf`), reports no envelope, and, only when the host lent
 //! no buffer, answers a fixed text.
@@ -61,7 +62,7 @@
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -71,17 +72,78 @@ use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, MetricEntry, OutHead, Outcome, MAX_ENVELOPE_ENTRIES,
 };
 use crate::abi::mechanism::lifecycle::OpenOut;
+use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::door::AbiOut;
 use crate::abi::sdk::generation::Gen;
 use crate::abi::sdk::lent::HostBuf;
 use crate::abi::sdk::life::{Leases, Refusal};
 use crate::abi::sdk::publish::{Generations, Publish};
 
-/// How many answers one instance keeps alive at once, per kind of memory (owned failure texts;
-/// envelopes), oldest dropped first: the store door's and the hook door's bound. The host copies
-/// each as its crossing returns, so an answer is dropped only once this many newer answers of the
-/// same instance have been kept.
+/// The former FIFO size, retained as a source-compatible constant. Answers are now retained by
+/// ticket; this number never permits another ticket to evict returned memory.
 pub const KEPT_RING: usize = 4096;
+
+/// A reply's full identity. Unticketed replies belong to the actual crossing thread, not a
+/// worker that submitted work to that thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ReplyKey {
+    ticket: Ticket,
+    thread: Option<std::thread::ThreadId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ReplySlot {
+    Ticket(u32),
+    Thread(std::thread::ThreadId),
+}
+
+impl ReplyKey {
+    pub(crate) fn of(ticket: Ticket) -> Self {
+        Self {
+            ticket,
+            thread: ticket.is_none().then(|| std::thread::current().id()),
+        }
+    }
+
+    fn slot(self) -> ReplySlot {
+        match self.thread {
+            Some(thread) => ReplySlot::Thread(thread),
+            None => ReplySlot::Ticket(self.ticket.slot),
+        }
+    }
+}
+
+/// Storage indexed by host slot, retaining its full ticket identity. A host cannot
+/// recycle a slot until its previous operation and reply consumption ended; seeing a new
+/// generation therefore also retires that slot's old reply. The number of entries follows the
+/// peak host ticket slots and unticketed crossing threads, never the number of completed calls.
+pub(crate) struct Replies<T>(Mutex<HashMap<ReplySlot, (ReplyKey, T)>>);
+
+impl<T> Default for Replies<T> {
+    fn default() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+}
+
+impl<T> Replies<T> {
+    pub(crate) fn take(&self, key: ReplyKey) -> Option<T> {
+        let retired = lock(&self.0).remove(&key.slot());
+        retired.map(|(_, value)| value)
+    }
+
+    pub(crate) fn insert(&self, key: ReplyKey, value: T) {
+        let retired = lock(&self.0).insert(key.slot(), (key, value));
+        drop(retired);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with<R>(&self, key: ReplyKey, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let held = lock(&self.0);
+        held.get(&key.slot())
+            .filter(|(stored, _)| *stored == key)
+            .map(|(_, value)| f(value))
+    }
+}
 
 /// A failure's owned text with no instance to keep it and no reason buffer lent by the host: the
 /// only case the SDK answers a fixed text for.
@@ -95,6 +157,7 @@ pub(crate) struct Report {
     metrics: Vec<MetricEntry>,
     diags: Vec<Diag>,
     texts: Vec<Box<str>>,
+    owned: Vec<Box<str>>,
 }
 
 // SAFETY: a `Report` owns everything its entries point to (`label_vals` is always NULL; a `Diag`'s
@@ -102,10 +165,15 @@ pub(crate) struct Report {
 unsafe impl Send for Report {}
 
 impl Report {
+    pub(crate) fn has_envelope(&self) -> bool {
+        !self.metrics.is_empty() || !self.diags.is_empty()
+    }
+
     fn clear(&mut self) {
         self.metrics.clear();
         self.diags.clear();
         self.texts.clear();
+        self.owned.clear();
     }
 }
 
@@ -114,12 +182,11 @@ impl Report {
 pub(crate) type Reporting = Cell<Option<Box<Report>>>;
 
 /// WHAT ONE INSTANCE'S ANSWERS NAME, kept by the instance (the SDK's instance box,
-/// `abi::sdk::safe`): the owned failure texts and the reported envelopes of its last [`KEPT_RING`]
-/// answers each. Dropped with the instance.
+/// `abi::sdk::safe`): each ticket's owned texts and reported envelope, until its next crossing or
+/// the host recycles the ticket's slot. Dropped with the instance.
 #[derive(Default)]
 pub(crate) struct Kept {
-    texts: Mutex<VecDeque<Box<str>>>,
-    reports: Mutex<VecDeque<Box<Report>>>,
+    replies: Replies<Box<Report>>,
     routes: Routes,
 }
 
@@ -128,60 +195,41 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Kept {
-    /// Keep `text` and answer the string naming it, valid until [`KEPT_RING`] newer texts of this
-    /// instance.
-    pub(crate) fn text(&self, text: String) -> AbiStr {
-        let kept: Box<str> = text.into();
-        let named = AbiStr {
-            ptr: kept.as_ptr(),
-            len: kept.len(),
-        };
-        let mut ring = lock(&self.texts);
-        if ring.len() >= KEPT_RING {
-            ring.pop_front();
-        }
-        ring.push_back(kept);
-        named
+    /// Start the next crossing on this ticket (or this actual unticketed thread). Retired owners
+    /// are detached under the lock, then cleared or dropped after unlocking. Reuse the preceding
+    /// envelope's capacity without invalidating any other ticket's answer.
+    pub(crate) fn begin(&self, key: ReplyKey) -> Option<Box<Report>> {
+        self.replies.take(key).map(|mut report| {
+            report.clear();
+            report
+        })
     }
 
-    /// An empty envelope for a call to fill: the oldest kept one, reused, once the ring is full
-    /// (no allocation from then on), else a new one.
+    /// An empty envelope for a call that did not inherit one from its preceding crossing.
     fn report(&self) -> Box<Report> {
-        let mut ring = lock(&self.reports);
-        if ring.len() >= KEPT_RING {
-            if let Some(mut r) = ring.pop_front() {
-                r.clear();
-                return r;
-            }
-        }
         Box::default()
     }
 
     /// Keep a returned call's envelope (its entries do not move: they live on the heap).
-    pub(crate) fn keep(&self, report: Box<Report>) {
-        let mut ring = lock(&self.reports);
-        if ring.len() >= KEPT_RING {
-            ring.pop_front();
-        }
-        ring.push_back(report);
-    }
-
-    /// `entry`'s name for an answer: the instance's kept copy, else a ring text.
-    pub(crate) fn route(&self, entry: &str) -> AbiStr {
-        self.routes
-            .name(entry)
-            .unwrap_or_else(|| self.text(entry.to_string()))
+    pub(crate) fn keep(&self, key: ReplyKey, report: Box<Report>) {
+        self.replies.insert(key, report);
     }
 
     /// How many texts and envelopes the instance holds.
     #[cfg(test)]
     pub(crate) fn held(&self) -> (usize, usize) {
-        (lock(&self.texts).len(), lock(&self.reports).len())
+        let held = lock(&self.replies.0);
+        (
+            held.values().map(|(_, reply)| reply.owned.len()).sum(),
+            held.values()
+                .filter(|(_, reply)| reply.has_envelope())
+                .count(),
+        )
     }
 }
 
 /// How many distinct route entry names one instance keeps for its lifetime. A plane names the
-/// entries of its own section, a set its config bounds; a name past these is kept in the text ring.
+/// entries of its own section, a set its config bounds; a name past these belongs to its reply.
 pub(crate) const KEPT_ROUTES: usize = 64;
 
 /// THE ROUTE NAMES AN INSTANCE HAS ANSWERED, each kept once for the instance's lifetime: a slot is
@@ -358,7 +406,10 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     pub fn route(&mut self, class: u8, entry: &str) {
         self.set(|o| &o.route, class);
         if let Some(kept) = self.kept {
-            let name = kept.route(entry);
+            let name = kept
+                .routes
+                .name(entry)
+                .unwrap_or_else(|| self.owned_text(entry.to_string()));
             self.put(|o| &o.pool, name);
         }
     }
@@ -403,8 +454,8 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
         if key.is_empty() {
             return;
         }
-        if let Some(kept) = self.kept {
-            let key = kept.text(key.to_string());
+        if self.kept.is_some() {
+            let key = self.owned_text(key.to_string());
             self.put(|o| &o.affinity, key);
         }
     }
@@ -417,15 +468,15 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
         if counterparty.is_empty() {
             return;
         }
-        if let Some(kept) = self.kept {
-            let c = kept.text(counterparty.to_string());
+        if self.kept.is_some() {
+            let c = self.owned_text(counterparty.to_string());
             self.put(|o| &o.trust_counterparty, c);
             if let Some(item) = item.filter(|s| !s.is_empty()) {
-                let i = kept.text(item.to_string());
+                let i = self.owned_text(item.to_string());
                 self.put(|o| &o.trust_item, i);
             }
             if let Some(digest) = digest.filter(|s| !s.is_empty()) {
-                let d = kept.text(digest.to_string());
+                let d = self.owned_text(digest.to_string());
                 self.put(|o| &o.trust_digest, d);
             }
         }
@@ -875,8 +926,8 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 
     /// Answer `refusal`: its outcome, the head's error naming its text. A `'static` text is named
-    /// where it lives. An owned text is kept by the answering instance until [`KEPT_RING`] newer
-    /// texts of it; with no instance yet it is written into the host's lent reason buffer (cut on a
+    /// where it lives. An owned text belongs to this ticket's reply until its next crossing;
+    /// with no instance yet it is written into the host's lent reason buffer (cut on a
     /// char boundary to its capacity; an `open` states its length in `err_len`), and only when the
     /// host lent none is it answered as [`NO_REASON_BUFFER`].
     pub fn fail(&mut self, refusal: Refusal) -> Outcome {
@@ -915,8 +966,16 @@ impl<'a, T: AbiOut> Out<'a, T> {
     /// Where an owned failure text lives: the instance, else the host's lent reason buffer, else
     /// nowhere (the fixed text).
     fn owned_text(&mut self, text: String) -> AbiStr {
-        if let Some(kept) = self.kept {
-            return kept.text(text);
+        if self.kept.is_some() {
+            let mut report = self.report().expect("an instance has reply storage");
+            let text: Box<str> = text.into();
+            let named = AbiStr {
+                ptr: text.as_ptr(),
+                len: text.len(),
+            };
+            report.owned.push(text);
+            self.hand_back(report);
+            return named;
         }
         let Some(r) = self.reason else {
             return AbiStr {

@@ -17,9 +17,10 @@
 //!
 //! WHERE THE STATE LIVES. The capture's dispatcher is long-lived, because creating a `Dispatch`
 //! rebuilds the interest of every callsite in the process, and the reply's entries must outlive
-//! the trampoline's return until the host copies them. Both live in ONE [`CaptureSlot`] per thread
-//! per plugin image, which the door macro expands in the PLUGIN's crate ([`CaptureHome`]); this
-//! module holds only the types.
+//! the trampoline's return until the host copies them. The dispatcher lives in one [`CaptureSlot`]
+//! per thread; immutable returned logs live in [`CaptureRetention`] per plugin image, keyed by
+//! host context and full ticket. The door macro owns both in the PLUGIN's crate ([`CaptureHome`]);
+//! this module holds only their types.
 //!
 //! BOUNDS. The capture keeps at most [`MAX_ENVELOPE_ENTRIES`] entries per reply, the plugin's own
 //! diagnostics first, and each text at most [`MAX_TEXT`] bytes. Anything over is counted and
@@ -27,8 +28,9 @@
 //!
 //! [`with_default`]: tracing_core::dispatcher::with_default
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tracing_core::field::{Field, Visit};
 use tracing_core::span::{Attributes, Id, Record as SpanRecord};
@@ -40,6 +42,8 @@ use crate::abi::mechanism::call::{
     AbiStr, Diag, Envelope, DIAG_LOG, DIAG_LOG_DROPPED, MAX_ENVELOPE_ENTRIES, MAX_TEXT,
     SEVERITY_DEBUG, SEVERITY_ERROR, SEVERITY_INFO, SEVERITY_TRACE, SEVERITY_WARN,
 };
+use crate::abi::mechanism::ticket::{HostCtx, Ticket};
+use crate::abi::sdk::out::{Replies, ReplyKey};
 
 /// `tracing-log`, re-exported for the door macro's expansion: it installs `LogTracer` as the
 /// plugin image's `log` logger, so a plugin crate needs no dependency of its own to do it.
@@ -51,6 +55,118 @@ pub use tracing_log as __tracing_log;
 pub trait CaptureHome {
     /// Run `f` on this thread's slot.
     fn with<R>(f: impl FnOnce(&mut CaptureSlot) -> R) -> R;
+    /// This plugin image's immutable returned capture storage, shared by crossing threads.
+    fn retention() -> &'static CaptureRetention;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Owner {
+    Host(u64),
+    Instance(usize),
+    Unbound(std::thread::ThreadId),
+}
+
+impl Owner {
+    fn of(host: HostCtx, instance: *mut std::ffi::c_void) -> Self {
+        if !host.is_none() {
+            Self::Host(host.handle)
+        } else if !instance.is_null() {
+            Self::Instance(instance as usize)
+        } else {
+            Self::Unbound(std::thread::current().id())
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct CapturedReply {
+    diags: Vec<Diag>,
+    texts: Vec<Box<[u8]>>,
+}
+
+// SAFETY: every nonempty text pointer names one of this reply's immutable boxed buffers.
+// Invalid declarations are made NULL and are never dereferenced.
+unsafe impl Send for CapturedReply {}
+
+impl CapturedReply {
+    fn clear(&mut self) {
+        self.diags.clear();
+        self.texts.clear();
+    }
+
+    fn text(&mut self, text: &[u8]) -> AbiStr {
+        let owned: Box<[u8]> = text.into();
+        let named = AbiStr {
+            ptr: owned.as_ptr(),
+            len: owned.len(),
+        };
+        self.texts.push(owned);
+        named
+    }
+}
+
+/// Returned logs belong to the host context and full ticket. The tracing dispatcher remains
+/// thread-local, while immutable replies survive another crossing or a ticket changing threads.
+#[derive(Default)]
+pub struct CaptureRetention {
+    owners: Mutex<HashMap<Owner, Arc<Replies<CapturedReply>>>>,
+}
+
+pub(crate) struct CaptureReply {
+    owner: Owner,
+    key: ReplyKey,
+    pub(crate) reply: CapturedReply,
+}
+
+impl CaptureRetention {
+    fn owner(&self, owner: Owner) -> Arc<Replies<CapturedReply>> {
+        Arc::clone(
+            self.owners
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(owner)
+                .or_default(),
+        )
+    }
+
+    pub(crate) fn begin(
+        &self,
+        host: HostCtx,
+        instance: *mut std::ffi::c_void,
+        ticket: Ticket,
+    ) -> CaptureReply {
+        let owner = Owner::of(host, instance);
+        let key = ReplyKey::of(ticket);
+        let mut reply = self.owner(owner).take(key).unwrap_or_default();
+        // No owner-map or reply-table lock is held while old buffers are destroyed.
+        reply.clear();
+        CaptureReply { owner, key, reply }
+    }
+
+    pub(crate) fn keep(
+        &self,
+        mut reply: CaptureReply,
+        closed: bool,
+        opened: Option<*mut std::ffi::c_void>,
+    ) {
+        if closed {
+            let retired = self
+                .owners
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&reply.owner);
+            drop(retired);
+            // The final CLOSE logs follow the actual unticketed crossing thread. Do not
+            // recreate a retention entry for an instance whose lifetime has ended.
+            reply.owner = Owner::Unbound(std::thread::current().id());
+            reply.key = ReplyKey::of(Ticket::NONE);
+        } else if let (Owner::Unbound(_), Some(instance)) = (reply.owner, opened) {
+            if !instance.is_null() {
+                reply.owner = Owner::Instance(instance as usize);
+            }
+        }
+        self.owner(reply.owner).insert(reply.key, reply.reply);
+    }
 }
 
 /// One log record the capture kept.
@@ -187,13 +303,10 @@ impl Subscriber for Capture {
     fn exit(&self, _: &Id) {}
 }
 
-/// ONE THREAD'S CAPTURE in one plugin image: the long-lived dispatcher, and the memory of the last
-/// reply it sealed, valid until the next reply sealed on this thread (the host copies a reply's
-/// entries before it makes any other call on the thread).
+/// One thread's long-lived tracing dispatcher in one plugin image. Returned diagnostics are
+/// detached into image-owned ticket storage; reusing this dispatcher cannot overwrite them.
 pub struct CaptureSlot {
     dispatch: Dispatch,
-    diags: Vec<Diag>,
-    texts: Vec<String>,
 }
 
 impl Default for CaptureSlot {
@@ -208,8 +321,6 @@ impl CaptureSlot {
     pub fn new() -> Self {
         Self {
             dispatch: Dispatch::new(Capture::default()),
-            diags: Vec::new(),
-            texts: Vec::new(),
         }
     }
 
@@ -236,7 +347,7 @@ impl CaptureSlot {
     ///
     /// # Safety
     /// `envelope.diags`, when non-NULL, points to `envelope.diags_len` live [`Diag`]s.
-    pub unsafe fn seal(&mut self, envelope: &mut Envelope) {
+    pub(crate) unsafe fn seal(&mut self, envelope: &mut Envelope, reply: &mut CapturedReply) {
         let Some(held) = self.capture().map(Capture::take) else {
             return;
         };
@@ -261,32 +372,44 @@ impl CaptureSlot {
         };
         let dropped = held.dropped + (wanted - kept) as u64;
 
-        // The previous reply on this thread was copied by the host before this call began.
-        self.diags.clear();
-        self.texts.clear();
-        self.diags.extend_from_slice(own);
-        let mut severities = Vec::with_capacity(kept + 1);
+        for diag in own {
+            let mut diag = *diag;
+            if diag.text.len > MAX_TEXT || (diag.text.len != 0 && diag.text.ptr.is_null()) {
+                // Keep the malformed-entry verdict without retaining an invalid pointer.
+                diag.text.ptr = std::ptr::null();
+            } else if diag.text.len != 0 {
+                // SAFETY: the caller's diagnostic bytes are live for this crossing, with a
+                // bounded non-NULL range. Copy before their source can be retired.
+                diag.text =
+                    reply.text(unsafe { std::slice::from_raw_parts(diag.text.ptr, diag.text.len) });
+            } else {
+                diag.text = AbiStr::ZERO;
+            }
+            reply.diags.push(diag);
+        }
         for r in held.records.into_iter().take(kept) {
-            severities.push((DIAG_LOG, r.severity));
-            self.texts.push(r.text);
-        }
-        if dropped > 0 && room > 0 {
-            severities.push((DIAG_LOG_DROPPED, SEVERITY_WARN));
-            self.texts.push(dropped.to_string());
-        }
-        // Each `String`'s bytes stay put while the vector of them grows; only the handles move.
-        for ((id_idx, severity), text) in severities.into_iter().zip(&self.texts) {
-            self.diags.push(Diag {
-                id_idx,
-                severity,
-                text: AbiStr {
-                    ptr: text.as_ptr(),
-                    len: text.len(),
-                },
+            let text = reply.text(r.text.as_bytes());
+            reply.diags.push(Diag {
+                id_idx: DIAG_LOG,
+                severity: r.severity,
+                text,
                 ..Diag::ZERO
             });
         }
-        envelope.diags = self.diags.as_ptr();
-        envelope.diags_len = self.diags.len();
+        if dropped > 0 && room > 0 {
+            let text = reply.text(dropped.to_string().as_bytes());
+            reply.diags.push(Diag {
+                id_idx: DIAG_LOG_DROPPED,
+                severity: SEVERITY_WARN,
+                text,
+                ..Diag::ZERO
+            });
+        }
+        envelope.diags = reply.diags.as_ptr();
+        envelope.diags_len = reply.diags.len();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/capture_retention_tests.rs"]
+mod tests;
