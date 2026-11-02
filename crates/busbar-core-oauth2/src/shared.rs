@@ -126,9 +126,9 @@ fn atomic_schema(name: &str) -> String {
     format!("{}.atomic.v1", kind(name))
 }
 
-/// Live bytes remain exact legacy bytes, preserving the existing per-record size bound. Retired
-/// records start with `-`, which neither a JSON cell/index nor a standard-base64 key can start
-/// with, followed by a fresh nonce. The nonce prevents ABA across create/retire cycles.
+/// Logical live bytes remain exact legacy bytes; `records` maps large cells to bounded physical
+/// records without changing their comparison/version semantics. Retired logical records start
+/// with `-`, which neither a JSON cell/index nor a standard-base64 key can start with, followed by a fresh nonce. The nonce prevents ABA across create/retire cycles.
 fn live_body(body: &[u8]) -> Vec<u8> {
     body.to_vec()
 }
@@ -381,21 +381,25 @@ impl Shared {
         // precisely the old chunk generation, without deleting a concurrent writer's chunks.
         let mut observed = Vec::new();
         for mutation in &request.mutations {
-            if let Mutation::Put { schema, key, .. } = mutation {
+            if let Mutation::Put { schema, key, value } = mutation {
                 if schema.ends_with(".atomic.v1")
                     && !request
                         .predicates
                         .iter()
                         .any(|p| p.schema == *schema && p.key == *key)
                 {
-                    observed.push(Predicate {
-                        schema: schema.clone(),
-                        key: key.clone(),
-                        expected: self
-                            .read_record(schema, key)
-                            .await?
-                            .map_or(Expected::Absent, Expected::Bytes),
-                    });
+                    let previous = self.read_record(schema, key).await?;
+                    if value.len() > busbar_contract::bounded::MAX_RECORD_BYTES
+                        || previous
+                            .as_ref()
+                            .is_some_and(|b| b.len() > busbar_contract::bounded::MAX_RECORD_BYTES)
+                    {
+                        observed.push(Predicate {
+                            schema: schema.clone(),
+                            key: key.clone(),
+                            expected: previous.map_or(Expected::Absent, Expected::Bytes),
+                        });
+                    }
                 }
             }
         }
@@ -669,20 +673,34 @@ impl Shared {
         Ok(())
     }
 
-    /// Reconstruct a bounded logical cell; concurrent replacement may remove an old generation.
-    /// Re-read its exact descriptor before accepting either data or a corruption diagnosis.
+    /// A successful immutable generation linearizes at its initial root read, just like an
+    /// inline row. Its digest binds every byte to that observation. Only a missing/corrupt old
+    /// generation needs a root recheck: changed roots retry, unchanged corruption fails closed.
     async fn read_record(&self, schema: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        let root = self
+            .calls
+            .record_get(schema, key)
+            .await
+            .map_err(|f| failed("record root", f))?;
+        match root {
+            Some(root) => {
+                self.read_record_at(schema, key, root.as_slice().to_vec())
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// A listing already observed this exact root; do not point-read every listed cell again.
+    async fn read_record_at(
+        &self,
+        schema: &str,
+        key: &[u8],
+        mut root: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
         for _ in 0..SWAP_ATTEMPTS {
-            let Some(root) = self
-                .calls
-                .record_get(schema, key)
-                .await
-                .map_err(|f| failed("record root", f))?
-            else {
-                return Ok(None);
-            };
-            let Some(descriptor) = records::Descriptor::decode(root.as_slice())? else {
-                return Ok(Some(root.as_slice().to_vec()));
+            let Some(descriptor) = records::Descriptor::decode(&root)? else {
+                return Ok(Some(root));
             };
             let mut bytes = Vec::new();
             let parts_schema = records::parts_schema(schema);
@@ -698,20 +716,23 @@ impl Shared {
                 };
                 bytes.extend_from_slice(part.as_slice());
             }
+            if descriptor.check(&bytes) {
+                return Ok(Some(bytes));
+            }
             let current = self
                 .calls
                 .record_get(schema, key)
                 .await
                 .map_err(|f| failed("record root", f))?;
-            if current.as_ref().map(|r| r.as_slice()) != Some(root.as_slice()) {
-                continue;
+            match current {
+                None => return Ok(None),
+                Some(current) if current.as_slice() != root => root = current.as_slice().to_vec(),
+                Some(_) => {
+                    return Err(StorageError::new(
+                        "oauth_as store: incomplete or corrupt chunked record",
+                    ))
+                }
             }
-            if !descriptor.check(&bytes) {
-                return Err(StorageError::new(
-                    "oauth_as store: incomplete or corrupt chunked record",
-                ));
-            }
-            return Ok(Some(bytes));
         }
         Err(StorageError::new(
             "oauth_as store: chunked record repeatedly changed",
@@ -880,8 +901,11 @@ impl Shared {
             for id in superseded {
                 self.cleanup_legacy(kind_name, &id).await;
             }
-            for key in raw.keys() {
-                if let Some(value) = self.read_record(&schema, key).await? {
+            for (key, root) in &raw {
+                let value = self
+                    .read_record_at(&schema, key, root.as_slice().to_vec())
+                    .await?;
+                if let Some(value) = value {
                     if let Some(body) = authority_body(&value)? {
                         rows.push(body.to_vec());
                     }

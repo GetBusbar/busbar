@@ -49,9 +49,11 @@ pub(super) fn test_store_calls() -> Arc<dyn StoreCalls> {
     OneStore::default().calls()
 }
 
+type AtomicRows = BTreeMap<(String, Vec<u8>), Vec<u8>>;
+
 #[derive(Default)]
 struct AtomicRecords {
-    rows: BTreeMap<(String, Vec<u8>), Vec<u8>>,
+    rows: AtomicRows,
     receipts: BTreeMap<[u8; 16], Request>,
     calls: Vec<Request>,
 }
@@ -1587,7 +1589,7 @@ async fn a_cancelled_client_keeps_its_exact_candidate_for_replay() {
     let storage = Arc::new(SharedStorage::new(shared.clone()));
     storage.put_client(client("atomic-client")).await.unwrap();
     let (release, accepted, decided) = store.delay_decision("bucket", false);
-    let writer = {
+    let mut writer = {
         let storage = storage.clone();
         tokio::spawn(async move {
             storage
@@ -1595,7 +1597,10 @@ async fn a_cancelled_client_keeps_its_exact_candidate_for_replay() {
                 .await
         })
     };
-    accepted.notified().await;
+    tokio::select! {
+        _ = accepted.notified() => {},
+        result = &mut writer => panic!("write returned before the delayed backend accepted it: {result:?}"),
+    }
     writer.abort();
     assert!(writer.await.unwrap_err().is_cancelled());
     let candidate = shared
@@ -1676,11 +1681,14 @@ async fn a_late_bucket_commit_restores_indexes_reclaimed_while_it_was_pending() 
     let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
     a.put_client(client("atomic-client")).await.unwrap();
     let (release, accepted, decided) = store.delay_decision("bucket", false);
-    let writer = {
+    let mut writer = {
         let a = a.clone();
         tokio::spawn(async move { a.put_refresh_token(refresh("indexed-refresh")).await })
     };
-    accepted.notified().await;
+    tokio::select! {
+        _ = accepted.notified() => {},
+        result = &mut writer => panic!("write returned before the delayed backend accepted it: {result:?}"),
+    }
     writer.abort();
     assert!(writer.await.unwrap_err().is_cancelled());
     drop(a);
@@ -1996,7 +2004,7 @@ fn logical_rows(
         .collect()
 }
 
-fn apply_mutations(rows: &mut BTreeMap<(String, Vec<u8>), Vec<u8>>, mutations: &[Mutation]) {
+fn apply_mutations(rows: &mut AtomicRows, mutations: &[Mutation]) {
     for mutation in mutations {
         match mutation {
             Mutation::Put { schema, key, value } => {
@@ -2111,10 +2119,25 @@ async fn replacing_a_blind_large_index_reclaims_its_exact_old_generation() {
         .rows
         .keys()
         .any(|(s, _)| s == &crate::shared::records::parts_schema(&schema)));
-    shared
-        .index("rt", "large-index", "small-client")
-        .await
-        .unwrap();
+    let mut blind = Shared::candidate(&schema, "unrelated-guard", None, b"guard".to_vec());
+    Arc::make_mut(&mut blind).mutations = vec![Mutation::Put {
+        schema: schema.clone(),
+        key: crate::shared::digest("large-index").into_bytes(),
+        value: serde_json::to_vec(&crate::shared::IndexRow {
+            client: "small-client".into(),
+            key: crate::shared::digest("large-index"),
+            at: crate::shared::now_secs(),
+        })
+        .unwrap(),
+    }];
+    assert!(
+        !blind
+            .predicates
+            .iter()
+            .any(|p| p.key == crate::shared::digest("large-index").as_bytes()),
+        "caller supplied no index-root comparison"
+    );
+    assert_eq!(shared.submit(blind).await.unwrap(), Decision::Applied);
     assert_eq!(
         shared
             .client_of("rt", "large-index")
