@@ -411,7 +411,7 @@ pub struct Listener {
     /// Each line's handle id, in the list's order, as the root minted it from the ref-id space's
     /// line half ([`is_line_id`]).
     pub ids: Vec<u64>,
-    /// Whether a request's path is answered by a dialect that signs ([`signed_by_dialect`]).
+    /// Whether a request's path is answered by a dialect that signs, supplied by [`SignedIngress`].
     pub signed_ingress: SignedIngress,
     /// Physical claimant resolution. Absent only for the original root listener API.
     pub scope: Option<ListenerScope>,
@@ -1033,20 +1033,6 @@ struct SignedAnswer {
 /// declared ingress auth, never a name), so the `keys` arm asks the host-held credentials'
 /// verifier first, as 1.5.5's gate did. Answered by the listener's [`Listener::signed_ingress`].
 pub type SignedIngress = Arc<dyn Fn(&App, &str) -> bool + Send + Sync>;
-
-/// THE DECLARED ANSWER ([`SignedIngress`]): the path's residual dialect declares a signed ingress,
-/// on the residual plane only (an audience-bound plane admits bearer tokens alone).
-#[must_use]
-#[cfg(any(test, feature = "test-support"))]
-pub fn signed_by_dialect() -> SignedIngress {
-    Arc::new(|app: &App, path: &str| {
-        let ingress = app.planes.ingress_of(path);
-        matches!(ingress, crate::plane_driver::dispatch::Ingress::Fallback(_))
-            && crate::ingress::protocols::uses_signed_ingress_auth(
-                crate::ingress::native::envelope_dialect(ingress),
-            )
-    })
-}
 
 /// The request's field lines as a header map (a value that is no header value is left out).
 struct FieldBytes(zeroize::Zeroizing<Vec<u8>>);

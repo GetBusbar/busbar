@@ -147,7 +147,7 @@ fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
         app,
         door_refusals: Vec::new(),
         ids,
-        signed_ingress: kin::signed_by_dialect(),
+        signed_ingress: busbar_kernel_testkit::test_support::inbound::signed_by_dialect(),
         scope: None,
     }
 }

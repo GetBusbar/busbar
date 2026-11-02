@@ -191,7 +191,7 @@ fn listener_policy_retains_each_candidate_across_three_new_generations() {
         app,
         door_refusals: Vec::new(),
         ids: Vec::new(),
-        signed_ingress: busbar_kernel::inbound::signed_by_dialect(),
+        signed_ingress: busbar_kernel_testkit::test_support::inbound::signed_by_dialect(),
         scope: None,
     };
     let select = plan.policy("export.private.settings.ingress".into());

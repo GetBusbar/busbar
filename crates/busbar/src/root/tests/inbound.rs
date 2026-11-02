@@ -75,7 +75,7 @@ fn side() -> (Arc<Inbound>, GuestList) {
                     .iter()
                     .map(|_| auth_handle::next_ref_id(RefSpace::Line))
                     .collect(),
-                signed_ingress: kin::signed_by_dialect(),
+                signed_ingress: busbar_kernel_testkit::test_support::inbound::signed_by_dialect(),
                 scope: None,
             },
         )
