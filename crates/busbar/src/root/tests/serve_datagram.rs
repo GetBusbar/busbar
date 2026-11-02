@@ -216,6 +216,7 @@ pub(crate) mod real {
         inner: Arc<dyn FramerDoor>,
         pub(crate) emitted: Mutex<Vec<usize>>,
         pub(crate) ingested: Mutex<Vec<usize>>,
+        pub(crate) finished: std::sync::atomic::AtomicUsize,
         pub(crate) observer: Mutex<Option<Observer>>,
     }
     impl FramerDoor for Observed {
@@ -223,6 +224,7 @@ pub(crate) mod real {
             self.inner.facts()
         }
         fn cross(&self, call: Call<'_>) -> Crossed {
+            let finishing = matches!(&call, Call::Finish(..));
             if let Call::Ingest(input, _) = &call {
                 self.ingested.lock().unwrap().push(input.len);
             }
@@ -233,7 +235,13 @@ pub(crate) mod real {
                     observe(input.len);
                 }
             }
-            self.inner.cross(call)
+            let crossed = self.inner.cross(call);
+            if finishing && crossed.outcome == busbar_contract::abi::mechanism::call::Outcome::Ready
+            {
+                self.finished
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            crossed
         }
     }
     pub(crate) fn loaded() -> Arc<dyn FramerDoor> {
@@ -329,6 +337,7 @@ pub(crate) mod real {
                 inner: inner.unwrap_or_else(loaded),
                 emitted: Mutex::new(Vec::new()),
                 ingested: Mutex::new(Vec::new()),
+                finished: std::sync::atomic::AtomicUsize::new(0),
                 observer: Mutex::new(None),
             });
             let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -967,4 +976,111 @@ async fn early_drain_wakes_the_next_writer_after_cancel_without_overtaking_accep
         assert_eq!(control.pair.received().await, bytes);
     }
     assert_eq!(*control.pair.framer.emitted.lock().unwrap(), vec![5, 6, 4]);
+}
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn dropping_an_accepted_actual_caller_write_cancels_before_the_actor_crosses_and_wakes_a_waiter(
+) {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    #[derive(Default)]
+    struct WriteWake(AtomicUsize);
+    impl Wake for WriteWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let mut control = ControlledDoor::new(false);
+    control.publish_channel();
+    assert_eq!(lock(&control.pair.caller.leg.outbound).channel, Some(1));
+    let wake = Arc::new(WriteWake::default());
+    let waker = Waker::from(wake.clone());
+    let mut cx = Context::from_waker(&waker);
+    let bytes = b"accepted before polling";
+    let mut accepted = Box::pin(control.pair.caller.write(bytes));
+    assert!(accepted.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(
+        control.pair.pairing.publication_outcome().original_bytes,
+        bytes.len() as u64
+    );
+    let mut waiter = Box::pin(control.pair.caller.write(b"unaccepted"));
+    assert!(waiter.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(
+        control.pair.pairing.publication_outcome().original_bytes,
+        bytes.len() as u64
+    );
+    let before = wake.0.load(Ordering::SeqCst);
+    drop(accepted);
+    assert!(
+        wake.0.load(Ordering::SeqCst) > before,
+        "cancellation wakes the waiting writer"
+    );
+    assert_eq!(waiter.as_mut().poll(&mut cx), Poll::Ready(false));
+    drop(waiter);
+    control.stop();
+    tokio::time::timeout(real::WAIT, control.tracker.drained())
+        .await
+        .unwrap();
+    let outcome = control.pair.pairing.published().await;
+    assert!(outcome.failure.is_some());
+    assert_eq!(
+        (
+            outcome.original_bytes,
+            outcome.original_handed_bytes,
+            outcome.original_cancelled_bytes,
+            outcome.original_uncertain_bytes
+        ),
+        (bytes.len() as u64, 0, bytes.len() as u64, 0)
+    );
+    assert!(control.pair.pairing.closed());
+    assert!(control.pair.framer.emitted.lock().unwrap().is_empty());
+    assert_eq!(control.pair.framer.finished.load(Ordering::SeqCst), 1);
+    assert!(control.pair.door.assocs.is_empty());
+    assert!(lock(&control.pair.door.legs).is_empty());
+    assert_eq!(control.pair.pairing.memory_account().used(), 0);
+}
+
+#[cfg(feature = "transport-webrtc")]
+#[tokio::test]
+async fn actual_claim_door_shutdown_cancels_accepted_input_before_the_first_actor_poll() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use std::future::Future;
+    use std::sync::atomic::Ordering;
+    use std::task::{Context, Poll, Waker};
+    let mut control = ControlledDoor::new(false);
+    control.publish_channel();
+    let mut writing = Box::pin(control.pair.caller.write(b"sh"));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(writing.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(control.pair.pairing.publication_outcome().original_bytes, 2);
+    control.pair.door.close();
+    assert_eq!(writing.as_mut().poll(&mut cx), Poll::Ready(false));
+    drop(writing);
+    control.stop();
+    tokio::time::timeout(real::WAIT, control.tracker.drained())
+        .await
+        .unwrap();
+    let outcome = control.pair.pairing.published().await;
+    assert!(outcome.failure.is_some());
+    assert_eq!(
+        (
+            outcome.original_bytes,
+            outcome.original_handed_bytes,
+            outcome.original_cancelled_bytes,
+            outcome.original_uncertain_bytes
+        ),
+        (2, 0, 2, 0)
+    );
+    assert!(control.pair.pairing.closed());
+    assert!(control.pair.framer.emitted.lock().unwrap().is_empty());
+    assert_eq!(control.pair.framer.finished.load(Ordering::SeqCst), 1);
+    assert!(control.pair.door.assocs.is_empty());
+    assert!(lock(&control.pair.door.legs).is_empty());
+    assert_eq!(control.pair.pairing.memory_account().used(), 0);
 }
