@@ -54,12 +54,19 @@ impl FramerDoor for OpeningFramer {
         self.inner.facts()
     }
     fn cross(&self, call: Call<'_>) -> Crossed {
-        if matches!(&call, Call::Finish(..)) {
-            self.finishes.fetch_add(1, Ordering::SeqCst);
-            let callback = lock(&self.on_finish).clone();
+        if let Call::Finish(input, out) = call {
+            let callback = self.on_finish.lock().unwrap().clone();
             if let Some(callback) = callback {
                 callback();
             }
+            let crossed = self.inner.cross(Call::Finish(input, out));
+            assert_eq!(
+                crossed.outcome,
+                busbar_contract::abi::mechanism::call::Outcome::Ready,
+                "the actual WebRTC product completed Finish"
+            );
+            self.finishes.fetch_add(1, Ordering::SeqCst);
+            return crossed;
         }
         if let Call::Ingest(input, out) = call {
             let crossed = self.inner.cross(Call::Ingest(input, out));

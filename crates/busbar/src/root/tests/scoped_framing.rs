@@ -202,9 +202,17 @@ impl FramerDoor for TraceDoor {
                     .cross_scoped(context, side, resume, Call::Ingest(input, out))
             }
             Call::Finish(input, out) => {
-                self.finishes.lock().unwrap().push(input.framing);
-                self.inner
-                    .cross_scoped(context, side, resume, Call::Finish(input, out))
+                let token = input.framing;
+                let crossed =
+                    self.inner
+                        .cross_scoped(context, side, resume, Call::Finish(input, out));
+                assert_eq!(
+                    crossed.outcome,
+                    busbar_contract::abi::mechanism::call::Outcome::Ready,
+                    "the actual HTTP product finished its returned resource"
+                );
+                self.finishes.lock().unwrap().push(token);
+                crossed
             }
             call => self.inner.cross_scoped(context, side, resume, call),
         }
