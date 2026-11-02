@@ -28,6 +28,9 @@ mod checkpoint_plugin;
 #[path = "hook_checkpoint_cancellation_tests.rs"]
 mod checkpoint_cancellation;
 
+#[path = "hook_recovery_backoff_tests.rs"]
+mod recovery_backoff;
+
 fn checkpoint_instance(
     way: Way,
     mode: &str,
