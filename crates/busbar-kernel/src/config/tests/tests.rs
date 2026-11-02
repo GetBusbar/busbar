@@ -294,37 +294,6 @@ fn test_removed_key_aliases_are_rejected() {
 }
 
 #[test]
-fn test_otlp_folds_into_an_export_instance() {
-    crate::test_support::export_axis::install_export_axis();
-    let defs: crate::config::ExportDefs = serde_yaml::from_str(
-        "traces:\n  module: otlp\n  settings: { url: \"http://localhost:4318/v1/traces\" }\n",
-    )
-    .expect("an otlp export instance parses");
-    let mut errors = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errors);
-    assert!(errors.is_empty(), "{errors:?}");
-    let otlp: Vec<_> = export
-        .plugins
-        .iter()
-        .map(|p| {
-            (
-                p.name.as_str(),
-                p.def.module.as_str(),
-                p.def.settings.get("url"),
-            )
-        })
-        .collect();
-    assert_eq!(
-        otlp,
-        vec![(
-            "traces",
-            "otlp",
-            Some(&serde_json::json!("http://localhost:4318/v1/traces"))
-        )]
-    );
-}
-
-#[test]
 fn test_retired_observability_export_keys_loud_fail_with_hint() {
     let err = serde_yaml::from_str::<DeployCfg>(
         "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\nmodels: {}\npools: {}\n",
@@ -3205,30 +3174,6 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
     .expect("every reserved knob, well-shaped, loads");
     let saw = serde_yaml::to_string(&PLANE_SAW.lock().unwrap()[0]).unwrap();
     assert!(saw.contains("srv") && !saw.contains("fees"), "{saw}");
-}
-
-#[test]
-fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
-    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
-        crate::test_support::neutral_fallback_plane(),
-    ]);
-    let pools: crate::config::PoolsCfg = serde_yaml::from_str(
-        "tier:\n  members: [{model: m}]\nwork:\n  members: [{model: m}]\n\
-         breaker:\n  members: [{model: m}]\n",
-    )
-    .expect("a pool named `tier`, `work` or `breaker` is a pool, as in 1.5.5");
-    let mut names: Vec<&String> = pools.pools.keys().collect();
-    names.sort();
-    assert_eq!(names, ["breaker", "tier", "work"]);
-    for word in busbar_contract::section::RESERVED_SECTION_KEYS {
-        let e =
-            serde_yaml::from_str::<crate::config::PoolsCfg>(&format!("{word}:\n  members: []\n"))
-                .expect_err(word);
-        assert_eq!(
-            e.to_string(),
-            busbar_contract::section::reserved_name_refusal("pools", "pool", word)
-        );
-    }
 }
 
 #[test]

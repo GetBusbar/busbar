@@ -485,3 +485,57 @@ fn test_auth_policy_ceiling_allowed_pools_three_state() {
         Some(2)
     );
 }
+
+#[test]
+fn test_otlp_folds_into_an_export_instance() {
+    crate::dist_root_install::install();
+    let defs: busbar_kernel::config::ExportDefs = serde_yaml::from_str(
+        "traces:\n  module: otlp\n  settings: { url: \"http://localhost:4318/v1/traces\" }\n",
+    )
+    .expect("an otlp export instance parses");
+    let mut errors = Vec::new();
+    let export = busbar_kernel::config::resolve_export(&defs, &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+    let otlp: Vec<_> = export
+        .plugins
+        .iter()
+        .map(|p| {
+            (
+                p.name.as_str(),
+                p.def.module.as_str(),
+                p.def.settings.get("url"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        otlp,
+        vec![(
+            "traces",
+            "otlp",
+            Some(&serde_json::json!("http://localhost:4318/v1/traces"))
+        )]
+    );
+}
+
+#[test]
+fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
+    crate::dist_root_install::install();
+    let pools: busbar_kernel::config::PoolsCfg = serde_yaml::from_str(
+        "tier:\n  members: [{model: m}]\nwork:\n  members: [{model: m}]\n\
+         breaker:\n  members: [{model: m}]\n",
+    )
+    .expect("a pool named `tier`, `work` or `breaker` is a pool, as in 1.5.5");
+    let mut names: Vec<&String> = pools.pools.keys().collect();
+    names.sort();
+    assert_eq!(names, ["breaker", "tier", "work"]);
+    for word in busbar_contract::section::RESERVED_SECTION_KEYS {
+        let e = serde_yaml::from_str::<busbar_kernel::config::PoolsCfg>(&format!(
+            "{word}:\n  members: []\n"
+        ))
+        .expect_err(word);
+        assert_eq!(
+            e.to_string(),
+            busbar_contract::section::reserved_name_refusal("pools", "pool", word)
+        );
+    }
+}
