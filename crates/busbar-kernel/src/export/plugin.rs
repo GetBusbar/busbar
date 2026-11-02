@@ -287,7 +287,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             }
         };
         let opened_sink = axis.open(module, &format!("export.{name}"), settings.as_value());
-        let Ok(sink) = opened_sink.map_err(|e| errors.push(format!("export.{name}: {e}"))) else {
+        let Ok(sink) = instance_opened(name, opened_sink).map_err(|e| errors.push(e)) else {
             continue;
         };
 
@@ -319,6 +319,10 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
 
     tracing::callsite::rebuild_interest_cache();
     Ok(())
+}
+
+fn instance_opened<T>(name: &str, opened: Result<T, String>) -> Result<T, String> {
+    opened.map_err(|error| format!("export.{name}: {error}"))
 }
 
 #[derive(Default)]

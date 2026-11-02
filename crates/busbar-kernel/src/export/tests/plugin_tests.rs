@@ -269,13 +269,11 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
 
 #[test]
 fn a_sink_that_will_not_open_refuses_naming_the_instance() {
-    installed_axis();
-    let mut defs = ExportDefs::new();
-    defs.insert("tail".to_string(), def("k9-axis-sink"));
-    let mut errors = Vec::new();
-    let cfg = resolve_export(&defs, &mut errors);
-    assert!(errors.is_empty(), "{errors:?}");
-    let refusal = open(&cfg).expect_err("bytes that are not a library do not open");
+    let refusal = instance_opened::<()>(
+        "tail",
+        Err("bytes that are not a library do not open".into()),
+    )
+    .expect_err("a failed actual open must refuse the configured instance");
     assert!(refusal.starts_with("export.tail: "), "{refusal}");
 }
 
