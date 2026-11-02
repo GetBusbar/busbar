@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 
 use crate::cost::rate::RateCard;
 use crate::cost::{
-    plane_fee_lane, price_exact, price_in_view, split_plane_lane, whole, HistoryView, LedgerEntry,
-    MoneyError, Tally, PER_REQUEST, STANDARD_TIER_BP,
+    plane_fee_lane, price_exact, price_in_view, split_plane_lane, whole, HistorySeq, HistoryView,
+    LedgerEntry, MoneyError, Tally, PER_REQUEST, STANDARD_TIER_BP,
 };
 
 /// ONE METERING ROW, AS ITS READER HOLDS IT: the lane it was metered on, its counts by class, its
@@ -127,8 +127,18 @@ impl<'r> MeteredRow<'r> {
     /// installed. [`Tally`] at that card, one row per lane at the standard tier (a metering row
     /// carries no tier), then the flat card's fee row.
     pub fn spend_micros_at_card(&self, card: &RateCard) -> Result<i64, MoneyError> {
+        self.spend_micros_at_card_seq(HistorySeq::OPENING, card)
+    }
+
+    /// The row at an already resolved card and its snapshot sequence. A reader resolving exact
+    /// entry provenance uses this method without a second, temporal history lookup.
+    pub fn spend_micros_at_card_seq(
+        &self,
+        seq: HistorySeq,
+        card: &RateCard,
+    ) -> Result<i64, MoneyError> {
         let (lanes, fee_count) = self.lanes();
-        let mut t = Tally::at_card(card);
+        let mut t = Tally::at_card_seq(seq, card);
         for (lane, counts) in &lanes {
             t.row(
                 lane,
