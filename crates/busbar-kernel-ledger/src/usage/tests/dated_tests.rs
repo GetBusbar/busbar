@@ -293,7 +293,7 @@ fn a_nonzero_serving_era_before_the_window_keeps_its_original_card() {
 
 #[test]
 fn an_amendment_uses_wall_window_and_never_the_live_configuration_card() {
-    use crate::cost::{HistorySeq, RawRateEra};
+    use crate::cost::RawRateEra;
 
     let mut history = edited(card(20.0, 5), card(10.0, 7));
     let old = RawRateEra::entry(0, history.entries()[0].id());
@@ -325,7 +325,10 @@ fn an_amendment_uses_wall_window_and_never_the_live_configuration_card() {
     assert_eq!(price_at(from, history.current()), Ok(30 + 2));
     assert_eq!(price_at(until - 1, history.current()), Ok(30 + 2));
     assert_eq!(price_at(until, history.current()), Ok(200 + 5));
-    assert_eq!(price_at(from, history.snapshot(HistorySeq(1))), Ok(200 + 5));
+    assert_eq!(
+        price_at(from, history.snapshot(history.entries()[1].key())),
+        Ok(200 + 5)
+    );
     let amendment_key = history.entries()[2].key();
     let mut voided = history.clone();
     voided.void(&amendment_key);

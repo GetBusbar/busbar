@@ -70,7 +70,7 @@ pub(crate) fn inputs(unit: u64) -> AuditInputs {
             lines: Vec::new(),
             tier_bp: 10_000,
             fee_count: 1,
-            rate_card_version: 1,
+            rate_card_version: Some([1; 20]),
             bucket_chain_ref: String::new(),
         },
         controls: Controls::default(),

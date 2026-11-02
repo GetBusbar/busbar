@@ -665,12 +665,21 @@ async fn node_boot_hooks_arm() {
     applied.per_request_fee = 3;
     let _applied =
         busbar_kernel_testkit::app::build_once(applied, Some(&app)).expect("the apply builds");
-    let pinned = crate::root::kernel::ROOT_CARD
-        .pin()
-        .expect("the card holder has entries")
-        .seq()
-        .get();
-    assert_ne!(pinned, 0, "the apply appended no entry to the card history");
+    let (pinned, pinned_ordinal) = {
+        let history = crate::root::kernel::ROOT_CARD
+            .pin()
+            .expect("the card holder has entries");
+        let view = history.view();
+        let entry = view
+            .entries()
+            .last()
+            .expect("the pinned history has an entry");
+        (entry.key().0, entry.seq().get())
+    };
+    assert_ne!(
+        pinned_ordinal, 0,
+        "the apply appended no entry to the card history"
+    );
 
     let _one = PUBLISHING.lock().await;
     let g = governed_over(
@@ -715,7 +724,8 @@ async fn node_boot_hooks_arm() {
         .last()
         .expect("the door unit's audit record is on the book");
     assert_eq!(
-        record.usage.rate_card_version, pinned,
+        record.usage.rate_card_version,
+        Some(pinned),
         "the door unit was not pinned to the card in force at its door"
     );
 }

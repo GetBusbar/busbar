@@ -2000,7 +2000,7 @@ fn a_sealed_chain() -> SealedChain {
                     lines: Vec::new(),
                     tier_bp: 9_000,
                     fee_count: 1,
-                    rate_card_version: 3,
+                    rate_card_version: Some([3; 20]),
                     bucket_chain_ref: "chain:free>paid".into(),
                 },
                 controls: Controls {
@@ -2387,7 +2387,7 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
         .view()
         .card_at(instant)
         .expect("the opening prices the instant");
-    assert_eq!(before_seq, busbar_kernel_ledger::cost::HistorySeq(0));
+    assert_eq!(before_seq, before.seq());
 
     let answer = amend_through_a_journal(&history, &a_correction_body(), ARRIVED)
         .expect("the correction applies");
@@ -2420,7 +2420,7 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     let (now_seq, _) = view
         .card_at(instant)
         .expect("the correction prices the instant");
-    assert_eq!(now_seq, busbar_kernel_ledger::cost::HistorySeq(1));
+    assert_eq!(now_seq, after.seq());
     assert!(
         matches!(
             entries[1].author(),
@@ -2438,7 +2438,7 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
         .view()
         .card_at(instant)
         .expect("the old snapshot still prices the instant");
-    assert_eq!(old_seq, busbar_kernel_ledger::cost::HistorySeq(0));
+    assert_eq!(old_seq, before.seq());
 }
 
 #[test]
@@ -2906,7 +2906,7 @@ fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
     let pinned = history.pin().expect("pinned");
     let view = pinned.view();
     let (seq, card) = view.card_at(1_000).expect("the window is priced");
-    assert_eq!(seq, busbar_kernel_ledger::cost::HistorySeq(2));
+    assert_eq!(seq, view.seq().expect("the latest correction has a key"));
     assert_eq!(
         card.fee(),
         9,
@@ -3263,7 +3263,7 @@ fn a_signed_record_verifies_against_the_served_audit_keys() {
             lines: Vec::new(),
             tier_bp: 10_000,
             fee_count: 1,
-            rate_card_version: 1,
+            rate_card_version: Some([1; 20]),
             bucket_chain_ref: "chain:free".into(),
         },
         controls: Controls::default(),
@@ -3870,4 +3870,89 @@ async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
         400,
         "a body longer than the cap is refused whatever length it declared"
     );
+}
+
+fn amendment_codec_fixture(version: u8, key_bytes: &[u8]) -> Vec<u8> {
+    let mut body = busbar_kernel_wal::BodyWriter::new();
+    body.text(&format!("busbar/rate-amendment/v{version}"));
+    body.num(0);
+    body.num(1);
+    body.num(100);
+    body.num(300);
+    if version == 4 {
+        body.bytes(key_bytes);
+        body.bytes(&[7; 32]);
+    }
+    if version == 3 {
+        body.num(17);
+        body.bytes(&[7; 32]);
+    }
+    body.figure(9);
+    body.num(1);
+    body.text("model");
+    body.text("input");
+    if version >= 2 {
+        body.num(1);
+    }
+    body.num(19);
+    body.text("old-operator");
+    body.bytes(&[8; 32]);
+    body.text("admin");
+    body.text("single");
+    body.bytes(b"original payload");
+    body.text("old-signature");
+    body.finish()
+}
+
+#[test]
+fn original_v1_v2_v3_and_keyed_v4_amendments_retain_their_exact_byte_formats() {
+    for version in 1..=4 {
+        let bytes = amendment_codec_fixture(version, &[0x4a; 20]);
+        let record = amendment_from_body(&bytes).expect("the original durable format decodes");
+        assert_eq!(amendment_body(&record).unwrap(), bytes);
+        assert_eq!(
+            record.version,
+            match version {
+                1 => AmendmentVersion::V1,
+                2 => AmendmentVersion::V2,
+                3 => AmendmentVersion::V3,
+                _ => AmendmentVersion::V4,
+            }
+        );
+        match record.sealed_over {
+            Some(crate::root::kernel::CorrectionBase::Key { key, card_digest }) => {
+                assert_eq!(version, 4);
+                assert_eq!(key.as_bytes(), &[0x4a; 20]);
+                assert_eq!(card_digest, [7; 32]);
+            }
+            Some(crate::root::kernel::CorrectionBase::LegacyOrdinal { seq, card_digest }) => {
+                assert_eq!(version, 3);
+                assert_eq!(seq.get(), 17);
+                assert_eq!(card_digest, [7; 32]);
+            }
+            None => assert!(version <= 2),
+        }
+    }
+}
+
+#[test]
+fn amendment_key_lengths_trailing_bytes_and_version_base_mismatches_fail_closed() {
+    for len in [0, 19, 21] {
+        assert!(amendment_from_body(&amendment_codec_fixture(4, &vec![0x4a; len])).is_none());
+    }
+    for version in 1..=4 {
+        let mut bytes = amendment_codec_fixture(version, &[0x4a; 20]);
+        bytes.push(0);
+        assert!(amendment_from_body(&bytes).is_none());
+    }
+    let mut record = amendment_from_body(&amendment_codec_fixture(4, &[0x4a; 20])).unwrap();
+    record.version = AmendmentVersion::V3;
+    assert!(amendment_body(&record).is_err());
+    record.version = AmendmentVersion::V1;
+    record.sealed_over = None;
+    record.rates[0].2 = None;
+    assert!(amendment_body(&record).is_err());
+    record.version = AmendmentVersion::V2;
+    let encoded = amendment_body(&record).unwrap();
+    assert_eq!(amendment_from_body(&encoded).unwrap(), record);
 }

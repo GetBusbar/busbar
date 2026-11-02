@@ -82,6 +82,8 @@ pub struct Adjustment<'a> {
     /// entry they were dated with at [`Self::card_epoch_ms`] (the latest era the epoch day's
     /// metering of the key and lane carries at or before it); any other is refused.
     pub entry_era: u64,
+    /// Exact raw rate entry, when known. A missing identity retains legacy dating semantics.
+    pub entry_id: Option<crate::cost::EntryId>,
     /// THE CARD EPOCH: the corrected unit's arrival instant in milliseconds, whose card its counts
     /// price at. It picks each bucket's window (the one holding it), the segment in that window,
     /// and the metering day — never the instant the correction is made.

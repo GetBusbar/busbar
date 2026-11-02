@@ -615,6 +615,16 @@ fn restart_fields(
     (reload_to_apply, note)
 }
 
+/// Restart metadata returned when a stored removal cannot take full effect in this process.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct PendingRestartRemovalView {
+    /// The operator-facing explanation of the pending restart.
+    note: Option<String>,
+    /// The boot-bound changes that require a process restart to take effect.
+    reload_to_apply: Vec<String>,
+}
+
 fn removal_response(paths: Vec<String>, planes: Vec<String>, exports: Vec<String>) -> Response {
     let (reload_to_apply, note) = restart_fields(paths, planes, exports);
     if reload_to_apply.is_empty() {
@@ -622,7 +632,10 @@ fn removal_response(paths: Vec<String>, planes: Vec<String>, exports: Vec<String
     } else {
         respond(
             StatusCode::OK,
-            Ok(serde_json::json!({ "reload_to_apply": reload_to_apply, "note": note })),
+            Ok(PendingRestartRemovalView {
+                reload_to_apply,
+                note,
+            }),
         )
     }
 }

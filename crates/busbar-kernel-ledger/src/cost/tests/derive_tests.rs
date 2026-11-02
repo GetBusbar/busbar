@@ -74,7 +74,7 @@ fn an_unknown_lane_with_a_card_is_unpriced_and_refuses() {
     assert_eq!(
         bucket_money(&c, [("mystery-lane", l.as_slice())], 0).and_then(Money::minor_i64),
         Err(MoneyError::LaneUnpriced {
-            card_seq: crate::cost::HistorySeq::OPENING,
+            card_seq: None,
             lane: "mystery-lane".to_string(),
         })
     );
@@ -198,7 +198,7 @@ fn a_partial_card_prices_the_known_lane_and_refuses_the_missing_one() {
         )
         .and_then(Money::minor_i64),
         Err(MoneyError::LaneUnpriced {
-            card_seq: crate::cost::HistorySeq::OPENING,
+            card_seq: None,
             lane: "absent".to_string(),
         })
     );

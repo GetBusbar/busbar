@@ -3,12 +3,13 @@
 
 use busbar_kernel_audit::digest::{Digest, Framing};
 use busbar_kernel_audit::sign::{SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
-use busbar_kernel_audit::{AuditVerifyingKey, DIGEST_RECIPE, DIGEST_RECIPE_V2};
+use busbar_kernel_audit::{AuditVerifyingKey, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 const V2: &str = include_str!("../../../../../docs/audit-chain-digest-v2.md");
 const V4: &str = include_str!("../../../../../docs/audit-chain-digest-v4.md");
+const V5: &str = include_str!("../../../../../docs/audit-chain-digest-v5.md");
 type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone, Copy)]
@@ -49,7 +50,8 @@ fn record_number(value: &Value, member: &str) -> Result<u64> {
 fn recipe(name: &str) -> Result<&'static str> {
     match name {
         DIGEST_RECIPE_V2 => Ok(V2),
-        DIGEST_RECIPE => Ok(V4),
+        DIGEST_RECIPE_V4 => Ok(V4),
+        DIGEST_RECIPE => Ok(V5),
         _ => Err("unsupported audit digest recipe"),
     }
 }
@@ -119,6 +121,22 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
         None if default_recipe == DIGEST_RECIPE_V2 => DIGEST_RECIPE_V2,
         None => return Err("a record recipe is absent"),
     };
+    if name == DIGEST_RECIPE {
+        let present = text(record, "rate_card_key_present")?;
+        let key = text(record, "rate_card_version")?;
+        let valid_key = key.len() == 40
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        let valid = match present {
+            "0" => key.is_empty(),
+            "1" => valid_key,
+            _ => false,
+        };
+        if !valid {
+            return Err("a keyed rate-card boundary has invalid presence or spelling");
+        }
+    }
     let order = fields(recipe(name)?)?;
     let mut digest = Digest::new(Framing::LengthPrefixed);
     let mut index = 0;

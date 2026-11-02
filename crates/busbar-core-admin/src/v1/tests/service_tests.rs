@@ -2243,7 +2243,7 @@ mod dated_rate_card_history {
         gov_with_priced_rows(rows.iter().map(|(bucket, era)| (*bucket, *era, "")))
     }
 
-    fn gov_with_priced_rows<'a>(
+    pub(super) fn gov_with_priced_rows<'a>(
         rows: impl IntoIterator<Item = (u64, u64, &'a str)>,
     ) -> Arc<GovState> {
         let store = Arc::new(MemoryStore::new());
@@ -2288,7 +2288,7 @@ mod dated_rate_card_history {
         gov: Arc<GovState>,
         src: &'static Arc<History>,
         bucket: u64,
-        as_of: Option<u64>,
+        as_of: Option<busbar_kernel::cost::EntryKey>,
     ) -> Result<UsageView, AdminError> {
         let app = crate::new_test_app()
             .governance(gov)
@@ -2303,7 +2303,7 @@ mod dated_rate_card_history {
     pub(super) async fn read_no_source_as_of(
         gov: Arc<GovState>,
         bucket: u64,
-        as_of: Option<u64>,
+        as_of: Option<busbar_kernel::cost::EntryKey>,
     ) -> Result<UsageView, AdminError> {
         let app = crate::new_test_app()
             .governance(gov)
@@ -2375,6 +2375,7 @@ mod dated_rate_card_history {
                     pool: "",
                     model: LANE,
                     entry_era: era,
+                    entry_id: None,
                     card_epoch_ms: served_at * 1_000,
                     delta: &delta,
                     now: busbar_kernel::store::now(),
@@ -2467,13 +2468,14 @@ mod dated_rate_card_history {
     async fn old_served_counts_keep_their_config_era_across_a_later_bucket_and_activation() {
         let (old, activated, later) = windows();
         let mut history = History::opening(card(20.0), 0);
-        let old_seq = history.append(CardEntryDraft {
+        history.append(CardEntryDraft {
             effective_from: old * 1_000,
             effective_until: None,
             card: card(10.0),
             appended_at: old * 1_000,
             author: Author::Config { policy_epoch: 1 },
         });
+        let old_seq = history.head_key().expect("the appended entry has a key");
         history.append(CardEntryDraft {
             effective_from: activated * 1_000,
             effective_until: None,
@@ -2485,9 +2487,9 @@ mod dated_rate_card_history {
         let old_rows = gov_with_rows(&[(later, old * 1_000)]);
         let old_read = read(old_rows.clone(), src, later).await;
         assert_eq!(old_read.total.spend_micros, 10_000);
-        assert_eq!(old_read.rate_card_version, Some(old_seq.get()));
+        assert_eq!(old_read.rate_card_version, Some(old_seq.hex()));
         assert_eq!(
-            read_as_of(old_rows, src, later, Some(old_seq.get()))
+            read_as_of(old_rows, src, later, Some(old_seq))
                 .await
                 .unwrap()
                 .total
@@ -2504,21 +2506,23 @@ mod dated_rate_card_history {
     async fn amendments_reach_old_served_eras_without_enabling_later_config_repricing() {
         let (old, activated, corrected_day) = windows();
         let mut history = History::opening(card(20.0), 0);
-        let old_seq = history.append(CardEntryDraft {
+        history.append(CardEntryDraft {
             effective_from: old * 1_000,
             effective_until: None,
             card: card(10.0),
             appended_at: old * 1_000,
             author: Author::Config { policy_epoch: 1 },
         });
-        let activated_seq = history.append(CardEntryDraft {
+        let old_seq = history.head_key().expect("the appended entry has a key");
+        history.append(CardEntryDraft {
             effective_from: activated * 1_000,
             effective_until: None,
             card: card(1.0),
             appended_at: activated * 1_000,
             author: Author::Config { policy_epoch: 2 },
         });
-        let amended_seq = history.append(CardEntryDraft {
+        let activated_seq = history.head_key().expect("the appended entry has a key");
+        history.append(CardEntryDraft {
             effective_from: corrected_day * 1_000,
             effective_until: Some((corrected_day + DAY) * 1_000),
             card: card(5.0),
@@ -2527,16 +2531,17 @@ mod dated_rate_card_history {
                 reason_hash: [7; 32],
             },
         });
+        let amended_seq = history.head_key().expect("the appended entry has a key");
         let src = source(history);
         let rows = gov_with_rows(&[(activated, old * 1_000), (corrected_day, old * 1_000)]);
-        let before = read_as_of(rows.clone(), src, corrected_day, Some(activated_seq.get()))
+        let before = read_as_of(rows.clone(), src, corrected_day, Some(activated_seq))
             .await
             .unwrap();
         assert_eq!(before.total.spend_micros, 10_000);
-        assert_eq!(before.rate_card_version, Some(old_seq.get()));
+        assert_eq!(before.rate_card_version, Some(old_seq.hex()));
         let corrected = read(rows.clone(), src, corrected_day).await;
         assert_eq!(corrected.total.spend_micros, 5_000);
-        assert_eq!(corrected.rate_card_version, Some(amended_seq.get()));
+        assert_eq!(corrected.rate_card_version, Some(amended_seq.hex()));
         assert_eq!(read(rows, src, activated).await.total.spend_micros, 10_000);
     }
 
@@ -2549,24 +2554,25 @@ mod dated_rate_card_history {
         let (_old, activated, later) = windows();
         let mut history = History::opening(card(10.0), 0);
         let opening_version = history.entries()[0].id().metering_version();
-        let activated_seq = history.append(CardEntryDraft {
+        history.append(CardEntryDraft {
             effective_from: activated * 1_000,
             effective_until: None,
             card: card(1.0),
             appended_at: activated * 1_000,
             author: Author::Config { policy_epoch: 1 },
         });
+        let activated_seq = history.head_key().expect("the appended entry has a key");
         let activated_version = history.entries()[1].id().metering_version();
         let src = source(history);
         let known = gov_with_priced_rows([(later, 0, opening_version.as_str())]);
         let view = read(known, src, later).await;
         assert_eq!(view.total.spend_micros, 10_000);
-        assert_eq!(view.rate_card_version, Some(0));
+        assert_eq!(view.rate_card_version, Some(src.entries()[0].key().hex()));
         for legacy in ["", LEGACY_NAMED_VERSION] {
             let rows = gov_with_priced_rows([(later, 0, legacy)]);
             let view = read(rows, src, later).await;
             assert_eq!(view.total.spend_micros, 1_000);
-            assert_eq!(view.rate_card_version, Some(activated_seq.get()));
+            assert_eq!(view.rate_card_version, Some(activated_seq.hex()));
         }
         let malformed = EntryId::METERING_VERSION_PREFIX;
         let unknown = EntryId::parse_hex(UNKNOWN_ENTRY_ID)
@@ -2587,7 +2593,7 @@ mod dated_rate_card_history {
             gov_with_priced_rows([(later, activated * 1_000, activated_version.as_str())]);
         assert!(
             matches!(
-                read_as_of(new_rows, src, later, Some(0)).await,
+                read_as_of(new_rows, src, later, Some(src.entries()[0].key())).await,
                 Err(AdminError::Internal)
             ),
             "a snapshot cannot price counts whose exact source entry it does not contain"
@@ -2603,11 +2609,12 @@ mod dated_rate_card_history {
             (monthly, monthly * 1_000),
             (prepaid, prepaid * 1_000),
         ]);
-        for (bucket, seq) in [(payg, 0), (monthly, 1), (prepaid, 2)] {
+        for (bucket, index) in [(payg, 0), (monthly, 1), (prepaid, 2)] {
+            let seq = src.entries()[index].key();
             let live = read(gov.clone(), src, bucket).await;
             assert_eq!(
                 live.rate_card_version,
-                Some(seq),
+                Some(seq.hex()),
                 "the window at {bucket} is priced by history entry {seq}"
             );
             let pinned = read_as_of(gov.clone(), src, bucket, Some(seq))
@@ -2617,9 +2624,9 @@ mod dated_rate_card_history {
                 pinned.total.spend_micros, live.total.spend_micros,
                 "`?as_of=<rate_card_version>` re-derives the figure the version was served beside"
             );
-            assert_eq!(pinned.rate_card_version, Some(seq));
+            assert_eq!(pinned.rate_card_version, Some(seq.hex()));
             let wire = serde_json::to_value(&live).expect("a usage view serializes");
-            assert_eq!(wire["rate_card_version"], serde_json::json!(seq));
+            assert_eq!(wire["rate_card_version"], serde_json::json!(seq.hex()));
         }
         let none = read_no_source_as_of(gov, payg, None)
             .await
@@ -2820,7 +2827,8 @@ mod dated_rate_card_history {
 #[cfg(test)]
 mod usage_as_of {
     use super::dated_rate_card_history::{
-        card, gov_with_rows, read_as_of, read_no_source_as_of, source, windows,
+        card, gov_with_priced_rows, gov_with_rows, read_as_of, read_no_source_as_of, source,
+        windows,
     };
     use busbar_kernel::cost::{Author, CardEntryDraft, History};
 
@@ -2840,18 +2848,18 @@ mod usage_as_of {
         let src = source(history);
 
         assert_eq!(
-            read_as_of(gov.clone(), src, payg, Some(0))
+            read_as_of(gov.clone(), src, payg, Some(src.entries()[0].key()))
                 .await
-                .expect("seq 0 exists")
+                .expect("the opening key exists")
                 .total
                 .spend_micros,
             10_000,
             "at the opening snapshot the window prices at the opening card"
         );
         assert_eq!(
-            read_as_of(gov, src, payg, Some(1))
+            read_as_of(gov, src, payg, Some(src.entries()[1].key()))
                 .await
-                .expect("seq 1 is the head")
+                .expect("the head key exists")
                 .total
                 .spend_micros,
             10_000,
@@ -2876,18 +2884,18 @@ mod usage_as_of {
         let src = source(history);
 
         assert_eq!(
-            read_as_of(gov.clone(), src, payg, Some(0))
+            read_as_of(gov.clone(), src, payg, Some(src.entries()[0].key()))
                 .await
-                .expect("seq 0 exists")
+                .expect("the opening key exists")
                 .total
                 .spend_micros,
             10_000,
             "the snapshot taken before the correction re-derives the figure it was cut at"
         );
         assert_eq!(
-            read_as_of(gov.clone(), src, payg, Some(1))
+            read_as_of(gov.clone(), src, payg, Some(src.entries()[1].key()))
                 .await
-                .expect("seq 1 is the head")
+                .expect("the head key exists")
                 .total
                 .spend_micros,
             5_000,
@@ -2905,30 +2913,50 @@ mod usage_as_of {
     }
 
     #[tokio::test]
-    async fn a_snapshot_above_the_head_is_refused_rather_than_clamped() {
+    async fn an_unknown_snapshot_key_is_refused_on_either_side_of_known_entries() {
+        use busbar_kernel::cost::EntryKey;
         let (payg, _, _) = windows();
         let gov = gov_with_rows(&[(payg, 0)]);
-        let src = source(History::opening(card(10.0), 0));
-
-        let err = read_as_of(gov, src, payg, Some(7))
-            .await
-            .expect_err("a snapshot that does not exist is a refusal");
-        let crate::v1::contract::AdminError::Validation(msg) = &err else {
-            panic!("expected a client-safe validation refusal, got {err:?}");
-        };
-        assert!(
-            msg.contains("as_of 7") && msg.contains("head (0)"),
-            "the refusal must name the seq asked for and the head that exists: {msg}"
-        );
+        let mut history = History::new();
+        for at in [100, 300] {
+            history.insert(
+                EntryKey::new(at, [1; 8], 0),
+                CardEntryDraft {
+                    effective_from: at,
+                    effective_until: None,
+                    card: card(10.0),
+                    appended_at: at,
+                    author: Author::Config { policy_epoch: at },
+                },
+            );
+        }
+        let src = source(history);
+        for at in [50, 200, 400] {
+            let unknown = EntryKey::new(at, [1; 8], 0);
+            let err = read_as_of(gov.clone(), src, payg, Some(unknown))
+                .await
+                .expect_err("a snapshot key that does not exist is a refusal");
+            let crate::v1::contract::AdminError::Validation(msg) = &err else {
+                panic!("expected a client-safe validation refusal, got {err:?}");
+            };
+            assert!(
+                msg.contains(&unknown.hex()) && msg.contains("known rate-card history entry"),
+                "the refusal must name the unknown key without interpreting its position: {msg}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn a_snapshot_of_a_history_that_does_not_exist_is_refused() {
         let (payg, _, _) = windows();
         let gov = gov_with_rows(&[(payg, 0)]);
-        let err = read_no_source_as_of(gov, payg, Some(0))
-            .await
-            .expect_err("there is no snapshot of a history that does not exist");
+        let err = read_no_source_as_of(
+            gov,
+            payg,
+            Some(busbar_kernel::cost::EntryKey::new(0, [0; 8], 0)),
+        )
+        .await
+        .expect_err("there is no snapshot of a history that does not exist");
         let crate::v1::contract::AdminError::Validation(msg) = &err else {
             panic!("expected a client-safe validation refusal, got {err:?}");
         };
@@ -2936,6 +2964,54 @@ mod usage_as_of {
             msg.contains("no rate-card history"),
             "the refusal must say WHY there is nothing to snapshot: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_saved_keyed_read_replays_after_an_earlier_peer_entry_arrives() {
+        use busbar_kernel::cost::EntryKey;
+        let (payg, _, _) = windows();
+        let wall = payg * 1_000;
+        let draft = |at, rate| CardEntryDraft {
+            effective_from: at,
+            effective_until: None,
+            card: card(rate),
+            appended_at: at,
+            author: Author::Config { policy_epoch: at },
+        };
+        let opening = EntryKey::new(100, [1; 8], 0);
+        let saved = EntryKey::new(300, [1; 8], 1);
+        let late_peer = EntryKey::new(200, [2; 8], 0);
+        let mut history = History::new();
+        let mut first = draft(0, 20.0);
+        first.author = Author::Opening;
+        history.insert(opening, first);
+        history.insert(saved, draft(300, 10.0));
+        let version = saved.id().metering_version();
+        for gov in [
+            gov_with_rows(&[(payg, 0)]),
+            gov_with_priced_rows([(payg, 300, version.as_str())]),
+        ] {
+            let before = read_as_of(gov.clone(), source(history.clone()), payg, Some(saved))
+                .await
+                .expect("the saved key is present before peer delivery");
+            assert_eq!(before.total.spend_micros, 10_000);
+            assert_eq!(before.rate_card_version, Some(saved.hex()));
+            assert!(wall > 300, "all three entries cover the row instant");
+
+            let mut after_history = history.clone();
+            after_history.insert(late_peer, draft(200, 2.0));
+            let after_source = source(after_history);
+            let current = read_as_of(gov.clone(), after_source, payg, None)
+                .await
+                .unwrap();
+            assert_eq!(current.total.spend_micros, 10_000);
+            let after = read_as_of(gov, after_source, payg, Some(saved))
+                .await
+                .expect("late delivery cannot invalidate the saved boundary");
+            assert_eq!(after.total.spend_micros, before.total.spend_micros);
+            assert_eq!(after.rate_card_version, before.rate_card_version);
+            assert_eq!(after.total.tokens_input, before.total.tokens_input);
+        }
     }
 }
 
@@ -3754,13 +3830,14 @@ mod plane_fees_on_admin_usage {
         let old_cost = carded_cost(OLD_CALL_MICROS, OLD_REQUEST_MINOR, 0);
         let new_cost = carded_cost(NEW_CALL_MICROS, NEW_REQUEST_MINOR, 0);
         let mut history = History::opening(new_cost.card().clone(), 0);
-        let old_seq = history.append(CardEntryDraft {
+        history.append(CardEntryDraft {
             effective_from: old_era,
             effective_until: None,
             card: old_cost.card().clone(),
             appended_at: old_era,
             author: Author::Config { policy_epoch: 1 },
         });
+        let old_seq = history.head_key().expect("the appended entry has a key");
         let old_version = history.entries()[1].id().metering_version();
         history.append(CardEntryDraft {
             effective_from: activated,
@@ -3802,7 +3879,7 @@ mod plane_fees_on_admin_usage {
         assert_eq!(view.total.spend_micros, class_cost + request_cost);
         assert_eq!(view.total.classes[TOOL_CLASS].cost, class_cost);
         assert_eq!(view.by_model[0].usage.classes[TOOL_CLASS].cost, class_cost);
-        assert_eq!(view.rate_card_version, Some(old_seq.get()));
+        assert_eq!(view.rate_card_version, Some(old_seq.hex()));
     }
 
     #[test]

@@ -808,6 +808,7 @@ fn amend_rate_history_effect(
                 return Err(GovernanceError::Conflict);
             }
             let record = AmendmentRecord {
+                version: AmendmentVersion::V4,
                 effective_from,
                 effective_until,
                 amended_at_ms: appended_at_ms,
@@ -837,7 +838,7 @@ fn amend_rate_history_effect(
             };
             match journal {
                 Some(journal) => journal
-                    .seal_policy(amendment_body(&record), arrival_secs)
+                    .seal_policy(amendment_body(&record)?, arrival_secs)
                     .map(|(node_seq, _)| sealed_at.set(Some(node_seq))),
                 None => Ok(()),
             }
@@ -896,11 +897,26 @@ pub struct AmendAttribution {
     pub principal: String,
 }
 
-pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v3";
+pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v4";
+
+const AMENDMENT_RECORD_TAG_V3: &str = "busbar/rate-amendment/v3";
 
 const AMENDMENT_RECORD_TAG_V2: &str = "busbar/rate-amendment/v2";
 
 const AMENDMENT_RECORD_TAG_V1: &str = "busbar/rate-amendment/v1";
+
+/// The original durable encoding retained when an old record is read back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmendmentVersion {
+    /// Unbased records with implicitly priced cells.
+    V1,
+    /// Unbased records with explicit cell pricing markers.
+    V2,
+    /// Records sealed over an original chain-local ordinal.
+    V3,
+    /// Records sealed over an actual fleet entry key.
+    V4,
+}
 
 /// One sealed rate-card amendment, as the node's journal keeps it: every figure the correction put
 /// on the history, who submitted it, and the canonical bytes of the correction.
@@ -911,15 +927,17 @@ const AMENDMENT_RECORD_TAG_V1: &str = "busbar/rate-amendment/v1";
 /// fingerprint, `single` and the empty signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AmendmentRecord {
+    /// The durable format to preserve when this record is encoded again.
+    pub version: AmendmentVersion,
     /// Start of the corrected window, milliseconds.
     pub effective_from: u64,
     /// End of the corrected window, milliseconds; `None` is open-ended.
     pub effective_until: Option<u64>,
     /// When the correction was admitted, milliseconds.
     pub amended_at_ms: u64,
-    /// `Some` (every record this node writes, `v3`): the cells are set OVER the card in force for
-    /// the window, and this is that card's entry number and digest, written at amend time. A
-    /// restart rebuilds the entry over the entry at that number holding that card, or refuses it
+    /// `Some` on new v4 records: the cells are set over the exact keyed card and digest resolved
+    /// at amend time. Old v3 records retain a distinct original-chain ordinal. A restart rebuilds
+    /// only over the resolved identity holding that card, or refuses it
     /// ([`crate::root::kernel::CorrectionRefused`]). `None` for a `v1`/`v2` record, whose cells
     /// and fee were the whole card it sealed.
     pub sealed_over: Option<crate::root::kernel::CorrectionBase>,
@@ -954,28 +972,46 @@ pub struct AmendmentRecord {
     pub signature: String,
 }
 
-#[must_use]
-pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
+pub fn amendment_body(
+    record: &AmendmentRecord,
+) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+    use crate::root::kernel::CorrectionBase;
+    let tag = match (record.version, record.sealed_over) {
+        (AmendmentVersion::V1, None) if record.rates.iter().all(|(_, _, rate)| rate.is_some()) => {
+            AMENDMENT_RECORD_TAG_V1
+        }
+        (AmendmentVersion::V2, None) => AMENDMENT_RECORD_TAG_V2,
+        (AmendmentVersion::V3, Some(CorrectionBase::LegacyOrdinal { .. })) => {
+            AMENDMENT_RECORD_TAG_V3
+        }
+        (AmendmentVersion::V4, Some(CorrectionBase::Key { .. })) => AMENDMENT_RECORD_TAG,
+        _ => return Err(busbar_core_admin::GovernanceError::Validation),
+    };
     let mut body = busbar_kernel_wal::BodyWriter::new();
-    body.text(if record.sealed_over.is_some() {
-        AMENDMENT_RECORD_TAG
-    } else {
-        AMENDMENT_RECORD_TAG_V2
-    });
+    body.text(tag);
     body.num(record.effective_from);
     body.num(u64::from(record.effective_until.is_some()));
     body.num(record.effective_until.unwrap_or(0));
     body.num(record.amended_at_ms);
-    if let Some(base) = &record.sealed_over {
-        body.num(base.seq.get());
-        body.bytes(&base.card_digest);
+    match record.sealed_over {
+        Some(CorrectionBase::Key { key, card_digest }) => {
+            body.bytes(key.as_bytes());
+            body.bytes(&card_digest);
+        }
+        Some(CorrectionBase::LegacyOrdinal { seq, card_digest }) => {
+            body.num(seq.get());
+            body.bytes(&card_digest);
+        }
+        None => {}
     }
     body.figure(i128::from(record.sealed_fee));
     body.num(record.rates.len() as u64);
     for (lane, class, nanos) in &record.rates {
         body.text(lane);
         body.text(class);
-        body.num(u64::from(nanos.is_some()));
+        if record.version != AmendmentVersion::V1 {
+            body.num(u64::from(nanos.is_some()));
+        }
         body.num(nanos.unwrap_or(0));
     }
     body.text(&record.operator_fingerprint);
@@ -984,7 +1020,7 @@ pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
     body.text(&record.dual_control);
     body.bytes(&record.signed_payload);
     body.text(&record.signature);
-    body.finish()
+    Ok(body.finish())
 }
 
 #[must_use]
@@ -1014,30 +1050,41 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         }
     }
     let mut r = Reader(body);
-    let (v2, v3) = match r.text()?.as_str() {
-        AMENDMENT_RECORD_TAG => (true, true),
-        AMENDMENT_RECORD_TAG_V2 => (true, false),
-        AMENDMENT_RECORD_TAG_V1 => (false, false),
+    let version = match r.text()?.as_str() {
+        AMENDMENT_RECORD_TAG => AmendmentVersion::V4,
+        AMENDMENT_RECORD_TAG_V3 => AmendmentVersion::V3,
+        AMENDMENT_RECORD_TAG_V2 => AmendmentVersion::V2,
+        AMENDMENT_RECORD_TAG_V1 => AmendmentVersion::V1,
         _ => return None,
     };
     let effective_from = r.num()?;
     let has_until = r.num()?;
     let until = r.num()?;
     let amended_at_ms = r.num()?;
-    let sealed_over = if v3 {
-        Some(crate::root::kernel::CorrectionBase {
+    if has_until > 1 || has_until == 0 && until != 0 {
+        return None;
+    }
+    let sealed_over = match version {
+        AmendmentVersion::V4 => Some(crate::root::kernel::CorrectionBase::Key {
+            key: busbar_kernel_ledger::cost::EntryKey::from_slice(r.bytes()?)?,
+            card_digest: r.bytes()?.try_into().ok()?,
+        }),
+        AmendmentVersion::V3 => Some(crate::root::kernel::CorrectionBase::LegacyOrdinal {
             seq: busbar_kernel_ledger::cost::HistorySeq(r.num()?),
             card_digest: r.bytes()?.try_into().ok()?,
-        })
-    } else {
-        None
+        }),
+        AmendmentVersion::V1 | AmendmentVersion::V2 => None,
     };
     let sealed_fee = i64::try_from(r.figure()?).ok()?;
     let n = r.num()?;
     let mut rates = Vec::new();
     for _ in 0..n {
         let (lane, class) = (r.text()?, r.text()?);
-        let priced = if v2 { r.num()? } else { 1 };
+        let priced = if version == AmendmentVersion::V1 {
+            1
+        } else {
+            r.num()?
+        };
         let nanos = r.num()?;
         let nanos = match priced {
             0 => None,
@@ -1047,6 +1094,7 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         rates.push((lane, class, nanos));
     }
     let record = AmendmentRecord {
+        version,
         effective_from,
         effective_until: (has_until == 1).then_some(until),
         amended_at_ms,
@@ -1088,7 +1136,7 @@ impl AmendmentJournal {
         record: &AmendmentRecord,
         wall_secs: u64,
     ) -> Result<(), busbar_core_admin::GovernanceError> {
-        self.seal_policy(amendment_body(record), wall_secs)
+        self.seal_policy(amendment_body(record)?, wall_secs)
             .map(|_| ())
     }
 

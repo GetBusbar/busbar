@@ -73,7 +73,7 @@ fn inputs(unit: u64) -> AuditInputs {
             ],
             tier_bp: 9_000,
             fee_count: 1,
-            rate_card_version: 3,
+            rate_card_version: Some([3; 20]),
             bucket_chain_ref: "chain:free>paid".into(),
         },
         controls: Controls {
@@ -198,7 +198,9 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
             r.usage.lines[0].estimated = !r.usage.lines[0].estimated
         }),
         ("the tier's basis points", |r| r.usage.tier_bp += 1),
-        ("the rate card version", |r| r.usage.rate_card_version += 1),
+        ("the rate card version", |r| {
+            r.usage.rate_card_version.as_mut().unwrap()[19] ^= 1
+        }),
         ("whether a hook failed", |r| {
             r.outcome.hook_failed = !r.outcome.hook_failed
         }),
@@ -509,7 +511,7 @@ fn the_head_read_answers_with_the_tip_and_the_recipe_it_was_sealed_under() {
     let last = last.expect("three records were sealed");
     let body = expose::head_body(&chain);
     assert!(
-        body.contains("\"recipe\":\"busbar.audit.digest.v4\""),
+        body.contains("\"recipe\":\"busbar.audit.digest.v5\""),
         "{body}"
     );
     assert!(
@@ -634,13 +636,13 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
             );
         }
     }
-    assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v4"));
+    assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v5"));
 
     assert_eq!(parsed["records"][0]["tier_bp"].as_str(), Some("9000"));
     assert_eq!(parsed["records"][0]["fee_count"].as_str(), Some("1"));
     assert_eq!(
         parsed["records"][0]["rate_card_version"].as_str(),
-        Some("3")
+        Some("0303030303030303030303030303030303030303")
     );
 
     assert_eq!(parsed["records"][0]["seq"].as_str(), Some("1"));
@@ -708,7 +710,7 @@ fn worked_example_inputs() -> AuditInputs {
     i.usage.bucket_chain_ref = "chain:free>paid".into();
     i.usage.tier_bp = 9_000;
     i.usage.fee_count = 1;
-    i.usage.rate_card_version = 3;
+    i.usage.rate_card_version = Some([3; 20]);
     i.what.incarnation = 2;
     i
 }
@@ -727,7 +729,7 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
 }
 
 #[test]
-fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
+fn the_legacy_v4_worked_example_keeps_its_exact_record_hash_and_signature() {
     let doc = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/audit-chain-digest-v4.md"),
@@ -737,15 +739,27 @@ fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     let mut chain = AuditChain::new()
         .signing_with(signer())
         .sealing_as(WORKED_EXAMPLE_NODE);
-    let record = chain.seal(
-        worked_example_inputs(),
-        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
-    );
+    let mut record = chain.seal(worked_example_inputs(), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
+    record.usage.rate_card_version = None;
+    record.recipe = busbar_kernel_audit::Recipe::V4 {
+        legacy_rate_card_version: 3,
+    };
+    record.hash = AuditChain::digest_of(&record);
+    record.signature = Some(signer().sign_digest(&record.hash));
+    record.key_id = Some(signer().key_id().to_owned());
+    let chain = AuditChain::resume(std::slice::from_ref(&record));
     let mut keys = AuditKeySet::new();
     keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
 
     let parse = |body: String| -> serde_json::Value {
-        serde_json::from_str(&body).expect("a published body is JSON")
+        let mut value: serde_json::Value =
+            serde_json::from_str(&body).expect("a published body is JSON");
+        assert_eq!(
+            value["recipe"], "busbar.audit.digest.v5",
+            "the envelope names this build's writer"
+        );
+        value["recipe"] = serde_json::json!("busbar.audit.digest.v4");
+        value
     };
     assert_eq!(
         spec_json_block(&doc, 0),
@@ -790,10 +804,14 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
     let mut chain = AuditChain::new()
         .signing_with(signer())
         .sealing_as(WORKED_EXAMPLE_NODE);
-    let record = chain.seal(
-        worked_example_inputs(),
-        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
-    );
+    let mut record = chain.seal(worked_example_inputs(), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
+    record.usage.rate_card_version = None;
+    record.recipe = busbar_kernel_audit::Recipe::V4 {
+        legacy_rate_card_version: 3,
+    };
+    record.hash = AuditChain::digest_of(&record);
+    record.signature = Some(signer().sign_digest(&record.hash));
+    record.key_id = Some(signer().key_id().to_owned());
     let framed: usize = digest_fields(&record)
         .iter()
         .map(|f| {

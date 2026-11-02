@@ -231,7 +231,7 @@ fn row_card<'a>(
     wall_at: u64,
 ) -> Result<
     (
-        busbar_kernel::cost::HistorySeq,
+        busbar_kernel::cost::EntryKey,
         &'a busbar_kernel::cost::RateCard,
     ),
     busbar_kernel::cost::MoneyError,
@@ -288,7 +288,7 @@ pub fn derive_spend_micros_row_classes_at_card(
 }
 
 pub fn derive_spend_micros_row_classes_at_entry(
-    seq: busbar_kernel::cost::HistorySeq,
+    seq: busbar_kernel::cost::EntryKey,
     card: &busbar_kernel::cost::RateCard,
     cost: &busbar_kernel::cost::CostModel,
     model: &str,

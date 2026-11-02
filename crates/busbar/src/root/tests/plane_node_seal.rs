@@ -407,7 +407,7 @@ async fn an_unfinished_session_retires_its_facts_and_preserves_its_destination_f
     assert_eq!(records[0].what.destination.as_deref(), Some(DESTINATION));
     assert_eq!(records[0].outcome.finish, RecordFinish::Error);
     assert_eq!(records[0].controls.policy_epoch, 7);
-    assert_eq!(records[0].usage.rate_card_version, 0);
+    assert_eq!(records[0].usage.rate_card_version, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -747,7 +747,8 @@ async fn a_unit_seals_the_policy_epoch_of_the_configuration_in_force_when_it_arr
         "the record names the generation of the configuration in force at the unit's arrival"
     );
     assert_eq!(
-        record.usage.rate_card_version, 0,
+        record.usage.rate_card_version,
+        Some([0; 20]),
         "and its card is the entry in force at that same instant, not the head"
     );
 }
@@ -771,7 +772,8 @@ async fn a_unit_under_an_amended_card_seals_the_configuration_beneath_it() {
         "an amendment corrects a price; the generation is the configuration's"
     );
     assert_eq!(
-        record.usage.rate_card_version, 1,
+        record.usage.rate_card_version,
+        Some(busbar_kernel_ledger::cost::EntryKey::new(1, [0; 8], 1).0),
         "the card version is the amendment that priced the arrival"
     );
 }
@@ -781,8 +783,43 @@ async fn a_unit_admitted_under_no_history_seals_no_policy_generation() {
     let record = sealed_under(|_| None).await;
     assert_eq!(record.controls.policy_epoch, 0, "no history, no generation");
     assert_eq!(
-        record.usage.rate_card_version,
-        busbar_kernel_ledger::cost::HistorySeq::OPENING.get(),
-        "and the opening card, as before"
+        record.usage.rate_card_version, None,
+        "no history has no rate-card identity"
     );
+}
+
+#[test]
+fn audit_rate_card_provenance_keeps_the_actual_key_across_peer_insertion() {
+    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, EntryKey, History};
+    let card = crate::root::kernel::card_from_config(
+        std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
+        0,
+        false,
+    );
+    let draft = |at| CardEntryDraft {
+        effective_from: 0,
+        effective_until: None,
+        card: card.clone(),
+        appended_at: at,
+        author: Author::Opening,
+    };
+    let original = EntryKey::new(300, [3; 8], 1);
+    let mut history = History::new();
+    history.insert(EntryKey::new(100, [1; 8], 0), draft(100));
+    history.insert(original, draft(300));
+    let before = crate::root::kernel::PinnedHistory::for_test(
+        Arc::new(history.clone()),
+        history.head().unwrap(),
+    );
+    assert_eq!(card_in_force(Some(&before), 0), Some(original.0));
+    history.insert(EntryKey::new(200, [2; 8], 0), draft(200));
+    assert_eq!(history.entry(&original).unwrap().seq().get(), 2);
+    let after = crate::root::kernel::PinnedHistory::for_test(
+        Arc::new(history.clone()),
+        history.head().unwrap(),
+    );
+    assert_eq!(card_in_force(Some(&after), 0), Some(original.0));
+    assert_eq!(card_in_force(None, 0), None);
+    let zero = pinned(vec![(0, configured(1))]);
+    assert_eq!(card_in_force(Some(&zero), 0), Some([0; 20]));
 }
