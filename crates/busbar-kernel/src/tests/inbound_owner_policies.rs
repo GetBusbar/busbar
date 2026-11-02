@@ -197,3 +197,98 @@ fn a_settled_list_never_dispatches_a_later_position_and_an_answer_is_not_repeate
     }
     assert_eq!(position_work(None, None), PositionWork::Verify);
 }
+
+#[test]
+fn continuation_bytes_preserve_the_original_request_except_declared_partial_stripping() {
+    let original = Head {
+        method: "POST".into(),
+        target: "/v1/messages".into(),
+        fields: vec![
+            ("Authorization".into(), b"secret-A".to_vec()),
+            ("X-Resource".into(), b"A".to_vec()),
+        ],
+        query: Some("token=a&scope=A&token=b".into()),
+        ..Default::default()
+    };
+    let strips = [
+        Strip::field("authorization".into()),
+        Strip::query("token".into()),
+    ];
+    for mutation in [
+        "method",
+        "path",
+        "authority",
+        "field",
+        "query",
+        "credential",
+        "added",
+    ] {
+        let mut changed = original.clone();
+        match mutation {
+            "method" => changed.method = "PUT".into(),
+            "path" => changed.target = "/different".into(),
+            "authority" => changed.authority = "other.example".into(),
+            "field" => changed.fields[1].1 = b"B".to_vec(),
+            "query" => changed.query = Some("token=a&scope=B".into()),
+            "credential" => changed.fields[0].1 = b"secret-B".to_vec(),
+            "added" => changed.fields.push(("X-Added".into(), b"B".to_vec())),
+            _ => unreachable!(),
+        }
+        assert!(
+            !continuation_head(&original, &changed, &strips),
+            "{mutation}"
+        );
+    }
+    for form in ["original", "field", "query", "both", "case"] {
+        let mut retained = original.clone();
+        match form {
+            "original" => {}
+            "field" => {
+                retained.fields.remove(0);
+            }
+            "query" => retained.query = Some("scope=A&token=b".into()),
+            "both" => retained = original.stripped(&strips).unwrap(),
+            "case" => {
+                retained.fields[0].0 = "authorization".into();
+                retained.fields[1].0 = "x-resource".into();
+            }
+            _ => unreachable!(),
+        }
+        assert!(continuation_head(&original, &retained, &strips), "{form}");
+    }
+}
+
+#[test]
+fn authenticated_framing_fields_remain_exact_at_the_claim_boundary() {
+    let original = Head {
+        method: "POST".into(),
+        target: "/v1/messages".into(),
+        fields: vec![
+            ("authorization".into(), b"credential".to_vec()),
+            ("connection".into(), b"close, x-signed".to_vec()),
+            ("content-length".into(), b"3".to_vec()),
+            ("x-signed".into(), b"first".to_vec()),
+            ("x-signed".into(), b"second".to_vec()),
+        ],
+        query: Some("x=1".into()),
+        ..Default::default()
+    };
+    let strips = [Strip::field("authorization".into())];
+    let admitted = original.stripped(&strips).unwrap();
+    for removed in ["connection", "content-length", "x-signed"] {
+        let mut changed = admitted.clone();
+        changed.fields.retain(|(name, _)| name != removed);
+        assert!(
+            !continuation_head(&original, &changed, &strips),
+            "hand-in may not delete {removed}"
+        );
+        assert!(
+            !same_request(&admitted, &changed),
+            "claim may not delete {removed}"
+        );
+    }
+    assert!(continuation_head(&original, &admitted, &strips));
+    assert!(same_request(&admitted, &admitted));
+    assert!(!still_present(&strips, &admitted));
+    assert!(still_present(&strips, &original));
+}
