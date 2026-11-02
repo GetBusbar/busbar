@@ -28,18 +28,26 @@ use crate::{Connector, DialJudge, Judged, Verdict};
 
 const OWNER: InstanceId = InstanceId(1);
 
-fn dispatcher() -> &'static Arc<Dispatcher> {
-    static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
-    DISPATCHER.get_or_init(|| {
+// Enter this reactor only for these fixtures. Installing the process fallback would also move
+// other tests' registrations and deadline timers onto this concurrently driven runtime.
+fn runtime() -> &'static tokio::runtime::Handle {
+    static RUNTIME: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("the host I/O runtime");
         let handle = runtime.handle().clone();
         std::thread::spawn(move || runtime.block_on(std::future::pending::<()>()));
-        crate::io::install_process_reactor(handle.clone());
+        handle
+    })
+}
+
+fn dispatcher() -> &'static Arc<Dispatcher> {
+    static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
+    DISPATCHER.get_or_init(|| {
         let dispatcher = Dispatcher::new(DispatchConfig::default());
-        dispatcher.install_runtime(handle);
+        dispatcher.install_runtime(runtime().clone());
         dispatcher.install_io(crate::hostio::process());
         Arc::new(dispatcher)
     })
@@ -273,6 +281,7 @@ fn upgraded_echo(connector: &Connector, target: &str) -> Result<Vec<u8>, ConnErr
 
 #[test]
 fn the_real_tcp_carrier_upgrades_with_the_hosts_configured_test_ca() {
+    let _entered = runtime().enter();
     let (ca, tls) = tls_identity();
     let (target, far) = tls_listener(tls);
     let connector = connector(&[ca], Arc::new(loopback), false);
@@ -286,6 +295,7 @@ fn the_real_tcp_carrier_upgrades_with_the_hosts_configured_test_ca() {
 
 #[test]
 fn the_real_tcp_carrier_refuses_a_tls_upgrade_without_the_test_ca() {
+    let _entered = runtime().enter();
     let (_, tls) = tls_identity();
     let (target, far) = tls_listener(tls);
     let connector = connector(&[], Arc::new(loopback), false);
@@ -299,6 +309,7 @@ fn the_real_tcp_carrier_refuses_a_tls_upgrade_without_the_test_ca() {
 
 #[test]
 fn the_real_tcp_carrier_obeys_the_production_destination_guard() {
+    let _entered = runtime().enter();
     let destinations = busbar_kernel::config::Destinations {
         block_private_addresses: busbar_kernel::config::sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES,
         ..Default::default()
@@ -352,6 +363,7 @@ fn the_real_tcp_carrier_obeys_the_production_destination_guard() {
 
 #[test]
 fn the_real_http_framer_delivers_one_head_and_the_exact_body() {
+    let _entered = runtime().enter();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
