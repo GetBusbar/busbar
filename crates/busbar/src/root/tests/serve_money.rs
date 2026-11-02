@@ -33,6 +33,14 @@ pub(super) struct Governed {
     book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
 
     current: Arc<std::sync::Mutex<Arc<App>>>,
+    screen_hook: busbar_kernel::config::HookCfg,
+    hook_server: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Governed {
+    fn drop(&mut self) {
+        self.hook_server.abort();
+    }
 }
 
 impl Governed {
@@ -63,56 +71,17 @@ enum Screen<'a> {
     Pool(&'a str),
 }
 
-fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
+fn screen_cfg(module: &str, endpoint: &str) -> busbar_kernel::config::HookCfg {
     serde_json::from_value(serde_json::json!({
         "kind": "gate",
-        "module": "test-hook",
+        "module": module,
         "timeout_ms": 10_000,
         "on_error": "weighted",
         "prompt": "ro",
         "priority": 0,
-        "settings": { "reject_if_contains": token },
+        "settings": { "url": endpoint },
     }))
     .expect("an operator's gate definition")
-}
-
-fn screen_env() -> busbar_kernel::hooks::HookEnv {
-    let needs = busbar_kernel_testkit::test_support::HookNeeds {
-        prompt: busbar_contract::plugin_rows::NeedLevel::Ro,
-        ..Default::default()
-    };
-    busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], needs)
-}
-
-fn screened(screen: Screen<'_>) -> busbar_kernel_testkit::test_support::TestApp {
-    match screen {
-        Screen::Nothing => busbar_kernel_testkit::test_support::TestApp::new(),
-        Screen::Global(token) => screening_gate(token),
-        Screen::Pool(token) => {
-            let env = screen_env();
-            let registry = [("screen".to_string(), screen_cfg(token))]
-                .into_iter()
-                .collect();
-            let gates = busbar_kernel::hooks::resolve_gate_hooks(
-                &registry,
-                &["screen".to_string()],
-                &env,
-                0,
-            );
-            assert_eq!(gates.len(), 1, "the configured gate resolves");
-            busbar_kernel_testkit::test_support::TestApp::new()
-                .hook_env(env)
-                .pool_gates_resolved("p", gates)
-        }
-    }
-}
-
-fn screening_gate(token: &str) -> busbar_kernel_testkit::test_support::TestApp {
-    busbar_kernel_testkit::test_support::TestApp::new()
-        .hook_env(screen_env())
-        .hook("screen", screen_cfg(token))
-        .global_hook("screen")
-        .resolve_global_gates()
 }
 
 fn governed_hooked(
@@ -146,6 +115,149 @@ fn governed_full(
     on: Option<BoundNode>,
     flat_fee: Option<i64>,
 ) -> Governed {
+    static ROOT: std::sync::Once = std::sync::Once::new();
+    ROOT.call_once(|| {
+        use crate::root::loader::dispatch::kinds::transport::Transport;
+        use crate::root::loader::dispatch::{
+            load_dropped, rendering_of_library, Bind, ConnTable, NoSink,
+        };
+        let release = crate::root::test_plugins::key(0x5a);
+        std::env::set_var(
+            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
+            hex::encode(release.verifying_key().as_bytes()),
+        );
+        let initial = busbar_kernel::config::deploy_from_yaml_str(
+            "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
+        )
+        .expect("the loopback deployment parses");
+        let initial = busbar_kernel::config::resolve(&initial, &Default::default()).unwrap();
+        let judge = crate::root::connector::dest_judge(&initial);
+        let late = super::LateServices::new();
+        let dispatcher = crate::root::dispatch::boot(1, &late);
+        crate::root::doors::install_dispatcher(dispatcher);
+        let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
+        super::compose(judge.clone(), &late, credentials);
+        crate::register_protocols();
+        crate::register_planes();
+        crate::register_diagnostics();
+        crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
+        if crate::root::connector::installed().is_none() {
+            let on = crate::root::dispatch::dispatcher();
+            crate::root::connector::install_io(&on);
+            let mut transports = Vec::new();
+            for variable in ["BUSBAR_TEST_TCP_CDYLIB", "BUSBAR_TEST_HTTP_CDYLIB"] {
+                let path = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
+                let statement = rendering_of_library(&path)
+                    .unwrap()
+                    .expect("the actual transport states itself");
+                let plugin = load_dropped::<Transport>(
+                    &path,
+                    &statement,
+                    Bind {
+                        instance: Arc::from(variable),
+                        max_inflight_cap: 1024,
+                        sink: Arc::new(NoSink),
+                        dispatcher: on.adopter(),
+                        conns: ConnTable::NoNeeds,
+                    },
+                )
+                .expect("the actual transport binds");
+                let door = crate::root::doors::Dispatched::open_on(
+                    plugin,
+                    &busbar_contract::transport::TransportSettings::default(),
+                    on.clone(),
+                )
+                .expect("the actual transport opens");
+                transports.push(busbar_core_connector::registry::Entry {
+                    door: Arc::new(door),
+                    alpn: Vec::new(),
+                });
+            }
+            let connector = busbar_core_connector::process::build_with_secrets(
+                || Ok(transports),
+                judge,
+                &[],
+                on.conn_waker(),
+                busbar_core_connector::pool::PoolPosture::NONE,
+                busbar_core_connector::spawn_env::linked_spawn_secret,
+            )
+            .expect("the production connector composes the real transports");
+            assert!(crate::root::connector::install(connector).is_ok());
+        }
+    });
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("the hook endpoint binds");
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}/screen", listener.local_addr().unwrap());
+    let blocked = match screen {
+        Screen::Global(token) | Screen::Pool(token) => token.to_owned(),
+        Screen::Nothing => "ping".to_owned(),
+    };
+    let hook_routes = axum::Router::new().route("/screen", axum::routing::post(
+        move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let blocked = blocked.clone();
+            async move {
+                axum::Json(if body["request"]["messages"].to_string().contains(&blocked) {
+                    serde_json::json!({"reject": {"status": 403, "message": "blocked by test gate"}})
+                } else {
+                    serde_json::json!({"order": [0]})
+                })
+            }
+        }
+    ));
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+    let hook_server =
+        tokio::spawn(async move { axum::serve(listener, hook_routes).await.unwrap() });
+    let directory = crate::root::test_plugins::scratch(instance);
+    let mut store_module = None;
+    let mut hook_module = None;
+    for (kind, variable) in [
+        ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+        ("hook", "BUSBAR_TEST_WEBREQUEST_CDYLIB"),
+    ] {
+        let path = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .unwrap()
+            .expect("the actual product states itself");
+        let facts = busbar_contract::abi::mechanism::rendering::read(&statement).unwrap();
+        let mut manifest = crate::root::test_plugins::manifest(
+            kind,
+            &facts.name,
+            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        if kind == "hook" {
+            manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
+            manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
+            hook_module = Some(facts.name);
+        } else {
+            store_module = Some(facts.name);
+        }
+        let archive = crate::root::test_plugins::signed(
+            &crate::root::test_plugins::key(0x5a),
+            manifest,
+            &std::fs::read(path).unwrap(),
+        );
+        std::fs::write(directory.join(format!("{kind}.tar.gz")), archive).unwrap();
+    }
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("the actual Store settings are JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {},
+        "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": []},
+        "store": {"module": store_module.unwrap(), "settings": settings},
+        "advanced": {"allow_destinations": ["127.0.0.1"]}
+    }))
+    .expect("the money deployment parses");
+    let mut config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    let screen_hook = screen_cfg(&hook_module.unwrap(), &endpoint);
+    if !matches!(screen, Screen::Nothing) {
+        config.hooks.insert("screen".into(), screen_hook.clone());
+        if matches!(screen, Screen::Global(_)) {
+            config.global_hooks.push("screen".into());
+        }
+    }
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
@@ -228,12 +340,40 @@ fn governed_full(
         "test_plane",
         serde_yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
     );
-    let app = screened(screen);
-    let app = if keys_chain { app.keys_chain() } else { app };
-    let app = groups
-        .iter()
-        .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
-    let app = app.governance(Arc::clone(&gov)).cost(cost).build();
+    config.groups = groups;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &(Arc::new(crate::root::door_steps::Rules::default())
+            as Arc<dyn busbar_kernel::appbuild::RootRules>),
+    )
+    .expect("the actual root builds the money deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    app.governance = Some(Arc::clone(&gov));
+    app.cost = Arc::new(cost);
+    if matches!(screen, Screen::Pool(_)) {
+        let gates = busbar_kernel::hooks::resolve_gate_hooks(
+            &app.hook_registry,
+            &["screen".into()],
+            &app.hook_env,
+            0,
+        );
+        assert_eq!(gates.len(), 1, "the configured gate resolves");
+        app.pool_decision_gates.insert("p".into(), gates);
+    }
+    let app = Arc::new(app);
 
     let current = Arc::new(std::sync::Mutex::new(Arc::clone(&app)));
     let reads = Arc::clone(&current);
@@ -277,6 +417,8 @@ fn governed_full(
         app,
         book,
         current,
+        screen_hook,
+        hook_server,
     }
 }
 
@@ -495,13 +637,13 @@ async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restar
     );
 
     let mut next = (*g.app).clone();
-    let registry: std::collections::HashMap<_, _> = [("screen".to_string(), screen_cfg("ping"))]
+    let registry: std::collections::HashMap<_, _> = [("screen".to_string(), g.screen_hook.clone())]
         .into_iter()
         .collect();
     next.global_gates = busbar_kernel::hooks::resolve_gate_hooks(
         &registry,
         &["screen".to_string()],
-        &screen_env(),
+        &g.app.hook_env,
         1,
     );
     assert_eq!(next.global_gates.len(), 1, "the applied gate resolves");
@@ -794,11 +936,11 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     assert_eq!(served.planes.len(), 1, "the dropped-in door plane composed");
     let post = Arc::clone(served.post.as_ref().expect("its units post on the node"));
     let routes = data_routes(served, &[], &[]).expect("its claims mount on the data listener");
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .keys_chain()
-        .governance(Arc::clone(&gov))
-        .cost(cost)
-        .build();
+    let deployment = governed("serve-money-boot-composition-app", true);
+    let mut app = (*deployment.app).clone();
+    app.governance = Some(Arc::clone(&gov));
+    app.cost = Arc::new(cost);
+    let app = Arc::new(app);
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     let (status, body) = {
