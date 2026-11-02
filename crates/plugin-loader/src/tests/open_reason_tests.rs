@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::cell::RefCell;
+use std::mem::size_of;
 use std::sync::OnceLock;
 
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_OCTETS};
@@ -68,11 +69,13 @@ fn octets(bytes: &[u8]) -> Blob {
 
 fn failed_open(reason: &[u8], buffer: &mut [u8]) -> (Outcome, OpenOut) {
     let mut input: OpenIn = blank_in();
+    input.head.size = size_of::<OpenIn>() as u32;
     input.head.op = slot::OPEN;
     input.settings = octets(reason);
     input.err_buf = buffer.as_mut_ptr();
     input.err_cap = buffer.len();
     let mut out: OpenOut = blank_out();
+    out.head.size = size_of::<OpenOut>() as u32;
     let callback =
         kind_op::<Lifecycle, Safe<life::Open<FailureOnly>>, CallbackCapture, { slot::OPEN }>()
             .expect("the SDK provides this lifecycle callback");
@@ -148,11 +151,13 @@ fn a_plugin_that_writes_no_reason_reads_as_a_stable_text() {
 fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers() {
     let mut validation = [0xa5; 65];
     let mut input: ValidateIn = blank_in();
+    input.head.size = size_of::<ValidateIn>() as u32;
     input.head.op = slot::VALIDATE;
     input.settings = octets(b"no port");
     input.err_buf = validation.as_mut_ptr();
     input.err_cap = validation.len() - 1;
     let mut out: OutHead = blank_out();
+    out.size = size_of::<OutHead>() as u32;
     let callback = kind_op::<
         Lifecycle,
         Safe<life::Validate<FailureOnly>>,
