@@ -71,7 +71,7 @@ metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 metrics-util = { version = "0.20.4", default-features = false }
 # Keep `axum`, `jwt-p256`, `jwt-rsa` and `jwt-ed25519` off: ES256 runs over ring, and `jwt-rsa` pulls RUSTSEC-2023-0071.
-oauth-as = { version = "1.0.0", features = [
+oauth-as = { version = "1.0.1", features = [
     "http",
     "jwt",
     "consent",
