@@ -207,7 +207,6 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
         );
         manifest.version = module_version.clone();
-        manifest.version = module_version.clone();
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
