@@ -287,7 +287,7 @@ fn lower_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
         }
     }
     let mut bytes = [0; N];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         bytes[index] = digit(pair[0])? * 16 + digit(pair[1])?;
     }
     Some(bytes)
