@@ -280,3 +280,28 @@ fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
     assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 1);
     assert_eq!(p.inner.resumes.load(Ordering::SeqCst) - before.1, 1);
 }
+
+#[test]
+fn the_real_probe_tells_an_image_with_the_door_from_one_without() {
+    use crate::dispatch::{rendering_of, rendering_of_library};
+    let actual = rendering_of(crate::actual_mcp::door).expect("actual MCP descriptor renders");
+    assert_eq!(
+        rendering_of_library(&crate::actual_mcp::cdylib()).expect("actual MCP library probes"),
+        Some(actual),
+        "the production probe finds the actual exported mechanism door"
+    );
+    let root = std::env::temp_dir().join(format!(
+        "loader-ordinary-door-probe-{}-{}",
+        std::process::id(),
+        now_ns()
+    ));
+    std::fs::create_dir_all(&root).expect("create isolated probe directory");
+    let not_library = root.join(crate::plugin_library_filename("not-a-library"));
+    std::fs::write(&not_library, b"not a library at all").expect("write malformed image");
+    let result = rendering_of_library(&not_library);
+    std::fs::remove_dir_all(&root).expect("remove owned probe directory");
+    assert!(
+        result.is_err(),
+        "a malformed image can never be a dropped-in door"
+    );
+}
