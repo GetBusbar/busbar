@@ -31,3 +31,12 @@ mod admin_usage_history;
 
 #[path = "kernel_application/central_root_rules.rs"]
 mod central_root_rules;
+
+#[path = "kernel_application/central_admin_verbs.rs"]
+mod central_admin_verbs;
+
+#[path = "kernel_application/central_router_headers.rs"]
+mod central_router_headers;
+
+#[path = "kernel_application/central_rebuild.rs"]
+mod central_rebuild;
