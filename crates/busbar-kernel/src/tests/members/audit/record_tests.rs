@@ -79,7 +79,10 @@ fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
     with_payloads.outcome.step = Some(StepName::Admit);
     with_payloads.outcome.finish = FinishClass::Error;
     with_payloads.what.incarnation = 3;
-    let mut record = chain.seal(with_payloads, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
+    let mut record = chain.seal(
+        with_payloads,
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     record.usage.rate_card_version = None;
     record.recipe = busbar_kernel_audit::recipe::Recipe::V4 {
         legacy_rate_card_version: 3,
@@ -622,7 +625,7 @@ fn v5_key_presence_and_every_key_byte_survive_seal_journal_and_publication() {
         let mut input = inputs(1);
         input.usage.rate_card_version = key;
         let mut chain = AuditChain::new();
-        let record = chain.seal(input, &pass::<AuditStep>());
+        let record = chain.seal(input, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
         assert_eq!(record.recipe, Recipe::V5);
         assert!(
             hashes.insert(record.hash.clone()),
@@ -657,7 +660,7 @@ fn v5_journal_rejects_wrong_key_lengths_presence_tags_and_trailing_bytes() {
     use busbar_kernel_audit::journal::{from_journal_body, head_from_journal_body, journal_body};
     let mut input = inputs(1);
     input.usage.rate_card_version = Some([0xa5; 20]);
-    let record = AuditChain::new().seal(input, &pass::<AuditStep>());
+    let record = AuditChain::new().seal(input, &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let body = journal_body(&record).unwrap();
     let key_at = body.windows(20).position(|w| w == [0xa5; 20]).unwrap();
     for len in [0_usize, 19, 21] {
@@ -691,7 +694,7 @@ fn a_mixed_old_and_keyed_chain_preserves_original_old_heads() {
     };
     second.hash = AuditChain::digest_of(&second);
     let mut chain = AuditChain::resume(&[first.clone(), second.clone()]);
-    let third = chain.seal(inputs(3), &pass::<AuditStep>());
+    let third = chain.seal(inputs(3), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
     let records = [first, second, third];
     assert_eq!(records[0].hash, FROZEN_V2);
     assert_eq!(records[2].recipe, Recipe::V5);
