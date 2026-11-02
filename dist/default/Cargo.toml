@@ -343,7 +343,7 @@ auth-oauth = ["dep:busbar-auth-oauth"]
 # `["keys","admin-tokens"]` (accepted difference `#64-class build.auth_modules lists the webhook-signature module`).
 auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
 hooks-ranking = ["dep:busbar-hook-ranking"]
-openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-core-admin-testkit/openapi-schema"]
+openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
 # Core's source, which this distribution compiles: build.rs, src/main.rs and the root modules.
@@ -566,7 +566,6 @@ planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
-busbar-core-admin-testkit = { path = "../../crates/busbar-core-admin-testkit" }
 # The root's transport refresh fixture uses the connector's instance-local test support.
 busbar-core-connector = { path = "../../crates/busbar-core-connector", features = ["test-support"] }
 # The kernel's test fixtures on its pub API (the root's tests and this crate's).
