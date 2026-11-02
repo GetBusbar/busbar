@@ -3,8 +3,9 @@
 
 //! Declarative plugin FETCH (`plugins.fetch:`): download the signed tarballs an operator declared
 //! into `plugins.dir` BEFORE the loader scans it. This is an INTEGRITY + CACHE layer only — it never
-//! `dlopen`s, evaluates trust, or parses a manifest; the unchanged `scan_and_validate` signature
-//! check remains the sole trust gate over whatever bytes land here.
+//! `dlopen`s or evaluates trust; the unchanged `scan_and_validate` signature check remains the
+//! sole trust gate. A new sealed first-party download additionally receives a refuse-only
+//! freshness check before write. Installed identical bytes retain boot semantics.
 //!
 //! ## Contract
 //! - **Cache-by-pin.** A `sha256`-pinned spec whose target file already hashes to the pin skips the
@@ -194,6 +195,18 @@ pub fn fetch_plugins(
             }
         }
 
+        // A refetch of identical installed bytes is not a new install. New bytes must pass
+        // install-time freshness, but this check never grants trust: the scan verifies the seal.
+        let unchanged = std::fs::read(&target)
+            .is_ok_and(|installed| sha256_hex(&installed) == sha256_hex(&bytes));
+        if !unchanged {
+            if let Err(refusal) = fresh(&bytes) {
+                record_problem(&mut errors, &mut outcomes, format!(
+                    "release seal refused ({}): {refusal} (not written; a NEW download is judged at install time, and any installed copy is kept)", refusal.code()));
+                continue;
+            }
+        }
+
         // Durable write via the single owner (`crate::durable`): temp -> fsync -> atomic rename ->
         // parent fsync; no partial or wrong file ever appears at the target.
         match crate::durable::write(&dir.join(&spec.filename), &bytes).map_err(|e| e.to_string()) {
@@ -208,6 +221,31 @@ pub fn fetch_plugins(
         Err(errors)
     } else {
         Ok(outcomes)
+    }
+}
+
+/// Refuse expired first-party seals in new downloads without authenticating or granting them.
+/// Unsealed or unreadable archives are left to the scan's structural and trust checks.
+fn fresh(bytes: &[u8]) -> Result<(), crate::release_trust::SealRefusal> {
+    let Ok(unpacked) = crate::tarball::unpack(bytes) else {
+        return Ok(());
+    };
+    if unpacked.manifest.publisher != crate::sign::FIRST_PARTY_PUBLISHER {
+        return Ok(());
+    }
+    match crate::release_trust::wire::read_seal(&unpacked.manifest.signature) {
+        None => Ok(()),
+        Some(Err(why)) => Err(crate::release_trust::SealRefusal::Malformed {
+            doc: "release seal",
+            why,
+        }),
+        Some(Ok((keys, targets))) => crate::release_trust::check_fresh(
+            crate::release_trust::Seal {
+                keys: &keys,
+                targets: &targets,
+            },
+            crate::release_trust::now(),
+        ),
     }
 }
 
