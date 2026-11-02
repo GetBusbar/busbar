@@ -53,6 +53,22 @@ pub struct Mux {
     facts: DoorFacts,
     session: bool,
     refuse_adopt: bool,
+    pending_adopt: bool,
+    pending_adopt_refused: bool,
+    pending_commit: bool,
+    adoption_released: AtomicBool,
+    commit_released: AtomicBool,
+    commit_active: AtomicBool,
+    adoption_ticket: Mutex<Option<Ticket>>,
+    commit_ticket: Mutex<Option<Ticket>>,
+    adoption_entered: tokio::sync::Notify,
+    commit_entered: tokio::sync::Notify,
+    commit_done: tokio::sync::Notify,
+    adoption_resumes: AtomicU32,
+    commit_attempts: AtomicU32,
+    cancellations: AtomicU32,
+    message_attempts: AtomicU32,
+    message_done: tokio::sync::Notify,
     response_started: AtomicBool,
     response_done: tokio::sync::Notify,
     responses: Mutex<Vec<Emitted>>,
@@ -72,6 +88,22 @@ impl Default for Mux {
         Self {
             session: false,
             refuse_adopt: false,
+            pending_adopt: false,
+            pending_adopt_refused: false,
+            pending_commit: false,
+            adoption_released: AtomicBool::new(false),
+            commit_released: AtomicBool::new(false),
+            commit_active: AtomicBool::new(false),
+            adoption_ticket: Mutex::new(None),
+            commit_ticket: Mutex::new(None),
+            adoption_entered: tokio::sync::Notify::new(),
+            commit_entered: tokio::sync::Notify::new(),
+            commit_done: tokio::sync::Notify::new(),
+            adoption_resumes: AtomicU32::new(0),
+            commit_attempts: AtomicU32::new(0),
+            cancellations: AtomicU32::new(0),
+            message_attempts: AtomicU32::new(0),
+            message_done: tokio::sync::Notify::new(),
             response_started: AtomicBool::new(false),
             response_done: tokio::sync::Notify::new(),
             responses: Mutex::new(Vec::new()),
@@ -115,6 +147,56 @@ impl Mux {
         }
     }
 
+    pub fn with_pending_adoption(refused: bool) -> Self {
+        Self {
+            pending_adopt: true,
+            pending_adopt_refused: refused,
+            ..Self::with_session()
+        }
+    }
+
+    pub fn with_pending_commit() -> Self {
+        Self {
+            pending_commit: true,
+            ..Self::with_session()
+        }
+    }
+
+    pub async fn wait_for_adoption_pending(&self) {
+        self.adoption_entered.notified().await;
+    }
+    pub async fn wait_for_commit_pending(&self) {
+        self.commit_entered.notified().await;
+    }
+    pub async fn wait_for_commit(&self) {
+        self.commit_done.notified().await;
+    }
+
+    pub fn release_adoption(&self) {
+        self.adoption_released.store(true, Ordering::SeqCst);
+        self.wake();
+    }
+    pub fn release_commit(&self) {
+        self.commit_released.store(true, Ordering::SeqCst);
+        self.wake();
+    }
+    pub fn adopted_resumes(&self) -> u32 {
+        self.adoption_resumes.load(Ordering::SeqCst)
+    }
+    pub fn commit_attempts(&self) -> u32 {
+        self.commit_attempts.load(Ordering::SeqCst)
+    }
+    pub fn cancellations(&self) -> u32 {
+        self.cancellations.load(Ordering::SeqCst)
+    }
+
+    pub fn message_attempts(&self) -> u32 {
+        self.message_attempts.load(Ordering::SeqCst)
+    }
+    pub async fn wait_for_message(&self) {
+        self.message_done.notified().await;
+    }
+
     pub fn responses(&self) -> Vec<Emitted> {
         self.responses.lock().unwrap().clone()
     }
@@ -137,6 +219,10 @@ impl Mux {
 
     pub fn release(&self) {
         self.gate.released.store(true, Ordering::SeqCst);
+        self.wake();
+    }
+
+    fn wake(&self) {
         let wake = { self.gate.wake.lock().unwrap().take() };
         if let Some(wake) = wake {
             wake.wake();
@@ -252,6 +338,33 @@ impl FramerDoor for Mux {
         }))
     }
 
+    fn carry(
+        &self,
+        side: &dyn busbar_core_connector::carrier::Side,
+        _: bool,
+        call: busbar_core_connector::carrier::Carry<'_>,
+    ) -> Crossed {
+        match call {
+            busbar_core_connector::carrier::Carry::Cancel(input, out) => {
+                assert_eq!(
+                    input.ticket,
+                    side.ticket(),
+                    "cancel retains its parked operation ticket"
+                );
+                self.cancellations.fetch_add(1, Ordering::SeqCst);
+                out.disposition = busbar_contract::abi::mechanism::lifecycle::cancel::ABORTED;
+                Crossed {
+                    outcome: Outcome::Ready,
+                    error: None,
+                }
+            }
+            _ => Crossed {
+                outcome: Outcome::Refused,
+                error: Some(b"not this fixture's carrier op".to_vec()),
+            },
+        }
+    }
+
     fn cross(&self, call: Call<'_>) -> Crossed {
         self.cross_on(
             &Side {
@@ -268,7 +381,7 @@ impl FramerDoor for Mux {
 
     fn cross_on(
         &self,
-        _: &dyn busbar_core_connector::carrier::Side,
+        side: &dyn busbar_core_connector::carrier::Side,
         resume: bool,
         call: Call<'_>,
     ) -> Crossed {
@@ -296,9 +409,37 @@ impl FramerDoor for Mux {
                 }
             }
             Call::Emit(input, out) => {
-                if self.session && input.status == 101 && input.len == 0 && input.end_of_frame != 0
+                if self.session
+                    && input.status == 101
+                    && input.len == 0
+                    && (input.end_of_frame != 0
+                        || (resume && self.commit_active.load(Ordering::SeqCst)))
                 {
+                    if resume {
+                        assert_eq!(
+                            *self.commit_ticket.lock().unwrap(),
+                            Some(side.ticket()),
+                            "commit resumes on its original ticket"
+                        );
+                    } else {
+                        *self.commit_ticket.lock().unwrap() = Some(side.ticket());
+                    }
+                    if !resume {
+                        self.commit_attempts.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if self.pending_commit && !self.commit_released.load(Ordering::SeqCst) {
+                        self.commit_active.store(true, Ordering::SeqCst);
+                        if !resume {
+                            self.commit_entered.notify_one();
+                        }
+                        return Crossed {
+                            outcome: Outcome::Pending,
+                            error: None,
+                        };
+                    }
+                    self.commit_active.store(false, Ordering::SeqCst);
                     self.committed_heads.fetch_add(1, Ordering::SeqCst);
+                    self.commit_done.notify_one();
                     return ready;
                 }
                 if self.session
@@ -318,6 +459,9 @@ impl FramerDoor for Mux {
                         self.response_done.notify_one();
                     }
                     return ready;
+                }
+                if !resume {
+                    self.message_attempts.fetch_add(1, Ordering::SeqCst);
                 }
                 let value = if resume {
                     if !self.gate.released.load(Ordering::SeqCst) {
@@ -355,12 +499,42 @@ impl FramerDoor for Mux {
                 };
                 let second_done = value.stream == 3 && value.status == 0 && value.end;
                 self.emitted.lock().unwrap().push(value);
+                self.message_done.notify_one();
                 if second_done {
                     self.second_done.notify_one();
                 }
             }
             Call::Detach(_, _) if self.session => {}
             Call::Adopt(input, out) if self.session => {
+                if resume {
+                    self.adoption_resumes.fetch_add(1, Ordering::SeqCst);
+                }
+                if self.pending_adopt {
+                    if resume {
+                        assert_eq!(
+                            *self.adoption_ticket.lock().unwrap(),
+                            Some(side.ticket()),
+                            "adoption resumes on its original ticket"
+                        );
+                    } else {
+                        *self.adoption_ticket.lock().unwrap() = Some(side.ticket());
+                    }
+                    if !self.adoption_released.load(Ordering::SeqCst) {
+                        if !resume {
+                            self.adoption_entered.notify_one();
+                        }
+                        return Crossed {
+                            outcome: Outcome::Pending,
+                            error: None,
+                        };
+                    }
+                    if self.pending_adopt_refused {
+                        return Crossed {
+                            outcome: Outcome::Refused,
+                            error: Some(b"the pending session adoption refused".to_vec()),
+                        };
+                    }
+                }
                 out.framing = 2;
                 self.accepted_head_pending.store(
                     !stage_head(&input.sink, out, self.refuse_adopt),
